@@ -1,0 +1,338 @@
+-- crimson_arena/.luacheckrc
+--
+-- luacheck runs this resource OUTSIDE FiveM, where none of the runtime it is
+-- written against exists. Every name below is something a real VM provides at
+-- run time and a bare `luacheck` cannot know about: a CitizenFX native, an
+-- ox_lib or qbx_core global, or one of this resource's own documented exports.
+--
+-- THE LIST IS DELIBERATELY EXACT, NOT A BLANKET ALLOW. Allowing every native
+-- CFX has ever shipped would make this file quiet and useless -- a typo'd
+-- native name is exactly the bug luacheck is here to catch, and it can only
+-- catch it while the allow-list is the natives this resource actually calls.
+-- Adding a native call therefore means adding a line here, on purpose.
+--
+-- REALMS ARE SEPARATE. A client file that calls a server-only native, or the
+-- reverse, is a crash in production and a warning here, which is the whole
+-- point of splitting the sections rather than pooling them.
+
+std = 'lua54'
+
+-- FiveM hands every handler a fixed set of arguments and ox_lib's NUI
+-- callbacks a fixed (data, cb) pair. A handler that legitimately ignores one
+-- of them still reads better naming it than taking `_`, so an unused argument
+-- is not a finding here.
+unused_args = false
+
+-- config.lua's tables, the log and locale format strings, and native calls
+-- that take a dozen coordinates in a row are all clearer on one line than
+-- wrapped. Line length is a style rule this codebase does not keep.
+max_line_length = false
+
+-- Nothing is allowed globally: `read_globals` stays empty at the top level so
+-- tests/ (plain lua5.4, no FiveM) cannot silently start calling a native.
+read_globals = {}
+
+files = {}
+
+-- ----------------------------------------------------------------------
+-- SHARED -- loaded into BOTH Lua VMs from fxmanifest.lua's shared_scripts.
+--
+-- These two files may use nothing realm-specific. shared/arena.lua calls no
+-- native at all, which is what lets tests/ load it under plain lua5.4.
+-- ----------------------------------------------------------------------
+
+files['config.lua'] = {
+    globals = { 'Config' },
+    -- CitizenFX Lua RUNTIME TYPES, not natives -- config.lua calls them while
+    -- the file is still loading.
+    read_globals = { 'vector3', 'vector4' },
+}
+
+files['shared/arena.lua'] = {
+    globals = { 'Arena' },
+    read_globals = { 'Config' },
+}
+
+-- ----------------------------------------------------------------------
+-- MANIFEST -- fxmanifest.lua is a Lua chunk run against FXServer's own
+-- manifest DSL, so every directive in it is a global function call.
+-- ----------------------------------------------------------------------
+
+files['fxmanifest.lua'] = {
+    read_globals = {
+        'author',
+        'client_scripts',
+        'dependencies',
+        'description',
+        'files',
+        'fx_version',
+        'game',
+        'lua54',
+        'name',
+        'ox_lib',
+        'server_scripts',
+        'shared_scripts',
+        'ui_page',
+        'version',
+    },
+}
+
+-- ----------------------------------------------------------------------
+-- CLIENT
+-- ----------------------------------------------------------------------
+
+files['client/'] = {
+    -- This realm's own exports, in the order fxmanifest.lua loads them.
+    globals = { 'ArenaUI', 'ArenaDispatch', 'ArenaState', 'ArenaSpectate' },
+
+    read_globals = {
+        -- Shared realm, read-only from here: the client never writes a rule.
+        'Arena',
+        'Config',
+
+        -- Dispatch suppression (client/dispatch.lua). The wanted-level and
+        -- police natives are only ever called between entering and leaving a
+        -- match, and every one of them is undone on the way out.
+        'GetEntityMaxHealth',
+        'GetPlayerWantedLevel',
+        'GetResourceState',
+        'SetCreateRandomCops',
+        'SetDispatchCopsForPlayer',
+        'SetMaxWantedLevel',
+        'SetPlayerHealthRechargeMultiplier',
+        'SetPlayerWantedLevel',
+        'SetPlayerWantedLevelNow',
+        'SetPoliceIgnorePlayer',
+
+        -- ox_lib (@ox_lib/init.lua) and its locale loader.
+        'lib',
+        'locale',
+        -- `cache` and `QBX` are the rest of the ox_lib / qbx_core client
+        -- surface. Nothing here reads them yet; they are allowed ahead of use
+        -- because they are framework globals rather than natives, so their
+        -- names cannot be typo'd into something that only fails in production.
+        'cache',
+        'QBX',
+
+        -- Resource exports: ox_target for the lobby ped, qbx_core elsewhere.
+        'exports',
+
+        -- CitizenFX runtime types.
+        'vector3',
+
+        -- Scheduling, events and resource identity.
+        'AddEventHandler',
+        'CreateThread',
+        'GetCurrentResourceName',
+        'GetGameTimer',
+        'RegisterCommand',
+        'RegisterNetEvent',
+        'TriggerEvent',
+        'TriggerServerEvent',
+        'Wait',
+
+        -- NUI.
+        'RegisterNUICallback',
+        'SendNUIMessage',
+        'SetNuiFocus',
+
+        -- Models.
+        'HasModelLoaded',
+        'IsModelInCdimage',
+        'IsModelValid',
+        'RequestModel',
+        'SetModelAsNoLongerNeeded',
+        'joaat',
+
+        -- Entities: the lobby ped, and the player's own.
+        'ApplyDamageToPed',
+        'ClearPedBloodDamage',
+        'CreatePed',
+        'DeleteEntity',
+        'DoesEntityExist',
+        'FreezeEntityPosition',
+        'GetEntityCoords',
+        'GetEntityHeading',
+        'GetEntityHealth',
+        'GetPedSourceOfDeath',
+        'HasCollisionLoadedAroundEntity',
+        'IsEntityAPed',
+        'IsEntityDead',
+        'RequestCollisionAtCoord',
+        'SetBlockingOfNonTemporaryEvents',
+        'SetEntityAsMissionEntity',
+        'SetEntityCollision',
+        'SetEntityCoordsNoOffset',
+        'SetEntityHeading',
+        'SetEntityHealth',
+        'SetEntityInvincible',
+        'SetEntityVisible',
+        'SetLocalPlayerVisibleLocally',
+        'TaskStartScenarioInPlace',
+
+        -- Players, local and remote.
+        'GetPlayerFromServerId',
+        'GetPlayerName',
+        'GetPlayerPed',
+        'GetPlayerServerId',
+        'IsPedAPlayer',
+        'NetworkGetPlayerIndexFromPed',
+        'NetworkIsPlayerActive',
+        'NetworkResurrectLocalPlayer',
+        'PlayerId',
+        'PlayerPedId',
+
+        -- Weapons and armour -- the loadout, and giving the player theirs back.
+        'GetAmmoInPedWeapon',
+        'GetPedArmour',
+        'GetSelectedPedWeapon',
+        'GiveWeaponComponentToPed',
+        'GiveWeaponToPed',
+        'HasPedGotWeapon',
+        'RemoveAllPedWeapons',
+        'RemoveWeaponFromPed',
+        'SetCurrentPedWeapon',
+        'SetPedAmmo',
+        'SetPedArmour',
+        'SetPedWeaponTintIndex',
+
+        -- The lobby blip.
+        'AddBlipForCoord',
+        'AddTextComponentSubstringPlayerName',
+        'BeginTextCommandSetBlipName',
+        'DoesBlipExist',
+        'EndTextCommandSetBlipName',
+        'RemoveBlip',
+        'SetBlipAsShortRange',
+        'SetBlipColour',
+        'SetBlipDisplay',
+        'SetBlipScale',
+        'SetBlipSprite',
+
+        -- The lobby marker and its help text.
+        'BeginTextCommandDisplayHelp',
+        'DrawMarker',
+        'EndTextCommandDisplayHelp',
+
+        -- Controls: locked down during a round and while spectating.
+        'DisableAllControlActions',
+        'DisableControlAction',
+        'EnableControlAction',
+        'GetDisabledControlNormal',
+        'IsControlJustReleased',
+        'IsDisabledControlJustPressed',
+        'IsDisabledControlPressed',
+        'IsPauseMenuActive',
+        'SetFrontendActive',
+
+        -- The spectator camera.
+        'ClearFocus',
+        'CreateCam',
+        'DestroyCam',
+        'RenderScriptCams',
+        'SetCamActive',
+        'SetCamCoord',
+        'SetCamRot',
+        'SetFocusEntity',
+
+        -- Per-arena weather and time overrides.
+        'ClearOverrideWeather',
+        'NetworkClearClockTimeOverride',
+        'NetworkOverrideClockTime',
+        'SetWeatherTypeNowPersist',
+    },
+}
+
+-- ----------------------------------------------------------------------
+-- SERVER
+-- ----------------------------------------------------------------------
+
+files['server/'] = {
+    -- The whole cross-file API, in the order fxmanifest.lua loads it:
+    -- util.lua's helpers, then the four namespaces.
+    globals = {
+        'ArenaCanCreate',
+        'ArenaDebug',
+        'ArenaForgetPlayer',
+        'ArenaGetPlayer',
+        'ArenaIsAdmin',
+        'ArenaLog',
+        'ArenaNewId',
+        'ArenaNotify',
+        'ArenaNotifyKey',
+        'ArenaPlayerName',
+        'ArenaRateLimit',
+        'ArenaWebhook',
+        'ArenaDispatch',
+        'ArenaStats',
+        'ArenaBetting',
+        'ArenaLobby',
+        'ArenaMatch',
+    },
+
+    read_globals = {
+        -- Shared realm. The server is the authority ON these rules, not over
+        -- them: it reads the same functions the client does and never edits.
+        'Arena',
+        'Config',
+
+        -- Server-side state bags. server/dispatch.lua writes the arena flag
+        -- through Player(src).state so a third-party dispatch script can
+        -- trust it -- a bag written from the client can be written by any
+        -- client.
+        'Player',
+
+        -- ox_lib and its locale loader. `cache` and `QBX` complete the
+        -- ox_lib / qbx_core surface and are allowed ahead of use for the same
+        -- reason they are on the client side.
+        'lib',
+        'locale',
+        'cache',
+        'QBX',
+
+        -- exports.qbx_core:GetPlayer is the only export this realm calls.
+        'exports',
+
+        -- oxmysql (@oxmysql/lib/MySQL.lua). Present whatever
+        -- Config.Database.enabled says, because it is a hard fxmanifest
+        -- dependency -- server/stats.lua just never queries through it.
+        'MySQL',
+
+        -- The server id of whoever raised the event being handled. Read into
+        -- a local before anything yields; never assigned.
+        'source',
+
+        -- Scheduling, events and resource identity.
+        'AddEventHandler',
+        'CreateThread',
+        'GetCurrentResourceName',
+        'GetGameTimer',
+        'RegisterCommand',
+        'RegisterNetEvent',
+        'TriggerClientEvent',
+        'Wait',
+
+        -- Server-side player queries, for the join gates and for logging.
+        'GetPlayerName',
+        'GetPlayerPed',
+        'GetVehiclePedIsIn',
+        'IsPlayerAceAllowed',
+
+        -- The Discord webhook.
+        'PerformHttpRequest',
+        'json',
+    },
+}
+
+-- ----------------------------------------------------------------------
+-- TESTS
+--
+-- Deliberately given nothing. Specs run under plain lua5.4 through
+-- tests/run.sh, load production files into a sandbox environment table, and
+-- reach the harness with dofile() -- so a native or a bare global appearing
+-- in one is a spec that will not run, and should be reported as such.
+-- ----------------------------------------------------------------------
+
+files['tests/'] = {
+    std = 'lua54',
+}

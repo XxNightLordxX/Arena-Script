@@ -1,0 +1,72 @@
+# crimson_arena -- CI
+#
+# Three gates, in the order they are worth failing on: does every Lua file
+# PARSE, does it pass the resource's own luacheck allow-list, and do the specs
+# still pass. A syntax error makes the other two meaningless, so it runs first.
+#
+# None of this boots FiveM. It cannot: the natives do not exist outside a
+# server. What it can prove is that nothing here fails to load, that no file
+# reached for a global the resource has not declared, and that every pure rule
+# in shared/arena.lua still behaves.
+
+name: lua-check
+
+on:
+  push:
+  pull_request:
+
+# The workflow only reads the checkout.
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first run's answer stale.
+concurrency:
+  group: lua-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lua-check:
+    name: syntax, lint and specs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the resource
+        uses: actions/checkout@v4
+
+      # lua5.4 is the runtime this resource ships against (fxmanifest.lua's
+      # `lua54 'yes'`), so it is the one the syntax check and the specs must
+      # run under. luacheck parses source itself and does not care which Lua
+      # it was built for.
+      - name: Install lua5.4 and luacheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends lua5.4 lua-check
+          lua5.4 -v
+          luacheck --version
+
+      # Every .lua file, including fxmanifest.lua, config.lua and the specs --
+      # a manifest that does not parse takes the whole resource down at start.
+      # -p parses and discards, so nothing is written to disk.
+      - name: Parse every Lua file
+        run: |
+          set -euo pipefail
+          status=0
+          while IFS= read -r -d '' file; do
+              if ! luac5.4 -p "$file"; then
+                  echo "::error file=${file}::does not parse under lua5.4"
+                  status=1
+              fi
+          done < <(find . -type f -name '*.lua' -not -path './.git/*' -print0)
+          exit "$status"
+
+      # Reads .luacheckrc at the repository root: the exact list of CFX
+      # natives, framework globals and this resource's own exports.
+      - name: luacheck
+        run: luacheck .
+
+      # tests/run.sh runs every tests/*_spec.lua under plain lua5.4 and exits
+      # non-zero if any fails. It also exits 2 when it finds no spec files at
+      # all, and that is a failure on purpose -- a green tick from a suite that
+      # never ran is worse than a red one.
+      - name: Specs
+        run: bash tests/run.sh

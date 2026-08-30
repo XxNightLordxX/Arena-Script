@@ -217,9 +217,12 @@ end
 -- WIRING
 -- ======================================================================
 
+-- Caching only. client/ui.lua registers its own handler for this same
+-- event and is the one that pushes the snapshot into the panel; this file
+-- owns the cache that match.lua and spectate.lua read. Relaying from here
+-- as well would send the panel two copies of every update.
 RegisterNetEvent('crimson_arena:client:state', function(newState)
     ArenaState.Set(newState)
-    ArenaUI.SetState(ArenaState.Get())
 end)
 
 CreateThread(function()

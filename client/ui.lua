@@ -1,0 +1,268 @@
+--[[
+    crimson_arena/client/ui.lua
+
+    The NUI bridge, and the ONLY file in this resource that touches NUI
+    focus. Everything else asks through ArenaUI.
+
+    WHY ONE FILE OWNS FOCUS: SetNuiFocus is global state with no stack. Two
+    files taking and releasing it independently produces a player who cannot
+    move because somebody else's release ran first. Keeping every call in
+    one place makes that class of bug unwritable.
+
+    WHAT THIS FILE DOES NOT DO: it does not decide anything. NUI callbacks
+    forward to the server and nothing else -- a client-side "can I?" check
+    here would be a suggestion, not a rule, and the server re-validates
+    every one of these payloads anyway.
+]]
+
+ArenaUI = {}
+
+--- True between a completed `open` message and the matching `close`.
+local isOpen = false
+
+--- Open() yields on a server callback. Without this the player pressing the
+--- interaction twice gets two panels open and one stale focus grab.
+local isOpening = false
+
+--- Sends the raw `{ action, data }` envelope the panel listens for. Every
+--- other Send* helper funnels through here so the shape is defined once.
+--- @param action string
+--- @param data table?
+function ArenaUI.Send(action, data)
+    SendNUIMessage({ action = action, data = data or {} })
+end
+
+--- @return boolean
+function ArenaUI.IsOpen()
+    return isOpen
+end
+
+--- Pushes a fresh state snapshot into an already-open panel.
+--- @param state table
+function ArenaUI.SendState(state)
+    if not state then return end
+    ArenaUI.Send('state', state)
+end
+
+--- Player-visible message. It goes to the panel when the panel is up, and
+--- to ox_lib otherwise -- a notification about a match the player is
+--- fighting in must not be swallowed just because they closed the menu.
+--- @param description string
+--- @param notifyType string? 'info'|'success'|'warning'|'error'
+function ArenaUI.Notify(description, notifyType)
+    if type(description) ~= 'string' or description == '' then return end
+    if isOpen then
+        ArenaUI.Send('notify', { message = description, type = notifyType or 'info' })
+    else
+        -- ox_lib spells the neutral level 'inform'; the rest of the resource
+        -- says 'info'. Translated here rather than at every call site.
+        local level = notifyType or 'info'
+        lib.notify({
+            title = Config.NotifyTitle,
+            description = description,
+            type = level == 'info' and 'inform' or level,
+        })
+    end
+end
+
+--- Fetches the snapshot first and only then takes focus: a panel that opens
+--- before it has anything to render shows an empty frame with the mouse
+--- already captured, and a failed fetch would leave that frame permanent.
+function ArenaUI.Open()
+    if isOpen or isOpening then return end
+    isOpening = true
+
+    local state = lib.callback.await('crimson_arena:server:getState', false)
+
+    isOpening = false
+    if not state then
+        ArenaUI.Notify(locale('error.state_unavailable'), 'error')
+        return
+    end
+
+    isOpen = true
+    ArenaUI.Send('open', state)
+    SetNuiFocus(true, true)
+end
+
+--- Safe to call when already closed; the release is unconditional because
+--- releasing focus we do not hold costs nothing and failing to release
+--- focus we do hold costs the player their character.
+function ArenaUI.Close()
+    isOpen = false
+    ArenaUI.Send('close')
+    SetNuiFocus(false, false)
+end
+
+-- ======================================================================
+-- HUD OVERLAY
+--
+-- A separate NUI root with no pointer events, so it never takes focus and
+-- is not affected by the panel being open or closed.
+-- ======================================================================
+
+--- @param data table? matchHud payload
+function ArenaUI.UpdateHud(data)
+    if not Config.UI.showMatchHud then return end
+    local payload = { visible = true }
+    for key, value in pairs(data or {}) do
+        payload[key] = value
+    end
+    ArenaUI.Send('hud', payload)
+end
+
+function ArenaUI.ShowHud()
+    if not Config.UI.showMatchHud then return end
+    ArenaUI.Send('hud', { visible = true })
+end
+
+--- Not gated on `showMatchHud`: an operator turning the HUD off mid-session
+--- must still be able to hide one that is already on screen.
+function ArenaUI.HideHud()
+    ArenaUI.Send('hud', { visible = false })
+end
+
+--- The big centred number before a round goes live.
+--- @param seconds integer
+--- @param label string?
+function ArenaUI.Countdown(seconds, label)
+    ArenaUI.Send('countdown', { seconds = seconds, label = label })
+end
+
+--- End-of-match scoreboard.
+--- @param results table
+function ArenaUI.Results(results)
+    ArenaUI.Send('results', { results = results })
+end
+
+-- ======================================================================
+-- NUI CALLBACKS
+--
+-- The panel talks to Lua with fetch(), and a fetch that is never answered
+-- never rejects -- the promise simply hangs, the panel's button stays
+-- disabled forever, and the player is left with a locked mouse.
+--
+-- So no handler below is allowed to answer for itself. `register` answers
+-- exactly once, after the handler returns, on every path INCLUDING a Lua
+-- error inside the handler (hence the pcall). Handlers cannot forget to
+-- call cb because they are never given cb.
+-- ======================================================================
+
+--- @param name string
+--- @param handler fun(data: table)
+local function register(name, handler)
+    RegisterNUICallback(name, function(data, cb)
+        -- fetch() with no body arrives as nil, and a hostile page could send
+        -- a bare number. Handlers may index `data` unconditionally.
+        if type(data) ~= 'table' then data = {} end
+
+        local ok, err = pcall(handler, data)
+        if not ok then
+            print(('[crimson_arena] NUI callback "%s" errored: %s'):format(name, err))
+        end
+
+        cb('ok')
+    end)
+end
+
+register('close', function()
+    ArenaUI.Close()
+end)
+
+register('refresh', function()
+    TriggerServerEvent('crimson_arena:server:requestState')
+end)
+
+register('createMatch', function(data)
+    TriggerServerEvent('crimson_arena:server:createMatch', {
+        arenaKey = data.arenaKey,
+        modeKey = data.modeKey,
+        entryFee = data.entryFee,
+    })
+end)
+
+register('joinMatch', function(data)
+    TriggerServerEvent('crimson_arena:server:joinMatch', {
+        matchId = data.matchId,
+        teamKey = data.teamKey,
+    })
+end)
+
+register('leaveMatch', function()
+    TriggerServerEvent('crimson_arena:server:leaveMatch')
+end)
+
+register('setTeam', function(data)
+    TriggerServerEvent('crimson_arena:server:setTeam', { teamKey = data.teamKey })
+end)
+
+register('setLoadout', function(data)
+    -- Forwarded as it arrives. Arena.ResolveLoadout on the server is what
+    -- decides which of these weapons exist and how much ammo they get.
+    TriggerServerEvent('crimson_arena:server:setLoadout', {
+        weapons = data.weapons,
+        armor = data.armor,
+    })
+end)
+
+register('setReady', function(data)
+    TriggerServerEvent('crimson_arena:server:setReady', { ready = data.ready and true or false })
+end)
+
+register('startMatch', function()
+    TriggerServerEvent('crimson_arena:server:startMatch')
+end)
+
+register('cancelMatch', function()
+    TriggerServerEvent('crimson_arena:server:cancelMatch')
+end)
+
+register('spectate', function(data)
+    TriggerServerEvent('crimson_arena:server:spectateMatch', { matchId = data.matchId })
+end)
+
+register('stopSpectate', function()
+    TriggerServerEvent('crimson_arena:server:stopSpectating')
+end)
+
+register('spectatorBet', function(data)
+    TriggerServerEvent('crimson_arena:server:placeSpectatorBet', {
+        matchId = data.matchId,
+        pick = data.pick,
+        amount = data.amount,
+    })
+end)
+
+-- ======================================================================
+-- SERVER -> PANEL RELAYS
+-- ======================================================================
+
+RegisterNetEvent('crimson_arena:client:state', function(state)
+    ArenaUI.SendState(state)
+end)
+
+RegisterNetEvent('crimson_arena:client:notify', function(data)
+    if type(data) ~= 'table' then return end
+    ArenaUI.Notify(data.description, data.type)
+end)
+
+RegisterNetEvent('crimson_arena:client:closePanel', function()
+    ArenaUI.Close()
+end)
+
+RegisterNetEvent('crimson_arena:client:matchHud', function(data)
+    ArenaUI.UpdateHud(data)
+end)
+
+RegisterNetEvent('crimson_arena:client:countdown', function(data)
+    if type(data) ~= 'table' then return end
+    ArenaUI.Countdown(data.seconds, data.label)
+end)
+
+-- The panel dies with the resource, but focus does not: a restart with the
+-- menu open otherwise leaves the player with a captured mouse and no page
+-- to release it. This handler is the reason a restart is survivable.
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= GetCurrentResourceName() then return end
+    SetNuiFocus(false, false)
+end)

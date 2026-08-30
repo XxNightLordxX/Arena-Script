@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<!--
+    crimson_arena/html/index.html
+
+    The arena panel and the in-match overlay, as structure only. Styling
+    lives in style.css, behaviour in app.js; this file names the ids those
+    two build against and nothing else.
+
+    TWO ROOTS, ON PURPOSE. #arena-root is the modal panel and is the only
+    thing that ever holds NUI focus. #arena-hud and #arena-countdown are
+    drawn over live gameplay while the player is shooting, so they are
+    inert at every level -- see the pointer-events note in style.css before
+    adding anything clickable to them.
+
+    Both roots start hidden; app.js toggles the `hidden` class and nothing
+    else. Every list here is empty on purpose: the panel renders from the
+    server's state snapshot, so there is no placeholder markup to go stale.
+-->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Crimson Arena</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="arena-root" class="hidden">
+    <header id="arena-header">
+        <img id="arena-logo" alt="">
+        <h1 id="arena-title"></h1>
+        <span id="arena-subtitle"></span>
+        <div id="arena-money"></div>
+        <button id="arena-close" type="button">&#10005;</button>
+    </header>
+
+    <nav id="arena-nav">
+        <button class="arena-tab" type="button" data-tab="matches">Matches</button>
+        <button class="arena-tab" type="button" data-tab="lobby">Lobby</button>
+        <button class="arena-tab" type="button" data-tab="loadout">Loadout</button>
+        <button class="arena-tab" type="button" data-tab="bets">Bets</button>
+        <button class="arena-tab" type="button" data-tab="board">Leaderboard</button>
+    </nav>
+
+    <main id="arena-body">
+        <section id="tab-matches" class="arena-panel">
+            <div id="match-list"></div>
+
+            <div id="create-panel">
+                <label class="field">
+                    <span class="field-label">Arena</span>
+                    <select id="create-arena"></select>
+                </label>
+
+                <label class="field">
+                    <span class="field-label">Mode</span>
+                    <select id="create-mode"></select>
+                </label>
+
+                <!-- Hidden wholesale when betting is off. A free match has no
+                     fee to set, and a blank input left behind would still read
+                     as one that could be. -->
+                <div id="create-fee-row" class="field">
+                    <span class="field-label">Entry Fee</span>
+                    <input id="create-fee" type="number" min="0" step="1">
+                    <div id="create-fee-presets"></div>
+                </div>
+
+                <button id="create-submit" class="btn btn-primary" type="button">Create Match</button>
+            </div>
+        </section>
+
+        <section id="tab-lobby" class="arena-panel">
+            <div id="lobby-empty"></div>
+
+            <div id="lobby-detail">
+                <h2 id="lobby-title"></h2>
+                <div id="lobby-meta"></div>
+                <div id="team-picker"></div>
+                <div id="roster"></div>
+                <div id="lobby-actions">
+                    <button id="btn-ready" class="btn" type="button">Ready</button>
+                    <button id="btn-start" class="btn btn-primary" type="button">Start Match</button>
+                    <button id="btn-leave" class="btn btn-danger" type="button">Leave</button>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-loadout" class="arena-panel">
+            <div id="loadout-cats"></div>
+            <div id="weapon-grid"></div>
+            <div id="loadout-slots"></div>
+            <div id="armor-picker"></div>
+            <button id="loadout-save" class="btn btn-primary" type="button">Save Loadout</button>
+        </section>
+
+        <section id="tab-bets" class="arena-panel">
+            <!-- Shown alone when betting is off; the controls below it are
+                 hidden in that case. -->
+            <div id="bet-disabled"></div>
+
+            <div id="bet-summary"></div>
+            <div id="bet-pick"></div>
+            <input id="bet-amount" type="number" min="0" step="1">
+            <button id="bet-submit" class="btn btn-primary" type="button">Place Bet</button>
+            <div id="bet-list"></div>
+        </section>
+
+        <section id="tab-board" class="arena-panel">
+            <table id="leaderboard">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Player</th>
+                        <th>Wins</th>
+                        <th>Kills</th>
+                        <th>Deaths</th>
+                        <th>Earnings</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboard-body"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <div id="arena-toast"></div>
+</div>
+
+<div id="arena-hud" class="hidden">
+    <div id="hud-timer"></div>
+    <div id="hud-alive"></div>
+    <div id="hud-kills"></div>
+    <div id="hud-pot"></div>
+    <div id="hud-scoreboard"></div>
+</div>
+
+<div id="arena-countdown" class="hidden">
+    <div id="countdown-value"></div>
+    <div id="countdown-label"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

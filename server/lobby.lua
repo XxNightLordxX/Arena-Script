@@ -1,0 +1,940 @@
+--[[
+    crimson_arena/server/lobby.lua
+
+    The match registry, and the one place the panel's picture of the world
+    is built.
+
+    EVERY match that exists lives in the `matches` table below, from the
+    moment its host creates it to the moment it is destroyed. Nothing else
+    in this resource keeps a second list -- server/match.lua reads and
+    mutates the very same records, which is why the record shape here is
+    fixed and documented rather than convenient.
+
+    WHAT THIS FILE DECIDES: who may sit in a lobby, on which side, with
+    which guns, and who has said they are ready. WHAT IT DOES NOT DECIDE:
+    whether a lobby may START (Arena.CanStartMatch and server/match.lua),
+    and where money is (server/betting.lua). Stakes are taken and returned
+    exclusively through ArenaBetting -- this file never touches an account.
+
+    UNEVEN TEAMS ARE LEGAL. Nothing here refuses a join, a team switch or a
+    ready toggle because the sides are lopsided. Arena.TeamsAreStartable is
+    the only thing that ever looks at balance, and it looks once, at start
+    time. The single team-shaped refusal below is Config.Teams.maxTeamSize,
+    which is a cap, not a balance rule.
+
+    THE SNAPSHOT is built in BuildState and nowhere else. Broadcast sends it
+    to the people who can see it -- panel open, in a match, or watching one
+    -- and to nobody else. A ready toggle in a two-player lobby must not
+    cost the other ninety-eight players on the server a serialisation.
+]]
+
+ArenaLobby = {}
+
+-- ======================================================================
+-- REGISTRY
+-- ======================================================================
+
+--- Every match, keyed by its ArenaNewId() string.
+local matches = {}
+
+--- The two ways a source can be attached to a match, kept as reverse
+--- indexes so "which match is this player in" is a lookup rather than a
+--- scan of every lobby on every event.
+local playerIndex = {}          -- [src] = matchId, for people PLAYING
+local spectatorIndex = {}       -- [src] = matchId, for people WATCHING
+
+--- Sources with the arena panel open. main.lua marks them, including on
+--- playerDropped -- but a dropped source that was never unmarked would be
+--- pushed to forever, so Broadcast prunes as it goes.
+local panelOpen = {}
+
+-- ======================================================================
+-- LEADERBOARD CACHE
+--
+-- The panel wants the leaderboard inside the same snapshot as everything
+-- else, but ArenaStats.GetLeaderboard answers through a callback and may
+-- be waiting on a database. So the snapshot always carries the last rows
+-- we were handed and a refresh runs behind it: a panel that opens on an
+-- empty board fills in a moment later, and no state build ever blocks on
+-- IO.
+-- ======================================================================
+
+local leaderboard = {}
+local leaderboardAt = 0
+local LEADERBOARD_TTL_SECONDS = 30
+
+local function refreshLeaderboard()
+    local now = os.time()
+    if now - leaderboardAt < LEADERBOARD_TTL_SECONDS then return end
+    leaderboardAt = now
+
+    local synchronous = true
+    ArenaStats.GetLeaderboard(function(rows)
+        leaderboard = rows
+        -- With no database the callback lands before this function has even
+        -- returned, and the caller is about to build a snapshot from the
+        -- fresh rows anyway. Only a late answer has an audience to push to.
+        if not synchronous then ArenaLobby.Broadcast() end
+    end)
+    synchronous = false
+end
+
+-- ======================================================================
+-- LOOKUPS
+-- ======================================================================
+
+--- @param matchId any -- straight off the wire; may be anything
+--- @return table|nil match
+function ArenaLobby.Get(matchId)
+    if not Arena.IsKey(matchId) then return nil end
+    return matches[matchId]
+end
+
+--- @param src any
+--- @return table|nil match
+function ArenaLobby.GetByPlayer(src)
+    local target = tonumber(src)
+    if not target then return nil end
+    local matchId = playerIndex[target]
+    if not matchId then return nil end
+    return matches[matchId]
+end
+
+--- Oldest first, id breaking the tie, so two reads of an unchanged registry
+--- can never render the match list in a different order.
+--- @return table[] matches
+function ArenaLobby.All()
+    local out = {}
+    for _, match in pairs(matches) do out[#out + 1] = match end
+    table.sort(out, function(a, b)
+        if a.createdAt ~= b.createdAt then return a.createdAt < b.createdAt end
+        return a.id < b.id
+    end)
+    return out
+end
+
+--- @param match table
+--- @return integer
+function ArenaLobby.PlayerCount(match)
+    if type(match) ~= 'table' then return 0 end
+    return Arena.Count(match.players)
+end
+
+--- The roster as an ARRAY, in join order -- the shape every Arena.* rule
+--- takes, and the order a spawn index is drawn from.
+--- @param match table
+--- @return table[] players
+function ArenaLobby.PlayerArray(match)
+    local out = {}
+    if type(match) ~= 'table' then return out end
+    for _, src in ipairs(match.order or {}) do
+        local player = match.players[src]
+        if player then out[#out + 1] = player end
+    end
+    return out
+end
+
+-- ======================================================================
+-- INTERNAL HELPERS
+-- ======================================================================
+
+--- @param match table
+--- @param src number
+local function removeFromOrder(match, src)
+    for index, entry in ipairs(match.order) do
+        if entry == src then
+            table.remove(match.order, index)
+            return
+        end
+    end
+end
+
+--- The match a player is in AND their row in it, in one lookup. The two can
+--- only fall out of step if something removed a row without clearing the
+--- index; reporting that as "not in a match" beats indexing a nil.
+--- @param src number
+--- @return table|nil match
+--- @return table|nil player
+local function findPlayer(src)
+    local match = ArenaLobby.GetByPlayer(src)
+    local player = match and match.players[src] or nil
+    if not player then return nil, nil end
+    return match, player
+end
+
+--- @param match table
+--- @return integer
+local function readyCount(match)
+    local total = 0
+    for _, player in pairs(match.players) do
+        if player.ready == true then total = total + 1 end
+    end
+    return total
+end
+
+--- The "not right now" gates from Config.Match. They read qbx's own
+--- metadata rather than the ped, because that is what the rest of the
+--- server agrees a dead or cuffed player is.
+---
+--- Cuffed rides along with the dead check: config.lua describes both under
+--- one switch and ships no separate flag for it.
+--- @param src number
+--- @param data table -- PlayerData
+--- @return string|nil reasonKey
+local function entryBlocked(src, data)
+    local metadata = type(data.metadata) == 'table' and data.metadata or {}
+
+    if Config.Match.blockWhileDead == true then
+        if metadata.isdead == true or metadata.inlaststand == true then
+            return 'error.cannot_join_dead'
+        end
+        if metadata.ishandcuffed == true then
+            return 'error.cannot_join_cuffed'
+        end
+    end
+
+    if Config.Match.blockWhileInVehicle == true then
+        if GetVehiclePedIsIn(GetPlayerPed(src), false) ~= 0 then
+            return 'error.cannot_join_in_vehicle'
+        end
+    end
+
+    return nil
+end
+
+--- Which side a player lands on, and the ONLY reason a side can be refused:
+--- its size cap. Lopsidedness is deliberately not consulted -- an eighth
+--- player joining a 7v0 lobby is a legal lobby, and whether that lobby may
+--- start is Arena.TeamsAreStartable's call, made once at start time.
+---
+--- A nil team with no reason means "has not picked yet", which is a legal
+--- lobby state; callers must branch on the REASON, not on the team.
+--- @param match table
+--- @param teamKey any -- straight off the wire
+--- @param ignoreSrc number? -- a player already on a side who is switching off it
+--- @return string|nil team
+--- @return string|nil reasonKey
+local function resolveTeam(match, teamKey, ignoreSrc)
+    if not Arena.ModeUsesTeams(match.modeKey) then return nil, nil end
+
+    local roster = ArenaLobby.PlayerArray(match)
+
+    -- With choosing switched off nobody sends a key and the smallest side
+    -- takes them the moment they join.
+    if Config.Teams.allowChoose == false then
+        return Arena.SuggestTeam(roster), nil
+    end
+
+    local team = Arena.GetTeamByKey(teamKey)
+    if not team then
+        -- Sending nothing is the panel's "I have not picked". Sending a key
+        -- that is not a live team is either a stale panel or a forged
+        -- payload, and both deserve to be told no.
+        if Arena.IsKey(teamKey) then return nil, 'error.team_unavailable' end
+        return nil, nil
+    end
+
+    local cap = Arena.ToInt(Config.Teams.maxTeamSize) or 0
+    if cap > 0 then
+        local taken = Arena.CountTeams(roster)[team.key] or 0
+        -- Someone switching within their own team must not be counted twice
+        -- against the cap they are already inside.
+        local current = ignoreSrc and match.players[ignoreSrc]
+        if current and current.team == team.key then taken = taken - 1 end
+        if taken >= cap then return nil, 'error.team_over_capacity' end
+    end
+
+    return team.key, nil
+end
+
+-- ======================================================================
+-- SNAPSHOT
+--
+-- One shape, built here and nowhere else. The client caches whatever
+-- arrives and re-renders from it, so anything the panel needs has to be in
+-- here -- and anything that is not needed is a cost paid on every push.
+-- ======================================================================
+
+--- The config third of the snapshot never changes under a running resource:
+--- Config is read at load and an operator editing it restarts. So it is
+--- built once and handed out by reference from then on.
+local configBlock
+
+--- @return table
+local function snapshotConfig()
+    if configBlock then return configBlock end
+
+    local weapons = {}
+    for _, weapon in ipairs(Arena.GetEnabledWeapons()) do
+        local ammo = type(weapon.ammo) == 'table' and weapon.ammo or {}
+        weapons[#weapons + 1] = {
+            key = weapon.key,
+            label = weapon.label or weapon.key,
+            category = weapon.category,
+            ammo = {
+                default = Arena.ToInt(ammo.default) or 0,
+                options = Arena.GetAmmoOptions(weapon),
+                max = Arena.ToInt(ammo.max) or 0,
+            },
+        }
+    end
+
+    local fee = Config.Betting.entryFee or {}
+    local spectator = Config.Betting.spectatorBets or {}
+
+    configBlock = {
+        ui = Config.UI,
+        arenas = Arena.GetEnabledArenas(),
+        modes = Arena.GetEnabledModes(),
+
+        teams = {
+            allowChoose = Config.Teams.allowChoose ~= false,
+            allowUnequal = Config.Teams.allowUnequal ~= false,
+            list = Arena.GetEnabledTeams(),
+        },
+
+        loadouts = {
+            allowChoose = Config.Loadouts.allowChoose ~= false,
+            weaponSlots = math.max(0, Arena.ToInt(Config.Loadouts.weaponSlots) or 1),
+            categories = Config.Loadouts.categories or {},
+            armor = Config.Loadouts.armor,
+            weapons = weapons,
+        },
+
+        betting = {
+            enabled = ArenaBetting.IsEnabled(),
+            currencySymbol = Config.Betting.currencySymbol,
+            account = Config.Betting.account,
+            payout = Config.Betting.payout,
+            entryFee = {
+                enabled = fee.enabled == true,
+                min = math.max(0, Arena.ToInt(fee.min) or 0),
+                max = math.max(0, Arena.ToInt(fee.max) or 0),
+                default = math.max(0, Arena.ToInt(fee.default) or 0),
+                presets = fee.presets or {},
+                hostSetsForEveryone = fee.hostSetsForEveryone ~= false,
+            },
+            spectatorBets = {
+                enabled = spectator.enabled == true,
+                min = math.max(0, Arena.ToInt(spectator.min) or 0),
+                max = math.max(0, Arena.ToInt(spectator.max) or 0),
+                oddsMultiplier = tonumber(spectator.oddsMultiplier) or 2.0,
+            },
+        },
+
+        match = {
+            minPlayers = math.max(1, Arena.ToInt(Config.Match.minPlayers) or 1),
+            maxPlayers = math.max(0, Arena.ToInt(Config.Match.maxPlayers) or 0),
+            lives = math.max(1, Arena.ToInt(Config.Match.lives) or 1),
+            roundTimeSeconds = math.max(0, Arena.ToInt(Config.Match.roundTimeSeconds) or 0),
+            winCondition = Config.Match.winCondition,
+            onlyHostCanStart = Config.Match.onlyHostCanStart ~= false,
+            lobbyCountdownSeconds = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0),
+        },
+    }
+    return configBlock
+end
+
+--- What somebody who is in no match is shown in the loadout tab, and what
+--- they would be handed if they joined and never touched it. Read-only: it
+--- is only ever serialised out, never stored on a player.
+local previewLoadout
+
+--- @return table
+local function loadoutPreview()
+    if not previewLoadout then previewLoadout = (Arena.ResolveLoadout(nil)) end
+    return previewLoadout
+end
+
+--- The one part of the snapshot that differs per recipient.
+---
+--- `false` rather than nil for the empty cases: a nil field does not survive
+--- the trip as a key at all, and the panel would have to tell "not in a
+--- match" from "the server forgot to say".
+--- @param src number
+--- @return table
+local function snapshotPlayer(src)
+    local match = ArenaLobby.GetByPlayer(src)
+    local player = match and match.players[src] or nil
+
+    local money = 0
+    local qbx = ArenaGetPlayer(src)
+    local data = qbx and qbx.PlayerData
+    if data and type(data.money) == 'table' then
+        money = Arena.ToInt(data.money[Config.Betting.account]) or 0
+    end
+
+    return {
+        serverId = src,
+        name = ArenaPlayerName(src),
+        money = money,
+        matchId = match and match.id or false,
+        team = (player and Arena.IsKey(player.team)) and player.team or false,
+        ready = player ~= nil and player.ready == true,
+        loadout = player and player.loadout or loadoutPreview(),
+        spectating = spectatorIndex[src] or false,
+        isHost = match ~= nil and match.hostSource == src,
+    }
+end
+
+--- Every match, as the browser and the lobby screen render them.
+--- @return table[]
+local function snapshotMatches()
+    local out = {}
+
+    for _, match in ipairs(ArenaLobby.All()) do
+        local arena = Arena.GetArenaByKey(match.arenaKey)
+        local mode = Arena.GetModeByKey(match.modeKey)
+        local roster = ArenaLobby.PlayerArray(match)
+
+        local players = {}
+        for _, player in ipairs(roster) do
+            players[#players + 1] = {
+                id = player.src,
+                name = player.name,
+                team = player.team,
+                ready = player.ready == true,
+                kills = player.kills,
+                deaths = player.deaths,
+                alive = player.alive == true,
+                isHost = player.src == match.hostSource,
+            }
+        end
+
+        out[#out + 1] = {
+            id = match.id,
+            label = match.label,
+            arenaKey = match.arenaKey,
+            -- An arena or mode switched off while a match was already using
+            -- it stops resolving; the key is still better than a blank card.
+            arenaLabel = arena and arena.label or match.arenaKey,
+            modeKey = match.modeKey,
+            modeLabel = mode and mode.label or match.modeKey,
+            teams = Arena.ModeUsesTeams(match.modeKey),
+            hostId = match.hostSource,
+            hostName = match.hostName,
+            state = match.state,
+            entryFee = match.entryFee,
+            pot = ArenaBetting.GetPot(match.id),
+            playerCount = #roster,
+            teamCounts = Arena.CountTeams(roster),
+            startsAt = match.startsAt,
+            players = players,
+        }
+    end
+
+    return out
+end
+
+--- Everyone with a reason to hold the snapshot, deduplicated.
+--- @return table<number, boolean>
+local function recipients()
+    local targets = {}
+
+    for src in pairs(panelOpen) do
+        -- Self-healing: a panel-open entry left behind by a disconnect would
+        -- otherwise be pushed to for the life of the resource.
+        if Arena.IsKey(GetPlayerName(src)) then
+            targets[src] = true
+        else
+            panelOpen[src] = nil
+        end
+    end
+
+    for _, match in pairs(matches) do
+        for src in pairs(match.players) do targets[src] = true end
+        for src in pairs(match.spectators) do targets[src] = true end
+    end
+
+    return targets
+end
+
+--- One player's snapshot, for the changes nobody else can see.
+--- @param src number
+local function pushState(src)
+    TriggerClientEvent('crimson_arena:client:state', src, ArenaLobby.BuildState(src))
+end
+
+--- @param src number
+--- @return table snapshot
+function ArenaLobby.BuildState(src)
+    refreshLeaderboard()
+    return {
+        config = snapshotConfig(),
+        player = snapshotPlayer(src),
+        matches = snapshotMatches(),
+        leaderboard = leaderboard,
+    }
+end
+
+--- Pushes the snapshot to everyone who can see it and nobody who cannot.
+---
+--- The three shared thirds are built ONCE per broadcast and handed to every
+--- recipient by reference; only the `player` block is rebuilt per head.
+--- With forty people in a lobby the alternative is forty identical match
+--- lists assembled on every ready toggle.
+function ArenaLobby.Broadcast()
+    refreshLeaderboard()
+
+    local config = snapshotConfig()
+    local matchList = snapshotMatches()
+    local rows = leaderboard
+
+    for src in pairs(recipients()) do
+        TriggerClientEvent('crimson_arena:client:state', src, {
+            config = config,
+            player = snapshotPlayer(src),
+            matches = matchList,
+            leaderboard = rows,
+        })
+    end
+end
+
+-- ======================================================================
+-- PANEL PRESENCE
+-- ======================================================================
+
+--- @param src any
+--- @return boolean
+function ArenaLobby.MarkPanelOpen(src)
+    local target = tonumber(src)
+    if not target then return false end
+    panelOpen[target] = true
+    return true
+end
+
+--- @param src any
+--- @return boolean
+function ArenaLobby.MarkPanelClosed(src)
+    local target = tonumber(src)
+    if not target then return false end
+    panelOpen[target] = nil
+    return true
+end
+
+-- ======================================================================
+-- LIFECYCLE
+-- ======================================================================
+
+--- Opens a lobby and puts its host in it.
+--- @param src any
+--- @param arenaKey any
+--- @param modeKey any
+--- @param entryFee any
+--- @return string|nil matchId
+--- @return string|nil reasonKey
+function ArenaLobby.Create(src, arenaKey, modeKey, entryFee)
+    local host = tonumber(src)
+    if not host then return nil, 'error.invalid_request' end
+    if not ArenaCanCreate(host) then return nil, 'error.no_permission' end
+    if playerIndex[host] then return nil, 'error.already_in_match' end
+
+    local arena = Arena.GetArenaByKey(arenaKey)
+    if not arena then return nil, 'error.arena_unavailable' end
+
+    -- An unset mode is a panel that has not been touched, not a tampered
+    -- payload -- the operator's default is what it would have shown anyway.
+    local wantedMode = Arena.IsKey(modeKey) and modeKey or Config.DefaultMode
+    local mode = Arena.GetModeByKey(wantedMode)
+    if not mode then return nil, 'error.mode_unavailable' end
+
+    local ceiling = Arena.ToInt(Config.Match.maxConcurrentMatches) or 0
+    if ceiling > 0 and Arena.Count(matches) >= ceiling then
+        return nil, 'error.too_many_matches'
+    end
+
+    -- With betting off the fee is not clamped, it does not exist: every
+    -- match is free and no stake is ever taken.
+    local fee = 0
+    if ArenaBetting.IsEnabled() then
+        local amount, reason = Arena.ResolveEntryFee(entryFee)
+        if not amount then return nil, reason end
+        fee = amount
+    end
+
+    local id = ArenaNewId()
+    local hostName = ArenaPlayerName(host)
+
+    matches[id] = {
+        id = id,
+        label = locale('match.label', hostName, mode.label or wantedMode),
+        arenaKey = arenaKey,
+        modeKey = wantedMode,
+        hostSource = host,
+        hostName = hostName,
+        state = 'lobby',
+        entryFee = fee,
+        createdAt = os.time(),
+        -- 0, not nil, until server/match.lua schedules them: a nil field
+        -- would simply be absent from the snapshot the panel receives.
+        startsAt = 0,
+        endsAt = 0,
+        players = {},
+        order = {},
+        spectators = {},
+    }
+
+    -- The host joins through the same door as everybody else so their stake
+    -- is taken once, by the one piece of code that takes stakes. A refused
+    -- stake leaves nothing behind -- including the match.
+    local ok, reason = ArenaLobby.Join(host, id, nil)
+    if not ok then
+        matches[id] = nil
+        return nil, reason
+    end
+
+    ArenaLog('%s created match %s (%s / %s, fee %d)', hostName, id, arenaKey, wantedMode, fee)
+    return id, nil
+end
+
+--- @param src any
+--- @param matchId any
+--- @param teamKey any
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaLobby.Join(src, matchId, teamKey)
+    local target = tonumber(src)
+    if not target then return false, 'error.invalid_request' end
+
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false, 'error.match_not_found' end
+    if match.state ~= 'lobby' then return false, 'error.match_in_progress' end
+    if playerIndex[target] then return false, 'error.already_in_match' end
+
+    -- Arena.HasRoom owns the maxPlayers = 0 rule. Reading the key here
+    -- instead is how "unlimited" quietly becomes "nobody".
+    if not Arena.HasRoom(ArenaLobby.PlayerCount(match)) then return false, 'error.match_full' end
+
+    local qbx = ArenaGetPlayer(target)
+    local data = qbx and qbx.PlayerData
+    if not data or not Arena.IsKey(data.citizenid) then return false, 'error.player_not_loaded' end
+
+    local blocked = entryBlocked(target, data)
+    if blocked then return false, blocked end
+
+    local team, teamReason = resolveTeam(match, teamKey, nil)
+    if teamReason then return false, teamReason end
+
+    -- MONEY FIRST. The player does not exist in this match until the stake
+    -- is in escrow, so a refused stake has no row, no order entry and no
+    -- index to unwind -- there is nothing to leave behind.
+    local stake = 0
+    if ArenaBetting.IsEnabled() and match.entryFee > 0 then
+        local taken, reason = ArenaBetting.TakeStake(target, match.id, match.entryFee)
+        if not taken then return false, reason or 'error.stake_failed' end
+        -- Escrow is the authority on what was actually taken, not the fee we
+        -- asked it for.
+        stake = ArenaBetting.GetStake(match.id, target)
+    end
+
+    -- Watching and playing are mutually exclusive.
+    ArenaLobby.RemoveSpectator(target)
+
+    match.players[target] = {
+        src = target,
+        citizenid = data.citizenid,
+        name = ArenaPlayerName(target),
+        team = team,
+        ready = false,
+        -- Resolved rather than nil so somebody who never opens the loadout
+        -- tab still walks in carrying the operator's alwaysGive list.
+        loadout = (Arena.ResolveLoadout(nil)),
+        kills = 0,
+        deaths = 0,
+        alive = true,
+        lives = math.max(1, Arena.ToInt(Config.Match.lives) or 1),
+        stake = stake,
+        joinedAt = os.time(),
+        placement = 0,
+    }
+    match.order[#match.order + 1] = target
+    playerIndex[target] = match.id
+
+    ArenaDebug('%s joined match %s (team %s, stake %d)', target, match.id, tostring(team), stake)
+    ArenaLobby.Broadcast()
+    return true, nil
+end
+
+--- Takes a player out of whatever they are attached to: a match if they are
+--- in one, otherwise the match they were watching. main.lua routes
+--- playerDropped through here for exactly that reason.
+--- @param src any
+--- @param reasonKey string?
+--- @return boolean ok
+function ArenaLobby.Leave(src, reasonKey)
+    local target = tonumber(src)
+    if not target then return false end
+
+    local match, player = findPlayer(target)
+    if not match then
+        -- A stale index, if one ever happened, must not outlive the leave
+        -- that found it.
+        playerIndex[target] = nil
+        return ArenaLobby.RemoveSpectator(target)
+    end
+
+    -- A stake in a lobby has bought nothing yet, so it always comes back.
+    -- Once the round is running the operator decides whether walking out
+    -- forfeits it to the pot.
+    local started = match.state == 'live' or match.state == 'ended'
+    if player.stake > 0 and (not started or Config.Betting.refundOnDisconnectDuringMatch == true) then
+        ArenaBetting.RefundOne(match.id, target, reasonKey or 'bet.refund_left')
+    end
+
+    match.players[target] = nil
+    playerIndex[target] = nil
+    removeFromOrder(match, target)
+
+    -- Join order is the fairest claim on the room: whoever has been waiting
+    -- longest takes it over.
+    if match.hostSource == target then
+        local heir = match.order[1]
+        if heir then
+            match.hostSource = heir
+            match.hostName = match.players[heir].name
+            ArenaNotifyKey(heir, 'notify.you_are_host', 'info')
+        end
+    end
+
+    if Arena.Count(match.players) == 0 then
+        ArenaLobby.Destroy(match.id, reasonKey or 'notify.match_empty')
+        return true
+    end
+
+    ArenaLobby.Broadcast()
+    return true
+end
+
+--- Refunds whatever is still escrowed, tells everyone, and removes the
+--- match from the registry.
+--- @param matchId any
+--- @param reasonKey string?
+--- @return boolean ok
+function ArenaLobby.Destroy(matchId, reasonKey)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false end
+
+    local notice = Arena.IsKey(reasonKey) and reasonKey or 'notify.match_closed'
+
+    -- Anything still held goes back before the id stops existing -- escrow
+    -- against a match nobody can look up is money nobody can get out again.
+    -- After ArenaMatch.End has settled and cleared there is nothing left to
+    -- return and both calls are no-ops, which is what makes that order safe.
+    ArenaBetting.RefundAll(match.id, notice)
+    ArenaBetting.Clear(match.id)
+
+    for src in pairs(match.players) do
+        playerIndex[src] = nil
+        ArenaNotifyKey(src, notice, 'warning')
+    end
+    for src in pairs(match.spectators) do
+        spectatorIndex[src] = nil
+    end
+
+    matches[match.id] = nil
+    ArenaLog('match %s closed (%s)', match.id, notice)
+
+    ArenaLobby.Broadcast()
+    return true
+end
+
+-- ======================================================================
+-- LOBBY CHOICES
+-- ======================================================================
+
+--- @param src any
+--- @param teamKey any
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaLobby.SetTeam(src, teamKey)
+    local target = tonumber(src)
+    if not target then return false, 'error.invalid_request' end
+
+    local match, player = findPlayer(target)
+    if not match then return false, 'error.not_in_match' end
+    if match.state ~= 'lobby' then return false, 'error.match_in_progress' end
+    if not Arena.ModeUsesTeams(match.modeKey) then return false, 'error.mode_has_no_teams' end
+    if Config.Teams.allowChoose == false then return false, 'error.team_choice_disabled' end
+
+    -- Switching has to name a side. Clearing one is not something the panel
+    -- offers, and treating a missing key as "unpick me" would let a player
+    -- dodge a full team by emptying their own.
+    if not Arena.IsKey(teamKey) then return false, 'error.team_unavailable' end
+
+    local team, reason = resolveTeam(match, teamKey, target)
+    if reason then return false, reason end
+
+    player.team = team
+    ArenaLobby.Broadcast()
+    return true, nil
+end
+
+--- @param src any
+--- @param request any -- { weapons = { { key, ammo } }, armor }, straight off the wire
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaLobby.SetLoadout(src, request)
+    local target = tonumber(src)
+    if not target then return false, 'error.invalid_request' end
+
+    local match, player = findPlayer(target)
+    if not match then return false, 'error.not_in_match' end
+    if match.state ~= 'lobby' then return false, 'error.match_in_progress' end
+
+    -- What is STORED is what Arena.ResolveLoadout allowed, never the
+    -- request: the panel's copy is a preview, this one is handed out.
+    local loadout, rejected = Arena.ResolveLoadout(type(request) == 'table' and request or nil)
+    player.loadout = loadout
+
+    -- A panel left open across a config change asks for weapons that are no
+    -- longer there. Saying so costs a toast; staying quiet costs the player
+    -- a gun they thought they had picked.
+    if #rejected > 0 then
+        ArenaNotifyKey(target, 'notify.loadout_rejected', 'warning', table.concat(rejected, ', '))
+    end
+
+    -- Nobody else's snapshot changed: a loadout is not in the match list.
+    pushState(target)
+    return true, nil
+end
+
+--- @param src any
+--- @param ready any
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaLobby.SetReady(src, ready)
+    local target = tonumber(src)
+    if not target then return false, 'error.invalid_request' end
+
+    local match, player = findPlayer(target)
+    if not match then return false, 'error.not_in_match' end
+    if match.state ~= 'lobby' then return false, 'error.match_in_progress' end
+
+    -- With auto-assignment off an unpicked side blocks the start. This is
+    -- the last moment the player is still looking at the team picker, so it
+    -- is the kindest place to say so.
+    if ready == true
+        and Arena.ModeUsesTeams(match.modeKey)
+        and not Arena.IsKey(player.team)
+        and Config.Teams.autoAssignIfUnchosen == false then
+        return false, 'error.pick_a_team'
+    end
+
+    player.ready = ready == true
+    ArenaLobby.Broadcast()
+
+    if player.ready and Config.Match.autoStartWhenAllReady == true then
+        local roster = ArenaLobby.PlayerArray(match)
+        local allReady = #roster > 0
+        for _, entry in ipairs(roster) do
+            if entry.ready ~= true then
+                allReady = false
+                break
+            end
+        end
+
+        if allReady then
+            local startable = Arena.CanStartMatch({
+                arenaKey = match.arenaKey,
+                modeKey = match.modeKey,
+                players = roster,
+            })
+            if startable then
+                -- ArenaMatch is defined by a file that loads AFTER this one.
+                -- This line runs inside an event handler, long after every
+                -- server file has finished loading, so the global is there --
+                -- fxmanifest.lua's server_scripts note spells out why.
+                --
+                -- No requester: an auto-start is the server's, not a
+                -- player's, so Config.Match.onlyHostCanStart has nothing to
+                -- weigh it against.
+                ArenaMatch.Begin(match.id, nil)
+            end
+        end
+    end
+
+    return true, nil
+end
+
+-- ======================================================================
+-- SPECTATORS
+-- ======================================================================
+
+--- @param src any
+--- @param matchId any
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaLobby.AddSpectator(src, matchId)
+    local target = tonumber(src)
+    if not target then return false, 'error.invalid_request' end
+
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false, 'error.match_not_found' end
+    if playerIndex[target] then return false, 'error.already_in_match' end
+
+    ArenaLobby.RemoveSpectator(target)      -- one match at a time
+    match.spectators[target] = true
+    spectatorIndex[target] = match.id
+
+    ArenaLobby.Broadcast()
+    return true, nil
+end
+
+--- @param src any
+--- @return boolean ok -- false when they were not watching anything
+function ArenaLobby.RemoveSpectator(src)
+    local target = tonumber(src)
+    if not target then return false end
+
+    local matchId = spectatorIndex[target]
+    if not matchId then return false end
+
+    spectatorIndex[target] = nil
+    local match = matches[matchId]
+    if match then match.spectators[target] = nil end
+
+    ArenaLobby.Broadcast()
+    return true
+end
+
+-- ======================================================================
+-- IDLE LOBBY SWEEP
+--
+-- ONE thread for the whole registry, not one per match. A per-match thread
+-- would spend its entire life asleep, would have to be cancelled from every
+-- one of the four paths that end a match to stop it outliving its own
+-- lobby, and would multiply by however many lobbies are open. This loop
+-- costs the same whether there is one match or fifty.
+-- ======================================================================
+
+local SWEEP_INTERVAL_MS = 30000
+
+local idleTimeout = math.max(0, Arena.ToInt(Config.Match.idleLobbyTimeoutSeconds) or 0)
+
+-- 0 means never, and a thread that can never do anything is not worth
+-- waking thirty seconds at a time for the life of the server.
+if idleTimeout > 0 then
+    CreateThread(function()
+        while true do
+            Wait(SWEEP_INTERVAL_MS)
+
+            local now = os.time()
+            local expired = {}
+
+            for id, match in pairs(matches) do
+                -- One ready player is the difference between a lobby that
+                -- was abandoned and one that is waiting for its last joiner.
+                if match.state == 'lobby'
+                    and readyCount(match) == 0
+                    and (now - match.createdAt) >= idleTimeout then
+                    expired[#expired + 1] = id
+                end
+            end
+
+            -- Collected first: Destroy edits the table being walked.
+            for _, id in ipairs(expired) do
+                ArenaLobby.Destroy(id, 'notify.lobby_timed_out')
+            end
+        end
+    end)
+end

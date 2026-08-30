@@ -1,0 +1,1048 @@
+--[[
+    crimson_arena/server/match.lua
+
+    The round itself: putting players in the arena, counting what happens
+    there, and deciding when it is over.
+
+    THE LOBBY OWNS THE RECORD, THIS FILE OWNS THE ROUND. Everything here
+    reads and writes the match record server/lobby.lua created. It keeps no
+    second list of who is playing, because two lists of players is one list
+    too many the moment somebody disconnects.
+
+    NOTHING A CLIENT SAYS IS A FACT. A death report is a hint: the server
+    already knows who is in the match, which side they are on and whether
+    they are still alive, and it re-checks all three before crediting a kill.
+    A claim it cannot verify scores nobody -- but the reporter is still
+    eliminated, because that part was never in doubt.
+
+    ONE SWEEP THREAD, NOT ONE PER MATCH. The round clock, the win check and
+    the scoreboard push all ride on a single one-second pass over the live
+    matches. That is also what turns a double knockout into a draw: two
+    players who die in the same tick are both counted before anything is
+    decided, so neither one is declared the last standing.
+
+    MONEY IS NOT DECIDED HERE. This file decides who won; what that is worth
+    is Arena.ComputePayouts' arithmetic and server/betting.lua's escrow. The
+    one thing it must get exactly right is the ORDER of the settlement in
+    End(), which is spelled out where it happens.
+]]
+
+ArenaMatch = {}
+
+--- How often the sweep looks at every live match. One second is the
+--- coarsest tick a round clock can be drawn from and the finest a
+--- scoreboard needs.
+local SWEEP_INTERVAL_MS = 1000
+
+-- ======================================================================
+-- SHAPES ON THE WIRE
+-- ======================================================================
+
+--- Copies a config coordinate into a plain table.
+---
+--- Spawns are vector4s and boundary centres are vector3s, but an operator
+--- may equally have written a table of numbers, and the client has to
+--- receive one shape whichever it was.
+--- @param value any
+--- @return table|nil point -- { x, y, z, w }
+local function toPoint(value)
+    local kind = type(value)
+    if kind ~= 'table' and kind ~= 'vector3' and kind ~= 'vector4' then return nil end
+
+    local indexed = kind == 'table' and value or nil
+    local x = tonumber(value.x) or (indexed and tonumber(indexed[1]))
+    local y = tonumber(value.y) or (indexed and tonumber(indexed[2]))
+    local z = tonumber(value.z) or (indexed and tonumber(indexed[3]))
+    if not x or not y or not z then return nil end
+
+    -- A vector3 has no `w` to ask for, and asking is not worth finding out
+    -- what this runtime's vector metatable does with an unknown field.
+    local w = 0.0
+    if kind ~= 'vector3' then
+        w = tonumber(value.w) or (indexed and tonumber(indexed[4])) or 0.0
+    end
+
+    return { x = x, y = y, z = z, w = w }
+end
+
+--- Metres the client scatters a player around the spawn point they drew.
+--- Sent with the spawn rather than left for the client to look up, so the
+--- point and the radius it is scattered by always come from one decision.
+--- @return number
+local function scatterRadius()
+    return math.max(0.0, tonumber(Config.Match.spawnScatterRadius) or 0.0)
+end
+
+--- @param arena table -- a raw Config.Arenas entry
+--- @return table|nil boundary -- nil for an open arena
+local function boundaryPayload(arena)
+    local boundary = arena.boundary
+    if type(boundary) ~= 'table' or boundary.enabled ~= true then return nil end
+
+    return {
+        enabled = true,
+        center = toPoint(boundary.center),
+        radius = tonumber(boundary.radius) or 0.0,
+        warningSeconds = math.max(0, Arena.ToInt(boundary.warningSeconds) or 0),
+        damagePerTick = math.max(0, Arena.ToInt(boundary.damagePerTick) or 0),
+        tickMs = math.max(100, Arena.ToInt(boundary.tickMs) or 1000),
+    }
+end
+
+-- ======================================================================
+-- READING THE MATCH
+-- ======================================================================
+
+--- The team key a player's spawn and damage rules key off. Free-for-all
+--- returns nil, which is what makes Arena.PickSpawn use the arena's shared
+--- spawn list rather than a team one.
+--- @param match table
+--- @param player table
+--- @return string|nil
+local function teamOf(match, player)
+    if not Arena.ModeUsesTeams(match.modeKey) then return nil end
+    return Arena.IsKey(player.team) and player.team or nil
+end
+
+--- Places an eliminated player from the bottom up: the first player out of
+--- a four-way match finishes fourth.
+--- @param match table
+--- @return integer placement
+local function placementFor(match)
+    local total, placed = 0, 0
+    for _, player in pairs(match.players) do
+        total = total + 1
+        if player.placement then placed = placed + 1 end
+    end
+    return math.max(1, total - placed)
+end
+
+--- @param match table
+--- @return table<string, integer> kills per team
+local function teamKills(match)
+    local scores = {}
+    for _, player in pairs(match.players) do
+        if Arena.IsKey(player.team) then
+            scores[player.team] = (scores[player.team] or 0) + math.max(0, Arena.ToInt(player.kills) or 0)
+        end
+    end
+    return scores
+end
+
+--- EVERY member of a side, alive or not.
+---
+--- Arena.ComputePayouts splits the pot evenly across the winners it is
+--- handed, so a seven-man team takes a seventh each while a lone winner
+--- takes the lot. That is deliberate, and it is what makes uneven teams
+--- (Config.Teams.allowUnequal) safe to allow: stacking a side dilutes what
+--- winning on it is worth instead of guaranteeing it.
+--- @param match table
+--- @param teamKey string
+--- @return integer[] ids
+local function membersOfTeam(match, teamKey)
+    local ids = {}
+    -- Join order, so the winners list -- and therefore the payout order --
+    -- never depends on pairs() iteration.
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        if player.team == teamKey then ids[#ids + 1] = player.src end
+    end
+    return ids
+end
+
+--- Most kills takes it.
+---
+--- A TIE IS A DRAW and returns nobody, which refunds the pot: paying one of
+--- two equal scores out of the other's stake is not a result, it is a coin
+--- toss with somebody else's money. A round where nobody killed anybody is
+--- a draw for the same reason.
+--- @param match table
+--- @param teamMode boolean
+--- @return integer[]|string[] winners -- empty when there is no clear leader
+local function decideOnKills(match, teamMode)
+    local scores, best = {}, 0
+
+    if teamMode then
+        scores = teamKills(match)
+    else
+        for _, player in pairs(match.players) do
+            scores[player.src] = math.max(0, Arena.ToInt(player.kills) or 0)
+        end
+    end
+
+    for _, score in pairs(scores) do
+        if score > best then best = score end
+    end
+    if best <= 0 then return {} end
+
+    local leaders = {}
+    for key, score in pairs(scores) do
+        if score == best then leaders[#leaders + 1] = key end
+    end
+    if #leaders ~= 1 then return {} end
+
+    if teamMode then return membersOfTeam(match, leaders[1]) end
+    return leaders
+end
+
+--- @param match table
+--- @param teamMode boolean
+--- @return boolean
+local function reachedScoreLimit(match, teamMode)
+    local limit = math.max(1, Arena.ToInt(Config.Match.scoreLimit) or 1)
+
+    if teamMode then
+        for _, score in pairs(teamKills(match)) do
+            if score >= limit then return true end
+        end
+        return false
+    end
+
+    for _, player in pairs(match.players) do
+        if (Arena.ToInt(player.kills) or 0) >= limit then return true end
+    end
+    return false
+end
+
+--- Whether the round is over, and who took it.
+---
+--- Called only from the sweep, never from the death report itself: everyone
+--- who died since the last pass is already counted by the time this runs,
+--- so a mutual kill leaves nobody alive and settles as a draw instead of
+--- crowning whichever corpse reported first.
+--- @param match table
+--- @return table|nil winners -- nil means the round carries on
+--- @return string|nil reasonKey
+local function evaluate(match)
+    local teamMode = Arena.ModeUsesTeams(match.modeKey)
+
+    -- STILL IN THE ROUND, not still breathing. With Config.Match.lives above
+    -- 1 a player lying on the floor waiting out respawnDelaySeconds has not
+    -- lost yet, and counting them as eliminated would hand the match to
+    -- whoever shot them before they got back up.
+    local total, standing, lastStanding = 0, 0, nil
+    local standingTeams = {}
+    for _, player in pairs(match.players) do
+        total = total + 1
+        if player.alive == true or (Arena.ToInt(player.lives) or 0) > 0 then
+            standing = standing + 1
+            lastStanding = player
+            if teamMode and Arena.IsKey(player.team) then
+                standingTeams[player.team] = (standingTeams[player.team] or 0) + 1
+            end
+        end
+    end
+
+    if total == 0 then return {}, 'match.ended_abandoned' end
+
+    if Config.Match.winCondition == 'score_limit' and reachedScoreLimit(match, teamMode) then
+        local winners = decideOnKills(match, teamMode)
+        return winners, #winners > 0 and 'match.ended_score_limit' or 'match.ended_draw'
+    end
+
+    -- Nobody left to fight ends the round whatever the condition is: with
+    -- one side still standing there is nothing left to decide it with, so
+    -- the survivors take it under every win condition, not just
+    -- 'last_standing'.
+    if teamMode then
+        local occupied = Arena.Count(standingTeams)
+        if occupied == 0 then return {}, 'match.ended_draw' end
+        if occupied == 1 then return membersOfTeam(match, (next(standingTeams))), 'match.ended_last_standing' end
+    else
+        if standing == 0 then return {}, 'match.ended_draw' end
+        if standing == 1 and total > 1 then return { lastStanding.src }, 'match.ended_last_standing' end
+        -- One player left in the record at all: there is no match here any
+        -- more. Whether a one-man round pays is Config.Betting's
+        -- minPlayersToPayOut to answer, not this file's.
+        if total == 1 then return { lastStanding.src }, 'match.ended_abandoned' end
+    end
+
+    -- The clock. `roundTimeSeconds = 0` leaves endsAt unset and the round
+    -- runs until one side is left.
+    if match.endsAt and os.time() >= match.endsAt then
+        local winners = decideOnKills(match, teamMode)
+        return winners, #winners > 0 and 'match.ended_time_up' or 'match.ended_draw'
+    end
+
+    return nil, nil
+end
+
+--- Ranks everybody who is still standing when the round stops, so the
+--- results board and a `top_three` payout have a full finishing order to
+--- read rather than a hole where the survivors are.
+--- @param match table
+local function assignFinalPlacements(match)
+    local unplaced = {}
+    for _, player in pairs(match.players) do
+        if not player.placement then unplaced[#unplaced + 1] = player end
+    end
+
+    table.sort(unplaced, function(a, b)
+        local aKills, bKills = Arena.ToInt(a.kills) or 0, Arena.ToInt(b.kills) or 0
+        if aKills ~= bKills then return aKills > bKills end
+        local aDeaths, bDeaths = Arena.ToInt(a.deaths) or 0, Arena.ToInt(b.deaths) or 0
+        if aDeaths ~= bDeaths then return aDeaths < bDeaths end
+        return a.src < b.src
+    end)
+
+    for index, player in ipairs(unplaced) do player.placement = index end
+end
+
+--- Server ids in finishing order, best first.
+--- @param match table
+--- @return integer[]
+local function standings(match)
+    local ordered = {}
+    for _, player in pairs(match.players) do ordered[#ordered + 1] = player end
+    table.sort(ordered, function(a, b)
+        local aPlace, bPlace = a.placement or math.maxinteger, b.placement or math.maxinteger
+        if aPlace ~= bPlace then return aPlace < bPlace end
+        return a.src < b.src
+    end)
+
+    local ids = {}
+    for index, player in ipairs(ordered) do ids[index] = player.src end
+    return ids
+end
+
+--- The live scoreboard, sorted the way the panel renders it.
+--- @param players table[] -- in join order
+--- @return table[]
+local function scoreboardOf(players)
+    local rows = {}
+    for _, player in ipairs(players) do
+        rows[#rows + 1] = {
+            id = player.src,
+            name = player.name or ArenaPlayerName(player.src),
+            team = player.team,
+            kills = math.max(0, Arena.ToInt(player.kills) or 0),
+            deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
+            alive = player.alive == true,
+        }
+    end
+
+    table.sort(rows, function(a, b)
+        if a.kills ~= b.kills then return a.kills > b.kills end
+        if a.deaths ~= b.deaths then return a.deaths < b.deaths end
+        -- Id last, so two identical rows never swap places between ticks and
+        -- make the board flicker.
+        return a.id < b.id
+    end)
+    return rows
+end
+
+--- What spectator side-bets are judged against: the winning team in a team
+--- mode, the winning fighter in a free-for-all, and nil when the round
+--- produced no result at all -- which is what makes SettleSpectatorBets
+--- hand every bet back instead of keeping it.
+--- @param match table
+--- @param winners table
+--- @param teamMode boolean
+--- @return any pick
+local function winningPick(match, winners, teamMode)
+    local first = winners and winners[1]
+    if first == nil then return nil end
+    if not teamMode then return first end
+
+    -- Every winner in a team mode is on the winning team, so the first one
+    -- names it.
+    local player = match.players[first]
+    return player and player.team or nil
+end
+
+-- ======================================================================
+-- TALKING TO THE ARENA
+-- ======================================================================
+
+--- One event to every fighter and every spectator of a match.
+--- @param match table
+--- @param event string
+--- @param payload table
+local function pushToMatch(match, event, payload)
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        TriggerClientEvent(event, player.src, payload)
+    end
+    for src in pairs(match.spectators or {}) do
+        -- An eliminated fighter who stayed to watch is in both tables and
+        -- must not be sent the same thing twice.
+        if not match.players[src] then
+            TriggerClientEvent(event, src, payload)
+        end
+    end
+end
+
+--- One second of scoreboard for everybody watching this match.
+--- @param match table
+local function pushHud(match)
+    local players = ArenaLobby.PlayerArray(match)
+    local scoreboard = scoreboardOf(players)
+
+    local alive = 0
+    for _, row in ipairs(scoreboard) do
+        if row.alive then alive = alive + 1 end
+    end
+
+    -- Shared by reference across every recipient; only the personal kill and
+    -- death counts differ, and nothing on the client writes back.
+    local common = {
+        alive = alive,
+        total = #players,
+        timeLeft = match.endsAt and math.max(0, match.endsAt - os.time()) or nil,
+        pot = ArenaBetting.GetPot(match.id),
+        scoreboard = scoreboard,
+        teamCounts = Arena.CountTeams(players),
+    }
+
+    local function hudFor(kills, deaths)
+        return {
+            alive = common.alive,
+            total = common.total,
+            kills = kills,
+            deaths = deaths,
+            timeLeft = common.timeLeft,
+            pot = common.pot,
+            scoreboard = common.scoreboard,
+            teamCounts = common.teamCounts,
+        }
+    end
+
+    for _, player in ipairs(players) do
+        TriggerClientEvent('crimson_arena:client:matchHud', player.src,
+            hudFor(math.max(0, Arena.ToInt(player.kills) or 0), math.max(0, Arena.ToInt(player.deaths) or 0)))
+    end
+
+    -- A spectator has no numbers of their own, only the board.
+    for src in pairs(match.spectators or {}) do
+        if not match.players[src] then
+            TriggerClientEvent('crimson_arena:client:matchHud', src, hudFor(0, 0))
+        end
+    end
+end
+
+--- Sends one player into the arena, frozen, with the loadout they are
+--- actually going to hold.
+--- @param match table
+--- @param player table
+--- @param index integer -- position in join order; the spawn is drawn from it
+--- @param arena table
+--- @param freezeSeconds integer
+local function sendEnterArena(match, player, index, arena, freezeSeconds)
+    local teamKey = teamOf(match, player)
+    TriggerClientEvent('crimson_arena:client:enterArena', player.src, {
+        matchId = match.id,
+        arenaKey = match.arenaKey,
+        modeKey = match.modeKey,
+        teamKey = teamKey,
+        spawn = toPoint(Arena.PickSpawn(match.arenaKey, teamKey, index)),
+        scatterRadius = scatterRadius(),
+        loadout = player.loadout,
+        boundary = boundaryPayload(arena),
+        weatherOverride = arena.weatherOverride,
+        timeOverride = arena.timeOverride,
+        freezeSeconds = freezeSeconds,
+    })
+end
+
+--- Puts a player back in at a fresh point with a fresh loadout once
+--- `respawnDelaySeconds` is up.
+---
+--- Re-checked on the way back in rather than trusted from the way out: a
+--- player can leave, or the round can end, while the timer is running.
+--- @param match table
+--- @param player table
+local function scheduleRespawn(match, player)
+    local matchId, src = match.id, player.src
+    local delay = math.max(0, Arena.ToInt(Config.Match.respawnDelaySeconds) or 0)
+
+    ArenaNotifyKey(src, 'notify.respawning', 'info', delay)
+
+    CreateThread(function()
+        if delay > 0 then Wait(delay * 1000) end
+
+        local current = ArenaLobby.Get(matchId)
+        if not current or current.state ~= 'live' then return end
+
+        local entry = current.players[src]
+        if not entry or entry.alive then return end
+
+        -- The cursor keeps walking the spawn list, so a player who dies
+        -- three times does not come back at the same corner three times.
+        current.spawnCursor = (current.spawnCursor or 0) + 1
+
+        local loadout = Arena.ResolveLoadout(entry.loadout)
+        entry.loadout = loadout
+        entry.alive = true
+
+        TriggerClientEvent('crimson_arena:client:respawn', src, {
+            spawn = toPoint(Arena.PickSpawn(current.arenaKey, teamOf(current, entry), current.spawnCursor)),
+            scatterRadius = scatterRadius(),
+            loadout = loadout,
+        })
+    end)
+end
+
+-- ======================================================================
+-- STARTING
+-- ======================================================================
+
+--- The client's killer claim, checked against what the server already knows.
+---
+--- Accepted only for a DIFFERENT player who is in this same match and whom
+--- the mode would have let land the shot -- with friendly fire off a
+--- teammate cannot be credited however the death was reported. The killer
+--- is not required to still be alive: two players who kill each other in
+--- the same exchange both earn the kill.
+--- @param match table
+--- @param victim table
+--- @param killerSrc any -- straight off the wire
+--- @return table|nil killer
+local function resolveKiller(match, victim, killerSrc)
+    local killerId = Arena.ToInt(killerSrc)
+    if not killerId or killerId <= 0 or killerId == victim.src then return nil end
+
+    local killer = match.players[killerId]
+    if not killer then return nil end
+    if not Arena.CanDamage(match.modeKey, killer.team, victim.team) then return nil end
+    return killer
+end
+
+--- Drops anyone who never picked a side onto the smallest team.
+---
+--- Config.Teams.autoAssignIfUnchosen is applied at start rather than at join
+--- time on purpose: "smallest team" means smallest when the fighting starts,
+--- not smallest when the first player wandered in.
+--- @param match table
+--- @return boolean ok -- false only when the setting is off and somebody has no side
+local function assignMissingTeams(match)
+    if not Arena.ModeUsesTeams(match.modeKey) then return true end
+
+    local players = ArenaLobby.PlayerArray(match)
+    for _, player in ipairs(players) do
+        if not Arena.GetTeamByKey(player.team) then
+            if Config.Teams.autoAssignIfUnchosen == false then return false end
+            -- Assigned in place, so the next unchosen player counts this one.
+            player.team = Arena.SuggestTeam(players)
+        end
+    end
+    return true
+end
+
+--- Weapons go live. Split out of Start because the freeze between the two is
+--- long enough for the last player to disconnect.
+--- @param matchId string
+local function goLive(matchId)
+    local match = ArenaLobby.Get(matchId)
+    if not match or match.state ~= 'countdown' then return end
+
+    local players = ArenaLobby.PlayerArray(match)
+    local startable, reason = Arena.CanStartMatch({
+        arenaKey = match.arenaKey,
+        modeKey = match.modeKey,
+        players = players,
+    })
+    if not startable then
+        -- Nobody threw a punch, so nobody has earned anything: this is the
+        -- refund path, not the results path.
+        ArenaMatch.Abort(matchId, reason or 'match.ended_abandoned')
+        return
+    end
+
+    match.state = 'live'
+    -- Re-stamped to the real moment the fighting starts. server/betting.lua
+    -- closes the side-bet window `closeAfterStartSeconds` after this, and a
+    -- startsAt still sitting in the future would leave it uncloseable.
+    match.startsAt = os.time()
+
+    local roundTime = math.max(0, Arena.ToInt(Config.Match.roundTimeSeconds) or 0)
+    match.endsAt = roundTime > 0 and (match.startsAt + roundTime) or nil
+
+    pushToMatch(match, 'crimson_arena:client:matchLive', { endsAt = match.endsAt })
+    ArenaLobby.Broadcast()
+    ArenaDebug('match %s is live with %d player(s)', tostring(matchId), #players)
+end
+
+--- Validates a lobby and runs the countdown players may still back out of.
+---
+--- Returns as soon as the checks pass -- the countdown itself is a thread,
+--- so the caller (a net event handler, or the lobby auto-starting) is not
+--- held for `lobbyCountdownSeconds`.
+--- @param matchId string
+--- @param requestedBy integer? -- nil is the server itself, and is never refused
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaMatch.Begin(matchId, requestedBy)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false, 'error.match_not_found' end
+    if match.state ~= 'lobby' then return false, 'error.match_already_started' end
+
+    if requestedBy ~= nil then
+        local requester = Arena.ToInt(requestedBy)
+        local isHost = requester ~= nil and requester == match.hostSource
+        local isAdmin = ArenaIsAdmin(requester)
+
+        if Config.Match.onlyHostCanStart ~= false and not isHost and not isAdmin then
+            return false, 'error.not_host'
+        end
+        -- With that setting off anyone in the lobby may start it -- anyone
+        -- IN it. A player elsewhere on the server may not start a match they
+        -- are not standing in.
+        if not isHost and not isAdmin and not (requester and match.players[requester]) then
+            return false, 'error.not_in_match'
+        end
+    end
+
+    if not assignMissingTeams(match) then return false, 'error.no_team_chosen' end
+
+    local ok, reason = Arena.CanStartMatch({
+        arenaKey = match.arenaKey,
+        modeKey = match.modeKey,
+        players = ArenaLobby.PlayerArray(match),
+    })
+    if not ok then return false, reason end
+
+    local countdown = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
+    match.state = 'countdown'
+    -- An estimate for the panel's clock. goLive replaces it with the real
+    -- one the moment the fighting starts.
+    match.startsAt = os.time() + countdown + math.max(0, Arena.ToInt(Config.Match.startCountdownSeconds) or 0)
+    ArenaLobby.Broadcast()
+
+    CreateThread(function()
+        local remaining = countdown
+        while remaining > 0 do
+            local current = ArenaLobby.Get(matchId)
+            -- Gone, aborted, or already started by something else: this
+            -- countdown is not the one that owns it any more.
+            if not current or current.state ~= 'countdown' then return end
+
+            local stillOk, why = Arena.CanStartMatch({
+                arenaKey = current.arenaKey,
+                modeKey = current.modeKey,
+                players = ArenaLobby.PlayerArray(current),
+            })
+            if not stillOk then
+                -- Someone backed out during the countdown, which they are
+                -- allowed to do. The lobby goes back to waiting rather than
+                -- closing, so the rest of the room keeps their seats.
+                current.state = 'lobby'
+                current.startsAt = nil
+                for _, player in ipairs(ArenaLobby.PlayerArray(current)) do
+                    ArenaNotifyKey(player.src, why or 'notify.start_cancelled', 'warning')
+                end
+                ArenaLobby.Broadcast()
+                return
+            end
+
+            pushToMatch(current, 'crimson_arena:client:countdown', {
+                seconds = remaining,
+                label = locale('match.countdown_label'),
+            })
+
+            Wait(1000)
+            remaining = remaining - 1
+        end
+
+        ArenaMatch.Start(matchId)
+    end)
+
+    return true, nil
+end
+
+--- Teleports everybody in, hands out the loadouts, and starts the frozen
+--- countdown that ends with weapons live.
+--- @param matchId string
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaMatch.Start(matchId)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false, 'error.match_not_found' end
+    if match.state ~= 'lobby' and match.state ~= 'countdown' then
+        return false, 'error.match_already_started'
+    end
+
+    local players = ArenaLobby.PlayerArray(match)
+    local ok, reason = Arena.CanStartMatch({
+        arenaKey = match.arenaKey,
+        modeKey = match.modeKey,
+        players = players,
+    })
+    if not ok then
+        -- Nobody has been moved yet, so the lobby simply goes back to
+        -- waiting.
+        match.state = 'lobby'
+        match.startsAt = nil
+        ArenaLobby.Broadcast()
+        return false, reason
+    end
+
+    local arena = Arena.GetArenaByKey(match.arenaKey)
+    local freeze = math.max(0, Arena.ToInt(Config.Match.startCountdownSeconds) or 0)
+    local lives = math.max(1, Arena.ToInt(Config.Match.lives) or 1)
+
+    match.state = 'countdown'
+    match.winners = nil
+    match.payouts = nil
+    -- Respawns carry on round-robin from where the initial placement left
+    -- off.
+    match.spawnCursor = #players
+
+    for index, player in ipairs(players) do
+        player.kills = 0
+        player.deaths = 0
+        player.alive = true
+        player.lives = lives
+        player.placement = nil
+
+        -- RE-RESOLVED, NOT TRUSTED. What the lobby stored was checked against
+        -- the catalogue as it stood when the player picked it, and an
+        -- operator may have reloaded config since. Feeding the stored
+        -- loadout back through the same function re-checks every weapon key
+        -- and re-clamps every ammo count against the list that is live now.
+        local loadout, rejected = Arena.ResolveLoadout(player.loadout)
+        player.loadout = loadout
+        if #rejected > 0 then
+            ArenaDebug('dropped %d loadout entr(ies) for %s on match %s: %s',
+                #rejected, tostring(player.src), tostring(match.id), table.concat(rejected, ', '))
+        end
+
+        sendEnterArena(match, player, index, arena, freeze)
+    end
+
+    ArenaLobby.Broadcast()
+
+    CreateThread(function()
+        if freeze > 0 then Wait(freeze * 1000) end
+        goLive(matchId)
+    end)
+
+    return true, nil
+end
+
+-- ======================================================================
+-- SCORING
+-- ======================================================================
+
+--- One player died. Scores it, spends a life, and eliminates them when they
+--- have none left.
+---
+--- Deliberately does NOT decide the match: the sweep does that a tick later,
+--- by which point everybody who died in this tick has been counted.
+--- @param src integer -- the reporter; the only identity trusted here
+--- @param killerSrc any -- claimed by the client, verified below
+--- @return boolean counted
+function ArenaMatch.OnDeath(src, killerSrc)
+    local id = Arena.ToInt(src)
+    if not id then return false end
+
+    local match = ArenaLobby.GetByPlayer(id)
+    if not match or match.state ~= 'live' then return false end
+
+    local player = match.players[id]
+    -- An already-dead player reporting another death is a client repeating
+    -- itself or someone farming eliminations. Either way there is nothing to
+    -- score, which also makes a spammed report cost one table lookup.
+    if not player or player.alive ~= true then return false end
+
+    player.alive = false
+    player.deaths = (Arena.ToInt(player.deaths) or 0) + 1
+
+    local killer = resolveKiller(match, player, killerSrc)
+    if killer then
+        killer.kills = (Arena.ToInt(killer.kills) or 0) + 1
+    elseif killerSrc ~= nil then
+        ArenaDebug('unverified kill claim on match %s: %s says %s killed them',
+            tostring(match.id), tostring(id), tostring(killerSrc))
+    end
+
+    local remaining = (Arena.ToInt(player.lives) or 1) - 1
+    player.lives = remaining
+
+    if remaining > 0 then
+        scheduleRespawn(match, player)
+    else
+        player.placement = placementFor(match)
+        local spectate = Config.Match.spectateOnElimination == true
+        TriggerClientEvent('crimson_arena:client:eliminated', id, { matchId = match.id, spectate = spectate })
+        if spectate then ArenaLobby.AddSpectator(id, match.id) end
+        ArenaNotifyKey(id, 'notify.eliminated', 'error')
+    end
+
+    ArenaLobby.Broadcast()
+    return true
+end
+
+-- ======================================================================
+-- FINISHING
+-- ======================================================================
+
+--- Ends a round that was actually fought: decides the winners, settles the
+--- money, records it, and sends everybody home with a result.
+--- @param matchId string
+--- @param reasonKey string? -- locale key; what the players are told
+--- @param winners table? -- as decided by the sweep; recomputed when absent
+--- @return boolean ok
+function ArenaMatch.End(matchId, reasonKey, winners)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false end
+    -- Settling twice would pay twice; server/betting.lua would refuse the
+    -- second one, loudly, but this is the guard that keeps it from getting
+    -- there.
+    if match.state == 'ended' then return false end
+
+    local players = ArenaLobby.PlayerArray(match)
+    if #players == 0 then
+        -- Arena.ComputePayouts refunds an empty room by handing every player
+        -- their stake back -- and with no players there is nobody to hand it
+        -- to, so Settle would mark the pot spent and pay none of it out.
+        -- Abort returns the money from escrow instead, which is where it
+        -- still is.
+        return ArenaMatch.Abort(matchId, reasonKey or 'match.ended_abandoned')
+    end
+
+    local teamMode = Arena.ModeUsesTeams(match.modeKey)
+    if type(winners) ~= 'table' then
+        -- Called by hand, without a decision: take the one the round has
+        -- earned, and failing that the one the clock would have given it.
+        winners = evaluate(match) or decideOnKills(match, teamMode)
+    end
+
+    match.state = 'ended'
+    assignFinalPlacements(match)
+    match.winners = winners
+
+    local endReason = Arena.IsKey(reasonKey) and reasonKey or 'match.ended'
+
+    -- `top_three` reads `winners` as a podium, best first, so under that
+    -- payout a free-for-all hands over the finishing order rather than the
+    -- single survivor. Every other payout mode splits evenly across whoever
+    -- is in the list, which is why the list stays exactly the winners
+    -- everywhere else.
+    local payoutWinners = winners
+    if Config.Betting.payout == 'top_three' and not teamMode and #winners > 0 then
+        local ranked = standings(match)
+        payoutWinners = {}
+        for index = 1, math.min(3, #ranked) do payoutWinners[index] = ranked[index] end
+    end
+
+    local context = { teams = teamMode, winners = payoutWinners, players = {} }
+    for _, player in ipairs(players) do
+        context.players[#context.players + 1] = {
+            id = player.src,
+            team = player.team,
+            kills = math.max(0, Arena.ToInt(player.kills) or 0),
+            stake = ArenaBetting.GetStake(match.id, player.src),
+            placement = player.placement,
+        }
+    end
+
+    -- THE ORDER OF THESE FIVE IS FIXED, and each one depends on the one
+    -- above it:
+    --   Settle first -- it is what turns held stakes into payouts, and
+    --     nothing below it can run against an undecided pot;
+    --   RecordMatch second -- a player's earnings ARE those payouts, so a
+    --     leaderboard written before them records every winner at zero;
+    --   SettleSpectatorBets third -- it needs a decided result to judge
+    --     bets against, and Clear hands unsettled side-bets BACK, so a Clear
+    --     that ran first would quietly refund every winning side-bet;
+    --   Clear fourth -- the only step that drops escrow, and it refuses
+    --     while anything is still held, so running it before Settle would
+    --     strand the pot with the match record already gone;
+    --   Destroy last -- it removes the record all four of the others read.
+    local payouts = ArenaBetting.Settle(match.id, context)
+    match.payouts = payouts
+    ArenaStats.RecordMatch(match)
+    ArenaBetting.SettleSpectatorBets(match.id, winningPick(match, winners, teamMode))
+    ArenaBetting.Clear(match.id)
+
+    local won, earned = {}, {}
+    for _, id in ipairs(winners) do won[id] = true end
+    for _, payout in ipairs(payouts) do
+        if payout.id ~= nil then
+            earned[payout.id] = (earned[payout.id] or 0) + (Arena.ToInt(payout.amount) or 0)
+        end
+    end
+
+    local board = scoreboardOf(players)
+    local returnCoords = toPoint(Config.Lobby.returnCoords)
+    local names = {}
+
+    for _, player in ipairs(players) do
+        if won[player.src] then
+            names[#names + 1] = player.name or ArenaPlayerName(player.src)
+            ArenaNotifyKey(player.src, 'notify.match_won', 'success')
+        else
+            ArenaNotifyKey(player.src, endReason, 'info')
+        end
+
+        TriggerClientEvent('crimson_arena:client:exitArena', player.src, {
+            returnCoords = returnCoords,
+            results = {
+                matchId = match.id,
+                reason = endReason,
+                won = won[player.src] == true,
+                placement = player.placement,
+                kills = math.max(0, Arena.ToInt(player.kills) or 0),
+                deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
+                earnings = earned[player.src] or 0,
+                scoreboard = board,
+            },
+        })
+    end
+
+    -- Spectators watched it, so they see the board; they were never in the
+    -- arena, so they win nothing and are owed nothing.
+    for src in pairs(match.spectators or {}) do
+        if not match.players[src] then
+            TriggerClientEvent('crimson_arena:client:exitArena', src, {
+                returnCoords = returnCoords,
+                results = { matchId = match.id, reason = endReason, won = false, earnings = 0, scoreboard = board },
+            })
+        end
+    end
+
+    if Config.Webhook.logResults == true then
+        local lines = {}
+        for _, row in ipairs(board) do
+            lines[#lines + 1] = ('%s -- %d kill(s), %d death(s)'):format(row.name, row.kills, row.deaths)
+        end
+        ArenaWebhook(('Match %s finished'):format(tostring(match.id)), endReason, {
+            { name = 'Arena', value = tostring(match.arenaKey) },
+            { name = 'Mode', value = tostring(match.modeKey) },
+            { name = 'Winners', value = #names > 0 and table.concat(names, ', ') or 'none (draw)' },
+            { name = 'Scoreboard', value = table.concat(lines, '\n') },
+        })
+    end
+
+    ArenaLog('match %s ended: %s', tostring(match.id), endReason)
+    ArenaLobby.Destroy(match.id, endReason)
+    return true
+end
+
+--- The refund-everything path: a resource stop, an admin force-stop, a
+--- lobby that emptied out, a round that could not start.
+---
+--- Nothing is recorded and nobody is paid, because no result was reached.
+--- Every stake goes back, and every side-bet goes back with it -- with no
+--- outcome to judge them against the house has no claim on either.
+--- @param matchId string
+--- @param reasonKey string?
+--- @return boolean ok
+function ArenaMatch.Abort(matchId, reasonKey)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false end
+
+    local reason = Arena.IsKey(reasonKey) and reasonKey or 'match.aborted'
+    match.state = 'ended'
+    match.winners = nil
+    match.payouts = nil
+
+    local returnCoords = toPoint(Config.Lobby.returnCoords)
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        ArenaNotifyKey(player.src, reason, 'warning')
+    end
+    pushToMatch(match, 'crimson_arena:client:exitArena', { returnCoords = returnCoords })
+
+    ArenaBetting.RefundAll(match.id, reason)
+    ArenaBetting.SettleSpectatorBets(match.id, nil)
+    ArenaBetting.Clear(match.id)
+
+    ArenaLog('match %s aborted: %s', tostring(match.id), reason)
+    ArenaLobby.Destroy(match.id, reason)
+    return true
+end
+
+--- One player out, mid-round: they left, they were dropped, or an admin
+--- pulled them.
+---
+--- The lobby owns what leaving costs them -- the refund rules and the host
+--- transfer are its call. This owns only what their leaving does to the
+--- round they were in.
+--- @param src integer
+--- @param reasonKey string?
+--- @return boolean ok
+function ArenaMatch.RemovePlayer(src, reasonKey)
+    local id = Arena.ToInt(src)
+    if not id then return false end
+
+    local match = ArenaLobby.GetByPlayer(id)
+    if not match then
+        -- Not fighting in one. They may still be watching one.
+        ArenaLobby.RemoveSpectator(id)
+        return false
+    end
+
+    local matchId = match.id
+    local inProgress = match.state == 'live' or match.state == 'countdown'
+    local player = match.players[id]
+
+    if player and inProgress then
+        player.alive = false
+        -- Placed on the way out so the results board can still rank them
+        -- rather than leaving a hole where they were.
+        if not player.placement then player.placement = placementFor(match) end
+        TriggerClientEvent('crimson_arena:client:exitArena', id, {
+            returnCoords = toPoint(Config.Lobby.returnCoords),
+        })
+    end
+
+    ArenaLobby.Leave(id, reasonKey or 'match.left')
+
+    -- Leave may already have destroyed the match -- it does when the last
+    -- player walks out of a lobby.
+    local current = ArenaLobby.Get(matchId)
+    if current and inProgress and ArenaLobby.PlayerCount(current) == 0 then
+        -- Everybody disconnected mid-round. There is nobody to declare a
+        -- winner over and nobody to pay, so the money goes back.
+        ArenaMatch.Abort(matchId, 'match.ended_abandoned')
+    end
+
+    return true
+end
+
+-- ======================================================================
+-- QUERIES
+-- ======================================================================
+
+--- @param matchId string
+--- @return boolean
+function ArenaMatch.IsLive(matchId)
+    local match = ArenaLobby.Get(matchId)
+    return match ~= nil and match.state == 'live'
+end
+
+--- Every match currently being fought. IsLive is true for every record this
+--- returns -- a lobby still filling up is not one of them.
+--- @return table[] matches
+function ArenaMatch.GetLive()
+    local out = {}
+    for _, match in ipairs(ArenaLobby.All()) do
+        if match.state == 'live' then out[#out + 1] = match end
+    end
+    return out
+end
+
+-- ======================================================================
+-- THE SWEEP
+--
+-- One thread for every live match rather than one thread each: the work is
+-- a handful of table walks a second, and a thread per match is a thread per
+-- match to leak when one ends badly.
+-- ======================================================================
+
+CreateThread(function()
+    while true do
+        Wait(SWEEP_INTERVAL_MS)
+
+        -- ArenaLobby.All() hands back a fresh array, so ending a match --
+        -- which removes it from the registry -- cannot disturb this loop.
+        for _, match in ipairs(ArenaLobby.All()) do
+            if match.state == 'live' then
+                local winners, reason = evaluate(match)
+                if winners then
+                    ArenaMatch.End(match.id, reason, winners)
+                else
+                    pushHud(match)
+                end
+            end
+        end
+    end
+end)

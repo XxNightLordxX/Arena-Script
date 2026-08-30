@@ -73,7 +73,8 @@
         "ended_score_limit": "Match over. Score limit hit.",
         "ended_time_up": "Match over. Clock ran out.",
         "ended_draw": "Match over. Nobody earned it.",
-        "ended_abandoned": "Match over. Everyone else walked."
+        "ended_abandoned": "Match over. Everyone else walked.",
+        "ended_ladder": "Match over. Somebody topped the ladder."
     },
 
     "bet": {
@@ -96,11 +97,13 @@
         "start_cancelled": "Start called off. Back to the lobby.",
         "loadout_rejected": "Refused from your loadout: %s",
         "respawning": "Back in the fight in %d.",
+        "gungame_promoted": "Rung %d of %d. %s in your hands.",
         "eliminated": "You are out.",
         "match_won": "You took it.",
 
         "stake_taken": "%s staked. It sits in the pot until this is settled.",
         "stake_refunded": "Stake back: %s",
+        "stake_forfeited": "Stake gone: %s. Nothing comes back.",
         "pot_won": "The pot is yours: %s",
         "bet_placed": "Bet is down.",
         "spectator_bet_placed": "%s on your pick. No takebacks.",

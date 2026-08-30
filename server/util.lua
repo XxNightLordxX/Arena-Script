@@ -167,12 +167,18 @@ function ArenaIsAdmin(src)
     return false
 end
 
+--- Whether `src` holds one of the jobs in one of Config.Permissions' job
+--- lists.
+---
+--- An EMPTY list means EVERYONE -- the shipped default for both of them, and
+--- the common case, so it is answered before any player lookup happens.
+--- adminGroups reads the opposite way and is deliberately not routed through
+--- here; ArenaIsAdmin above says why.
 --- @param src any
+--- @param jobs table? -- a Config.Permissions job list
 --- @return boolean
-function ArenaCanCreate(src)
-    local jobs = Config.Permissions.createJobs or {}
-    -- Empty means the whole server may create a match. That is the shipped
-    -- default, and the common case -- no player lookup needed for it.
+local function jobAllowed(src, jobs)
+    jobs = jobs or {}
     if Arena.Count(jobs) == 0 then return true end
 
     local player = ArenaGetPlayer(src)
@@ -180,12 +186,29 @@ function ArenaCanCreate(src)
     local name = job and job.name
     if not Arena.IsKey(name) then return false end
 
-    -- Operators write this list both ways: { 'police' } and { police = true }.
+    -- Operators write these lists both ways: { 'police' } and { police = true }.
     if jobs[name] then return true end
     for _, allowed in ipairs(jobs) do
         if allowed == name then return true end
     end
     return false
+end
+
+--- @param src any
+--- @return boolean
+function ArenaCanCreate(src)
+    return jobAllowed(src, Config.Permissions.createJobs)
+end
+
+--- The same question asked of somebody joining a match they did not open.
+--- One rule, two lists: a near-copy of the function above would let the two
+--- permissions drift apart -- an operator who writes `{ police = true }` in
+--- one and has it honoured, and writes it in the other and does not, has
+--- found a bug rather than a setting.
+--- @param src any
+--- @return boolean
+function ArenaCanJoin(src)
+    return jobAllowed(src, Config.Permissions.joinJobs)
 end
 
 -- ======================================================================

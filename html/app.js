@@ -106,7 +106,12 @@
         betAmount: null,
 
         hud: null,
-        hudVisible: false
+        hudVisible: false,
+
+        /* What the last snapshot said about the state of the match this
+           player is in. Only the sound reads it: it is how a start is heard
+           once rather than on every snapshot that repeats the same word. */
+        lastMatchState: null
     };
 
     // ==================================================================
@@ -375,6 +380,151 @@
     }
 
     // ==================================================================
+    // SOUND -- Config.UI.sounds
+    //
+    // Every tone is synthesised here. The panel ships no audio files on
+    // purpose: a NUI page has no dependable way out to the network, and a
+    // binary asset committed to the resource is a worse answer than a sine
+    // wave that costs nothing to send.
+    //
+    // SHORT, LOW AND QUIET IS THE DESIGN, not an accident of tuning. These
+    // fire on ordinary clicks, and a panel that chirps loudly at every one
+    // is a panel an operator turns off -- so no sound runs past a fifth of
+    // a second, none peaks above a twentieth of full scale, and the pitches
+    // sit low enough to read as feedback rather than as an alarm.
+    //
+    // NONE OF IT IS LOAD-BEARING. No AudioContext, a refused one, or one
+    // still suspended all mean silence and nothing else. Nothing in here
+    // may throw into a render path -- a decoration that kills the panel is
+    // the exact failure the file header forbids.
+    // ==================================================================
+
+    /* One entry per event, as a list of notes. `at` offsets a note from the
+       start of the sound, `to` slides the pitch across it, `len` is seconds.
+       Open rises and close falls because that is the pair a player learns
+       without being told which is which. */
+    var SOUNDS = {
+        open: [{ freq: 196, len: 0.07 }, { at: 0.055, freq: 294, len: 0.10 }],
+        close: [{ freq: 294, len: 0.06 }, { at: 0.050, freq: 175, len: 0.11 }],
+        /* The most frequent sound in the panel, so the quietest and shortest
+           of them: a tick, not a note. */
+        tab: [{ freq: 330, len: 0.045, peak: 0.022 }],
+        ready: [{ freq: 392, len: 0.09 }],
+        confirm: [{ freq: 262, len: 0.07 }, { at: 0.070, freq: 349, len: 0.07 }, { at: 0.140, freq: 440, len: 0.16 }],
+        /* The only one that is not a clean tone: a low sagging triangle,
+           which reads as refusal without being loud about it. */
+        error: [{ freq: 155, to: 110, len: 0.20, type: 'triangle' }]
+    };
+
+    /* Peak gain of one note unless it names its own. */
+    var SOUND_PEAK = 0.045;
+
+    /* `blocked` is remembered so a build with no audio at all is asked
+       once rather than on every click for the rest of the session. */
+    var audio = { ctx: null, blocked: false };
+
+    function soundsOn() {
+        /* Absent reads as on, like every other `!== false` switch in the
+           snapshot. Only an operator writing `sounds = false` silences it. */
+        return (cfg().ui || {}).sounds !== false;
+    }
+
+    function audioContext() {
+        if (audio.blocked) return null;
+        if (audio.ctx) return audio.ctx;
+
+        var Ctor = window.AudioContext || window.webkitAudioContext;
+        if (!Ctor) {
+            audio.blocked = true;
+            return null;
+        }
+        try {
+            audio.ctx = new Ctor();
+        } catch {
+            /* No output device, or a policy this build enforces at
+               construction. Either way there is no second answer to get. */
+            audio.blocked = true;
+        }
+        return audio.ctx;
+    }
+
+    /* A context is born suspended and only a gesture inside THIS PAGE may
+       resume it -- and the keypress or target interaction that opens the
+       panel goes to the game, not here. So the unlock hangs off the first
+       click or key the page itself sees, which is also why the very first
+       open of a session can be silent. Re-checked on every gesture rather
+       than once, because a browser may suspend a context again later. */
+    function unlockAudio() {
+        var ctx = audioContext();
+        if (!ctx || ctx.state !== 'suspended') return;
+        try {
+            var pending = ctx.resume();
+            /* resume() rejects when the gesture was not accepted. There is
+               nothing to do about that and nowhere to report it. */
+            if (pending && typeof pending.catch === 'function') pending.catch(function () {});
+        } catch {
+            /* Older shapes of resume() throw where newer ones reject. */
+        }
+    }
+
+    function playNote(ctx, note) {
+        var start = ctx.currentTime + (note.at || 0);
+        var peak = note.peak || SOUND_PEAK;
+
+        var osc = ctx.createOscillator();
+        osc.type = note.type || 'sine';
+        osc.frequency.setValueAtTime(note.freq, start);
+        if (note.to) osc.frequency.exponentialRampToValueAtTime(note.to, start + note.len);
+
+        /* An envelope rather than a raw gate: a tone switched on and off at
+           full amplitude clicks, and the click is louder than the note. */
+        var gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(peak, start + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + note.len);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + note.len + 0.02);
+    }
+
+    function play(name) {
+        if (!soundsOn()) return;
+        var notes = SOUNDS[name];
+        if (!notes) return;
+
+        var ctx = audioContext();
+        /* A suspended context does not drop what is scheduled on it -- it
+           queues it and fires the lot the moment it resumes. Silence now
+           beats every click the player made before their first click
+           arriving as one chord. */
+        if (!ctx || ctx.state !== 'running') return;
+
+        try {
+            for (var i = 0; i < notes.length; i++) playNote(ctx, notes[i]);
+        } catch {
+            /* A closed or exhausted context is not worth a dead panel. */
+        }
+    }
+
+    /* A match starting is worth one confirm, at the moment it starts. Every
+       snapshot afterwards repeats the same state, and the panel is usually
+       closed by then, so this hangs off the change rather than off anything
+       on screen. */
+    function announceMatchState() {
+        var match = matchById(playerMatchId());
+        var now = match ? keyOr(match.state, null) : null;
+        var was = state.lastMatchState;
+        state.lastMatchState = now;
+
+        if (now === was) return;
+        /* A round that went straight to live is still a start; one that came
+           through its countdown has already been announced. */
+        if (now === 'countdown' || (now === 'live' && was !== 'countdown')) play('confirm');
+    }
+
+    // ==================================================================
     // TOASTS
     // ==================================================================
 
@@ -383,6 +533,11 @@
         if (!has(host) || typeof message !== 'string' || message === '') return;
 
         var level = (kind === 'success' || kind === 'error' || kind === 'warning') ? kind : 'info';
+        /* Every refusal a player can see arrives here -- the server's, as a
+           'notify' relay, and this file's own -- so this is the one place
+           the error tone has to be wired to catch all of them. */
+        if (level === 'error' || level === 'warning') play('error');
+
         var node = makeEl('div', 'toast ' + level, message);
         host.appendChild(node);
 
@@ -403,13 +558,20 @@
     // ==================================================================
 
     function openPanel(snapshot) {
+        /* After the snapshot, not before: the switch that decides whether
+           this panel makes a sound at all arrives in it. */
         applySnapshot(snapshot);
+        play('open');
         state.open = true;
         show(byId('arena-root'), true);
         render();
     }
 
     function hidePanel() {
+        /* Only when there was a panel to close. This also runs once at load
+           to put the page in its resting state, and a panel that greets the
+           player by closing itself is not the impression to make. */
+        if (state.open) play('close');
         state.open = false;
         show(byId('arena-root'), false);
     }
@@ -461,6 +623,7 @@
         }
 
         seedDraft();
+        announceMatchState();
     }
 
     // ==================================================================
@@ -855,6 +1018,7 @@
             ready.classList.toggle('btn-primary', !isReady);
             ready.disabled = !inMatch || match.state !== 'lobby';
             ready.onclick = function () {
+                play('ready');
                 post('setReady', { ready: !isReady });
             };
         }
@@ -1519,6 +1683,13 @@
     // INPUT
     // ==================================================================
 
+    /* The audio unlock, on the capture phase so a handler that stops the
+       event does not also silence the panel. Both are cheap enough to leave
+       registered for the life of the page: unlockAudio does nothing at all
+       unless there is a suspended context to resume. */
+    document.addEventListener('pointerdown', unlockAudio, true);
+    document.addEventListener('keydown', unlockAudio, true);
+
     document.addEventListener('keydown', function (event) {
         if (event.key !== 'Escape' && event.key !== 'Esc') return;
         if (!state.open) return;
@@ -1537,6 +1708,7 @@
         button.addEventListener('click', function () {
             var name = button.getAttribute('data-tab');
             if (TABS.indexOf(name) < 0) return;
+            if (name !== state.tab) play('tab');
             state.tab = name;
             /* Every other block of the snapshot is pushed when it changes.
                The leaderboard is the one that goes stale on a timer, so

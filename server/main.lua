@@ -283,20 +283,14 @@ onClient('crimson_arena:server:startMatch', RATE.start, function(src)
     if not ok then return refuse(src, reason) end
 end)
 
+--- Nothing to shape-check: the only argument a cancel has is who sent it.
+--- Whether they are the host, whether the match is still cancellable, and
+--- what closing it does to the stakes are all ArenaLobby.Cancel's to answer
+--- -- the last of those reads Config.Betting.refundOnCancel, which is
+--- precisely the kind of decision this file does not make.
 onClient('crimson_arena:server:cancelMatch', RATE.start, function(src)
-    local match = ArenaLobby.GetByPlayer(src)
-    if not match then return refuse(src, 'error.not_in_match') end
-    if match.hostSource ~= src then return refuse(src, 'error.host_only') end
-
-    -- Cancelling is a lobby control. Once the round is running the way out
-    -- is leaving it, or an admin stop -- both of which already exist, and
-    -- neither of which should be reachable by every host through a button
-    -- labelled "cancel".
-    if match.state ~= 'lobby' and match.state ~= 'countdown' then
-        return refuse(src, 'error.match_in_progress')
-    end
-
-    ArenaLobby.Destroy(match.id, 'notify.match_cancelled')
+    local ok, reason = ArenaLobby.Cancel(src)
+    if not ok then return refuse(src, reason) end
 end)
 
 --- A death report is a hint from the victim's client, and it is treated as

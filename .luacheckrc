@@ -196,8 +196,10 @@ files['client/'] = {
         'SetPedArmour',
         'SetPedWeaponTintIndex',
 
-        -- The lobby blip.
+        -- Blips: the one on the lobby, and one on each living fighter for
+        -- the length of a round (Config.Teams.showTeamBlips/showEnemyBlips).
         'AddBlipForCoord',
+        'AddBlipForEntity',
         'AddTextComponentSubstringPlayerName',
         'BeginTextCommandSetBlipName',
         'DoesBlipExist',
@@ -252,6 +254,7 @@ files['server/'] = {
     -- util.lua's helpers, then the four namespaces.
     globals = {
         'ArenaCanCreate',
+        'ArenaCanJoin',
         'ArenaDebug',
         'ArenaForgetPlayer',
         'ArenaGetPlayer',

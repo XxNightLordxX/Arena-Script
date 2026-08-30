@@ -17,6 +17,17 @@
 
 local UNARMED = joaat('WEAPON_UNARMED')
 
+-- How often the fighter blips are reconciled against the scoreboard. The
+-- server pushes one board a second; the extra pass in between exists for
+-- peds that streamed in since the last one, which is worth half a second
+-- and no more.
+local BLIP_REFRESH_MS = 500
+
+-- The tint for a fighter with no team to take one from: a free-for-all
+-- fighter, or one whose side an operator switched off mid-round. 1 is GTA's
+-- red, the colour the rest of this resource is keyed to.
+local BLIP_FALLBACK_COLOR = 1
+
 -- The match we are physically inside, nil when standing in the world.
 local currentMatch
 local matchLive = false
@@ -29,6 +40,12 @@ local matchToken = 0
 -- What the player owned before we touched them, and what we handed them.
 local carried
 local givenWeapons = {}
+
+-- The last scoreboard the server pushed, and the blips drawn from it keyed
+-- by server id. Every handle in `playerBlips` is one this file created, and
+-- this file is the only thing that can take it away again.
+local roster = {}
+local playerBlips = {}
 
 --- @param key string
 --- @param notifyType string
@@ -188,8 +205,9 @@ end
 -- ======================================================================
 -- MATCH-ONLY THREADS
 --
--- Both loops are gated on `matchLive` AND the entry token, so they end
--- when the round ends and cannot survive into the next one.
+-- Every loop this file starts -- the two here and the blip loop below --
+-- is gated on `matchLive` AND the entry token, so they end when the round
+-- ends and cannot survive into the next one.
 -- ======================================================================
 
 --- Per-frame while live: report the death once, and shut the doors a
@@ -273,6 +291,183 @@ local function startBoundaryThread(boundary)
 end
 
 -- ======================================================================
+-- FIGHTER BLIPS
+--
+-- `Config.Teams.showTeamBlips` and `Config.Teams.showEnemyBlips`, drawn on
+-- the living fighters of the match this player is in.
+--
+-- THE ROSTER IS THE SCOREBOARD the server already pushes for the HUD. There
+-- is no second list of who is in the match and nothing extra is asked of
+-- the server, so a blip can never disagree with the board about who is
+-- alive.
+--
+-- A BLIP OUTLIVES THE RESOURCE THAT MADE IT -- one left behind is on the
+-- map until the player reconnects. So every handle created here is removed
+-- on the single exit path in leaveArena, which is also the resource-stop
+-- path, rather than by the loop that drew it: a loop from the previous
+-- match could wake one last time and take the current match's blips with
+-- it.
+-- ======================================================================
+
+--- Whether this match could put a blip on the map at all.
+---
+--- FREE-FOR-ALL HAS NO TEAMMATES, so showTeamBlips has nobody it could ever
+--- draw there and showEnemyBlips alone decides. Said here as well as in
+--- blipColorFor below so a free-for-all with only team blips on starts no
+--- loop at all, rather than one that wakes twice a second to work out it has
+--- nothing to do.
+--- @param modeKey any
+--- @return boolean
+local function blipsEnabled(modeKey)
+    if Config.Teams.showEnemyBlips == true then return true end
+    return Config.Teams.showTeamBlips == true and Arena.ModeUsesTeams(modeKey)
+end
+
+--- The colour one scoreboard row should be blipped in, or nil for a row
+--- that must not be drawn at all.
+---
+--- FREE-FOR-ALL IS DECIDED HERE, not left to fall out of a missing team
+--- key: no teams means nobody to be a teammate of, so every row takes the
+--- enemy branch and showEnemyBlips alone decides. A team mode a player
+--- somehow reached without a side of their own lands there too, for the
+--- same reason.
+--- @param row table -- one entry from the matchHud scoreboard
+--- @return integer|nil color
+local function blipColorFor(row)
+    if not currentMatch or type(row) ~= 'table' then return nil end
+
+    -- `alive` is the server's word for it and the only trustworthy one:
+    -- Config.Dispatch.clearDeadStateImmediately stands an arena casualty
+    -- straight back up, so IsEntityDead is false for a player who is out.
+    if row.alive ~= true then return nil end
+
+    local teamMode = Arena.ModeUsesTeams(currentMatch.modeKey)
+    local ownTeam = teamMode and currentMatch.teamKey or nil
+    local teammate = teamMode and Arena.IsKey(ownTeam) and row.team == ownTeam
+
+    if teammate then
+        if Config.Teams.showTeamBlips ~= true then return nil end
+    elseif Config.Teams.showEnemyBlips ~= true then
+        return nil
+    end
+
+    -- Only a team mode has a tint to hand out. `blipColor` is legitimately 0
+    -- for one of the shipped teams, so this leans on ToInt returning nil --
+    -- not on the value being falsy -- to spot a team with none set.
+    local team = teamMode and Arena.GetTeamByKey(row.team) or nil
+    return (team and Arena.ToInt(team.blipColor)) or BLIP_FALLBACK_COLOR
+end
+
+--- The local ped for a server id, or nil when that player has left the
+--- server or is not streamed in near enough to hang a blip on.
+--- @param serverId integer
+--- @return integer|nil ped
+local function pedForServerId(serverId)
+    local player = GetPlayerFromServerId(serverId)
+    -- -1 is "nobody here by that id", and GetPlayerPed(-1) is our OWN ped --
+    -- taking it would blip this player as every fighter who happens to be
+    -- out of scope.
+    if player == -1 or not NetworkIsPlayerActive(player) then return nil end
+
+    local ped = GetPlayerPed(player)
+    if ped == 0 or not DoesEntityExist(ped) then return nil end
+    return ped
+end
+
+--- @param ped integer
+--- @param color integer
+--- @param name any -- the scoreboard's name for this fighter, if it had one
+--- @return integer blip
+local function createBlipOn(ped, color, name)
+    local blip = AddBlipForEntity(ped)
+
+    -- A plain dot. The tint is what says whose side this is, and a sprite
+    -- with a shape of its own would compete with it for the same answer.
+    SetBlipSprite(blip, 1)
+    SetBlipColour(blip, color)
+    SetBlipDisplay(blip, 4)
+    -- Never short range: knowing where somebody is stops being worth
+    -- anything at the point you can already see them.
+    SetBlipAsShortRange(blip, false)
+
+    if Arena.IsKey(name) then
+        BeginTextCommandSetBlipName('STRING')
+        AddTextComponentSubstringPlayerName(name)
+        EndTextCommandSetBlipName(blip)
+    end
+
+    return blip
+end
+
+--- @param serverId integer
+local function removePlayerBlip(serverId)
+    local blip = playerBlips[serverId]
+    if blip and DoesBlipExist(blip) then RemoveBlip(blip) end
+    playerBlips[serverId] = nil
+end
+
+--- Every blip this file drew, gone. Idempotent, and synchronous so it can
+--- run on the resource-stop path.
+local function removeAllPlayerBlips()
+    for serverId in pairs(playerBlips) do
+        removePlayerBlip(serverId)
+    end
+end
+
+--- Brings what is drawn in line with the last scoreboard: one pass to take
+--- away what should no longer be there -- a fighter who died, left, or was
+--- never ours to see -- and one to draw what should.
+local function refreshBlips()
+    local selfId = GetPlayerServerId(PlayerId())
+    local wanted = {}
+
+    for _, row in ipairs(roster) do
+        local serverId = type(row) == 'table' and Arena.ToInt(row.id) or nil
+        -- Our own dot is already on the map, drawn by the game.
+        if serverId and serverId ~= selfId then
+            local color = blipColorFor(row)
+            if color then wanted[serverId] = { color = color, name = row.name } end
+        end
+    end
+
+    for serverId in pairs(playerBlips) do
+        if not wanted[serverId] then removePlayerBlip(serverId) end
+    end
+
+    for serverId, want in pairs(wanted) do
+        -- The engine takes an entity blip away with the entity, so a handle
+        -- still sitting in the table can already be dead. Forget it, and let
+        -- the pass below draw a fresh one when the player streams back in.
+        if playerBlips[serverId] and not DoesBlipExist(playerBlips[serverId]) then
+            playerBlips[serverId] = nil
+        end
+
+        if not playerBlips[serverId] then
+            local ped = pedForServerId(serverId)
+            if ped then
+                playerBlips[serverId] = createBlipOn(ped, want.color, want.name)
+            end
+        end
+    end
+end
+
+--- Started with the other match-only loops, on the same token, and left to
+--- die with them. Removal is leaveArena's job, not this loop's -- see the
+--- section note above.
+local function startBlipThread()
+    if not currentMatch or not blipsEnabled(currentMatch.modeKey) then return end
+
+    local token = matchToken
+
+    CreateThread(function()
+        while matchLive and matchToken == token do
+            refreshBlips()
+            Wait(BLIP_REFRESH_MS)
+        end
+    end)
+end
+
+-- ======================================================================
 -- ENTRY / EXIT
 -- ======================================================================
 
@@ -287,6 +482,13 @@ local function leaveArena(returnCoords)
     matchLive = false
     deathReported = false
     matchToken = matchToken + 1
+
+    -- Before anything below can yield or throw. A blip nobody removes stays
+    -- on the map until the player reconnects, and this is the one path every
+    -- way out of the arena goes through -- the round ending, walking out
+    -- mid-round, and the resource stopping.
+    removeAllPlayerBlips()
+    roster = {}
 
     if ArenaSpectate then ArenaSpectate.Stop() end
 
@@ -334,7 +536,18 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     matchToken = matchToken + 1
     matchLive = false
     deathReported = false
-    currentMatch = { id = data.matchId, boundary = data.boundary }
+    currentMatch = {
+        id = data.matchId,
+        boundary = data.boundary,
+        -- Between them these two decide who counts as a teammate for the
+        -- blips. Both are re-read through Arena.* at the point of use rather
+        -- than trusted as they arrive.
+        modeKey = data.modeKey,
+        teamKey = data.teamKey,
+    }
+
+    -- Last round's board must not seed this round's blips.
+    roster = {}
 
     local token = matchToken
     local ped = PlayerPedId()
@@ -374,6 +587,7 @@ RegisterNetEvent('crimson_arena:client:matchLive', function()
     FreezeEntityPosition(PlayerPedId(), false)
     startLiveThread()
     startBoundaryThread(currentMatch.boundary)
+    startBlipThread()
 end)
 
 RegisterNetEvent('crimson_arena:client:respawn', function(data)
@@ -415,6 +629,11 @@ RegisterNetEvent('crimson_arena:client:exitArena', function(data)
 end)
 
 RegisterNetEvent('crimson_arena:client:matchHud', function(data)
+    -- Taken BEFORE the HUD switch is read. The scoreboard is the roster the
+    -- blip loop draws from, and an operator who turned the overlay off did
+    -- not thereby turn the blips off.
+    roster = (type(data) == 'table' and type(data.scoreboard) == 'table') and data.scoreboard or {}
+
     if not Config.UI.showMatchHud then return end
 
     ArenaUI.UpdateHud({ visible = currentMatch ~= nil, hud = data })

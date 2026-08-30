@@ -17,6 +17,10 @@
       - a settled stake is marked rather than deleted, so a second payout of
         it is refused and printed instead of silently doubled, and only
         `Clear` -- once nothing is owed -- drops the record;
+      - a stake the operator's config forfeits is marked settled and kept
+        rather than quietly dropped from the books: it is the one movement
+        here that ends with nobody credited, so it is logged and sent to the
+        webhook every time. ForfeitAll says where that money goes and why;
       - money that cannot be handed back stays on the books and stays loud;
       - `Clear` refuses to drop a match that still holds anything. A leaked
         table entry is a bug someone can find later; a swallowed pot is one
@@ -173,8 +177,10 @@ end
 --- the countdown, then `closeAfterStartSeconds` into the live round
 --- (0 = closed the moment it begins).
 ---
---- `startsAt` is stamped by the lobby in epoch seconds, the same clock used
---- here. A live match whose start this clock cannot read -- missing, or
+--- `startsAt` is stamped by server/match.lua in epoch seconds (os.time), the
+--- same clock read here -- NOT GetGameTimer, which server/util.lua's rate
+--- limiter uses for its own monotonic purposes and which would silently
+--- compare against the wrong scale. A live match whose start this clock cannot read -- missing, or
 --- somehow still in the future -- closes the window rather than leaving it
 --- open, because a window that cannot be timed cannot be closed, and an
 --- uncloseable window is free money for anyone watching the scoreboard.
@@ -408,6 +414,83 @@ function ArenaBetting.RefundAll(matchId, reasonKey)
     end
 
     return owed == 0, refunded, total
+end
+
+--- Keeps one player's stake in the pot rather than handing it back.
+---
+--- NOTHING MOVES, and that is the entire operation: the money is already
+--- escrowed against this match, so leaving it exactly where it is IS the
+--- forfeit. It stays inside ArenaBetting.GetPot, the players who stayed are
+--- fighting for it, and Settle pays it out with the rest. Every path that
+--- ends the match without a result still refunds it, so a stake forfeited to
+--- a pot is never money nobody can reach.
+---
+--- The player is told, because a stake that is not coming back is not
+--- something to work out from a balance -- and somebody who walked out of a
+--- lobby is still on the server to hear it.
+--- @param matchId string
+--- @param src integer
+--- @return integer kept -- 0 when this match holds nothing of theirs
+function ArenaBetting.KeepInPot(matchId, src)
+    local id = serverId(src)
+    if not id then return 0 end
+
+    local stake = stakesOf(matchId)[id]
+    if not stake or stake.settled then return 0 end
+
+    trace('kept %d of %s in the pot on match %s', stake.amount, tostring(id), tostring(matchId))
+    ArenaNotifyKey(id, 'notify.stake_forfeited', 'error', money(stake.amount))
+    return stake.amount
+end
+
+--- Keeps every held stake and pays nobody. The pot is forfeited.
+---
+--- WHERE THE MONEY GOES, exactly: nowhere. A forfeited pot is kept the way
+--- the house cut of a settled pot and a losing side-bet are kept -- this file
+--- has no house account to credit, so the money leaves the economy at the
+--- point it leaves escrow. That is what `Config.Betting.refundOnCancel =
+--- false` is FOR: it is a deterrent against a host filling a lobby,
+--- collecting everybody's stake and closing it, and a deterrent that handed
+--- the pot to someone would only move the abuse to whoever received it.
+--- Every forfeit is logged and sent to the webhook whatever `logPayouts`
+--- says, because an operator who runs a house account by hand is the only
+--- person who can put this money anywhere.
+---
+--- Marked rather than deleted, like every other settlement here: a second
+--- forfeit of the same stake keeps nothing twice, a later refund of it is
+--- refused out loud, and `Clear` may drop a match that now genuinely holds
+--- nothing -- which is what keeps its refusal to drop one that does worth
+--- something.
+--- @param matchId string
+--- @param reasonKey string? -- audit reason recorded against each stake
+--- @return integer forfeited -- stakes kept
+--- @return integer total -- money kept
+function ArenaBetting.ForfeitAll(matchId, reasonKey)
+    local forfeited, total = 0, 0
+
+    for id, stake in pairs(stakesOf(matchId)) do
+        if not stake.settled then
+            stake.settled = true
+            stake.settledAs = 'forfeit'
+            stake.reason = reasonKey
+            forfeited = forfeited + 1
+            total = total + stake.amount
+            ArenaNotifyKey(id, 'notify.stake_forfeited', 'error', money(stake.amount))
+        end
+    end
+
+    if total > 0 then
+        ArenaLog('FORFEIT: match %s kept %d across %d stake(s) (%s). Nobody was paid it.',
+            tostring(matchId), total, forfeited, tostring(reasonKey))
+        incidentWebhook('Pot forfeited', 'A cancelled lobby kept its stakes instead of returning them.', {
+            { name = 'Match', value = tostring(matchId) },
+            { name = 'Kept', value = money(total) },
+            { name = 'Stakes', value = tostring(forfeited) },
+            { name = 'Reason', value = tostring(reasonKey) },
+        })
+    end
+
+    return forfeited, total
 end
 
 --- Pays the pot out. The match decides who won; this decides nothing but

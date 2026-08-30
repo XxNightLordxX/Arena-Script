@@ -518,8 +518,13 @@ Config.Loadouts = {
 --
 -- HOW THE MONEY MOVES: a player's entry fee leaves their account the moment
 -- they lock in, and is held by the match. It is paid out to the winner(s)
--- when the match ends, or refunded in full if the match is cancelled, fails
--- to start, or ends with nobody eligible to be paid.
+-- when the match ends, or refunded in full if the match fails to start, is
+-- closed by the server, or ends with nobody eligible to be paid.
+--
+-- The two exceptions are both settings, both default to refunding, and both
+-- are spelled out where they live below: `refundOnCancel` (a host closing
+-- their own lobby) and `refundOnDisconnectBeforeStart` (leaving one). Turn
+-- either off and that stake stops coming back.
 -- ======================================================================
 Config.Betting = {
     enabled = true,
@@ -562,8 +567,33 @@ Config.Betting = {
     -- 0 = no ceiling on the total pot.
     maxPot = 0,
 
+    -- A HOST CLOSING THEIR OWN LOBBY. With this on -- the default -- every
+    -- stake goes straight back. With it off they are FORFEITED, and the
+    -- money goes nowhere at all: it is kept the way the house cut and a
+    -- losing side-bet are kept, because this resource has no house account
+    -- to credit and handing the pot to somebody would only move the abuse to
+    -- whoever received it. That is the point of the setting -- it deters a
+    -- host who fills a lobby, takes everyone's stake and closes it. Every
+    -- forfeit is logged and webhooked whatever `logPayouts` says, because an
+    -- operator running a house account by hand is the only person who can
+    -- put that money anywhere.
+    --
+    -- ONLY a host cancelling forfeits. An idle-timeout close, an admin
+    -- force-stop, the last player walking out and a resource restart all
+    -- still refund in full: punishing a host who calls their own match off
+    -- is not the same as punishing a lobby the server itself closed.
     refundOnCancel = true,
+
+    -- LEAVING A LOBBY THAT HAS NOT STARTED. On, the stake comes back. Off,
+    -- it stays in the pot and is won by whoever takes the match.
+    --
+    -- Like its mid-match sibling below, this does NOT distinguish a
+    -- deliberate quit from a crash, and deliberately so: a rule that charged
+    -- only genuine disconnects would take money from players whose game
+    -- crashed and hand it back to the ones who left on purpose, which is
+    -- worse than either answer applied evenly.
     refundOnDisconnectBeforeStart = true,
+
     -- Someone who disconnects mid-match forfeits their stake to the pot.
     -- With this on they get it back instead.
     refundOnDisconnectDuringMatch = false,

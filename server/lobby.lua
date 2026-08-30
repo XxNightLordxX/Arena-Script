@@ -596,6 +596,16 @@ function ArenaLobby.Join(src, matchId, teamKey)
     local target = tonumber(src)
     if not target then return false, 'error.invalid_request' end
 
+    -- Asked before the match is even looked up, the way Create asks
+    -- ArenaCanCreate first: whether this player may fight here at all does
+    -- not depend on which lobby they picked. An empty Config.Permissions
+    -- .joinJobs is everybody, which is the shipped default.
+    --
+    -- The host comes through this same door, so a joinJobs list that excludes
+    -- them refuses their Create as well -- which is right. A match its own
+    -- host may not enter is not a match.
+    if not ArenaCanJoin(target) then return false, 'error.no_permission' end
+
     local match = ArenaLobby.Get(matchId)
     if not match then return false, 'error.match_not_found' end
     if match.state ~= 'lobby' then return false, 'error.match_in_progress' end
@@ -673,12 +683,34 @@ function ArenaLobby.Leave(src, reasonKey)
         return ArenaLobby.RemoveSpectator(target)
     end
 
-    -- A stake in a lobby has bought nothing yet, so it always comes back.
-    -- Once the round is running the operator decides whether walking out
-    -- forfeits it to the pot.
+    -- WHAT LEAVING COSTS. One switch per state, and the state is the only
+    -- thing that picks between them: refundOnDisconnectBeforeStart while the
+    -- match is still a lobby or a countdown, refundOnDisconnectDuringMatch
+    -- once the round is running. Both ship as "hand it back", and neither
+    -- separates walking out from dropping -- a rule that charged only real
+    -- disconnects would take money from the players who crashed and give it
+    -- back to the ones who quit on purpose.
+    --
+    -- NOT REFUNDING IS NOT MOVING: the stake stays escrowed against this
+    -- match, still counted by ArenaBetting.GetPot, which is what "forfeited
+    -- to the pot" means -- whoever is still in the match is playing for it.
     local started = match.state == 'live' or match.state == 'ended'
-    if player.stake > 0 and (not started or Config.Betting.refundOnDisconnectDuringMatch == true) then
-        ArenaBetting.RefundOne(match.id, target, reasonKey or 'bet.refund_left')
+    local refund
+    if started then
+        refund = Config.Betting.refundOnDisconnectDuringMatch == true
+    else
+        refund = Config.Betting.refundOnDisconnectBeforeStart ~= false
+    end
+
+    if player.stake > 0 then
+        if refund then
+            ArenaBetting.RefundOne(match.id, target, reasonKey or 'bet.refund_left')
+        elseif not started then
+            -- Only the lobby forfeit says anything. The mid-round one has
+            -- been silent since it shipped and is not this change's to alter;
+            -- this one is new, so the player it takes money from hears why.
+            ArenaBetting.KeepInPot(match.id, target)
+        end
     end
 
     match.players[target] = nil
@@ -736,6 +768,52 @@ function ArenaLobby.Destroy(matchId, reasonKey)
 
     ArenaLobby.Broadcast()
     return true
+end
+
+--- The host closing their own lobby.
+---
+--- A cancel is its own exit rather than a Destroy with a different notice
+--- because it is the ONE way of closing a lobby an operator can make cost
+--- something. Everything else that closes one -- the idle sweep, an admin
+--- force-stop, the last player walking out, a resource restart -- refunds in
+--- full and none of them come through here, which is exactly why they are
+--- unaffected by `refundOnCancel`: an operator punishing a host who calls
+--- their own match off has not asked to punish a lobby the server itself
+--- closed.
+---
+--- WHICH MATCH is never taken from the caller: it is the one they are
+--- standing in, and they have to be its host.
+--- @param src any
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaLobby.Cancel(src)
+    local target = tonumber(src)
+    if not target then return false, 'error.invalid_request' end
+
+    local match = ArenaLobby.GetByPlayer(target)
+    if not match then return false, 'error.not_in_match' end
+    if match.hostSource ~= target then return false, 'error.host_only' end
+
+    -- Cancelling is a lobby control. Once the round is running the way out is
+    -- leaving it, or an admin stop -- both of which already exist, and
+    -- neither of which should be reachable by every host through a button
+    -- labelled "cancel".
+    if match.state ~= 'lobby' and match.state ~= 'countdown' then
+        return false, 'error.match_in_progress'
+    end
+
+    -- THE STAKES. With refundOnCancel on -- the default -- nothing happens
+    -- here and Destroy hands every one of them straight back. With it off
+    -- they are forfeited BEFORE Destroy runs, which is what makes that order
+    -- load-bearing: forfeiting marks each stake settled, so Destroy's
+    -- RefundAll finds nothing left to return and its Clear can drop the match
+    -- without the escrow check having to be weakened for this path.
+    if Config.Betting.refundOnCancel == false then
+        ArenaBetting.ForfeitAll(match.id, 'notify.match_cancelled')
+    end
+
+    ArenaLobby.Destroy(match.id, 'notify.match_cancelled')
+    return true, nil
 end
 
 -- ======================================================================

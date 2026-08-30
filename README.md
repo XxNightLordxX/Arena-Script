@@ -67,7 +67,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 - `/arenaadmin` to list, force-stop or wipe matches, gated on ACE groups.
 - A Discord webhook for match results and payouts. **Ships disabled** (`Config.Webhook.enabled = false`).
 - Server-authoritative throughout: nothing a client sends about a weapon, ammo count, team, match id, bet or kill is trusted. Every one is re-checked against config before it is acted on.
-- `Config.Permissions.joinJobs` is **not enforced**. Anyone may join a match, which is what the shipped comment says.
+- `Config.Permissions.joinJobs` gates who may join, the same way `createJobs` gates who may create. Both ship empty, and an empty list means everyone.
 
 ---
 
@@ -320,16 +320,12 @@ Turn it on only if NPC police still respond to gunfire on your server. It stops 
 
 ### Config keys nothing reads yet
 
-These exist in `config.lua` and changing them has no effect:
+None. Every key in `config.lua` is read by something.
 
-| Key | What actually happens |
-|---|---|
-| `Config.Teams.showTeamBlips` / `showEnemyBlips` | No blips are drawn during a round. |
-| `Config.UI.sounds` | The panel is silent. |
-| `Config.Permissions.joinJobs` | Anyone may join a match. |
-| `Config.Betting.refundOnCancel` | A cancelled lobby always refunds. |
-| `Config.Betting.refundOnDisconnectBeforeStart` | A stake in a lobby always comes back. |
-| `Config.Modes.gungame.gunGameLadder` | Validated at start, never played. The mode ships disabled. |
+This section used to list six that were not, and it is kept — empty — on
+purpose: it is the right place to record the next one, and an operator who
+has read this file once will come back looking for it before they conclude a
+setting is broken.
 
 ---
 
@@ -381,16 +377,26 @@ Three rules hold the invariant up:
 
 | Event | The money |
 |---|---|
-| A player leaves a lobby that has not started | Refunded in full. Always. |
-| A player disconnects from a lobby | Same — refunded in full. |
+| A player leaves a lobby that has not started | Refunded in full, unless `Config.Betting.refundOnDisconnectBeforeStart = false`, in which case the stake stays in the pot and is won by whoever takes the match. |
+| A player disconnects from a lobby | The same rule, deliberately. That key does not distinguish a rage-quit from a crash, because a rule that charged only genuine disconnects would take money from players whose game crashed and hand it back to the ones who left on purpose. |
 | A player leaves or disconnects **mid-round** | Forfeited to the pot by default. `Config.Betting.refundOnDisconnectDuringMatch = true` refunds them instead. |
-| The host cancels the lobby | Every stake refunded, match closed. |
+| The host cancels the lobby | Every stake refunded, match closed — unless `Config.Betting.refundOnCancel = false`, in which case the stakes are **forfeited and leave the economy entirely**. See below. |
 | A lobby sits idle past `idleLobbyTimeoutSeconds` with nobody ready | Closed, every stake refunded. |
 | Everybody disconnects mid-round | The round is aborted, not settled. Every stake and every side-bet goes back — there is nobody to declare a winner over. |
 | The round ends in a draw | Refunded. Paying one of two equal scores out of the other's stake is a coin toss with somebody else's money. |
 | The round ends below `minPlayersToPayOut` | Refunded. This is what stops two friends farming each other. |
 | An admin runs `/arenaadmin stop` or `wipe` | Aborted and refunded, whatever state the match was in. |
 | **The resource stops or the server restarts** | Every live match is aborted on the way down, which refunds every stake in full, and only then are queued stat rows flushed. The handler is deliberately synchronous — a stop handler that yields may never be resumed, and a refund that never resumes is the exact bug it exists to prevent. |
+
+### Where a forfeited pot goes
+
+`Config.Betting.refundOnCancel = false` is the one setting that makes closing a lobby cost something, and the money it takes goes **nowhere**. It is kept the same way the house cut of a settled pot and a losing side-bet are kept: this resource has no house account to credit, so the money leaves the economy at the point it leaves escrow.
+
+That is the point of the setting. It exists to deter a host who fills a lobby, collects everybody's stake and closes it — and a deterrent that handed the pot to somebody would only move the abuse to whoever received it.
+
+Every forfeit prints a `FORFEIT:` line to the console and goes to the webhook regardless of `logPayouts`, because an operator running a house account by hand is the only person who can put that money anywhere.
+
+Only a **host cancelling** forfeits. An idle-timeout close, an admin force-stop, the last player walking out and a resource restart all still refund in full — an operator punishing a host who calls their own match off has not asked to punish a lobby the server itself closed.
 
 ### When a payment cannot be made
 

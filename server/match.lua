@@ -234,6 +234,23 @@ local function evaluate(match)
 
     if total == 0 then return {}, 'match.ended_abandoned' end
 
+    -- THE LADDER OVERRIDES Config.Match.winCondition, and this is the one
+    -- mode that overrides anything: gun game IS its own win condition.
+    -- 'most_kills' and 'score_limit' would settle a ladder race on a number
+    -- nobody in it is playing for, and 'last_standing' would leave a finished
+    -- ladder waiting for a corpse. Read before the clock, too -- a ladder
+    -- finished on the last second of the round was still finished.
+    --
+    -- A ladder is climbed by one player, so it is won by one player whatever
+    -- the mode's `teams` setting says. Two who finish inside the same sweep
+    -- both took it and split the pot, the way a winning team does -- the
+    -- server cannot honestly order two kills reported in the same second.
+    local climbed = {}
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        if player.ladderFinished == true then climbed[#climbed + 1] = player.src end
+    end
+    if #climbed > 0 then return climbed, 'match.ended_ladder' end
+
     if Config.Match.winCondition == 'score_limit' and reachedScoreLimit(match, teamMode) then
         local winners = decideOnKills(match, teamMode)
         return winners, #winners > 0 and 'match.ended_score_limit' or 'match.ended_draw'
@@ -347,6 +364,174 @@ local function winningPick(match, winners, teamMode)
     -- names it.
     local player = match.players[first]
     return player and player.team or nil
+end
+
+-- ======================================================================
+-- GUN GAME
+--
+-- Config.Modes.gungame.gunGameLadder, played.
+--
+-- THE LADDER IS THE LOADOUT. What a player picked in the panel is never
+-- handed out in this mode -- the ladder replaces it on the way in, on every
+-- promotion and on every respawn, which is what config.lua has always said
+-- happens. Armour, health and the operator's alwaysGive list are not a
+-- weapon choice and are left exactly as they are everywhere else.
+--
+-- A RUNG IS DERIVED FROM THE KILL COUNT, NEVER COUNTED UP. Two kills landing
+-- between one sweep and the next promote once per rung and never twice, and
+-- a kill the server refused to credit cannot leave anybody standing a rung
+-- above their own score.
+-- ======================================================================
+
+--- The rungs of a mode's ladder that can actually be handed out, in ladder
+--- order.
+---
+--- A RUNG NAMING A WEAPON THAT IS NOT IN THE ENABLED CATALOGUE IS DROPPED
+--- and the ladder is that much shorter. Promoting somebody onto a rung with
+--- no weapon on it would put a player in the arena empty-handed, and
+--- refusing to run the mode at all would punish a full lobby for one typo.
+--- An EMPTY result -- no ladder, or nothing in it survived -- is what makes
+--- every caller below fall back to ordinary play.
+--- @param modeKey any
+--- @return table[] rungs -- Config.Loadouts.weapons entries, never bare keys
+local function ladderFor(modeKey)
+    -- nil for a mode an operator has switched off, so a disabled gun game
+    -- never plays a ladder no matter what is stored on a match record.
+    local mode = Arena.GetModeByKey(modeKey)
+    local ladder = mode and mode.gunGameLadder
+    if type(ladder) ~= 'table' then return {} end
+
+    local rungs = {}
+    for _, key in ipairs(ladder) do
+        -- GetWeaponByKey answers nil for a disabled weapon exactly as it
+        -- does for an invented one, which is the whole reason the ladder is
+        -- read through it rather than trusted.
+        local weapon = Arena.GetWeaponByKey(key)
+        if weapon then
+            rungs[#rungs + 1] = weapon
+        else
+            ArenaDebug('gun game rung "%s" is not an enabled weapon -- dropped from the ladder', tostring(key))
+        end
+    end
+    return rungs
+end
+
+--- Which rung a kill count has earned, and whether it finished the ladder.
+---
+--- Everybody starts on rung 1, so the Nth kill puts a player on rung N+1 and
+--- the kill made ON the last rung is the one that finishes it.
+--- @param kills any
+--- @param rungs any -- how many playable rungs the ladder has
+--- @return integer rung -- 1-based, and never past the end of the ladder
+--- @return boolean finished
+local function rungForKills(kills, rungs)
+    local total = math.max(0, Arena.ToInt(rungs) or 0)
+    local scored = math.max(0, Arena.ToInt(kills) or 0)
+    if total <= 0 then return 1, false end
+    if scored >= total then return total, true end
+    return scored + 1, false
+end
+
+--- What a player holds on one rung: that rung's weapon at its own configured
+--- default ammo, and nothing they chose for themselves.
+--- @param weapon table -- a Config.Loadouts.weapons entry
+--- @param previous table? -- what they were holding, read for its armour only
+--- @return table loadout -- the shape Arena.ResolveLoadout returns
+local function ladderLoadout(weapon, previous)
+    local rung = {
+        key = weapon.key,
+        weapon = weapon.weapon,
+        label = weapon.label or weapon.key,
+        -- Nothing requested: with no ask to resolve, ResolveAmmo hands back
+        -- this weapon's own default clamped to its own max, which is exactly
+        -- what a rung is worth.
+        ammo = Arena.ResolveAmmo(weapon, nil),
+        components = type(weapon.components) == 'table' and weapon.components or {},
+        tint = Arena.ToInt(weapon.tint) or 0,
+    }
+
+    -- Armour, health and alwaysGive still come from the ordinary path so the
+    -- ladder never grows a second copy of those rules. Only the alwaysGive
+    -- entries are kept out of what comes back: with Config.Loadouts
+    -- .allowChoose off, ResolveLoadout answers with the operator's `fixed`
+    -- weapon list, and in this mode the ladder outranks that list too.
+    local base = Arena.ResolveLoadout({
+        weapons = {},
+        armor = type(previous) == 'table' and previous.armor or nil,
+    })
+
+    local weapons = { rung }
+    for _, given in ipairs(base.weapons) do
+        -- A house knife the ladder is already handing out must not arrive
+        -- twice: the client gives what it is sent, entry for entry.
+        if given.alwaysGive == true and given.weapon ~= rung.weapon then
+            weapons[#weapons + 1] = given
+        end
+    end
+
+    return { weapons = weapons, armor = base.armor, health = base.health }
+end
+
+--- The loadout a player should be holding for this match right now: their
+--- own choice re-resolved in every mode, and the rung they are standing on
+--- in a gun game.
+--- @param match table
+--- @param player table
+--- @return table loadout
+--- @return string[] rejected -- keys dropped from a player's own choice
+local function loadoutFor(match, player)
+    local rungs = ladderFor(match.modeKey)
+    if #rungs == 0 then return Arena.ResolveLoadout(player.loadout) end
+
+    -- Clamped rather than trusted: an operator who shortened the ladder
+    -- since the round started leaves somebody standing on a rung that is no
+    -- longer there.
+    local rung = Arena.ClampInt(player.rung, 1, #rungs) or 1
+    player.rung = rung
+    return ladderLoadout(rungs[rung], player.loadout), {}
+end
+
+--- Scores one gun-game kill: moves the killer up the ladder when that kill
+--- earned it, and marks the ladder finished when it was made on the last
+--- rung.
+---
+--- DECIDES NOTHING. The flag it sets is read by the sweep a tick later, the
+--- same as every other way a round ends here.
+--- @param match table
+--- @param killer table
+local function promote(match, killer)
+    local rungs = ladderFor(match.modeKey)
+    if #rungs == 0 then return end
+
+    local rung, finished = rungForKills(killer.kills, #rungs)
+    killer.ladderFinished = finished
+
+    -- Already standing there: the rung is read off the kill count, so a kill
+    -- made FROM the top rung -- and any second pass over a count already
+    -- granted -- would otherwise re-issue a weapon the player is holding and
+    -- refill its ammo for free.
+    if rung == killer.rung then return end
+
+    local previous = killer.rung and rungs[killer.rung] or nil
+    killer.rung = rung
+    killer.loadout = ladderLoadout(rungs[rung], killer.loadout)
+
+    local weapon = killer.loadout.weapons[1]
+    TriggerClientEvent('crimson_arena:client:gunGameRung', killer.src, {
+        matchId = match.id,
+        rung = rung,
+        rungs = #rungs,
+        weapon = weapon.weapon,
+        ammo = weapon.ammo,
+        components = weapon.components,
+        tint = weapon.tint,
+        -- The rung below is taken back and nothing else is -- the house
+        -- alwaysGive list was never part of the ladder. A ladder naming the
+        -- same weapon on two rungs would otherwise strip the gun it was
+        -- handed in the same breath.
+        remove = (previous and previous.weapon ~= weapon.weapon) and previous.weapon or nil,
+    })
+    ArenaNotifyKey(killer.src, 'notify.gungame_promoted', 'success', rung, #rungs, weapon.label)
 end
 
 -- ======================================================================
@@ -490,7 +675,10 @@ local function scheduleRespawn(match, player)
         -- three times does not come back at the same corner three times.
         current.spawnCursor = (current.spawnCursor or 0) + 1
 
-        local loadout = Arena.ResolveLoadout(entry.loadout)
+        -- Gun game hands back the rung they are on rather than the loadout
+        -- they picked: coming back down the ladder on every death is not the
+        -- mode. Every other mode re-resolves the stored choice as before.
+        local loadout = loadoutFor(current, entry)
         entry.loadout = loadout
         entry.alive = true
 
@@ -713,13 +901,22 @@ function ArenaMatch.Start(matchId)
         player.alive = true
         player.lives = lives
         player.placement = nil
+        -- Round state like the rest of this block, and dead weight in every
+        -- mode but gun game: everybody starts on the bottom rung with the
+        -- ladder ahead of them.
+        player.rung = 1
+        player.ladderFinished = false
 
         -- RE-RESOLVED, NOT TRUSTED. What the lobby stored was checked against
         -- the catalogue as it stood when the player picked it, and an
         -- operator may have reloaded config since. Feeding the stored
         -- loadout back through the same function re-checks every weapon key
         -- and re-clamps every ammo count against the list that is live now.
-        local loadout, rejected = Arena.ResolveLoadout(player.loadout)
+        --
+        -- In gun game it is not re-resolved but REPLACED, by the bottom rung
+        -- of the ladder: the mode ignores the player's weapon choice, which
+        -- is what config.lua promises next to the ladder itself.
+        local loadout, rejected = loadoutFor(match, player)
         player.loadout = loadout
         if #rejected > 0 then
             ArenaDebug('dropped %d loadout entr(ies) for %s on match %s: %s',
@@ -770,6 +967,9 @@ function ArenaMatch.OnDeath(src, killerSrc)
     local killer = resolveKiller(match, player, killerSrc)
     if killer then
         killer.kills = (Arena.ToInt(killer.kills) or 0) + 1
+        -- The kill is what moves them up the ladder, so the promotion sits
+        -- with the score it is earned by and not with the elimination below.
+        promote(match, killer)
     elseif killerSrc ~= nil then
         ArenaDebug('unverified kill claim on match %s: %s says %s killed them',
             tostring(match.id), tostring(id), tostring(killerSrc))
@@ -1038,6 +1238,26 @@ end
 function ArenaMatch.IsLive(matchId)
     local match = ArenaLobby.Get(matchId)
     return match ~= nil and match.state == 'live'
+end
+
+--- The rungs of a mode's gun-game ladder that can actually be handed out,
+--- resolved against the live weapon catalogue. Empty for every other mode,
+--- and for a ladder whose every rung names a weapon an operator switched off.
+--- @param modeKey any
+--- @return table[] rungs
+function ArenaMatch.GetLadder(modeKey)
+    return ladderFor(modeKey)
+end
+
+--- Which rung `kills` has earned on a ladder `rungs` long, and whether that
+--- finished it. Exposed because this arithmetic IS the mode -- it is worth
+--- checking on its own, without a match record around it.
+--- @param kills any
+--- @param rungs any
+--- @return integer rung
+--- @return boolean finished
+function ArenaMatch.RungForKills(kills, rungs)
+    return rungForKills(kills, rungs)
 end
 
 --- Every match currently being fought. IsLive is true for every record this

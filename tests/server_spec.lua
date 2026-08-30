@@ -135,12 +135,13 @@ end
 --- Two fighters staked into one team match, with the lobby record wired up
 --- so spectator bets have something to bet on.
 --- @param spectators table<integer, integer>? -- [serverId] = starting cash
+--- @param mutate fun(config: table)? -- applied before anything is staked
 --- @return table server
-local function teamMatch(spectators)
+local function teamMatch(spectators, mutate)
     local wallets = { [1] = 5000, [2] = 5000 }
     for id, cash in pairs(spectators or {}) do wallets[id] = cash end
 
-    local server = newServer(wallets)
+    local server = newServer(wallets, mutate)
     server.env.ArenaLobby = fakeLobby({
         ['m1'] = {
             id = 'm1',
@@ -170,6 +171,37 @@ local function teamContext()
             { id = 2, team = 'ash', kills = 0, stake = 1000 },
         },
     }
+end
+
+--- Four fighters staked into one free-for-all -- the shape every payout mode
+--- below is settled against, so the only thing that differs between those
+--- tests is the mode itself.
+--- @param mutate fun(config: table)? -- applied before anything is staked
+--- @param stakes integer[]? -- per fighter, in order; 1000 each by default
+--- @return table server
+local function ffaMatch(mutate, stakes)
+    local server = newServer({ [1] = 5000, [2] = 5000, [3] = 5000, [4] = 5000 }, mutate)
+    for id = 1, 4 do
+        server.betting.TakeStake(id, 'm1', (stakes or {})[id] or 1000)
+    end
+    return server
+end
+
+--- The settlement context for that free-for-all. `winners` is in placement
+--- order, best first: top_three reads it as the podium, every other mode as
+--- the set of people who won.
+--- @param winners integer[]
+--- @param stakes integer[]?
+--- @return table
+local function ffaContext(winners, stakes)
+    -- Lopsided kills on purpose. An even spread would make a per_kill split
+    -- and an even split agree, and telling those two apart is the point.
+    local kills = { 3, 1, 0, 0 }
+    local players = {}
+    for id = 1, 4 do
+        players[id] = { id = id, kills = kills[id], stake = (stakes or {})[id] or 1000 }
+    end
+    return { teams = false, winners = winners, players = players }
 end
 
 -- ======================================================================
@@ -406,6 +438,119 @@ t.test('Settle pays the net pot when the house takes a cut, and not a dollar mor
     t.equals(server.cash(1), 6700)
     t.equals(server.ledgerTotal(), -300, 'the house keeps the cut and nothing else leaves the world')
     t.equals(server.betting.GetPot('m1'), 0)
+end)
+
+t.test('top_three pays each place its configured share, remainder and all', function()
+    -- The odd stake is what stops 60/30/10 dividing the pot cleanly. Two
+    -- dollars are left over after the three percentages are taken, and they
+    -- have to land on somebody: a split that "balances" by dropping them
+    -- shrinks the pot by a couple of dollars every single match.
+    local stakes = { 1000, 1000, 1000, 999 }
+    local server = ffaMatch(function(config) config.Betting.payout = 'top_three' end, stakes)
+    t.equals(server.betting.GetPot('m1'), 3999)
+
+    local payouts = server.betting.Settle('m1', ffaContext({ 1, 2, 3 }, stakes))
+
+    t.equals(#payouts, 3)
+    t.equals(payouts[1].amount, 2401, '60% of 3999, plus the 2 no other share could carry')
+    t.equals(payouts[2].amount, 1199)
+    t.equals(payouts[3].amount, 399)
+    t.equals(payouts[1].reason, 'placement')
+
+    t.equals(server.cash(1), 6401)
+    t.equals(server.cash(2), 5199)
+    t.equals(server.cash(3), 4399)
+    t.equals(server.cash(4), 4001, 'fourth place staked and takes nothing home')
+    t.equals(server.qbx.movements(4), 1, 'off the podium is one movement, not two')
+    t.equals(server.ledgerTotal(), 0, 'the pot paid out is exactly the pot taken in')
+    t.equals(server.betting.GetPot('m1'), 0)
+    t.isTrue(server.betting.Clear('m1'))
+end)
+
+t.test('top_three in a team match pays the winning side, not a podium', function()
+    -- topThreeSplit is free-for-all only. Ranking two sides onto a podium
+    -- would pay the LOSING team's runner-up out of the winners' pot, so the
+    -- mode falls back rather than doing it -- and the fallback is what an
+    -- operator who set top_three on a team server actually gets.
+    local server = teamMatch(nil, function(config) config.Betting.payout = 'top_three' end)
+    t.equals(server.betting.GetPot('m1'), 2000)
+
+    local payouts = server.betting.Settle('m1', teamContext())
+
+    t.equals(#payouts, 1)
+    t.equals(payouts[1].id, 1)
+    t.equals(payouts[1].amount, 2000)
+    t.equals(payouts[1].reason, 'winner', 'not a placement -- nothing was placed')
+    t.equals(server.cash(1), 6000)
+    t.equals(server.cash(2), 4000)
+    t.equals(server.ledgerTotal(), 0)
+    t.isTrue(server.betting.Clear('m1'))
+end)
+
+t.test('per_kill splits the pot by share of the kills and skips whoever scored none', function()
+    local server = ffaMatch(function(config) config.Betting.payout = 'per_kill' end)
+    t.equals(server.betting.GetPot('m1'), 4000)
+
+    -- 4 kills between them, 3 to one player and 1 to another: three quarters
+    -- and one quarter of 4000.
+    local payouts = server.betting.Settle('m1', ffaContext({ 1 }))
+
+    t.equals(#payouts, 2, 'two players scored; the other two are not on the sheet at all')
+    t.equals(payouts[1].id, 1)
+    t.equals(payouts[1].amount, 3000)
+    t.equals(payouts[1].reason, 'per_kill')
+    t.equals(payouts[2].id, 2)
+    t.equals(payouts[2].amount, 1000)
+
+    t.equals(server.cash(1), 7000)
+    t.equals(server.cash(2), 5000, 'a player who scored is paid whether or not they won')
+    t.equals(server.cash(3), 4000)
+    t.equals(server.cash(4), 4000)
+    t.equals(server.qbx.movements(3), 1, 'staked, and never paid')
+    t.equals(server.ledgerTotal(), 0)
+    t.equals(server.betting.GetPot('m1'), 0)
+    t.isTrue(server.betting.Clear('m1'))
+end)
+
+t.test('a payout mode nobody implemented pays the winner rather than stranding the pot', function()
+    -- A typo in config.lua is an operator's mistake to make; four people's
+    -- stakes sitting in escrow with nobody left to hand them to is not the
+    -- punishment for it.
+    local server = ffaMatch(function(config) config.Betting.payout = 'winner_take_all' end)
+
+    local payouts = server.betting.Settle('m1', ffaContext({ 1 }))
+
+    t.equals(#payouts, 1)
+    t.equals(payouts[1].amount, 4000)
+    t.equals(payouts[1].reason, 'winner')
+    t.equals(server.cash(1), 8000)
+    t.equals(server.ledgerTotal(), 0)
+    t.isTrue(server.betting.Clear('m1'))
+end)
+
+t.test('every payout mode spends the net pot exactly and leaves escrow empty', function()
+    -- What each test above claims in its own arithmetic, claimed once as a
+    -- property across every mode an operator can set: the money that leaves
+    -- escrow is the pot less the house cut. Never a dollar more -- that is
+    -- money invented out of a pot that never held it -- and never a dollar
+    -- less, which is a stake stranded in a match record about to be dropped.
+    for _, mode in ipairs({ 'winner_takes_all', 'top_three', 'per_kill', 'a mode nobody wrote' }) do
+        local server = ffaMatch(function(config)
+            config.Betting.payout = mode
+            config.Betting.houseCutPercent = 10
+        end)
+
+        local payouts = server.betting.Settle('m1', ffaContext({ 1, 2, 3 }))
+
+        local paid = 0
+        for _, payout in ipairs(payouts) do paid = paid + payout.amount end
+
+        t.isTrue(#payouts > 0, mode .. ': settled a full pot and decided nobody')
+        t.equals(paid, 3600, mode .. ': 4000 less the 10% cut')
+        t.equals(server.ledgerTotal(), -400, mode .. ': the house kept the cut and nothing else left')
+        t.equals(server.betting.GetPot('m1'), 0, mode .. ': escrow still holds something')
+        t.isTrue(server.betting.Clear('m1'), mode .. ': a spent pot must be droppable')
+    end
 end)
 
 t.test('a second Settle pays nothing', function()

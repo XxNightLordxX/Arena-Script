@@ -7,8 +7,12 @@
     clear about which of them this file actually solves:
 
     1. THE GAME'S OWN POLICE. GTA dispatches NPC cops at gunfire on its own,
-       with no script involved. This file switches that off for the length
-       of a match and puts it back afterwards. Solved outright.
+       with no script involved. This file can switch that off for the length
+       of a match and put it back afterwards -- but it ships OFF, under
+       Config.Dispatch.vanillaPolice. A server running a custom dispatch
+       script has almost certainly disabled the vanilla wanted system
+       already, and some custom systems drive their own logic off the native
+       wanted level, where pinning it to zero would fight them for it.
 
     2. A DEAD PLAYER BEING SPOTTED BY A MEDICAL SCRIPT. Almost every one of
        them finds casualties by polling "is this player dead" a couple of
@@ -88,7 +92,8 @@ exports('GetArenaMatchId', ArenaDispatch.MatchId)
 --- would be worse than the original problem.
 --- @param enabled boolean
 local function callDisableExports(enabled)
-    local list = Config.Dispatch and Config.Dispatch.disableExports
+    local custom = Config.Dispatch and Config.Dispatch.custom or nil
+    local list = custom and custom.disableExports
     if type(list) ~= 'table' then return end
 
     for _, entry in ipairs(list) do
@@ -98,11 +103,11 @@ local function callDisableExports(enabled)
                     exports[entry.resource][entry.export](nil, enabled)
                 end)
                 if not ok then
-                    print(('[crimson_arena] Config.Dispatch.disableExports: %s:%s failed (%s). Check that export name against that resource\'s own documentation.')
+                    print(('[crimson_arena] Config.Dispatch.custom.disableExports: %s:%s failed (%s). Check that export name against that resource\'s own documentation.')
                         :format(entry.resource, entry.export, tostring(err)))
                 end
             else
-                print(('[crimson_arena] Config.Dispatch.disableExports names "%s", which is not started. Skipping it.')
+                print(('[crimson_arena] Config.Dispatch.custom.disableExports names "%s", which is not started. Skipping it.')
                     :format(entry.resource))
             end
         end
@@ -131,24 +136,34 @@ function ArenaDispatch.Enter(matchId)
         matchId = matchId,
         wantedLevel = 0,
         touchedPolice = false,
+        touchedDispatch = false,
         touchedWanted = false,
     }
 
-    if config.suppressPoliceShotsFired ~= false and config.suppressVanillaPolice ~= false then
-        restore.touchedPolice = true
-        SetPoliceIgnorePlayer(player, true)
-        SetDispatchCopsForPlayer(player, false)
-        SetCreateRandomCops(false)
-    end
-
-    if config.stashWantedLevel ~= false then
-        restore.touchedWanted = true
-        restore.wantedLevel = GetPlayerWantedLevel(player)
-        -- Clearing without also locking the maximum lets the stars come
-        -- straight back the first time somebody fires at a passing NPC.
-        SetPlayerWantedLevel(player, 0, false)
-        SetPlayerWantedLevelNow(player, false)
-        SetMaxWantedLevel(0)
+    -- OFF unless an operator asks for it. A server running a custom dispatch
+    -- script has almost certainly disabled the vanilla wanted system already,
+    -- and plenty of custom systems drive their own logic off the native
+    -- wanted level -- pinning it to zero mid-match would fight them for it.
+    local vanilla = config.vanillaPolice or {}
+    if vanilla.enabled == true and config.suppressPoliceShotsFired ~= false then
+        if vanilla.ignorePlayer ~= false then
+            restore.touchedPolice = true
+            SetPoliceIgnorePlayer(player, true)
+        end
+        if vanilla.stopDispatch ~= false then
+            restore.touchedDispatch = true
+            SetDispatchCopsForPlayer(player, false)
+            SetCreateRandomCops(false)
+        end
+        if vanilla.stashWantedLevel ~= false then
+            restore.touchedWanted = true
+            restore.wantedLevel = GetPlayerWantedLevel(player)
+            -- Clearing without also locking the maximum lets the stars come
+            -- straight back the first time somebody fires at a passing NPC.
+            SetPlayerWantedLevel(player, 0, false)
+            SetPlayerWantedLevelNow(player, false)
+            SetMaxWantedLevel(0)
+        end
     end
 
     if config.disableHealthRecharge == true then
@@ -173,8 +188,13 @@ function ArenaDispatch.Exit()
     -- an inactive state rather than being refused by the guard in Enter.
     restore = nil
 
+    -- Each undone only if it was done. Restoring a native this resource never
+    -- touched would stamp on whatever the server's own scripts had set.
     if previous.touchedPolice then
         SetPoliceIgnorePlayer(player, false)
+    end
+
+    if previous.touchedDispatch then
         SetDispatchCopsForPlayer(player, true)
         SetCreateRandomCops(true)
     end

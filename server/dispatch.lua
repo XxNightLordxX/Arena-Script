@@ -12,8 +12,17 @@
     ignore them shooting up a bank. Only the server knows who is genuinely
     in a match, so only the server writes it.
 
-    TWO FORMS OF THE SAME FACT, because different scripts want it different
-    ways and neither is more correct:
+    THREE FORMS OF THE SAME FACT, because dispatch scripts are written
+    differently and none of these is more correct than the others:
+
+      EVENTS -- this resource tells you, so you can keep your own ignore
+      list without polling anything:
+          AddEventHandler('crimson_arena:dispatch:enter', function(src, matchId) ... end)
+          AddEventHandler('crimson_arena:dispatch:exit',  function(src, matchId) ... end)
+      Names are Config.Dispatch.custom.enterEvent / exitEvent, and either can
+      be set to nil to fire nothing. Both are SERVER events and are never
+      sent to a client.
+
 
       STATE BAG -- replicated, readable from both realms with no call:
           -- server
@@ -45,10 +54,35 @@ ArenaDispatch = {}
 --- @type table<number, string>
 local active = {}
 
+--- @return table
+local function customConfig()
+    return (Config.Dispatch and Config.Dispatch.custom) or {}
+end
+
 --- @return string
 local function stateKey()
-    local key = Config.Dispatch and Config.Dispatch.stateBagKey
+    local key = customConfig().stateBagKey
     return type(key) == 'string' and key ~= '' and key or 'crimsonArena'
+end
+
+--- Fires one of the two announcement events, if the operator has named it.
+---
+--- SERVER events, never sent to a client: "who may be ignored by dispatch"
+--- is not a decision a client gets a say in, and an event carrying that fact
+--- to every player would be handing them the answer.
+--- @param eventName any -- whatever the operator put in config; validated here
+--- @param src number
+--- @param matchId string
+local function announce(eventName, src, matchId)
+    if type(eventName) ~= 'string' or eventName == '' then return end
+
+    -- pcall because this crosses into somebody else's handler: a dispatch
+    -- script that throws must not take a match start or a match end down
+    -- with it.
+    local ok, err = pcall(TriggerEvent, eventName, src, matchId)
+    if not ok then
+        ArenaLog('a handler for "%s" errored: %s', eventName, tostring(err))
+    end
 end
 
 -- ======================================================================
@@ -67,6 +101,7 @@ function ArenaDispatch.Set(src, matchId)
 
     active[src] = matchId
     Player(src).state:set(stateKey(), { active = true, matchId = matchId }, true)
+    announce(customConfig().enterEvent, src, matchId)
 end
 
 --- Clears the flag. Deliberately unconditional and idempotent: it is called
@@ -79,7 +114,14 @@ end
 function ArenaDispatch.Clear(src)
     if type(src) ~= 'number' or src <= 0 then return end
 
+    local matchId = active[src]
     active[src] = nil
+
+    -- Announced even when nothing was set, so a dispatch script that missed
+    -- the enter -- it restarted, it was not running yet -- still gets told to
+    -- drop this player rather than keeping them ignored forever. A clear for
+    -- somebody who was never flagged is a harmless no-op on its side.
+    announce(customConfig().exitEvent, src, matchId)
 
     -- Guarded because a player who has already dropped has no state bag to
     -- write to, and the disconnect path reaches here after they are gone.
@@ -119,6 +161,33 @@ end
 exports('IsPlayerInArena', function(src) return ArenaDispatch.IsPlayerInArena(src) end)
 exports('GetPlayerMatchId', function(src) return ArenaDispatch.GetPlayerMatchId(src) end)
 exports('GetArenaPlayers', function() return ArenaDispatch.GetArenaPlayers() end)
+
+-- A dispatch script that restarts mid-round comes back with an empty ignore
+-- list and starts alerting on a fight already in progress. Operators name
+-- those resources in Config.Dispatch.custom.resyncResources and every player
+-- currently in an arena is re-announced the moment one comes back up.
+AddEventHandler('onResourceStart', function(resource)
+    if resource == GetCurrentResourceName() then return end
+
+    local watched = customConfig().resyncResources
+    if type(watched) ~= 'table' then return end
+
+    local wanted = false
+    for _, name in ipairs(watched) do
+        if name == resource then wanted = true break end
+    end
+    if not wanted then return end
+
+    local count = 0
+    for src, matchId in pairs(active) do
+        announce(customConfig().enterEvent, src, matchId)
+        count = count + 1
+    end
+
+    if count > 0 then
+        ArenaLog('%s restarted -- re-announced %d player(s) still in an arena.', resource, count)
+    end
+end)
 
 -- Nothing is left flagged when this resource goes away. A dispatch script
 -- that outlives a restart would otherwise keep reading a stale bag and keep

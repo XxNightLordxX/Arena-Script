@@ -16,7 +16,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 **Staying out of everyone else's way**
 
-- Police and EMS are kept out of the arena — `Config.Dispatch`. The game's own police response is silenced for the length of a match and restored afterwards, and an arena death never registers long enough for a medical script's polling loop to page an ambulance. Alerts sent by a third-party dispatch resource need one line in that resource; the arena publishes a server-written state bag and exports for it. Both switches on by default. See [Keeping police and EMS out of the arena](#keeping-police-and-ems-out-of-the-arena).
+- Police and EMS are kept out of the arena — `Config.Dispatch`, built for a custom dispatch script rather than GTA's five-star system. An arena death never registers long enough for a medical script's polling loop to page an ambulance, which needs nothing from anyone. Alerts your own dispatch script sends need one line in that script, and there are three ways to write it: entry/exit events it can listen to, a server-written state bag it can read, or its own ignore export for this resource to call. Both switches on by default; the vanilla wanted-system handling ships off. See [Keeping police and EMS out of the arena](#keeping-police-and-ems-out-of-the-arena).
 
 **The panel**
 
@@ -243,9 +243,9 @@ The one place zero means *now* rather than *never* is `Config.Betting.spectatorB
 
 ### Keeping police and EMS out of the arena
 
-An arena is a place where people shoot each other on purpose. Left alone, every round pages the police for shots fired and every death pages EMS for a person down, and your emergency services spend the evening driving to a fight nobody wants them at.
+An arena is a place where people shoot each other on purpose. Left alone, every round calls the police for shots fired and every death calls EMS for a person down, and your emergency services spend the evening driving to a fight nobody wants them at.
 
-`Config.Dispatch` deals with this. Both switches are on by default:
+`Config.Dispatch` deals with this, and it is built for a **custom dispatch script** rather than GTA's five-star wanted system. Both switches are on by default:
 
 ```lua
 Config.Dispatch = {
@@ -255,43 +255,66 @@ Config.Dispatch = {
 }
 ```
 
-Be clear about what a resource can and cannot do here, because the difference matters when you are debugging it.
+**Start here: the one thing no resource can do.** Your dispatch script decides to send an alert inside its own event handlers. Nothing in FiveM can reach into another resource and cancel that — not this script, and not any script claiming otherwise. So the job is to hand your dispatch script the facts it needs to decline. There are three ways to read the same fact, all live at once. Use whichever is least work in the script you are editing.
 
-**What works with no cooperation from anything else.** Two of the three problems are entirely inside this resource's reach, and both are handled out of the box:
-
-- *The game's own police.* GTA dispatches NPC cops at gunfire by itself, with no script involved. While a player is in a match they are ignored by police, no cops are dispatched for them, and their wanted level is pinned at zero. All of it is undone on the way out — a player who walks into the arena with two stars walks back out with two stars. That is deliberate: an arena is not an amnesty.
-- *A medical script spotting a dead player.* Almost every one of them finds casualties by polling "is this player dead", somewhere between twice a second and once a second. `clearDeadStateImmediately` puts an arena casualty back on their feet in the same instant they go down — held frozen, invisible and untouchable until the server says whether they respawn or are out — so that poll never catches one. The player notices no difference; they were being held in place either way.
-
-**What needs one line from your dispatch script.** An alert sent by ps-dispatch, cd_dispatch, qs-dispatch, linden_outlawalert, rcore_dispatch, or the distress signal qbx_ambulancejob raises itself, is that resource's decision inside its own event handlers. No FiveM resource can reach into another one and cancel that, and any script claiming otherwise is doing something you would rather it did not.
-
-So this resource publishes the fact that a player is mid-match, and you add the check. Two forms of the same fact — use whichever suits the script you are editing:
+**Form 1 — this resource tells you.** Server events fired when a player is put into an arena and when they leave, so your script keeps its own ignore list without polling anything:
 
 ```lua
--- Server, about anybody
-if Player(src).state.crimsonArena then return end
+AddEventHandler('crimson_arena:dispatch:enter', function(src, matchId)
+    MyDispatch.Ignore[src] = true
+end)
 
--- Client, about yourself
-if LocalPlayer.state.crimsonArena then return end
-
--- Or as a call
-if exports.crimson_arena:IsPlayerInArena(src) then return end
+AddEventHandler('crimson_arena:dispatch:exit', function(src, matchId)
+    MyDispatch.Ignore[src] = nil
+end)
 ```
 
-Drop that at the top of whatever function sends the alert. Rename the key with `Config.Dispatch.stateBagKey` if `crimsonArena` collides with something you already use.
+Both are **server** events and are never sent to a client — who may be ignored by dispatch is not a decision a client gets a say in. Rename them with `custom.enterEvent` / `custom.exitEvent`, or set either to `nil` to fire nothing.
 
-**The state bag is written by the server, never the client.** That is a security decision rather than a structural one: a replicated bag set from the client can be set by *any* client, so a player who has never been near the arena could pin the flag on themselves and have your dispatch script politely ignore them robbing a bank. Only the server knows who is genuinely in a match, so only the server writes it. The flag goes up when a player is placed in the arena — not when they join the lobby, because somebody sitting in a menu choosing a rifle is not in a fight.
+If your dispatch script restarts mid-round it comes back with an empty ignore list and starts alerting on a fight already in progress. Name it in `custom.resyncResources` and every player currently in an arena is re-announced the moment it comes back up:
 
-**If your dispatch script has its own mute export**, name it and this resource will call it with `true` on entry and `false` on exit:
+```lua
+resyncResources = { 'my_dispatch' },
+```
+
+**Form 2 — you read a flag.** A replicated state bag, readable from either realm with no call and no event:
+
+```lua
+if Player(src).state.crimsonArena then return end     -- server
+if LocalPlayer.state.crimsonArena then return end     -- client
+```
+
+Drop that at the top of whatever sends the alert. Rename the key with `custom.stateBagKey` if `crimsonArena` collides with something you already use.
+
+**Form 3 — this resource calls you.** If your script already has its own ignore or disable export, name it and it is called with `true` on entry and `false` on exit:
 
 ```lua
 disableExports = {
-    { resource = 'ps-dispatch', export = 'SetIgnoredPlayer' },
+    { resource = 'my_dispatch', export = 'SetIgnoredPlayer' },
 },
 ```
 
-Nothing ships enabled there, because calling an export that means something different on your build is worse than not calling it. Check that script's own documentation first. An entry naming a resource that is not running, or an export that does not exist, is skipped with one console warning — it will not error and it will not stop a match starting.
+Nothing ships enabled there, because calling an export that means something different on your build is worse than not calling it. An entry naming a resource that is not running, or an export that does not exist, is skipped with one console warning — it will not error and it will not stop a match starting.
 
-**The honest limit.** A resource that hooks the death *event* rather than polling the death *state* still fires, because the player really did die. For those, the state bag is the answer and `clearDeadStateImmediately` is not.
+There are also exports, for a script that would rather ask than listen — see [Exports](#exports).
+
+**The state bag is written by the server, never the client.** That is a security decision rather than a tidy one: a replicated bag set from a client can be set by *any* client, so a player who had never been near the arena could pin the flag on themselves and have your dispatch script politely ignore them robbing a bank. The flag goes up when a player is placed in the arena, not when they join the lobby — somebody sitting in a menu choosing a rifle is not in a fight.
+
+#### The person-down alert, stopped at source
+
+This one needs nothing from anybody, and it is on by default.
+
+Most medical scripts spot a casualty by watching whether a player is dead, on a loop running somewhere between twice a second and once a second. With `clearDeadStateImmediately`, an arena death is reported to the server and the body is put back on its feet in the same instant — frozen, invisible and untouchable until the server says whether they respawn or are out. That loop never sees a dead player to report. It also makes respawning feel sharper, which is why it is on even for servers with no medical script at all.
+
+**The honest limit:** a script that hooks the death *event* rather than polling the death *state* still fires, because the player really did die. Use Form 1 or Form 2 above for those. This is not a substitute for them.
+
+#### GTA's own five-star system
+
+`Config.Dispatch.vanillaPolice.enabled` ships **false**, on purpose.
+
+If you run a custom dispatch script you have almost certainly disabled the vanilla wanted system server-wide already, and touching these natives on top of that ranges from pointless to actively harmful — plenty of custom systems drive their own logic off the native wanted level, and pinning it to zero mid-match would fight them for it.
+
+Turn it on only if NPC police still respond to gunfire on your server. It stops NPC cops being dispatched, stops them reacting to the player, and pins the wanted level at zero for the match. Everything it changes is restored on the way out, wanted stars included — walking into an arena is not an amnesty.
 
 ---
 

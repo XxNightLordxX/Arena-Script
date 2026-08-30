@@ -739,95 +739,153 @@ Config.Webhook = {
 -- ======================================================================
 -- DISPATCH SUPPRESSION
 --
--- An arena is a place where people shoot each other on purpose. Without
--- this block, every round pages the police for shots fired and every death
--- pages EMS for a person down, and your emergency services spend the
--- evening driving to a fight nobody wants them at.
+-- An arena is a place where people shoot each other on purpose. Left alone,
+-- every round calls the police for shots fired and every death calls EMS for
+-- a person down, and your emergency services spend the evening driving to a
+-- fight nobody wants them at.
 --
--- WHAT THIS RESOURCE CAN DO ON ITS OWN, with no cooperation from anything
--- else: silence the game's own police response, and stop a player ever
--- being registered as dead long enough for a medical script's polling loop
--- to notice. Both are on below and both work out of the box.
+-- THIS BLOCK IS BUILT FOR A CUSTOM DISPATCH SCRIPT, not for GTA's own
+-- five-star wanted system. Almost every serious RP server has the vanilla
+-- system switched off entirely and runs its own alerts, so that is the case
+-- treated as normal here: `Config.Dispatch.custom` below is the real
+-- integration, and the vanilla block further down ships DISABLED for servers
+-- that still use it.
 --
--- WHAT NEEDS ONE LINE FROM YOUR DISPATCH SCRIPT: alerts sent by a third-
--- party resource (ps-dispatch, cd_dispatch, qs-dispatch, linden_outlawalert,
--- rcore_dispatch, and the alert qbx_ambulancejob raises itself) are that
--- resource's to send or not send. No script can reach inside another one
--- and cancel its events. So this resource publishes the fact that a player
--- is mid-match, in two forms any of them can read, and the README shows the
--- exact line to add. See `stateBagKey` and `disableExports` below.
+-- THE ONE THING NO RESOURCE CAN DO. Your dispatch script decides to send an
+-- alert inside its own event handlers. Nothing in FiveM can reach into
+-- another resource and cancel that -- not this script, not any script that
+-- claims otherwise. So the job here is to hand your dispatch script the
+-- facts it needs to decline, in whichever of the three forms suits how it is
+-- written. All three are live at once; use whichever is least work.
 -- ======================================================================
 Config.Dispatch = {
     -- The two switches you actually came here for. Both only ever apply to
-    -- players who are IN a match -- nothing this block does follows anyone
-    -- back out to the rest of the map.
+    -- players who are IN a match -- nothing here follows anyone back out.
     suppressPoliceShotsFired = true,
     suppressAmbulanceDown = true,
 
-    -- THE GAME'S OWN POLICE. Fully handled here: NPC cops stop being
-    -- dispatched and stop reacting to the player at all for the length of
-    -- the match. Restored on the way out, so a player who walks into the
-    -- arena wanted walks back out wanted.
-    suppressVanillaPolice = true,
-
-    -- Wanted stars a player brought in with them are stashed on entry and
-    -- handed back on exit. Without this, a two-star chase that walks into
-    -- the arena keeps NPC police piling into the middle of a match.
-    stashWantedLevel = true,
-
-    -- THE INTEGRATION POINT, and the thing to point your dispatch script at.
-    -- While a player is in a match this resource sets a REPLICATED state bag
-    -- on them, readable from any resource on either side:
+    -- ==================================================================
+    -- YOUR DISPATCH SCRIPT
     --
-    --     -- client, about yourself
-    --     if LocalPlayer.state.crimsonArena then return end
-    --
-    --     -- server, about anyone
-    --     if Player(src).state.crimsonArena then return end
-    --
-    -- The value is a table -- { active = true, matchId = '...' } -- so it is
-    -- truthy while in a match and nil otherwise. Rename the key here if it
-    -- collides with something you already use.
-    stateBagKey = 'crimsonArena',
+    -- Three ways to read the same fact. Pick one; the others cost nothing.
+    -- ==================================================================
+    custom = {
+        -- ---- FORM 1: this resource tells you -----------------------------
+        -- Server events fired when a player is put into an arena and when
+        -- they leave it, so your script can keep its own ignore list without
+        -- polling anything.
+        --
+        --     AddEventHandler('crimson_arena:dispatch:enter', function(src, matchId)
+        --         MyDispatch.Ignore[src] = true
+        --     end)
+        --     AddEventHandler('crimson_arena:dispatch:exit', function(src, matchId)
+        --         MyDispatch.Ignore[src] = nil
+        --     end)
+        --
+        -- Both are SERVER events -- they are not sent to any client, because
+        -- "who is allowed to be ignored" is not a decision a client gets to
+        -- take part in. Set either to nil to fire nothing.
+        enterEvent = 'crimson_arena:dispatch:enter',
+        exitEvent = 'crimson_arena:dispatch:exit',
 
-    -- Same fact, as exports, for scripts that would rather call than read:
+        -- Your dispatch script restarting mid-round would otherwise lose its
+        -- ignore list and start alerting on a fight already in progress.
+        -- Name it here and this resource re-fires `enterEvent` for everyone
+        -- currently in an arena as soon as it comes back up.
+        -- Add every resource that keeps its own copy of that list.
+        resyncResources = {},
+
+        -- ---- FORM 2: you read a flag -------------------------------------
+        -- A replicated state bag, readable from either realm with no call
+        -- and no event:
+        --
+        --     if Player(src).state.crimsonArena then return end        -- server
+        --     if LocalPlayer.state.crimsonArena then return end        -- client
+        --
+        -- The value is a table -- { active = true, matchId = '...' } -- so it
+        -- is truthy in a match and nil otherwise. Rename the key if it
+        -- collides with something you already use.
+        --
+        -- IT IS WRITTEN BY THE SERVER, NEVER THE CLIENT, and that is a
+        -- security decision rather than a tidy one: a replicated bag set from
+        -- a client can be set by ANY client, so a player who has never been
+        -- near the arena could pin the flag on themselves and have your
+        -- dispatch script politely ignore them robbing a bank.
+        stateBagKey = 'crimsonArena',
+
+        -- ---- FORM 3: this resource calls you -----------------------------
+        -- If your script already has its own "ignore this player" or
+        -- "disable" export, name it and it will be called with `true` when a
+        -- player enters and `false` when they leave.
+        --
+        --     disableExports = {
+        --         { resource = 'my_dispatch', export = 'SetIgnoredPlayer' },
+        --     },
+        --
+        -- Nothing ships enabled, because calling an export that means
+        -- something different on your build is worse than not calling it. An
+        -- entry naming a resource that is not running, or an export that does
+        -- not exist, is skipped with one console warning -- it will not error
+        -- and it will not stop a match starting.
+        disableExports = {},
+    },
+
+    -- There are exports too, for a script that would rather ask than listen:
     --     exports.crimson_arena:IsPlayerInArena(src)     -- server
+    --     exports.crimson_arena:GetPlayerMatchId(src)    -- server
+    --     exports.crimson_arena:GetArenaPlayers()        -- server
     --     exports.crimson_arena:IsInArena()              -- client
-    -- Those exist whether or not this block is switched on -- they report
-    -- the truth, they do not enforce anything.
+    -- Those exist whether or not anything here is switched on. They report;
+    -- they do not enforce.
 
-    -- RESOURCES TO MUTE DIRECTLY. Some dispatch scripts ship their own
-    -- "ignore this player" or "disable" export. If yours does, name it here
-    -- and this resource calls it with `true` on entry and `false` on exit.
-    -- An entry naming a resource that is not running, or an export that does
-    -- not exist, is skipped with one console warning -- it will not error
-    -- and it will not stop the match starting.
+    -- ==================================================================
+    -- GTA'S OWN FIVE-STAR WANTED SYSTEM
     --
-    -- Nothing ships enabled here, because calling an export that means
-    -- something different on your build is worse than not calling it. Check
-    -- your dispatch script's own documentation, then add it:
+    -- OFF, deliberately. If you run a custom dispatch script you have almost
+    -- certainly disabled the vanilla wanted system server-wide already, and
+    -- touching these natives on top of that ranges from pointless to
+    -- actively harmful -- plenty of custom systems drive their own logic off
+    -- the native wanted level, and pinning it to zero mid-match would fight
+    -- them for it.
     --
-    --     { resource = 'ps-dispatch', export = 'SetIgnoredPlayer' },
-    --
-    disableExports = {},
+    -- Turn this on ONLY if NPC police still respond to gunfire on your
+    -- server. Everything it changes is restored on the way out, wanted stars
+    -- included: walking into an arena is not an amnesty.
+    -- ==================================================================
+    vanillaPolice = {
+        enabled = false,
 
-    -- STOPPING THE "PERSON DOWN" ALERT AT SOURCE. Most medical scripts spot
-    -- a casualty by watching whether the player is dead, on a loop that runs
+        -- Stop NPC police reacting to this player at all.
+        ignorePlayer = true,
+        -- Stop the game dispatching units for them.
+        stopDispatch = true,
+        -- Stash the stars they walked in with, pin them at zero for the
+        -- match, and hand them back on the way out. Without the pin, stars
+        -- come straight back the first time somebody shoots near an NPC.
+        stashWantedLevel = true,
+    },
+
+    -- ==================================================================
+    -- THE "PERSON DOWN" ALERT, STOPPED AT SOURCE
+    --
+    -- This one needs nothing from anybody. Most medical scripts spot a
+    -- casualty by watching whether a player is dead, on a loop that runs
     -- somewhere between twice a second and once a second. With this on, an
-    -- arena death is reported to the server and then the body is put back on
-    -- its feet in the same instant -- frozen, invisible and untouchable
-    -- until the server says whether they respawn or are out -- so that loop
-    -- never sees a dead player to report.
+    -- arena death is reported to the server and the body is put back on its
+    -- feet in the same instant -- frozen, invisible and untouchable until
+    -- the server says whether they respawn or are out -- so that loop never
+    -- sees a dead player to report.
     --
     -- It also makes respawning feel sharper, which is why it is on even for
     -- servers with no medical script at all.
     --
-    -- THE HONEST LIMIT: a resource that hooks the death EVENT rather than
-    -- polling for the death STATE still fires, because the player really did
-    -- die. For those, the state bag above is the answer, not this.
+    -- THE HONEST LIMIT: a script that hooks the death EVENT rather than
+    -- polling the death STATE still fires, because the player really did
+    -- die. For those, use `custom` above. This is not a substitute for it.
+    -- ==================================================================
     clearDeadStateImmediately = true,
 
-    -- Belt and braces for the same problem: keep the player out of the
-    -- game's own "injured" handling for the length of the match.
+    -- Keep the player out of the game's own injured/recovery handling for
+    -- the length of the match.
     disableHealthRecharge = true,
 }

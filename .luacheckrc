@@ -282,6 +282,11 @@ files['server/'] = {
         -- client.
         'Player',
 
+        -- server/dispatch.lua announces arena entry and exit on an
+        -- operator-named SERVER event, so a custom dispatch script can keep
+        -- its own ignore list.
+        'TriggerEvent',
+
         -- ox_lib and its locale loader. `cache` and `QBX` complete the
         -- ox_lib / qbx_core surface and are allowed ahead of use for the same
         -- reason they are on the client side.

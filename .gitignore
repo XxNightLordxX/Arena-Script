@@ -1,0 +1,14 @@
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Lua build output
+*.luac
+luac.out
+
+# Local operator overrides -- never commit a live server's real config
+config.local.lua

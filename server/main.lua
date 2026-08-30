@@ -363,6 +363,12 @@ AddEventHandler('playerDropped', function()
     ArenaLobby.RemoveSpectator(src)
     ArenaLobby.MarkPanelClosed(src)
 
+    -- detach() routes a live-match disconnect through the normal exit, which
+    -- clears the flag. This catches the rest: a player who dropped between
+    -- being placed in the arena and the match registering it, and any future
+    -- path that forgets. Clearing a flag that was never set costs nothing.
+    ArenaDispatch.Clear(src)
+
     -- Last, and always: the rate-limit history is keyed by source and
     -- nothing else drops it, so skipping this leaks a table per player who
     -- has ever connected.

@@ -357,6 +357,22 @@ end
 --- @param match table
 --- @param event string
 --- @param payload table
+--- The ONE way anybody is told to leave the arena.
+---
+--- Every exit path in this file routes through here specifically so the
+--- dispatch flag cannot be left set: there are five separate places a
+--- player can be sent home from -- winning, watching someone else win, an
+--- abort, an admin stop, walking out mid-round -- and a flag that survives
+--- any one of them would suppress that player's police and medical alerts
+--- for the rest of their session. One choke point, rather than five call
+--- sites and the hope that a sixth remembers.
+--- @param src number
+--- @param payload table
+local function sendExitArena(src, payload)
+    ArenaDispatch.Clear(src)
+    TriggerClientEvent('crimson_arena:client:exitArena', src, payload)
+end
+
 local function pushToMatch(match, event, payload)
     for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
         TriggerClientEvent(event, player.src, payload)
@@ -427,6 +443,12 @@ end
 --- @param freezeSeconds integer
 local function sendEnterArena(match, player, index, arena, freezeSeconds)
     local teamKey = teamOf(match, player)
+
+    -- Set here rather than at join: somebody sitting in a lobby menu picking
+    -- a rifle is not in a fight, and suppressing their alerts while they
+    -- stand in the middle of town would be a hole, not a feature.
+    ArenaDispatch.Set(player.src, match.id)
+
     TriggerClientEvent('crimson_arena:client:enterArena', player.src, {
         matchId = match.id,
         arenaKey = match.arenaKey,
@@ -873,7 +895,7 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             ArenaNotifyKey(player.src, endReason, 'info')
         end
 
-        TriggerClientEvent('crimson_arena:client:exitArena', player.src, {
+        sendExitArena(player.src, {
             returnCoords = returnCoords,
             results = {
                 matchId = match.id,
@@ -892,7 +914,7 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     -- arena, so they win nothing and are owed nothing.
     for src in pairs(match.spectators or {}) do
         if not match.players[src] then
-            TriggerClientEvent('crimson_arena:client:exitArena', src, {
+            sendExitArena(src, {
                 returnCoords = returnCoords,
                 results = { matchId = match.id, reason = endReason, won = false, earnings = 0, scoreboard = board },
             })
@@ -939,7 +961,16 @@ function ArenaMatch.Abort(matchId, reasonKey)
     for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
         ArenaNotifyKey(player.src, reason, 'warning')
     end
-    pushToMatch(match, 'crimson_arena:client:exitArena', { returnCoords = returnCoords })
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        sendExitArena(player.src, { returnCoords = returnCoords })
+    end
+    for src in pairs(match.spectators or {}) do
+        -- Same double-send guard pushToMatch applies: an eliminated fighter
+        -- who stayed to watch sits in both tables.
+        if not match.players[src] then
+            sendExitArena(src, { returnCoords = returnCoords })
+        end
+    end
 
     ArenaBetting.RefundAll(match.id, reason)
     ArenaBetting.SettleSpectatorBets(match.id, nil)
@@ -979,7 +1010,7 @@ function ArenaMatch.RemovePlayer(src, reasonKey)
         -- Placed on the way out so the results board can still rank them
         -- rather than leaving a hole where they were.
         if not player.placement then player.placement = placementFor(match) end
-        TriggerClientEvent('crimson_arena:client:exitArena', id, {
+        sendExitArena(id, {
             returnCoords = toPoint(Config.Lobby.returnCoords),
         })
     end

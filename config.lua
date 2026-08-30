@@ -735,3 +735,99 @@ Config.Webhook = {
     logResults = true,
     logPayouts = true,
 }
+
+-- ======================================================================
+-- DISPATCH SUPPRESSION
+--
+-- An arena is a place where people shoot each other on purpose. Without
+-- this block, every round pages the police for shots fired and every death
+-- pages EMS for a person down, and your emergency services spend the
+-- evening driving to a fight nobody wants them at.
+--
+-- WHAT THIS RESOURCE CAN DO ON ITS OWN, with no cooperation from anything
+-- else: silence the game's own police response, and stop a player ever
+-- being registered as dead long enough for a medical script's polling loop
+-- to notice. Both are on below and both work out of the box.
+--
+-- WHAT NEEDS ONE LINE FROM YOUR DISPATCH SCRIPT: alerts sent by a third-
+-- party resource (ps-dispatch, cd_dispatch, qs-dispatch, linden_outlawalert,
+-- rcore_dispatch, and the alert qbx_ambulancejob raises itself) are that
+-- resource's to send or not send. No script can reach inside another one
+-- and cancel its events. So this resource publishes the fact that a player
+-- is mid-match, in two forms any of them can read, and the README shows the
+-- exact line to add. See `stateBagKey` and `disableExports` below.
+-- ======================================================================
+Config.Dispatch = {
+    -- The two switches you actually came here for. Both only ever apply to
+    -- players who are IN a match -- nothing this block does follows anyone
+    -- back out to the rest of the map.
+    suppressPoliceShotsFired = true,
+    suppressAmbulanceDown = true,
+
+    -- THE GAME'S OWN POLICE. Fully handled here: NPC cops stop being
+    -- dispatched and stop reacting to the player at all for the length of
+    -- the match. Restored on the way out, so a player who walks into the
+    -- arena wanted walks back out wanted.
+    suppressVanillaPolice = true,
+
+    -- Wanted stars a player brought in with them are stashed on entry and
+    -- handed back on exit. Without this, a two-star chase that walks into
+    -- the arena keeps NPC police piling into the middle of a match.
+    stashWantedLevel = true,
+
+    -- THE INTEGRATION POINT, and the thing to point your dispatch script at.
+    -- While a player is in a match this resource sets a REPLICATED state bag
+    -- on them, readable from any resource on either side:
+    --
+    --     -- client, about yourself
+    --     if LocalPlayer.state.crimsonArena then return end
+    --
+    --     -- server, about anyone
+    --     if Player(src).state.crimsonArena then return end
+    --
+    -- The value is a table -- { active = true, matchId = '...' } -- so it is
+    -- truthy while in a match and nil otherwise. Rename the key here if it
+    -- collides with something you already use.
+    stateBagKey = 'crimsonArena',
+
+    -- Same fact, as exports, for scripts that would rather call than read:
+    --     exports.crimson_arena:IsPlayerInArena(src)     -- server
+    --     exports.crimson_arena:IsInArena()              -- client
+    -- Those exist whether or not this block is switched on -- they report
+    -- the truth, they do not enforce anything.
+
+    -- RESOURCES TO MUTE DIRECTLY. Some dispatch scripts ship their own
+    -- "ignore this player" or "disable" export. If yours does, name it here
+    -- and this resource calls it with `true` on entry and `false` on exit.
+    -- An entry naming a resource that is not running, or an export that does
+    -- not exist, is skipped with one console warning -- it will not error
+    -- and it will not stop the match starting.
+    --
+    -- Nothing ships enabled here, because calling an export that means
+    -- something different on your build is worse than not calling it. Check
+    -- your dispatch script's own documentation, then add it:
+    --
+    --     { resource = 'ps-dispatch', export = 'SetIgnoredPlayer' },
+    --
+    disableExports = {},
+
+    -- STOPPING THE "PERSON DOWN" ALERT AT SOURCE. Most medical scripts spot
+    -- a casualty by watching whether the player is dead, on a loop that runs
+    -- somewhere between twice a second and once a second. With this on, an
+    -- arena death is reported to the server and then the body is put back on
+    -- its feet in the same instant -- frozen, invisible and untouchable
+    -- until the server says whether they respawn or are out -- so that loop
+    -- never sees a dead player to report.
+    --
+    -- It also makes respawning feel sharper, which is why it is on even for
+    -- servers with no medical script at all.
+    --
+    -- THE HONEST LIMIT: a resource that hooks the death EVENT rather than
+    -- polling for the death STATE still fires, because the player really did
+    -- die. For those, the state bag above is the answer, not this.
+    clearDeadStateImmediately = true,
+
+    -- Belt and braces for the same problem: keep the player out of the
+    -- game's own "injured" handling for the length of the match.
+    disableHealthRecharge = true,
+}

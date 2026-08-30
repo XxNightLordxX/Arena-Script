@@ -47,12 +47,15 @@ shared_scripts {
 -- without this resource re-inventing one.
 --
 -- ORDER: ui.lua defines the NUI bridge that main.lua's ped interaction and
--- match.lua's HUD both push through, so it loads first. main.lua owns the
--- lobby and the cached server state that match.lua and spectate.lua read.
+-- match.lua's HUD both push through, so it loads first. dispatch.lua next,
+-- because match.lua calls into it on every entry, death and exit. main.lua
+-- owns the lobby and the cached server state that match.lua and
+-- spectate.lua read.
 -- ----------------------------------------------------------------------
 client_scripts {
     '@qbx_core/modules/playerdata.lua',
     'client/ui.lua',
+    'client/dispatch.lua',
     'client/main.lua',
     'client/match.lua',
     'client/spectate.lua',
@@ -61,8 +64,8 @@ client_scripts {
 -- ----------------------------------------------------------------------
 -- SERVER.
 --
--- ORDER, strictly: shared primitives (util, stats) -> betting -> lobby ->
--- match -> main. Each file calls only into globals defined by a file above
+-- ORDER, strictly: shared primitives (util, dispatch, stats) -> betting ->
+-- lobby -> match -> main. Each file calls only into globals defined by a file above
 -- it at LOAD time. The one upward call -- lobby.lua auto-starting a match
 -- through ArenaMatch.Begin -- happens at RUN time, inside an event handler,
 -- long after every file has finished loading, so it needs no existence
@@ -72,6 +75,9 @@ client_scripts {
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
     'server/util.lua',
+    -- Straight after util.lua, whose ArenaDebug it calls, and before every
+    -- file that flags a player as being in the arena.
+    'server/dispatch.lua',
     'server/stats.lua',
     'server/betting.lua',
     'server/lobby.lua',

@@ -225,6 +225,12 @@ local function startLiveThread()
                 end
 
                 TriggerServerEvent('crimson_arena:server:reportDeath', { killerServerId = killerServerId })
+
+                -- Reported first, cleared second. The server's record of the
+                -- kill must not depend on how fast this runs, and this must
+                -- run before any medical script's polling loop comes round
+                -- and finds a casualty to send an ambulance to.
+                ArenaDispatch.ClearDeadState(ped)
             end
 
             Wait(0)
@@ -284,6 +290,11 @@ local function leaveArena(returnCoords)
 
     if ArenaSpectate then ArenaSpectate.Stop() end
 
+    -- Police, wanted level and the arena flag all go back to what they were
+    -- before this player walked in. Safe to call when nothing was ever
+    -- suppressed, which is why it sits on the single shared exit path.
+    ArenaDispatch.Exit()
+
     ClearOverrideWeather()
     NetworkClearClockTimeOverride()
 
@@ -294,6 +305,12 @@ local function leaveArena(returnCoords)
         NetworkResurrectLocalPlayer(coords.x, coords.y, coords.z, coords.w or 0.0, true, false)
         ped = PlayerPedId()
     end
+
+    -- Unconditional: an eliminated player is still inside ClearDeadState's
+    -- hold at this point, and nobody may be teleported back to the lobby
+    -- invisible, invincible or without collision. Idempotent for everyone
+    -- else.
+    ArenaDispatch.ReleaseDeadState(ped)
 
     stripIssuedWeapons(ped)
     restoreOwnLoadout(ped)
@@ -321,6 +338,10 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
     local token = matchToken
     local ped = PlayerPedId()
+
+    -- Before anything can make a noise. The countdown is still inside the
+    -- arena, and a shot fired during it is still a shot fired.
+    ArenaDispatch.Enter(data.matchId)
 
     FreezeEntityPosition(ped, true)
     placeAt(ped, scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius))
@@ -362,6 +383,9 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
 
     local ped = PlayerPedId()
+    -- Undoes the frozen, invisible hold ClearDeadState put them in. placeAt
+    -- below sets the position, so this only restores the ped's properties.
+    ArenaDispatch.ReleaseDeadState(ped)
     ClearPedBloodDamage(ped)
     placeAt(ped, x, y, z, heading)
     applyLoadout(ped, data.loadout)
@@ -374,7 +398,14 @@ end)
 RegisterNetEvent('crimson_arena:client:eliminated', function(data)
     if type(data) ~= 'table' then return end
 
+    -- The hold ClearDeadState put them in STAYS unless spectating is about
+    -- to replace it. When Config.Match.spectateOnElimination is off the
+    -- server sends nothing more until the match ends, so releasing here
+    -- would stand an eliminated player back up, armed, in a live round --
+    -- they were only ever inert before because they were lying dead.
+    -- leaveArena releases it on the way out, whichever path gets there.
     if data.spectate and ArenaSpectate then
+        ArenaDispatch.ReleaseDeadState(PlayerPedId())
         ArenaSpectate.Start(data.matchId)
     end
 end)

@@ -200,7 +200,11 @@ Config.Arenas = {
     ['airfield'] = {
         label = 'Sandy Shores Airfield',
         description = 'Open tarmac. Nowhere to hide, long sightlines, rifles win.',
-        enabled = true,
+        -- OFF, at the operator's request: this server fights in the sky
+        -- instead. Nothing here is deleted -- the coordinates, spawns, teams
+        -- and boundary are all intact, so switching it back on is this one
+        -- word.
+        enabled = false,
 
         -- ONE POINT AND A RADIUS. Every player lands somewhere random
         -- inside this circle, no two closer than minSeparation, and in a
@@ -275,7 +279,9 @@ Config.Arenas = {
     ['beach'] = {
         label = 'Vespucci Sands',
         description = 'Flat open sand at the waterline. No cover at all -- pure aim.',
-        enabled = true,
+        -- OFF, for the same reason as the airfield above. Intact, not
+        -- deleted.
+        enabled = false,
 
         -- ONE POINT AND A RADIUS. Every player lands somewhere random
         -- inside this circle, no two closer than minSeparation, and in a
@@ -330,6 +336,165 @@ Config.Arenas = {
             -- Twice a second rather than once, too: the damage arrives as
             -- steady pressure a player can feel and react to, instead of
             -- four big unexplained hits.
+            damagePerTick = 20,
+            tickMs = 500,
+        },
+
+        weatherOverride = nil,
+        timeOverride = nil,
+    },
+
+    -- ==================================================================
+    -- AN ARENA IN THE SKY, for a map whose ground is all spoken for.
+    --
+    -- Nothing is up here, so this arena brings its own floor: one prop
+    -- tiled into a disc, spawned when a fighter walks in and deleted when
+    -- they walk out. It costs nothing while nobody is fighting.
+    --
+    -- ONE SKY ARENA SERVES EVERY MATCH AT ONCE, and that is worth being
+    -- clear about because it looks like it should not. Every match is
+    -- fought in its own routing bucket, so two matches at these exact
+    -- coordinates cannot see, shoot or collide with each other -- they are
+    -- in different instances of the world. There is no need for a second
+    -- location, and no need to move anything when a match ends.
+    --
+    -- The floor is CLIENT-SIDE and local to each fighter: they each build
+    -- their own copy at the same coordinates, so it is solid for all of
+    -- them and invisible to everybody else on the server.
+    -- ==================================================================
+    ['skydome'] = {
+        label = 'The Skydome',
+        description = 'A platform in the clouds. Step off the edge and there is nothing under you.',
+        -- ON, and the only arena this server runs.
+        --
+        -- THE PROP MODELS BELOW ARE THE ONE THING HERE THAT CANNOT BE CHECKED
+        -- FROM OUTSIDE THE GAME. If a model is not on your build the floor
+        -- does not appear -- so the client REFUSES to place anybody into an
+        -- arena whose floor did not build, and says so in the console, rather
+        -- than dropping the round into a kilometre of air. Nobody falls; the
+        -- match simply will not start, which is the failure you want.
+        --
+        -- Fly up to the coordinates below once and look at it. What you are
+        -- checking is that the floor is solid and that `spawnArea.center.z`
+        -- is standing height on it.
+        enabled = true,
+
+        -- THE FLOOR.
+        platform = {
+            enabled = true,
+
+            -- A flat stunt-track piece, which is what these props exist for.
+            -- Any large flat prop works -- 'prop_container_01a' is a
+            -- base-game shipping container that tiles at 12.0 if you would
+            -- rather use something certain to be on every build.
+            model = 'stt_prop_stunt_track_widey',
+
+            -- How much floor one piece covers, in metres. It has to match
+            -- the prop: too big leaves seams to fall through, too small
+            -- stacks them into a flickering mess.
+            tileSize = 8.0,
+
+            -- How far the floor reaches. Inside the boundary below, so the
+            -- edge of the world is the edge of the floor rather than a
+            -- stretch of open air you can stand in while bleeding.
+            radius = 45.0,
+
+            -- Where the PIECES are created. Their walkable surface sits a
+            -- little above this depending on the model, which is why the
+            -- spawn Z below is a separate number -- fly up once, stand on
+            -- it, and read your own Z.
+            z = 1200.0,
+        },
+
+        -- SOMETHING TO GET BEHIND. Without it a flat disc is a staring
+        -- contest: everybody sees everybody from the first second and the
+        -- round is decided by who aimed first.
+        --
+        -- Positions are OFFSETS from the spawn-area centre below, so `z = 0`
+        -- is standing on the floor and a piece can be nudged a metre without
+        -- working out a world coordinate. Add, delete and move these freely
+        -- -- it is a list, and nothing else reads it.
+        --
+        -- The models here are the second thing to check in game, after the
+        -- floor. Any solid prop works; these are ordinary base-game ones.
+        cover = {
+            enabled = true,
+            pieces = {
+                -- THE OUTER RING: containers turned side-on to the middle, with
+                -- gaps between them to run through rather than a solid wall.
+                { model = 'prop_container_01a', x = 28.0, y = 0.0, z = 0.0, heading = 90.0 },
+                { model = 'prop_container_01a', x = 19.8, y = 19.8, z = 0.0, heading = 135.0 },
+                { model = 'prop_container_01a', x = 0.0, y = 28.0, z = 0.0, heading = 180.0 },
+                { model = 'prop_container_01a', x = -19.8, y = 19.8, z = 0.0, heading = 225.0 },
+                { model = 'prop_container_01a', x = -28.0, y = 0.0, z = 0.0, heading = 270.0 },
+                { model = 'prop_container_01a', x = -19.8, y = -19.8, z = 0.0, heading = 315.0 },
+                { model = 'prop_container_01a', x = -0.0, y = -28.0, z = 0.0, heading = 0.0 },
+                { model = 'prop_container_01a', x = 19.8, y = -19.8, z = 0.0, heading = 45.0 },
+
+                -- FOUR CORNERS, each a long wall and a short return. A pocket
+                -- you can hold, open from one side only.
+                { model = 'prop_container_01a', x = 11.3, y = 11.3, z = 0.0, heading = 135.0 },
+                { model = 'prop_mp_barrier_02b', x = 6.7, y = 15.9, z = 0.0, heading = 45.0 },
+                { model = 'prop_container_01a', x = -11.3, y = 11.3, z = 0.0, heading = 225.0 },
+                { model = 'prop_mp_barrier_02b', x = -15.9, y = 6.7, z = 0.0, heading = 135.0 },
+                { model = 'prop_container_01a', x = -11.3, y = -11.3, z = 0.0, heading = 315.0 },
+                { model = 'prop_mp_barrier_02b', x = -6.7, y = -15.9, z = 0.0, heading = 225.0 },
+                { model = 'prop_container_01a', x = 11.3, y = -11.3, z = 0.0, heading = 45.0 },
+                { model = 'prop_mp_barrier_02b', x = 15.9, y = -6.7, z = 0.0, heading = 315.0 },
+
+                -- THE MIDDLE: a pinwheel, so the centre can be crossed but is
+                -- never open ground.
+                { model = 'prop_mp_barrier_02b', x = 6.5, y = 0.0, z = 0.0, heading = 45.0 },
+                { model = 'prop_mp_barrier_02b', x = 0.0, y = 6.5, z = 0.0, heading = 135.0 },
+                { model = 'prop_mp_barrier_02b', x = -6.5, y = 0.0, z = 0.0, heading = 225.0 },
+                { model = 'prop_mp_barrier_02b', x = -0.0, y = -6.5, z = 0.0, heading = 315.0 },
+            },
+        },
+
+        -- THE SPAWN Z IS EXACT HERE. Without this the client asks the game
+        -- where the ground is, the game answers with the real terrain a
+        -- kilometre below, and every fighter is teleported out of the sky
+        -- the moment the round starts.
+        exactSpawnZ = true,
+
+        spawnArea = {
+            enabled = true,
+            -- The walkable surface, not the prop origin above.
+            center = vector3(1500.00, 3000.00, 1201.00),
+            radius = 35.0,
+            minSeparation = 10.0,
+            teamRadius = 16.0,
+        },
+
+        -- The fallback list, used only if spawnArea is switched off. Same
+        -- surface height.
+        spawns = {
+            vector4(1470.00, 3000.00, 1201.00, 90.0),
+            vector4(1530.00, 3000.00, 1201.00, 270.0),
+            vector4(1500.00, 3030.00, 1201.00, 180.0),
+            vector4(1500.00, 2970.00, 1201.00, 0.0),
+        },
+
+        teamSpawns = {
+            crimson = {
+                vector4(1470.00, 3000.00, 1201.00, 90.0),
+                vector4(1470.00, 3012.00, 1201.00, 90.0),
+            },
+            ash = {
+                vector4(1530.00, 3000.00, 1201.00, 270.0),
+                vector4(1530.00, 2988.00, 1201.00, 270.0),
+            },
+        },
+
+        -- A SPHERE, which is what makes the drop lethal without a single
+        -- line of falling code: step off the floor and you leave the
+        -- boundary from underneath within a second, and it bleeds you the
+        -- same way walking out of any other arena does.
+        boundary = {
+            enabled = true,
+            center = vector3(1500.00, 3000.00, 1201.00),
+            radius = 60.0,
+            warningSeconds = 5,
             damagePerTick = 20,
             tickMs = 500,
         },

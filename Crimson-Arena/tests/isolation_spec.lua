@@ -121,6 +121,10 @@ local function newFixture(dispatchConfig, world)
     })
 
     Sandbox.loadInto('../config.lua', env)
+    -- Loaded by hand here rather than through newArenaEnv, so the arenas are
+    -- switched on by hand too. Nothing in this file is about which ones an
+    -- operator ships enabled.
+    Sandbox.enableAllArenas(env)
     Sandbox.loadInto('../shared/arena.lua', env)
     if dispatchConfig ~= nil then env.Config.Dispatch = dispatchConfig end
     Sandbox.loadInto('../server/dispatch.lua', env)
@@ -743,6 +747,10 @@ local function newArena(world)
     })
 
     Sandbox.loadInto('../config.lua', env)
+    -- Loaded by hand here rather than through newArenaEnv, so the arenas are
+    -- switched on by hand too. Nothing in this file is about which ones an
+    -- operator ships enabled.
+    Sandbox.enableAllArenas(env)
     Sandbox.loadInto('../shared/arena.lua', env)
     -- No freeze and one life each: the round is live on the first pass, and
     -- one death decides it. Both are about getting to the sweep this section

@@ -208,6 +208,13 @@ files['client/'] = {
         'SetEntityHealth',
         'SetEntityInvincible',
         'SetEntityVisible',
+        -- The arena's own scenery: a floor for an arena in the sky, and
+        -- cover to fight over. Built client-side and local to each fighter,
+        -- so these are the object natives rather than the networked ones.
+        'CreateObject',
+        'DeleteObject',
+        'IsModelInCdimage',
+        'IsModelValid',
         'SetLocalPlayerVisibleLocally',
         'TaskStartScenarioInPlace',
 

@@ -832,6 +832,184 @@ function Arena.PickSpawn(arenaKey, teamKey, index)
     return list[((position - 1) % #list) + 1]
 end
 
+--- THE FLOOR AN ARENA BRINGS WITH IT.
+---
+--- An arena in the sky has nothing under it, so it carries its own surface:
+--- one prop model tiled into a disc, spawned when a fighter walks in and
+--- deleted when they walk out.
+---
+--- TILED RATHER THAN LISTED, because a hand-written list of two hundred prop
+--- coordinates is not something an operator can resize. `radius` and
+--- `tileSize` are the two numbers that describe it, and this works the rest
+--- out.
+--- @param arenaKey any
+--- @return table|nil -- { model, tileSize, radius, z }
+function Arena.GetPlatform(arenaKey)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    if type(arena) ~= 'table' then return nil end
+
+    local platform = arena.platform
+    if type(platform) ~= 'table' or platform.enabled == false then return nil end
+    if not Arena.IsKey(platform.model) then return nil end
+
+    local tileSize = tonumber(platform.tileSize) or 0
+    local radius = tonumber(platform.radius) or 0
+    if tileSize <= 0 or radius <= 0 then return nil end
+
+    return {
+        model = platform.model,
+        tileSize = tileSize,
+        radius = radius,
+        z = tonumber(platform.z) or 0.0,
+    }
+end
+
+--- Every point one platform's pieces go, worked out from its two numbers.
+---
+--- A DISC, not a square: the boundary is a sphere and a square floor would
+--- put its corners outside it, so a fighter standing in one would be bleeding
+--- while still on solid ground.
+--- @param platform table -- Arena.GetPlatform output
+--- @return table[] -- { { x, y, z }, ... }, relative to the centre given
+function Arena.PlatformTiles(platform, centreX, centreY)
+    if type(platform) ~= 'table' then return {} end
+
+    local out = {}
+    local step = platform.tileSize
+    local reach = platform.radius
+    -- The half-tile inset keeps a piece's OUTER edge on the radius rather
+    -- than its centre, so the floor really is as wide as it says.
+    local limit = math.max(0.0, reach - (step * 0.5))
+
+    local steps = math.floor(limit / step)
+    for ix = -steps, steps do
+        for iy = -steps, steps do
+            local x, y = ix * step, iy * step
+            if math.sqrt(x * x + y * y) <= limit then
+                out[#out + 1] = { x = centreX + x, y = centreY + y, z = platform.z }
+            end
+        end
+    end
+    return out
+end
+
+--- THE COVER AN ARENA BRINGS WITH IT: barriers, blocks, crates.
+---
+--- A plain list rather than anything generated, because cover is the one
+--- part of an arena that is a design decision. Where a barrier goes decides
+--- how the ground is fought over, and no formula knows that -- so this is
+--- laid out by hand and moved by hand.
+---
+--- Positions are OFFSETS from the arena's spawn-area centre, so `z = 0` is
+--- standing on the floor and a piece can be nudged without recomputing a
+--- world coordinate.
+--- @param arenaKey any
+--- @return table[] -- { { model, x, y, z, heading }, ... }, offsets
+function Arena.GetCover(arenaKey)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    if type(arena) ~= 'table' then return {} end
+
+    local cover = arena.cover
+    if type(cover) ~= 'table' or cover.enabled == false then return {} end
+
+    local out = {}
+    for _, piece in ipairs(cover.pieces or {}) do
+        if type(piece) == 'table' and Arena.IsKey(piece.model) then
+            out[#out + 1] = {
+                model = piece.model,
+                x = tonumber(piece.x) or 0.0,
+                y = tonumber(piece.y) or 0.0,
+                z = tonumber(piece.z) or 0.0,
+                heading = tonumber(piece.heading) or 0.0,
+            }
+        end
+    end
+    return out
+end
+
+--- EVERYTHING AN ARENA HAS TO BUILD, in world coordinates: the tiled floor
+--- and the cover on top of it, as one list.
+---
+--- One list on purpose. The client spawns these and deletes them again, and
+--- a floor that is torn down by one code path while the barriers standing on
+--- it are torn down by another is two chances to leave something behind at a
+--- thousand metres.
+--- @param arenaKey any
+--- @return table[] -- { { model, x, y, z, heading }, ... }, absolute
+function Arena.ArenaProps(arenaKey)
+    local out = {}
+
+    local area = Arena.GetSpawnArea(arenaKey)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    if type(arena) ~= 'table' then return out end
+
+    -- The centre everything is measured from. The spawn area when there is
+    -- one, the boundary otherwise -- an arena can define cover without
+    -- scattering its spawns.
+    local centre = area
+    if not centre then
+        local boundary = type(arena.boundary) == 'table' and arena.boundary.center or nil
+        if type(boundary) ~= 'table' and type(boundary) ~= 'userdata' then return out end
+        centre = { x = tonumber(boundary.x) or 0.0, y = tonumber(boundary.y) or 0.0,
+                   z = tonumber(boundary.z) or 0.0 }
+    end
+
+    local platform = Arena.GetPlatform(arenaKey)
+    if platform then
+        for _, tile in ipairs(Arena.PlatformTiles(platform, centre.x, centre.y)) do
+            out[#out + 1] = {
+                model = platform.model,
+                x = tile.x, y = tile.y, z = tile.z,
+                heading = 0.0,
+            }
+        end
+    end
+
+    for _, piece in ipairs(Arena.GetCover(arenaKey)) do
+        out[#out + 1] = {
+            model = piece.model,
+            x = centre.x + piece.x,
+            y = centre.y + piece.y,
+            z = centre.z + piece.z,
+            heading = piece.heading,
+        }
+    end
+
+    return out
+end
+
+--- The lowest Z a fighter may legitimately be placed at in this arena, or
+--- nil where the ground answers that question.
+---
+--- FOR AN ARENA THAT CARRIES ITS OWN FLOOR. There is nothing under it but a
+--- kilometre of air, so a spawn Z below the floor is not a near miss -- it is
+--- a fighter placed underneath the arena, falling, with the boundary killing
+--- them a second later and no way to tell why. That is a typo an operator
+--- makes once and cannot diagnose, so it is caught rather than trusted.
+--- @param arenaKey any
+--- @return number|nil
+function Arena.SpawnFloor(arenaKey)
+    local platform = Arena.GetPlatform(arenaKey)
+    if not platform then return nil end
+    return platform.z
+end
+
+--- Whether an arena's spawn Z is exact, rather than a hint to search from.
+---
+--- THE ONE THING THAT WOULD SILENTLY BREAK AN ARENA IN THE SKY. The client
+--- places a fighter by asking GetGroundZFor_3dCoord, which searches DOWNWARD
+--- for terrain -- so a spawn a kilometre up finds the real map far below,
+--- reports success, and teleports every fighter out of the arena onto the
+--- ground. Nothing about that reads as an error at either end.
+---
+--- With this on, the configured Z is used exactly and no search is made.
+--- @param arenaKey any
+--- @return boolean
+function Arena.UsesExactSpawnZ(arenaKey)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    return type(arena) == 'table' and arena.exactSpawnZ == true
+end
+
 --- The spawn AREA an arena defines, if it defines one.
 ---
 --- `spawns` is a list of exact points; `spawnArea` is one point and a radius,
@@ -990,7 +1168,18 @@ function Arena.PlanSpawns(arenaKey, roster, rng)
     end
 
     local plan = {}
+
+    -- COVER IS AN OBSTACLE, NOT SCENERY, as far as placing people goes.
+    --
+    -- scatterWithin already refuses a point too close to anything in
+    -- `placed`, which is how two fighters are kept apart. Seeding it with the
+    -- arena's own walls and barriers makes the same rule keep them out of
+    -- those -- otherwise a random spawn inside a shipping container is only a
+    -- matter of time, and from inside one there is nowhere to walk to.
     local placed = {}
+    for _, piece in ipairs(Arena.GetCover(arenaKey)) do
+        placed[#placed + 1] = { x = area.x + piece.x, y = area.y + piece.y }
+    end
 
     -- FREE FOR ALL, or a team mode nobody has picked a side in yet.
     if #order == 1 and order[1] == '\0ffa' then

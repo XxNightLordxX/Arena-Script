@@ -210,6 +210,10 @@ local function newFixture(mutate)
     })
 
     Sandbox.loadInto('../config.lua', env)
+    -- Loaded by hand here rather than through newArenaEnv, so the arenas are
+    -- switched on by hand too. Nothing in this file is about which ones an
+    -- operator ships enabled.
+    Sandbox.enableAllArenas(env)
     Sandbox.loadInto('../shared/arena.lua', env)
     if mutate then mutate(env.Config) end
     Sandbox.loadInto('../server/util.lua', env)

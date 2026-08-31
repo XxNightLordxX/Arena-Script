@@ -227,7 +227,9 @@ end
 --- @param leaveFrozen boolean -- the freeze state to leave the ped in
 --- @param stillWanted fun(): boolean|nil -- re-asked after the yield below
 --- @return boolean placed -- false when the caller stopped wanting this
-local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted)
+--- @param exactZ boolean|nil -- true where `z` is the surface, not a hint
+--- @param floorZ number|nil -- the lowest Z this arena may place anybody at
+local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted, exactZ, floorZ)
     -- FROZEN IS WHAT STOPS THE FALL. HEIGHT IS ONLY FOR THE PROBE.
     --
     -- Two separate things, and conflating them cost a round: this used to
@@ -273,6 +275,25 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted)
         return false
     end
 
+    -- AN ARENA THAT KNOWS ITS OWN FLOOR IS NOT SEARCHED FOR ONE.
+    --
+    -- GetGroundZFor_3dCoord searches DOWNWARD for TERRAIN. It does not know
+    -- about props, and it does not stop at the first thing it passes -- so in
+    -- an arena a kilometre up, standing on a floor this resource spawned
+    -- itself, it happily finds the real map far below, reports success, and
+    -- the line beneath teleports the fighter out of the sky and onto the
+    -- ground. Both halves behave exactly as documented; the result is an
+    -- arena nobody can hold a round in.
+    --
+    -- So an arena with `exactSpawnZ` is placed at the Z it was given and
+    -- nothing is asked. The freeze above still runs -- that is what stops the
+    -- fall while the floor streams in -- and it is dropped below as usual.
+    if exactZ then
+        SetEntityCoordsNoOffset(ped, x, y, math.max(z, floorZ or z), false, false, false)
+        FreezeEntityPosition(ped, leaveFrozen == true)
+        return true
+    end
+
     -- PROBED FROM HIGH ABOVE -- the query, not the player.
     --
     -- GetGroundZFor_3dCoord searches DOWNWARD from the point it is given. Ask
@@ -290,7 +311,12 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted)
     local placed = false
     for _, probe in ipairs({ lift, 50.0, 200.0 }) do
         local found, groundZ = GetGroundZFor_3dCoord(x, y, z + probe, false)
-        if found and groundZ and groundZ > -190.0 then
+        -- `> -190.0` rejects the answer the game gives when it knows nothing:
+        -- the bottom of the world. `floorZ` rejects the other wrong answer --
+        -- real terrain that is genuinely there and is nowhere near this
+        -- arena, which is what an arena in the sky gets asked about.
+        local belowTheArena = floorZ ~= nil and groundZ and groundZ < floorZ
+        if found and groundZ and groundZ > -190.0 and not belowTheArena then
             SetEntityCoordsNoOffset(ped, x, y, groundZ + 0.15, false, false, false)
             placed = true
             break
@@ -308,7 +334,8 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted)
         -- head-room than the ordinary hold above: it is not where players
         -- are put, it is where players are put when the alternative is
         -- falling out of the world.
-        SetEntityCoordsNoOffset(ped, x, y, z + math.max(lift, 10.0), false, false, false)
+        SetEntityCoordsNoOffset(ped, x, y,
+            math.max(z + math.max(lift, 10.0), floorZ or -math.huge), false, false, false)
     end
 
     -- Restored explicitly rather than assumed: entry wants the ped held still
@@ -1001,6 +1028,105 @@ local function startBlipThread()
     end)
 end
 
+-- ----------------------------------------------------------------------
+-- THE ARENA'S OWN SCENERY
+--
+-- An arena in the sky has nothing under it, and an arena on flat ground has
+-- nothing to hide behind. Both are the same problem: props this resource
+-- puts there for the length of a round and takes away again.
+--
+-- LOCAL TO EACH FIGHTER, and deliberately. Every player in the match builds
+-- their own copy at the same coordinates, so the floor is solid for all of
+-- them and invisible to everybody else on the server -- no network objects,
+-- nothing for another resource to trip over, and nothing left behind if this
+-- client crashes.
+-- ----------------------------------------------------------------------
+
+--- Handles of everything this client built for the current round.
+local arenaProps = {}
+
+--- Loads a model, or gives up. Bounded, because a model that will never
+--- arrive must not hold the entry handler open for the whole round.
+--- @return integer|nil hash
+local function loadPropModel(model)
+    local hash = joaat(model)
+    if not IsModelInCdimage(hash) or not IsModelValid(hash) then return nil end
+
+    RequestModel(hash)
+    local deadline = GetGameTimer() + 10000
+    while not HasModelLoaded(hash) and GetGameTimer() < deadline do Wait(0) end
+
+    if not HasModelLoaded(hash) then return nil end
+    return hash
+end
+
+--- Takes down everything this client built. Idempotent, and synchronous so
+--- it can run on the resource-stop path.
+local function removeArenaProps()
+    for _, object in ipairs(arenaProps) do
+        if DoesEntityExist(object) then
+            SetEntityAsMissionEntity(object, true, true)
+            DeleteObject(object)
+        end
+    end
+    arenaProps = {}
+end
+
+--- Builds an arena's floor and cover, and answers whether the FLOOR is
+--- really there.
+---
+--- The answer matters: an arena whose floor did not build is a very long
+--- fall, and the caller would rather refuse to place anybody than drop them
+--- into one. Cover failing is a worse round, not a broken one.
+--- @param arenaKey any
+--- @return boolean floorReady
+local function buildArenaProps(arenaKey)
+    removeArenaProps()
+
+    local wanted = Arena.ArenaProps(arenaKey)
+    if #wanted == 0 then
+        -- Nothing to build is not a failure: every arena on the ground is
+        -- this case, and the ground is already there.
+        return true
+    end
+
+    local needsFloor = Arena.GetPlatform(arenaKey) ~= nil
+    local built, failed = 0, {}
+
+    for _, piece in ipairs(wanted) do
+        local hash = loadPropModel(piece.model)
+        if hash then
+            local object = CreateObject(hash, piece.x, piece.y, piece.z, false, false, false)
+            if object and object ~= 0 then
+                SetEntityHeading(object, piece.heading or 0.0)
+                -- Frozen and collidable: it is scenery to stand on and hide
+                -- behind, not something to shove off the edge.
+                FreezeEntityPosition(object, true)
+                SetEntityCollision(object, true, true)
+                SetEntityInvincible(object, true)
+                SetEntityAsMissionEntity(object, true, true)
+                arenaProps[#arenaProps + 1] = object
+                built = built + 1
+            end
+            SetModelAsNoLongerNeeded(hash)
+        else
+            failed[piece.model] = true
+        end
+    end
+
+    for model in pairs(failed) do
+        print(('[crimson_arena] arena scenery: the model \'%s\' would not load, so those pieces are missing. Check it exists on this build.')
+            :format(tostring(model)))
+    end
+
+    if needsFloor and built == 0 then
+        print('[crimson_arena] arena scenery: NOTHING was built for an arena that supplies its own floor. Nobody is being placed into it -- there is nothing under it.')
+        return false
+    end
+
+    return true
+end
+
 -- ======================================================================
 -- ENTRY / EXIT
 -- ======================================================================
@@ -1023,6 +1149,10 @@ local function leaveArena(returnCoords)
     -- mid-round, and the resource stopping.
     removeAllPlayerBlips()
     removeAllOutlines()
+    -- The arena's own floor and cover, on the same single exit path as the
+    -- blips: a prop nobody deletes is left standing at a thousand metres for
+    -- the rest of the session.
+    removeArenaProps()
     roster = {}
 
     if ArenaSpectate then ArenaSpectate.Stop() end
@@ -1079,6 +1209,10 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
         -- than trusted as they arrive.
         modeKey = data.modeKey,
         teamKey = data.teamKey,
+        -- Kept because the arena's own scenery and its exact-Z rule are read
+        -- from config by key, on this side, rather than serialised into every
+        -- entry payload.
+        arenaKey = data.arenaKey,
         -- Kept rather than used and dropped: a death during the start
         -- countdown is answered on this side alone, and standing that
         -- player back up means handing them the same loadout again.
@@ -1104,8 +1238,20 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- in the middle of an argument list is truncated to one -- so passing it
     -- inline alongside the freeze flag would hand placeAt an x and nothing
     -- else.
+    -- THE FLOOR BEFORE THE FIGHTER, always. An arena that supplies its own
+    -- surface has none until this runs, and a player placed first is a player
+    -- falling. Returns false only when the floor could not be built at all,
+    -- which is the one case where NOT placing them is the kinder outcome --
+    -- they stay in the lobby with a line in the console instead of dropping
+    -- out of the sky.
+    if not buildArenaProps(data.arenaKey) then
+        removeArenaProps()
+        return
+    end
+
     local sx, sy, sz, sheading = scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
-    placeAt(ped, sx, sy, sz, sheading, true)
+    placeAt(ped, sx, sy, sz, sheading, true, nil,
+        Arena.UsesExactSpawnZ(data.arenaKey), Arena.SpawnFloor(data.arenaKey))
 
     -- placeAt waits for the ground to stream in, so this handler YIELDS for
     -- up to five seconds and an exitArena can be delivered inside that
@@ -1196,7 +1342,8 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     -- not place them.
     local placed = placeAt(ped, x, y, z, heading, true, function()
         return matchToken == token and currentMatch ~= nil
-    end)
+    end, Arena.UsesExactSpawnZ(currentMatch and currentMatch.arenaKey),
+        Arena.SpawnFloor(currentMatch and currentMatch.arenaKey))
 
     -- Unconditional, and ahead of the guard below: placeAt re-freezes this
     -- ped, and a round that ended during its yield already spent its one

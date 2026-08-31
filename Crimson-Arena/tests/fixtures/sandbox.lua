@@ -185,8 +185,45 @@ end
 function Sandbox.newArenaEnv(overrides)
     local env = Sandbox.newEnv(overrides)
     Sandbox.loadInto('../config.lua', env)
+
+    -- EVERY ARENA SWITCHED ON, and this is a deliberate decision about what
+    -- these specs are for.
+    --
+    -- Which arenas an operator ships enabled is THEIR choice and it changes:
+    -- the day the ground arenas were switched off in favour of one in the
+    -- sky, a hundred and seventy-seven assertions went red at once -- none of
+    -- them about arenas. They were about lives, ammunition, betting, panel
+    -- presence and the countdown, and every one of them had quietly been
+    -- leaning on 'airfield' being open.
+    --
+    -- So a spec gets a config with every arena available and asks its own
+    -- question. A spec that really is about what SHIPS uses
+    -- Sandbox.shippedConfig() below, which touches nothing.
+    Sandbox.enableAllArenas(env)
+
     Sandbox.loadInto('../shared/arena.lua', env)
     return env
+end
+
+--- Switches on every arena in an env's config. Called by newArenaEnv above,
+--- and by hand in the specs that load config.lua themselves.
+--- @param env table
+--- @return table env
+function Sandbox.enableAllArenas(env)
+    for _, arena in pairs((env.Config or {}).Arenas or {}) do
+        if type(arena) == 'table' then arena.enabled = true end
+    end
+    return env
+end
+
+--- The operator's config exactly as it ships, with nothing switched on for
+--- the convenience of a test. For the specs that are about the shipped
+--- defaults themselves.
+--- @return table config
+function Sandbox.shippedConfig()
+    local env = Sandbox.newEnv()
+    Sandbox.loadInto('../config.lua', env)
+    return env.Config
 end
 
 -- ======================================================================

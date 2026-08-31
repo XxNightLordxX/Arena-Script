@@ -262,7 +262,6 @@ An arena that gives out two hundred armour-piercing rounds and does not take the
 (A host *cancelling* is not on that list because it cannot be: cancel is refused the moment anybody has been placed in the arena, which is the same moment ammunition is issued. There is never a cancel with rounds outstanding.)
 
 ```lua
-reclaimOnExit = true,
 ```
 
 The switch exists, it defaults to on, and turning it off makes the arena a source of free ammunition. It is there only for servers that genuinely want that. If you are not sure, you do not.
@@ -878,7 +877,7 @@ Anything you build on those is subject to the same rule the rest of the resource
 
 - **A shortfall is usually spent ammunition.** Rounds the player fired cannot be removed, because they are gone. `reclaimed 41 of 60` after a fought match is the expected shape.
 - Anything that genuinely will not come out is named: `ammo: <item> x<n> issued to <src> on match <id> could not be taken back (<reason>)`. The reason in brackets is which exit path was running.
-- **Check `reclaimOnExit`.** Set to `false` it is doing exactly what it says: leaving the ammunition with the player. That switch turns the arena into a source of free ammunition and exists only for servers that want that.
+- **Check the door.** `Config.Loadouts.inventory.stripOnEntry` is what decides whether a player's own kit is taken and given back. With it off, players keep everything they walked in with *and* everything the arena issued — that is the switch that makes the arena a source of free ammunition, and it exists only for servers that want that.
 - `refusing to drop match <id> -- <src> still holds <item> x<n>` means a match record was asked to close with ammunition outstanding and refused. The refusal is the safe outcome — the record stays reachable so a later reclaim can still find it — but it is worth reading as a sign that an exit path did not run.
 
 ### The leaderboard is empty

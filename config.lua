@@ -822,25 +822,22 @@ Config.Loadouts = {
     -- server is a silent nothing, and a player who chose armour-piercing and
     -- got no ammo will report it as the arena being broken.
     --
-    -- HOW IT WORKS: the player picks a type in the panel alongside the amount.
-    -- On entry the server gives them that many of the matching item. On the
-    -- way out it TAKES BACK exactly what it issued.
+    -- HOW IT WORKS: the player picks a type in the panel alongside the amount,
+    -- and the server gives them that many of the matching item when the round
+    -- starts.
     --
-    -- THE RECLAIM IS THE WHOLE POINT, and it is not optional in spirit even
-    -- though it is a switch. Without it the arena is an ammo printer: join,
-    -- take 250 armour-piercing rounds, walk out, repeat. Everything issued is
-    -- recorded per player per match and removed on every exit path, including
-    -- a disconnect and a resource restart. Anything that cannot be taken back
-    -- -- because the player already spent it, dropped it, or left -- is named
-    -- in the server console rather than written off quietly.
+    -- GETTING IT BACK IS NOT THIS BLOCK'S JOB, and there is no switch for it
+    -- here. The door above already guarantees it: a player's own inventory is
+    -- stashed on the way in and everything they are carrying is destroyed on
+    -- the way out, so arena ammunition cannot leave the arena any more than
+    -- anything else can. There is nothing to reclaim separately, and no way to
+    -- turn the reclaim off without turning the door off -- which is
+    -- `Config.Loadouts.inventory.stripOnEntry`, and is the honest place for
+    -- that decision to live.
     -- ==================================================================
     ammoItems = {
         enabled = false,
 
-        -- Take back what was issued when the player leaves the arena.
-        -- Turning this off makes the arena a source of free ammunition. It
-        -- exists only for servers that genuinely want that.
-        reclaimOnExit = true,
 
         -- How many rounds one item is worth. With ox_inventory's usual
         -- per-round ammo items this is 1 and a player picking 60 rounds is

@@ -1664,6 +1664,9 @@
 
         show(byId('loadout-firearms'), gunsOn);
         show(byId('loadout-melee'), meleeOn);
+        /* The box that holds them goes too, or it would sit in the same grid
+           cell as the empty state below and stack on top of it. */
+        show(byId('loadout-lists'), gunsOn || meleeOn);
 
         var empty = byId('loadout-empty');
         show(empty, !gunsOn && !meleeOn);

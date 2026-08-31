@@ -213,6 +213,6 @@ pot goes missing, the console already knows why.
 - [ ] A backup of your database, if you turned `Config.Database.enabled` on
       and imported the SQL.
 - [ ] If ammo types are on: every `item` name in your list is a real item, you
-      have seen section 6 pass, and `reclaimOnExit` is still `true`. Turning
+      have seen section 6 pass, and `inventory.stripOnEntry` is still `true`. Turning
       that one off makes the arena a source of free ammunition — which is a
       decision, not a default.

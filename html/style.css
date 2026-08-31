@@ -750,11 +750,16 @@ option {
     align-self: start;
 }
 
-/* THE TWO LISTS SHARE THE MIDDLE ROW and split it between them. Firearms
-   take the larger share because thirty guns and a handful of blades is the
-   common shape of a config; each list scrolls inside itself, so neither one
-   can push the other off or grow the page. With one of them switched off the
-   remaining list takes the whole row without a rule to say so. */
+/* THE TWO LISTS SHARE THE MIDDLE ROW. Melee takes the height its own list
+   asks for, capped at a little over a third; firearms take everything left.
+   That is the shape both ends of the range want: five blades under thirty
+   guns should not be given a third of the screen to sit in, and twenty
+   blades should not be allowed to take the firearms list with them.
+
+   Past the cap each list scrolls inside its own box, which is what keeps the
+   panel body -- and the page under it -- from ever growing a scrollbar over
+   the running game. With one section switched off the other fills the row
+   with no rule needed to say so. */
 #loadout-lists {
     grid-column: 1;
     grid-row: 2;
@@ -772,11 +777,12 @@ option {
 }
 
 #loadout-firearms {
-    flex: 2 1 0;
+    flex: 1 1 0;
 }
 
 #loadout-melee {
-    flex: 1 1 0;
+    flex: 0 1 auto;
+    max-height: 38%;
 }
 
 /* Name on the left, counter hard against the right edge of the list it

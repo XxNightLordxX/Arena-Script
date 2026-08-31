@@ -667,13 +667,28 @@ t.test('the groups it joins come from config, not a name baked in here', functio
     t.contains(ran, 'group.god')
 end)
 
-t.test('the shipped config really does turn it on, so this file states what ships', function()
-    -- A default the tests never look at is a default nobody is checking.
-    -- This one has a real cost, so it is worth being visible here rather
-    -- than only in a comment.
+t.test('the shipped config asks the server for no permission at all', function()
+    -- A default the tests never look at is a default nobody is checking, and
+    -- this one has a real security cost, so it is stated here rather than
+    -- only in a comment.
+    --
+    -- It ships OFF, and it ships off because it buys nothing: the arena
+    -- revives its own players in code (see below), so the admin group was
+    -- paying "any flaw in this resource runs any command on the box" for a
+    -- capability that is no longer used. Most servers refuse the grant
+    -- anyway -- correctly -- and every refusal is another console line.
+    --
+    -- If a future change genuinely needs elevated rights, this is the test to
+    -- come and argue with first.
     local env = Sandbox.newArenaEnv()
-    t.isTrue(env.Config.Dispatch.revive.grantSelfAdmin,
-        'the shipped config no longer grants admin -- if that is deliberate, this test is where to say so')
+    local revive = env.Config.Dispatch.revive
+
+    t.isFalse(revive.grantSelfAdmin,
+        'the shipped config grants itself admin again -- that trade needs a reason stated here')
+    t.isFalse(revive.grantSelfPermission,
+        'the shipped config grants itself an ace again -- same question')
+    t.equals(#revive.commands, 0,
+        'the shipped config runs a console command again -- on a server that refuses it, that is an "Access denied" line per death')
 end)
 
 t.test('an operator who would rather grant it themselves can turn it off', function()
@@ -768,6 +783,37 @@ t.test('the arena revives the player itself, before anything is configured', fun
     t.isNotNil(revived, 'a player the arena knocked down was left on the floor by default')
     t.equals(revived.target, 5, 'the wrong player was revived')
     t.equals(#f.commands, 0, 'a command ran on a config that names none')
+end)
+
+t.test('the config AS SHIPPED revives, and runs no console command doing it', function()
+    -- The test above proves the built-in revive works on an empty config.
+    -- This one proves it on the config an operator actually downloads, which
+    -- is a different question and the one that kept regressing: the code was
+    -- right while the shipped defaults still pointed at an admin command
+    -- this resource is not allowed to run.
+    --
+    -- Both halves matter. The revive has to happen, AND nothing may reach for
+    -- the console to do it -- because a refused command is not an error, it
+    -- is a line of "Access denied" per death with the player getting up
+    -- anyway. That log is what made a working revive look broken.
+    --
+    -- newFixture() with no argument is the real ../config.lua, untouched.
+    local f = newFixture()
+
+    f.D.Revive(7)
+    f.step()
+
+    local revived = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:revive' then revived = message end
+    end
+
+    t.isNotNil(revived, 'the shipped config does not stand its own dead back up')
+    t.equals(revived.target, 7, 'the shipped config revived the wrong player')
+
+    local ran = table.concat(f.commands, '\n')
+    t.equals(#f.commands, 0,
+        'the shipped config runs a console command -- on a server that refuses it that is an "Access denied" line every death: ' .. ran)
 end)
 
 t.test('a client-side revive is sent to that player, and to nobody else', function()
@@ -930,15 +976,27 @@ t.test('and a configured one is reported as configured', function()
     t.notContains(report, 'revive: NOT configured')
 end)
 
-t.test('the shipped config is one that will actually revive somebody', function()
-    -- The default that ships is the one nearly every operator runs, so it
-    -- being wired up is worth an assertion of its own -- and a default that
-    -- reported itself as broken would be the thing everyone sees first.
+t.test('the shipped config reports the handoff as unconfigured -- and says the arena revives anyway', function()
+    -- The default that ships is the one nearly every operator runs, so what
+    -- it reports about itself is worth an assertion of its own.
+    --
+    -- It ships with NOTHING named, and that is correct: the only things it
+    -- could name are another server's commands and events, and this resource
+    -- cannot know them. Guessing produces a line that looks wired up and
+    -- calls nothing, which is the worst of both.
+    --
+    -- So the report says NOT configured -- but the danger in that word is an
+    -- operator reading it as "revives are broken" on an install where they
+    -- work fine. They do work: the arena stands its own dead back up in code.
+    -- The only thing missing is telling a SEPARATE medical script, so the
+    -- report has to say both halves or it is scarier than the truth.
     local env = newCompat()
     local report = table.concat(env.ArenaCompat.Report(), '\n')
 
-    t.contains(report, 'revive: configured')
-    t.notContains(report, 'revive: NOT configured')
+    t.contains(report, 'revive: NOT configured',
+        'the shipped config claims a handoff it has not been given the names for')
+    t.contains(report, 'stood back up by the arena',
+        'the report says the handoff is missing without saying players still get up -- that reads as broken')
 end)
 
 t.test('enabled with nothing named counts as not configured', function()

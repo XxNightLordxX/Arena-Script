@@ -1568,16 +1568,31 @@ Config.Dispatch = {
     -- for the same reason the catalogue below only detects: an event name
     -- that is close but not right looks wired up and does nothing.
     revive = {
-        -- ON, and pointed at this server's own /revive command below.
+        -- NOTHING HERE HAS TO BE SET FOR PLAYERS TO GET BACK UP.
+        --
+        -- The arena revives its own players itself, in code, with no command
+        -- and no permission -- it knocked them down, so standing them back up
+        -- is not a privileged act and it does not ask anybody. That happens
+        -- whatever this block says, including with `enabled = false`.
+        --
+        -- What is left below is for telling ANOTHER script -- a medical or
+        -- ambulance resource -- that the player is no longer a casualty. That
+        -- part is optional, and it is the only part these settings control.
         enabled = true,
 
-        -- COMMANDS -- the form most servers actually have, and the one this
-        -- is set up for. Each line is run from the SERVER CONSOLE, which is
-        -- the identity a restricted admin command already trusts.
+        -- COMMANDS run from the SERVER CONSOLE. `%s` is where the player's
+        -- server id goes; a line with no `%s` gets the id appended, so
+        -- 'revive' and 'revive %s' both work.
         --
-        -- `%s` is where the player's server id goes. A line with no `%s` gets
-        -- the id appended, so 'revive' and 'revive %s' both work.
-        commands = { 'revive %s' },
+        -- EMPTY ON PURPOSE. An admin revive command checks whether its caller
+        -- is allowed, and a resource is not an admin -- so on most servers
+        -- this is refused, which prints an "Access denied" line for every
+        -- single death while the built-in revive quietly does the real work.
+        -- Since nothing needs the command any more, the noise is not worth
+        -- shipping on. Add your medical script's own command here if you want
+        -- it run as well:
+        --     commands = { 'revive %s' },
+        commands = {},
 
         -- THE SAME COMMANDS, RUN ON THE PLAYER'S OWN CLIENT.
         --
@@ -1616,9 +1631,15 @@ Config.Dispatch = {
         -- restart. It is granted again at every start, from this config, so
         -- deleting a command above deletes its permission with it.
         --
-        -- Set false if you would rather grant it yourself in server.cfg:
+        -- Set true only if you added a `commands` line above AND that command
+        -- is gated on its own ACE. Off by default: most servers refuse a
+        -- resource's attempt to grant itself anything -- correctly -- and the
+        -- refusal is itself another console line per death.
+        --
+        -- If you do want it granted, the honest way is one line in server.cfg,
+        -- which needs no permission from anybody because you are the console:
         --     add_ace resource.Crimson-Arena command.revive allow
-        grantSelfPermission = true,
+        grantSelfPermission = false,
 
         -- PUT THIS RESOURCE IN THE ADMIN GROUP AS WELL.
         --
@@ -1632,13 +1653,18 @@ Config.Dispatch = {
         -- script that tests GROUP membership never looks at the ace list.
         -- Either could be what your revive checks, so both are applied.
         --
-        -- BE CLEAR ABOUT THE TRADE. With this on, any flaw anywhere in this
-        -- resource is a way to run any command on your server. That is a real
-        -- cost and it is worth turning off again once the revive is working
-        -- through an export or an event instead. Runtime only -- nothing is
-        -- written to a .cfg -- so switching it off and restarting takes all
-        -- of it back.
-        grantSelfAdmin = true,
+        -- BE CLEAR ABOUT THE TRADE, WHICH IS WHY THIS IS OFF.
+        --
+        -- With this on, any flaw anywhere in this resource is a way to run any
+        -- command on your server. The arena no longer needs that for anything
+        -- -- it revives players itself -- so paying that price buys nothing.
+        --
+        -- It is also usually refused anyway: a server that lets a resource
+        -- write its own permissions is a server with no permissions. If you
+        -- genuinely want the arena in the admin group, put it in server.cfg
+        -- yourself, where the console is doing the granting:
+        --     add_principal resource.Crimson-Arena group.admin
+        grantSelfAdmin = false,
 
         -- The groups to join. `group.admin` is the usual one; add your own if
         -- your permissions are named differently.

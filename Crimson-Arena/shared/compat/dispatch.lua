@@ -325,12 +325,15 @@ local CATALOGUE = {
     { resource = 'qbx_police', kind = 'police' },           -- the shorter spelling some builds use
     { resource = 'qb-policejob', kind = 'police' },
     { resource = 'wasabi_police', kind = 'police' },
+    { resource = 'sc-police', kind = 'police' },
+    { resource = 'sc-dispatch', kind = 'both' },            -- dispatch for police AND EMS on this family of scripts
 
     -- ---- EMS -------------------------------------------------------
     { resource = 'qbx_ambulancejob', kind = 'ambulance' },
     { resource = 'qbx_medical', kind = 'ambulance' },       -- Qbox's death and injury system: the one that watches the dead state
     { resource = 'qb-ambulancejob', kind = 'ambulance' },
     { resource = 'wasabi_ambulance', kind = 'ambulance' },
+    { resource = 'sc-ambulance', kind = 'ambulance' },
 }
 
 for _, entry in ipairs(CATALOGUE) do

@@ -343,6 +343,87 @@ t.test('a spawn Z below the floor is a typo an operator cannot diagnose', functi
 end)
 
 -- ======================================================================
+-- THE PROPS ARE REAL
+-- ======================================================================
+
+--- Every object name the base game and its DLC ship, as a set.
+local function realObjects()
+    local handle = assert(io.open('fixtures/gta-object-names.txt', 'r'),
+        'the GTA object list fixture is missing -- see its header for how to regenerate it')
+    local names = {}
+    for line in handle:lines() do
+        local name = line:match('^([a-z0-9_]+)$')
+        if name then names[name] = true end
+    end
+    handle:close()
+    return names
+end
+
+--- Every prop model config.lua names, across every arena.
+local function configuredModels(config)
+    local out, seen = {}, {}
+    local function want(model, where)
+        if type(model) ~= 'string' or seen[model] then return end
+        seen[model] = true
+        out[#out + 1] = { model = model, where = where }
+    end
+
+    for key, arena in pairs(config.Arenas or {}) do
+        if type(arena) == 'table' then
+            if type(arena.platform) == 'table' then
+                want(arena.platform.model, key .. '.platform')
+            end
+            for _, piece in ipairs((arena.cover or {}).pieces or {}) do
+                if type(piece) == 'table' then want(piece.model, key .. '.cover') end
+            end
+        end
+    end
+    return out
+end
+
+t.test('EVERY prop model config.lua names is a real GTA V object', function()
+    -- A MODEL NAME THAT IS NOT REAL FAILS SILENTLY. The game does not raise:
+    -- it simply never loads the model, the prop never appears, and what an
+    -- operator sees is an arena with no floor in it and nothing anywhere
+    -- saying why.
+    --
+    -- The first floor model written into config.lua was
+    -- 'stt_prop_stunt_track_widey' -- remembered rather than looked up, and
+    -- not a real object. Nothing in this suite could tell, because a prop
+    -- name is a string until the game is asked. This asks a list of all
+    -- 21,629 of them instead.
+    local real = realObjects()
+    t.isTrue(real['prop_container_01a'] == true,
+        'the object list fixture did not load properly, so this test proves nothing')
+
+    local models = configuredModels(Sandbox.shippedConfig())
+    t.isTrue(#models > 0, 'no arena names any prop models, so this test proves nothing')
+
+    local missing = {}
+    for _, entry in ipairs(models) do
+        if not real[entry.model] then
+            missing[#missing + 1] = ('%s (%s)'):format(entry.model, entry.where)
+        end
+    end
+    table.sort(missing)
+
+    t.equals(table.concat(missing, ', '), '',
+        'these prop models are not real GTA V objects. The game will never load them, so the '
+        .. 'props simply do not appear -- an arena with no floor, and nothing to say why. If one '
+        .. 'is a model your own server streams, that is fine and this test needs to know about it')
+end)
+
+t.test('and the model that was actually wrong is named, so a failure says which', function()
+    -- Guards the guard: a fixture that quietly matched everything would let
+    -- the original mistake straight back through.
+    local real = realObjects()
+    t.isNil(real['stt_prop_stunt_track_widey'],
+        'the object list contains a name that is not a real object, so it cannot catch one')
+    t.isTrue(real['stt_prop_stunt_bblock_huge_01'] == true,
+        'the floor this arena is built from is not in the object list')
+end)
+
+-- ======================================================================
 -- WHAT SHIPS
 -- ======================================================================
 

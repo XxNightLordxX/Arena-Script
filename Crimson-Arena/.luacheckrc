@@ -212,6 +212,10 @@ files['client/'] = {
         -- cover to fight over. Built client-side and local to each fighter,
         -- so these are the object natives rather than the networked ones.
         'CreateObject',
+        -- Asked what a prop actually IS, rather than trusting a size typed
+        -- into config: the floor is tiled on the model's real footprint and
+        -- the walkable surface is its real top.
+        'GetModelDimensions',
         'DeleteObject',
         'IsModelInCdimage',
         'IsModelValid',

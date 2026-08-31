@@ -1045,6 +1045,29 @@ end
 --- Handles of everything this client built for the current round.
 local arenaProps = {}
 
+--- The TOP of the floor this client built, measured rather than configured.
+--- nil for an arena that stands on real ground.
+local arenaSurfaceZ = nil
+
+--- One prop's real footprint and height, straight from the game.
+---
+--- ASKED RATHER THAN CONFIGURED, and it removes the two numbers nobody can
+--- get right from outside the game: how far apart to lay the floor tiles,
+--- and how high its walkable surface ends up. A tile spacing typed into
+--- config leaves gaps to fall through when it is too big and a flickering
+--- overlap where it is too small, and an operator looking at the result
+--- cannot tell which.
+--- @param hash integer
+--- @return number width, number top -- footprint across, and height above origin
+local function modelFootprint(hash)
+    local minimum, maximum = GetModelDimensions(hash)
+    if type(minimum) ~= 'table' and type(minimum) ~= 'userdata' then return 0.0, 0.0 end
+
+    local width = math.max((maximum.x or 0.0) - (minimum.x or 0.0),
+                           (maximum.y or 0.0) - (minimum.y or 0.0))
+    return width, (maximum.z or 0.0)
+end
+
 --- Loads a model, or gives up. Bounded, because a model that will never
 --- arrive must not hold the entry handler open for the whole round.
 --- @return integer|nil hash
@@ -1082,15 +1105,34 @@ end
 --- @return boolean floorReady
 local function buildArenaProps(arenaKey)
     removeArenaProps()
+    arenaSurfaceZ = nil
 
-    local wanted = Arena.ArenaProps(arenaKey)
+    local platform = Arena.GetPlatform(arenaKey)
+
+    -- THE FLOOR IS MEASURED BEFORE IT IS LAID.
+    --
+    -- The model is loaded once up front purely to ask the game how big it
+    -- is, and the tiling and the walkable height both come from the answer.
+    -- config's `tileSize` is only the fallback for a model that will not
+    -- load -- and a model that will not load has no floor to space out.
+    local measured = nil
+    if platform then
+        local hash = loadPropModel(platform.model)
+        if hash then
+            local width, top = modelFootprint(hash)
+            if width > 0.0 then measured = width end
+            arenaSurfaceZ = platform.z + top
+        end
+    end
+
+    local wanted = Arena.ArenaProps(arenaKey, measured)
     if #wanted == 0 then
         -- Nothing to build is not a failure: every arena on the ground is
         -- this case, and the ground is already there.
         return true
     end
 
-    local needsFloor = Arena.GetPlatform(arenaKey) ~= nil
+    local needsFloor = platform ~= nil
     local built, failed = 0, {}
 
     for _, piece in ipairs(wanted) do
@@ -1119,7 +1161,13 @@ local function buildArenaProps(arenaKey)
             :format(tostring(model)))
     end
 
+    if built > 0 and measured then
+        print(('[crimson_arena] arena scenery: %d piece(s) built; the floor measured %.2fm across and its surface is at %.2f.')
+            :format(built, measured, arenaSurfaceZ or 0.0))
+    end
+
     if needsFloor and built == 0 then
+        arenaSurfaceZ = nil
         print('[crimson_arena] arena scenery: NOTHING was built for an arena that supplies its own floor. Nobody is being placed into it -- there is nothing under it.')
         return false
     end
@@ -1153,6 +1201,7 @@ local function leaveArena(returnCoords)
     -- blips: a prop nobody deletes is left standing at a thousand metres for
     -- the rest of the session.
     removeArenaProps()
+    arenaSurfaceZ = nil
     roster = {}
 
     if ArenaSpectate then ArenaSpectate.Stop() end
@@ -1250,8 +1299,11 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     end
 
     local sx, sy, sz, sheading = scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
+    -- The floor this client actually BUILT beats the one config described.
+    -- A surface measured from the model is right whatever prop an operator
+    -- swapped in; a number typed beside it is right until they swap one.
     placeAt(ped, sx, sy, sz, sheading, true, nil,
-        Arena.UsesExactSpawnZ(data.arenaKey), Arena.SpawnFloor(data.arenaKey))
+        Arena.UsesExactSpawnZ(data.arenaKey), arenaSurfaceZ or Arena.SpawnFloor(data.arenaKey))
 
     -- placeAt waits for the ground to stream in, so this handler YIELDS for
     -- up to five seconds and an exitArena can be delivered inside that
@@ -1343,7 +1395,7 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     local placed = placeAt(ped, x, y, z, heading, true, function()
         return matchToken == token and currentMatch ~= nil
     end, Arena.UsesExactSpawnZ(currentMatch and currentMatch.arenaKey),
-        Arena.SpawnFloor(currentMatch and currentMatch.arenaKey))
+        arenaSurfaceZ or Arena.SpawnFloor(currentMatch and currentMatch.arenaKey))
 
     -- Unconditional, and ahead of the guard below: placeAt re-freezes this
     -- ped, and a round that ended during its yield already spent its one

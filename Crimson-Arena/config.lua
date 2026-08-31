@@ -383,26 +383,35 @@ Config.Arenas = {
         platform = {
             enabled = true,
 
-            -- A flat stunt-track piece, which is what these props exist for.
-            -- Any large flat prop works -- 'prop_container_01a' is a
-            -- base-game shipping container that tiles at 12.0 if you would
-            -- rather use something certain to be on every build.
-            model = 'stt_prop_stunt_track_widey',
+            -- A Cunning Stunts building block: a big solid slab with a flat
+            -- top, which is what people build sky platforms out of.
+            --
+            -- CHECKED AGAINST THE GAME'S OWN OBJECT LIST, not remembered.
+            -- The first model written here was invented and does not exist,
+            -- which would have meant no floor at all -- tests/skyarena_spec
+            -- now pins every model named in this file against a dump of all
+            -- 21,631 real ones.
+            model = 'stt_prop_stunt_bblock_huge_01',
 
-            -- How much floor one piece covers, in metres. It has to match
-            -- the prop: too big leaves seams to fall through, too small
-            -- stacks them into a flickering mess.
-            tileSize = 8.0,
+            -- A FALLBACK, not the answer. The client asks the game for the
+            -- model's real footprint with GetModelDimensions and lays the
+            -- floor out on that, so this is only used if the model will not
+            -- load -- and a model that will not load has no floor to space.
+            --
+            -- It matters because nobody can get it right by hand: too big
+            -- leaves seams to fall through, too small stacks the pieces into
+            -- a flickering mess, and from the ground you cannot tell which.
+            tileSize = 10.0,
 
             -- How far the floor reaches. Inside the boundary below, so the
             -- edge of the world is the edge of the floor rather than a
             -- stretch of open air you can stand in while bleeding.
             radius = 45.0,
 
-            -- Where the PIECES are created. Their walkable surface sits a
-            -- little above this depending on the model, which is why the
-            -- spawn Z below is a separate number -- fly up once, stand on
-            -- it, and read your own Z.
+            -- Where the PIECES are created. Their walkable surface is worked
+            -- out from the model's own height, so there is nothing to
+            -- measure by hand: whatever prop is named above, fighters are
+            -- placed on top of it.
             z = 1200.0,
         },
 
@@ -459,7 +468,10 @@ Config.Arenas = {
 
         spawnArea = {
             enabled = true,
-            -- The walkable surface, not the prop origin above.
+            -- A floor for the client to raise fighters to. It measures the
+            -- real surface from the prop and uses that when it is higher, so
+            -- this only has to be at or below standing height -- it cannot
+            -- put anybody underneath the platform.
             center = vector3(1500.00, 3000.00, 1201.00),
             radius = 35.0,
             minSeparation = 10.0,

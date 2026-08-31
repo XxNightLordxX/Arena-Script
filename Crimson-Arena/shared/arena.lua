@@ -852,6 +852,10 @@ function Arena.GetPlatform(arenaKey)
     if type(platform) ~= 'table' or platform.enabled == false then return nil end
     if not Arena.IsKey(platform.model) then return nil end
 
+    -- tileSize is a FALLBACK now, not the answer: the client measures the
+    -- model with GetModelDimensions and tiles on what is really there. It
+    -- still has to be sane, because a client that cannot load the model at
+    -- all has nothing to measure.
     local tileSize = tonumber(platform.tileSize) or 0
     local radius = tonumber(platform.radius) or 0
     if tileSize <= 0 or radius <= 0 then return nil end
@@ -871,11 +875,17 @@ end
 --- while still on solid ground.
 --- @param platform table -- Arena.GetPlatform output
 --- @return table[] -- { { x, y, z }, ... }, relative to the centre given
-function Arena.PlatformTiles(platform, centreX, centreY)
+--- @param measuredSize number|nil -- the prop's real width, when the client
+---        has asked the game for it. Beats the configured guess: a floor
+---        tiled on a number somebody typed has gaps to fall through when the
+---        number is too big and a flickering mess where it is too small, and
+---        nobody can tell which from outside the game.
+function Arena.PlatformTiles(platform, centreX, centreY, measuredSize)
     if type(platform) ~= 'table' then return {} end
 
     local out = {}
-    local step = platform.tileSize
+    local step = tonumber(measuredSize) or platform.tileSize
+    if not step or step <= 0 then step = platform.tileSize end
     local reach = platform.radius
     -- The half-tile inset keeps a piece's OUTER edge on the radius rather
     -- than its centre, so the floor really is as wide as it says.
@@ -936,7 +946,9 @@ end
 --- thousand metres.
 --- @param arenaKey any
 --- @return table[] -- { { model, x, y, z, heading }, ... }, absolute
-function Arena.ArenaProps(arenaKey)
+--- @param measuredSize number|nil -- the floor prop's real width, measured
+---        by the client. See Arena.PlatformTiles.
+function Arena.ArenaProps(arenaKey, measuredSize)
     local out = {}
 
     local area = Arena.GetSpawnArea(arenaKey)
@@ -956,7 +968,7 @@ function Arena.ArenaProps(arenaKey)
 
     local platform = Arena.GetPlatform(arenaKey)
     if platform then
-        for _, tile in ipairs(Arena.PlatformTiles(platform, centre.x, centre.y)) do
+        for _, tile in ipairs(Arena.PlatformTiles(platform, centre.x, centre.y, measuredSize)) do
             out[#out + 1] = {
                 model = platform.model,
                 x = tile.x, y = tile.y, z = tile.z,

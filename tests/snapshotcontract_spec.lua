@@ -628,34 +628,33 @@ t.test('weaponSlots and meleeSlots arrive and match config', function()
     t.equals(loadouts.allowChoose, server.config.Loadouts.allowChoose ~= false)
 end)
 
-t.test('DEFECT: ammoTypeSlots -- the third allowance -- never reaches the panel', function()
-    -- Arena.ResolveLoadout enforces Config.Loadouts.ammoTypeSlots, but
-    -- snapshotConfig's `loadouts` block sends allowChoose, weaponSlots,
-    -- meleeSlots, categories, armor and weapons -- and not this. An operator
-    -- who sets a cap gets a picker that offers a different round for every
-    -- weapon and a server that quietly issues defaults instead.
-    --
-    -- Stated as it is today so the suite stays green; the moment the field
-    -- arrives this becomes the real contract assertion.
-    local server = newArena(function(config)
-        config.Loadouts.ammoTypeSlots = 2
-    end)
-    local loadouts = server.loadouts()
+t.test('ammoTypeSlots -- the third allowance -- reaches the panel too', function()
+    -- It did not, when this file was written. Arena.ResolveLoadout enforced
+    -- Config.Loadouts.ammoTypeSlots while snapshotConfig sent every other
+    -- allowance and not this one, so an operator who set a cap got a picker
+    -- offering a different round for every weapon and a server that quietly
+    -- issued defaults instead. This test was written as a defect note with a
+    -- branch for the day it started arriving; that day came, and this is the
+    -- branch it left behind.
+    for _, cap in ipairs({ 0, 1, 2, 5 }) do
+        local server = newArena(function(config)
+            config.Loadouts.ammoTypeSlots = cap
+        end)
+        local loadouts = server.loadouts()
 
-    if loadouts.ammoTypeSlots ~= nil then
-        t.equals(loadouts.ammoTypeSlots, server.config.Loadouts.ammoTypeSlots,
-            'ammoTypeSlots arrives now but does not match config')
-        return
+        t.equals(type(loadouts.ammoTypeSlots), 'number',
+            ('ammoTypeSlots never reached the panel at a cap of %d'):format(cap))
+        t.equals(loadouts.ammoTypeSlots, cap,
+            'the panel is told a different cap than the server enforces')
     end
-    t.isNil(loadouts.ammoTypeSlots,
-        'ammoTypeSlots reaches the panel now -- delete this branch and keep the one above')
 end)
 
-t.test('the ammo type cap is real, and it is silent -- which is why the panel needs to be told', function()
-    -- The harm the missing field causes, asserted on the server side where
-    -- it is observable. Two firearms, two different rounds, a cap of one:
-    -- the second weapon is NOT refused, it is handed its default instead.
-    -- Nothing in the snapshot lets the panel say so before the player saves.
+t.test('the ammo type cap is real, and it is silent -- which is why the panel is told', function()
+    -- Why that field has to arrive, asserted on the server side where it is
+    -- observable. Two firearms, two different rounds, a cap of one: the second
+    -- weapon is NOT refused, it is handed its default instead. A player is
+    -- never told no -- they are told yes and then given something else -- so
+    -- the only way the panel can warn them beforehand is to know the number.
     local base = newArena()
     local firearms = snapWeaponsByKind(base.loadouts(), false)
     local pair = {}

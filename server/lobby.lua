@@ -367,6 +367,14 @@ local function snapshotConfig()
             allowChoose = Config.Loadouts.allowChoose ~= false,
             weaponSlots = math.max(0, Arena.ToInt(Config.Loadouts.weaponSlots) or 1),
             meleeSlots = math.max(0, Arena.ToInt(Config.Loadouts.meleeSlots) or 1),
+            -- Sent because the SERVER enforces it. Arena.ResolveLoadout caps
+            -- distinct ammo types and quietly substitutes a weapon's default
+            -- past the cap, so a panel that does not know the number offers a
+            -- different round per weapon and then watches the server change
+            -- its mind. The fourth field in this resource to be enforced at
+            -- one end and never sent to the other; the pattern is always a
+            -- table rebuilt by hand rather than passed through.
+            ammoTypeSlots = math.max(0, Arena.ToInt(Config.Loadouts.ammoTypeSlots) or 0),
             categories = Config.Loadouts.categories or {},
             armor = Config.Loadouts.armor,
             weapons = weapons,

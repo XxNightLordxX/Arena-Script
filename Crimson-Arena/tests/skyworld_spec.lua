@@ -1371,6 +1371,127 @@ t.test('FUZZ: and a player in the sky is never left standing below the floor', f
 end)
 
 -- ======================================================================
+-- AN ARENA THE OPERATOR ADDED, BUILT FOR REAL
+--
+-- newarena_spec proves a pasted-in block is READ correctly -- it appears in
+-- the list, it plans spawns, its slips are named. This is the other half:
+-- that the client actually BUILDS one it has never seen, at coordinates and
+-- a height nothing in the shipped config uses.
+-- ======================================================================
+
+--- A sky arena an operator wrote, nothing like the shipped one: different
+--- coordinates, a different height, a different prop, a different size.
+local function pastedSkyArena()
+    return {
+        label = 'The Gantry',
+        enabled = true,
+        exactSpawnZ = true,
+        platform = {
+            enabled = true,
+            models = { 'prop_container_01a' },
+            tileSize = 10.0,
+            radius = 40.0,
+            z = 640.0,
+            maxTiles = 500,
+        },
+        cover = {
+            enabled = true,
+            pieces = {
+                { models = { 'prop_mp_barrier_02b' }, x = 12.0, y = 0.0, z = 0.0, heading = 90.0 },
+                { models = { 'prop_mp_barrier_02b' }, x = -12.0, y = 0.0, z = 0.0, heading = 270.0 },
+            },
+        },
+        spawnArea = {
+            enabled = true,
+            center = { x = -2200.0, y = 4400.0, z = 640.0 },
+            radius = 25.0,
+            minSeparation = 9.0,
+            teamRadius = 12.0,
+        },
+        spawns = { { x = -2200.0, y = 4400.0, z = 640.0, w = 0.0 } },
+        boundary = {
+            enabled = true,
+            center = { x = -2200.0, y = 4400.0, z = 640.0 },
+            radius = 60.0,
+            warningSeconds = 5, damagePerTick = 20, tickMs = 500,
+        },
+    }
+end
+
+t.test('a sky arena the operator added builds, and holds the fighter up', function()
+    local c = newClient()
+    c.env.Config.Arenas.gantry = pastedSkyArena()
+    c.enter('gantry')
+
+    t.isTrue(#c.world.live() > 0, 'an arena added by an operator built nothing')
+    t.isTrue(onFloor(c, c.pos().x, c.pos().y),
+        'the fighter is over open air in an arena the operator added')
+    t.isTrue(math.abs(c.pos().z - 640.0) < 0.5,
+        ('the fighter is at %0.2f, and the operator asked for 640'):format(c.pos().z))
+end)
+
+t.test('and its whole spawn ring has floor under it', function()
+    local c = newClient()
+    c.env.Config.Arenas.gantry = pastedSkyArena()
+    c.enter('gantry')
+
+    local area = c.Arena.GetSpawnArea('gantry')
+    local holes = 0
+    for ring = 0, math.floor(area.radius) do
+        for step = 0, 23 do
+            local angle = (step / 24) * math.pi * 2
+            if not onFloor(c, area.x + ring * math.cos(angle), area.y + ring * math.sin(angle)) then
+                holes = holes + 1
+            end
+        end
+    end
+    t.equals(holes, 0, ('%d points in the new arena have no floor under them'):format(holes))
+end)
+
+t.test('and it comes down again when the round ends, like any other', function()
+    local c = newClient()
+    c.env.Config.Arenas.gantry = pastedSkyArena()
+    c.enter('gantry')
+    t.isTrue(#c.world.live() > 0)
+
+    c.fire('crimson_arena:client:exitArena', {})
+    t.equals(#c.world.live(), 0, 'an operator-added arena left its floor at 640m')
+end)
+
+t.test('two operator arenas at once do not build into each other', function()
+    -- Somebody will add three. Each client builds only the one it is in.
+    local first = newClient()
+    first.env.Config.Arenas.gantry = pastedSkyArena()
+    first.enter('gantry')
+
+    local second = newClient()
+    second.env.Config.Arenas.gantry = pastedSkyArena()
+    second.enter('skydome')
+
+    -- The second client is in the SHIPPED arena; nothing it built should sit
+    -- at the operator arena's height.
+    for _, object in ipairs(second.world.live()) do
+        t.isTrue(math.abs(object.z - 640.0) > 1.0,
+            'a client in the shipped arena built pieces at the operator arena height')
+    end
+    t.isTrue(#first.world.live() > 0 and #second.world.live() > 0)
+end)
+
+t.test('DEFECT: an operator arena that forgets exactSpawnZ is still not dropped to the map', function()
+    -- The second guard, on an arena nobody has ever run. The floor Z is what
+    -- rejects a ground answer from below the platform, and it has to work
+    -- for an arena defined entirely by the operator.
+    local c = newClient()
+    local arena = pastedSkyArena()
+    arena.exactSpawnZ = nil
+    c.env.Config.Arenas.gantry = arena
+    c.enter('gantry')
+
+    t.isTrue(c.pos().z > 500.0,
+        ('without exactSpawnZ the fighter ended at z=%0.1f -- the ground probe won'):format(c.pos().z))
+end)
+
+-- ======================================================================
 -- THE ARENA ON THE GROUND
 -- ======================================================================
 

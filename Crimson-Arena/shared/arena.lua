@@ -800,6 +800,201 @@ function Arena.PickSpawn(arenaKey, teamKey, index)
     return list[((position - 1) % #list) + 1]
 end
 
+--- The spawn AREA an arena defines, if it defines one.
+---
+--- `spawns` is a list of exact points; `spawnArea` is one point and a radius,
+--- and the arena works out the rest. An operator who only wants to drop a
+--- marker in the middle of a field and say "a hundred metres around here"
+--- should not have to write out twenty coordinates to do it.
+--- @param arenaKey any
+--- @return table|nil
+function Arena.GetSpawnArea(arenaKey)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    if type(arena) ~= 'table' then return nil end
+
+    local area = arena.spawnArea
+    if type(area) ~= 'table' or area.enabled == false then return nil end
+
+    local centre = area.center or area.centre
+    local x = centre and tonumber(centre.x) or (centre and tonumber(centre[1]))
+    local y = centre and tonumber(centre.y) or (centre and tonumber(centre[2]))
+    local z = centre and tonumber(centre.z) or (centre and tonumber(centre[3]))
+    if not x or not y or not z then return nil end
+
+    local radius = math.max(1.0, tonumber(area.radius) or 60.0)
+
+    return {
+        x = x, y = y, z = z,
+        radius = radius,
+        -- Never allowed to exceed the radius itself: a separation bigger than
+        -- the area it has to fit inside cannot be satisfied by any placement,
+        -- and the relaxation below would just grind through every attempt
+        -- before giving up.
+        minSeparation = math.max(0.0, math.min(tonumber(area.minSeparation) or 10.0, radius)),
+        -- How tightly a team lands together. Defaults to a quarter of the
+        -- area, which reads as "same corner of the field" rather than "same
+        -- square metre".
+        teamRadius = math.max(1.0, tonumber(area.teamRadius) or (radius * 0.25)),
+    }
+end
+
+--- Turns an angle and a distance into a point, with a heading facing the
+--- centre.
+---
+--- FACING INWARDS is deliberate. A player dropped at the edge of a circle
+--- looking outwards is looking at empty scenery with the fight behind them,
+--- and the first thing they do is spin around.
+--- @return table point -- { x, y, z, w }
+local function pointAt(area, angle, distance)
+    local x = area.x + math.cos(angle) * distance
+    local y = area.y + math.sin(angle) * distance
+    -- Degrees, clockwise from north, which is what GTA headings are.
+    local heading = (math.deg(angle) + 180.0) % 360.0
+    return { x = x, y = y, z = area.z, w = heading }
+end
+
+--- Squared distance, because nothing here needs the square root -- it is
+--- only ever compared against another distance.
+local function distanceSquared(a, b)
+    local dx, dy = a.x - b.x, a.y - b.y
+    return dx * dx + dy * dy
+end
+
+--- One random point inside a disc, uniformly.
+---
+--- sqrt() ON THE RADIUS, and it is not decoration: sampling the distance
+--- uniformly instead crowds points towards the middle, because the area of a
+--- ring grows with its radius. On a spawn circle that reads as everybody
+--- landing in a heap around the centre with the edges empty.
+local function sampleDisc(rng, area, centreX, centreY, radius)
+    local angle = rng() * math.pi * 2.0
+    local distance = math.sqrt(rng()) * radius
+    return {
+        x = centreX + math.cos(angle) * distance,
+        y = centreY + math.sin(angle) * distance,
+        z = area.z,
+        w = (math.deg(math.atan(area.y - (centreY + math.sin(angle) * distance),
+                                area.x - (centreX + math.cos(angle) * distance))) + 360.0) % 360.0,
+    }
+end
+
+--- Places `count` players inside a circle, no two closer than `separation`.
+---
+--- ALWAYS TERMINATES, and that is the whole design. A fixed number of tries
+--- per player, then the separation is relaxed and they are tried again; the
+--- last round accepts whatever it is given. A placement loop that can spin
+--- forever on a crowded arena is worse than one that occasionally puts two
+--- players a little close together, because the first one hangs the match
+--- start and the second is survivable.
+--- @return table[] points
+local function scatterWithin(rng, area, centreX, centreY, radius, separation, count, placed)
+    local out = {}
+    local wanted = separation
+
+    for _ = 1, count do
+        local chosen
+        local floor = wanted
+
+        for round = 1, 5 do
+            for _ = 1, 12 do
+                local candidate = sampleDisc(rng, area, centreX, centreY, radius)
+                local ok = true
+                for _, other in ipairs(placed) do
+                    if distanceSquared(candidate, other) < floor * floor then ok = false break end
+                end
+                if ok then chosen = candidate break end
+            end
+            if chosen then break end
+            -- Nothing fitted. Ask for less rather than trying the same
+            -- question again, and on the final round ask for nothing.
+            floor = (round == 4) and 0.0 or floor * 0.6
+        end
+
+        chosen = chosen or sampleDisc(rng, area, centreX, centreY, radius)
+        placed[#placed + 1] = chosen
+        out[#out + 1] = chosen
+    end
+
+    return out
+end
+
+--- Works out where every player in a roster starts.
+---
+--- ONE ANSWER FOR THE WHOLE ROSTER, not one per player as they walk in.
+--- Keeping two players apart is a fact about the pair, so it cannot be
+--- decided by looking at either of them alone -- which is why this takes the
+--- roster and returns a plan rather than answering `where does this player
+--- go` one call at a time.
+---
+--- Free-for-all scatters everybody across the area. A team mode gives each
+--- team its own anchor, spaced evenly around the circle at a random rotation
+--- so the same team does not always start in the same corner, and lands that
+--- team's players around their own anchor -- together, and away from the
+--- others.
+---
+--- @param arenaKey any
+--- @param roster table[] -- { { src = number, team = string|nil }, ... }
+--- @param rng fun():number|nil -- injectable; defaults to math.random
+--- @return table<number, table>|nil plan -- src -> { x, y, z, w }, or nil when
+---         the arena defines no spawn area and the point list should be used
+function Arena.PlanSpawns(arenaKey, roster, rng)
+    local area = Arena.GetSpawnArea(arenaKey)
+    if not area or type(roster) ~= 'table' or #roster == 0 then return nil end
+
+    rng = rng or math.random
+
+    -- Grouped in ENCOUNTER ORDER rather than by sorting the keys, so the plan
+    -- for a given roster and a given rng is reproducible: a test that cannot
+    -- predict which team gets which corner cannot assert anything about them.
+    local order, byTeam = {}, {}
+    for _, entry in ipairs(roster) do
+        local team = Arena.IsKey(entry.team) and entry.team or nil
+        local key = team or '\0ffa'
+        if not byTeam[key] then
+            byTeam[key] = {}
+            order[#order + 1] = key
+        end
+        byTeam[key][#byTeam[key] + 1] = entry
+    end
+
+    local plan = {}
+    local placed = {}
+
+    -- FREE FOR ALL, or a team mode nobody has picked a side in yet.
+    if #order == 1 and order[1] == '\0ffa' then
+        local points = scatterWithin(rng, area, area.x, area.y, area.radius,
+            area.minSeparation, #byTeam['\0ffa'], placed)
+        for index, entry in ipairs(byTeam['\0ffa']) do
+            plan[entry.src] = points[index]
+        end
+        return plan
+    end
+
+    -- TEAMS. Anchors evenly around the circle, rotated at random so a team
+    -- does not always open in the same place, and pulled in from the edge so
+    -- a team's own spread stays inside the area.
+    local anchorDistance = math.max(0.0, area.radius - area.teamRadius)
+    local rotation = rng() * math.pi * 2.0
+
+    for index, key in ipairs(order) do
+        local angle = rotation + ((index - 1) / #order) * math.pi * 2.0
+        local anchor = pointAt(area, angle, anchorDistance)
+
+        local points = scatterWithin(rng, area, anchor.x, anchor.y, area.teamRadius,
+            area.minSeparation, #byTeam[key], placed)
+
+        for slot, entry in ipairs(byTeam[key]) do
+            local point = points[slot]
+            -- The team faces the middle together rather than each player
+            -- facing wherever their own sample happened to land.
+            point.w = anchor.w
+            plan[entry.src] = point
+        end
+    end
+
+    return plan
+end
+
 -- ======================================================================
 -- BETTING MATHS
 --

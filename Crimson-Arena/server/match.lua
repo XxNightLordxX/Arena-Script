@@ -738,7 +738,10 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
         arenaKey = match.arenaKey,
         modeKey = match.modeKey,
         teamKey = teamKey,
-        spawn = toPoint(Arena.PickSpawn(match.arenaKey, teamKey, index)),
+        -- The plan first, the point list as the fallback. An arena with no
+        -- spawnArea behaves exactly as it always did.
+        spawn = toPoint((match.spawnPlan and match.spawnPlan[player.src])
+            or Arena.PickSpawn(match.arenaKey, teamKey, index)),
         scatterRadius = scatterRadius(),
         loadout = player.loadout,
         boundary = boundaryPayload(arena),
@@ -1042,6 +1045,26 @@ function ArenaMatch.Start(matchId)
     -- Respawns carry on round-robin from where the initial placement left
     -- off.
     match.spawnCursor = #players
+
+    -- THE WHOLE ROSTER AT ONCE, before anybody is placed.
+    --
+    -- Keeping two players apart is a fact about the PAIR, so it cannot be
+    -- decided by looking at either one alone -- which is why this is planned
+    -- for everybody here rather than answered per player inside the loop
+    -- below. Nil when the arena defines no spawn area, and the exact point
+    -- list is used exactly as before.
+    match.spawnPlan = Arena.PlanSpawns(match.arenaKey, (function()
+        local roster = {}
+        for _, entry in ipairs(players) do
+            roster[#roster + 1] = { src = entry.src, team = teamOf(match, entry) }
+        end
+        return roster
+    end)())
+
+    if match.spawnPlan then
+        ArenaDebug('spawns: planned %d placement(s) inside %s\'s spawn area.',
+            #players, tostring(match.arenaKey))
+    end
 
     for index, player in ipairs(players) do
         player.kills = 0

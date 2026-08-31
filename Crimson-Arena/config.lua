@@ -141,6 +141,22 @@ Config.Lobby = {
 --         label = 'Del Perro Pier',
 --         description = 'Whatever players see under the name in the panel.',
 --         enabled = true,
+--         -- ONE POINT AND A RADIUS, instead of a list of exact spawns.
+--         --
+--         -- Set this and the arena works the rest out: every player lands
+--         -- somewhere random inside the circle, nobody closer to anybody
+--         -- else than `minSeparation`, and in a team mode each team lands
+--         -- together on its own side of it. `spawns` below is then unused.
+--         --
+--         -- Delete it, or set enabled = false, and the exact `spawns` list
+--         -- is used exactly as before.
+--         spawnArea = {
+--             enabled = true,
+--             center = vector3(x, y, z),      -- the middle of the circle
+--             radius = 100.0,                 -- how far out players may land
+--             minSeparation = 12.0,           -- never closer than this to another player
+--             teamRadius = 25.0,              -- how tightly one team lands together
+--         },
 --         spawns = {
 --             vector4(x, y, z, heading),
 --             vector4(x, y, z, heading),
@@ -154,8 +170,8 @@ Config.Lobby = {
 --             center = vector3(x, y, z),
 --             radius = 110.0,                 -- metres
 --             warningSeconds = 5,
---             damagePerTick = 8,
---             tickMs = 1000,
+--             damagePerTick = 20,             -- per tick, through armour too
+--             tickMs = 500,                   -- 40/second: dead in ~7.5s
 --         },
 --         weatherOverride = nil,              -- e.g. 'THUNDER'
 --         timeOverride = nil,                 -- e.g. { hour = 22, minute = 0 }
@@ -179,6 +195,22 @@ Config.Arenas = {
         label = 'Sandy Shores Airfield',
         description = 'Open tarmac. Nowhere to hide, long sightlines, rifles win.',
         enabled = true,
+
+        -- ONE POINT AND A RADIUS. Every player lands somewhere random
+        -- inside this circle, no two closer than minSeparation, and in a
+        -- team mode each team lands together on its own side of it.
+        --
+        -- Centred on this arena's own boundary and pulled inside it, so a
+        -- spawn cannot put somebody out of bounds and bleeding before the
+        -- round has started. Set enabled = false to use the exact `spawns`
+        -- list below instead.
+        spawnArea = {
+            enabled = true,
+            center = vector3(1722.00, 3270.00, 41.12),
+            radius = 97.5,
+            minSeparation = 12.0,
+            teamRadius = 26.0,
+        },
 
         -- Used in free-for-all, and as the fallback for any team with no
         -- entry in `teamSpawns` below. Spread wide across the apron so
@@ -214,8 +246,20 @@ Config.Arenas = {
             center = vector3(1722.00, 3270.00, 41.12),
             radius = 130.0,
             warningSeconds = 5,
-            damagePerTick = 8,
-            tickMs = 1000,
+            -- LETHAL, AND QUICKLY. 20 twice a second is 40 a second, so a
+            -- player who ignores the warning is dead in about seven and a
+            -- half seconds from a full bar and a full plate.
+            --
+            -- It used to be 8 once a second, which is 35 seconds through
+            -- health and armour -- long enough to walk out of the arena,
+            -- take a look around and stroll back with most of a bar left.
+            -- That is not a boundary, it is a suggestion.
+            --
+            -- Twice a second rather than once, too: the damage arrives as
+            -- steady pressure a player can feel and react to, instead of
+            -- four big unexplained hits.
+            damagePerTick = 20,
+            tickMs = 500,
         },
 
         weatherOverride = nil,
@@ -226,6 +270,22 @@ Config.Arenas = {
         label = 'Vespucci Sands',
         description = 'Flat open sand at the waterline. No cover at all -- pure aim.',
         enabled = true,
+
+        -- ONE POINT AND A RADIUS. Every player lands somewhere random
+        -- inside this circle, no two closer than minSeparation, and in a
+        -- team mode each team lands together on its own side of it.
+        --
+        -- Centred on this arena's own boundary and pulled inside it, so a
+        -- spawn cannot put somebody out of bounds and bleeding before the
+        -- round has started. Set enabled = false to use the exact `spawns`
+        -- list below instead.
+        spawnArea = {
+            enabled = true,
+            center = vector3(-1255.00, -1507.00, 3.20),
+            radius = 82.5,
+            minSeparation = 12.0,
+            teamRadius = 22.0,
+        },
 
         spawns = {
             vector4(-1222.60, -1531.40, 4.35, 35.0),
@@ -252,8 +312,20 @@ Config.Arenas = {
             center = vector3(-1255.00, -1507.00, 3.20),
             radius = 110.0,
             warningSeconds = 5,
-            damagePerTick = 8,
-            tickMs = 1000,
+            -- LETHAL, AND QUICKLY. 20 twice a second is 40 a second, so a
+            -- player who ignores the warning is dead in about seven and a
+            -- half seconds from a full bar and a full plate.
+            --
+            -- It used to be 8 once a second, which is 35 seconds through
+            -- health and armour -- long enough to walk out of the arena,
+            -- take a look around and stroll back with most of a bar left.
+            -- That is not a boundary, it is a suggestion.
+            --
+            -- Twice a second rather than once, too: the damage arrives as
+            -- steady pressure a player can feel and react to, instead of
+            -- four big unexplained hits.
+            damagePerTick = 20,
+            tickMs = 500,
         },
 
         weatherOverride = nil,

@@ -408,8 +408,13 @@ option {
     overscroll-behavior: contain;
 }
 
+/* THE SCROLLBAR HAS TO BE VISIBLE, and it was not.
+   A `--border` thumb on a `--bg` track is two neighbouring shades of the same
+   dark, so a list with more below the fold looked like a list that simply
+   ended. With a long weapon catalogue that is not a cosmetic problem: a player
+   who cannot tell the melee list scrolls concludes half of it is missing. */
 ::-webkit-scrollbar {
-    width: 0.5rem;
+    width: 0.65rem;
 }
 
 ::-webkit-scrollbar-track {
@@ -417,11 +422,20 @@ option {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--border);
+    background: var(--text-muted);
+    border: 2px solid var(--bg);
+    border-radius: 0.4rem;
 }
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--accent);
+}
+
+/* Firefox, which takes neither of the above. */
+.weapon-grid,
+.panel-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--text-muted) var(--bg);
 }
 
 .muted {
@@ -803,7 +817,15 @@ option {
 
 #loadout-melee {
     flex: 0 1 auto;
-    max-height: 38%;
+    /* A FLOOR AS WELL AS A CEILING.
+       The cap alone was tuned when ten blades were a long melee list. Against
+       eighteen it left the section showing about a row and a half out of five,
+       which reads as a list that has been cut in half rather than one that
+       scrolls. The floor keeps at least two full rows of cards visible at any
+       panel height, and the raised cap gives a long list a fairer share
+       without ever letting it swallow the firearms above it. */
+    min-height: 12.5rem;
+    max-height: 46%;
 }
 
 /* Name on the left, counter hard against the right edge of the list it

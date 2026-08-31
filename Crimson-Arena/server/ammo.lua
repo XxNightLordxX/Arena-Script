@@ -244,6 +244,14 @@ end
 --- @type table<string, table<number, table[]>>
 local issuedWeapons = {}
 
+--- Ammunition ITEMS handed out, per match, per player, by item name.
+---
+--- Kept apart from `issued` above, which is a running count for the console
+--- line and cannot be reclaimed against: knowing sixty rounds were given says
+--- nothing about which item to take back.
+--- @type table<string, table<number, table<string, integer>>>
+local issuedAmmo = {}
+
 --- Gives one player the loadout's weapons as ox_inventory items.
 --- @param ox table -- ox_inventory exports
 --- @param src number
@@ -360,6 +368,19 @@ local function reclaimWeapons(ox, src)
             byPlayer[src] = nil
         end
     end
+
+    -- AND THE ROUNDS. Same path, same reason: with the door off nothing else
+    -- takes them, and ammunition left behind is a slower version of the same
+    -- weapon shop -- a player farming rounds a match at a time.
+    for _, byPlayer in pairs(issuedAmmo) do
+        local given = byPlayer[src]
+        if given then
+            for item, count in pairs(given) do
+                pcall(function() return ox:RemoveItem(src, item, count) end)
+            end
+            byPlayer[src] = nil
+        end
+    end
 end
 
 --- Forgets a player's weapon record without removing anything -- for the
@@ -367,6 +388,7 @@ end
 --- @param src number
 local function forgetWeapons(src)
     for _, byPlayer in pairs(issuedWeapons) do byPlayer[src] = nil end
+    for _, byPlayer in pairs(issuedAmmo) do byPlayer[src] = nil end
 end
 
 -- ======================================================================
@@ -418,6 +440,18 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     issued[matchId] = issued[matchId] or {}
     local given = issued[matchId][src] or 0
 
+    -- BY NAME AS WELL AS BY COUNT, and the count alone was a leak.
+    --
+    -- A running total says how much was handed over; it does not say WHAT, so
+    -- there is nothing for the exit to remove. With the door on that never
+    -- showed, because the door clears the whole inventory anyway. With the
+    -- door off -- `stripOnEntry = false` -- the rounds simply stayed: join,
+    -- collect sixty, leave, keep them, repeat. The weapons were already
+    -- recorded by name for exactly this reason; the ammunition was not.
+    issuedAmmo[matchId] = issuedAmmo[matchId] or {}
+    local record = issuedAmmo[matchId][src] or {}
+    issuedAmmo[matchId][src] = record
+
     for _, entry in ipairs(loadout.weapons or {}) do
         local item = entry.ammoTypeItem
         local count = itemsFor(entry.ammo)
@@ -429,6 +463,7 @@ function ArenaAmmo.Issue(src, matchId, loadout)
             local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
             if ok and granted ~= false then
                 given = given + count
+                record[item] = (record[item] or 0) + count
             else
                 failed[#failed + 1] = entry.key or entry.weapon
                 ArenaLog('ammo: could not give %s x%d to %s -- check that item exists on this server.',

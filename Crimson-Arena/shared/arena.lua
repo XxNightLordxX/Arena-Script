@@ -593,16 +593,49 @@ function Arena.ResolveLoadout(request)
     -- `alwaysGive` is appended AFTER the slot limit is applied, on purpose:
     -- it is the operator's own list, not the player's, and it should not be
     -- possible to spend your slots in a way that denies you the house knife.
+    -- A CATALOGUE KEY IS RESOLVED, A RAW WEAPON NAME IS TAKEN AS WRITTEN.
+    --
+    -- This used to gate on `entry.weapon` alone and never look at the weapon
+    -- list, so the obvious way to write the operator's own line --
+    --     { key = 'knife' }
+    -- was skipped in silence, and the form that DID work produced a weapon
+    -- labelled 'WEAPON_KNIFE', in no category, paired with no ammunition,
+    -- because every one of those fields lives in the catalogue entry it never
+    -- read.
+    --
+    -- Now a `key` is looked up and the real entry is inherited -- label,
+    -- category, components, tint, and the ammo type that weapon actually
+    -- takes -- while `weapon` still works verbatim for handing out something
+    -- deliberately not in the list, like a parachute.
     for _, entry in ipairs(Config.Loadouts.alwaysGive or {}) do
-        if Arena.IsKey(entry.weapon) and not seen[entry.weapon] then
-            seen[entry.weapon] = true
+        local catalogue = Arena.IsKey(entry.key) and Arena.GetWeaponByKey(entry.key) or nil
+        local weapon = entry.weapon or (catalogue and catalogue.weapon)
+
+        if Arena.IsKey(weapon) and not seen[weapon] then
+            seen[weapon] = true
+
+            -- The amount, in order of who gets to decide: the operator's own
+            -- line, then the weapon's own default, then one -- never zero,
+            -- because a weapon handed out with no ammunition at all is a
+            -- weapon that looks broken to the player holding it.
+            local ammo = Arena.ToInt(entry.ammo)
+            if ammo == nil and catalogue then ammo = Arena.ToInt((catalogue.ammo or {}).default) end
+
+            local types = catalogue and Arena.GetAmmoTypes(catalogue) or nil
+            local firstType = types and types[1] or nil
+
             resolved[#resolved + 1] = {
-                key = entry.key or entry.weapon,
-                weapon = entry.weapon,
-                label = entry.label or entry.weapon,
-                ammo = math.max(0, Arena.ToInt(entry.ammo) or 0),
-                components = type(entry.components) == 'table' and entry.components or {},
-                tint = Arena.ToInt(entry.tint) or 0,
+                key = entry.key or (catalogue and catalogue.key) or weapon,
+                weapon = weapon,
+                label = entry.label or (catalogue and catalogue.label) or weapon,
+                category = entry.category or (catalogue and catalogue.category) or nil,
+                ammo = math.max(0, ammo or 1),
+                ammoType = firstType and firstType.key or nil,
+                ammoTypeLabel = firstType and firstType.label or nil,
+                ammoTypeItem = firstType and firstType.item or nil,
+                components = type(entry.components) == 'table' and entry.components
+                    or (catalogue and catalogue.components) or {},
+                tint = Arena.ToInt(entry.tint) or (catalogue and Arena.ToInt(catalogue.tint)) or 0,
                 alwaysGive = true,
             }
         end

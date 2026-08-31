@@ -214,8 +214,17 @@ end)
 -- ======================================================================
 
 t.test('picking the weapon the operator already hands out does not hand it out twice', function()
+    -- THE FIXTURE, asserted through the resolver rather than off the raw
+    -- config field. alwaysGive accepts either spelling -- a catalogue `key`,
+    -- which inherits the real entry, or a bare `weapon` name taken verbatim
+    -- -- and this test is about the guard between the two loops, not about
+    -- which form the shipped config happens to use today. Reading the field
+    -- directly made it fail the moment that choice changed, which is a test
+    -- failing for a reason it does not care about.
     local Config = stock.Config
-    t.equals(Config.Loadouts.alwaysGive[1].weapon, 'WEAPON_KNIFE')
+    local house = Config.Loadouts.alwaysGive[1]
+    local houseWeapon = house.weapon or Arena.GetWeaponByKey(house.key).weapon
+    t.equals(houseWeapon, 'WEAPON_KNIFE')
     t.equals(Arena.GetWeaponByKey('knife').weapon, 'WEAPON_KNIFE')
 
     local loadout, rejected = Arena.ResolveLoadout({

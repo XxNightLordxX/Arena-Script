@@ -248,10 +248,20 @@ end)
 -- ========================================================================
 
 t.test('the loadout weapon is handed over as an item, not left to the ped', function()
-    -- Deliberately with ammo items OFF -- the shipped setting. Weapons must
-    -- not be behind that toggle: putting them there is what would leave a
-    -- default install issuing nobody anything at all.
-    local s = newServer({ [1] = OWN })
+    -- AMMO ITEMS OFF, and now said out loud rather than inherited.
+    --
+    -- This used to lean on the shipped default, with a comment calling it
+    -- "the shipped setting" -- and then the shipped setting changed, and the
+    -- test started failing for a reason that had nothing to do with what it
+    -- checks. A test about weapons should not move when an ammunition
+    -- default does.
+    --
+    -- What it is really asserting: weapons are NOT behind the ammo-items
+    -- toggle. Putting them there would leave a default install issuing
+    -- nobody anything at all.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = false
+    end)
     s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
 
     t.equals(s.carrying(1), 'WEAPON_TEST',
@@ -317,6 +327,9 @@ t.test('DEFECT: with the door OFF the arena weapon has to be taken back by name'
     -- became a weapon shop.
     local s = newServer({ [1] = OWN }, function(c)
         c.Loadouts.inventory.stripOnEntry = false
+        -- Weapons only, so this stays a test about the weapon reclaim. The
+        -- ammunition reclaim is its own test below.
+        c.Loadouts.ammoItems.enabled = false
     end)
 
     s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
@@ -331,12 +344,37 @@ end)
 t.test('and taking it back does not touch anything of the player\'s own', function()
     local s = newServer({ [1] = OWN }, function(c)
         c.Loadouts.inventory.stripOnEntry = false
+        c.Loadouts.ammoItems.enabled = false
     end)
 
     s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
     s.ammo.Reclaim(1, 'match ended')
 
     t.equals(s.carrying(1), 'phone,water', 'their own kit is untouched, in order')
+end)
+
+t.test('DEFECT: the ROUNDS come back too, or the arena is a slower weapon shop', function()
+    -- The leak that turning ammo items on opened, and it is the same shape as
+    -- the weapon one above.
+    --
+    -- Issued ammunition was recorded as a running COUNT -- enough for the
+    -- console line, useless to the exit, because knowing sixty rounds were
+    -- given says nothing about which item to take back. With the door on that
+    -- never showed: the door clears the whole inventory anyway. With the door
+    -- off the rounds simply stayed. Join, collect sixty, leave, keep them,
+    -- repeat -- a weapon shop with extra steps.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.inventory.stripOnEntry = false
+        c.Loadouts.ammoItems.enabled = true
+    end)
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.contains(s.carrying(1), 'ammo-rifle',
+        'the rounds were never issued, so this proves nothing about taking them back')
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.carrying(1), 'phone,water',
+        'the rounds left with the player -- the arena is now a way to farm ammunition')
 end)
 
 -- ========================================================================

@@ -757,8 +757,15 @@ t.test('ValidateConfig catches an ammo option above the weapon max', function()
     t.contains(problems[1], '999')
 
     -- Why it matters: the option is on the list, so it passes the list check
-    -- and is then clamped -- a player picking 999 silently gets 60.
-    t.equals(arena.ResolveAmmo(arena.GetWeaponByKey('sniper'), 999), 60)
+    -- and is then clamped -- a player picking 999 silently gets that weapon's
+    -- max instead, with nothing telling them.
+    --
+    -- Read off the weapon rather than written as a number here. The behaviour
+    -- under test is the clamp, not the sniper's current allowance, and a test
+    -- that hardcodes a config value fails the next time somebody retunes it --
+    -- which teaches people to edit the test instead of reading it.
+    local tweakedSniper = arena.GetWeaponByKey('sniper')
+    t.equals(arena.ResolveAmmo(tweakedSniper, 999), tweakedSniper.ammo.max)
 end)
 
 t.test('ValidateConfig catches an arena with no spawns', function()

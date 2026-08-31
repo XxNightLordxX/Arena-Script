@@ -741,7 +741,16 @@ t.test('a non-admin gets nothing, not even a revive of themselves', function()
     t.equals(#f.commands, 0, 'anybody could revive anybody by typing a command')
 end)
 
-t.test('it says so rather than staying quiet when revive is switched off', function()
+t.test('/arenarevive still stands the player up when the handoff is switched off', function()
+    -- THE REGRESSION THIS EXISTS FOR. The command used to return early here,
+    -- logging "nothing would be called. Nothing was." -- true when the only
+    -- revive was somebody else's command, and false the moment the arena
+    -- started reviving players itself.
+    --
+    -- With `enabled = false` it was refusing to do the one thing that works,
+    -- and telling an admin lying on the floor that nothing could be done for
+    -- them. The switch governs telling OTHER scripts. It has never governed
+    -- whether this resource picks its own players up.
     local config = reviveConfig('revive %s')
     config.revive.enabled = false
 
@@ -750,9 +759,17 @@ t.test('it says so rather than staying quiet when revive is switched off', funct
 
     f.runCommand('arenarevive', 1, { '3' })
 
-    t.equals(#f.commands, 0)
+    local revived = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:revive' then revived = message end
+    end
+
+    t.isNotNil(revived, 'the command refused to revive because the handoff to other scripts is off')
+    t.equals(revived.target, 3, 'the wrong player was revived')
+
+    t.equals(#f.commands, 0, 'a command ran despite the handoff being switched off')
     t.contains(table.concat(f.logs, '\n'), 'enabled is off',
-        'a disabled revive did nothing and explained nothing')
+        'nothing said why no other script was told')
 end)
 
 t.test('the arena revives the player itself, before anything is configured', function()

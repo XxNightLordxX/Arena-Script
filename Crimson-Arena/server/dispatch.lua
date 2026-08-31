@@ -442,17 +442,30 @@ RegisterCommand('arenarevive', function(src, args)
         return
     end
 
+    -- NOT gated on revive.enabled, and that is the point.
+    --
+    -- It used to return here saying "nothing would be called, nothing was",
+    -- which stopped being true the moment the arena started reviving players
+    -- itself: the built-in revive runs first and unconditionally, so with
+    -- `enabled = false` this command was refusing to do the one thing that
+    -- actually works, and telling an admin on the floor that nothing could
+    -- be done for them.
     local revive = (Config.Dispatch or {}).revive
-    if type(revive) ~= 'table' or revive.enabled ~= true then
-        ArenaLog('arenarevive: Config.Dispatch.revive.enabled is off, so nothing would be called. Nothing was.')
-        return
-    end
+    local handoff = type(revive) == 'table' and revive.enabled == true
 
     ArenaLog('arenarevive: running the end-of-match revive against %d. Everything below is what a real match would do.',
         target)
     ArenaDispatch.Revive(target)
-    ArenaLog('arenarevive: done. If %d is still on the floor, the lines above are the whole of what this resource can do -- the revive is gated on something no permission grant reaches, and it needs that script\'s own export or event in Config.Dispatch.revive instead.',
-        target)
+
+    if handoff then
+        ArenaLog('arenarevive: done. %d has been stood up by the arena, and the handoff in Config.Dispatch.revive ran as well.',
+            target)
+        ArenaLog('arenarevive: if %d is up but something still treats them as dead, the arena has done its part -- that is your medical script\'s own death list, and it needs its revive named in Config.Dispatch.revive.',
+            target)
+    else
+        ArenaLog('arenarevive: done. %d has been stood up by the arena. Config.Dispatch.revive.enabled is off, so no other script was told -- which is fine unless one of them keeps its own death list.',
+            target)
+    end
 end, false)
 
 function ArenaDispatch.IsPlayerInArena(src)

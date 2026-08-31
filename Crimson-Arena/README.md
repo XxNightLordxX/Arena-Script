@@ -695,6 +695,83 @@ This section is kept whether or not it has anything in it: it is the right
 place to record the next one, and an operator who has read this file once will
 come back looking for it before concluding a setting is broken.
 
+### Getting back up after a death
+
+**There is nothing to configure for this, and nothing to grant.** The arena
+stands its own dead back up itself, in code. It knocked the player down, so
+putting them back on their feet is not a privileged act and it does not ask
+the server for permission to do it.
+
+That happens on a mid-match respawn and again when the match ends, so nobody
+walks out of the arena still on the floor. It works on a fresh install with an
+untouched `config.lua`, and it keeps working with
+`Config.Dispatch.revive.enabled = false`.
+
+#### Then what is `Config.Dispatch.revive` for?
+
+Telling **another** script. A medical or ambulance resource keeps its own
+record of who is dead, and nothing about resurrecting a ped reaches it — so a
+player can be up and walking while that script still has them listed as a
+casualty, and does whatever it does to a casualty. That handoff is the only
+thing those settings control.
+
+It ships with every list empty, and that is deliberate: the only things it
+could name are your server's own commands, events and exports, which this
+resource cannot know. A name that is close but not right looks wired up and
+calls nothing, which is worse than an empty list.
+
+So the startup report says:
+
+```
+revive: NOT configured. A player who dies in a match will be stood back up by the arena,
+  but your medical/ambulance script keeps its own death state and nothing here has told it.
+```
+
+**That is not "revives are broken".** Players get up either way. It is saying
+the handoff has not been given any names. If your medical script does not care
+— many do not, because they poll the ped's health rather than keeping a list —
+you can leave it exactly as it is.
+
+To wire it up, name whatever revives a player on your server:
+
+```lua
+serverEvents = { 'my_ambulance:server:revivePlayer' },
+clientEvents = { 'my_ambulance:client:revive' },
+exports      = { { resource = 'my_ambulance', export = 'RevivePlayer' } },
+```
+
+#### Why it does not run `/revive`
+
+It used to try, and on most servers it silently failed. A command run from a
+resource is run **by** that resource, and an admin command checks whether its
+caller is allowed — a resource is not an admin, so the command was refused.
+A refused command is not an error, it is a command that did nothing, so the
+console could honestly report running it while the player stayed on the floor.
+
+Granting the permission does not fix it either, because a resource may not
+grant itself permissions — correctly, since a server where it could is a
+server with no permissions at all. Both doors are shut, which is why the
+arena stopped knocking on them.
+
+`commands`, `grantSelfPermission` and `grantSelfAdmin` therefore all ship
+**off**. `grantSelfAdmin` in particular meant any flaw anywhere in this
+resource was a way to run any command on your box, and it was paying that for
+a capability nothing uses any more.
+
+If you still want the arena to run a command — because your medical script's
+revive *is* a command — add it, and grant the right in `server.cfg`, where
+the console is doing the granting and it actually works:
+
+```cfg
+add_ace resource.Crimson-Arena command.revive allow
+```
+
+Whatever the grant does, the result is now checked with
+`IsPrincipalAceAllowed` rather than trusted, so a refusal prints the exact
+lines to paste instead of a false "granted" line.
+
+---
+
 ---
 
 ## How a round plays out
@@ -891,6 +968,15 @@ Anything you build on those is subject to the same rule the rest of the resource
 - **Check the door.** `Config.Loadouts.inventory.stripOnEntry` is what decides whether a player's own kit is taken and given back. With it off, players keep everything they walked in with *and* everything the arena issued — that is the switch that makes the arena a source of free ammunition, and it exists only for servers that want that.
 - `refusing to drop match <id> -- <src> still holds <item> x<n>` means a match record was asked to close with ammunition outstanding and refused. The refusal is the safe outcome — the record stays reachable so a later reclaim can still find it — but it is worth reading as a sign that an exit path did not run.
 
+### A player is still dead
+
+- **`revive: NOT configured` in the console is not this.** Players are stood back up by the arena whatever that line says — see [getting back up after a death](#getting-back-up-after-a-death). That line is about telling a separate medical script, and on many servers there is nothing to tell.
+- **Type `/arenarevive <id>`.** It runs exactly the same path a finished match runs, on demand, so you can test it without playing a round. If that puts them up, the revive works and the problem is upstream of it.
+- **A player who looks alive but is treated as dead** — cuffed, bleeding out, refused a weapon, dragged by EMS — is the handoff, not the revive. Their ped is up; your medical script's own list has not been told. Name its revive in `Config.Dispatch.revive`.
+- **Still down right after a respawn?** Raise `Config.Dispatch.revive.afterRespawnDelayMs` (2000 by default). The revive has to land *after* the client has stood the ped up and finished the teleport; told sooner, whatever it does is undone by the teardown behind it.
+- **Still down after the match ends?** `Config.Dispatch.revive.sweepAfterMatchMs` (5000 by default) is a second blanket pass over everyone who played, run once everybody is home. `0` turns it off; raise it if your teleport home is slow.
+- `Access denied` in the console means something in `Config.Dispatch.revive.commands` is being refused by your server. Nothing needs that command — the list ships empty — so the fix is usually to empty it again.
+
 ### The leaderboard is empty
 
 - **Rows are queued, not written immediately.** A match that ended seconds ago appears after the next flush — `Config.Database.flushIntervalMs`, 60 seconds by default — and a flush also runs on resource stop. This is the usual answer.
@@ -920,8 +1006,16 @@ Set `Config.Debug = true` and restart. It is chatty by design — every stake, r
 
 ```sh
 luacheck .          # against .luacheckrc: exact native and global allow-list
-tests/run.sh        # every tests/*_spec.lua under plain lua5.4
+tests/run.sh        # every tests/*_spec.lua under plain lua5.4, then tests/panel/ under node
 ```
+
+`tests/panel/` is the odd one out: it loads the real, unmodified `html/app.js`
+in a DOM shim under Node and asserts what the panel puts **on the wire**, not
+what the source looks like. It exists because the panel is the one place a
+value can be computed correctly and still never arrive — a field the form
+never reads reaches the server as `undefined` and silently falls back, with
+both ends looking right. It runs in CI, and `run.sh` skips it with a notice
+where `node` is not installed rather than failing.
 
 Both run on every push and pull request via `.github/workflows/lua-check.yml`, along with `luac5.4 -p` over every `.lua` file.
 

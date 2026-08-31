@@ -222,6 +222,16 @@ local function newMatch(fixture, modeKey, picks)
         modeKey = modeKey,
         hostSource = 1,
         state = 'lobby',
+        -- LIVES LIVE ON THE MATCH NOW, not in config: the host picks the
+        -- number when they open the lobby, and every player seeded into that
+        -- match takes it from here. A fixture that builds a match by hand has
+        -- to say what the host chose -- left nil, every player is seeded with
+        -- one life and a round ends on the first death.
+        --
+        -- Resolved through the real function against this fixture's own
+        -- config, so a spec that sets Config.Match.lives still gets what it
+        -- asked for rather than a literal written here.
+        lives = fixture.Arena.ResolveLives(nil),
         entryFee = 0,
         createdAt = os.time(),
         startsAt = 0,

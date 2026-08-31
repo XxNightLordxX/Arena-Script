@@ -782,6 +782,39 @@ end
 --- @param requested any
 --- @return integer|nil amount
 --- @return string|nil reason
+--- How many lives a host may give a match, resolved from what they asked for.
+---
+--- Mirrors ResolveEntryFee deliberately: both are numbers a host picks at
+--- creation, both are clamped to a range the operator sets, and both REFUSE
+--- an out-of-range request rather than quietly clamping it -- a host who
+--- typed 99 and silently got 5 would believe they were running a different
+--- match to the one they are in.
+---
+--- Config.Match.lives takes two shapes. A plain number fixes the count for
+--- every match, which is how an operator takes the decision away without a
+--- second setting to find. A table opens it up to the host.
+--- @param requested any
+--- @return integer|nil lives
+--- @return string|nil reason
+function Arena.ResolveLives(requested)
+    local lives = Config.Match.lives or {}
+
+    if type(lives) ~= 'table' then
+        return math.max(1, Arena.ToInt(lives) or 1), nil
+    end
+
+    local minimum = math.max(1, Arena.ToInt(lives.min) or 1)
+    local maximum = math.max(minimum, Arena.ToInt(lives.max) or minimum)
+    local fallback = Arena.ClampInt(lives.default, minimum, maximum) or minimum
+
+    if lives.allowChoose ~= true then return fallback, nil end
+
+    local wanted = Arena.ToInt(requested)
+    if not wanted then return fallback, nil end
+    if wanted < minimum or wanted > maximum then return nil, 'error.lives_out_of_range' end
+    return wanted, nil
+end
+
 function Arena.ResolveEntryFee(requested)
     if Config.Betting.enabled ~= true then return nil, 'error.betting_disabled' end
 
@@ -1144,8 +1177,23 @@ function Arena.ValidateConfig()
         end
     end
 
-    local lives = Arena.ToInt(Config.Match.lives) or 1
-    if lives < 1 then
+    -- Two shapes are legal here: a plain number, which fixes the count for
+    -- every match, or a table the host picks from within.
+    local lives = Config.Match.lives
+    if type(lives) == 'table' then
+        local minimum = Arena.ToInt(lives.min) or 1
+        local maximum = Arena.ToInt(lives.max) or 1
+        if minimum < 1 then
+            complain('Config.Match.lives.min must be at least 1 -- a match nobody can lose is not a match.')
+        end
+        if maximum < minimum then
+            complain('Config.Match.lives.max is below its min, so no host could pick a valid number.')
+        end
+        local fallback = Arena.ToInt(lives.default)
+        if fallback and (fallback < minimum or fallback > maximum) then
+            complain('Config.Match.lives.default sits outside min/max -- it will be clamped.')
+        end
+    elseif (Arena.ToInt(lives) or 0) < 1 then
         complain('Config.Match.lives must be at least 1.')
     end
 

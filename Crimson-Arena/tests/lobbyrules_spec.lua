@@ -837,7 +837,12 @@ t.test('THE REAL FINISH: a kill ends the round through the sweep and the pot is 
     -- an empty winner list the pot is refunded rather than paid -- money
     -- comes back, nobody wins, and from a player's seat that is
     -- indistinguishable from the arena being broken.
-    local server = newArena({ [1] = 5000, [2] = 5000 })
+    -- One life, stated rather than inherited: lives now default to three and
+    -- a host may pick, so a single death no longer ends a round. This test is
+    -- about the MONEY reaching a winner, and it needs a round that finishes.
+    local server = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Match.lives = 1
+    end)
     local matchId = openLobby(server, 1000, { 1, 2 })
 
     t.equals(server.betting.GetPot(matchId), 2000)
@@ -859,6 +864,54 @@ t.test('THE REAL FINISH: a kill ends the round through the sweep and the pot is 
     t.equals(server.cash(1), 6000, 'the winner was not paid -- the pot was refunded instead')
     t.equals(server.cash(2), 4000, 'the loser got their stake back')
     t.equals(server.ledgerTotal(), 0)
+end)
+
+-- ========================================================================
+-- THE HOST CHOOSES HOW MANY LIVES
+-- ========================================================================
+
+t.test('the number the host picks is the number every player gets', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, lives = 5 })
+
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'the lobby was refused')
+    t.equals(match.lives, 5, 'the host\'s choice was not recorded on the match')
+
+    server.fire('joinMatch', 2, { matchId = match.id })
+    t.equals(match.players[2].lives, 5, 'a joiner is playing a different match to the host')
+end)
+
+t.test('a number outside the allowed range is refused, not quietly clamped', function()
+    -- A host who typed 99 and silently got 10 would believe they were running
+    -- a different match to the one they are in.
+    local server = newArena({ [1] = 5000 })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, lives = 99 })
+
+    t.equals(#server.lobby.All(), 0, 'an out-of-range choice opened a lobby anyway')
+end)
+
+t.test('a host who picks nothing gets the operator default', function()
+    local server = newArena({ [1] = 5000 })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+
+    local match = server.lobby.All()[1]
+    t.isNotNil(match)
+    t.equals(match.lives, 3, 'the shipped default is not what an unspecified match gets')
+end)
+
+t.test('an operator who fixes the number takes the choice away entirely', function()
+    -- Config.Match.lives as a plain number rather than a table: nobody
+    -- chooses, and a host asking for something else is ignored rather than
+    -- refused, because there is no range to be outside of.
+    local server = newArena({ [1] = 5000 }, function(config)
+        config.Match.lives = 2
+    end)
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, lives = 9 })
+
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'a fixed-lives server refused a match')
+    t.equals(match.lives, 2, 'the host overrode a number the operator had fixed')
 end)
 
 os.exit(t.summary())

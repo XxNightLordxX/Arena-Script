@@ -431,7 +431,19 @@ local function snapshotConfig()
         match = {
             minPlayers = math.max(1, Arena.ToInt(Config.Match.minPlayers) or 1),
             maxPlayers = math.max(0, Arena.ToInt(Config.Match.maxPlayers) or 0),
-            lives = math.max(1, Arena.ToInt(Config.Match.lives) or 1),
+            -- The default a host starts on, plus the range they may move
+            -- within. Sent because the SERVER enforces the range: a panel
+            -- that did not know it would offer a number the server refuses.
+            lives = Arena.ResolveLives(nil),
+            livesChoice = (function()
+                local lives = Config.Match.lives
+                if type(lives) ~= 'table' or lives.allowChoose ~= true then return nil end
+                local minimum = math.max(1, Arena.ToInt(lives.min) or 1)
+                return {
+                    min = minimum,
+                    max = math.max(minimum, Arena.ToInt(lives.max) or minimum),
+                }
+            end)(),
             roundTimeSeconds = math.max(0, Arena.ToInt(Config.Match.roundTimeSeconds) or 0),
             winCondition = Config.Match.winCondition,
             onlyHostCanStart = Config.Match.onlyHostCanStart ~= false,
@@ -629,7 +641,7 @@ end
 --- @param entryFee any
 --- @return string|nil matchId
 --- @return string|nil reasonKey
-function ArenaLobby.Create(src, arenaKey, modeKey, entryFee)
+function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives)
     local host = tonumber(src)
     if not host then return nil, 'error.invalid_request' end
     if not ArenaCanCreate(host) then return nil, 'error.no_permission' end
@@ -658,6 +670,12 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee)
         fee = amount
     end
 
+    -- REFUSED, NOT CLAMPED. A host who asked for a number this server does
+    -- not allow is told so, rather than being dropped into a match with a
+    -- different rule to the one they set.
+    local resolvedLives, livesReason = Arena.ResolveLives(lives)
+    if not resolvedLives then return nil, livesReason end
+
     local id = ArenaNewId()
     local hostName = ArenaPlayerName(host)
 
@@ -670,6 +688,11 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee)
         hostName = hostName,
         state = 'lobby',
         entryFee = fee,
+        -- The host's choice, resolved once here and read from the match for
+        -- the rest of its life. Re-reading Config.Match.lives when a player
+        -- joins would give a late joiner a different number to everybody
+        -- else the moment an operator edited the config mid-session.
+        lives = resolvedLives,
         createdAt = os.time(),
         -- 0, not nil, until server/match.lua schedules them: a nil field
         -- would simply be absent from the snapshot the panel receives.
@@ -761,7 +784,10 @@ function ArenaLobby.Join(src, matchId, teamKey)
         kills = 0,
         deaths = 0,
         alive = true,
-        lives = math.max(1, Arena.ToInt(Config.Match.lives) or 1),
+        -- FROM THE MATCH, not from config. The host chose this when they
+        -- opened the lobby, and somebody who joins later has to be playing
+        -- the same match as everybody already in it.
+        lives = math.max(1, Arena.ToInt(match.lives) or 1),
         stake = stake,
         joinedAt = os.time(),
         placement = 0,

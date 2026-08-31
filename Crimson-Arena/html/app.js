@@ -899,6 +899,7 @@
         }
         if (state.createFee === null) {
             state.createFee = int(((config.betting || {}).entryFee || {}).default, 0);
+            state.createLives = int((config.match || {}).lives, 1);
         }
         if (state.betAmount === null) {
             state.betAmount = int(((config.betting || {}).spectatorBets || {}).min, 0);
@@ -1146,6 +1147,30 @@
     function renderCreatePanel() {
         fillSelect(byId('create-arena'), arrayOf(cfg().arenas), state.createArena);
         fillSelect(byId('create-mode'), arrayOf(cfg().modes), state.createMode);
+
+        /* LIVES, when the operator lets the host pick. `livesChoice` is
+           absent when they have fixed it, and the row goes with it -- a
+           control that cannot change anything invites a host to try. */
+        var livesChoice = (cfg().match || {}).livesChoice;
+        var livesUsed = !!livesChoice;
+        show(byId('create-lives-row'), livesUsed);
+
+        var livesInput = byId('create-lives');
+        if (has(livesInput) && livesUsed) {
+            livesInput.min = String(int(livesChoice.min, 1));
+            livesInput.max = String(int(livesChoice.max, 1));
+            if (document.activeElement !== livesInput) {
+                livesInput.value = String(int(state.createLives, 1));
+            }
+        }
+
+        var livesHint = byId('create-lives-hint');
+        if (has(livesHint)) {
+            livesHint.textContent = livesUsed
+                ? 'How many times each player can die before they are out. '
+                  + int(livesChoice.min, 1) + ' to ' + int(livesChoice.max, 1) + '.'
+                : '';
+        }
 
         var fee = (betting().entryFee) || {};
         /* A free arena has no fee to set. Leaving a blank number input on
@@ -2862,6 +2887,11 @@
 
     /* Tracked on every keystroke so render() never has to write back into
        an input the player is still typing in. */
+    bind('create-lives', 'input', function (event) {
+        var choice = (cfg().match || {}).livesChoice || {};
+        state.createLives = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
+    });
+
     bind('create-fee', 'input', function (event) {
         var fee = (betting().entryFee) || {};
         state.createFee = clampInt(event.target.value, int(fee.min, 0), int(fee.max, 0));
@@ -2871,7 +2901,8 @@
         post('createMatch', {
             arenaKey: state.createArena,
             modeKey: state.createMode,
-            entryFee: int(state.createFee, 0)
+            entryFee: int(state.createFee, 0),
+            lives: int(state.createLives, 1)
         });
     });
 

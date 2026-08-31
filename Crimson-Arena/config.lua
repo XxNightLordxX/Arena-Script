@@ -1062,9 +1062,26 @@ Config.Match = {
     -- decided on kills.
     roundTimeSeconds = 600,
 
-    -- Lives per player. 1 = eliminated on first death. Higher values
-    -- respawn the player at a fresh spawn point.
-    lives = 1,
+    -- LIVES PER PLAYER. 1 = eliminated on the first death. Above that, a
+    -- player who dies is put back at a fresh spawn point with a full
+    -- loadout, and is only out once their last life is spent.
+    --
+    -- Three changes how a round feels more than any other number here: a
+    -- single unlucky opening exchange no longer ends somebody's match, and
+    -- the round lasts long enough for position and ammunition to matter.
+    -- Watch roundTimeSeconds alongside it -- three lives each across a full
+    -- lobby is a much longer fight than one.
+    -- Set a plain number here instead -- `lives = 3` -- to fix it for every
+    -- match and take the choice away.
+    lives = {
+        allowChoose = true,
+        min = 1,
+        max = 10,
+        default = 3,
+    },
+
+    -- How long a player lies there before being put back in. Long enough to
+    -- feel like a death, short enough not to be a punishment on its own.
     respawnDelaySeconds = 5,
 
     -- HOW A MATCH IS WON.

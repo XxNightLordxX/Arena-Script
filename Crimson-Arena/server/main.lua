@@ -254,7 +254,7 @@ onClient('crimson_arena:server:createMatch', RATE.create, function(src, data)
 
     -- A missing mode or fee is a panel that was never touched; the lobby
     -- falls back to the operator's defaults for both.
-    local matchId, reason = ArenaLobby.Create(src, arenaKey, keyArg(payload.modeKey), intArg(payload.entryFee))
+    local matchId, reason = ArenaLobby.Create(src, arenaKey, keyArg(payload.modeKey), intArg(payload.entryFee), intArg(payload.lives))
     if not matchId then return refuse(src, reason) end
 
     ArenaNotifyKey(src, 'notify.match_created', 'success')

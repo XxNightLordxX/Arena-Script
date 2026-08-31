@@ -53,7 +53,8 @@
         "team_unavailable": "That side is not in play.",
         "teams_unbalanced": "The sides are too lopsided to start.",
         "too_many_matches": "Too many matches already running. Wait for one to finish.",
-        "host_picks_loadout": "The host picks the loadout for this match."
+        "host_picks_loadout": "The host picks the loadout for this match.",
+        "lives_out_of_range": "That is not a number of lives this server allows."
     },
     "match": {
         "aborted": "Match called off. Every stake went back.",

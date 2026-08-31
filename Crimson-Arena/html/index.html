@@ -81,6 +81,15 @@
                     <p id="create-fee-hint" class="hint"></p>
                 </div>
 
+                <!-- Hidden when the operator has fixed the number: a control
+                     that cannot change anything is worse than no control,
+                     because it invites a host to try. -->
+                <div id="create-lives-row" class="field">
+                    <span class="field-label">Lives Each</span>
+                    <input id="create-lives" type="number" min="1" step="1">
+                    <p id="create-lives-hint" class="hint"></p>
+                </div>
+
                 <button id="create-submit" class="btn btn-primary" type="button">Create Match</button>
                 <!-- Says what pressing it does, or why it cannot be pressed.
                      A greyed-out button with no reason reads as broken. -->

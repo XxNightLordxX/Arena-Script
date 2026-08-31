@@ -649,7 +649,13 @@ local function newLobby()
     function lobby.Broadcast() end
     function lobby.AddSpectator(src, matchId)
         local match = matches[matchId]
-        if match then match.spectators[src] = true end
+        if not match then return false end
+        match.spectators[src] = true
+        -- `true`, because the real one returns it and ArenaMatch.OnDeath
+        -- reads it with `== true` to decide whether an eliminated player is
+        -- handed the camera at all. A double that answered nil made the
+        -- elimination path in the spectator tests below the wrong shape.
+        return true
     end
     function lobby.RemoveSpectator(src)
         for _, match in pairs(matches) do match.spectators[src] = nil end

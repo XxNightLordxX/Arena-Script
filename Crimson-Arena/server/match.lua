@@ -1006,7 +1006,9 @@ function ArenaMatch.Start(matchId)
 
     local arena = Arena.GetArenaByKey(match.arenaKey)
     local freeze = math.max(0, Arena.ToInt(Config.Match.startCountdownSeconds) or 0)
-    local lives = math.max(1, Arena.ToInt(Config.Match.lives) or 1)
+    -- The host's choice, taken from the match rather than re-read from
+    -- config, so a round plays the rule it was opened with.
+    local lives = math.max(1, Arena.ToInt(match.lives) or 1)
 
     match.state = 'countdown'
     match.winners = nil
@@ -1522,7 +1524,10 @@ end
 --- replicates to that client: no peds, no gunfire, and a spectator camera
 --- pointed at a player id its game does not have. Spectators are attached
 --- and detached by server/lobby.lua from three call sites this file does not
---- own, so they are reconciled rather than intercepted.
+--- own, so they are reconciled rather than intercepted. Being the only thing
+--- that puts them in the arena, this is also the only thing that can PUBLISH
+--- that it did -- so the dispatch flag is raised and dropped here alongside
+--- the bucket, for spectators and for nobody else.
 ---
 --- TWO: EVERY LEAK, INCLUDING THE ONES NOT WRITTEN YET. sendExitArena is the
 --- exit this file controls, and it is not the only way out of a countdown or
@@ -1537,22 +1542,59 @@ end
 local function syncMatchBuckets()
     local wanted = {}
 
+    --- Of `wanted`, the ones who are in a match's instance ONLY because they
+    --- are watching it. The dispatch flag is raised for these and for nobody
+    --- else in this function -- see the enter loop for why that distinction
+    --- is load-bearing rather than tidiness.
+    --- @type table<number, boolean>
+    local spectatorOnly = {}
+
     for _, match in ipairs(ArenaLobby.All()) do
         -- 'countdown' as well as 'live': Start() has already put the
         -- fighters in the arena by then, so a match in its frozen countdown
         -- is every bit as instanced as one being fought.
         if match.state == 'countdown' or match.state == 'live' then
-            for src in pairs(match.players) do wanted[src] = match.id end
+            for src in pairs(match.players) do
+                wanted[src] = match.id
+                -- CLAIMED AS A FIGHTER WHICHEVER ORDER ArenaLobby.All() CAME
+                -- BACK IN. Nothing orders that array, so a player fighting in
+                -- one match while the registry still calls them a spectator of
+                -- another can be reached by the spectator loop below first.
+                -- Fighters win the tie either way: this assignment is
+                -- unconditional, and it takes the spectator claim back with it.
+                spectatorOnly[src] = nil
+            end
             -- An eliminated fighter who stayed to watch is in both tables and
             -- has already been claimed by the loop above.
             for src in pairs(match.spectators or {}) do
-                if wanted[src] == nil then wanted[src] = match.id end
+                if wanted[src] == nil then
+                    wanted[src] = match.id
+                    spectatorOnly[src] = true
+                end
             end
         end
     end
 
     for src, matchId in pairs(wanted) do
         if instanced[src] ~= matchId then
+            -- THE FLAG FOLLOWS THE BUCKET, for the one group no choke point
+            -- covers. sendEnterArena raises it for every fighter in the same
+            -- breath as it instances them; a spectator is put in that same
+            -- instance by this sweep and was left unflagged, so the state-bag
+            -- guard an operator pastes into their dispatch script suppressed
+            -- nothing their client raised -- and their client is inside the
+            -- fight, seeing every shot of it.
+            --
+            -- FIGHTERS ARE DELIBERATELY NOT FLAGGED HERE. 'countdown' names
+            -- the LOBBY countdown as well as the frozen one, so this loop
+            -- reaches players who have not been teleported anywhere yet.
+            -- Flagging those would suppress the alerts of someone standing in
+            -- the middle of town -- the hole ArenaDispatch.Set's own comment
+            -- refuses to open -- and would make server/lobby.lua's
+            -- playersArePlaced read a filling lobby as a round in progress and
+            -- refuse its host the cancel button. sendEnterArena is what raises
+            -- a fighter's flag, and it runs when they are actually placed.
+            if spectatorOnly[src] then ArenaDispatch.Set(src, matchId) end
             ArenaDispatch.EnterBucket(src, matchId)
             instanced[src] = matchId
         end
@@ -1563,6 +1605,13 @@ local function syncMatchBuckets()
     for src in pairs(instanced) do
         if wanted[src] == nil then
             ArenaDispatch.ExitBucket(src)
+            -- Paired with the bucket for the reason sendExitArena gives: put
+            -- the two on separate call sites and they can disagree about who
+            -- is in a match. Unconditional and safe on somebody who was never
+            -- flagged -- ArenaDispatch.Clear documents that no-op -- and an
+            -- eliminated fighter cannot reach it, because match.players kept
+            -- them in `wanted` above.
+            ArenaDispatch.Clear(src)
             instanced[src] = nil
         end
     end

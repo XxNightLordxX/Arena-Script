@@ -267,22 +267,79 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen)
 end
 
 -- ======================================================================
--- MATCH-ONLY THREADS
+-- IN-ARENA THREADS
 --
--- Every loop this file starts -- the two here and the blip loop below --
--- is gated on `matchLive` AND the entry token, so they end when the round
--- ends and cannot survive into the next one.
+-- Every loop this file starts is gated on the entry token, so none of them
+-- can survive into the next match. What they are gated on BESIDES the token
+-- differs, and the difference is the point:
+--
+--   * the death watch runs from the moment the player is put in the arena,
+--     because they are standing in it -- armed, and shootable -- for the
+--     whole of the start countdown;
+--   * the boundary and the blips wait for `matchLive`, which is deliberate.
+--     A sphere that bit during the countdown would bleed fighters who are
+--     frozen and cannot walk back inside it, and there is no scoreboard to
+--     draw a blip from until the round produces one.
 -- ======================================================================
 
---- Per-frame while live: report the death once, and shut the doors a
---- player could otherwise use to walk out of the arena sideways -- the
---- pause menu's map (teleport/respawn exploits and quitting to the lobby
---- both live behind it) and the multiplayer overlay.
-local function startLiveThread()
+--- A death BEFORE the weapons go live. Nobody is out, nothing is scored,
+--- and the player has to be on their feet when the round starts.
+---
+--- DELIBERATELY NOT REPORTED. ArenaMatch.OnDeath refuses anything from a
+--- match that is not 'live' yet, so the report would be dropped on the
+--- floor having already set `deathReported` -- and the respawn that clears
+--- that flag again would never be sent. The player would then sit out the
+--- entire round inside ClearDeadState's hold, invisible and frozen, for a
+--- death that never counted. This side settles it alone instead.
+---
+--- Nor is it gated on Config.Dispatch the way ClearDeadState is: those keys
+--- choose who handles a death the round is going to score, and this is not
+--- one of those. Left dead here, nothing else would ever pick this player
+--- up -- the server has no record that they went down.
+--- @param ped integer
+local function reviveForCountdown(ped)
+    local x, y, z = table.unpack(GetEntityCoords(ped))
+
+    NetworkResurrectLocalPlayer(x, y, z, GetEntityHeading(ped), true, false)
+
+    -- The resurrect can hand back a different handle, so nothing below may
+    -- use the one that was passed in.
+    local revived = PlayerPedId()
+    ClearPedBloodDamage(revived)
+
+    -- Back to exactly what the server armed them with on the way in: full
+    -- health and armour, and -- on a server with no inventory resource
+    -- holding the weapons as items -- the guns again too.
+    applyLoadout(revived, currentMatch and currentMatch.loadout)
+
+    -- Held still again, for the reason entry froze them in the first place:
+    -- the countdown is still running and dying is not a way to start moving
+    -- early. Nothing can strand them here -- both matchLive and leaveArena
+    -- unfreeze unconditionally.
+    FreezeEntityPosition(revived, true)
+end
+
+--- Per-frame from entry until the player is out of the arena: catch their
+--- death, and shut the doors they could otherwise use to walk out sideways
+--- -- the pause menu's map (teleport/respawn exploits and quitting to the
+--- lobby both live behind it) and the multiplayer overlay.
+---
+--- STARTED AT ENTRY RATHER THAN AT `matchLive`, and that is the whole
+--- reason it is a separate function from the two loops below. Players are
+--- placed in the arena at the top of the start countdown, and a shot fired
+--- during it kills exactly like any other. Watching only from `matchLive`
+--- left that kill invisible on every side at once: never reported, so the
+--- server never scored it; never cleared, so the operator's medical script
+--- found a real corpse and paged an ambulance into a routing bucket it
+--- cannot reach; and never resurrected, so the victim entered the round
+--- lying on the floor. The blocked controls come earlier for the same
+--- reason -- the pause menu was an open exit for the length of the
+--- countdown.
+local function startArenaThread()
     local token = matchToken
 
     CreateThread(function()
-        while matchLive and matchToken == token do
+        while currentMatch and matchToken == token do
             DisableControlAction(0, 199, true)      -- P, pause menu
             DisableControlAction(0, 200, true)      -- ESC, pause menu
             DisableControlAction(0, 322, true)      -- ESC, frontend
@@ -293,26 +350,35 @@ local function startLiveThread()
 
             local ped = PlayerPedId()
             if not deathReported and IsEntityDead(ped) then
-                deathReported = true
+                if not matchLive then
+                    -- Still counting down, so there is no round for this to
+                    -- have happened in. `deathReported` stays down on
+                    -- purpose: the death that counts is the next one.
+                    reviveForCountdown(ped)
+                else
+                    deathReported = true
 
-                -- A hint, not a verdict. The server checks the claim against
-                -- its own record of who was alive and on which team.
-                local killerServerId
-                local source = GetPedSourceOfDeath(ped)
-                if source ~= 0 and source ~= ped and IsEntityAPed(source) and IsPedAPlayer(source) then
-                    local index = NetworkGetPlayerIndexFromPed(source)
-                    if index and index ~= -1 then
-                        killerServerId = GetPlayerServerId(index)
+                    -- A hint, not a verdict. The server checks the claim
+                    -- against its own record of who was alive and on which
+                    -- team.
+                    local killerServerId
+                    local source = GetPedSourceOfDeath(ped)
+                    if source ~= 0 and source ~= ped and IsEntityAPed(source) and IsPedAPlayer(source) then
+                        local index = NetworkGetPlayerIndexFromPed(source)
+                        if index and index ~= -1 then
+                            killerServerId = GetPlayerServerId(index)
+                        end
                     end
+
+                    TriggerServerEvent('crimson_arena:server:reportDeath', { killerServerId = killerServerId })
+
+                    -- Reported first, cleared second. The server's record of
+                    -- the kill must not depend on how fast this runs, and
+                    -- this must run before any medical script's polling loop
+                    -- comes round and finds a casualty to send an ambulance
+                    -- to.
+                    ArenaDispatch.ClearDeadState(ped)
                 end
-
-                TriggerServerEvent('crimson_arena:server:reportDeath', { killerServerId = killerServerId })
-
-                -- Reported first, cleared second. The server's record of the
-                -- kill must not depend on how fast this runs, and this must
-                -- run before any medical script's polling loop comes round
-                -- and finds a casualty to send an ambulance to.
-                ArenaDispatch.ClearDeadState(ped)
             end
 
             Wait(0)
@@ -342,7 +408,7 @@ local function startBoundaryThread(boundary)
             -- either a corpse or one parked inside ClearDeadState's hold --
             -- neither is a fighter who could walk back inside the sphere,
             -- and both are frozen where they fell. Bleeding one kills it a
-            -- second time, and the live thread reports and clears a death
+            -- second time, and the arena thread reports and clears a death
             -- once: that second one stays, which is the casualty
             -- clearDeadStateImmediately exists to stop a medical script
             -- ever finding.
@@ -616,6 +682,10 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
         -- than trusted as they arrive.
         modeKey = data.modeKey,
         teamKey = data.teamKey,
+        -- Kept rather than used and dropped: a death during the start
+        -- countdown is answered on this side alone, and standing that
+        -- player back up means handing them the same loadout again.
+        loadout = data.loadout,
     }
 
     -- Last round's board must not seed this round's blips.
@@ -645,6 +715,12 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
     applyLoadout(ped, data.loadout)
 
+    -- Watching starts HERE, not at matchLive: the countdown below is spent
+    -- standing in the arena within range of everybody else's opening shot.
+    -- Started after placeAt rather than before it because a countdown
+    -- revive replaces the ped handle, and `ped` above is still in use.
+    startArenaThread()
+
     if data.weatherOverride then SetWeatherTypeNowPersist(data.weatherOverride) end
     if type(data.timeOverride) == 'table' then
         NetworkOverrideClockTime(data.timeOverride.hour or 12, data.timeOverride.minute or 0, 0)
@@ -663,14 +739,15 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     end
 end)
 
---- The round is on: this is the only thing that opens the match-only
---- threads, so the boundary never bites during the start countdown.
+--- The round is on. The two loops opened here are the ones that have
+--- nothing to do until it is -- the boundary would otherwise bleed fighters
+--- frozen in place by the countdown, and the blips have no scoreboard to
+--- draw from yet. The death watch is already running; entry started it.
 RegisterNetEvent('crimson_arena:client:matchLive', function()
     if not currentMatch or matchLive then return end
 
     matchLive = true
     FreezeEntityPosition(PlayerPedId(), false)
-    startLiveThread()
     startBoundaryThread(currentMatch.boundary)
     startBlipThread()
 end)

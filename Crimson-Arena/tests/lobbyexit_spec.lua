@@ -228,8 +228,19 @@ end
 --- The same match, one step further on, with weapons live.
 --- @return table server
 --- @return string matchId
+--- A live round where ONE death eliminates.
+---
+--- Config.Match.lives ships at 3, so a single reported death now costs a
+--- life and respawns the player rather than putting them out. Every test
+--- below is about what happens to somebody who is ELIMINATED, so they set
+--- the precondition they need rather than leaning on a default that has
+--- since changed underneath them -- and they keep testing elimination
+--- rather than quietly becoming tests of respawning.
 local function liveRound(mutate)
-    local server, matchId = frozenCountdown(mutate)
+    local server, matchId = frozenCountdown(function(config)
+        config.Match.lives = 1
+        if mutate then mutate(config) end
+    end)
     server.step(1)
     t.isTrue(server.match.IsLive(matchId), 'the match never went live')
     return server, matchId
@@ -408,6 +419,39 @@ t.test('the eliminated fighter keeps their row, so the results board can still r
     t.isNotNil(match.players[2], 'admitting them as a spectator must not cost them their row')
     t.isFalse(match.players[2].alive)
     t.equals(match.players[2].lives, 0)
+end)
+
+t.test('with the shipped three lives, one death costs a life instead of the match', function()
+    -- The other side of the helper above, and the behaviour that actually
+    -- ships now: a single unlucky opening exchange must not end somebody's
+    -- round.
+    local server, matchId = frozenCountdown()
+    server.step(1)
+
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+
+    local match = server.lobby.Get(matchId)
+    t.isNotNil(match, 'the round ended on the first death of a three-life match')
+    t.equals(match.players[2].lives, 2, 'the death did not cost a life')
+    t.isNil(match.spectators[2], 'a player with lives left was made a spectator')
+end)
+
+t.test('a second death while waiting to respawn is not counted twice', function()
+    -- Learned by writing the test below wrongly first: firing three deaths
+    -- back to back only spends ONE life, because a player lying there
+    -- waiting on respawnDelaySeconds is already dead and cannot die again.
+    -- That is correct, and worth pinning -- a double-counted death would
+    -- burn a player's whole match on one kill.
+    local server, matchId = frozenCountdown()
+    server.step(1)
+
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+
+    local match = server.lobby.Get(matchId)
+    t.isNotNil(match, 'three reports in one breath ended a three-life round')
+    t.equals(match.players[2].lives, 2, 'a death was counted more than once')
 end)
 
 t.test('a fighter who is still alive may not spectate the match they are fighting in', function()

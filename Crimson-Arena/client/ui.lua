@@ -201,11 +201,41 @@ register('refresh', function()
     TriggerServerEvent('crimson_arena:server:requestState')
 end)
 
+-- EVERY FIELD THE PANEL SENDS IS NAMED HERE, and that is the whole job of
+-- these handlers -- which is exactly why a missing name is so quiet.
+--
+-- `lives` was absent from this list. The panel computed it correctly, the
+-- server read it correctly, and this relay in the middle dropped it on the
+-- floor: every match was created on the operator's default no matter what
+-- the host typed, with nothing anywhere reporting a problem. Both ends
+-- looked right because both ends WERE right.
 register('createMatch', function(data)
     TriggerServerEvent('crimson_arena:server:createMatch', {
         arenaKey = data.arenaKey,
         modeKey = data.modeKey,
         entryFee = data.entryFee,
+        lives = data.lives,
+    })
+end)
+
+--- The host editing a lobby they have already opened.
+---
+--- THIS WAS MISSING ENTIRELY. The panel posts `updateMatch`, the server
+--- listens for `crimson_arena:server:updateMatch`, and nothing on the client
+--- joined them up -- so "Apply changes" reached a callback that did not
+--- exist. A fetch to an unregistered NUI callback does not throw and does not
+--- warn; `register` answers every call it receives, but it never received
+--- this one, so the panel got its answer from the runtime and carried on as
+--- though the edit had been applied.
+---
+--- No entryFee: the fee is frozen once a lobby is open, and the panel
+--- deliberately does not send one rather than sending a value the server
+--- would refuse.
+register('updateMatch', function(data)
+    TriggerServerEvent('crimson_arena:server:updateMatch', {
+        arenaKey = data.arenaKey,
+        modeKey = data.modeKey,
+        lives = data.lives,
     })
 end)
 

@@ -771,9 +771,12 @@ local function scheduleRespawn(match, player)
         entry.loadout = loadout
         entry.alive = true
 
-        -- Same reason as the exit path: the arena puts them back on their
-        -- feet, and the script that recorded the death has to be told too or
-        -- the player fights the rest of the round flagged as a casualty.
+        -- Every time they are stood back up, not only on the way out. A
+        -- player who died mid-match is flagged dead by the medical script
+        -- from that moment, and the arena putting them on their feet does
+        -- not reach it -- so without this they fight the rest of the round
+        -- as a casualty, and whatever that script does to a dead player it
+        -- keeps doing.
         ArenaDispatch.Revive(src)
 
         TriggerClientEvent('crimson_arena:client:respawn', src, {

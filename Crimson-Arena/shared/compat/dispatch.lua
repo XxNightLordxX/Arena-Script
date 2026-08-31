@@ -545,12 +545,17 @@ function ArenaCompat.Report()
     -- broken, with nothing anywhere saying why. So it says why, here, at
     -- every start.
     local revive = (Config.Dispatch or {}).revive
-    local reviveOn = type(revive) == 'table' and revive.enabled == true
-        and ((#(revive.serverEvents or {}) + #(revive.clientEvents or {}) + #(revive.exports or {})) > 0)
+    local named = type(revive) == 'table'
+        and (#(revive.commands or {}) + #(revive.serverEvents or {})
+             + #(revive.clientEvents or {}) + #(revive.exports or {}))
+        or 0
+    local reviveOn = type(revive) == 'table' and revive.enabled == true and named > 0
 
     if reviveOn then
-        lines[#lines + 1] = ('revive: configured -- %d event(s) and %d export(s) will be called when a player is stood back up.')
-            :format(#(revive.serverEvents or {}) + #(revive.clientEvents or {}), #(revive.exports or {}))
+        lines[#lines + 1] = ('revive: configured -- %d command(s), %d event(s) and %d export(s) run when a player leaves the arena.')
+            :format(#(revive.commands or {}),
+                #(revive.serverEvents or {}) + #(revive.clientEvents or {}),
+                #(revive.exports or {}))
     else
         lines[#lines + 1] = 'revive: NOT configured. A player who dies in a match will be stood back up by the arena,'
         lines[#lines + 1] = '  but your medical/ambulance script keeps its own death state and nothing here has told it.'

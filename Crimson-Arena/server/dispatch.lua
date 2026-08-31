@@ -176,6 +176,38 @@ function ArenaDispatch.Revive(src)
     local revive = (Config.Dispatch or {}).revive
     if type(revive) ~= 'table' or revive.enabled ~= true then return end
 
+    -- COMMANDS, and this is the form most servers actually have. An
+    -- ambulance script's revive is very often just `/revive <id>`, run by an
+    -- admin, with no event and no export behind it worth calling directly.
+    -- ExecuteCommand runs it from the server console, which is the identity
+    -- a restricted command already trusts.
+    for _, template in ipairs(revive.commands or {}) do
+        if Arena.IsKey(template) then
+            -- `%s` is where the player's id goes. A template without one is
+            -- taken as the bare command and the id is appended, because
+            -- "revive" and "revive %s" are both things an operator will
+            -- reasonably write and only one of them is documented.
+            local line
+            if template:find('%%') then
+                local ok, formatted = pcall(string.format, template, src)
+                line = ok and formatted or nil
+                if not line then
+                    ArenaLog('revive: could not build a command from "%s" -- use %%s where the player id goes.',
+                        template)
+                end
+            else
+                line = ('%s %d'):format(template, src)
+            end
+
+            if line then
+                local ok, err = pcall(ExecuteCommand, line)
+                if not ok then
+                    ArenaLog('revive: command "%s" errored (%s).', line, tostring(err))
+                end
+            end
+        end
+    end
+
     for _, name in ipairs(revive.serverEvents or {}) do
         if Arena.IsKey(name) then
             -- pcall because these are other people's handlers: one that

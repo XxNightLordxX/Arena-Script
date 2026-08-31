@@ -29,8 +29,10 @@ local function newFixture(dispatchConfig)
     local events = {}        -- every TriggerEvent, in order
     local handlers = {}      -- AddEventHandler registrations
     local logs = {}
+    local commands = {}      -- every ExecuteCommand line, in order
 
     local env = Sandbox.newEnv({
+        ExecuteCommand = function(line) commands[#commands + 1] = line end,
         Player = function(src)
             return {
                 state = {
@@ -67,6 +69,7 @@ local function newFixture(dispatchConfig)
         bagWrites = bagWrites,
         events = events,
         logs = logs,
+        commands = commands,
         --- Runs every handler registered for `name`, the way FXServer would.
         fire = function(name, ...)
             for _, fn in ipairs(handlers[name] or {}) do fn(...) end
@@ -321,6 +324,88 @@ local function newCompat(mutate)
 end
 
 -- ========================================================================
+-- TELLING THE AMBULANCE SCRIPT THEY ARE ALIVE
+--
+-- The arena stands its own dead back up. That is the whole job for the ped
+-- and none of it for the server: a medical script keeps its own record and
+-- nothing about resurrecting a ped reaches it, so a player who died walks
+-- out still dead as far as that script is concerned.
+--
+-- Most servers' revive is a command -- `/revive <id>`, run by an admin --
+-- rather than an event or an export, so that is the form these cover.
+-- ========================================================================
+
+--- A dispatch config with revive wired to one command template.
+local function reviveConfig(template)
+    return {
+        enabled = true,
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = { enabled = false, disableExports = {}, cancelEvents = {} },
+        vanillaPolice = { enabled = false },
+        revive = {
+            enabled = true,
+            commands = { template },
+            serverEvents = {},
+            clientEvents = {},
+            exports = {},
+        },
+    }
+end
+
+t.test('the revive command runs with the player id substituted in', function()
+    local f = newFixture(reviveConfig('revive %s'))
+    f.D.Revive(7)
+
+    t.equals(#f.commands, 1, 'the command did not run')
+    t.equals(f.commands[1], 'revive 7', 'the wrong player was revived')
+end)
+
+t.test('a template with no placeholder gets the id appended', function()
+    -- 'revive' and 'revive %s' are both things an operator will reasonably
+    -- write, and only one of them is documented. Guessing wrong here revives
+    -- nobody, silently.
+    local f = newFixture(reviveConfig('revive'))
+    f.D.Revive(12)
+
+    t.equals(f.commands[1], 'revive 12')
+end)
+
+t.test('a template that cannot be built is reported rather than run', function()
+    -- A stray percent is a format error. Running the half-built line would
+    -- be worse than not running it, and running nothing silently is how an
+    -- operator concludes the arena is broken.
+    local f = newFixture(reviveConfig('revive %q %d'))
+    f.D.Revive(3)
+
+    t.equals(#f.commands, 0, 'a malformed command line was executed anyway')
+    t.contains(table.concat(f.logs, '\n'), 'revive',
+        'nothing was logged, so the operator has no way to know')
+end)
+
+t.test('nothing runs while revive is switched off', function()
+    local config = reviveConfig('revive %s')
+    config.revive.enabled = false
+
+    local f = newFixture(config)
+    f.D.Revive(7)
+
+    t.equals(#f.commands, 0, 'a disabled revive still ran a command')
+end)
+
+t.test('a bad server id never reaches the command line', function()
+    -- The id is interpolated straight into a console command, so what may
+    -- reach it is worth an assertion rather than an assumption.
+    local f = newFixture(reviveConfig('revive %s'))
+    f.D.Revive(nil)
+    f.D.Revive(0)
+    f.D.Revive(-1)
+    f.D.Revive('7; quit')
+
+    t.equals(#f.commands, 0, 'something other than a real server id was put on a command line')
+end)
+
+-- ========================================================================
 -- THE REPORT SAYS WHETHER A DEAD PLAYER WILL COME BACK
 --
 -- Every other line of this report is about stopping alerts going OUT. This
@@ -332,7 +417,13 @@ end
 -- ========================================================================
 
 t.test('an unconfigured revive is called out at start, with the consequence', function()
-    local env = newCompat()
+    -- Set up explicitly rather than leaned on: this resource now SHIPS with
+    -- revive pointed at a /revive command, so the shipped config is the
+    -- configured case and testing the warning against it would test nothing.
+    local env = newCompat(function(config)
+        config.Dispatch.revive = { enabled = false, commands = {}, serverEvents = {},
+                                   clientEvents = {}, exports = {} }
+    end)
     local report = table.concat(env.ArenaCompat.Report(), '\n')
 
     t.contains(report, 'revive: NOT configured')
@@ -358,12 +449,24 @@ t.test('and a configured one is reported as configured', function()
     t.notContains(report, 'revive: NOT configured')
 end)
 
+t.test('the shipped config is one that will actually revive somebody', function()
+    -- The default that ships is the one nearly every operator runs, so it
+    -- being wired up is worth an assertion of its own -- and a default that
+    -- reported itself as broken would be the thing everyone sees first.
+    local env = newCompat()
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'revive: configured')
+    t.notContains(report, 'revive: NOT configured')
+end)
+
 t.test('enabled with nothing named counts as not configured', function()
     -- The trap: switching it on and leaving the lists empty looks configured
     -- in the file and calls nothing at run time. That has to read as OFF in
     -- the report, or the report is worse than not having one.
     local env = newCompat(function(config)
-        config.Dispatch.revive = { enabled = true, serverEvents = {}, clientEvents = {}, exports = {} }
+        config.Dispatch.revive = { enabled = true, commands = {}, serverEvents = {},
+                                   clientEvents = {}, exports = {} }
     end)
 
     t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'revive: NOT configured')

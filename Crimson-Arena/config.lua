@@ -1471,15 +1471,31 @@ Config.Dispatch = {
     -- still has them down, and they stay stuck until somebody revives
     -- them properly.
     --
-    -- Name whatever your script uses to revive somebody and it will be
-    -- called for that player twice: when the arena respawns them
-    -- mid-match, and again when they leave.
+    -- Name whatever your script uses to revive somebody and it is called
+    -- for that player EVERY TIME THE ARENA STANDS THEM BACK UP: on each
+    -- mid-match respawn, and again on the way out.
+    --
+    -- Both, because a death inside the arena is a death as far as your
+    -- medical script is concerned. From that moment it has them down, and
+    -- the arena putting them back on their feet does not reach it -- so a
+    -- player who is only revived at the end fights the rest of the round as
+    -- a casualty, with whatever that script does to a dead player still
+    -- being done to them.
     --
     -- NOTHING IS GUESSED AND NOTHING SHIPS ON. There is no default here
     -- for the same reason the catalogue below only detects: an event name
     -- that is close but not right looks wired up and does nothing.
     revive = {
-        enabled = false,
+        -- ON, and pointed at this server's own /revive command below.
+        enabled = true,
+
+        -- COMMANDS -- the form most servers actually have, and the one this
+        -- is set up for. Each line is run from the SERVER CONSOLE, which is
+        -- the identity a restricted admin command already trusts.
+        --
+        -- `%s` is where the player's server id goes. A line with no `%s` gets
+        -- the id appended, so 'revive' and 'revive %s' both work.
+        commands = { 'revive %s' },
 
         -- Server events. Each is triggered with the player's server id.
         --     serverEvents = { 'my_ambulance:server:revivePlayer' },

@@ -388,7 +388,7 @@ files['server/'] = {
         'SetRoutingBucketPopulationEnabled',
 
         -- The Discord webhook.
-        'PerformHttpRequest',
+        'ExecuteCommand', 'PerformHttpRequest',
         'json',
     },
 }

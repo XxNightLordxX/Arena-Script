@@ -1793,7 +1793,11 @@
                 start.title = isHost
                     ? 'Hold the start. Everybody stays in the lobby and nobody loses their place.'
                     : 'Only the host can stop the countdown.';
-                start.onclick = function () { post('cancelMatch'); };
+                /* holdCountdown, NOT cancelMatch. The tooltip above promises
+                   the lobby survives and nobody loses their place; the cancel
+                   destroys the match, evicts the room, and on a server with
+                   refundOnCancel off burns every stake in it. */
+                start.onclick = function () { post('holdCountdown'); };
             } else {
                 start.disabled = blocked !== null;
                 start.title = blocked === null

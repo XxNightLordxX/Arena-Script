@@ -1114,6 +1114,52 @@ end
 --- @param src any
 --- @return boolean ok
 --- @return string|nil reasonKey
+--- Puts a counting-down lobby back to being a lobby.
+---
+--- WHAT THE PANEL'S BUTTON ALWAYS SAID IT DID. "Stop The Countdown" posted
+--- `cancelMatch`, and its own tooltip read "Everybody stays in the lobby and
+--- nobody loses their place" -- while Cancel below destroys the match,
+--- evicts the room, and on a server with refundOnCancel off burns every
+--- stake in it. A host reading that button had no way to know.
+---
+--- Nothing has to be undone. ArenaMatch.Begin's countdown thread re-reads
+--- the match every second and returns the moment its state is not
+--- 'countdown', so putting the state back IS the stop.
+---
+--- Refused once the room has been teleported in, for the same reason Cancel
+--- is: `state` alone cannot tell the lobby countdown from the frozen start
+--- countdown -- both are called 'countdown' -- so it asks what has actually
+--- been DONE to the players.
+--- @param src any
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaLobby.HoldCountdown(src)
+    local target = tonumber(src)
+    if not target then return false, 'error.invalid_request' end
+
+    local match = ArenaLobby.GetByPlayer(target)
+    if not match then return false, 'error.not_in_match' end
+    if match.hostSource ~= target and not ArenaIsAdmin(target) then return false, 'error.host_only' end
+    -- THE PLACEMENT CHECK FIRST, because it is the stronger answer and the
+    -- two overlap. A live round is also "not counting down", and telling a
+    -- host their match cannot be found when it is being fought in front of
+    -- them is the less useful of the two true things.
+    if playersArePlaced(match) then return false, 'error.match_in_progress' end
+    if match.state ~= 'countdown' then return false, 'error.match_not_found' end
+
+    match.state = 'lobby'
+    -- Back to "no start time", or the panel keeps counting down to a moment
+    -- that is no longer coming.
+    match.startsAt = 0
+
+    for src2 in pairs(match.players) do
+        ArenaNotifyKey(src2, 'notify.start_cancelled', 'warning')
+    end
+
+    ArenaLobby.Broadcast()
+    return true, nil
+end
+
 function ArenaLobby.Cancel(src)
     local target = tonumber(src)
     if not target then return false, 'error.invalid_request' end

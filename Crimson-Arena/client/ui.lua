@@ -283,6 +283,13 @@ register('cancelMatch', function()
     TriggerServerEvent('crimson_arena:server:cancelMatch')
 end)
 
+--- Holding a countdown, which is NOT cancelling the match. The panel's
+--- button says "everybody stays in the lobby and nobody loses their place",
+--- and until this existed it posted the cancel above, which does neither.
+register('holdCountdown', function()
+    TriggerServerEvent('crimson_arena:server:holdCountdown')
+end)
+
 --- THE RADAR IS NOT RELAYED FROM HERE ANY MORE, on purpose.
 ---
 --- There was a `setRadar` callback in this spot: the panel's own toggle,

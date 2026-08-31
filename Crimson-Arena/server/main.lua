@@ -331,6 +331,16 @@ end)
 --- what closing it does to the stakes are all ArenaLobby.Cancel's to answer
 --- -- the last of those reads Config.Betting.refundOnCancel, which is
 --- precisely the kind of decision this file does not make.
+--- The host holding a start they have already called.
+---
+--- SEPARATE FROM cancelMatch, and it has to be: the panel's "Stop The
+--- Countdown" posted the cancel, which destroys the lobby and evicts
+--- everybody -- the opposite of what the button says.
+onClient('crimson_arena:server:holdCountdown', RATE.start, function(src)
+    local ok, reason = ArenaLobby.HoldCountdown(src)
+    if not ok then return refuse(src, reason) end
+end)
+
 onClient('crimson_arena:server:cancelMatch', RATE.start, function(src)
     local ok, reason = ArenaLobby.Cancel(src)
     if not ok then return refuse(src, reason) end

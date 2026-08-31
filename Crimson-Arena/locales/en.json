@@ -54,7 +54,8 @@
         "teams_unbalanced": "The sides are too lopsided to start.",
         "too_many_matches": "Too many matches already running. Wait for one to finish.",
         "host_picks_loadout": "The host picks the loadout for this match.",
-        "lives_out_of_range": "That is not a number of lives this server allows."
+        "lives_out_of_range": "That is not a number of lives this server allows.",
+        "bet_not_own_side": "You can only back your own side."
     },
     "match": {
         "aborted": "Match called off. Every stake went back.",

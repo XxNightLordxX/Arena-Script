@@ -791,17 +791,25 @@ t.test('ResolveEntryFee rejects an amount above the maximum', function()
 end)
 
 t.test('ResolveEntryFee falls back to the default for a non-numeric request', function()
+    -- Read off config rather than written as 1000: the shipped default is
+    -- now 0 -- a match is free unless the host asks for a fee -- and this
+    -- test is about the FALLBACK, not about today's number.
     local Arena = arenaWith()
-    t.equals((Arena.ResolveEntryFee('all of it')), 1000)
-    t.equals((Arena.ResolveEntryFee({ amount = 500 })), 1000)
-    t.equals((Arena.ResolveEntryFee(true)), 1000)
-    t.equals((Arena.ResolveEntryFee(math.huge)), 1000)
-    t.equals((Arena.ResolveEntryFee(0 / 0)), 1000)
+    local fallback = Arena.ResolveEntryFee(nil)
+    t.equals((Arena.ResolveEntryFee('all of it')), fallback)
+    t.equals((Arena.ResolveEntryFee({ amount = 500 })), fallback)
+    t.equals((Arena.ResolveEntryFee(true)), fallback)
+    t.equals((Arena.ResolveEntryFee(math.huge)), fallback)
+    t.equals((Arena.ResolveEntryFee(0 / 0)), fallback)
+
+    -- And the fallback is not vacuously whatever came back: it is the
+    -- operator's configured default, which now ships at 0.
+    t.equals(fallback, 0, 'the shipped entry fee is no longer free by default')
 end)
 
 t.test('ResolveEntryFee falls back to the default when nothing was requested', function()
     local amount, reason = arenaWith().ResolveEntryFee(nil)
-    t.equals(amount, 1000)
+    t.equals(amount, 0, 'a host who never touches the fee field should open a free match')
     t.isNil(reason)
 end)
 

@@ -208,6 +208,23 @@ end
 -- WHAT THESE TESTS ASSUME
 -- ======================================================================
 
+--- Pins the FIXED-ODDS payout, which several tests below were written
+--- against and which is no longer the default.
+---
+--- Both kinds of bet now settle out of a POOL by default -- winners split
+--- the stakes in proportion to what they put in, and the server funds
+--- nothing. That changes two numbers these tests assert: what a winner
+--- receives, and what happens to a loser when nobody backed the winning
+--- side (a pool with no winner is the bettors' own money and goes back,
+--- where the house keeps a losing bet against fixed odds).
+---
+--- The rule under test in each case is the odds one, so it is stated here
+--- rather than inherited.
+--- @param config table
+local function oddsPayout(config)
+    config.Betting.betPayout = { fighters = 'odds', spectators = 'odds', sharedPool = true }
+end
+
 t.test('the shipped betting config is the one the numbers below assume', function()
     -- Every expected amount in this file is worked out by hand from these
     -- five settings. Change one in config.lua and the arithmetic here is
@@ -632,7 +649,7 @@ end)
 -- ======================================================================
 
 t.test('a spectator side-bet never reaches the fighters pot', function()
-    local server = teamMatch({ [3] = 3000 })
+    local server = teamMatch({ [3] = 3000 }, oddsPayout)
     t.equals(server.betting.GetPot('m1'), 2000)
 
     local ok, reason = server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 1000)
@@ -660,7 +677,7 @@ t.test('a spectator side-bet never reaches the fighters pot', function()
 end)
 
 t.test('a losing side-bet is kept by the house, not added to the pot', function()
-    local server = teamMatch({ [4] = 3000 })
+    local server = teamMatch({ [4] = 3000 }, oddsPayout)
     t.isTrue(server.betting.PlaceSpectatorBet(4, 'm1', 'ash', 1000))
     t.equals(server.betting.GetPot('m1'), 2000)
 

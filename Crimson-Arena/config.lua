@@ -1874,6 +1874,88 @@ Config.Betting = {
 
     -- 'cash' or 'bank'.
     account = 'cash',
+
+    -- WHERE A STAKE IS TAKEN FROM, in the order tried.
+    --
+    -- One account was 'cash' and nothing else, so a player with the price in
+    -- the bank and an empty pocket was told they could not afford it. Each is
+    -- tried in turn for the WHOLE amount; a stake is never split across two.
+    --
+    -- Splitting has a failure mode nothing else here does: half the money
+    -- leaves, the second half is refused, and the player is out of pocket for
+    -- a stake that was never taken. Refunding a split is also two movements
+    -- that can each fail on their own. One account or none is the honest
+    -- trade, and it keeps a refund a single reversible movement.
+    --
+    -- Money always goes back where it came from. Refunding bank money as
+    -- cash is a way to launder through the arena, and refunding cash into the
+    -- bank is a surprise for somebody carrying it on purpose.
+    accounts = { 'cash', 'bank' },
+
+    -- FIGHTERS BACKING THEMSELVES.
+    --
+    -- Separate from the entry fee, which is one fixed price everybody pays.
+    -- This is a real bet at whatever size the player chooses, on themselves
+    -- in a free-for-all or on their own team in a team mode.
+    --
+    -- HOW A WINNING BET IS PAID, and it is the same question for both kinds.
+    --
+    --   'pool' -- PARIMUTUEL. Every bet on the match goes into a pool and the
+    --             winners split it in PROPORTION TO WHAT THEY STAKED. A
+    --             winner is paid with the losers' money, the sum handed out
+    --             equals the pool exactly, and the server creates nothing. So
+    --             what you win depends on how much you put in AND on how many
+    --             people bet -- a big pool with one winner pays enormously, a
+    --             small pool split four ways pays little.
+    --
+    --   'odds'  -- FIXED PRICE. The stake is multiplied by
+    --             spectatorBets.oddsMultiplier below and paid by the server.
+    --             Predictable, and it costs the server money on every win.
+    --
+    -- BOTH DEFAULT TO 'pool', because 'odds' on a bet placed by somebody who
+    -- can influence the result is a money printer: a fighter backs themselves
+    -- to win a round they were going to win anyway and the server pays for
+    -- it. With 'pool' that same bet can only ever take money other bettors
+    -- put up.
+    -- NAMED betPayout, NOT `payout`. `Config.Betting.payout` already exists
+    -- further down and is a different question entirely -- how the POT is
+    -- split between the winners of the round. Calling this one `payout` too
+    -- meant the second assignment silently replaced the first, so this whole
+    -- block did nothing and every bet quietly fell back to the default. It
+    -- was luacheck that noticed, not a test.
+    betPayout = {
+        fighters = 'pool',
+        spectators = 'pool',
+
+        -- ONE POOL FOR BOTH, or one each.
+        --
+        -- Shared, a spectator's stake can be won by a fighter and the other
+        -- way round, which makes a small arena's pool worth betting into.
+        -- Separate keeps the two crowds' money apart, which is fairer when
+        -- fighters can see things spectators cannot.
+        --
+        -- Only ever pools bets that are actually on 'pool' -- an 'odds' bet
+        -- is server-funded and never enters, or it would be paying itself
+        -- out of other people's stakes as well.
+        sharedPool = true,
+    },
+
+    fighterBets = {
+        enabled = true,
+
+        -- The band one fighter may stake. Nothing to do with the entry fee.
+        min = 100,
+        max = 50000,
+
+        -- A fighter may only back THEMSELVES, or their own team in a team
+        -- mode. Off, they may back any side -- which on most servers is a
+        -- way to throw a round for money, so it ships on.
+        ownSideOnly = true,
+
+        -- One bet each. Off, a fighter may keep adding to their position
+        -- while the lobby is open.
+        oneBetPerMatch = true,
+    },
     currencySymbol = '$',
 
     -- THE ENTRY FEE each player stakes to take part.
@@ -1883,7 +1965,12 @@ Config.Betting = {
         enabled = true,
         min = 0,
         max = 50000,
-        default = 1000,
+        -- FREE UNLESS THE HOST ASKS FOR A FEE. Creating a match should not
+        -- quietly put a price on it: a host who never touches the field
+        -- opens a free round, and anybody who wants money on the outcome
+        -- backs themselves with a fighter bet instead, which is voluntary,
+        -- their own size, and paid out of the pool rather than by the server.
+        default = 0,
         -- Quick-pick buttons in the panel. Any value between min and max is
         -- still accepted if the player types it.
         presets = { 500, 1000, 5000, 25000 },

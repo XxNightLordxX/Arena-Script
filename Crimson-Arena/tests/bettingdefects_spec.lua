@@ -139,6 +139,23 @@ end
 --- @param mutate fun(config: table)?
 --- @return table server
 --- @return table record -- the m1 match record the server reads
+--- Pins the FIXED-ODDS payout, which several tests below were written
+--- against and which is no longer the default.
+---
+--- Both kinds of bet now settle out of a POOL by default -- winners split
+--- the stakes in proportion to what they put in, and the server funds
+--- nothing. That changes two numbers these tests assert: what a winner
+--- receives, and what happens to a loser when nobody backed the winning
+--- side (a pool with no winner is the bettors' own money and goes back,
+--- where the house keeps a losing bet against fixed odds).
+---
+--- The rule under test in each case is the odds one, so it is stated here
+--- rather than inherited.
+--- @param config table
+local function oddsPayout(config)
+    config.Betting.betPayout = { fighters = 'odds', spectators = 'odds', sharedPool = true }
+end
+
 local function teamMatch(spectators, mutate)
     local wallets = { [1] = 5000, [2] = 5000 }
     for id, cash in pairs(spectators or {}) do wallets[id] = cash end
@@ -259,7 +276,13 @@ t.test('a bet whose holder ends the match as a fighter is void and goes back unp
     -- calls TakeStake at all -- `entryFee.enabled = false` with side-bets
     -- left on is a documented setup -- so the rule has to hold again where
     -- the money actually moves.
-    local server, record = teamMatch({ [3] = 30000, [4] = 30000 })
+    -- WITH FIGHTER BETS OFF, which is the rule this test is about. With them
+    -- on, backing the side you then fight for is a legitimate fighter bet and
+    -- is settled rather than voided -- a different rule, tested separately.
+    local server, record = teamMatch({ [3] = 30000, [4] = 30000 }, function(config)
+        oddsPayout(config)
+        config.Betting.fighterBets = { enabled = false }
+    end)
     t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 25000))
     t.isTrue(server.betting.PlaceSpectatorBet(4, 'm1', 'crimson', 25000))
 
@@ -300,9 +323,9 @@ t.test('a fighter\'s side-bet is void whichever way it would have gone', functio
     t.equals(server.movements(3), 2, 'out once, back once -- not kept by the house')
 end)
 
-t.test('an ordinary losing side-bet is still kept by the house', function()
+t.test('an ordinary losing side-bet is still kept by the house, against fixed odds', function()
     -- The guard above must not have turned every loser into a refund.
-    local server = teamMatch({ [4] = 3000 })
+    local server = teamMatch({ [4] = 3000 }, oddsPayout)
     t.isTrue(server.betting.PlaceSpectatorBet(4, 'm1', 'ash', 1000))
 
     local paid, total = server.betting.SettleSpectatorBets('m1', 'crimson')
@@ -373,7 +396,7 @@ t.test('a side-bet is returned to its owner, not to the id they used to hold', f
 end)
 
 t.test('a winning side-bet is not paid to whoever inherited the id', function()
-    local server = teamMatch({ [3] = 3000 })
+    local server = teamMatch({ [3] = 3000 }, oddsPayout)
     t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 1000))
     server.reassignId(3, 400)
 
@@ -461,6 +484,108 @@ t.test('a stake is not a seat somebody else can inherit with the id', function()
     t.equals(server.cash(2), 5000, 'and the newcomer was not charged for it either')
     t.equals(server.betting.GetPot('m1'), 2000)
     t.contains(server.log(), 'DOUBLE STAKE REFUSED')
+end)
+-- ======================================================================
+-- THE POOL, which is how both kinds of bet are paid by default
+--
+-- Nothing is created. Every stake on a match goes into one pool and the
+-- winners split it in proportion to what they put in, so what you take home
+-- depends on your own stake AND on how many others backed the other side.
+-- The server funds none of it -- which is the whole reason a fighter is
+-- allowed to back themselves at all. Against fixed odds, somebody who can
+-- influence the result winning a bet is a money printer.
+-- ======================================================================
+
+t.test('the winners split the whole pool and the server adds nothing', function()
+    local server = teamMatch({ [3] = 10000, [4] = 10000, [5] = 10000 })
+    t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 1000))
+    t.isTrue(server.betting.PlaceSpectatorBet(4, 'm1', 'ash', 2000))
+    t.isTrue(server.betting.PlaceSpectatorBet(5, 'm1', 'ash', 1000))
+
+    local paid, total = server.betting.SettleSpectatorBets('m1', 'ash')
+
+    t.equals(paid, 2, 'both winners should be settled')
+    t.equals(total, 4000,
+        'the pool was 1000 + 2000 + 1000 and every penny of it must be handed out, and no more')
+
+    -- 4 staked twice what 5 did, so takes twice the share.
+    t.equals(server.cash(4), 8000 + 2667, 'the larger stake did not take the larger share')
+    t.equals(server.cash(5), 9000 + 1333)
+end)
+
+t.test('a fighter backing themselves is paid out of the same pool', function()
+    local server, record = teamMatch({ [3] = 10000 })
+    record.players[1] = { src = 1, team = 'crimson' }
+
+    t.isTrue(server.betting.PlaceSpectatorBet(1, 'm1', 'crimson', 1000),
+        'a fighter was refused a bet on their own side')
+    t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'ash', 3000))
+
+    local _, total = server.betting.SettleSpectatorBets('m1', 'crimson')
+
+    t.equals(total, 4000, 'the fighter was paid anything other than the whole pool')
+    t.equals(server.cash(3), 7000, 'the losing spectator was refunded, or paid twice')
+end)
+
+t.test('and may NOT back the other side, which is being paid to lose', function()
+    local server, record = teamMatch({})
+    record.players[1] = { src = 1, team = 'crimson' }
+
+    local ok, reason = server.betting.PlaceSpectatorBet(1, 'm1', 'ash', 1000)
+    t.isFalse(ok, 'a fighter was allowed to back the team they are fighting against')
+    t.equals(reason, 'error.bet_not_own_side')
+end)
+
+t.test('and cannot get round it by betting first and joining afterwards', function()
+    -- The placement check alone is defeated by doing the two things in the
+    -- other order, so it is checked again at settlement against who actually
+    -- fought -- the only moment both facts are known.
+    local server, record = teamMatch({ [3] = 10000 })
+    t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'ash', 5000))
+
+    -- Now they join the OTHER side.
+    record.players[3] = { src = 3, team = 'crimson' }
+
+    server.betting.SettleSpectatorBets('m1', 'ash')
+
+    t.equals(server.cash(3), 10000, 'a bet against your own side paid out -- bet, then join, then collect')
+    t.equals(server.movements(3), 2, 'out once and back once: void, not judged')
+end)
+
+t.test('a pool nobody won goes back, rather than being kept by the arena', function()
+    -- Against fixed odds a loser has lost to the server, which was the
+    -- counterparty. A pool has no counterparty: it is the bettors' own money,
+    -- and if the winning side drew no backers there is nobody to pay it to.
+    -- Keeping it would be the arena quietly taking every stake on the match.
+    local server = teamMatch({ [3] = 5000, [4] = 5000 })
+    t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'ash', 1000))
+    t.isTrue(server.betting.PlaceSpectatorBet(4, 'm1', 'ash', 1000))
+
+    local paid, total = server.betting.SettleSpectatorBets('m1', 'crimson')
+
+    t.equals(paid, 0)
+    t.equals(total, 0)
+    t.equals(server.cash(3), 5000, 'a stake on a pool nobody won was kept by the house')
+    t.equals(server.cash(4), 5000)
+end)
+
+t.test('somebody who places no bet is paid nothing, and loses nothing', function()
+    -- Betting is voluntary. Not taking part must cost nothing and earn
+    -- nothing -- it must not be a silent entry into the pool either way.
+    local server, record = teamMatch({ [3] = 5000 })
+    record.players[1] = { src = 1, team = 'crimson' }
+    t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 1000))
+
+    -- Measured ACROSS the settlement rather than against a starting figure:
+    -- the fixture's match has already taken an entry stake from the fighters,
+    -- and this test is about the pool, not about the fee.
+    local before, moves = server.cash(1), server.movements(1)
+    server.betting.SettleSpectatorBets('m1', 'crimson')
+
+    t.equals(server.cash(1), before,
+        'a fighter who never placed a bet was paid out of the pool anyway')
+    t.equals(server.movements(1), moves,
+        'settling the pool moved money for somebody who was not in it')
 end)
 
 os.exit(t.summary())

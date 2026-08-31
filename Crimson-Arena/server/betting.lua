@@ -96,13 +96,32 @@ end
 --- nil when it cannot be read.
 --- @param player table|nil
 --- @return integer|nil
-local function balanceOf(player)
+local function balanceOf(player, account)
     -- Named `wallet` rather than `money`: this file already has a `money`
     -- upvalue for formatting figures, and one shadowing the other is a
     -- misread waiting to happen in a file where every variable is currency.
     local wallet = player and player.PlayerData and player.PlayerData.money
     if type(wallet) ~= 'table' then return nil end
-    return Arena.ToInt(wallet[Config.Betting.account])
+    return Arena.ToInt(wallet[account or Config.Betting.account])
+end
+
+--- The accounts money may be TAKEN from, in the order they are tried.
+---
+--- One name was 'cash' and nothing else, so a player with the price in the
+--- bank and nothing in their pocket was told they could not afford it.
+--- Falling back to a list keeps the old single-account behaviour for a
+--- server that never sets one.
+--- @return string[]
+local function debitAccounts()
+    local list = Config.Betting.accounts
+    local out = {}
+    if type(list) == 'table' then
+        for _, name in ipairs(list) do
+            if Arena.IsKey(name) then out[#out + 1] = name end
+        end
+    end
+    if #out == 0 then out[1] = Config.Betting.account or 'cash' end
+    return out
 end
 
 --- Did `amount` actually move, in the direction expected?
@@ -133,26 +152,46 @@ end
 --- Money OUT. False means nothing moved, so the caller must record nothing --
 --- otherwise escrow claims a stake the player still has in their pocket.
 --- @return boolean
+--- @return boolean took
+--- @return string|nil account -- which one it came out of, for the refund
 local function debit(src, amount, reason)
     local player = ArenaGetPlayer(src)
-    if not player then return false end
+    if not player then return false, nil end
 
-    local before = balanceOf(player)
-    local answer = player.Functions.RemoveMoney(Config.Betting.account, amount, reason)
+    -- WHOLE AMOUNT FROM ONE ACCOUNT, never split across two.
+    --
+    -- A split debit has a failure mode nothing else here does: half the
+    -- money leaves, the second half is refused, and the player is out of
+    -- pocket for a stake that was never taken. Refunding a split is also two
+    -- movements that can each fail independently. One account or none is the
+    -- honest trade -- and it keeps a refund a single, reversible movement to
+    -- the place the money came from.
+    for _, account in ipairs(debitAccounts()) do
+        local before = balanceOf(player, account)
 
-    -- An explicit refusal is believed immediately: it is the one answer that
-    -- means something unambiguous, and re-reading a balance to second-guess
-    -- it would only find the money still there and agree.
-    if answer == false then return false end
+        -- Skipped rather than attempted when it plainly cannot cover it, so
+        -- an unaffordable first account does not produce a framework refusal
+        -- that looks like an error in the log.
+        if before == nil or before >= amount then
+            local answer = player.Functions.RemoveMoney(account, amount, reason)
 
-    local confirmed = moved(before, balanceOf(ArenaGetPlayer(src)), amount, true)
-    if confirmed ~= nil then return confirmed end
+            -- An explicit refusal is believed immediately: it is the one
+            -- answer that means something unambiguous, and re-reading a
+            -- balance to second-guess it would only find the money still
+            -- there and agree.
+            if answer ~= false then
+                local confirmed = moved(before, balanceOf(ArenaGetPlayer(src), account), amount, true)
 
-    -- The balance was unreadable, so the return value is all there is. Only
-    -- an explicit false counts against it -- checked above -- because a nil
-    -- from a framework that reports success by staying quiet must not be
-    -- read as a refusal.
-    return true
+                -- nil is an unreadable balance, so the return value is all
+                -- there is. Only an explicit false counts against it --
+                -- checked above -- because a framework that reports success
+                -- by staying quiet must not be read as refusing.
+                if confirmed == nil or confirmed then return true, account end
+            end
+        end
+    end
+
+    return false, nil
 end
 
 --- Money IN. False means the player could not be paid, almost always because
@@ -171,16 +210,24 @@ end
 --- than paying a stranger quietly. Money recorded without an identity passes
 --- nil and is paid on the id alone.
 --- @return boolean
-local function credit(src, amount, reason, citizenid)
+--- @param account string|nil -- where it came from; a refund goes back there
+local function credit(src, amount, reason, citizenid, account)
     local player = ArenaGetPlayer(src)
     if not player then return false end
     if citizenid and (player.PlayerData and player.PlayerData.citizenid) ~= citizenid then return false end
 
-    local before = balanceOf(player)
-    local answer = player.Functions.AddMoney(Config.Betting.account, amount, reason)
+    -- BACK WHERE IT CAME FROM when we know, and to the configured account
+    -- when we do not. Refunding bank money as cash is a way to launder
+    -- through the arena, and refunding cash into the bank is a surprise for
+    -- somebody who was carrying it on purpose.
+    local target = Arena.IsKey(account) and account
+        or (debitAccounts()[1] or Config.Betting.account)
+
+    local before = balanceOf(player, target)
+    local answer = player.Functions.AddMoney(target, amount, reason)
     if answer == false then return false end
 
-    local confirmed = moved(before, balanceOf(ArenaGetPlayer(src)), amount, false)
+    local confirmed = moved(before, balanceOf(ArenaGetPlayer(src), target), amount, false)
     if confirmed ~= nil then return confirmed end
 
     return true
@@ -798,6 +845,69 @@ function ArenaBetting.HasSpectatorBet(matchId, src)
     return false
 end
 
+--- The payout mode for one kind of bet: 'pool' or 'odds'.
+--- @param kind string -- 'fighter' or 'spectator'
+--- @return string
+local function payoutMode(kind)
+    local block = Config.Betting.betPayout
+    local wanted = type(block) == 'table'
+        and block[kind == 'fighter' and 'fighters' or 'spectators']
+        or nil
+    return wanted == 'odds' and 'odds' or 'pool'
+end
+
+--- Whether fighter bets are on at all.
+local function fighterBetsOn()
+    local block = Config.Betting.fighterBets
+    return type(block) == 'table' and block.enabled == true
+end
+
+--- The side a fighter is allowed to back: their team, or themselves.
+--- @return string|nil
+local function ownSideOf(match, src)
+    local row = type(match.players) == 'table' and match.players[src] or nil
+    if not row then return nil end
+    if Arena.ModeUsesTeams(match.modeKey) and Arena.IsKey(row.team) then return row.team end
+    return tostring(src)
+end
+
+--- Whether a bet must be handed back unjudged.
+---
+--- THE BET-THEN-JOIN HOLE. The rule that a fighter may only back their own
+--- side is checked when the bet is placed, and that check alone is defeated
+--- by doing the two things in the other order: bet on the side you are about
+--- to fight against, then join. So it is checked AGAIN here, against who
+--- actually fought, which is the only moment both facts are known.
+---
+--- With fighter bets switched off entirely, any bet held by a fighter is
+--- void -- the original rule, unchanged.
+--- @param bet table
+--- @param fighters table<number, table|boolean>
+--- @return boolean
+local function voided(bet, fighters)
+    local row = fighters[bet.src]
+    if not row then return false end
+
+    -- They fought. Whether that is allowed at all:
+    if not fighterBetsOn() then return true end
+    if (Config.Betting.fighterBets or {}).ownSideOnly == false then return false end
+
+    -- And whether they backed their own side. `row` is the player record the
+    -- registry returned, so their team is read from what they actually
+    -- fought as rather than from anything carried on the bet.
+    local team = type(row) == 'table' and row.team or nil
+    local own = Arena.IsKey(team) and team or tostring(bet.src)
+    return bet.pick ~= own
+end
+
+--- Which pool a bet belongs to, so a shared pool and two separate ones are
+--- the same code path with a different key.
+local function poolKeyFor(kind)
+    local block = Config.Betting.betPayout
+    if type(block) == 'table' and block.sharedPool == false then return kind end
+    return 'all'
+end
+
 --- Takes a spectator's side-bet on a team or a fighter.
 ---
 --- Everything is checked before the money moves: that the match exists, that
@@ -821,8 +931,15 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount)
     local match = lobbyMatch(matchId)
     if not match then return false, 'error.match_not_found' end
 
-    if type(match.players) == 'table' and match.players[id] then
-        -- A fighter backing an outcome they are in is not a side-bet.
+    -- A FIGHTER IS A DIFFERENT KIND OF BET, not a refused one.
+    --
+    -- It used to be refused outright. With fighterBets on they may back
+    -- themselves -- or their own team in a team mode -- and the bet is
+    -- settled out of the pool rather than by the server, so winning a round
+    -- they were always going to win takes other bettors' money instead of
+    -- printing it.
+    local isFighter = type(match.players) == 'table' and match.players[id] ~= nil
+    if isFighter and not fighterBetsOn() then
         return false, 'error.bet_not_spectator'
     end
     if not betsAreOpen(match) then return false, 'error.bets_closed' end
@@ -830,14 +947,26 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount)
     local wanted = canonicalPick(pick)
     if not wanted or not pickExists(match, wanted) then return false, 'error.bet_invalid_pick' end
 
-    local spectator = Config.Betting.spectatorBets or {}
-    if spectator.oneBetPerMatch ~= false and ArenaBetting.HasSpectatorBet(matchId, id) then
+    -- A FIGHTER MAY ONLY BACK THEIR OWN SIDE, when the operator says so.
+    -- Backing the other side is a way to be paid for losing on purpose, and
+    -- an arena is exactly where that is worth doing.
+    if isFighter and (Config.Betting.fighterBets or {}).ownSideOnly ~= false then
+        local own = ownSideOf(match, id)
+        if own and wanted ~= own then return false, 'error.bet_not_own_side' end
+    end
+
+    local rules = isFighter and (Config.Betting.fighterBets or {})
+        or (Config.Betting.spectatorBets or {})
+    if rules.oneBetPerMatch ~= false and ArenaBetting.HasSpectatorBet(matchId, id) then
         return false, 'error.bet_already_placed'
     end
 
-    if not debit(id, stake, transaction('sidebet', matchId)) then
+    local took, account = debit(id, stake, transaction('sidebet', matchId))
+    if not took then
         return false, 'error.not_enough_money'
     end
+
+    local kind = isFighter and 'fighter' or 'spectator'
 
     sideBets[matchId] = sideBets[matchId] or {}
     sideBets[matchId][#sideBets[matchId] + 1] = {
@@ -846,6 +975,11 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount)
         name = ArenaPlayerName(id),
         pick = wanted,
         amount = stake,
+        -- Recorded so a refund goes back to the account it came out of
+        -- rather than to whichever one this server happens to list first.
+        account = account,
+        kind = kind,
+        mode = payoutMode(kind),
         placedAt = os.time(),
         settled = false,
     }
@@ -885,16 +1019,57 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
     local wanted = canonicalPick(winningPick)
     local paid, total, kept, lines = 0, 0, 0, {}
 
+    -- THE POOLS, built before anything is paid.
+    --
+    -- A pool bet is paid with other bettors' money and nothing else, so the
+    -- pool has to be known in full before the first payment leaves -- and the
+    -- winners' stakes with it, because a share is a proportion of the whole.
+    -- Working it out as we go would pay the first winner out of a pool that
+    -- had not finished being counted.
+    --
+    -- 'odds' bets are deliberately absent from both. They are funded by the
+    -- server, so letting one into the pool would pay it out of other people's
+    -- stakes as well as the operator's pocket.
+    local pools, winners = {}, {}
+    for _, bet in ipairs(bets) do
+        if not bet.settled and bet.mode ~= 'odds' and not voided(bet, fighters) then
+            local key = poolKeyFor(bet.kind or 'spectator')
+            pools[key] = (pools[key] or 0) + (Arena.ToInt(bet.amount) or 0)
+
+            if wanted and bet.pick == wanted then
+                winners[key] = winners[key] or {}
+                winners[key][#winners[key] + 1] = bet
+            end
+        end
+    end
+
+    -- Each pool split among ITS winners, in proportion to what they staked.
+    -- Done here rather than per bet so the shares provably sum to the pool.
+    for key, pool in pairs(pools) do
+        local list = winners[key]
+        if list and #list > 0 then
+            local stakes = {}
+            for index, bet in ipairs(list) do stakes[index] = bet.amount end
+            local shares = Arena.SplitByStake(pool, stakes)
+            for index, bet in ipairs(list) do bet.poolShare = shares[index] or 0 end
+        end
+    end
+
     for _, bet in ipairs(bets) do
         if not bet.settled then
-            if fighters[bet.src] then
+            if voided(bet, fighters) then
                 ArenaLog('SIDE-BET VOID: %s backed "%s" on match %s and then fought in it -- returning %d unjudged.',
                     tostring(bet.name or bet.src), tostring(bet.pick), tostring(matchId), bet.amount)
                 returnSideBet(bet, matchId)
             elseif not wanted then
+                -- No result to judge against, so the house has no claim and
+                -- every stake goes back -- pool bets included, because a pool
+                -- with no winner is just everybody's money.
                 returnSideBet(bet, matchId)
             elseif bet.pick == wanted then
-                local amount = Arena.ComputeSpectatorPayout(bet.amount)
+                local amount = (bet.mode == 'odds')
+                    and Arena.ComputeSpectatorPayout(bet.amount)
+                    or (Arena.ToInt(bet.poolShare) or 0)
                 -- Marked before the payment for the same reason the pot is:
                 -- a settlement that runs twice must not pay twice.
                 bet.settled = true
@@ -914,6 +1089,16 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                             { name = 'Amount', value = money(amount) },
                         })
                 end
+            elseif bet.mode ~= 'odds' and not (winners[poolKeyFor(bet.kind or 'spectator')] or {})[1] then
+                -- A POOL NOBODY WON IS NOT THE HOUSE'S.
+                --
+                -- With fixed odds a loser's stake is simply lost -- the
+                -- server was the counterparty and it kept the bet. A pool has
+                -- no counterparty: it is the bettors' own money, and if the
+                -- winning side drew no backers there is nobody it can be paid
+                -- to. Keeping it would be the arena quietly taking every
+                -- stake on the match.
+                returnSideBet(bet, matchId)
             else
                 bet.settled = true
                 bet.settledAs = 'lost'

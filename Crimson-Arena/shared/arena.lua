@@ -1169,6 +1169,50 @@ function Arena.SplitByPercent(amount, percents)
     return shares
 end
 
+--- Splits a POOL among winners in proportion to what each of them staked.
+---
+--- THE POOL IS THE ONLY MONEY THERE IS. Fighter bets pay out of the stakes
+--- everybody put in and nothing else -- a winner is paid with the losers'
+--- money, and the sum of what is handed out equals the pool exactly. That is
+--- the whole difference between this and Arena.ComputeSpectatorPayout, which
+--- multiplies a stake by the operator's odds and is therefore funded by the
+--- server: a fighter backing themselves must not be able to print money by
+--- winning a round they were going to win anyway.
+---
+--- Proportional rather than even: somebody who staked twice as much carries
+--- twice the risk and takes twice the share.
+---
+--- The remainder goes to the largest stake rather than being dropped, for
+--- the same reason every other split here distributes it -- a pool that
+--- leaks a few dollars a match is the bug nobody reports and everybody
+--- notices.
+--- @param pool integer -- every stake placed, winners and losers together
+--- @param stakes integer[] -- the WINNERS' stakes, in order
+--- @return integer[] shares -- same order; sums to `pool` exactly
+function Arena.SplitByStake(pool, stakes)
+    local total = math.max(0, Arena.ToInt(pool) or 0)
+    if type(stakes) ~= 'table' or #stakes == 0 then return {} end
+
+    local sum = 0
+    for _, stake in ipairs(stakes) do sum = sum + math.max(0, Arena.ToInt(stake) or 0) end
+
+    -- Nobody staked anything measurable, so proportion means nothing and an
+    -- even split is the only honest reading.
+    if sum <= 0 then return Arena.SplitEvenly(total, #stakes) end
+
+    local shares, allocated, biggest = {}, 0, 1
+    for index, stake in ipairs(stakes) do
+        local own = math.max(0, Arena.ToInt(stake) or 0)
+        local share = math.floor((total * own) / sum)
+        shares[index] = share
+        allocated = allocated + share
+        if own > (math.max(0, Arena.ToInt(stakes[biggest]) or 0)) then biggest = index end
+    end
+
+    shares[biggest] = shares[biggest] + (total - allocated)
+    return shares
+end
+
 --- Works out who gets paid what when a match ends.
 ---
 --- `context` is deliberately plain data, not a live match object, so this

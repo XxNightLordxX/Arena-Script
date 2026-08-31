@@ -21,10 +21,10 @@
       664   UI            Panel colours, logo and title
       727   Permissions   Who may open a match, who may force-stop one
       806   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1321   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2749   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2759   Webhook       Optional: a Discord line per finished match
-     2797   Dispatch      Optional: keeping police and EMS out of the arena
+     1357   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     2785   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2795   Webhook       Optional: a Discord line per finished match
+     2833   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1059,12 +1059,35 @@ Config.Arenas = {
         boundary = {
             enabled = true,
             center = vector3(2344.4294, 2565.0552, 46.6677),
-            -- Outside the spawn ring and outside the cover, so nothing this
-            -- arena builds is standing in the bleed.
-            radius = 60.0,
+            -- BIG ENOUGH FOR THE WHOLE PARK, which is the point of holding a
+            -- match in a real place. Sixty metres reached the spawn ring and
+            -- very little else: the vans on the far rows, the track in and
+            -- the fence line were all outside it, so chasing somebody around
+            -- the place you came here to fight in started the bleed. A
+            -- hundred covers the lot end to end with room to back off, and
+            -- still stops well short of the highway.
+            --
+            -- Grows with the roster like everything else below: at the
+            -- twenty-player ceiling this is 135m.
+            radius = 100.0,
             warningSeconds = 5,
             damagePerTick = 20,
             tickMs = 500,
+        },
+
+        -- ROOM FOR TWENTY, on ground that already exists.
+        --
+        -- Only the spawn ring and the boundary move here -- there is no floor
+        -- to grow and the cover is switched off -- so this is purely "spread
+        -- people further apart and give them more of the park to use". The
+        -- ceiling is deliberately lower than the skydome's: that one builds
+        -- its own world and can be any size, and this one has a fence around
+        -- it and a highway past it.
+        scale = {
+            enabled = true,
+            baseline = 6,
+            perPlayer = 1.4,
+            maxGrowth = 1.35,
         },
 
         weatherOverride = nil,
@@ -1283,10 +1306,23 @@ Config.Arenas = {
         -- line of falling code: step off the floor and you leave the
         -- boundary from underneath within a second, and it bleeds you the
         -- same way walking out of any other arena does.
+        --
+        -- IT HAS TO CONTAIN THE WHOLE FLOOR, and this was 60 while the floor
+        -- reached 77. The last seventeen metres of solid platform were
+        -- outside the arena: you walked to the edge, still on the floor, and
+        -- started bleeding for it. Nothing about that reads as a boundary --
+        -- it reads as the arena being broken.
+        --
+        -- The floor is TILED, so it reaches further than `platform.radius`:
+        -- a tile is kept whenever any part of it falls inside that radius,
+        -- so the last ring sticks out by up to half a tile, and on the
+        -- corners by half a diagonal. 110 covers the shipped prop with room
+        -- to spare, and Arena.ValidateConfig now complains if a boundary is
+        -- ever smaller than the floor it is drawn around.
         boundary = {
             enabled = true,
             center = vector3(1500.00, 3000.00, 1201.00),
-            radius = 60.0,
+            radius = 110.0,
             warningSeconds = 5,
             damagePerTick = 20,
             tickMs = 500,

@@ -289,7 +289,18 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted, exactZ, 
     -- nothing is asked. The freeze above still runs -- that is what stops the
     -- fall while the floor streams in -- and it is dropped below as usual.
     if exactZ then
-        SetEntityCoordsNoOffset(ped, x, y, math.max(z, floorZ or z), false, false, false)
+        -- ABOVE THE SURFACE, NOT LEVEL WITH IT.
+        --
+        -- This used to place the ped at exactly the floor height, which puts
+        -- its origin inside the prop it is meant to be standing on -- so the
+        -- player spawns in the geometry and drops straight through it. A ped
+        -- is not a point that rests on a plane; it needs room to be stood up
+        -- in, and the collision of a prop created moments earlier needs a
+        -- beat to exist at all.
+        --
+        -- Dropped from `lift` when the freeze is released, which is what the
+        -- countdown is for. Config.Match.spawnHeightOffset tunes it.
+        SetEntityCoordsNoOffset(ped, x, y, math.max(z, floorZ or z) + lift, false, false, false)
         FreezeEntityPosition(ped, leaveFrozen == true)
         return true
     end
@@ -1037,6 +1048,14 @@ end
 -- client crashes.
 -- ----------------------------------------------------------------------
 
+--- How far a piece of cover is held off the floor it stands on.
+---
+--- Small enough that nothing looks like it is hovering, big enough that the
+--- underside of a barrier and the top of the platform are not the same
+--- plane. Coincident coplanar faces are what flicker, and on a floor made of
+--- tiled props there are a lot of them to flicker against.
+local COVER_LIFT = 0.05
+
 --- Handles of everything this client built for the current round.
 local arenaProps = {}
 
@@ -1056,15 +1075,26 @@ local arenaSurfaceZ = nil
 --- A shipping container is twelve metres by two and a half; collapsing that
 --- to one number and tiling on it either leaves ten-metre holes to fall
 --- through or stacks the pieces four deep.
+--- THE BOTTOM MATTERS AS MUCH AS THE TOP, and leaving it out is why cover
+--- looked wrong. GetModelDimensions answers in MODEL space: the origin is
+--- (0,0,0) and the box sits wherever the artist put it. Some props are built
+--- with the origin on the floor of the model (bottom = 0), others with it in
+--- the middle (bottom = -half the height).
+---
+--- Place both kinds at the same Z and the second sinks halfway into the
+--- floor. Asking for the bottom and resting the prop ON the surface works
+--- for either, without knowing or caring which convention a given model
+--- follows.
 --- @param hash integer
---- @return number sizeX, number sizeY, number top -- footprint, and height above origin
+--- @return number sizeX, number sizeY, number top, number bottom
 local function modelFootprint(hash)
     local minimum, maximum = GetModelDimensions(hash)
-    if type(minimum) ~= 'table' and type(minimum) ~= 'userdata' then return 0.0, 0.0, 0.0 end
+    if type(minimum) ~= 'table' and type(minimum) ~= 'userdata' then return 0.0, 0.0, 0.0, 0.0 end
 
     return (maximum.x or 0.0) - (minimum.x or 0.0),
            (maximum.y or 0.0) - (minimum.y or 0.0),
-           (maximum.z or 0.0)
+           (maximum.z or 0.0),
+           (minimum.z or 0.0)
 end
 
 --- Loads the first model in a chain this build actually has.
@@ -1176,7 +1206,26 @@ local function buildArenaProps(arenaKey, factor)
     for _, piece in ipairs(wanted) do
         local hash = loadPropModel(piece.models or piece.model)
         if hash then
-            local object = CreateObject(hash, piece.x, piece.y, piece.z, false, false, false)
+            local placeZ = piece.z
+
+            -- COVER IS RESTED ON THE FLOOR, NOT DROPPED AT ITS HEIGHT.
+            --
+            -- Its Z arrives as "the arena surface plus whatever offset the
+            -- operator wrote", which is only correct for a prop whose origin
+            -- happens to sit on its own base. For one with the origin in the
+            -- middle it buries half the piece in the floor.
+            --
+            -- Measuring the bottom and lifting by it rests the piece on the
+            -- surface whichever convention the model follows. The extra
+            -- fraction keeps its underside off the floor's top face -- two
+            -- coplanar surfaces at exactly the same height is what makes a
+            -- platform flicker.
+            if piece.kind ~= 'floor' then
+                local _, _, _, bottom = modelFootprint(hash)
+                placeZ = placeZ - bottom + COVER_LIFT
+            end
+
+            local object = CreateObject(hash, piece.x, piece.y, placeZ, false, false, false)
             if object and object ~= 0 then
                 if piece.kind == 'floor' then builtFloor = builtFloor + 1 end
                 SetEntityHeading(object, piece.heading or 0.0)

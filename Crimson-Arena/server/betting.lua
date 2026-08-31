@@ -982,12 +982,23 @@ function ArenaBetting.Settle(matchId, context)
         tostring(matchId), money(distributed), money(pot), #payouts,
         tostring(Config.Betting.payout or 'winner_takes_all'), money(houseCut))
 
+    -- WHERE EACH WINNER'S OWN STAKE CAME FROM. A pot payout is that stake
+    -- plus a share of everybody else's, and the stake is the part we can
+    -- place exactly -- so the whole payment rides back to the account the
+    -- winner actually paid from. Dropping it paid a bank-funded entry out
+    -- as cash, which is the same surprise (and the same laundering route)
+    -- returnSideBet spells out. Unknown here only for a winner escrow never
+    -- held, and credit() falls back to the configured account for those.
+    local paidFrom = {}
+    for id, stake in pairs(stakesOf(matchId)) do paidFrom[id] = stake.account end
+
     local lines, undelivered = {}, 0
     for _, payout in ipairs(payouts) do
         local amount = math.max(0, Arena.ToInt(payout.amount) or 0)
         local winner = serverId(payout.id)
         if amount > 0 then
-            if winner and credit(winner, amount, transaction('payout', matchId)) then
+            if winner and credit(winner, amount, transaction('payout', matchId),
+                nil, paidFrom[winner] or paidFrom[payout.id]) then
                 lines[#lines + 1] = ('%s: %s (%s)'):format(ArenaPlayerName(winner), money(amount), tostring(payout.reason))
                 trace('paid %d to %s on match %s (%s)',
                     amount, tostring(winner), tostring(matchId), tostring(payout.reason))
@@ -1277,17 +1288,34 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
     -- 'odds' bets are deliberately absent from both. They are funded by the
     -- server, so letting one into the pool would pay it out of other people's
     -- stakes as well as the operator's pocket.
-    local pools, winners = {}, {}
+    local pools, winners, backed = {}, {}, {}
     for _, bet in ipairs(bets) do
         if not bet.settled and bet.mode ~= 'odds' and not voided(bet, fighters) then
             local key = poolKeyFor(bet.kind or 'spectator')
-            pools[key] = (pools[key] or 0) + (Arena.ToInt(bet.amount) or 0)
+            local stake = Arena.ToInt(bet.amount) or 0
+            pools[key] = (pools[key] or 0) + stake
 
             if wanted and bet.pick == wanted then
                 winners[key] = winners[key] or {}
                 winners[key][#winners[key] + 1] = bet
+                backed[key] = (backed[key] or 0) + stake
             end
         end
+    end
+
+    -- A POOL NOBODY BET AGAINST IS NOT A WIN, and paying it as one is how
+    -- the arena ends up looking like it stole from the only person who
+    -- played along. Bet on yourself in an empty pool and the pool IS your
+    -- stake: the share works out to exactly what you put in, so you are
+    -- told you won and your balance does not move -- or worse, moves into
+    -- the other account. There was no counterparty, so there is nothing to
+    -- judge: every stake goes back and is described as what it is.
+    --
+    -- Only when the winners hold the WHOLE pool. One backer against one
+    -- loser is a real bet and settles normally.
+    local uncontested = {}
+    for key, pool in pairs(pools) do
+        if (backed[key] or 0) >= pool then uncontested[key] = true end
     end
 
     -- Each pool split among ITS winners, in proportion to what they staked.
@@ -1313,6 +1341,12 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                 -- every stake goes back -- pool bets included, because a pool
                 -- with no winner is just everybody's money.
                 returnSideBet(bet, matchId)
+            elseif bet.mode ~= 'odds' and uncontested[poolKeyFor(bet.kind or 'spectator')] then
+                -- Winner and loser alike: with the whole pool on one side
+                -- there is no money to move between them.
+                ArenaLog('SIDE-BET UNCONTESTED: nobody bet against %s on match %s -- returning %d.',
+                    tostring(bet.name or bet.src), tostring(matchId), bet.amount)
+                returnSideBet(bet, matchId)
             elseif bet.pick == wanted then
                 local amount = (bet.mode == 'odds')
                     and Arena.ComputeSpectatorPayout(bet.amount)
@@ -1323,7 +1357,16 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                 bet.settledAs = 'won'
                 paid = paid + 1
                 total = total + amount
-                if amount > 0 and credit(bet.src, amount, transaction('sidebet_payout', matchId), bet.citizenid) then
+                -- `bet.account` AGAIN, for the same reason returnSideBet
+                -- carries it. A winning side-bet is the bettor's own stake
+                -- plus a share of the pool, and dropping the account paid it
+                -- into whichever account the operator happens to list first:
+                -- back a bank-funded bet on yourself with nobody else in the
+                -- pool and you win exactly your stake -- into your pocket,
+                -- with your bank permanently down by it. That reads as the
+                -- arena taking the money, and from the bank's side it is.
+                if amount > 0 and credit(bet.src, amount, transaction('sidebet_payout', matchId),
+                    bet.citizenid, bet.account) then
                     lines[#lines + 1] = ('%s: %s on "%s"'):format(tostring(bet.name or bet.src), money(amount), bet.pick)
                     ArenaNotifyKey(bet.src, 'notify.spectator_bet_won', 'success', money(amount))
                 elseif amount > 0 then
@@ -1349,7 +1392,14 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
             else
                 bet.settled = true
                 bet.settledAs = 'lost'
-                kept = kept + bet.amount
+                -- KEPT MEANS THE HOUSE KEPT IT, and only fixed odds ever
+                -- does: the server was the counterparty and the stake stays
+                -- with it. A losing POOL stake was just paid to the winners
+                -- a few lines up, so counting it here reported the same
+                -- money twice -- "paid out 10,000, kept 5,000" out of a
+                -- 10,000 pool -- and an operator reading that line has been
+                -- told the arena is skimming when it is not.
+                if bet.mode == 'odds' then kept = kept + bet.amount end
                 ArenaNotifyKey(bet.src, 'notify.spectator_bet_lost', 'error', money(bet.amount))
             end
         end

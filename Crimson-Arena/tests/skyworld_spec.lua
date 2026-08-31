@@ -237,6 +237,28 @@ end
 
 local SKY = { x = 1500.0, y = 3000.0, z = 1201.0 }
 
+--- How far above the surface a fighter is held while the countdown runs.
+---
+--- NOT ZERO, and that is the fix for spawning inside the platform. A ped
+--- placed at exactly the floor height has its origin inside the prop it is
+--- meant to be standing on, and drops straight through. It is held clear and
+--- released onto the floor when the freeze ends.
+--- @param client table
+--- @return number
+local function standOffset(client)
+    return tonumber(client.env.Config.Match.spawnHeightOffset) or 1.0
+end
+
+--- Is this fighter standing on the arena surface -- clear of it, and not
+--- further above it than the hold accounts for?
+--- @param client table
+--- @param surface number
+--- @return boolean
+local function standingOn(client, surface)
+    local z = client.pos().z
+    return z >= surface - 0.01 and z <= surface + standOffset(client) + 0.01
+end
+
 --- Is there a piece of the FLOOR under this point?
 ---
 --- BY LAYER, NOT BY MODEL NAME, and that distinction is forced: the shipped
@@ -284,9 +306,12 @@ t.test('DEFECT: entering the skydome builds a floor and stands the player on it'
     t.isNotNil(surface, 'the player is standing over open air -- there is no piece under them')
     t.isNotNil(piece)
 
-    -- Standing ON it, not inside it and not hovering above it.
-    t.isTrue(math.abs(c.pos().z - surface) < 0.5,
-        ('the player is at %0.2f and the floor under them is at %0.2f'):format(c.pos().z, surface))
+    -- Above it and within the hold, never inside it. Placing a ped at
+    -- exactly the floor height puts its origin in the prop and it falls
+    -- through, which is what this used to do.
+    t.isTrue(standingOn(c, surface),
+        ('the player is at %0.2f, and the floor under them is at %0.2f (hold %0.2f)')
+            :format(c.pos().z, surface, standOffset(c)))
 end)
 
 t.test('DEFECT: and the ground probe does not drag them out of the sky', function()
@@ -486,7 +511,7 @@ t.test('a build without the stunt blocks falls back and still has no holes', fun
 
     local surface = c.world.surfaceUnder(c.pos().x, c.pos().y)
     t.isNotNil(surface)
-    t.isTrue(math.abs(c.pos().z - surface) < 0.5, 'the player is not standing on the fallback floor')
+    t.isTrue(standingOn(c, surface), 'the player is not standing on the fallback floor')
 end)
 
 t.test('and the piece count stays under the ceiling config sets', function()
@@ -635,8 +660,9 @@ t.test('DEFECT: ten respawns in a row all land on the floor', function()
         t.isTrue(onFloor(c, c.pos().x, c.pos().y),
             ('respawn %d put the player over open air'):format(life))
         -- ON THE SURFACE CONFIG NAMES, which is the invariant every other
-        -- number in the arena is written against.
-        t.isTrue(math.abs(c.pos().z - surfaceZ) < 0.5,
+        -- number in the arena is written against -- held clear of it, as
+        -- every placement is.
+        t.isTrue(standingOn(c, surfaceZ),
             ('respawn %d left the player at %0.2f, and the arena surface is %0.2f')
                 :format(life, c.pos().z, surfaceZ))
     end
@@ -776,7 +802,7 @@ t.test('at every roster size the floor is built, and the player is on it', funct
         t.isTrue(#c.world.live() > 0, ('%d players built nothing'):format(players))
         t.isTrue(onFloor(c, c.pos().x, c.pos().y),
             ('%d players: the fighter is over open air'):format(players))
-        t.isTrue(math.abs(c.pos().z - c.Arena.GetPlatform('skydome', factor).z) < 0.5,
+        t.isTrue(standingOn(c, c.Arena.GetPlatform('skydome', factor).z),
             ('%d players: the fighter is not on the arena surface'):format(players))
     end
 end)
@@ -963,7 +989,7 @@ t.test('a twenty-player match builds a bigger floor, and every spawn is on it', 
 
         local surface = c.world.surfaceUnder(c.pos().x, c.pos().y)
         t.isNotNil(surface, ('fighter %d is standing over open air'):format(src))
-        t.isTrue(math.abs(c.pos().z - (surface or 0)) < 0.5,
+        t.isTrue(standingOn(c, surface or 0),
             ('fighter %d is not standing on the floor'):format(src))
     end
 end)
@@ -1028,7 +1054,7 @@ t.test('DEFECT: the client respawns on the point the server chose, not near it',
     -- And still on the floor, which is the other half of a respawn in the sky.
     local surface = c.world.surfaceUnder(c.pos().x, c.pos().y)
     t.isNotNil(surface, 'the respawn put the player over open air')
-    t.isTrue(math.abs(c.pos().z - surface) < 0.5, 'the respawn did not land on the floor')
+    t.isTrue(standingOn(c, surface), 'the respawn did not land on the floor')
 end)
 
 t.test('and it still scatters when the server asks for one', function()
@@ -1426,7 +1452,7 @@ t.test('a sky arena the operator added builds, and holds the fighter up', functi
     t.isTrue(#c.world.live() > 0, 'an arena added by an operator built nothing')
     t.isTrue(onFloor(c, c.pos().x, c.pos().y),
         'the fighter is over open air in an arena the operator added')
-    t.isTrue(math.abs(c.pos().z - 640.0) < 0.5,
+    t.isTrue(standingOn(c, 640.0),
         ('the fighter is at %0.2f, and the operator asked for 640'):format(c.pos().z))
 end)
 

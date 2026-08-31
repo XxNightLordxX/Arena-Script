@@ -2115,7 +2115,11 @@ function Arena.ValidateConfig()
         local platform = Arena.GetPlatform(entry.key)
         if platform then
             local surface = platform.z
+            local raw = Arena.GetArenaByKey(entry.key) or {}
 
+            --- Every height in this arena has to agree with the surface.
+            --- @param where string
+            --- @param z any
             local function checkHeight(where, z)
                 local value = tonumber(z)
                 if not value then return end
@@ -2128,8 +2132,8 @@ function Arena.ValidateConfig()
                 end
             end
 
-            local area = type(arenaSpawnAreaOf(entry.key)) == 'table' and arenaSpawnAreaOf(entry.key) or nil
-            if area then
+            local area = arenaSpawnAreaOf(entry.key)
+            if type(area) == 'table' then
                 checkHeight('spawnArea.center.z', area.z)
 
                 -- A FLOOR SMALLER THAN THE RING OF SPAWNS ON IT.
@@ -2148,7 +2152,6 @@ function Arena.ValidateConfig()
                 end
             end
 
-            local raw = Arena.GetArenaByKey(entry.key) or {}
             for index, point in ipairs(raw.spawns or {}) do
                 checkHeight(('spawns[%d].z'):format(index), point and point.z)
             end
@@ -2157,8 +2160,35 @@ function Arena.ValidateConfig()
                     checkHeight(('teamSpawns.%s[%d].z'):format(tostring(team), index), point and point.z)
                 end
             end
-            if type(raw.boundary) == 'table' and type(raw.boundary.center) ~= 'nil' then
-                checkHeight('boundary.center.z', raw.boundary.center.z)
+
+            if type(raw.boundary) == 'table' then
+                checkHeight('boundary.center.z', raw.boundary.center and raw.boundary.center.z)
+
+                -- THE BOUNDARY HAS TO CONTAIN THE FLOOR.
+                --
+                -- A floor that reaches past the sphere is solid ground you
+                -- bleed on: you walk to the edge of the platform, still
+                -- standing on it, and start dying for it. That does not read
+                -- as a boundary, it reads as the arena being broken -- and it
+                -- shipped that way, with a 60m sphere around a floor that
+                -- reached 77.
+                --
+                -- The floor is TILED, so it reaches further than
+                -- platform.radius: a tile is kept whenever any part of it is
+                -- inside that radius, so the outer ring sticks out by up to
+                -- half a tile and the corners by half a diagonal. The
+                -- configured tileSize is the only size known outside the
+                -- game, so it is what the margin is worked out from.
+                if raw.boundary.enabled == true then
+                    local tile = tonumber(platform.tileSize) or 0
+                    local reach = platform.radius + (tile * 0.708)
+                    local sphere = tonumber(raw.boundary.radius) or 0
+
+                    if sphere < reach then
+                        complain(('Config.Arenas["%s"] has a %.2fm boundary around a floor that reaches about %.2fm -- the outer ring of the platform is solid ground OUTSIDE the arena, and standing on it bleeds you.')
+                            :format(entry.key, sphere, reach))
+                    end
+                end
             end
         end
     end

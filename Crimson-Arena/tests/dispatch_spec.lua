@@ -292,4 +292,81 @@ t.test('another resource stopping leaves the flags alone', function()
 end)
 
 print('dispatch_spec')
+--- shared/compat/dispatch.lua loaded on its own, with the handful of natives
+--- it reaches for at load time.
+---
+--- It is the one shared file that calls natives, and it decides which half of
+--- itself to run from IsDuplicityVersion() -- so that answer is the fixture's
+--- most important stub rather than a detail. Server side here: the report is
+--- printed from both realms, and the server's is the one an operator reads.
+--- @param mutate fun(config: table)?
+--- @return table env
+local function newCompat(mutate)
+    local env = Sandbox.newArenaEnv({
+        IsDuplicityVersion = function() return true end,
+        GetResourceState = function() return 'missing' end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        CreateThread = function() end,
+        AddEventHandler = function() end,
+        RegisterCommand = function() end,
+        Wait = function() end,
+        ArenaIsAdmin = function() return false end,
+        ArenaNotify = function() end,
+        ArenaNotifyKey = function() end,
+    })
+
+    if mutate then mutate(env.Config) end
+    Sandbox.loadInto('../shared/compat/dispatch.lua', env)
+    return env
+end
+
+-- ========================================================================
+-- THE REPORT SAYS WHETHER A DEAD PLAYER WILL COME BACK
+--
+-- Every other line of this report is about stopping alerts going OUT. This
+-- one is about a player coming back, and it is here because the failure it
+-- describes is completely silent: the arena stands its own dead back up, the
+-- medical script keeps its own record and is never told, and the player
+-- leaves the arena still dead with nothing in any console. An operator hits
+-- that and concludes the arena is broken.
+-- ========================================================================
+
+t.test('an unconfigured revive is called out at start, with the consequence', function()
+    local env = newCompat()
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'revive: NOT configured')
+    t.contains(report, 'still dead',
+        'the report names the setting but never says what goes wrong without it')
+    t.contains(report, 'Config.Dispatch.revive',
+        'the report describes the problem but not where to fix it')
+end)
+
+t.test('and a configured one is reported as configured', function()
+    local env = newCompat(function(config)
+        config.Dispatch.revive = {
+            enabled = true,
+            serverEvents = { 'my_ambulance:server:revive' },
+            clientEvents = {},
+            exports = { { resource = 'my_ambulance', export = 'Revive' } },
+        }
+    end)
+
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'revive: configured')
+    t.notContains(report, 'revive: NOT configured')
+end)
+
+t.test('enabled with nothing named counts as not configured', function()
+    -- The trap: switching it on and leaving the lists empty looks configured
+    -- in the file and calls nothing at run time. That has to read as OFF in
+    -- the report, or the report is worse than not having one.
+    local env = newCompat(function(config)
+        config.Dispatch.revive = { enabled = true, serverEvents = {}, clientEvents = {}, exports = {} }
+    end)
+
+    t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'revive: NOT configured')
+end)
+
 os.exit(t.summary())

@@ -534,6 +534,31 @@ function ArenaCompat.Report()
     end
 
     lines[#lines + 1] = hookLine()
+
+    -- THE OTHER HALF OF THE PROBLEM, and worth its own line because nothing
+    -- else in this report is about it. Everything above is about stopping
+    -- alerts going OUT. This is about a player coming back: the arena stands
+    -- its own dead back up itself, but a medical or ambulance script keeps
+    -- its own record of who is dead and nothing about resurrecting a ped
+    -- reaches it. Unconfigured, that player leaves the arena on their feet
+    -- and is still dead to that script -- which reads as the arena being
+    -- broken, with nothing anywhere saying why. So it says why, here, at
+    -- every start.
+    local revive = (Config.Dispatch or {}).revive
+    local reviveOn = type(revive) == 'table' and revive.enabled == true
+        and ((#(revive.serverEvents or {}) + #(revive.clientEvents or {}) + #(revive.exports or {})) > 0)
+
+    if reviveOn then
+        lines[#lines + 1] = ('revive: configured -- %d event(s) and %d export(s) will be called when a player is stood back up.')
+            :format(#(revive.serverEvents or {}) + #(revive.clientEvents or {}), #(revive.exports or {}))
+    else
+        lines[#lines + 1] = 'revive: NOT configured. A player who dies in a match will be stood back up by the arena,'
+        lines[#lines + 1] = '  but your medical/ambulance script keeps its own death state and nothing here has told it.'
+        lines[#lines + 1] = '  They will walk out of the arena still dead as far as that script is concerned.'
+        lines[#lines + 1] = '  Fix: name whatever revives a player on this server in Config.Dispatch.revive'
+        lines[#lines + 1] = '       (serverEvents / clientEvents / exports) and set enabled = true.'
+    end
+
     return lines
 end
 

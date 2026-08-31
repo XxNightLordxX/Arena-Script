@@ -535,7 +535,12 @@ Config.Loadouts = {
     --
     -- 0 removes melee from the arena entirely while leaving the weapons in the
     -- list below, ready to switch back on.
-    meleeSlots = 1,
+    --
+    -- TWO, at the operator's request: a blade and a blunt, or a knife kept
+    -- back for the end of a round. It is still counted apart from the
+    -- firearms above, so this buys a second melee weapon and never a third
+    -- gun.
+    meleeSlots = 2,
 
     -- Handed to everyone on top of what they picked. Use it for a knife,
     -- a parachute, or nothing at all.

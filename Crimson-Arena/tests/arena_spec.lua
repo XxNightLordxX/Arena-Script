@@ -349,7 +349,11 @@ t.test('ResolveLoadout stops at weaponSlots, and names what did not fit', functi
 end)
 
 t.test('melee has its own allowance and does not compete with firearms', function()
-    t.equals(Config.Loadouts.meleeSlots, 1)
+    -- The BEHAVIOUR, not the shipped number. This used to assert
+    -- meleeSlots == 1 and then lean on it, so raising the operator's melee
+    -- allowance broke a test that is not about the allowance at all.
+    t.isTrue((Arena.ToInt(Config.Loadouts.meleeSlots) or 0) >= 1,
+        'melee is switched off entirely, so there is no allowance to test')
 
     -- Two guns AND a blade, from a request that would have cost three shared
     -- slots. The whole point of the separate count.
@@ -366,10 +370,17 @@ t.test('melee has its own allowance and does not compete with firearms', functio
     t.equals(#rejected, 0)
 end)
 
-t.test('a second blade is refused while a firearm slot is still free', function()
+t.test('a blade past the allowance is refused while a firearm slot is still free', function()
+    -- Pinned to ONE melee slot here rather than read from the config: this is
+    -- about what happens when the allowance runs out, so the allowance has to
+    -- be a known number. The operator ships two.
+    local restore = Config.Loadouts.meleeSlots
+    Config.Loadouts.meleeSlots = 1
+
     local loadout, rejected = Arena.ResolveLoadout({
         weapons = { { key = 'machete' }, { key = 'bat' }, { key = 'pistol' } },
     })
+    Config.Loadouts.meleeSlots = restore
 
     local names = {}
     for _, weapon in ipairs(loadout.weapons) do names[weapon.weapon] = true end

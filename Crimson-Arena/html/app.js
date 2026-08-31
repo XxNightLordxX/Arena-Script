@@ -1365,8 +1365,21 @@
 
         var matchCfg = cfg().match || {};
         var max = int(matchCfg.maxPlayers, 0);
-        var lives = int(matchCfg.lives, 1);
         var roundTime = int(matchCfg.roundTimeSeconds, 0);
+
+        /* THE MATCH'S OWN NUMBER FIRST, and the operator default only as a
+           fallback for a match that predates the field.
+
+           This read `matchCfg.lives`, which is the DEFAULT the server sends
+           in the config block -- Arena.ResolveLives(nil) -- and never the
+           number this match is actually played with. So the card said
+           "3 lives each" under every match ever created, including one the
+           host had correctly set to 1, and the host's own edit screen
+           disagreed with the lobby card right next to it.
+
+           Nothing was wrong with the value: `match.lives` is in the snapshot
+           and always was. This line simply asked the wrong object for it. */
+        var lives = int(match.lives, int(matchCfg.lives, 1));
 
         /* The rules of the round, spelled out here because this is the last
            screen before it starts and none of it is guessable from the

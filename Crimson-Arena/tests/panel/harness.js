@@ -119,6 +119,19 @@ function loadPanel(root) {
             const node = this.node(id);
             (node.listeners[type] || []).forEach((fn) => fn(event || { target: node }));
         },
+        /**
+         * All text rendered inside a node, children included.
+         *
+         * The panel builds screens by appending elements rather than by
+         * setting innerHTML, so what a player actually READS is spread across
+         * a tree. A test that only checks textContent on the container sees
+         * an empty string and passes for the wrong reason.
+         */
+        text(id) {
+            const walk = (node) => (node.textContent || '')
+                + (node.children || []).map(walk).join(' ');
+            return walk(this.node(id)).trim();
+        },
         /** Types into an input and fires the input event, as a player does. */
         type(id, value) {
             const node = this.node(id);

@@ -854,6 +854,15 @@ function ArenaLobby.Destroy(matchId, reasonKey)
         -- countdown and the frozen one Start leaves behind after moving
         -- everybody.
         if ArenaDispatch.IsPlayerInArena(src) then
+            -- FIRST, and unconditionally: this is the last moment anybody
+            -- looks at this player, and it is the one that owes them their own
+            -- inventory back. A teardown that cleared the flag and the bucket
+            -- but skipped this would leave them holding the arena kit with
+            -- their real belongings still sitting in a stash -- exactly the
+            -- promise the door makes, broken on the one path nothing else
+            -- covers. Reclaiming somebody who was never stashed is a no-op.
+            ArenaAmmo.Reclaim(src, 'match closed')
+
             ArenaDispatch.Clear(src)
             ArenaDispatch.ExitBucket(src)
             -- No returnCoords: the client falls back to its own copy of

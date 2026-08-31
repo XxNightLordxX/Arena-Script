@@ -114,8 +114,15 @@
            it, so it survives a re-render of the list. */
         selectedMatchId: null,
 
+        /* The FIREARMS filter, and only that -- melee is its own section on
+           that screen and has no tabs of its own. A key that is no longer on
+           offer reads as 'all' rather than as an empty list. */
         loadoutCategory: 'all',
-        /* [{ key, ammo, ammoType }] -- the unsaved draft. Seeded from the
+        /* [{ key, ammo, ammoType }] -- the unsaved draft, in SEND ORDER,
+           which is the order Arena.ResolveLoadout walks it in. Firearms and
+           melee share this one list and are counted apart by isMelee(),
+           because the two allowances are separate on the server and have to
+           be separate here. Seeded from the
            server's loadout until the player touches it; after that it is
            theirs until they save, so a broadcast cannot undo a selection.
 
@@ -1952,15 +1959,30 @@
         slotGroup(host, false, plan);
         slotGroup(host, true, plan);
 
-        /* Only when there is a cap to report against. */
+        /* Only when there is a cap to report against.
+
+           OVER THE ALLOWANCE IS A REAL STATE, not an arithmetic slip. When a
+           weapon falls back to its own default round, the server counts that
+           default towards the cap as well -- so a loadout that spent its one
+           type on FMJ and then fell a rifle back to Standard is genuinely
+           carrying two. '2 of 1 kind' would read as a broken sum, so the
+           over case is written out as a sentence instead. */
         if (plan.cap > 0) {
             var line = makeEl('div', 'slot-types');
             line.appendChild(makeEl('span', 'slot-group-title', 'Round types'));
-            var count = makeEl('span', 'loadout-count',
-                String(plan.distinct) + ' of ' + plural(plan.cap, 'kind'));
+            var count = makeEl('span', 'loadout-count', plan.distinct <= plan.cap
+                ? String(plan.distinct) + ' of ' + plural(plan.cap, 'kind')
+                : plural(plan.distinct, 'kind') + ', over an allowance of ' + String(plan.cap));
             if (plan.distinct >= plan.cap) count.classList.add('full');
             line.appendChild(count);
             host.appendChild(line);
+
+            if (plan.distinct > plan.cap) {
+                host.appendChild(makeEl('div', 'hint',
+                    'A weapon that fell back to its own default is carrying that round too, '
+                    + 'and it counts. Pick a round this loadout already holds to stay inside '
+                    + 'the allowance.'));
+            }
         }
 
         /* WHAT HAPPENS TO THE GUNS THEY WALKED IN WITH -- the question every

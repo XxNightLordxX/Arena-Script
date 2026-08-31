@@ -108,9 +108,60 @@
             </div>
         </section>
 
+        <!-- TWO LISTS, NOT ONE FILTERED GRID.
+
+             The server keeps a separate allowance for shootable weapons and
+             for melee and spends them separately, so this screen shows them
+             separately: two sections, both on screen at once, each with its
+             own heading and its own counter. A player whose guns are full can
+             see at a glance that their blade slot is still free -- which is
+             the one thing a single grid under a single counter could never
+             say, and the reason it said the wrong thing instead.
+
+             Each list scrolls inside its own box: thirty guns and twenty
+             blades is an ordinary config, and neither the page nor the panel
+             body may ever grow a scrollbar over the game. -->
         <section id="tab-loadout" class="arena-panel">
-            <div id="loadout-cats"></div>
-            <div id="weapon-grid"></div>
+            <!-- The sentence that is true of both lists, plus whatever the
+                 ammo-type cap adds to it. Written by app.js: the rule it
+                 states is the operator's, not this file's. -->
+            <div id="loadout-note"></div>
+
+            <!-- Only when both lists below are switched off. -->
+            <div id="loadout-empty" class="hidden"></div>
+
+            <div id="loadout-lists">
+                <section id="loadout-firearms" class="loadout-section">
+                    <div class="loadout-section-head">
+                        <h2 class="panel-heading">Firearms</h2>
+                        <!-- '2 of 2 guns'. -->
+                        <span id="firearms-count" class="loadout-count"></span>
+                    </div>
+                    <!-- Category tabs over the FIREARMS list only. app.js
+                         drops them when there is only one group to pick
+                         between; with thirty guns in the list they earn
+                         their place. -->
+                    <div id="loadout-cats"></div>
+                    <div id="weapon-grid" class="weapon-grid"></div>
+                </section>
+
+                <!-- Hidden outright when meleeSlots is 0. The operator turned
+                     melee off, and an empty or greyed-out section would read
+                     as a fault rather than as a decision. -->
+                <section id="loadout-melee" class="loadout-section">
+                    <div class="loadout-section-head">
+                        <h2 class="panel-heading">Melee</h2>
+                        <!-- '1 of 1 blade'. -->
+                        <span id="melee-count" class="loadout-count"></span>
+                    </div>
+                    <!-- No tabs here: melee is one section already. -->
+                    <div id="melee-grid" class="weapon-grid"></div>
+                </section>
+            </div>
+
+            <!-- The last thing read before a round locks the choice in: both
+                 counters, and per weapon the weapon, the amount and the
+                 round. -->
             <div id="loadout-slots"></div>
             <div id="armor-picker"></div>
             <!-- The button and the one line that says whether pressing it is

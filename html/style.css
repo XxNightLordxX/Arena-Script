@@ -729,23 +729,97 @@ option {
    LOADOUT
    ====================================================================== */
 
+/* Three rows down the left: the note, the two weapon lists, the save row.
+   The summary column beside them spans the first two. */
 #tab-loadout {
     display: grid;
     grid-template-columns: 1fr minmax(16rem, 22rem);
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     gap: 0.8rem 1.2rem;
     min-height: 0;
 }
 
-#loadout-cats {
+#loadout-note {
     grid-column: 1;
+    grid-row: 1;
+}
+
+#loadout-empty {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: start;
+}
+
+/* THE TWO LISTS SHARE THE MIDDLE ROW and split it between them. Firearms
+   take the larger share because thirty guns and a handful of blades is the
+   common shape of a config; each list scrolls inside itself, so neither one
+   can push the other off or grow the page. With one of them switched off the
+   remaining list takes the whole row without a rule to say so. */
+#loadout-lists {
+    grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    min-height: 0;
+}
+
+.loadout-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-height: 0;
+}
+
+#loadout-firearms {
+    flex: 2 1 0;
+}
+
+#loadout-melee {
+    flex: 1 1 0;
+}
+
+/* Name on the left, counter hard against the right edge of the list it
+   counts, on a hairline that ties the two to the list below them. */
+.loadout-section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.8rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--border);
+}
+
+/* The heading already has the hairline under it here. */
+.loadout-section-head .panel-heading {
+    margin: 0;
+}
+
+/* '2 of 2 guns'. Tabular figures so the number does not shuffle the words
+   along as it changes, and the bright accent once that pool is full -- 'no
+   room left in here' has to read without anyone doing the sum. */
+.loadout-count {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.loadout-count.full {
+    color: var(--accent-bright);
+}
+
+#loadout-cats {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
 }
 
-#weapon-grid {
-    grid-column: 1;
+/* Both lists, the same grid. Each scrolls itself; the panel body never
+   does. */
+.weapon-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
     align-content: start;
@@ -774,6 +848,17 @@ option {
     border-color: var(--accent);
     border-top-color: var(--accent-bright);
     box-shadow: 0 0 1.2rem -0.4rem var(--accent);
+}
+
+/* The pool THIS weapon would go in is full. Dimmed rather than hidden or
+   disabled: the weapon is still on offer, it is the allowance that is spent,
+   and clicking it says which allowance in words. */
+.weapon-card.blocked {
+    opacity: 0.45;
+}
+
+.weapon-card.blocked:hover {
+    opacity: 0.8;
 }
 
 .weapon-name {
@@ -818,6 +903,27 @@ option {
     font-size: 0.8rem;
 }
 
+/* A sentence on the card about what will ACTUALLY happen -- the pool being
+   full, or the round being swapped for this weapon's default because the
+   loadout has spent its ammo types. Accent rather than muted: it is the one
+   line on the card that contradicts what the card otherwise appears to
+   offer. */
+.weapon-note {
+    margin-top: 0.5rem;
+    color: var(--accent-bright);
+    font-size: 0.75rem;
+    line-height: 1.35;
+}
+
+/* A round this loadout has no type slot left for. Still pressable -- the
+   server takes the weapon either way -- but dashed and dimmed, because being
+   handed the default at the start of a round with no warning is the surprise
+   this whole treatment exists to prevent. */
+.chip.spent {
+    border-style: dashed;
+    border-color: var(--accent-dim);
+}
+
 #loadout-slots,
 #armor-picker {
     grid-column: 2;
@@ -833,6 +939,42 @@ option {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+    /* Two groups of slots on a server with generous allowances is a tall
+       box. It scrolls itself rather than pushing the armour picker off the
+       bottom of the panel. */
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* Names one pool inside the summary and counts it. THE TWO COUNTERS ARE THE
+   POINT OF THIS BOX: 'my guns are full' and 'I am full' are different
+   sentences, and only the first one is ever true. */
+.slot-group-head,
+.slot-types {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.slot-group-head {
+    margin-top: 0.3rem;
+}
+
+/* How many different rounds the loadout is carrying, against the cap. Ruled
+   off, because it counts across both groups above rather than belonging to
+   either. */
+.slot-types {
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+}
+
+.slot-group-title {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
 }
 
 .slot {
@@ -865,6 +1007,14 @@ option {
     color: var(--text-muted);
     font-size: 0.8rem;
     font-variant-numeric: tabular-nums;
+}
+
+/* The round the server will load instead of the one that was clicked. It
+   sits under the line that names the round, so the two are read together. */
+.slot-swap {
+    color: var(--accent-bright);
+    font-size: 0.75rem;
+    line-height: 1.35;
 }
 
 #armor-picker {
@@ -1255,10 +1405,23 @@ option {
     }
 
     #match-list,
-    #weapon-grid,
+    .weapon-grid,
     #bet-list,
     #roster {
         max-height: 40vh;
+    }
+
+    /* Stacked, the two lists have no row to divide between them: they take
+       the height their own grids ask for -- capped just above -- and the tab
+       scrolls past them. A flex basis of 0 here would collapse both. */
+    #loadout-firearms,
+    #loadout-melee {
+        flex: 0 0 auto;
+    }
+
+    /* Nothing definite left to be a percentage of. */
+    #loadout-slots {
+        max-height: none;
     }
 
     #create-fee-presets,

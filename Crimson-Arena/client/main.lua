@@ -272,7 +272,30 @@ CreateThread(function()
     -- opening the same panel -- it just costs them a keypress instead of a
     -- target prompt. Better a lobby that reads slightly wrong than one that
     -- is not there.
-    local pedUp = (mode == 'ped' or mode == 'both') and spawnLobbyPed() or false
+    -- WRAPPED, because a raise in here used to take everything after it down.
+    --
+    -- This file already says so about `targeting()`: "a raise inside the
+    -- startup thread below takes the marker, the blip and the fallback
+    -- command down with the ped, leaving the arena unreachable with nothing
+    -- in the console pointing at the cause". That was true of exactly one
+    -- call in spawnLobbyPed and the guard was put around that one. Everything
+    -- else in there can raise too -- CreatePed on a model the game will not
+    -- give, a scenario name it does not know, and above all
+    -- ox_target:addLocalEntity, whose shape is another resource's to change.
+    --
+    -- The symptom is unmistakable and was unexplainable: NO NPC AND NO BLIP,
+    -- on a resource that reports itself started. The blip is drawn two lines
+    -- below this one.
+    local pedUp = false
+    if mode == 'ped' or mode == 'both' then
+        local ok, result = pcall(spawnLobbyPed)
+        if ok then
+            pedUp = result == true
+        else
+            warn(('the lobby NPC could not be spawned: %s -- falling back to the ground marker.')
+                :format(tostring(result)))
+        end
+    end
 
     if mode == 'marker' or mode == 'both' or not pedUp then startMarkerThread() end
     createBlip(pedUp and mode or 'marker')

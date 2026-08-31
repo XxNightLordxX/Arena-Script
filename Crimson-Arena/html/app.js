@@ -1032,8 +1032,18 @@
             state.createArena = arenas.length > 0 ? arenas[0].key : null;
         }
         if (!state.createMode) {
+            /* THE OPERATOR'S DEFAULT FIRST, and the first enabled mode only
+               when they have not named one or have named one this server does
+               not have. The panel always sends a mode, so the server-side
+               fallback to Config.DefaultMode never fired and the setting did
+               nothing at all. */
             var modes = arrayOf(config.modes);
-            state.createMode = modes.length > 0 ? modes[0].key : null;
+            var wanted = (config.match || {}).defaultMode;
+            var found = null;
+            for (var m = 0; m < modes.length; m++) {
+                if (modes[m] && modes[m].key === wanted) { found = modes[m].key; break; }
+            }
+            state.createMode = found || (modes.length > 0 ? modes[0].key : null);
         }
         if (state.createFee === null) {
             state.createFee = int(((config.betting || {}).entryFee || {}).default, 0);

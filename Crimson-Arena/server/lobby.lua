@@ -535,6 +535,13 @@ local function snapshotConfig()
             -- sentence a player reads immediately before pressing the button
             -- it is wrong about.
             autoStartWhenAllReady = Config.Match.autoStartWhenAllReady == true,
+            -- WHICH MODE A NEW MATCH STARTS ON. Config.DefaultMode is used
+            -- server-side as the fallback when a create arrives without one --
+            -- and the panel always sends one, because it preselects from its
+            -- own list. So the fallback never fired, the operator's setting
+            -- never took effect, and every match opened on whichever mode
+            -- happened to come first.
+            defaultMode = Arena.IsKey(Config.DefaultMode) and Config.DefaultMode or nil,
             lobbyCountdownSeconds = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0),
         },
     }

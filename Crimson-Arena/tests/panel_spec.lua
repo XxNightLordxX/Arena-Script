@@ -244,6 +244,7 @@ local function newLobbyFixture(opts)
     opts = opts or {}
     local serverEvents = {}
     local built = {}
+    local console = {}
     local depth = 0
 
     local env = Sandbox.newEnv({
@@ -263,6 +264,9 @@ local function newLobbyFixture(opts)
             depth = depth - 1
         end,
         Wait = function() end,
+        -- Captured, not silenced: half of what this file asserts is that a
+        -- failure says so out loud.
+        print = function(line) console[#console + 1] = tostring(line) end,
         -- Started unless a test says otherwise: that is the shape every
         -- assertion written before the fallback existed was written against.
         GetResourceState = function(resource)
@@ -292,6 +296,10 @@ local function newLobbyFixture(opts)
         -- the coordinates" is unanswerable from a fixture that only records
         -- that a ped was made.
         CreatePed = function(_kind, _model, x, y, z, heading)
+            -- A raise here is not hypothetical: CreatePed, the scenario, and
+            -- above all ox_target's addLocalEntity are all things another
+            -- resource or the engine can refuse.
+            if opts.pedRaises then error('the game would not make that ped') end
             built.ped = true
             built.pedAt = { x = x, y = y, z = z, w = heading }
             return 7
@@ -322,7 +330,15 @@ local function newLobbyFixture(opts)
     Sandbox.loadInto('../config.lua', env)
     Sandbox.loadInto('../client/main.lua', env)
 
-    return { env = env, serverEvents = serverEvents, built = built }
+    return {
+        env = env,
+        serverEvents = serverEvents,
+        built = built,
+        --- Everything the resource printed while starting. Half of what this
+        --- file asserts is that a failure is LOUD, and the console is where
+        --- that lands.
+        log = function() return table.concat(console, '\n') end,
+    }
 end
 
 t.test('the lobby NPC goes exactly where config.lua says', function()
@@ -365,6 +381,30 @@ t.test('and with ox_target absent the blip follows the MARKER instead', function
     t.isNotNil(f.built.blipAt)
     t.equals(f.built.blipAt.x, wanted.x)
     t.equals(f.built.blipAt.y, wanted.y)
+end)
+
+t.test('DEFECT: an NPC that RAISES does not take the blip and marker with it', function()
+    -- THE SYMPTOM, and it was unexplainable from outside: no NPC and no blip,
+    -- on a resource reporting itself started. The blip is created two lines
+    -- after the spawn on the same thread, so anything that raises in the
+    -- spawn kills the rest of the start-up -- the marker fallback, the blip,
+    -- and the /arena command with them, leaving the arena unreachable by any
+    -- route and nothing in the console pointing at the cause.
+    --
+    -- This file already said exactly that, about ONE call inside the spawn,
+    -- and guarded only that one.
+    local f = newLobbyFixture({ pedRaises = true })
+
+    t.isTrue(f.built.blip, 'A RAISE IN THE NPC TOOK THE MAP BLIP DOWN WITH IT')
+    t.isTrue(f.built.markerThread, 'and the ground-marker fallback, so there is no way in at all')
+    t.equals(f.built.command, f.env.Config.UI.command,
+        'and the command, so there is not even a way to open the panel by typing')
+end)
+
+t.test('and the failure is named rather than swallowed', function()
+    local f = newLobbyFixture({ pedRaises = true })
+    t.isTrue(f.log():find('could not be spawned', 1, true) ~= nil,
+        'the NPC vanished and the console says nothing about why: ' .. f.log())
 end)
 
 t.test('starting the resource asks the server for nothing', function()

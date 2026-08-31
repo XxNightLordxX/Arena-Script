@@ -330,6 +330,27 @@ local function issueWeapons(ox, src, matchId, loadout)
             local rounds = Arena.ToInt(entry.ammo) or 0
             if rounds > 0 then metadata.ammo = rounds end
 
+            -- ATTACHMENTS AND TINT RIDE IN THE METADATA TOO, and they were
+            -- being dropped here. client/match.lua applies both with natives
+            -- on a server WITHOUT ox_inventory -- so a suppressor or a scope
+            -- an operator configured arrived on one kind of server and not
+            -- the other, from the same config, with nothing to say why.
+            --
+            -- Only when there is something to carry: ox_inventory reads an
+            -- empty `components` list as a weapon with its attachments
+            -- explicitly removed, which is not the same as one that was never
+            -- given any.
+            if type(entry.components) == 'table' and #entry.components > 0 then
+                local parts = {}
+                for _, component in ipairs(entry.components) do
+                    if Arena.IsKey(component) then parts[#parts + 1] = component end
+                end
+                if #parts > 0 then metadata.components = parts end
+            end
+
+            local tint = Arena.ToInt(entry.tint) or 0
+            if tint > 0 then metadata.tint = tint end
+
             -- BOTH have to be true, for the same reason the ammo items below
             -- check both: a pcall that did not throw is not ox_inventory
             -- saying yes. It returns false for an item it does not know, and

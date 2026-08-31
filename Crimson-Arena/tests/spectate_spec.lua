@@ -93,9 +93,13 @@ local function newFixture(opts)
         NetworkIsPlayerActive = function(player) return player ~= nil end,
         DoesEntityExist = function() return true end,
         -- The target resolver refuses a corpse: a camera parked on a dead
-        -- body is the thing cycling exists to avoid. Ped 1000 + DEAD is the
-        -- one that answers yes.
-        IsEntityDead = function(ped) return ped == 1000 + DEAD end,
+        -- body is the thing cycling exists to avoid. `deadPeds` lets a test
+        -- kill somebody the SCOREBOARD still lists as alive, which is the
+        -- only way to reach that check -- the roster filter would otherwise
+        -- have removed them first.
+        IsEntityDead = function(ped)
+            return ped == 1000 + DEAD or (f.deadPeds or {})[ped] == true
+        end,
         GetPlayerName = function(player) return ('Fighter %d'):format(player or 0) end,
         GetEntityCoords = function() return { x = 0.0, y = 0.0, z = 0.0 } end,
         GetEntityHeading = function() return 90.0 end,
@@ -388,18 +392,70 @@ end)
 -- WHO THE CAMERA FOLLOWS
 -- ======================================================================
 
-t.test('the target list is the living fighters, and never the viewer', function()
+t.test('the camera only ever frames a LIVING fighter who is not the viewer', function()
+    -- Cycling announces who it lands on, so the announcements are the list
+    -- without having to expose it. Three things must never appear: the
+    -- viewer themselves, a fighter who is dead on the scoreboard, and one
+    -- whose ped is a corpse -- the last is a separate check inside the
+    -- resolver and the one that keeps a camera off a body.
     local f = newFixture()
     f.fire('crimson_arena:client:state', snapshot())
 
-    -- Cycling proves membership without exposing the list: it can only stop
-    -- on somebody who is in it.
-    local seen = {}
-    for _ = 1, 6 do
+    for _ = 1, 12 do
         f.spectate.Next()
-        seen[#seen + 1] = true
+        f.spectate.Previous()
     end
-    t.isTrue(f.spectate.IsActive(), 'cycling ended the spectating')
+
+    local announced = table.concat(f.notes, '\n')
+    t.isTrue(#f.notes > 0, 'cycling announced nobody at all, so this proves nothing')
+
+    t.notContains(announced, ('Fighter %d'):format(SELF),
+        'the camera framed the viewer themselves')
+    t.notContains(announced, ('Fighter %d'):format(DEAD),
+        'the camera framed a fighter the scoreboard says is dead')
+    t.isTrue(announced:find(('Fighter %d'):format(ALIVE_A), 1, true) ~= nil
+        or announced:find(('Fighter %d'):format(ALIVE_B), 1, true) ~= nil,
+        'the camera never framed either of the living fighters')
+end)
+
+t.test('DEFECT: never the viewer, even when the roster still lists them alive', function()
+    -- THE GUARD MY FIRST VERSION OF THIS TEST COULD NOT REACH. The ordinary
+    -- spectator is an eliminated fighter, so the roster already has them
+    -- dead and the "not me" check is redundant -- which means a test built
+    -- on that roster passes whether the check is there or not.
+    --
+    -- An onlooker who never joined is listed alive. Frame them and the
+    -- camera orbits an invisible, frozen body: nothing moves, and there is
+    -- no way to tell that from the resource being broken.
+    local f = newFixture()
+    local state = snapshot()
+    state.matches[1].players[1].alive = true
+    f.fire('crimson_arena:client:state', state)
+
+    for _ = 1, 12 do f.spectate.Next() end
+
+    t.notContains(table.concat(f.notes, '\n'), ('Fighter %d'):format(SELF),
+        'the camera framed the viewer, who is standing still and invisible')
+end)
+
+t.test('DEFECT: and never a corpse the scoreboard has not caught up with', function()
+    -- The scoreboard arrives on a broadcast; a ped dies in a frame. Between
+    -- the two, a fighter is alive on the roster and a body in the world --
+    -- and parking the camera on a body is exactly what the resolver's own
+    -- death check is for. The roster filter cannot reach that case, so a
+    -- test built only on the roster leaves the check unproven.
+    local f = newFixture()
+    -- ALIVE_B has just been killed. The roster still says otherwise.
+    f.deadPeds = { [1000 + ALIVE_B] = true }
+    f.fire('crimson_arena:client:state', snapshot())
+
+    for _ = 1, 12 do f.spectate.Next() end
+
+    local announced = table.concat(f.notes, '\n')
+    t.notContains(announced, ('Fighter %d'):format(ALIVE_B),
+        'the camera framed a fighter whose ped is already a corpse')
+    t.contains(announced, ('Fighter %d'):format(ALIVE_A),
+        'it skipped the corpse and then framed nobody at all')
 end)
 
 t.test('cycling does nothing at all when not spectating', function()

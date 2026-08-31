@@ -361,26 +361,48 @@ function ArenaDispatch.Revive(health)
     local x, y, z = table.unpack(GetEntityCoords(ped))
     local heading = GetEntityHeading(ped)
 
-    if IsEntityDead(ped) then
+    -- READ BEFORE ANYTHING IS CHANGED, because the cheap half below changes
+    -- the very thing the expensive half needs to test.
+    local maximum = GetEntityMaxHealth(ped)
+    local wasDead = IsEntityDead(ped)
+    local wasHurt = wasDead or IsPedRagdoll(ped) or GetEntityHealth(ped) < maximum
+
+    if wasDead then
         NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
         ped = PlayerPedId()
     end
 
-    -- Everything below runs whether or not the body was dead, because the
-    -- state this fixes is not only death: a player can be alive and still be
-    -- stuck in the animation, damage and ragdoll a death left behind.
-    local maximum = GetEntityMaxHealth(ped)
+    -- THE CHEAP HALF, run every time. All of it is idempotent, all of it is
+    -- undoing something a match does, and none of it is felt by a player who
+    -- was already fine.
     SetEntityHealth(ped, math.min(tonumber(health) or maximum, maximum))
-
-    ClearPedBloodDamage(ped)
-    ResetPedVisibleDamage(ped)
-    ClearPedLastWeaponDamage(ped)
-
-    -- The tasks a death leaves running -- the fall, the writhe, the ragdoll
-    -- -- outlive the resurrect and leave a player alive on the floor unable
-    -- to stand, which reads exactly like not having been revived at all.
-    ClearPedTasksImmediately(ped)
     SetPedCanRagdoll(ped, true)
+
+    -- THE EXPENSIVE HALF, and it is guarded on the player actually having
+    -- been in a state worth clearing.
+    --
+    -- It used to run every time, and that was wrong for one caller in
+    -- particular: the post-match sweep revives EVERYONE who played, five
+    -- seconds after the match, by which point they are home and getting on
+    -- with something else. ClearPedTasksImmediately on a player who is fine
+    -- cancels whatever they are doing -- an animation, an emote, getting into
+    -- a car -- and AnimpostfxStopAll kills every screen effect on the client,
+    -- including ones other resources own and will not put back.
+    --
+    -- `wasHurt` still covers the case this was written for: somebody alive
+    -- but stuck in the animation and damage a death left behind is ragdolling
+    -- or below full health, so they are cleaned up exactly as before.
+    if wasHurt then
+        ClearPedBloodDamage(ped)
+        ResetPedVisibleDamage(ped)
+        ClearPedLastWeaponDamage(ped)
+
+        -- The tasks a death leaves running -- the fall, the writhe, the
+        -- ragdoll -- outlive the resurrect and leave a player alive on the
+        -- floor unable to stand, which reads exactly like not having been
+        -- revived at all.
+        ClearPedTasksImmediately(ped)
+    end
 
     SetEntityInvincible(ped, false)
     SetEntityVisible(ped, true, false)
@@ -388,8 +410,10 @@ function ArenaDispatch.Revive(health)
     FreezeEntityPosition(ped, false)
 
     -- The screen effects a death leaves on: without this a revived player
-    -- can be alive and walking around a greyed-out, blurred world.
-    AnimpostfxStopAll()
+    -- can be alive and walking around a greyed-out, blurred world. Guarded
+    -- for the same reason as the block above -- it stops EVERY effect on the
+    -- client, not only the arena's.
+    if wasHurt then AnimpostfxStopAll() end
 
     -- AND NOTHING WORLD-WIDE IS TOUCHED HERE. In particular the health
     -- recharge multiplier is left alone -- see the note above ENTER / EXIT.

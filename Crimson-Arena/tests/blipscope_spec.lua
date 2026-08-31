@@ -610,4 +610,169 @@ t.test('and nobody at all is hazed in a free-for-all, however long it runs', fun
     end
 end)
 
+-- ======================================================================
+-- ROSTERS AND ORDERS NOBODY CHOSE
+--
+-- Every case above uses a roster I wrote: four players, two a side, one of
+-- them dead. The rule that matters -- an enemy is NEVER outlined, because
+-- the outline draws through walls -- has to hold for rosters nobody wrote
+-- and for event orders nobody designed.
+--
+-- Seeded, so a failure names a seed that reproduces it.
+-- ======================================================================
+
+--- A roster of `count` fighters with random teams and random alive flags.
+--- @param count integer
+--- @param selfTeam string
+local function randomRoster(count, selfTeam)
+    local teams = { 'crimson', 'ash' }
+    local rows = { { id = SELF, name = 'You', alive = math.random() < 0.5, team = selfTeam } }
+    for id = 2, count do
+        rows[#rows + 1] = {
+            id = id,
+            name = ('Fighter %d'):format(id),
+            alive = math.random() < 0.7,
+            team = teams[math.random(2)],
+        }
+    end
+    return rows
+end
+
+t.test('FUZZ: an enemy is never outlined, on any roster', function()
+    -- THE WALLHACK INVARIANT. On a teammate the outline is the point; on an
+    -- enemy it is an aimbot with a palette, and the only person who would
+    -- ever notice is the one benefiting from it.
+    local caught = nil
+
+    for seed = 1, 200 do
+        math.randomseed(seed + 4242)
+
+        local f = newFixture()
+        local selfTeam = (math.random() < 0.5) and 'crimson' or 'ash'
+        f.enterLive({ teamKey = selfTeam, radar = math.random() < 0.5 })
+
+        local rows = randomRoster(2 + math.random(6), selfTeam)
+        f.hud(rows)
+
+        -- Team lookup for the assertion, built from the same rows.
+        local teamOf = {}
+        for _, row in ipairs(rows) do teamOf[row.id] = row.team end
+
+        for _ = 1, 20 do
+            f.step()
+            for ped in pairs(f.outlines) do
+                local id = ped - 1000
+                if id ~= SELF and teamOf[id] ~= selfTeam and not caught then
+                    caught = ('seed %d: fighter %d (%s) outlined by a %s player')
+                        :format(seed, id, tostring(teamOf[id]), selfTeam)
+                end
+            end
+        end
+    end
+
+    t.isNil(caught, caught or '')
+end)
+
+t.test('FUZZ: and a dead player is never blipped or outlined', function()
+    -- A dot on a corpse is a free read on where somebody died, and an
+    -- outline on one is that plus a wall to see it through.
+    local caught = nil
+
+    for seed = 1, 200 do
+        math.randomseed(seed + 8484)
+
+        local f = newFixture()
+        f.enterLive({ teamKey = 'crimson', radar = math.random() < 0.5 })
+
+        local rows = randomRoster(2 + math.random(6), 'crimson')
+        f.hud(rows)
+
+        local aliveOf = {}
+        for _, row in ipairs(rows) do aliveOf[row.id] = row.alive end
+
+        for _ = 1, 20 do
+            f.step()
+            for id in pairs(f.blipped()) do
+                if aliveOf[id] == false and not caught then
+                    caught = ('seed %d: dead fighter %d was blipped'):format(seed, id)
+                end
+            end
+            for ped in pairs(f.outlines) do
+                local id = ped - 1000
+                if aliveOf[id] == false and not caught then
+                    caught = ('seed %d: dead fighter %d was outlined'):format(seed, id)
+                end
+            end
+        end
+    end
+
+    t.isNil(caught, caught or '')
+end)
+
+t.test('FUZZ: no event order leaves a blip or an outline behind', function()
+    -- Every one of these outlives the round if it is missed: a blip stays on
+    -- the map until the player reconnects, an outline follows a ped around
+    -- the city.
+    local names = { 'enter', 'hud', 'step', 'exit', 'stop', 'otherStop' }
+    local leaked = nil
+
+    for seed = 1, 150 do
+        math.randomseed(seed + 1717)
+
+        local f = newFixture()
+        local order = {}
+        local menu = {
+            enter = function() f.enterLive({ radar = math.random() < 0.5 }) end,
+            hud = function() f.hud(randomRoster(2 + math.random(5), 'crimson')) end,
+            step = function() f.step() end,
+            exit = function() f.fire('crimson_arena:client:exitArena', {}) end,
+            stop = function() f.fire('onResourceStop', 'crimson_arena') end,
+            otherStop = function() f.fire('onResourceStop', 'other_resource') end,
+        }
+
+        for _ = 1, 8 do
+            local pick = names[math.random(#names)]
+            order[#order + 1] = pick
+            menu[pick]()
+        end
+
+        menu.exit()
+
+        if f.blipCount() ~= 0 and not leaked then
+            leaked = ('seed %d after [%s] then exit: %d blips left')
+                :format(seed, table.concat(order, ' '), f.blipCount())
+        end
+        if f.outlineCount() ~= 0 and not leaked then
+            leaked = ('seed %d after [%s] then exit: %d outlines left')
+                :format(seed, table.concat(order, ' '), f.outlineCount())
+        end
+    end
+
+    t.isNil(leaked, leaked or '')
+end)
+
+t.test('FUZZ: and a client in no match draws nothing, whatever it is sent', function()
+    -- The whole "nobody outside the arena sees it" claim, against rosters
+    -- and orders nobody picked. A client that never entered has no loop to
+    -- run, so nothing it is handed should ever reach the map.
+    local drew = nil
+
+    for seed = 1, 150 do
+        math.randomseed(seed + 3131)
+
+        local f = newFixture()
+        for _ = 1, 6 do
+            f.hud(randomRoster(2 + math.random(6), 'crimson'))
+            f.step()
+        end
+
+        if (f.blipCount() ~= 0 or f.outlineCount() ~= 0) and not drew then
+            drew = ('seed %d: a client in no match drew %d blips and %d outlines')
+                :format(seed, f.blipCount(), f.outlineCount())
+        end
+    end
+
+    t.isNil(drew, drew or '')
+end)
+
 os.exit(t.summary())

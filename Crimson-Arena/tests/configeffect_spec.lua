@@ -580,4 +580,155 @@ t.test('and an arena on the ground is never asked about a surface it does not ha
         ('an arena with no platform was warned about its heights:\n%s'):format(output))
 end)
 
+-- ======================================================================
+-- AND A TYPO MUST NOT TAKE THE SERVER DOWN
+--
+-- The other half of "editing the config works". A setting that does nothing
+-- is the quiet failure; a setting that throws is the loud one, and it is
+-- worse -- an operator who mistypes a number should get a warning and a
+-- running arena, not a resource that fails to start and a server with a hole
+-- in it.
+--
+-- config.lua is edited by hand, in a text editor, by somebody who is not a
+-- programmer. Every value in it will eventually be a string, a nil, a
+-- negative, or a table where a number belongs.
+-- ======================================================================
+
+--- The settings an operator actually edits, as setters.
+local SETTERS = {
+    { 'Match.lives.default', function(c, v) c.Match.lives.default = v end },
+    { 'Match.lives.min', function(c, v) c.Match.lives.min = v end },
+    { 'Match.lives.max', function(c, v) c.Match.lives.max = v end },
+    { 'Match.maxPlayers', function(c, v) c.Match.maxPlayers = v end },
+    { 'Match.minPlayers', function(c, v) c.Match.minPlayers = v end },
+    { 'Match.spawnScatterRadius', function(c, v) c.Match.spawnScatterRadius = v end },
+    { 'Match.spawnHeightOffset', function(c, v) c.Match.spawnHeightOffset = v end },
+    { 'Match.startCountdownSeconds', function(c, v) c.Match.startCountdownSeconds = v end },
+    { 'Match.respawnDelaySeconds', function(c, v) c.Match.respawnDelaySeconds = v end },
+    { 'Loadouts.weaponSlots', function(c, v) c.Loadouts.weaponSlots = v end },
+    { 'Loadouts.meleeSlots', function(c, v) c.Loadouts.meleeSlots = v end },
+    { 'Loadouts.ammoTypeSlots', function(c, v) c.Loadouts.ammoTypeSlots = v end },
+    { 'Betting.entryFee.min', function(c, v) c.Betting.entryFee.min = v end },
+    { 'Betting.entryFee.max', function(c, v) c.Betting.entryFee.max = v end },
+    { 'Betting.entryFee.default', function(c, v) c.Betting.entryFee.default = v end },
+    { 'Betting.enabled', function(c, v) c.Betting.enabled = v end },
+    { 'Teams.allowUnequal', function(c, v) c.Teams.allowUnequal = v end },
+    { 'Teams.maxTeamSizeDifference', function(c, v) c.Teams.maxTeamSizeDifference = v end },
+    { 'DefaultMode', function(c, v) c.DefaultMode = v end },
+    { 'skydome.platform.z', function(c, v) c.Arenas.skydome.platform.z = v end },
+    { 'skydome.platform.radius', function(c, v) c.Arenas.skydome.platform.radius = v end },
+    { 'skydome.platform.tileSize', function(c, v) c.Arenas.skydome.platform.tileSize = v end },
+    { 'skydome.platform.maxTiles', function(c, v) c.Arenas.skydome.platform.maxTiles = v end },
+    { 'skydome.spawnArea.radius', function(c, v) c.Arenas.skydome.spawnArea.radius = v end },
+    { 'skydome.spawnArea.minSeparation', function(c, v) c.Arenas.skydome.spawnArea.minSeparation = v end },
+    { 'skydome.spawnArea.teamRadius', function(c, v) c.Arenas.skydome.spawnArea.teamRadius = v end },
+    { 'skydome.boundary.radius', function(c, v) c.Arenas.skydome.boundary.radius = v end },
+    { 'skydome.scale.baseline', function(c, v) c.Arenas.skydome.scale.baseline = v end },
+    { 'skydome.scale.perPlayer', function(c, v) c.Arenas.skydome.scale.perPlayer = v end },
+    { 'skydome.scale.maxGrowth', function(c, v) c.Arenas.skydome.scale.maxGrowth = v end },
+    { 'skydome.cover.clearance', function(c, v) c.Arenas.skydome.cover.clearance = v end },
+    { 'UI.title', function(c, v) c.UI.title = v end },
+    { 'Lobby.interaction', function(c, v) c.Lobby.interaction = v end },
+}
+
+--- Everything a hand-edited file eventually contains.
+local JUNK = {
+    nil, false, true, 0, -1, -99999, 0.5, 1e15, 0/0, 1/0, -1/0,
+    '', ' ', 'yes', '10', 'NaN', {}, { 1, 2 }, { x = 1 },
+}
+
+t.test('FUZZ: no junk value in any operator setting throws', function()
+    -- Not "is handled correctly" -- that is what the differential half above
+    -- is for. Just that the resource still starts, still builds a panel, and
+    -- still answers a request. A warning and a running arena beats a stack
+    -- trace and a dead resource every time.
+    local broke = nil
+
+    for _, setter in ipairs(SETTERS) do
+        local name, apply = setter[1], setter[2]
+        -- `#JUNK` stops at the nil, so walk the whole range explicitly.
+        for index = 1, 19 do
+            local value = JUNK[index]
+
+            local ok, err = pcall(function()
+                local server = newArena(function(config) apply(config, value) end)
+
+                -- Three things every start does, in order.
+                server.Arena.ValidateConfig()
+                server.snapshot(1)
+
+                -- And the one thing a player does first. Refusing is fine;
+                -- throwing is not.
+                server.env.ArenaLobby.Create(1, 'skydome', 'ffa', 0, nil, false, nil)
+            end)
+
+            if not ok and not broke then
+                broke = ('%s = %s (%s) threw: %s')
+                    :format(name, tostring(value), type(value), tostring(err))
+            end
+        end
+    end
+
+    t.isNil(broke, broke or '')
+end)
+
+t.test('DEFECT: a floor smaller than its spawn ring is named at start', function()
+    -- FOUND BY FUZZING JUNK INTO THE RADIUS, and it is the one geometry
+    -- mistake that builds SUCCESSFULLY and is still fatal. Set
+    -- platform.radius to 0.5 and the arena comes up: pieces really were
+    -- created, so the client's "is there a floor" check passes -- and
+    -- everybody who does not draw the middle spawn is placed over open air.
+    --
+    -- The realistic version is a dropped digit, not 0.5.
+    local missed = nil
+
+    for _, radius in ipairs({ 0.5, 1.0, 4.0, 20.0, 34.9, 35.0 }) do
+        local output = validate(function(config)
+            config.Arenas.skydome.platform.radius = radius
+        end)
+        if not output:find('over open air', 1, true) and not missed then
+            missed = ('platform.radius = %.1f under a 35m spawn ring was not flagged'):format(radius)
+        end
+    end
+
+    t.isNil(missed, missed or '')
+end)
+
+t.test('and a floor wider than its spawn ring is not', function()
+    -- The shipped arena, and every sane one. A check that fires on correct
+    -- config is a check an operator learns to ignore.
+    local output = validate()
+    t.isNil(output:find('over open air', 1, true),
+        ('the shipped arenas were flagged for a floor that is fine:\n%s'):format(output))
+
+    local wider = validate(function(config)
+        config.Arenas.skydome.platform.radius = 200.0
+    end)
+    t.isNil(wider:find('over open air', 1, true), 'a generously large floor was flagged')
+end)
+
+t.test('FUZZ: and junk geometry never throws, whatever it is', function()
+    -- The radius reaches arithmetic in several places. Whatever an operator
+    -- types, the resource has to keep running and say something.
+    local broke = nil
+
+    for index = 1, 19 do
+        local value = JUNK[index]
+        local ok, err = pcall(function()
+            local env = Sandbox.newArenaEnv()
+            env.Config.Arenas.skydome.platform.radius = value
+            env.Arena.ValidateConfig()
+            env.Arena.GetPlatform('skydome')
+            env.Arena.GetSpawnArea('skydome')
+            env.Arena.PlanSpawns('skydome', { { src = 1 }, { src = 2 } })
+        end)
+
+        if not ok and not broke then
+            broke = ('platform.radius = %s (%s): %s'):format(tostring(value), type(value), tostring(err))
+        end
+    end
+
+    t.isNil(broke, broke or '')
+end)
+
 os.exit(t.summary())

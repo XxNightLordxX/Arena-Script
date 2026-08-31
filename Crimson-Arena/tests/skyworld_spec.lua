@@ -1202,6 +1202,175 @@ t.test('and returnCoords is where a player really ends up', function()
 end)
 
 -- ======================================================================
+-- EVENT ORDERS NOBODY DESIGNED FOR
+--
+-- Every test above fires events in the order a healthy round produces them.
+-- Production does not always oblige: a player disconnects during a
+-- countdown, a match is cancelled while somebody is still loading models, a
+-- resource is restarted mid-round, two entries race because the server
+-- retried. Those orderings are where a state machine leaks -- and this one
+-- holds a floor made of objects that outlive the script if nobody deletes
+-- them.
+--
+-- So the order is generated instead of chosen. Seeded, so a failure names a
+-- seed that reproduces it exactly.
+-- ======================================================================
+
+--- Every event the client takes, as things a fuzz run can throw at it.
+--- @param c table
+--- @return table<string, fun()>
+local function eventMenu(c)
+    local area = c.Arena.GetSpawnArea('skydome')
+    local spawn = { x = area.x, y = area.y, z = area.z, w = 0.0 }
+
+    return {
+        enter = function() c.enter('skydome') end,
+        enterGrown = function() c.enter('skydome', nil, c.Arena.SizeFactor('skydome', 20)) end,
+        enterGround = function() c.enter('trailerpark') end,
+        live = function() c.fire('crimson_arena:client:matchLive') end,
+        respawn = function()
+            c.fire('crimson_arena:client:respawn', {
+                spawn = spawn, scatterRadius = 0.0, loadout = { weapons = {} },
+            })
+        end,
+        hud = function()
+            c.fire('crimson_arena:client:matchHud', {
+                visible = true,
+                scoreboard = { { id = 1, name = 'You', alive = true, team = 'crimson' } },
+            })
+        end,
+        exit = function() c.fire('crimson_arena:client:exitArena', {}) end,
+        stop = function() c.fire('onResourceStop', 'crimson_arena') end,
+        otherStop = function() c.fire('onResourceStop', 'some_other_resource') end,
+    }
+end
+
+t.test('FUZZ: no ordering of events ever leaves scenery behind', function()
+    -- THE LEAK THAT NOBODY SEES. Props are client-side local objects a
+    -- kilometre up, in an instance no one can reach to look at. A player
+    -- whose round ended badly is home, holding their own gear, with nothing
+    -- on screen -- and a hundred pieces still standing. Only the object
+    -- count knows.
+    --
+    -- The invariant is not "zero at the end" -- a run may legitimately end
+    -- mid-round. It is that the count never exceeds ONE arena's worth, and
+    -- that it IS zero once the round is over by any route.
+    local clean = newClient()
+    clean.enter('skydome')
+    local oneArena = #clean.world.live()
+    t.isTrue(oneArena > 0, 'a clean entry built nothing, so this proves nothing')
+
+    local grown = newClient()
+    grown.enter('skydome', nil, grown.Arena.SizeFactor('skydome', 20))
+    local biggest = math.max(oneArena, #grown.world.live())
+
+    local names = { 'enter', 'enterGrown', 'enterGround', 'live', 'respawn',
+                    'hud', 'exit', 'stop', 'otherStop' }
+
+    local failures = {}
+    for seed = 1, 120 do
+        math.randomseed(seed + 777)
+
+        local c = newClient()
+        local menu = eventMenu(c)
+        local order = {}
+
+        for _ = 1, 8 do
+            local pick = names[math.random(#names)]
+            order[#order + 1] = pick
+            menu[pick]()
+
+            local standing = #c.world.live()
+            if standing > biggest and #failures == 0 then
+                failures[#failures + 1] = ('seed %d after [%s]: %d pieces, more than one arena (%d)')
+                    :format(seed, table.concat(order, ' '), standing, biggest)
+            end
+        end
+
+        -- However it went, ending the round has to leave nothing.
+        menu.exit()
+        if #c.world.live() ~= 0 and #failures == 0 then
+            failures[#failures + 1] = ('seed %d after [%s] then exit: %d pieces left standing')
+                :format(seed, table.concat(order, ' '), #c.world.live())
+        end
+    end
+
+    t.equals(#failures, 0, failures[1] or '')
+end)
+
+t.test('FUZZ: and never leaves the player frozen somewhere they cannot get out of', function()
+    -- The other way a bad ordering ruins a session, and the one the player
+    -- actually feels: frozen, in an arena that no longer exists, with no
+    -- round to end and nothing to press. leaveArena is the single path that
+    -- releases them, so every route out has to reach it.
+    local names = { 'enter', 'enterGrown', 'enterGround', 'live', 'respawn',
+                    'hud', 'exit', 'stop', 'otherStop' }
+
+    local stuck = nil
+    for seed = 1, 120 do
+        math.randomseed(seed + 555)
+
+        local c = newClient()
+        local menu = eventMenu(c)
+        local order = {}
+
+        for _ = 1, 8 do
+            local pick = names[math.random(#names)]
+            order[#order + 1] = pick
+            menu[pick]()
+        end
+
+        -- The round ends, by the route the server really uses.
+        menu.exit()
+
+        if c.world.frozen and not stuck then
+            stuck = ('seed %d after [%s] then exit: the player is still frozen')
+                :format(seed, table.concat(order, ' '))
+        end
+
+        local home = c.env.Config.Lobby.returnCoords
+        if math.abs(c.pos().z - home.z) > 1.0 and not stuck then
+            stuck = ('seed %d after [%s] then exit: the player is at z=%0.1f, not the lobby')
+                :format(seed, table.concat(order, ' '), c.pos().z)
+        end
+    end
+
+    t.isNil(stuck, stuck or '')
+end)
+
+t.test('FUZZ: and a player in the sky is never left standing below the floor', function()
+    -- The fatal direction. Above the surface is a fall onto something;
+    -- below it is a fall out of the world, and the boundary finishes it a
+    -- second later with nothing to say why.
+    local names = { 'enter', 'enterGrown', 'live', 'respawn', 'hud', 'otherStop' }
+
+    local sunk = nil
+    for seed = 1, 150 do
+        math.randomseed(seed + 999)
+
+        local c = newClient()
+        local menu = eventMenu(c)
+        local floor = c.Arena.SpawnFloor('skydome')
+        local order = {}
+
+        for _ = 1, 8 do
+            local pick = names[math.random(#names)]
+            order[#order + 1] = pick
+            menu[pick]()
+
+            -- Only while there is an arena standing: once it is gone the
+            -- player belongs at the lobby, which is far below.
+            if #c.world.live() > 0 and c.pos().z < floor - 0.001 and not sunk then
+                sunk = ('seed %d after [%s]: standing at %0.2f, under a floor at %0.2f')
+                    :format(seed, table.concat(order, ' '), c.pos().z, floor)
+            end
+        end
+    end
+
+    t.isNil(sunk, sunk or '')
+end)
+
+-- ======================================================================
 -- THE ARENA ON THE GROUND
 -- ======================================================================
 

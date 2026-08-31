@@ -2129,7 +2129,24 @@ function Arena.ValidateConfig()
             end
 
             local area = type(arenaSpawnAreaOf(entry.key)) == 'table' and arenaSpawnAreaOf(entry.key) or nil
-            if area then checkHeight('spawnArea.center.z', area.z) end
+            if area then
+                checkHeight('spawnArea.center.z', area.z)
+
+                -- A FLOOR SMALLER THAN THE RING OF SPAWNS ON IT.
+                --
+                -- The one geometry mistake that builds successfully and is
+                -- still fatal: the arena comes up, the floor check passes
+                -- because pieces really were created, and everybody who does
+                -- not draw the middle spawn is placed over open air.
+                --
+                -- Found by fuzzing junk into the radius -- 0.5 leaves half a
+                -- metre of floor under a thirty-five metre spawn ring -- but
+                -- the realistic version is a dropped digit.
+                if area.radius >= platform.radius then
+                    complain(('Config.Arenas["%s"] has a %.2fm floor under a %.2fm spawn ring -- fighters would be placed over open air. platform.radius must be larger than spawnArea.radius.')
+                        :format(entry.key, platform.radius, area.radius))
+                end
+            end
 
             local raw = Arena.GetArenaByKey(entry.key) or {}
             for index, point in ipairs(raw.spawns or {}) do

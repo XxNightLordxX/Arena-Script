@@ -743,6 +743,184 @@ t.test('and the shipped skydome is the one that grows', function()
 end)
 
 -- ======================================================================
+-- THOUSANDS OF ARENAS NOBODY CHOSE
+--
+-- Every geometry test above uses numbers I picked, and I picked them after
+-- writing the code -- so they are the cases I already had in mind. The ones
+-- that break a tiling are the ones nobody thinks of: a prop wider than the
+-- arena, a prop a handspan across, an arena barely bigger than one tile, a
+-- footprint forty times longer than it is deep.
+--
+-- These generate the arena and the prop instead, thousands of times, and
+-- assert the properties that must hold for ALL of them. Seeded, so a failure
+-- names a seed that reproduces it exactly rather than being a story about a
+-- run nobody can repeat.
+-- ======================================================================
+
+--- Is (px, py) inside some tile?
+local function covered(tiles, px, py, sizeX, sizeY)
+    for _, tile in ipairs(tiles) do
+        if math.abs(px - tile.x) <= sizeX * 0.5 + 1e-6
+            and math.abs(py - tile.y) <= sizeY * 0.5 + 1e-6 then
+            return true
+        end
+    end
+    return false
+end
+
+t.test('FUZZ: any prop, any arena -- the floor covers every point inside the radius', function()
+    -- THE ONE PROPERTY A FLOOR HAS. A hole is a fall, and in this arena a
+    -- fall is a kilometre. It has to hold for a shipping container, a
+    -- forty-metre block, and every shape neither of those is.
+    local Arena = envWith().Arena
+    local platform = Arena.GetPlatform('sky')
+
+    local failures = {}
+    for seed = 1, 400 do
+        math.randomseed(seed)
+
+        -- Deliberately unreasonable ranges: props both far larger and far
+        -- smaller than the arena, and footprints that are nothing like square.
+        local radius = 5.0 + math.random() * 120.0
+        local sizeX = 0.4 + math.random() * 60.0
+        local sizeY = 0.4 + math.random() * 60.0
+        local top = math.random() * 20.0
+
+        local shaped = { models = platform.models, model = platform.model,
+                         tileSize = platform.tileSize, radius = radius, z = platform.z,
+                         maxTiles = 0 }
+        local tiles = Arena.PlatformTiles(shaped, 0.0, 0.0, { x = sizeX, y = sizeY, top = top })
+
+        if #tiles == 0 then
+            failures[#failures + 1] = ('seed %d: radius %.1f, prop %.1fx%.1f produced NO floor')
+                :format(seed, radius, sizeX, sizeY)
+        else
+            -- Sample the disc, including dead centre and the rim.
+            local hole = nil
+            for ring = 0, 8 do
+                local r = (ring / 8) * radius
+                for step = 0, 15 do
+                    local angle = (step / 16) * math.pi * 2
+                    if not covered(tiles, r * math.cos(angle), r * math.sin(angle), sizeX, sizeY) then
+                        hole = hole or ('%.1f,%.1f'):format(r * math.cos(angle), r * math.sin(angle))
+                    end
+                end
+            end
+            if hole then
+                failures[#failures + 1] = ('seed %d: radius %.1f, prop %.1fx%.1f -- hole at %s')
+                    :format(seed, radius, sizeX, sizeY, hole)
+            end
+        end
+    end
+
+    t.equals(#failures, 0, ('%d of 400 generated arenas have a hole in the floor. First: %s')
+        :format(#failures, failures[1] or ''))
+end)
+
+t.test('FUZZ: and the walkable surface always lands exactly on platform.z', function()
+    -- Whatever prop turns up and however tall it is, the number in config is
+    -- the height people stand at. Everything else in the arena -- the spawn
+    -- Z, the cover, the boundary -- is written against that promise.
+    local Arena = envWith().Arena
+    local platform = Arena.GetPlatform('sky')
+
+    local wrong = nil
+    for seed = 1, 400 do
+        math.randomseed(seed + 10000)
+        local top = math.random() * 40.0
+        local sizeX = 0.5 + math.random() * 50.0
+        local sizeY = 0.5 + math.random() * 50.0
+
+        local tiles = Arena.PlatformTiles(platform, 0.0, 0.0, { x = sizeX, y = sizeY, top = top })
+        for _, tile in ipairs(tiles) do
+            if math.abs((tile.z + top) - platform.z) > 1e-6 and not wrong then
+                wrong = ('seed %d: prop %.1f tall put the surface at %.4f, not %.4f')
+                    :format(seed, top, tile.z + top, platform.z)
+            end
+        end
+    end
+
+    t.isNil(wrong, wrong or '')
+end)
+
+t.test('FUZZ: a tile ceiling never eats the middle of the floor', function()
+    -- The cap drops the rim, never the centre -- everybody spawns nearer the
+    -- middle than the edge, so a cap that ate inwards would be holes exactly
+    -- where people stand.
+    local Arena = envWith().Arena
+    local platform = Arena.GetPlatform('sky')
+
+    local broken = nil
+    for seed = 1, 200 do
+        math.randomseed(seed + 20000)
+        local cap = 1 + math.floor(math.random() * 200)
+        local size = 1.0 + math.random() * 20.0
+
+        local capped = { models = platform.models, model = platform.model,
+                         tileSize = platform.tileSize, radius = platform.radius,
+                         z = platform.z, maxTiles = cap }
+        local tiles = Arena.PlatformTiles(capped, 0.0, 0.0, size)
+
+        if #tiles > cap and not broken then
+            broken = ('seed %d: cap %d produced %d tiles'):format(seed, cap, #tiles)
+        end
+        if #tiles > 0 and not covered(tiles, 0.0, 0.0, size, size) and not broken then
+            broken = ('seed %d: cap %d left the centre of the floor bare'):format(seed, cap)
+        end
+    end
+
+    t.isNil(broken, broken or '')
+end)
+
+t.test('FUZZ: growth never puts the spawn ring outside the floor', function()
+    -- The two radii scale by the same factor, so this holds by construction
+    -- -- which is exactly the sort of claim that stops being true when
+    -- somebody adds a clamp. Checked across the whole range rather than at
+    -- the three sizes I happened to write down.
+    local Arena = growingEnv().Arena
+
+    local broken = nil
+    for players = 0, 120 do
+        local factor = Arena.SizeFactor('sky', players)
+        local area = Arena.GetSpawnArea('sky', factor)
+        local platform = Arena.GetPlatform('sky', factor)
+
+        if area.radius >= platform.radius and not broken then
+            broken = ('%d players: spawn ring %.1f vs floor %.1f'):format(players, area.radius, platform.radius)
+        end
+        if factor < 1.0 and not broken then
+            broken = ('%d players: the arena SHRANK, factor %.3f'):format(players, factor)
+        end
+    end
+
+    t.isNil(broken, broken or '')
+end)
+
+t.test('FUZZ: and a junk size factor never shrinks an arena or crashes it', function()
+    -- The factor crosses the wire. A client that is handed nonsense must
+    -- build the arena at its configured size rather than a smaller one --
+    -- a floor smaller than the spawn ring is the fatal direction.
+    local Arena = envWith().Arena
+    local baseline = Arena.GetPlatform('sky').radius
+
+    for _, junk in ipairs({ nil, 0, -1, -1000, 0.5, 0.999, '', 'two', {}, true, 1/0, -1/0 }) do
+        local ok, platform = pcall(Arena.GetPlatform, 'sky', junk)
+        t.isTrue(ok, ('GetPlatform threw on a factor of %s'):format(tostring(junk)))
+        if platform and platform.radius == platform.radius then
+            t.isTrue(platform.radius >= baseline - 1e-9,
+                ('a factor of %s shrank the floor to %.2f from %.2f')
+                    :format(tostring(junk), platform.radius, baseline))
+        end
+
+        local area = select(2, pcall(Arena.GetSpawnArea, 'sky', junk))
+        if type(area) == 'table' and area.radius == area.radius then
+            t.isTrue(area.radius >= 35.0 - 1e-9,
+                ('a factor of %s shrank the spawn area'):format(tostring(junk)))
+        end
+    end
+end)
+
+-- ======================================================================
 -- THE PROPS ARE REAL
 -- ======================================================================
 

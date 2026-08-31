@@ -1169,6 +1169,37 @@ function Arena.SplitByPercent(amount, percents)
     return shares
 end
 
+--- A team's panel colour as three 0-255 channels.
+---
+--- ONE SOURCE FOR EVERY PLACE A TEAM IS COLOURED. The team already carries a
+--- hex `color` for the panel, so the outline drawn round a teammate in the
+--- world is derived from it rather than configured separately -- which is
+--- what makes "the same colour as on the map" true by construction instead
+--- of by an operator keeping two fields in step.
+---
+--- Accepts '#rgb' and '#rrggbb', with or without the hash. Anything else
+--- returns nil, and the caller falls back rather than drawing a wrong
+--- colour confidently.
+--- @param hex any
+--- @return integer|nil r
+--- @return integer|nil g
+--- @return integer|nil b
+function Arena.HexToRgb(hex)
+    if type(hex) ~= 'string' then return nil end
+
+    local body = hex:gsub('^#', '')
+    if #body == 3 then
+        -- '#c12' is the same colour as '#cc1122'; doubling each digit is the
+        -- standard reading and not an approximation.
+        body = body:gsub('(%x)', '%1%1')
+    end
+    if #body ~= 6 or body:match('%X') then return nil end
+
+    return tonumber(body:sub(1, 2), 16),
+           tonumber(body:sub(3, 4), 16),
+           tonumber(body:sub(5, 6), 16)
+end
+
 --- Splits a POOL among winners in proportion to what each of them staked.
 ---
 --- THE POOL IS THE ONLY MONEY THERE IS. Fighter bets pay out of the stakes

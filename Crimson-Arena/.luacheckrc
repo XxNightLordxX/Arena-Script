@@ -187,6 +187,7 @@ files['client/'] = {
         -- Entities: the lobby ped, and the player's own.
         'ApplyDamageToPed',
         'ClearPedBloodDamage', 'ResetPedVisibleDamage', 'ClearPedLastWeaponDamage', 'ClearPedTasksImmediately', 'SetPedCanRagdoll', 'AnimpostfxStopAll', 'IsPedRagdoll', 'IsPedInWrithe',
+        'SetEntityDrawOutline', 'SetEntityDrawOutlineColor',
         'CreatePed',
         'DeleteEntity',
         'DoesEntityExist',

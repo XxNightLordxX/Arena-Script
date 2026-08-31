@@ -687,7 +687,7 @@ end
 --- same reason.
 --- @param row table -- one entry from the matchHud scoreboard
 --- @return integer|nil color
-local function blipColorFor(row)
+local function blipColorFor(row, includeEnemies)
     if not currentMatch or type(row) ~= 'table' then return nil end
 
     -- `alive` is the server's word for it and the only trustworthy one:
@@ -701,7 +701,10 @@ local function blipColorFor(row)
 
     if teammate then
         if Config.Teams.showTeamBlips ~= true then return nil end
-    elseif Config.Teams.showEnemyBlips ~= true then
+    elseif not includeEnemies and Config.Teams.showEnemyBlips ~= true then
+        -- ENEMIES ARE THE RADAR'S TO DRAW, not this pass's. `includeEnemies`
+        -- is the sweep saying so for the moment it is lit; the operator's own
+        -- showEnemyBlips still overrides it into being permanent.
         return nil
     end
 
@@ -771,7 +774,76 @@ end
 --- Brings what is drawn in line with the last scoreboard: one pass to take
 --- away what should no longer be there -- a fighter who died, left, or was
 --- never ours to see -- and one to draw what should.
-local function refreshBlips()
+--- Peds currently wearing a team outline, so one can be taken off again.
+local outlined = {}
+
+--- Draws a coloured edge round the player's own TEAMMATES.
+---
+--- The colour is the team's own `color`, the same value the panel is tinted
+--- with and the same team the map blip belongs to, so "the outline matches
+--- the dot" is true by construction rather than by an operator keeping two
+--- fields in step.
+---
+--- TEAMMATES ONLY, and never the other side. An outline on an enemy would
+--- be a wallhack with a colour scheme: it draws THROUGH geometry, which is
+--- the whole point of it for finding a friend and exactly the problem with
+--- it for finding a target.
+local function refreshOutlines()
+    local wanted = {}
+
+    if currentMatch and Config.Teams.showTeamOutline == true
+        and Arena.ModeUsesTeams(currentMatch.modeKey)
+        and Arena.IsKey(currentMatch.teamKey)
+    then
+        local selfId = GetPlayerServerId(PlayerId())
+        local team = Arena.GetTeamByKey(currentMatch.teamKey)
+        local r, g, b = Arena.HexToRgb(team and team.color)
+
+        -- No usable colour is a reason not to draw, not a reason to guess:
+        -- a white outline round half the lobby says nothing about sides.
+        if r then
+            for _, row in ipairs(roster) do
+                local serverId = type(row) == 'table' and Arena.ToInt(row.id) or nil
+                if serverId and serverId ~= selfId and row.alive == true
+                    and row.team == currentMatch.teamKey
+                then
+                    local ped = pedForServerId(serverId)
+                    if ped then
+                        wanted[ped] = true
+                        if not outlined[ped] then
+                            SetEntityDrawOutline(ped, true)
+                            outlined[ped] = true
+                        end
+                    end
+                end
+            end
+
+            -- Set every pass rather than once: it is global state on the
+            -- outline shader, and anything else on the server that draws an
+            -- outline sets it too.
+            SetEntityDrawOutlineColor(r, g, b, 255)
+        end
+    end
+
+    for ped in pairs(outlined) do
+        if not wanted[ped] then
+            if DoesEntityExist(ped) then SetEntityDrawOutline(ped, false) end
+            outlined[ped] = nil
+        end
+    end
+end
+
+--- Takes every outline off. Part of the same teardown the blips use, and for
+--- the same reason: an outline outlives the match that drew it.
+local function removeAllOutlines()
+    for ped in pairs(outlined) do
+        if DoesEntityExist(ped) then SetEntityDrawOutline(ped, false) end
+    end
+    outlined = {}
+end
+
+--- @param includeEnemies boolean|nil -- true only while a radar sweep is lit
+local function refreshBlips(includeEnemies)
     local selfId = GetPlayerServerId(PlayerId())
     local wanted = {}
 
@@ -779,7 +851,7 @@ local function refreshBlips()
         local serverId = type(row) == 'table' and Arena.ToInt(row.id) or nil
         -- Our own dot is already on the map, drawn by the game.
         if serverId and serverId ~= selfId then
-            local color = blipColorFor(row)
+            local color = blipColorFor(row, includeEnemies)
             if color then wanted[serverId] = { color = color, name = row.name } end
         end
     end
@@ -864,25 +936,35 @@ local function startBlipThread()
 
     CreateThread(function()
         while matchLive and matchToken == token do
+            -- TEAMMATES ARE ALWAYS DRAWN, sweep or no sweep. Your own side
+            -- is not something the radar reveals -- you know where your team
+            -- is because they are your team.
+            refreshOutlines()
+
             if permanent then
                 -- The old behaviour, for a server that asked for it.
-                refreshBlips()
+                refreshBlips(true)
                 Wait(BLIP_REFRESH_MS)
             elseif radarOn() then
                 -- LIT, then DARK. The removal is not optional and not
                 -- deferred to the next pass: a sweep that failed to clear
                 -- itself would be a permanent blip with extra steps.
-                refreshBlips()
+                -- LIT: teammates and enemies together, briefly.
+                refreshBlips(true)
                 Wait(math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800))
+
+                -- DARK: the enemies go, the teammates come straight back.
                 removeAllPlayerBlips()
+                refreshBlips(false)
 
                 local interval = math.max(1000, Arena.ToInt(radarConfig().intervalMs) or 30000)
                 local visible = math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800)
                 Wait(math.max(500, interval - visible))
             else
-                -- Off. Checked often enough that switching it on in the
-                -- panel is felt within a sweep rather than within a round.
-                removeAllPlayerBlips()
+                -- Radar off. Teammates still on the map -- that is not what
+                -- the radar is for -- and checked often enough that switching
+                -- it on is felt within a sweep rather than within a round.
+                refreshBlips(false)
                 Wait(1000)
             end
         end
@@ -891,6 +973,7 @@ local function startBlipThread()
         -- way out, but a match that ends between two sweeps must not leave
         -- the last one burning until it does.
         removeAllPlayerBlips()
+        removeAllOutlines()
     end)
 end
 
@@ -915,6 +998,7 @@ local function leaveArena(returnCoords)
     -- way out of the arena goes through -- the round ending, walking out
     -- mid-round, and the resource stopping.
     removeAllPlayerBlips()
+    removeAllOutlines()
     roster = {}
 
     if ArenaSpectate then ArenaSpectate.Stop() end

@@ -417,8 +417,27 @@ Config.Teams = {
     -- player: a sweep that shows where everyone was for a moment and then
     -- goes dark again. Turn these back on for a server that wants the old
     -- permanent behaviour; they override the radar entirely.
-    showTeamBlips = false,
+    -- YOUR OWN SIDE, ALWAYS. Knowing where your team is is not intelligence
+    -- -- it is the difference between a team mode and four people in the
+    -- same field -- so teammates stay on the map for the whole round.
+    showTeamBlips = true,
+
+    -- THE OTHER SIDE, NEVER. A permanent dot on every enemy turns a round
+    -- into a map to be read rather than a place to be searched. The radar
+    -- below is how an enemy position is learned: opt-in, and a sweep that
+    -- goes dark again. Turn this on for a server that wants the old
+    -- permanent behaviour, and the radar stops running.
     showEnemyBlips = false,
+
+    -- A COLOURED EDGE ROUND YOUR TEAMMATES, in that team's own colour --
+    -- the same value the panel is tinted with and the same team the map
+    -- blip belongs to, so the outline and the dot match by construction
+    -- rather than by keeping two settings in step.
+    --
+    -- Teammates only, and it cannot be turned on for enemies: an outline
+    -- draws THROUGH walls, which is the point of it for finding a friend
+    -- and exactly the problem with it for finding a target.
+    showTeamOutline = true,
 
     list = {
         ['crimson'] = {

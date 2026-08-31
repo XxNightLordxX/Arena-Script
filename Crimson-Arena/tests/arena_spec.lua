@@ -923,5 +923,59 @@ t.test('ValidateConfig reports rather than throws, and finds every fault at once
     -- config.lua must not take the resource down at start.
     t.equals(#problems, 3, table.concat(problems, ' | '))
 end)
+-- ======================================================================
+-- HexToRgb -- one source for every place a team is coloured
+--
+-- The outline drawn round a teammate in the world is derived from the same
+-- hex the panel is tinted with and the same team the map blip belongs to.
+-- That is what makes "the outline matches the dot" true by construction
+-- rather than by an operator keeping two fields in step.
+-- ======================================================================
+
+t.test('a full hex is read as three channels', function()
+    local r, g, b = Arena.HexToRgb('#c81020')
+    t.equals(r, 200) t.equals(g, 16) t.equals(b, 32)
+end)
+
+t.test('the hash is optional, because half the world writes it without one', function()
+    local r, g, b = Arena.HexToRgb('4a4a52')
+    t.equals(r, 74) t.equals(g, 74) t.equals(b, 82)
+end)
+
+t.test('a three-digit hex doubles each digit, which is the standard reading', function()
+    -- '#c12' IS '#cc1122'. Not an approximation of it.
+    local r, g, b = Arena.HexToRgb('#c12')
+    t.equals(r, 204) t.equals(g, 17) t.equals(b, 34)
+end)
+
+t.test('anything else is nil, so the caller falls back rather than guessing', function()
+    -- A wrong colour drawn confidently is worse than no outline: a white
+    -- edge round half the lobby says nothing about sides.
+    t.isNil(Arena.HexToRgb('nonsense'))
+    t.isNil(Arena.HexToRgb('#12345'))
+    t.isNil(Arena.HexToRgb('#gg0000'))
+    t.isNil(Arena.HexToRgb(''))
+    t.isNil(Arena.HexToRgb(nil))
+    t.isNil(Arena.HexToRgb(0xc81020))
+    t.isNil(Arena.HexToRgb({ 200, 16, 32 }))
+end)
+
+t.test('every shipped team has a colour the outline can actually use', function()
+    -- The outline is drawn from this field. A team whose colour cannot be
+    -- read gets no outline at all, silently, so it is worth failing here
+    -- instead of in a round.
+    for _, team in ipairs(Arena.GetEnabledTeams()) do
+        local r = Arena.HexToRgb(team.color)
+        t.isNotNil(r, ('team "%s" has colour %s, which cannot be read as RGB'):format(
+            tostring(team.key), tostring(team.color)))
+    end
+end)
+
+t.test('and the shipped config really draws them, or none of that matters', function()
+    t.isTrue(Config.Teams.showTeamBlips == true, 'teammates are not on the map')
+    t.isTrue(Config.Teams.showTeamOutline == true, 'teammates have no outline')
+    t.isFalse(Config.Teams.showEnemyBlips == true,
+        'enemies are permanently on the map, which is what the radar exists to replace')
+end)
 
 os.exit(t.summary())

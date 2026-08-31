@@ -578,6 +578,12 @@ local function newMatchFixture()
         NetworkGetPlayerIndexFromPed = function() return 5 end,
         GetPlayerServerId = function() return f.killerServerId end,
 
+        -- The team outline, which the blip loop now drives on every pass.
+        PlayerId = function() return 0 end,
+        DoesEntityExist = function() return true end,
+        SetEntityDrawOutline = function() end,
+        SetEntityDrawOutlineColor = function() end,
+
         SetWeatherTypeNowPersist = function() end,
         NetworkOverrideClockTime = function() end,
         ClearOverrideWeather = function() end,

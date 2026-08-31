@@ -930,6 +930,38 @@ local function newClientFixture()
         NetworkGetPlayerIndexFromPed = function() return 5 end,
         GetPlayerServerId = function() return 7 end,
 
+        -- The team outline. Recorded rather than ignored: an outline that is
+        -- put on and never taken off outlives the match that drew it, and
+        -- these are what a spec would assert that against.
+        PlayerId = function() return 0 end,
+        DoesEntityExist = function() return true end,
+        -- One ped per server id, distinct, so a test can tell WHICH players
+        -- were outlined rather than only how many calls were made.
+        GetPlayerFromServerId = function(serverId) return serverId end,
+        NetworkIsPlayerActive = function() return true end,
+
+        -- The map blips, which the same loop draws. Stubbed rather than
+        -- asserted here: this block is about the OUTLINE, and a loop that
+        -- errors on a blip native never reaches the outline at all.
+        AddBlipForEntity = function(ped) return 5000 + (ped or 0) end,
+        SetBlipSprite = function() end,
+        SetBlipColour = function() end,
+        SetBlipAsShortRange = function() end,
+        BeginTextCommandSetBlipName = function() end,
+        EndTextCommandSetBlipName = function() end,
+        AddTextComponentSubstringPlayerName = function() end,
+        SetBlipDisplay = function() end,
+        DoesBlipExist = function() return true end,
+        RemoveBlip = function() end,
+        GetPlayerPed = function(player) return 1000 + (player or 0) end,
+        SetEntityDrawOutline = function(ped, on)
+            f.outlines = f.outlines or {}
+            f.outlines[#f.outlines + 1] = { ped = ped, on = on == true }
+        end,
+        SetEntityDrawOutlineColor = function(r, g, b)
+            f.outlineColor = { r = r, g = g, b = b }
+        end,
+
         ClearOverrideWeather = function() end,
         NetworkClearClockTimeOverride = function() end,
 
@@ -946,6 +978,9 @@ local function newClientFixture()
 
     Sandbox.loadInto('../client/match.lua', env)
 
+    -- Exposed so a spec can compare against the SAME Arena the client is
+    -- running, rather than a second copy of the config that could drift.
+    f.env = env
     f.step = runner.step
 
     function f.fire(name, ...)
@@ -1134,6 +1169,88 @@ t.test('and does not teleport a player who has gone home back to the arena', fun
 
     t.equals(#f.placements, afterExit,
         'the parked placement fired after the player had already left, dragging them back into the arena')
+end)
+-- ======================================================================
+-- THE TEAM OUTLINE, and the one thing it must never do
+--
+-- A coloured edge round a teammate draws THROUGH geometry. That is the
+-- whole point of it for finding a friend behind a wall, and exactly the
+-- problem with it for finding a target behind one -- an outline on an enemy
+-- is a wallhack with a colour scheme.
+--
+-- The teammates-only rule is therefore the security property here, not a
+-- preference, and it was not covered: outlining everybody passed the whole
+-- suite.
+-- ======================================================================
+
+--- Drives the client into a live TEAM match with a roster of one teammate
+--- and one enemy, then runs the loop that draws outlines.
+--- @return table f
+local function outlinedTeamMatch()
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'tdm',
+        teamKey = 'crimson',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    -- The roster the loop reads comes off the HUD push, which is where the
+    -- server really puts it.
+    f.fire('crimson_arena:client:matchHud', {
+        scoreboard = {
+            { id = 11, name = 'Teammate', team = 'crimson', alive = true },
+            { id = 22, name = 'Enemy', team = 'ash', alive = true },
+        },
+    })
+
+    f.step()
+    return f
+end
+
+t.test('a teammate is outlined', function()
+    local f = outlinedTeamMatch()
+
+    local on = {}
+    for _, call in ipairs(f.outlines or {}) do
+        if call.on then on[#on + 1] = call.ped end
+    end
+
+    t.isTrue(#on > 0, 'nobody was outlined at all, so this test proves nothing about who')
+end)
+
+t.test('and an ENEMY is never outlined, whatever else is on', function()
+    -- pedForServerId is stubbed to answer for any id in this fixture, so an
+    -- outline aimed at the enemy would show up here. If the filter is
+    -- dropped, both peds are outlined and this fails.
+    local f = outlinedTeamMatch()
+
+    local peds = {}
+    for _, call in ipairs(f.outlines or {}) do
+        if call.on then peds[call.ped] = true end
+    end
+
+    local count = 0
+    for _ in pairs(peds) do count = count + 1 end
+
+    t.equals(count, 1,
+        'more than one ped was outlined in a two-player roster with one teammate -- the enemy is being drawn through walls')
+end)
+
+t.test('the outline colour is the team own colour, not a guess', function()
+    local f = outlinedTeamMatch()
+    local team = f.env.Arena.GetTeamByKey('crimson')
+    local r, g, b = f.env.Arena.HexToRgb(team.color)
+
+    t.isNotNil(f.outlineColor, 'no outline colour was ever set')
+    t.equals(f.outlineColor.r, r, 'the outline is not the team colour')
+    t.equals(f.outlineColor.g, g)
+    t.equals(f.outlineColor.b, b)
 end)
 
 os.exit(t.summary())

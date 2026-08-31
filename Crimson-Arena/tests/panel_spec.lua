@@ -287,7 +287,15 @@ local function newLobbyFixture(opts)
         RequestModel = function() end,
         HasModelLoaded = function() return true end,
         GetGameTimer = function() return 0 end,
-        CreatePed = function() built.ped = true return 7 end,
+        -- WHERE, not just whether. The operator's whole interface to this
+        -- resource is config.lua, and "the ped did not move when I changed
+        -- the coordinates" is unanswerable from a fixture that only records
+        -- that a ped was made.
+        CreatePed = function(_kind, _model, x, y, z, heading)
+            built.ped = true
+            built.pedAt = { x = x, y = y, z = z, w = heading }
+            return 7
+        end,
         SetModelAsNoLongerNeeded = function() end,
         SetEntityAsMissionEntity = function() end,
         FreezeEntityPosition = function() end,
@@ -296,7 +304,11 @@ local function newLobbyFixture(opts)
         TaskStartScenarioInPlace = function() end,
         exports = { ox_target = { addLocalEntity = function() built.target = true end } },
 
-        AddBlipForCoord = function() built.blip = true return 3 end,
+        AddBlipForCoord = function(x, y, z)
+            built.blip = true
+            built.blipAt = { x = x, y = y, z = z }
+            return 3
+        end,
         SetBlipSprite = function() end,
         SetBlipColour = function() end,
         SetBlipScale = function() end,
@@ -312,6 +324,48 @@ local function newLobbyFixture(opts)
 
     return { env = env, serverEvents = serverEvents, built = built }
 end
+
+t.test('the lobby NPC goes exactly where config.lua says', function()
+    -- THE OPERATOR'S WHOLE INTERFACE IS config.lua, and a coordinate that
+    -- does not take it is the most confusing possible failure: the resource
+    -- works, the panel works, and the arena is somewhere the operator did not
+    -- put it. Asserted against Config rather than against numbers written
+    -- here, so moving the arena can never turn this red.
+    local f = newLobbyFixture()
+    local wanted = f.env.Config.Lobby.ped.coords
+
+    t.isNotNil(f.built.pedAt, 'no NPC was spawned at all')
+    t.equals(f.built.pedAt.x, wanted.x)
+    t.equals(f.built.pedAt.y, wanted.y)
+    -- One unit down: config documents `z` as the GROUND z and CreatePed puts
+    -- the ped's root there, which leaves it hovering.
+    t.equals(f.built.pedAt.z, wanted.z - 1.0)
+    t.equals(f.built.pedAt.w, wanted.w)
+end)
+
+t.test('and the map blip goes with it', function()
+    -- A blip left behind at the old place is a player walking to an arena
+    -- that is not there any more.
+    local f = newLobbyFixture()
+    local wanted = f.env.Config.Lobby.ped.coords
+
+    t.isNotNil(f.built.blipAt, 'no blip was created')
+    t.equals(f.built.blipAt.x, wanted.x)
+    t.equals(f.built.blipAt.y, wanted.y)
+end)
+
+t.test('and with ox_target absent the blip follows the MARKER instead', function()
+    -- The fallback puts the marker up in the NPC's place. Both live in
+    -- config and an operator may legitimately move one and not the other,
+    -- so the blip has to point at whichever fixture is really there.
+    local f = newLobbyFixture({ targetState = 'missing' })
+    local wanted = f.env.Config.Lobby.marker.coords
+
+    t.isTrue(f.built.markerThread, 'no marker went up in the NPC\'s place')
+    t.isNotNil(f.built.blipAt)
+    t.equals(f.built.blipAt.x, wanted.x)
+    t.equals(f.built.blipAt.y, wanted.y)
+end)
 
 t.test('starting the resource asks the server for nothing', function()
     -- The server reads a state request as "this player has a panel open" and

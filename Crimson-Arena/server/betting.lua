@@ -411,6 +411,19 @@ local function isRefundReason(reason)
     return type(reason) == 'string' and reason:sub(1, 6) == 'refund'
 end
 
+--- Whether a payout line is a stake coming back rather than money won.
+---
+--- Exported because server/match.lua has to tell them apart and could not:
+--- Settle hands its computed list back even when the whole thing is a
+--- refund -- deliberately, as the report of what was decided -- and End
+--- summed every line into a player's `earnings`. So a match that did not
+--- qualify to pay out told everybody they had WON their own entry fee back.
+--- @param reason any
+--- @return boolean
+function ArenaBetting.IsRefundReason(reason)
+    return isRefundReason(reason)
+end
+
 --- Hands one unresolved side-bet back, once. Shared by the no-result
 --- settlement and by Clear so both take identical care about paying twice.
 --- @return boolean paid
@@ -1134,6 +1147,20 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     trace('took side-bet of %d from %s on "%s" in match %s',
         stake, tostring(id), wanted, tostring(matchId))
     ArenaNotifyKey(id, 'notify.spectator_bet_placed', 'info', money(stake))
+
+    -- THE ONE MONEY MOVEMENT THAT NEVER REFRESHED THE PANEL. Everything else
+    -- that takes or returns money runs through a lobby path that broadcasts
+    -- afterwards; a side-bet is placed from the Bets tab and settled here,
+    -- and nothing told anyone. So the bettor was left reading their balance
+    -- from before the bet and a pot that did not include it, until some
+    -- unrelated change to the lobby happened to refresh them.
+    --
+    -- Guarded the way lobbyMatch above guards: this file loads before
+    -- server/lobby.lua, so the global is checked rather than assumed.
+    if type(ArenaLobby) == 'table' and type(ArenaLobby.Broadcast) == 'function' then
+        ArenaLobby.Broadcast()
+    end
+
     return true, nil
 end
 

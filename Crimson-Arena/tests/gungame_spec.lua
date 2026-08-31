@@ -163,6 +163,11 @@ local function newFixture(mutate)
             ReleaseBucket = function() end,
         },
         ArenaBetting = {
+            -- Refunds are not earnings, and server/match.lua asks this to
+            -- tell them apart. A double missing it is a nil call naming it.
+            IsRefundReason = function(reason)
+                return type(reason) == 'string' and reason:sub(1, 6) == 'refund'
+            end,
             GetPot = function() return 0 end,
             GetStake = function() return 0 end,
             Settle = function(matchId) settled[#settled + 1] = matchId return {} end,

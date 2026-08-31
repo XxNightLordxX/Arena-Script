@@ -1368,7 +1368,15 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     local won, earned = {}, {}
     for _, id in ipairs(winners) do won[id] = true end
     for _, payout in ipairs(payouts) do
-        if payout.id ~= nil then
+        -- REFUNDS ARE NOT EARNINGS. Settle hands its computed list back even
+        -- when every line of it is a refund -- deliberately, as the report of
+        -- what was decided -- and this summed the lot into `earnings`, which
+        -- goes out in the results as money the player made. So a match that
+        -- did not qualify to pay out (too few fought, no winner) told
+        -- everybody they had WON their own entry fee back, while the pot was
+        -- being handed straight back to them.
+        local refund = ArenaBetting.IsRefundReason(payout.reason)
+        if payout.id ~= nil and not refund then
             earned[payout.id] = (earned[payout.id] or 0) + (Arena.ToInt(payout.amount) or 0)
         end
     end

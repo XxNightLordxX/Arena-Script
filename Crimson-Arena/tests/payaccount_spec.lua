@@ -45,7 +45,7 @@ local function newServer(wallets, mutate)
 
     local qbx = Sandbox.newQbxCore(players)
     local threads = Sandbox.newThreadRunner()
-    local netEvents, console = {}, {}
+    local netEvents, console, sent = {}, {}, {}
     local clock = 0
 
     local env = Sandbox.newArenaEnv({
@@ -55,7 +55,9 @@ local function newServer(wallets, mutate)
         Wait = threads.Wait,
         SetTimeout = threads.SetTimeout,
         print = function(line) console[#console + 1] = line end,
-        TriggerClientEvent = function() end,
+        TriggerClientEvent = function(event, target, payload)
+            sent[#sent + 1] = { event = event, target = target, payload = payload }
+        end,
         TriggerEvent = function() end,
         RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
         -- Nothing here drives a disconnect, so the handlers are taken and
@@ -107,6 +109,21 @@ local function newServer(wallets, mutate)
         if not handler then error('no handler for ' .. event, 2) end
         env.source = src
         handler(data)
+    end
+
+    --- How many state snapshots one player has been sent since forgetSent.
+    function server.snapshotsTo(src)
+        local hits = 0
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:state' and message.target == src then
+                hits = hits + 1
+            end
+        end
+        return hits
+    end
+
+    function server.forgetSent()
+        for index = #sent, 1, -1 do sent[index] = nil end
     end
 
     function server.cash(src) return qbx.players[src].money.cash end
@@ -259,6 +276,40 @@ t.test('a side-bet is paid from the account the bettor picked', function()
 
     t.equals(server.cash(3), 5000, 'the bet came out of cash despite the bettor picking bank')
     t.equals(server.bank(3), 4500)
+end)
+
+t.test('DEFECT: placing a bet refreshes the panel that shows the balance', function()
+    -- Every other money movement runs through a lobby path that broadcasts
+    -- afterwards. A side-bet is placed from the Bets tab and settled inside
+    -- betting.lua, and told nobody -- so the bettor read their balance from
+    -- before the bet, and a pot that did not include it, until some unrelated
+    -- lobby change happened to refresh them.
+    --
+    -- It matters more now the panel offers a choice of account and prints
+    -- what is in each: a player pays from the bank and the chip still shows
+    -- the old figure.
+    local server = newServer({
+        [1] = { cash = 5000, bank = 5000 },
+        [2] = { cash = 5000, bank = 5000 },
+        [3] = { cash = 5000, bank = 5000 },
+    })
+    local matchId = openLobby(server, 0, nil)
+    server.fire('joinMatch', 2, { matchId = matchId })
+
+    -- The bettor has the panel open, because the Bets tab is the only place
+    -- a bet can be placed from. That is what puts them on the broadcast list.
+    server.fire('requestState', 3, { panel = true })
+    server.forgetSent()
+
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = '1', amount = 500, account = 'cash',
+    })
+    t.equals(server.cash(3), 4500, 'the bet was not taken, so this proves nothing')
+
+    t.isTrue(server.snapshotsTo(3) > 0,
+        'the bettor was left reading the balance and the pot from before their own bet')
+    t.isTrue(server.snapshotsTo(1) > 0,
+        'and nobody else was told the pot had grown')
 end)
 
 t.test('and a bet the chosen account cannot cover is refused', function()

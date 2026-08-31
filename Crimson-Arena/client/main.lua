@@ -277,6 +277,24 @@ CreateThread(function()
     if mode == 'marker' or mode == 'both' or not pedUp then startMarkerThread() end
     createBlip(pedUp and mode or 'marker')
 
+    -- WHERE THE ARENA ACTUALLY WENT, said out loud on every start.
+    --
+    -- config.lua is the operator's whole interface to this resource, and a
+    -- coordinate that appears not to take is the most confusing failure it
+    -- has: the resource works, the panel works, and the arena is somewhere
+    -- they did not put it. From outside, "my edit was ignored", "I am looking
+    -- at the old spot", "the folder the server runs is not the one I edited"
+    -- and "ox_target is down so there is a marker rather than an NPC" all
+    -- look identical -- nothing was in the console to tell them apart.
+    --
+    -- Not gated on Config.Debug: this is one line at start-up, and it is
+    -- worth more to the person who needs it than it costs everybody else.
+    local where = pedUp and Config.Lobby.ped.coords or Config.Lobby.marker.coords
+    warn(('lobby: %s at %.2f, %.2f, %.2f (interaction = %s%s).'):format(
+        pedUp and 'NPC' or 'ground marker',
+        where.x, where.y, where.z, tostring(mode),
+        (not pedUp and mode ~= 'marker') and ', fell back -- see the warning above' or ''))
+
     if Config.UI.command then
         RegisterCommand(Config.UI.command, openPanel, false)
         TriggerEvent('chat:addSuggestion', '/' .. Config.UI.command, locale('cmd.open_panel'))

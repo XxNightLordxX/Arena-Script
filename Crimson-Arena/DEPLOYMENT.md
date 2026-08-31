@@ -9,14 +9,24 @@ every Lua file parses, `luacheck` is clean across the resource, and the spec
 suite exercises the real production files under plain Lua 5.4 — the rules, the
 payout arithmetic, the escrow invariants, the locale coverage.
 
+The client is also run against a *model* of the game — `tests/fixtures/world.lua`
+gives it objects, prop dimensions and a streaming bubble, and the real
+`client/match.lua` builds the sky arena inside it. That model found three
+defects the reading had missed. It is still a model.
+
 **None of it has ever loaded into FXServer.** No ped has spawned, no panel has
 opened, no weapon has been handed out, no routing bucket has replicated. Tests
-prove the *rules* are right. They cannot prove the *natives* behave, because
-there are no natives outside the game.
+prove the *rules* are right, and the model proves the *sequence* is right. Only
+the game proves the natives behave.
 
 So: the smoke test below is not a formality. It is the part of the verification
 that this build has not had, and it takes about twenty minutes — half an hour
 if you have switched ammo types on, which adds a section of its own.
+
+**The arena in the sky is the one to check first.** It is the only part of
+this resource that builds its own ground, it has the least real-world evidence
+behind it, and it fails in the most expensive way. It has a section of its own
+below and it is deliberately near the top.
 
 ## Install
 
@@ -48,10 +58,22 @@ Open `config.lua`. The three things that are certainly wrong for your server:
 - `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` — the shipped
   coordinates are placeholders. Stand where you want the NPC and use your
   server's coordinate command.
-- `Config.Arenas.*.spawns` — likewise. The two shipped arenas are open ground
-  at real GTA locations (Sandy Shores Airfield and Vespucci beach), chosen so a
-  fight has room and sightlines. The coordinates are a starting point: stand
-  where you want a spawn and take your own. The config carries a copy-paste
+- `Config.Arenas` — **two ship enabled, and they are very different animals.**
+
+  `trailerpark` is a real place on the map. It has its own trailers, fences and
+  vehicles to fight around, so it spawns nothing of its own — its `cover` block
+  is laid out but switched off, because fixed offsets know nothing about what is
+  already standing there and turning it on drops a shipping container through
+  somebody's caravan. Coordinates are the operator's own; change them the same
+  way you changed the lobby.
+
+  `skydome` is built, not found: a floor of props tiled into a disc at 1201 m
+  over open water, with cover on top, spawned per match and deleted when it
+  ends. Nothing under it. It also **grows with the roster** — six fighters get
+  the 35 m circle in config, twenty get a 57 m one on a floor to match.
+
+  `airfield` and `beach` are the older ground arenas, switched off rather than
+  deleted, so turning one back on is one word. The config carries a copy-paste
   block for adding more.
 - `Config.Betting` — decide whether money is in play at all before players can
   stake it. `Config.Betting.enabled = false` if you are unsure.
@@ -67,8 +89,9 @@ placeholder you have to fix; both are switches you have to mean:
   `ammo-rifle-ap`, …) and handing out an item name that does not exist is a
   silent nothing that players report as the arena being broken. If you run an
   ammo script whose types are inventory items, put **your** names in that list
-  and then flip the switch — and test it with section 6 below, because it is
-  the only part of this resource that touches a player's inventory.
+  and then flip the switch — and test it with the **Ammo types** section
+  below, because it is the only part of this resource that touches a player's
+  inventory.
 
 ## The smoke test
 
@@ -76,13 +99,90 @@ Run this on a development server, with at least two accounts. Each step names
 what to watch for, because most failures here are silent.
 
 ### 1. It starts
+
+Two of these are in the **server console**, two are in **F8** on a client. They
+are separate places and the client ones cannot appear in the server log.
+
 - [ ] Console shows no Lua error on `ensure crimson_arena`.
 - [ ] The config validator printed nothing, or printed only things you expect.
 - [ ] The dispatch report lists your real dispatch and ambulance scripts. If it
       says nothing was detected and you know you run one, the resource does not
       recognise its name — add it, or use the hooks.
+- [ ] **F8 shows the lobby line**, naming the fixture, its coordinates and the
+      interaction mode:
 
-### 2. The lobby
+      ```
+      [crimson_arena] lobby: NPC at -282.01, -2030.46, 30.15 (interaction = ped).
+      ```
+
+      This one line separates four failures that otherwise look identical: the
+      config edit was ignored, you are standing at the old spot, the folder the
+      server runs is not the folder you edited, or `ox_target` is down so a
+      ground marker went up instead of an NPC. **No line at all means the
+      startup thread died** — read upward for the error.
+
+- [ ] **F8 shows no `PROPS MISSING` line.** Every prop the arena spawns names a
+      chain of models and the client checks them against your build a couple of
+      seconds after start. Silence is the pass. If a chain has run out you get:
+
+      ```
+      [crimson_arena] PROPS MISSING ON THIS BUILD -- an arena below cannot be built and will refuse to start:
+          skydome floor -- none of: stt_prop_stunt_bblock_huge_01, ...
+      ```
+
+      That arena will refuse to start rather than drop anyone into open air.
+      Every chain ends in a base-game model, so this should not happen on a
+      stock install — see `stream/README.md` if it does.
+
+      With `Config.Debug = true` you get the full report either way, naming
+      *which* model out of each chain your build supplied. Worth reading once.
+
+### 2. The arena in the sky — do this before anything else
+
+The only part of this resource that builds its own ground. Everything here is
+natives, it has the least real-world evidence behind it, and the failure mode
+is a kilometre of air.
+
+- [ ] Fly to `1500, 3000, 1201`, outside a match, and look. **You should see
+      nothing** — the floor exists only while a match is running, and only for
+      the clients in it.
+- [ ] Now start a match in **The Skydome** with two players.
+- [ ] **There is a floor, and you are standing on it.** Not falling, not inside
+      it, not hovering above it.
+- [ ] **The barriers are on top of the floor**, not sunk into it and not
+      floating. They used to be buried by exactly the height of the floor prop.
+- [ ] Walk the whole disc, including the diagonals and the outer edge. **No
+      holes.** A gap here is a fall of a kilometre, and the diagonals are where
+      the old tiling left them.
+- [ ] Walk off the edge. You should fall, leave the boundary from underneath
+      within a second, and be killed by the bleed like any other out-of-bounds.
+- [ ] **Expect the floor to reach a little past the arena at the corners.** The
+      floor is tiled, and a tile is kept whenever any part of it is inside the
+      radius — coverage beats tidiness, because trimming to the radius leaves a
+      hole and a hole here is fatal. So on a large floor prop there is some
+      solid ground out past the boundary, and standing on it bleeds you exactly
+      as walking out of any other arena does. That is deliberate, not a bug to
+      report.
+- [ ] Die once. You come back **on the floor**, not on the terrain a kilometre
+      below and not under the platform.
+- [ ] End the match. **Fly back to `1500, 3000, 1201`. Nothing is left
+      standing.** A prop nobody deletes stays there for the rest of the session,
+      in an instance you cannot normally reach to look at it.
+- [ ] With `Config.Debug` on, F8 names the piece count and the surface height:
+
+      ```
+      [crimson_arena] arena scenery: 29 piece(s) built, 9 of them floor; the floor prop measures 40.00 x 40.00m and its surface is at 1201.00.
+      ```
+
+      **`0 of them floor` is the failure to care about.** If the piece count is
+      zero entirely, the floor was asked for somewhere the engine was not
+      holding the map — which is the bug this arena shipped with.
+
+- [ ] If you can muster the players: run one with a **large roster**. The arena
+      grows with it, so the floor and the spawn ring should visibly be bigger,
+      and nobody should start the round standing on anybody.
+
+### 3. The lobby
 - [ ] The NPC is standing where you put it, not floating or sunk.
 - [ ] Your target script offers the arena option on it.
 - [ ] The panel opens, and your mouse works in it.
@@ -90,7 +190,7 @@ what to watch for, because most failures here are silent.
       stuck cursor here is the single most disruptive failure this resource can
       have; check it before anything else.
 
-### 3. A match, two players
+### 4. A match, two players
 - [ ] Create a match, second player joins, both see each other in the roster.
 - [ ] Pick a weapon and an ammo amount. Pick a team if the mode has them.
 - [ ] Start it. Both players are teleported, frozen, then released together.
@@ -101,7 +201,7 @@ what to watch for, because most failures here are silent.
       weapons and armour are back**. Losing a player's inventory is the
       unforgivable failure; verify it deliberately rather than assuming.
 
-### 4. Dispatch — the reason most of this exists
+### 5. Dispatch — the reason most of this exists
 - [ ] Fire a weapon inside the arena. **Your police script gets no call.**
 - [ ] Die inside the arena. **Your ambulance script gets no call, and no medic
       is paged.**
@@ -112,7 +212,7 @@ what to watch for, because most failures here are silent.
       suppression flag that leaked — a player who stays permanently invisible to
       dispatch is far worse than one who never was.
 
-### 5. Money, if betting is on
+### 6. Money, if betting is on
 - [ ] Join with a stake. It leaves your account immediately.
 - [ ] Win. The pot arrives, and the arithmetic is what you expected.
 - [ ] Start another, then have a player **disconnect mid-round**. Check the
@@ -121,7 +221,7 @@ what to watch for, because most failures here are silent.
       crimson_arena`). Every stake must come back. Every player must be back in
       the world, visible, with their own gear.
 
-### 6. Ammo types, if you switched them on
+### 7. Ammo types, if you switched them on
 
 Skip this whole section if `Config.Loadouts.ammoItems.enabled` is `false` —
 nothing below can happen. If it is `true`, do not skip any of it: this is the
@@ -191,7 +291,7 @@ item ledger. If your ammo script reconciles the two, run the "you still have
 your own" step above twice before trusting the numbers — that is where a
 double-count would show.
 
-### 7. The nasty ones
+### 8. The nasty ones
 - [ ] Have a player leave during the **frozen countdown**, after the teleport
       but before weapons go live. They should return to the lobby cleanly, with
       their own gear, and be visible to dispatch again.
@@ -220,6 +320,7 @@ pot goes missing, the console already knows why.
 - [ ] A backup of your database, if you turned `Config.Database.enabled` on
       and imported the SQL.
 - [ ] If ammo types are on: every `item` name in your list is a real item, you
-      have seen section 6 pass, and `inventory.stripOnEntry` is still `true`. Turning
+      have seen the **Ammo types** section pass, and `inventory.stripOnEntry` is
+  still `true`. Turning
       that one off makes the arena a source of free ammunition — which is a
       decision, not a default.

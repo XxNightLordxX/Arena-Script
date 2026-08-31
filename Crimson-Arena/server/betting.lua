@@ -1164,6 +1164,39 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     return true, nil
 end
 
+--- Hands every unsettled side-bet on a match back, unjudged.
+---
+--- FOR A MATCH THAT HAS CHANGED OUT FROM UNDER THEM. A side-bet names a
+--- side: a team key in a team mode, a fighter's server id in a free-for-all.
+--- Change the mode of an open lobby and every outstanding bet on it is
+--- picking something that can no longer win -- a team key in a match with no
+--- teams -- so at settlement it simply loses. Not voided, not refunded: lost,
+--- with no way for the bettor to have seen it coming and nothing on screen
+--- saying it happened.
+---
+--- Returning them is the honest answer. They backed a match that no longer
+--- exists in the shape they backed it in, and they can bet again on the one
+--- that replaced it.
+--- No reason key: returnSideBet tells the bettor in its own words, and a
+--- parameter this passed along and that function ignored would read as
+--- wired up.
+--- @param matchId string
+--- @return integer returned
+--- @return integer owed -- money that could not be handed back
+function ArenaBetting.ReturnSideBets(matchId)
+    local returned, owed = 0, 0
+    for _, bet in ipairs(sideBets[matchId] or {}) do
+        if not bet.settled then
+            if returnSideBet(bet, matchId) then
+                returned = returned + 1
+            else
+                owed = owed + (Arena.ToInt(bet.amount) or 0)
+            end
+        end
+    end
+    return returned, owed
+end
+
 --- Settles every side-bet on a match. Winners are paid
 --- `Arena.ComputeSpectatorPayout` (their stake included in it); losers are
 --- kept by the house.

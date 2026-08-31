@@ -1291,6 +1291,29 @@ function ArenaLobby.UpdateMatch(src, data)
     -- CanStartMatch already refuses to start a team match with nobody sorted.
     local teamsChanged = modeKey ~= match.modeKey
 
+    -- EVERY OUTSTANDING SIDE-BET GOES BACK when the mode changes.
+    --
+    -- A side-bet names a side: a team key in a team mode, a fighter's server
+    -- id in a free-for-all. Change the mode and every bet already placed is
+    -- picking something that cannot win any more -- a team key in a match
+    -- with no teams -- so at settlement it simply loses. Not voided, not
+    -- refunded: lost, with nothing on screen saying so and no way for the
+    -- bettor to have seen it coming.
+    --
+    -- They backed a match that no longer exists in the shape they backed it
+    -- in. They get their money and can back the one that replaced it.
+    if teamsChanged then
+        local returned, owed = ArenaBetting.ReturnSideBets(match.id)
+        if returned > 0 then
+            ArenaLog('betting: match %s changed mode, so %d side-bet(s) were returned unjudged.',
+                tostring(match.id), returned)
+        end
+        if owed > 0 then
+            ArenaLog('betting: match %s changed mode and %d of side-bets could not be returned -- they are still held.',
+                tostring(match.id), owed)
+        end
+    end
+
     match.arenaKey = arenaKey
     match.modeKey = modeKey
     match.lives = lives

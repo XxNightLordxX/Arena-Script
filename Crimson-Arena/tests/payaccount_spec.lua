@@ -312,6 +312,80 @@ t.test('DEFECT: placing a bet refreshes the panel that shows the balance', funct
         'and nobody else was told the pot had grown')
 end)
 
+t.test('DEFECT: changing a lobby\'s mode hands every side-bet back', function()
+    -- A side-bet names a SIDE: a team key in a team mode, a fighter's server
+    -- id in a free-for-all. Change the mode of an open lobby and every bet
+    -- already on it is picking something that cannot win any more -- so at
+    -- settlement it simply lost. Not voided, not refunded: lost, with nothing
+    -- on screen saying so and no way for the bettor to have seen it coming.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 },
+        [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 },
+    })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = 500, account = 'cash',
+    })
+    t.equals(server.cash(3), 49500, 'the bet was never taken, so this proves nothing')
+
+    -- The host changes their mind about the mode.
+    server.fire('updateMatch', 1, { modeKey = 'ffa' })
+
+    t.equals(server.cash(3), 50000,
+        'A BET ON A TEAM THAT NO LONGER EXISTS WAS KEPT -- it can only lose now')
+end)
+
+t.test('but editing anything ELSE leaves the bets exactly where they are', function()
+    -- The distinction the guard exists to draw. A side-bet names a SIDE, and
+    -- only a mode change can make a side stop existing -- so a host nudging
+    -- the lives or the arena must not hand everybody their money back and
+    -- empty the pool they were betting into. Returning on every edit passes
+    -- the test above just as well as returning on the right one, which is
+    -- why this is here.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 },
+        [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 },
+    })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = 500, account = 'cash',
+    })
+    t.equals(server.cash(3), 49500, 'the bet was never taken, so this proves nothing')
+
+    -- Lives, then the arena. Neither changes what "crimson" means.
+    server.fire('updateMatch', 1, { lives = 2 })
+    t.equals(server.cash(3), 49500,
+        'editing the LIVES handed a standing bet back and emptied the pool')
+
+    server.fire('updateMatch', 1, { arenaKey = 'beach' })
+    t.equals(server.cash(3), 49500,
+        'changing the ARENA handed a standing bet back -- the side they picked still exists')
+
+    t.equals(server.lobby.Get(matchId).lives, 2, 'the lives edit itself did not land')
+end)
+
+t.test('and a mode change with no bets on it is uneventful', function()
+    -- The guard must not fire on the ordinary case: a host adjusting an empty
+    -- lobby is not a settlement.
+    local server = newServer({ [1] = { cash = 50000, bank = 50000 } })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'tdm', entryFee = 1000 })
+    local matchId = server.lobby.All()[1].id
+
+    server.fire('updateMatch', 1, { modeKey = 'ffa' })
+
+    t.equals(server.lobby.Get(matchId).modeKey, 'ffa', 'the mode change did not take')
+    t.equals(server.cash(1), 49000, 'the host\'s own entry fee was disturbed by a mode change')
+end)
+
 t.test('and a bet the chosen account cannot cover is refused', function()
     local server = newServer({
         [1] = { cash = 5000, bank = 5000 },

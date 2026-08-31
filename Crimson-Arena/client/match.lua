@@ -670,11 +670,27 @@ end)
 --- blipColorFor below so a free-for-all with only team blips on starts no
 --- loop at all, rather than one that wakes twice a second to work out it has
 --- nothing to do.
---- @param modeKey any
+--- Whether the OTHER SIDE is drawn permanently, which is the one thing
+--- that switches the radar off entirely.
+---
+--- THIS USED TO ASK THE WRONG QUESTION, and it cost the radar its whole
+--- reason for existing. It read:
+---
+---     if Config.Teams.showEnemyBlips == true then return true end
+---     return Config.Teams.showTeamBlips == true and Arena.ModeUsesTeams(modeKey)
+---
+--- -- which is "is anything drawn permanently", and in the shipped config
+--- (team blips on, enemy blips off) it answered TRUE for every team match.
+--- The loop below reads it as "draw everything, always", so a team deathmatch
+--- put every enemy on the map for the whole round and the sweep never ran
+--- once. The setting looked switched on in the panel and did nothing.
+---
+--- Teammates are not what this decides. They are drawn on every branch of
+--- that loop, sweep or no sweep, because your own side is not something the
+--- radar reveals -- so `showTeamBlips` has no business here at all.
 --- @return boolean
-local function blipsEnabled(modeKey)
-    if Config.Teams.showEnemyBlips == true then return true end
-    return Config.Teams.showTeamBlips == true and Arena.ModeUsesTeams(modeKey)
+local function permanentEnemyBlips()
+    return Config.Teams.showEnemyBlips == true
 end
 
 --- The colour one scoreboard row should be blipped in, or nil for a row
@@ -940,7 +956,7 @@ local function startBlipThread()
     if not currentMatch then return end
 
     local token = matchToken
-    local permanent = blipsEnabled(currentMatch.modeKey)
+    local permanent = permanentEnemyBlips()
 
     CreateThread(function()
         while matchLive and matchToken == token do

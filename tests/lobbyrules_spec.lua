@@ -118,10 +118,17 @@ local function newArena(wallets, mutate, jobs)
             RecordMatch = function() end,
             Flush = function() end,
         },
+        -- The arena flag, and the routing bucket a round is fought in. Both
+        -- ride the same two choke points in server/match.lua, so a stub
+        -- missing either half fails as a nil call naming it.
         ArenaDispatch = {
             Set = function() end,
             Clear = function() end,
             IsPlayerInArena = function() return false end,
+            EnterBucket = function() end,
+            ExitBucket = function() end,
+            GetBucket = function() end,
+            ReleaseBucket = function() end,
         },
     })
 

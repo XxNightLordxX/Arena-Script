@@ -32,12 +32,21 @@ dependencies {
 -- shared/arena.lua reads on every call, so config must come first. Both
 -- must come before any client or server file, since every one of them
 -- calls Arena.* at some point.
+--
+-- shared/compat/dispatch.lua comes last of the three because it reads both:
+-- Config for the operator's hook names, and Arena.IsKey to validate every
+-- adapter it registers -- and it registers them while the file is still
+-- loading. It is shared rather than server-only because the catalogue and
+-- the detection walk are the same question in either realm; the file works
+-- out which realm it is in and keeps the report, the mutes and the
+-- /arenadispatch command on the server.
 -- ----------------------------------------------------------------------
 shared_scripts {
     '@ox_lib/init.lua',
     '@qbx_core/modules/lib.lua',
     'config.lua',
     'shared/arena.lua',
+    'shared/compat/dispatch.lua',
 }
 
 -- ----------------------------------------------------------------------

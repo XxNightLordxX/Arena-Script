@@ -37,8 +37,15 @@ files = {}
 -- ----------------------------------------------------------------------
 -- SHARED -- loaded into BOTH Lua VMs from fxmanifest.lua's shared_scripts.
 --
--- These two files may use nothing realm-specific. shared/arena.lua calls no
--- native at all, which is what lets tests/ load it under plain lua5.4.
+-- config.lua and shared/arena.lua may use nothing realm-specific.
+-- shared/arena.lua calls no native at all, which is what lets tests/ load it
+-- under plain lua5.4.
+--
+-- shared/compat/dispatch.lua is the one shared file that does call natives,
+-- and every one of them is SHARED-realm: it works out which VM it is in from
+-- IsDuplicityVersion() and keeps the report, the adapter mutes and its
+-- command behind that check. A client-only or server-only native turning up
+-- in its list below is a bug rather than a new entry.
 -- ----------------------------------------------------------------------
 
 files['config.lua'] = {
@@ -51,6 +58,42 @@ files['config.lua'] = {
 files['shared/arena.lua'] = {
     globals = { 'Arena' },
     read_globals = { 'Config' },
+}
+
+files['shared/compat/dispatch.lua'] = {
+    -- The adapter registry, the detection walk and the startup report.
+    globals = { 'ArenaCompat' },
+
+    read_globals = {
+        -- Shared realm, read-only: the catalogue reads the operator's hook
+        -- names out of Config and validates every registration with
+        -- Arena.IsKey.
+        'Arena',
+        'Config',
+
+        -- Which VM this copy is running in. Shared, and the reason none of
+        -- the server-only names below are ever reached on a client.
+        'IsDuplicityVersion',
+
+        -- Detection itself: the whole catalogue is a name and this answer.
+        'GetResourceState',
+
+        -- Scheduling, events, resource identity and the /arenadispatch
+        -- command. Every one of them is registered on the server side of
+        -- the realm check.
+        'AddEventHandler',
+        'CreateThread',
+        'GetCurrentResourceName',
+        'RegisterCommand',
+        'Wait',
+
+        -- server/util.lua's helpers, called only from the server branch and
+        -- only at run time -- server_scripts load after this file, so none
+        -- of these exists while it is still loading.
+        'ArenaIsAdmin',
+        'ArenaNotify',
+        'ArenaNotifyKey',
+    },
 }
 
 -- ----------------------------------------------------------------------
@@ -290,6 +333,13 @@ files['server/'] = {
         -- its own ignore list.
         'TriggerEvent',
 
+        -- Best-effort event cancelling (server/dispatch.lua). Raises the
+        -- cancel flag on an operator-named alert event. WasEventCanceled is
+        -- deliberately NOT here: this resource only ever sets that flag and
+        -- never reads it -- whether anything acts on it belongs to the
+        -- resource that raised the event.
+        'CancelEvent',
+
         -- ox_lib and its locale loader. `cache` and `QBX` complete the
         -- ox_lib / qbx_core surface and are allowed ahead of use for the same
         -- reason they are on the client side.
@@ -325,6 +375,15 @@ files['server/'] = {
         'GetPlayerPed',
         'GetVehiclePedIsIn',
         'IsPlayerAceAllowed',
+
+        -- Routing buckets (server/dispatch.lua). A match is fought in its
+        -- own network instance, which is set server-side and never on a
+        -- client's say-so -- these have no client-realm counterpart on
+        -- purpose.
+        'GetPlayerRoutingBucket',
+        'SetPlayerRoutingBucket',
+        'SetRoutingBucketEntityLockdownMode',
+        'SetRoutingBucketPopulationEnabled',
 
         -- The Discord webhook.
         'PerformHttpRequest',

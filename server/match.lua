@@ -21,6 +21,17 @@
     players who die in the same tick are both counted before anything is
     decided, so neither one is declared the last standing.
 
+    A ROUND IS FOUGHT IN ITS OWN NETWORK INSTANCE. Entering the arena moves a
+    player into the match's routing bucket and leaving it puts them back in
+    the one they came from, both on the same two choke points that raise and
+    clear the dispatch flag -- sendEnterArena and sendExitArena -- so the two
+    cannot end up disagreeing about who is in a match. The sweep reconciles
+    that against the registry once a second, so a departure that never
+    reaches those choke points -- and there is one -- still ends with the
+    player back in the world they came from. What all that buys, what it does
+    not, and why the bucket is captured rather than assumed to be 0 are in
+    server/dispatch.lua.
+
     MONEY IS NOT DECIDED HERE. This file decides who won; what that is worth
     is Arena.ComputePayouts' arithmetic and server/betting.lua's escrow. The
     one thing it must get exactly right is the ORDER of the settlement in
@@ -538,6 +549,29 @@ end
 -- TALKING TO THE ARENA
 -- ======================================================================
 
+--- Everybody this file has moved into a match's routing bucket, fighter or
+--- spectator, as src -> matchId.
+---
+--- WHY THERE IS A SECOND LIST AT ALL, in a file whose opening comment says
+--- two lists of players is one too many: this is not a list of players, it
+--- is a record of what has been DONE to them, and nothing else in the
+--- resource holds it. It is written on the two choke points below and
+--- reconciled against the match registry by the sweep, which is what makes
+--- the isolation self-healing rather than merely careful.
+---
+--- IT HAS TO BE SELF-HEALING, because not every departure comes through
+--- those choke points. A spectator is attached and detached by
+--- server/lobby.lua from call sites this file does not own. And a player who
+--- leaves during the frozen countdown -- after Start() has already put them
+--- in the arena, before goLive() flips the match to 'live' -- is routed by
+--- main.lua's detach() to ArenaLobby.Leave rather than RemovePlayer, so no
+--- exit is ever sent for them. A leaked flag on that path is a bug somebody
+--- else's script has to live with for one session; a leaked BUCKET is a
+--- player alone in an invisible copy of the map with no way out. The sweep
+--- puts them back within a tick, whichever path dropped them.
+--- @type table<number, string>
+local instanced = {}
+
 --- One event to every fighter and every spectator of a match.
 --- @param match table
 --- @param event string
@@ -551,10 +585,21 @@ end
 --- any one of them would suppress that player's police and medical alerts
 --- for the rest of their session. One choke point, rather than five call
 --- sites and the hope that a sixth remembers.
+---
+--- THE ROUTING BUCKET RIDES ON THE SAME CHOKE POINT, and deliberately so:
+--- put the two on separate call sites and they can disagree about who is in
+--- a match, which means either a player left instanced in an empty world
+--- after the flag says they went home, or a player back in the world with
+--- the flag still suppressing their alerts. Neither is visible from a log.
 --- @param src number
 --- @param payload table
 local function sendExitArena(src, payload)
     ArenaDispatch.Clear(src)
+    -- Before the client is told, so the teleport back to the lobby happens
+    -- in the world the player is going to be standing in rather than in the
+    -- instance they are leaving.
+    ArenaDispatch.ExitBucket(src)
+    instanced[src] = nil
     TriggerClientEvent('crimson_arena:client:exitArena', src, payload)
 end
 
@@ -633,6 +678,14 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
     -- a rifle is not in a fight, and suppressing their alerts while they
     -- stand in the middle of town would be a hole, not a feature.
     ArenaDispatch.Set(player.src, match.id)
+
+    -- Instanced BEFORE the client is told to teleport in, so the player
+    -- materialises inside the match's own network instance rather than
+    -- appearing in the arena in front of the whole server for the frame in
+    -- between. Same choke point as the flag above for the reason given on
+    -- sendExitArena: split them and they can disagree.
+    ArenaDispatch.EnterBucket(player.src, match.id)
+    instanced[player.src] = match.id
 
     TriggerClientEvent('crimson_arena:client:enterArena', player.src, {
         matchId = match.id,
@@ -1134,6 +1187,13 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         })
     end
 
+    -- The instance goes back to the pool. ExitBucket already frees it as the
+    -- last person walks out, so on a normal finish this is a no-op -- it is
+    -- here for the match everybody had already disconnected from, where
+    -- there was no last person to walk out and the number would otherwise be
+    -- held against a match id that no longer exists.
+    ArenaDispatch.ReleaseBucket(match.id)
+
     ArenaLog('match %s ended: %s', tostring(match.id), endReason)
     ArenaLobby.Destroy(match.id, endReason)
     return true
@@ -1175,6 +1235,11 @@ function ArenaMatch.Abort(matchId, reasonKey)
     ArenaBetting.RefundAll(match.id, reason)
     ArenaBetting.SettleSpectatorBets(match.id, nil)
     ArenaBetting.Clear(match.id)
+
+    -- Same reason as in End: the abort path is the one that runs when
+    -- everybody has already gone, so it is the one that has to collect the
+    -- bucket nobody was left to release.
+    ArenaDispatch.ReleaseBucket(match.id)
 
     ArenaLog('match %s aborted: %s', tostring(match.id), reason)
     ArenaLobby.Destroy(match.id, reason)
@@ -1279,9 +1344,68 @@ end
 -- match to leak when one ends badly.
 -- ======================================================================
 
+--- Reconciles who is standing in a match's routing bucket against who the
+--- registry says is in a match. Does two jobs, and the second is the reason
+--- it is a reconcile rather than another call site.
+---
+--- ONE: SPECTATORS. Without this a spectator watches an empty room -- the
+--- fighters are in a bucket their watcher is not in, so nothing about them
+--- replicates to that client: no peds, no gunfire, and a spectator camera
+--- pointed at a player id its game does not have. Spectators are attached
+--- and detached by server/lobby.lua from three call sites this file does not
+--- own, so they are reconciled rather than intercepted.
+---
+--- TWO: EVERY LEAK, INCLUDING THE ONES NOT WRITTEN YET. sendExitArena is the
+--- exit this file controls, and it is not the only way out of a countdown or
+--- a live round. main.lua's detach() sends a player who leaves during the
+--- frozen countdown to ArenaLobby.Leave instead of RemovePlayer, and no exit
+--- is sent for them at all. Rather than trust that every current and future
+--- departure remembers, anyone holding a bucket who is no longer in a
+--- countdown or live match is put back where they came from within a tick.
+--- A stranded player cannot fix this themselves and an operator cannot
+--- easily see it, so it is worth a table walk a second.
+local function syncMatchBuckets()
+    local wanted = {}
+
+    for _, match in ipairs(ArenaLobby.All()) do
+        -- 'countdown' as well as 'live': Start() has already put the
+        -- fighters in the arena by then, so a match in its frozen countdown
+        -- is every bit as instanced as one being fought.
+        if match.state == 'countdown' or match.state == 'live' then
+            for src in pairs(match.players) do wanted[src] = match.id end
+            -- An eliminated fighter who stayed to watch is in both tables and
+            -- has already been claimed by the loop above.
+            for src in pairs(match.spectators or {}) do
+                if wanted[src] == nil then wanted[src] = match.id end
+            end
+        end
+    end
+
+    for src, matchId in pairs(wanted) do
+        if instanced[src] ~= matchId then
+            ArenaDispatch.EnterBucket(src, matchId)
+            instanced[src] = matchId
+        end
+    end
+
+    -- Clearing an entry during the walk is defined in Lua, which is what
+    -- makes this safe to do in place rather than into a second table.
+    for src in pairs(instanced) do
+        if wanted[src] == nil then
+            ArenaDispatch.ExitBucket(src)
+            instanced[src] = nil
+        end
+    end
+end
+
 CreateThread(function()
     while true do
         Wait(SWEEP_INTERVAL_MS)
+
+        -- Before the win check, not after: a match that ends this tick sends
+        -- everybody home through sendExitArena, and reconciling afterwards
+        -- would read a registry it had just been removed from.
+        syncMatchBuckets()
 
         -- ArenaLobby.All() hands back a fresh array, so ending a match --
         -- which removes it from the registry -- cannot disturb this loop.

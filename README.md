@@ -16,7 +16,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 **Staying out of everyone else's way**
 
-- Police and EMS are kept out of the arena — `Config.Dispatch`, built for a custom dispatch script rather than GTA's five-star system. An arena death never registers long enough for a medical script's polling loop to page an ambulance, which needs nothing from anyone. Alerts your own dispatch script sends need one line in that script, and there are three ways to write it: entry/exit events it can listen to, a server-written state bag it can read, or its own ignore export for this resource to call. Both switches on by default; the vanilla wanted-system handling ships off. See [Keeping police and EMS out of the arena](#keeping-police-and-ems-out-of-the-arena).
+- Police and EMS are kept out of the arena — `Config.Dispatch`, built for a custom dispatch script rather than GTA's five-star system, and layered so that most of it works **without you editing either of those scripts**. Every match is fought in its own routing bucket, so no other player's client is ever sent arena gunfire, arena bodies or arena entities, and a dispatch or ambulance script running on one has nothing to detect. An arena death is put back on its feet in the same instant, so a medical script's polling loop never catches a casualty. At start the console prints which police and EMS resources you are really running and what the arena can do about each one. What is left over is the alert your own script sends about its own player, and that is one line in it. See [Keeping police and EMS out of the arena](#keeping-police-and-ems-out-of-the-arena).
 
 **The panel**
 
@@ -245,17 +245,135 @@ The one place zero means *now* rather than *never* is `Config.Betting.spectatorB
 
 An arena is a place where people shoot each other on purpose. Left alone, every round calls the police for shots fired and every death calls EMS for a person down, and your emergency services spend the evening driving to a fight nobody wants them at.
 
-`Config.Dispatch` deals with this, and it is built for a **custom dispatch script** rather than GTA's five-star wanted system. Both switches are on by default:
+`Config.Dispatch` deals with this. It is built for a **custom dispatch script and a custom ambulance script** rather than GTA's five-star wanted system, and it is deliberately layered — strongest first, and the strong ones need nothing from you:
+
+| | Layer | Needs an edit to your dispatch or EMS script? |
+|---|---|---|
+| 1 | Every match is fought in its own routing bucket | **No.** On by default. |
+| 2 | The death state is cleared in the same instant it is set | **No.** On by default. |
+| 3 | A startup report naming what you run and what the arena does about it | **No.** It only tells you the truth. |
+| 4 | Hooks your script can read: events, a state bag, exports | Yes — one line, and this is the one that always works. |
+| 5 | Cancelling the alert event outright | No, but it is **best effort** and often does nothing. |
+
+**Will it just work?** Mostly, and more than you would expect. Layers 1 and 2 are on out of the box. Between them, no *other* machine on your server is ever sent an arena fight to detect, and a medical script that finds casualties by polling the death state does not find one here. Nothing is pasted into anything, and nothing is asked of anybody.
+
+**What do you have to do?** One thing, and only for one case: a dispatch script that watches the *arena player's own client* for gunfire. That is the one thing no resource can reach, and it takes one line in that script. It is spelled out under [the one limit](#the-one-limit-nothing-here-gets-past) below.
+
+**How do you tell whether it is working?** Read the console at start, or type `/arenadispatch`. Layer 3 exists for exactly that question and answers it by name.
+
+#### Layer 1 — the match is fought in its own network instance
 
 ```lua
-Config.Dispatch = {
-    suppressPoliceShotsFired = true,
-    suppressAmbulanceDown = true,
-    ...
-}
+isolation = {
+    enabled = true,
+    perMatch = true,
+    firstBucket = 4210,
+    populationEnabled = false,
+    lockdownMode = 'relaxed',
+},
 ```
 
-**Start here: the one thing no resource can do.** Your dispatch script decides to send an alert inside its own event handlers. Nothing in FiveM can reach into another resource and cancel that — not this script, and not any script claiming otherwise. So the job is to hand your dispatch script the facts it needs to decline. There are three ways to read the same fact, all live at once. Use whichever is least work in the script you are editing.
+A **routing bucket** is a separate network instance. Entities and events inside one do not replicate to players outside it. Every player the server puts into a match is moved into the match's bucket, and moved back out on the way home.
+
+That single fact does most of the work here. A dispatch or ambulance script running on some other player's client is never *sent* arena gunfire, arena bodies or arena entities, so it has nothing to detect and nothing to report. There is no cooperation to ask for, no line to paste, and no way for the other script to be written that gets around it — it is not being asked to decline, it is being given nothing.
+
+It is worth having even on a server with no dispatch script at all. Passers-by stop wandering into a live round, and arena gunfire stops being heard across the map.
+
+What the settings do:
+
+- **`enabled`** — off means every match is fought in the ordinary world in front of everybody, exactly as it was before this setting existed. It is opt-*out*, so an operator upgrading from an older `config.lua` gets it.
+- **`perMatch`** — one bucket per match, so two matches running at once cannot see each other either. Switch it off and every match shares `firstBucket`: still hidden from the rest of the server, but two simultaneous arenas stand in one room hearing each other.
+- **`firstBucket`** — the number allocated from, counting upwards to the first free one. **Bucket numbers are server-wide and shared with every other resource on the box**, so change this if something you already run lives in the 4210 range. A number is handed back when the match that held it ends, so a server running for a week does not walk off into somebody else's range.
+- **`populationEnabled`** — ambient NPCs and traffic inside the bucket. Off, so a round is fought in an empty world. An NPC that does not exist cannot witness a firefight, panic in front of one, or be run over into somebody's incident report.
+- **`lockdownMode`** — `'relaxed'` by default, and **not `'strict'` on purpose**. Weapons and props handed out during a match are entities created by the receiving client, and a strict bucket refuses them: the player arrives empty-handed with nothing on screen saying why. Only set `'strict'` if you have tested that loadouts still arrive on your build.
+
+Things worth knowing before you turn it on for a live server:
+
+- **The bucket is set by the server and never on a client's say-so.** A client that could pick its own instance could pick the one somebody else's match is being fought in, which is a spectating cheat and a griefing tool in the same request.
+- **A player is put back in the bucket they were found in, not in bucket 0.** Restoring to zero is right only on a server that instances nobody; on one running apartments, heists or per-job worlds it would silently move players to the default world on the way out of the arena, with nothing telling them or you that it happened.
+- **Spectators are moved into the match's bucket too.** Watch from outside it and the arena is an empty room — no fighters, no gunfire, and a camera pointed at a player the watching client does not have.
+- **Everybody is returned on `onResourceStop`, first, before anything else in the shutdown.** A bucket lives in the server, not in this resource: stopping `crimson_arena` does not empty one. A player left behind in an arena instance is alone in an invisible copy of the map, cannot fix it themselves, and does not get it cleared by reconnecting.
+- **A bucket is a network boundary, not a permissions boundary.** Server-side code still sees every player normally — a dispatch script's *server* half looping over players finds an arena player exactly as it always did. That is what layer 4 is for.
+- **Proximity voice and anything else that follows client replication follows the bucket too.** In practice a fighter hears their match and nobody outside it. Check yours if that matters to you.
+
+**And the limit, which is the reason the rest of this section exists:** a bucket hides the fight from every *other* machine on the server. It cannot hide an arena player's gunfire from **their own** client. See [the one limit](#the-one-limit-nothing-here-gets-past).
+
+#### Layer 2 — an arena death is undone in the same instant
+
+```lua
+suppressAmbulanceDown = true,
+clearDeadStateImmediately = true,
+```
+
+Most medical scripts spot a casualty by watching whether a player is dead, on a loop running somewhere between twice a second and once a second. The stock `baseevents` resource finds one the same way, which is where a great many "player died" handlers on a server ultimately come from.
+
+With `clearDeadStateImmediately`, an arena death is reported to the server and the body is put back on its feet in the same instant — frozen, invisible and untouchable until the server says whether they respawn or are out. In practice that loop never has a dead player to find, and no ambulance is ever paged. The player sees no difference: they are held in place either way, waiting on the server. It also makes respawning feel sharper, which is why it is on even for servers with no medical script at all.
+
+**The honest limit:** a script that hooks the death *event* rather than polling the death *state* still fires, because the player really did die. Layer 4 is the answer for those. This is not a substitute for it.
+
+#### Layer 3 — the startup report, so you never have to guess
+
+Every other layer is either invisible when it works or needs something from you. This one exists to tell you which.
+
+Five seconds after the resource starts — five, because resource start order is not guaranteed and a dispatch script listed below this one in `server.cfg` has not started yet at zero — the arena looks up every police and EMS resource name it knows about, sees which are running on **your** server, and prints one short block naming each one and what it can do about it.
+
+Nothing wired up yet, with Project Sloth's dispatch and the Qbox ambulance job running:
+
+```
+[crimson_arena] dispatch compat: 2 police/EMS resource(s) running.
+[crimson_arena]   ps-dispatch          police+EMS  NOT muted -- needs the line below
+[crimson_arena]   qbx_ambulancejob     EMS         NOT muted -- needs the line below
+[crimson_arena] Isolation is on: no OTHER player's client can see the fight. An arena player's own client still can -- that is what the line below is for.
+[crimson_arena]   Paste at the top of whatever sends the alert, in that script:
+[crimson_arena]       if Player(src).state.crimsonArena then return end        -- server realm
+[crimson_arena]       if LocalPlayer.state.crimsonArena then return end        -- client realm
+[crimson_arena] Hooks configured: entry/exit events. /arenadispatch re-runs this report.
+```
+
+The same server once both are handled — one through its own ignore export, one through the entry/exit events:
+
+```
+[crimson_arena] dispatch compat: 2 police/EMS resource(s) running.
+[crimson_arena]   ps-dispatch          police+EMS  muted automatically -- disableExports calls exports.ps-dispatch:SetIgnoredPlayer
+[crimson_arena]   qbx_ambulancejob     EMS         assumed handled -- you named it in resyncResources, so it hears crimson_arena:dispatch:enter
+[crimson_arena] Isolation is on: no OTHER player's client can see the fight.
+[crimson_arena] Hooks configured: entry/exit events, 1 disableExport(s), 1 resyncResource(s). /arenadispatch re-runs this report.
+```
+
+Reading it:
+
+| Row says | It means |
+|---|---|
+| `muted automatically` | The arena really calls something on that resource on entry and exit. Nothing more to do. |
+| `assumed handled` | You named it in `resyncResources`, so you have evidently wired it to the entry/exit events. That is evidence, not proof — the report cannot see inside your script. |
+| `NOT muted -- needs the line below` | Nothing in the arena reaches it. Paste the line it prints. |
+| `Isolation is off` | Layer 1 is switched off, so every client on the server can see arena gunfire and arena bodies. |
+
+`/arenadispatch` runs the whole detection again, live, and prints the same block — after installing a dispatch script, or after pasting the line it asked for, without a restart. It is gated on `Config.Permissions.adminGroups`, and the server console always qualifies. An admin who runs it in-game has no console to read, so they get the block as one notification as well.
+
+**Nothing in the catalogue ships with a mute call, deliberately.** A third-party script's export names cannot be verified from inside this resource, and a guessed export name is the worst outcome available: it detects as present, reports itself as handled, and silently does nothing — strictly worse than admitting the resource is unhandled. Detection is what drives the report, and the report is the point.
+
+Detected by name today:
+
+| Kind | Resources |
+|---|---|
+| Dispatch boards (`police+EMS`) | `ps-dispatch`, `cd_dispatch`, `qs-dispatch`, `core_dispatch`, `rcore_dispatch`, `codem-dispatch`, `emergencydispatch` |
+| Police (`police`) | `linden_outlawalert`, `origen_police`, `qbx_policejob`, `qbx_police`, `qb-policejob`, `wasabi_police` |
+| EMS (`EMS`) | `qbx_ambulancejob`, `qbx_medical`, `qb-ambulancejob`, `wasabi_ambulance` |
+
+If yours is not on that list the report says so and tells you where to add the name — `shared/compat/dispatch.lua`, one line. A name nobody runs simply never matches, so the list being generous with spellings costs nothing.
+
+```lua
+ArenaCompat.RegisterAdapter({ resource = 'my_dispatch', kind = 'police' })
+```
+
+`kind` is `'police'`, `'ambulance'` or `'both'`, and is only ever a label in the report. If you know the *real* ignore export for a script you run — read out of its own documentation, never one that merely sounds right — a registration may carry a `mute = function(src, active) ... end` as well, and the report will then say `muted automatically` about it. `src` is a server id and `active` is `true` on entry, `false` on exit; the call is made on the server, wrapped so that a throw on the far side cannot take a match start down with it. It rides `custom.enterEvent` / `custom.exitEvent`, so a mute with those set to `nil` has nothing to trigger it — and the report says exactly that rather than claiming a mute that cannot fire.
+
+#### Layer 4 — the hooks, for the alert your own script sends
+
+This is the layer that always works, and it is the one that covers the case layer 1 cannot. It is also the only place in this whole section where you edit somebody else's file.
+
+**Start from what no resource can do.** Your dispatch script decides to send an alert inside its own event handlers. Nothing in FiveM can reach into another resource and cancel that decision — not this script, and not any script claiming otherwise. So the job is to hand your dispatch script the facts it needs to decline. There are three ways to read the same fact, all live at once. Use whichever is least work in the script you are editing.
 
 **Form 1 — this resource tells you.** Server events fired when a player is put into an arena and when they leave, so your script keeps its own ignore list without polling anything:
 
@@ -284,7 +402,7 @@ if Player(src).state.crimsonArena then return end     -- server
 if LocalPlayer.state.crimsonArena then return end     -- client
 ```
 
-Drop that at the top of whatever sends the alert. Rename the key with `custom.stateBagKey` if `crimsonArena` collides with something you already use.
+Drop that at the top of whatever sends the alert. Rename the key with `custom.stateBagKey` if `crimsonArena` collides with something you already use. The value is a table — `{ active = true, matchId = '...' }` — so it is truthy in a match and `nil` otherwise.
 
 **Form 3 — this resource calls you.** If your script already has its own ignore or disable export, name it and it is called with `true` on entry and `false` on exit:
 
@@ -294,19 +412,70 @@ disableExports = {
 },
 ```
 
-Nothing ships enabled there, because calling an export that means something different on your build is worse than not calling it. An entry naming a resource that is not running, or an export that does not exist, is skipped with one console warning — it will not error and it will not stop a match starting.
+It is called **on the client**, with that boolean as its only argument — the player it is about is the client making the call. (For a server-side ignore export that wants a server id, register a `mute` instead: see [layer 3](#layer-3--the-startup-report-so-you-never-have-to-guess).)
+
+Nothing ships enabled there, because calling an export that means something different on your build is worse than not calling it. An entry naming a resource that is not running, or an export that does not exist, is skipped with one console warning — it will not error and it will not stop a match starting. The startup report credits the resources this list names.
 
 There are also exports, for a script that would rather ask than listen — see [Exports](#exports).
 
 **The state bag is written by the server, never the client.** That is a security decision rather than a tidy one: a replicated bag set from a client can be set by *any* client, so a player who had never been near the arena could pin the flag on themselves and have your dispatch script politely ignore them robbing a bank. The flag goes up when a player is placed in the arena, not when they join the lobby — somebody sitting in a menu choosing a rifle is not in a fight.
 
-#### The person-down alert, stopped at source
+#### Layer 5 — cancelling the alert event, and it is best effort only
 
-This one needs nothing from anybody, and it is on by default.
+**This is the weakest thing in this section, and if it is the only form you fill in you should assume your alerts are still going out.** It is here for the case where you cannot edit the sending script at all.
 
-Most medical scripts spot a casualty by watching whether a player is dead, on a loop running somewhere between twice a second and once a second. With `clearDeadStateImmediately`, an arena death is reported to the server and the body is put back on its feet in the same instant — frozen, invisible and untouchable until the server says whether they respawn or are out. That loop never sees a dead player to report. It also makes respawning feel sharper, which is why it is on even for servers with no medical script at all.
+Name the events your dispatch or ambulance script raises in order to send an alert. The arena registers a handler on each one and calls `CancelEvent()` on it — but only when it can establish that the alert is about a player who is in a match right now:
 
-**The honest limit:** a script that hooks the death *event* rather than polling the death *state* still fires, because the player really did die. Use Form 1 or Form 2 above for those. This is not a substitute for them.
+```lua
+cancelEvents = {
+    -- An event a CLIENT triggers. `source` is the player who triggered it,
+    -- and that is all this needs.
+    'dispatch:server:shotsFired',
+
+    -- An event another RESOURCE triggers on the server. There is no player
+    -- behind it, so say which argument carries the server id of the player
+    -- the alert is ABOUT. Count from 1.
+    { event = 'dispatch:server:personDown', playerArg = 1 },
+},
+```
+
+(A set keyed by event name — `['dispatch:server:shotsFired'] = true` — is accepted too.)
+
+**Why it is only best effort, and there is no way to make it more.** `CancelEvent()` raises a flag and stops nothing by itself. The alert still goes out unless the code that raised the event checks `WasEventCanceled()` afterwards and decides to drop it, **and many scripts never check**. Worse, a script that does check inside its own handler only sees the flag if `crimson_arena` registered first — which comes down to the order resources start in your `server.cfg`, and is not something any resource can guarantee about another.
+
+**It will not guess.** An event that arrives with no usable `source` and no `playerArg` is passed straight through untouched, and its name is printed once so you know to add one:
+
+```
+[crimson_arena] cancelEvents: "dispatch:server:personDown" fired with no player behind it, so it was left alone. If that event carries a server id, say which argument it is -- { event = 'dispatch:server:personDown', playerArg = 1 } -- or drop it from the list.
+```
+
+Cancelling a shots-fired call about somebody on the other side of the map is a far worse outcome than failing to cancel one about a fighter — it is the same silent hole the state bag's security note is written against, arrived at from the other direction — so anything doubtful is left alone.
+
+**It only ever listens.** These are registered with `AddEventHandler` and never `RegisterNetEvent`. `RegisterNetEvent` is what makes an event triggerable by a client, and calling it on somebody else's server-only event name would let *any* player fire that event — turning a feature meant to silence false alerts into a way to forge real ones.
+
+The list ships empty. The startup report counts what you put in it and labels it `(best effort)` there too.
+
+#### The one limit nothing here gets past
+
+**A dispatch script that polls the arena player's own client for gunfire cannot be stopped from outside it.**
+
+If a script runs `while true do if IsPedShooting(PlayerPedId()) then ... end end` on the shooter's own machine, then layer 1 does not help — the bucket hides the fight from every *other* client, not from the shooter's own game, and the shooter really is shooting. Layer 5 may not fire, and even when it does the other script may not check. No FiveM resource can reach into another one and cancel its events or stop its loops. Any resource claiming otherwise is claiming something the platform does not offer.
+
+Here is the line that fixes it. It goes at the top of whatever sends the alert, in **that** script:
+
+```lua
+-- client realm, in the loop or the handler that decides to alert
+if LocalPlayer.state.crimsonArena then return end
+```
+
+```lua
+-- server realm, in whatever receives it and broadcasts to police
+if Player(src).state.crimsonArena then return end
+```
+
+That is the same line the startup report prints, with your own `stateBagKey` already filled in, next to the name of the resource that needs it.
+
+**The report cannot then see that you pasted it.** It does not read other people's files, so that row keeps saying `NOT muted` afterwards — what confirms the fix is a round of the arena and a dispatch board that stays quiet. If you would rather the report stopped raising a resource you have handled by hand, name it in `custom.resyncResources`; the row becomes `assumed handled`, worded as an assumption because that is exactly what it is.
 
 #### GTA's own five-star system
 
@@ -426,6 +595,7 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 | `/arenaadmin list` | server | admins. Lists every match with its state, head count and pot. |
 | `/arenaadmin stop <id>` | server | admins. Aborts one match and refunds everybody. |
 | `/arenaadmin wipe` | server | admins. Aborts every match and refunds everybody. |
+| `/arenadispatch` | server | admins. Re-runs the police/EMS detection and reprints the startup report. See [Layer 3](#layer-3--the-startup-report-so-you-never-have-to-guess). |
 
 "Admins" means the ACE groups in `Config.Permissions.adminGroups`, checked as both `group.<name>` and a bare `<name>` because servers hand admin out both ways. The server console (source 0) always qualifies.
 
@@ -512,6 +682,16 @@ Anything you build on those is subject to the same rule the rest of the resource
 - The table is created at start by the resource. If it is missing, oxmysql was not connected at that moment — check the oxmysql console lines and restart `crimson_arena` after the database is up.
 - A query that cannot be answered falls back to this run's in-memory numbers rather than showing an empty panel, so a board with today's matches and nothing older is a database problem, not an empty table.
 - Turn `Config.Debug` on to see flushes: `flushed 4 stat row(s)`.
+
+### Police or EMS are still being called
+
+- **Type `/arenadispatch` first.** It names every police and EMS resource running on your server and says, per resource, whether the arena reaches it. A row reading `NOT muted -- needs the line below` is the answer, and the line it prints is the fix.
+- A resource the report does not list is one the catalogue does not know by name. Add the name in `shared/compat/dispatch.lua` and it appears from the next restart.
+- `Isolation is off` in the report means `Config.Dispatch.isolation.enabled` is `false`, so every client on the server can see arena gunfire and arena bodies. That is the layer that works without anybody's cooperation — turn it back on.
+- **With isolation on, an alert that still arrives almost certainly came from the fighter's own client.** No other machine on the server was sent the fight, so there is nothing else it could have been watching. That narrows it to one file, and the state bag line goes in it.
+- If it is only *EMS* being called, the likeliest cause is a script hooking the death **event** rather than polling the death **state**. Layer 2 cannot help with those; the state bag can.
+- If a `cancelEvents` entry is not silencing anything, that is the documented behaviour rather than a fault — see [layer 5](#layer-5--cancelling-the-alert-event-and-it-is-best-effort-only). Use the state bag line instead.
+- A dispatch script that starts alerting again after *it* restarts has lost its ignore list. Name it in `Config.Dispatch.custom.resyncResources`.
 
 ### Nothing else fits
 

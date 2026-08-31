@@ -176,11 +176,24 @@ end
 --- @param src number
 --- @param reasonKey string
 local function detach(src, reasonKey)
-    local match = ArenaLobby.GetByPlayer(src)
-    if match and ArenaMatch.IsLive(match.id) then
-        ArenaMatch.RemovePlayer(src, reasonKey)
-        return
-    end
+    -- ArenaMatch.RemovePlayer owns the "are they mid-match" question and
+    -- already calls ArenaLobby.Leave itself; it returns false only when the
+    -- player was in no match at all.
+    --
+    -- THIS USED TO ASK ArenaMatch.IsLive, WHICH WAS THE WRONG QUESTION.
+    -- IsLive is `state == 'live'`, but Start() teleports everybody into the
+    -- arena and leaves the state at 'countdown' -- only goLive() promotes it,
+    -- several seconds later, after the frozen countdown. A player who left
+    -- during that window was standing in the arena, holding a routing bucket
+    -- and the dispatch flag, while this gate said they were not, so they went
+    -- to ArenaLobby.Leave and no exit was ever sent: their police and medical
+    -- alerts stayed suppressed for the rest of their session and they kept a
+    -- bucket that made them invisible. RemovePlayer's own predicate has always
+    -- been the correct one ('live' OR 'countdown'); this was a narrower copy
+    -- of it that drifted. Asking the owner rather than re-deriving the answer
+    -- is what stops it drifting again.
+    if ArenaMatch.RemovePlayer(src, reasonKey) then return end
+
     ArenaLobby.Leave(src, reasonKey)
 end
 

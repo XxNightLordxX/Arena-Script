@@ -118,7 +118,18 @@ local function newFixture(mutate)
 
         ArenaLobby = lobby,
         ArenaStats = { RecordMatch = function(match) recorded[#recorded + 1] = match end },
-        ArenaDispatch = { Set = function() end, Clear = function() end },
+        -- The flag, and the routing bucket a round is fought in. Both are
+        -- entered and left on the same two choke points in match.lua, which
+        -- is why they are stubbed together: a file that starts calling a
+        -- fifth one fails as a nil call naming it.
+        ArenaDispatch = {
+            Set = function() end,
+            Clear = function() end,
+            EnterBucket = function() end,
+            ExitBucket = function() end,
+            GetBucket = function() end,
+            ReleaseBucket = function() end,
+        },
         ArenaBetting = {
             GetPot = function() return 0 end,
             GetStake = function() return 0 end,

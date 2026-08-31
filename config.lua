@@ -787,6 +787,12 @@ Config.Webhook = {
 -- claims otherwise. So the job here is to hand your dispatch script the
 -- facts it needs to decline, in whichever of the three forms suits how it is
 -- written. All three are live at once; use whichever is least work.
+--
+-- WHICH IS WHY THE STRONGEST SETTING IN THIS BLOCK IS `isolation` BELOW, and
+-- why it is first. It does not ask anybody to decline anything: it puts the
+-- match in its own network instance, where every OTHER player's client --
+-- and therefore every dispatch and ambulance script running on one -- has
+-- nothing to see in the first place. Read that block before any of the rest.
 -- ======================================================================
 Config.Dispatch = {
     -- The two switches you actually came here for. Both only ever apply to
@@ -795,9 +801,72 @@ Config.Dispatch = {
     suppressAmbulanceDown = true,
 
     -- ==================================================================
+    -- ROUTING BUCKET ISOLATION -- the layer that needs nothing from anybody
+    --
+    -- A routing bucket is a separate network instance. Entities and events
+    -- inside one do not replicate to players outside it. Put a match in its
+    -- own bucket and no other player's client can see arena gunfire, arena
+    -- bodies or arena entities AT ALL -- so a dispatch or ambulance script
+    -- running on one of those clients has nothing to detect and nothing to
+    -- report, with no cooperation from it and no line pasted into it.
+    --
+    -- It is worth having even on a server with no dispatch script: it stops
+    -- passers-by wandering into a live round, and stops arena gunfire being
+    -- heard across the map.
+    --
+    -- THE HONEST LIMIT, and it is the same one everything else in this block
+    -- is here for: a bucket cannot hide an arena player's gunfire from THEIR
+    -- OWN client. A dispatch script polling IsPedShooting on the shooter's
+    -- machine still sees the shooter shooting. Nothing inside another
+    -- resource can stop that loop. The state bag, the events and the exports
+    -- further down are what is left for that case, and they still matter.
+    -- ==================================================================
+    isolation = {
+        -- Off means every match is fought in the ordinary world, in front of
+        -- everybody, exactly as it was before this setting existed.
+        enabled = true,
+
+        -- ONE BUCKET PER MATCH, so two matches running at once cannot see
+        -- each other either. With this off every match shares `firstBucket`:
+        -- still hidden from the rest of the server, but two simultaneous
+        -- arenas would be standing in one room hearing each other.
+        perMatch = true,
+
+        -- The number allocated from, counting upwards. Bucket numbers are
+        -- server-wide and shared with every other resource on the box, so
+        -- this is deliberately high and unlikely to collide -- change it if
+        -- something you run already lives in this range. Bucket 0 is the
+        -- default world and is never allocated.
+        firstBucket = 4210,
+
+        -- Ambient NPCs and traffic inside an arena bucket. Off, so a round
+        -- is fought in an empty world: an NPC that does not exist cannot
+        -- witness a firefight, panic in front of one, or be run over into
+        -- somebody's incident report.
+        populationEnabled = false,
+
+        -- HOW STRICT THE BUCKET IS ABOUT ENTITIES CLIENTS CREATE.
+        --   'relaxed'  -- clients may create entities. THE DEFAULT.
+        --   'inactive' -- entities are not culled, and clients may create
+        --                 them; the loosest of the three.
+        --   'strict'   -- clients may not create entities at all.
+        --
+        -- 'strict' isolates hardest and is NOT the default on purpose:
+        -- weapons and props handed out during a match are created BY the
+        -- receiving client, and a strict bucket refuses them -- the player
+        -- arrives in the arena empty-handed with nothing on screen saying
+        -- why. Only set this to 'strict' if you have tested that loadouts
+        -- still arrive on your build.
+        lockdownMode = 'relaxed',
+    },
+
+    -- ==================================================================
     -- YOUR DISPATCH SCRIPT
     --
-    -- Three ways to read the same fact. Pick one; the others cost nothing.
+    -- Three ways to hand it the same fact so it can decline the alert
+    -- itself, and then a fourth that tries to decline on its behalf and
+    -- works only sometimes -- read FORM 4's own comment before using it.
+    -- Pick one; the others cost nothing.
     -- ==================================================================
     custom = {
         -- ---- FORM 1: this resource tells you -----------------------------
@@ -858,6 +927,56 @@ Config.Dispatch = {
         -- not exist, is skipped with one console warning -- it will not error
         -- and it will not stop a match starting.
         disableExports = {},
+
+        -- ---- FORM 4: this resource cancels the alert event ----------------
+        -- BEST EFFORT. THE WEAKEST THING IN THIS ENTIRE BLOCK. Read the whole
+        -- comment before you count on it, because a suppression you believe
+        -- is working and is not is worse than one you know you still have to
+        -- wire up.
+        --
+        -- Name the events your dispatch or ambulance script raises in order to
+        -- send an alert. This resource registers a handler on each one and
+        -- calls CancelEvent() on it -- but only when it can establish that the
+        -- alert is about a player who is in a match right now.
+        --
+        --     cancelEvents = {
+        --         -- An event a CLIENT triggers. `source` is the player who
+        --         -- triggered it, and that is all this needs.
+        --         'dispatch:server:shotsFired',
+        --
+        --         -- An event another RESOURCE triggers on the server. There
+        --         -- is no player behind it, so say which argument carries the
+        --         -- server id of the player the alert is ABOUT. Count from 1.
+        --         { event = 'dispatch:server:personDown', playerArg = 1 },
+        --     },
+        --
+        -- WHY IT IS ONLY BEST EFFORT, and there is no way to make it more.
+        -- CancelEvent() raises a flag. It stops nothing by itself. The alert
+        -- still goes out unless the code that raised the event checks
+        -- WasEventCanceled() afterwards and decides to drop it -- AND MANY
+        -- SCRIPTS NEVER CHECK. Worse, a script that does check inside its own
+        -- handler only sees the flag if this resource registered first, which
+        -- comes down to the order resources start in your server.cfg and is
+        -- not something any resource can guarantee about another.
+        --
+        -- So: treat a cancelled alert as a bonus, never as the thing keeping
+        -- your dispatch quiet. If this is the only form on this list you have
+        -- filled in, assume the alerts are still being sent. `stateBagKey`
+        -- above is one line pasted into the sending script and it always
+        -- works; this exists for the case where you cannot edit that script
+        -- at all.
+        --
+        -- WHAT IT WILL NOT DO IS GUESS. An event that arrives with no usable
+        -- `source` and no `playerArg` is left alone, and its name is printed
+        -- once so you know to add one. Cancelling a shots-fired call about
+        -- somebody on the other side of the map is a far worse outcome than
+        -- failing to cancel one about a fighter, so anything doubtful is
+        -- passed straight through.
+        --
+        -- Not tied to the two suppress switches at the top of this block: an
+        -- event name does not say whether it is a police alert or a medical
+        -- one. Empty this list to switch it off.
+        cancelEvents = {},
     },
 
     -- There are exports too, for a script that would rather ask than listen:

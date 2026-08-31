@@ -190,6 +190,75 @@ function Sandbox.newArenaEnv(overrides)
 end
 
 -- ======================================================================
+-- READING THE RESOURCE'S OWN MANIFESTS
+-- ======================================================================
+
+--- Executes a declaration file -- fxmanifest.lua or .luacheckrc -- and
+--- returns what it declared.
+---
+--- Both are Lua scripts rather than data: a manifest line is a call to a
+--- global the server defines (`fx_version 'cerulean'`), and .luacheckrc is
+--- assignments into a plain environment. Reading either with patterns would
+--- test a copy of the file rather than the file, so both are run for real
+--- against an environment that records instead of applying.
+---
+--- Any global the file CALLS becomes a recorder under its own name; any
+--- global it ASSIGNS lands in the same table. A directive added tomorrow is
+--- therefore captured rather than crashing the read.
+--- @param path string -- relative to tests/, e.g. '../fxmanifest.lua'
+--- @return table declared
+function Sandbox.readDeclarations(path)
+    -- The environment IS the result table, which is what lets the two
+    -- shapes coexist. fxmanifest.lua CALLS its directives, so a read finds
+    -- nothing and gets a recorder back; .luacheckrc ASSIGNS them, so the
+    -- value lands in the table directly and the NEXT read -- `files` again,
+    -- to index into it -- finds the real table rather than a recorder.
+    local declared = {}
+
+    setmetatable(declared, {
+        __index = function(_, key)
+            return function(value)
+                rawset(declared, key, value)
+                return value
+            end
+        end,
+    })
+
+    local chunk, err = loadfile(path, 't', declared)
+    if not chunk then
+        error(('sandbox: failed to load %s: %s'):format(path, tostring(err)))
+    end
+    chunk()
+
+    -- Handed back without the metatable: a caller checking `declared.foo`
+    -- for a directive that was never declared must get nil, not a recorder.
+    return setmetatable(declared, nil)
+end
+
+--- The scripts fxmanifest.lua loads into one realm, in manifest order, with
+--- other resources' `@resource/file` includes dropped.
+---
+--- ORDER IS THE POINT. A file that calls a global another file defines later
+--- is a hard error at start and nothing else in this suite would see it, so
+--- the list is returned exactly as the manifest declares it rather than
+--- sorted or de-duplicated.
+--- @param manifest table -- from readDeclarations('../fxmanifest.lua')
+--- @param realm string -- 'client' or 'server'
+--- @return string[] paths
+function Sandbox.realmScripts(manifest, realm)
+    local lists = { 'shared_scripts', realm .. '_scripts' }
+    local paths = {}
+
+    for _, list in ipairs(lists) do
+        for _, entry in ipairs(manifest[list] or {}) do
+            if not entry:find('^@') then paths[#paths + 1] = entry end
+        end
+    end
+
+    return paths
+end
+
+-- ======================================================================
 -- COOPERATIVE THREADS
 -- ======================================================================
 

@@ -287,8 +287,12 @@ end
 -- ======================================================================
 -- THE CATALOGUE
 --
--- The resource NAMES police dispatch and EMS are commonly run under on
--- Qbox and QBCore servers. Every one of them is DETECTION-ONLY: a name, and
+-- The resource NAMES police dispatch and EMS are commonly run under. This
+-- resource is Qbox -- it talks to qbx_core and nothing else -- but plenty of
+-- Qbox servers run a dispatch script that predates Qbox, so the catalogue
+-- carries those older names too. It is a list of things to LOOK FOR, not a
+-- statement about which framework is supported. Every one of them is
+-- DETECTION-ONLY: a name, and
 -- what that resource is. Not one carries a mute call, because not one of
 -- their export names can be verified from inside this repository, and a
 -- guessed export name detects as working and then silently does nothing.

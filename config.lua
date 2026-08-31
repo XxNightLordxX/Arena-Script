@@ -60,8 +60,10 @@ Config.NotifyTitle = 'CRIMSON ARENA'
 -- ======================================================================
 Config.Lobby = {
     -- HOW PLAYERS OPEN THE ARENA PANEL.
-    --   'ped'    -- an NPC stands at `ped.coords`; players use their target
-    --              script (ox_target/qb-target) on them. This is the default.
+    --   'ped'    -- an NPC stands at `ped.coords`; players use ox_target on
+    --              them. This is the default. ox_target is the only target
+    --              script wired up -- with it stopped or absent the marker
+    --              below goes up in the NPC's place, on the same spot.
     --   'marker' -- a glowing marker on the ground; players stand in it and
     --              press the key in `marker.key`. No NPC is spawned.
     --   'both'   -- spawn the NPC AND draw the marker. Either one opens the

@@ -443,6 +443,32 @@ t.test('the shipped sc-dispatch entries are both registered', function()
     t.contains(names, 'sc-dispatch:AddNotification')
 end)
 
+t.test('the jobs an alert names are reported, so EMS and police can be told apart', function()
+    -- On this family of dispatch scripts police and EMS alerts travel the
+    -- SAME event and differ only by the jobs in the payload -- so "police
+    -- went quiet but the ambulance did not" is not something that event can
+    -- do. Printing the jobs turns that from a guess into an observation.
+    local f = newFixture(locationConfig())
+    f.D.Set(1, 'm1')
+
+    f.env.source = 1
+    f.fire('alerts:raise', { job_table = { 'ambulance', 'doctor' }, title = '10-52' })
+
+    t.contains(table.concat(f.logs, '\n'), 'ambulance, doctor',
+        'an EMS alert arrived and nothing recorded which kind it was')
+end)
+
+t.test('and a payload that names no jobs is not invented for', function()
+    local f = newFixture(locationConfig())
+    f.D.Set(1, 'm1')
+
+    f.env.source = 1
+    f.fire('alerts:raise', { title = 'no jobs here' })
+
+    t.notContains(table.concat(f.logs, '\n'), 'an alert for [',
+        'jobs were reported for a payload that named none')
+end)
+
 t.test('a location-declared entry is pinned by location or not at all', function()
     -- The over-cancel this closes: with the point outside every arena, the
     -- handler used to fall through to the ambient `source`, which FiveM
@@ -937,5 +963,169 @@ t.test('a resyncResources entry for a script that is not running earns nothing',
     t.notContains(report, 'Hooks configured: entry/exit events')
     t.contains(report, 'Paste at the top')
 end)
+
+-- ========================================================================
+-- THE VANILLA POLICE BLOCK, AND THE SWITCH THAT USED TO SIT ABOVE IT
+--
+-- THE DEFECT THESE EXIST FOR. Config.Dispatch opened with a key named
+-- `suppressPoliceShotsFired`, introduced as one of "the two switches you
+-- actually came here for" and shipped true. Its only reader was inside the
+-- `vanillaPolice` branch of client/dispatch.lua, and that branch is gated on
+-- `vanillaPolice.enabled`, which ships FALSE. So on a stock config the key
+-- did nothing in either position -- and it was the first thing an operator
+-- whose police still turned up at a round would reach for, and the one thing
+-- that could not have been the cause.
+--
+-- The key is gone from config.lua and the branch is gated on
+-- `vanillaPolice.enabled` alone. Both halves are asserted below, separately,
+-- because either one can be put back on its own and the trap is back.
+--
+-- These are the only tests in this suite that load the REAL
+-- client/dispatch.lua. Its natives are recorded by name rather than
+-- emulated: the whole question here is whether a given config reaches them.
+-- ========================================================================
+
+--- One fresh load of client/dispatch.lua against the REAL shipped config,
+--- with `mutate` free to change Config.Dispatch before the file sees it.
+--- @param mutate fun(dispatch: table)?
+--- @return table fixture
+local function newClientFixture(mutate)
+    local calls = {}    -- every recorded native, in call order
+
+    local function record(name, value)
+        return function()
+            calls[#calls + 1] = name
+            return value
+        end
+    end
+
+    local env = Sandbox.newEnv({
+        exports = setmetatable({}, { __call = function() end }),
+        AddEventHandler = function() end,
+        RegisterNetEvent = function() end,
+        ExecuteCommand = function() end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        GetResourceState = function() return 'missing' end,
+        print = function() end,
+
+        PlayerId = function() return 0 end,
+        PlayerPedId = function() return 11 end,
+
+        -- The vanilla wanted system. Every one of these is recorded, so
+        -- "touched nothing" is provable rather than assumed.
+        SetPoliceIgnorePlayer = record('SetPoliceIgnorePlayer'),
+        SetDispatchCopsForPlayer = record('SetDispatchCopsForPlayer'),
+        GetPlayerWantedLevel = record('GetPlayerWantedLevel', 3),
+        SetPlayerWantedLevel = record('SetPlayerWantedLevel'),
+        SetPlayerWantedLevelNow = record('SetPlayerWantedLevelNow'),
+
+        -- The dead-state side, for the switch that survived.
+        GetEntityCoords = function() return { 1.0, 2.0, 3.0 } end,
+        GetEntityHeading = function() return 90.0 end,
+        GetEntityMaxHealth = function() return 200 end,
+        NetworkResurrectLocalPlayer = record('NetworkResurrectLocalPlayer'),
+        SetEntityInvincible = record('SetEntityInvincible'),
+        SetEntityVisible = record('SetEntityVisible'),
+        SetEntityCollision = record('SetEntityCollision'),
+        FreezeEntityPosition = record('FreezeEntityPosition'),
+        SetEntityHealth = record('SetEntityHealth'),
+    })
+
+    Sandbox.loadInto('../config.lua', env)
+    if mutate then mutate(env.Config.Dispatch) end
+    Sandbox.loadInto('../client/dispatch.lua', env)
+
+    return {
+        env = env,
+        D = env.ArenaDispatch,
+        calls = calls,
+        --- Whether a native was reached at all, by name.
+        called = function(name)
+            for _, seen in ipairs(calls) do
+                if seen == name then return true end
+            end
+            return false
+        end,
+    }
+end
+
+t.test('the shipped config declares no suppressPoliceShotsFired switch', function()
+    -- THE CONTRACT, stated: a key at the top of Config.Dispatch is read as
+    -- something an operator can act on, so a key up there whose only reader
+    -- lives inside a block that ships off must not exist. Put it back and
+    -- this goes red, which is the whole job of this test.
+    local f = newClientFixture()
+
+    t.isNil(f.env.Config.Dispatch.suppressPoliceShotsFired,
+        'the unreachable police switch is back at the top of Config.Dispatch')
+end)
+
+t.test('as shipped, entering a match touches no vanilla police native', function()
+    -- The other half of the same fact, and the reason that key was
+    -- unreachable rather than merely redundant.
+    local f = newClientFixture()
+
+    t.isFalse(f.env.Config.Dispatch.vanillaPolice.enabled,
+        'vanillaPolice now ships ON, so this whole block is asserting the wrong world')
+
+    f.D.Enter('match-1')
+    t.equals(#f.calls, 0, 'the vanilla wanted system was touched on a stock config')
+end)
+
+t.test('vanillaPolice.enabled is the whole gate -- nothing above it can veto it', function()
+    -- THE REGRESSION GUARD. The gate used to read
+    --     vanilla.enabled == true and config.suppressPoliceShotsFired ~= false
+    -- so a config could switch the block on and have a top-level key switch
+    -- it silently back off. This sets exactly that pair, so restoring the old
+    -- gate fails here rather than passing quietly on a nil.
+    local f = newClientFixture(function(dispatch)
+        dispatch.vanillaPolice.enabled = true
+        dispatch.suppressPoliceShotsFired = false
+    end)
+
+    f.D.Enter('match-1')
+
+    t.isTrue(f.called('SetPoliceIgnorePlayer'),
+        'a key that no longer exists vetoed the block an operator switched on')
+    t.isTrue(f.called('SetDispatchCopsForPlayer'))
+    t.isTrue(f.called('SetPlayerWantedLevel'))
+end)
+
+t.test('and the three switches inside the block still gate one native each', function()
+    -- Why the dead key was removed rather than moved down into this block:
+    -- there is already a master switch here and already per-native control,
+    -- so a second master switch would have been the same trap one level down.
+    local f = newClientFixture(function(dispatch)
+        dispatch.vanillaPolice = {
+            enabled = true, ignorePlayer = false,
+            stopDispatch = false, stashWantedLevel = true,
+        }
+    end)
+
+    f.D.Enter('match-1')
+
+    t.isFalse(f.called('SetPoliceIgnorePlayer'), 'ignorePlayer = false was ignored')
+    t.isFalse(f.called('SetDispatchCopsForPlayer'), 'stopDispatch = false was ignored')
+    t.isTrue(f.called('SetPlayerWantedLevel'), 'stashWantedLevel = true did nothing')
+end)
+
+t.test('suppressAmbulanceDown, the switch that survived, works on a stock config', function()
+    -- The difference that decided which of the two headline switches was
+    -- honest: this one's reader is gated on nothing an operator cannot see,
+    -- so BOTH its positions change behaviour on the config as it ships.
+    local on = newClientFixture()
+    on.D.Enter('match-1')
+    t.isTrue(on.D.ClearDeadState(11),
+        'the shipped config no longer suppresses the person-down alert')
+
+    local off = newClientFixture(function(dispatch)
+        dispatch.suppressAmbulanceDown = false
+    end)
+    off.D.Enter('match-1')
+    t.isFalse(off.D.ClearDeadState(11),
+        'suppressAmbulanceDown = false left the medical suppression running')
+    t.isFalse(off.called('NetworkResurrectLocalPlayer'))
+end)
+
 
 os.exit(t.summary())

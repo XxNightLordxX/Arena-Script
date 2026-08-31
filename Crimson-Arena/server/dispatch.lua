@@ -857,6 +857,11 @@ local warnedCancel = {}
 --- @type table<string, boolean>
 local sawFiring = {}
 
+--- Job lists already reported, so the line below is once per KIND of alert
+--- rather than once per alert.
+--- @type table<string, boolean>
+local sawJobs = {}
+
 --- One console line, the first time an entry turns out to be unusable.
 ---
 --- Once, and never per firing: an alert event on a busy server fires
@@ -878,6 +883,39 @@ local function warnUnpinnable(entry)
 
     ArenaLog('cancelEvents: "%s" fired with no player behind it, so it was left alone. Say which argument carries the server id -- { event = \'%s\', playerArg = 1 } -- or, if the payload only says WHERE, which argument carries that -- { event = \'%s\', coordsArg = 1 } -- or drop it from the list.',
         entry.event, entry.event, entry.event)
+end
+
+--- Which jobs an alert was aimed at, as text, or nil when it does not say.
+---
+--- WHY THIS IS WORTH READING. On this family of dispatch scripts police and
+--- EMS alerts travel the SAME event and differ only by the jobs named in the
+--- payload -- so "the police stopped getting calls but the ambulance did
+--- not" is not a thing that event can do. Printing the jobs turns that from
+--- a guess into an observation: if EMS alerts are still arriving, this line
+--- shows them arriving and being cancelled, and if they never appear then
+--- they are coming from somewhere else entirely and no amount of work on
+--- this event will ever reach them.
+---
+--- Read defensively -- it is another resource's payload, in whatever shape
+--- that resource felt like, and this is a diagnostic rather than a
+--- decision. Nothing is suppressed or allowed on the strength of it.
+--- @param ... any
+--- @return string|nil
+local function jobsNamedIn(...)
+    for index = 1, select('#', ...) do
+        local argument = (select(index, ...))
+        if type(argument) == 'table' then
+            local jobs = argument.job_table or argument.jobs
+            if type(jobs) == 'table' then
+                local names = {}
+                for _, job in ipairs(jobs) do
+                    if type(job) == 'string' then names[#names + 1] = job end
+                end
+                if #names > 0 then return table.concat(names, ', ') end
+            end
+        end
+    end
+    return nil
 end
 
 --- Listens on one alert event.
@@ -926,10 +964,21 @@ local function registerCancelHandler(entry)
         -- ever reach it; or the handler ran and declined, which is a pinning
         -- problem this file can solve. Without this line those are the same
         -- silence, and an operator cannot tell which they are looking at.
+        local jobs = jobsNamedIn(...)
+
         if not sawFiring[entry.event] then
             sawFiring[entry.event] = true
             ArenaLog('cancelEvents: "%s" reached this resource for the first time -- the hook is live. If alerts still get through from here it is a pinning problem, not a plumbing one.',
                 entry.event)
+        end
+
+        -- Once per set of jobs, not once per alert: a busy server raises
+        -- these constantly, and the question this answers -- WHICH kinds of
+        -- alert reach us at all -- is answered by the first of each kind.
+        if jobs and not sawJobs[jobs] then
+            sawJobs[jobs] = true
+            ArenaLog('cancelEvents: an alert for [%s] came through "%s". Alerts for jobs never listed here are being raised somewhere this resource cannot see.',
+                jobs, entry.event)
         end
 
         -- LOCATION FIRST, because it is the answer for the firings the player

@@ -1287,10 +1287,32 @@ Config.Webhook = {
 -- nothing to see in the first place. Read that block before any of the rest.
 -- ======================================================================
 Config.Dispatch = {
-    -- The two switches you actually came here for. Both only ever apply to
-    -- players who are IN a match -- nothing here follows anyone back out.
-    suppressPoliceShotsFired = true,
+    -- THE ONE SWITCH AT THIS LEVEL. It only ever applies to players who are
+    -- IN a match -- it does not follow anyone back out. What it governs is
+    -- `clearDeadStateImmediately` at the bottom of this block: the arena
+    -- standing its own casualties straight back up, so a medical script's
+    -- polling loop never catches one. That is something this resource does
+    -- to its own players in its own file, which is why one switch can
+    -- honestly turn it off.
     suppressAmbulanceDown = true,
+
+    -- THERE IS NO `suppressPoliceShotsFired` KEY HERE, and saying why is
+    -- worth more than the key was. It sat on this line reading like the
+    -- headline police setting, and the only code that ever looked at it was
+    -- inside `vanillaPolice` below -- which ships OFF -- so on a shipped
+    -- config it did nothing in either position. It was the first thing to
+    -- reach for when the police still turned up at a round, and the one
+    -- thing that could not have been the cause.
+    --
+    -- There is no single police switch because the police are not a single
+    -- thing here. GTA's own NPC cops are `vanillaPolice` below, behind that
+    -- block's own `enabled`. A custom dispatch script is `custom` below, and
+    -- each of its four forms is already governed by whether you filled that
+    -- form's own list in -- an empty list does nothing whatever a switch
+    -- says, which is the same reason `custom` has no master switch either.
+    -- `cancelEvents` explains in its own comment why it is deliberately not
+    -- tied to a police-or-medical switch at all: an event name does not say
+    -- which of the two it is.
 
     -- ==================================================================
     -- ROUTING BUCKET ISOLATION -- the layer that needs nothing from anybody

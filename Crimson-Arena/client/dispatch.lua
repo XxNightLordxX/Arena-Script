@@ -170,8 +170,18 @@ function ArenaDispatch.Enter(matchId)
     -- script has almost certainly disabled the vanilla wanted system already,
     -- and plenty of custom systems drive their own logic off the native
     -- wanted level -- zeroing it mid-match would fight them for it.
+    --
+    -- `vanillaPolice.enabled` and the three sub-switches below it are the
+    -- WHOLE gate, deliberately. This used to be AND-ed with a top-level
+    -- Config.Dispatch.suppressPoliceShotsFired, which read as the headline
+    -- police switch in the config and could only ever be consulted from in
+    -- here -- inside a block that ships disabled. An operator toggling it on
+    -- a stock config changed nothing, which made it the worst kind of key:
+    -- the first one reached for when the police still turn up, and the one
+    -- that cannot be the reason. It is gone from config.lua rather than
+    -- silently kept, so this block's scope is the block you can see.
     local vanilla = config.vanillaPolice or {}
-    if vanilla.enabled == true and config.suppressPoliceShotsFired ~= false then
+    if vanilla.enabled == true then
         if vanilla.ignorePlayer ~= false then
             restore.touchedPolice = true
             SetPoliceIgnorePlayer(player, true)

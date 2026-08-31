@@ -75,11 +75,15 @@ Config.Lobby = {
         model = 'g_m_m_armboss_01',
         -- x, y, z, heading. z should be the GROUND z -- the resource drops
         -- the ped by one unit itself so it does not float.
-        -- OUTSIDE the airfield hangar at Sandy Shores, facing the tarmac the
-        -- fights happen on. Deliberately not inside a building: an interior
-        -- puts the NPC behind a door players have to find, and interiors are
-        -- their own can of worms once a match teleports people out of one.
-        coords = vector4(1737.20, 3308.40, 41.22, 195.0),
+        -- IN THE CITY, at the operator's own coordinates. Deliberately not
+        -- inside a building: an interior puts the NPC behind a door players
+        -- have to find, and interiors are their own can of worms once a match
+        -- teleports people out of one.
+        --
+        -- The NPC and the ARENAS are separate settings. This is only where
+        -- players come to join; the fights still happen wherever each entry
+        -- in Config.Arenas puts them.
+        coords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
         -- An idle animation so the NPC is not a statue. Set to nil for none.
         scenario = 'WORLD_HUMAN_GUARD_STAND',
         freeze = true,
@@ -93,7 +97,9 @@ Config.Lobby = {
 
     marker = {
         type = 27,
-        coords = vector3(1737.20, 3308.40, 40.22),
+        -- The same spot as the NPC above: this is what goes up in its place
+        -- when ox_target is not running, so the two must not drift apart.
+        coords = vector3(-282.0125, -2030.4575, 30.1457),
         size = vector3(1.6, 1.6, 0.6),
         -- Crimson, to match the panel.
         color = { r = 200, g = 16, b = 32, a = 140 },
@@ -117,7 +123,7 @@ Config.Lobby = {
     -- Where a player is put back when they leave, die out, or the match
     -- ends. Also where they are returned to if the resource restarts while
     -- they are mid-match, so make sure it is somewhere safe to stand.
-    returnCoords = vector4(1740.10, 3305.60, 41.22, 195.0),
+    returnCoords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
 }
 
 -- ======================================================================

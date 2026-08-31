@@ -29,6 +29,15 @@ jobs:
     name: syntax, lint and specs
     runs-on: ubuntu-latest
 
+    # THE RESOURCE LIVES IN A SUBFOLDER, and that is deliberate: the folder in
+    # this repository is the folder an operator drags into `resources/`, named
+    # exactly as it should be named there. So every step below runs from
+    # inside it, which is also where .luacheckrc and tests/ expect to be run
+    # from. `uses:` steps ignore this and are unaffected.
+    defaults:
+      run:
+        working-directory: Crimson-Arena
+
     steps:
       - name: Check out the resource
         uses: actions/checkout@v4
@@ -56,10 +65,10 @@ jobs:
                   echo "::error file=${file}::does not parse under lua5.4"
                   status=1
               fi
-          done < <(find . -type f -name '*.lua' -not -path './.git/*' -print0)
+          done < <(find . -type f -name '*.lua' -print0)
           exit "$status"
 
-      # Reads .luacheckrc at the repository root: the exact list of CFX
+      # Reads the resource's own .luacheckrc: the exact list of CFX
       # natives, framework globals and this resource's own exports.
       - name: luacheck
         run: luacheck .

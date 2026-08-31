@@ -20,10 +20,11 @@ if you have switched ammo types on, which adds a section of its own.
 
 ## Install
 
-1. Drop the folder into your resources directory. The name is yours —
-   `crimson_arena`, `Arena-Script`, or the `-main` suffix a downloaded zip
-   leaves on it. The panel asks the game which resource is serving it rather
-   than assuming, and the exports are registered under whatever you chose.
+1. Drop this `Crimson-Arena` folder into your resources directory. It is
+   already named the way it should be named there. The name is still yours to
+   change if you want -- the panel asks the game which resource is serving it
+   rather than assuming, and the exports are registered under whatever you
+   chose.
 2. `ensure <that folder name>` in your `server.cfg`, anywhere after
    `qbx_core`. Those are the only two hard dependencies — `qbx_core` and
    `ox_lib` — and they are the whole `dependencies` block. `ox_target`,

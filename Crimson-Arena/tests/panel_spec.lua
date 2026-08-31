@@ -761,5 +761,49 @@ t.test('leaving the arena ends the watch, countdown or not', function()
     t.equals(#f.resurrects, 0, 'a loop from a match this player has left is still touching their ped')
 end)
 
+-- ------------------------------------------------------------------------
+-- THE CREATE FORM BECOMES AN EDIT FORM FOR A HOST
+--
+-- Asserted as text, like the other panel-wiring tests: there is no DOM here,
+-- and what these guard is that the three ends still agree -- the helper that
+-- decides, the render that relabels, and the submit that has to post a
+-- DIFFERENT event depending on which job the form is doing.
+-- ------------------------------------------------------------------------
+
+t.test('the form knows when it is editing rather than creating', function()
+    local app = readPanelFile('app.js')
+
+    t.contains(app, 'function editableMatch()',
+        'nothing decides whether the form is creating or editing')
+    t.contains(app, "match.state !== 'lobby'",
+        'a round being fought could be edited like a form')
+    t.contains(app, "player().isHost !== true",
+        'a guest could edit the host\'s match')
+end)
+
+t.test('and posts updateMatch instead of createMatch when it is', function()
+    -- The half that would be easy to leave out: a form that relabels itself
+    -- and then still creates a second match is worse than one that never
+    -- relabelled, because it looks like it worked.
+    local app = readPanelFile('app.js')
+
+    t.contains(app, "post('updateMatch'", 'editing still posts createMatch')
+    t.contains(app, "post('createMatch'", 'creating stopped working')
+end)
+
+t.test('the entry fee is not offered while editing, since it cannot change', function()
+    local app = readPanelFile('app.js')
+    t.contains(app, "if (editing) show(byId('create-fee-row'), false)",
+        'the fee is still offered on a lobby where it has already been paid')
+end)
+
+t.test('the form is seeded from the match once, not on every broadcast', function()
+    -- Re-seeding each push would overwrite the host mid-edit -- the same
+    -- class of bug as writing into an input while it is focused.
+    local app = readPanelFile('app.js')
+    t.contains(app, 'state.seededFromMatch !== editable.id',
+        'the seed is not keyed on the match, so it repeats on every push')
+end)
+
 print('panel_spec')
 os.exit(t.summary())

@@ -131,6 +131,11 @@
            whatever the host picked before touching the box. */
         createLives: null,
 
+        /* The match the create form was last seeded from. Keyed on the id so
+           the seed happens once on becoming host, not on every broadcast --
+           re-seeding each push would overwrite the host mid-edit. */
+        seededFromMatch: null,
+
         /* The match the browser has highlighted. Bets and spectating read
            it, so it survives a re-render of the list. */
         selectedMatchId: null,
@@ -387,6 +392,22 @@
 
     function spectatingMatchId() {
         return keyOr(player().spectating, null);
+    }
+
+    /* The match this player may edit the settings of, or null.
+       Only a host, and only while the lobby is still a lobby -- a round being
+       fought is not a form, and the server refuses it on both counts too.
+       This is the panel agreeing with that rather than deciding it. */
+    function editableMatch() {
+        if (player().isHost !== true) return null;
+
+        var id = playerMatchId();
+        if (!id) return null;
+
+        var match = matchById(id);
+        if (!match || match.state !== 'lobby') return null;
+
+        return match;
     }
 
     function matchById(id) {
@@ -918,6 +939,25 @@
             state.betAmount = int(((config.betting || {}).spectatorBets || {}).min, 0);
         }
 
+        /* SEEDED FROM THE MATCH, ONCE PER MATCH. Becoming the host of a lobby
+           turns the create form into that lobby's settings, so it has to
+           start out showing what the match actually is rather than whatever
+           was last typed into it.
+
+           Keyed on the match id so it happens on the transition and not on
+           every server push -- re-seeding each broadcast would overwrite the
+           host mid-edit, which is the same class of bug as the input being
+           rewritten while focused. */
+        var editable = editableMatch();
+        if (editable && state.seededFromMatch !== editable.id) {
+            state.seededFromMatch = editable.id;
+            state.createArena = editable.arenaKey || state.createArena;
+            state.createMode = editable.modeKey || state.createMode;
+            state.createLives = int(editable.lives, int(state.createLives, 1));
+        } else if (!editable) {
+            state.seededFromMatch = null;
+        }
+
         /* Joining a match is the moment the lobby screen becomes the
            interesting one; landing back on the browser after a join reads
            as the click having done nothing. */
@@ -1228,18 +1268,40 @@
 
         var submit = byId('create-submit');
         var hint = byId('create-hint');
-        var blocked = playerMatchId() ? 'You are already in a match. Leave it before starting another.' : null;
+
+        /* HOSTING A LOBBY TURNS THIS FORM INTO AN EDIT FORM. Picking the
+           wrong arena used to mean closing the lobby and opening another --
+           which refunds and re-takes every stake, drops everybody who had
+           joined, and costs the host their own place, for a mistake that
+           takes one click to make. */
+        var editing = editableMatch();
+
+        var blocked = null;
+        if (!editing && playerMatchId()) {
+            blocked = 'You are already in a match. Leave it before starting another.';
+        }
         if (!blocked && !state.createArena) blocked = 'This server has no arena switched on.';
         if (!blocked && !state.createMode) blocked = 'This server has no mode switched on.';
+
+        /* The fee is the one thing an open lobby cannot change: everybody in
+           it paid what was advertised when they joined. The server refuses
+           it too -- this only stops the panel offering something that would
+           come back rejected. */
+        if (editing) show(byId('create-fee-row'), false);
 
         if (has(submit)) {
             submit.disabled = blocked !== null;
             submit.title = blocked || '';
+            submit.textContent = editing ? 'Apply Changes' : 'Create Match';
         }
         if (has(hint)) {
             var onlyHost = (cfg().match || {}).onlyHostCanStart !== false;
             hint.textContent = blocked !== null
                 ? blocked
+                : editing
+                    ? 'You are the host, so these are the settings of the match you are already in. '
+                        + 'Changing them applies to everybody in the lobby. The entry fee cannot change -- '
+                        + 'it has already been paid.'
                 : 'You become the host and are put straight into the lobby. '
                     + (onlyHost
                         ? 'Only you can start the round.'
@@ -2911,6 +2973,19 @@
     });
 
     bind('create-submit', 'click', function () {
+        /* Same form, two jobs. Hosting an open lobby makes this an edit --
+           and the fee is deliberately absent from that payload rather than
+           sent and ignored, so the panel is not asking for something it has
+           just told the player it cannot have. */
+        if (editableMatch()) {
+            post('updateMatch', {
+                arenaKey: state.createArena,
+                modeKey: state.createMode,
+                lives: int(state.createLives, 1)
+            });
+            return;
+        }
+
         post('createMatch', {
             arenaKey: state.createArena,
             modeKey: state.createMode,

@@ -334,6 +334,22 @@ onClient('crimson_arena:server:cancelMatch', RATE.start, function(src)
     if not ok then return refuse(src, reason) end
 end)
 
+--- The host changing their mind about a lobby they have already opened.
+---
+--- Rate-limited as a CHOICE rather than as a start: it is somebody adjusting
+--- a form, which they will do several times in a row, not an action that
+--- opens or closes anything.
+onClient('crimson_arena:server:updateMatch', RATE.choice, function(src, data)
+    if type(data) ~= 'table' then return refuse(src, 'error.invalid_request') end
+
+    local ok, reason = ArenaLobby.UpdateMatch(src, {
+        arenaKey = keyArg(data.arenaKey),
+        modeKey = keyArg(data.modeKey),
+        lives = intArg(data.lives),
+    })
+    if not ok then return refuse(src, reason) end
+end)
+
 --- A death report is a hint from the victim's client, and it is treated as
 --- one: ArenaMatch.OnDeath re-checks that the reporter is really in a live
 --- match and really alive, and that the claimed killer is somebody who

@@ -914,4 +914,88 @@ t.test('an operator who fixes the number takes the choice away entirely', functi
     t.equals(match.lives, 2, 'the host overrode a number the operator had fixed')
 end)
 
+-- ========================================================================
+-- THE HOST EDITING A LOBBY THEY HAVE ALREADY OPENED
+--
+-- Picking the wrong arena used to mean closing the lobby and opening
+-- another, which refunds and re-takes every stake, drops everybody who had
+-- joined, and costs the host their own place -- for a mistake that takes one
+-- click to make.
+-- ========================================================================
+
+t.test('the host can change the arena, the mode and the lives of an open lobby', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 0, { 1, 2 })
+
+    server.fire('updateMatch', 1, { arenaKey = 'beach', modeKey = 'tdm', lives = 5 })
+
+    local match = server.lobby.Get(matchId)
+    t.equals(match.arenaKey, 'beach', 'the arena did not change')
+    t.equals(match.modeKey, 'tdm', 'the mode did not change')
+    t.equals(match.lives, 5, 'the lives did not change')
+end)
+
+t.test('and the change reaches everybody already in the lobby, not only the next joiner', function()
+    -- A lobby where the host changed the rules and half the room is still on
+    -- the old ones is worse than not allowing the change at all.
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 0, { 1, 2 })
+
+    server.fire('updateMatch', 1, { lives = 7 })
+
+    local match = server.lobby.Get(matchId)
+    t.equals(match.players[1].lives, 7)
+    t.equals(match.players[2].lives, 7, 'a player already in the lobby kept the old rule')
+end)
+
+t.test('a guest cannot edit the host\'s match', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 0, { 1, 2 })
+
+    server.fire('updateMatch', 2, { arenaKey = 'beach', lives = 9 })
+
+    local match = server.lobby.Get(matchId)
+    t.equals(match.arenaKey, 'airfield', 'a guest moved the match to another arena')
+    t.equals(match.lives, 3, 'a guest rewrote the rules')
+end)
+
+t.test('the entry fee is refused, because it has already been paid', function()
+    -- Not a limitation, a decision. Everybody in the lobby paid the fee that
+    -- was advertised when they joined; changing it afterwards either charges
+    -- them for something they did not agree to or gives late joiners a
+    -- different deal. A host who wants a different fee opens another lobby.
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 1000, { 1, 2 })
+
+    server.fire('updateMatch', 1, { entryFee = 4000 })
+
+    t.equals(server.lobby.Get(matchId).entryFee, 1000, 'the entry fee was changed after it was paid')
+    t.equals(server.betting.GetPot(matchId), 2000, 'the pot moved')
+end)
+
+t.test('nothing can be edited once the round has started', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 0, { 1, 2 })
+    server.lobby.Get(matchId).state = 'live'
+
+    server.fire('updateMatch', 1, { arenaKey = 'beach', lives = 9 })
+
+    local match = server.lobby.Get(matchId)
+    t.equals(match.arenaKey, 'airfield', 'a match being fought is not a form')
+    t.equals(match.lives, 3)
+end)
+
+t.test('a request naming an arena that does not exist changes nothing at all', function()
+    -- Validated before anything is written, so a half-legal request does not
+    -- leave the match half changed.
+    local server = newArena({ [1] = 5000 })
+    local matchId = openLobby(server, 0, { 1 })
+
+    server.fire('updateMatch', 1, { arenaKey = 'atlantis', lives = 8 })
+
+    local match = server.lobby.Get(matchId)
+    t.equals(match.arenaKey, 'airfield')
+    t.equals(match.lives, 3, 'the legal half of an illegal request was applied anyway')
+end)
+
 os.exit(t.summary())

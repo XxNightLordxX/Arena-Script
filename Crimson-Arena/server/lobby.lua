@@ -1012,6 +1012,89 @@ function ArenaLobby.Cancel(src)
 end
 
 -- ======================================================================
+-- EDITING A LOBBY THAT IS ALREADY OPEN
+-- ======================================================================
+
+--- Changes the settings of a match the host has already opened.
+---
+--- WHY THIS EXISTS. Picking the wrong arena used to mean closing the lobby
+--- and opening another -- which refunds and re-takes every stake, drops
+--- everybody who had joined, and costs the host their own place in the queue
+--- for a mistake that takes one click to make.
+---
+--- WHAT IT WILL NOT CHANGE, and both refusals are about money and fairness
+--- rather than difficulty:
+---
+---   The ENTRY FEE. Every player in the lobby has already paid the fee that
+---   was advertised when they joined. Changing it afterwards either charges
+---   them for something they did not agree to or hands the late joiners a
+---   different deal to the early ones, and no amount of refunding and
+---   re-taking makes that honest. A host who wants a different fee opens a
+---   different lobby.
+---
+---   Anything at all once the round has STARTED. A match being fought is not
+---   a form.
+--- @param src any
+--- @param data any -- { arenaKey?, modeKey?, lives? }
+--- @return boolean ok
+--- @return string|nil reasonKey
+function ArenaLobby.UpdateMatch(src, data)
+    local target = tonumber(src)
+    if not target then return false, 'error.invalid_request' end
+    if type(data) ~= 'table' then return false, 'error.invalid_request' end
+
+    local match = findPlayer(target)
+    if not match then return false, 'error.not_in_match' end
+    if match.hostSource ~= target then return false, 'error.not_host' end
+    if match.state ~= 'lobby' then return false, 'error.match_in_progress' end
+
+    -- Everything is validated BEFORE anything is written, so a request that
+    -- is half legal does not leave the match half changed.
+    local arenaKey, modeKey, lives = match.arenaKey, match.modeKey, match.lives
+
+    if data.arenaKey ~= nil then
+        local arena = Arena.GetArenaByKey(data.arenaKey)
+        if not arena then return false, 'error.arena_unavailable' end
+        arenaKey = data.arenaKey
+    end
+
+    if data.modeKey ~= nil then
+        local mode = Arena.GetModeByKey(data.modeKey)
+        if not mode then return false, 'error.mode_unavailable' end
+        modeKey = data.modeKey
+    end
+
+    if data.lives ~= nil then
+        local resolved, reason = Arena.ResolveLives(data.lives)
+        if not resolved then return false, reason end
+        lives = resolved
+    end
+
+    -- A mode change can strand players on a team the new mode does not have,
+    -- or leave them teamless in one that needs sides. Cleared rather than
+    -- guessed at: the panel puts the team picker back in front of them, and
+    -- CanStartMatch already refuses to start a team match with nobody sorted.
+    local teamsChanged = modeKey ~= match.modeKey
+
+    match.arenaKey = arenaKey
+    match.modeKey = modeKey
+    match.lives = lives
+    match.label = locale('match.label', match.hostName,
+        (Arena.GetModeByKey(modeKey) or {}).label or modeKey)
+
+    for _, player in pairs(match.players) do
+        -- Applied to everybody, not only to those who join next. A lobby
+        -- where the host changed the rules and half the room is still on the
+        -- old ones is worse than not allowing the change at all.
+        player.lives = lives
+        if teamsChanged then player.team = nil end
+    end
+
+    ArenaLobby.Broadcast()
+    return true, nil
+end
+
+-- ======================================================================
 -- LOBBY CHOICES
 -- ======================================================================
 

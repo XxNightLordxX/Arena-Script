@@ -759,4 +759,106 @@ t.test("in player mode everybody picks their own again", function()
         'host mode is still in force with chooser set to player')
 end)
 
+-- ========================================================================
+-- THE POT REACHES THE WINNER
+--
+-- THE SEAM NOTHING COVERED. matchflow_spec stubs ArenaBetting entirely, so it
+-- proves a round runs but never that money moves. payoutchain_spec calls
+-- Settle directly with a context built by hand, so it proves the arithmetic
+-- but never that server/match.lua builds that context correctly from a real
+-- match. Between those two specs sat the entire chain an operator actually
+-- runs -- stakes taken at the lobby, held through a round, and handed to a
+-- winner -- with nothing driving it end to end.
+--
+-- This file already loads the REAL util, betting, lobby and match, so it is
+-- where that chain can be driven for real.
+-- ========================================================================
+
+t.test('two players stake, one wins, and the pot reaches them', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 1000, { 1, 2 })
+
+    t.equals(server.betting.GetPot(matchId), 2000, 'the stakes never reached escrow')
+    t.equals(server.cash(1), 4000)
+    t.equals(server.cash(2), 4000)
+
+    server.lobby.Get(matchId).state = 'live'
+    server.match.End(matchId, 'match.ended', { 1 })
+
+    t.equals(server.cash(1), 6000, 'the winner was not paid the pot')
+    t.equals(server.cash(2), 4000, 'the loser got money back')
+    t.equals(server.ledgerTotal(), 0, 'money was created or destroyed')
+end)
+
+t.test('and the pot is empty afterwards rather than paid twice', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 1000, { 1, 2 })
+
+    server.lobby.Get(matchId).state = 'live'
+    server.match.End(matchId, 'match.ended', { 1 })
+
+    t.equals(server.betting.GetPot(matchId), 0, 'the pot still claims to hold money')
+    t.equals(server.cash(1), 6000)
+end)
+
+t.test('a three-way pot goes entirely to the one winner', function()
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    local matchId = openLobby(server, 1000, { 1, 2, 3 })
+
+    t.equals(server.betting.GetPot(matchId), 3000)
+
+    server.lobby.Get(matchId).state = 'live'
+    server.match.End(matchId, 'match.ended', { 2 })
+
+    t.equals(server.cash(2), 7000, 'the winner did not receive the whole pot')
+    t.equals(server.cash(1), 4000)
+    t.equals(server.cash(3), 4000)
+    t.equals(server.ledgerTotal(), 0)
+end)
+
+t.test('the winner is paid exactly once, counted by movements not by balance', function()
+    -- A double payout and a missing one can leave the same number behind
+    -- once other movements are in play, so the count is the assertion.
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 1000, { 1, 2 })
+
+    server.lobby.Get(matchId).state = 'live'
+    server.match.End(matchId, 'match.ended', { 1 })
+
+    -- One out (the stake), one in (the pot).
+    t.equals(server.movements(1), 2, 'the winner was paid a number of times that is not once')
+    t.equals(server.movements(2), 1, 'the loser was paid or refunded')
+end)
+
+t.test('THE REAL FINISH: a kill ends the round through the sweep and the pot is paid', function()
+    -- The previous tests call End() themselves, which skips the part of the
+    -- chain a server actually runs: a death is reported, the sweep thread
+    -- evaluates the round, and IT decides who won. If evaluate() hands back
+    -- an empty winner list the pot is refunded rather than paid -- money
+    -- comes back, nobody wins, and from a player's seat that is
+    -- indistinguishable from the arena being broken.
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 1000, { 1, 2 })
+
+    t.equals(server.betting.GetPot(matchId), 2000)
+
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.fire('startMatch', 1)
+
+    -- Whatever the countdown does, get the round live and then kill one.
+    local match = server.lobby.Get(matchId)
+    match.state = 'live'
+    server.fire('reportDeath', 2, { matchId = matchId, killer = 1 })
+
+    -- The sweep is what ends a round. Two steps: the first only primes it.
+    server.step()
+    server.step()
+
+    t.isNil(server.lobby.Get(matchId), 'the round never ended')
+    t.equals(server.cash(1), 6000, 'the winner was not paid -- the pot was refunded instead')
+    t.equals(server.cash(2), 4000, 'the loser got their stake back')
+    t.equals(server.ledgerTotal(), 0)
+end)
+
 os.exit(t.summary())

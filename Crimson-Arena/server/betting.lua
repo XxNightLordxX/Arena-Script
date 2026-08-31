@@ -636,7 +636,19 @@ function ArenaBetting.Settle(matchId, context)
     if not Arena.IsKey(matchId) then return {} end
 
     local pot = ArenaBetting.GetPot(matchId)
-    if pot <= 0 then return {} end
+    if pot <= 0 then
+        -- THE LAST SILENT PATH, and the one that looks most like a broken
+        -- arena from a player's seat: side-bets are a separate pool and pay
+        -- out normally, so a match where only they pay reads as "the pot is
+        -- broken" when the truth is there was no pot to pay.
+        --
+        -- Said out loud with the reason it can happen, because from outside
+        -- this function an empty pot and a failed payout are the same
+        -- event: nobody got anything.
+        ArenaLog('betting: match %s had NOTHING IN THE POT to pay out. Either the match was created with no entry fee, or every stake had already been refunded or forfeited before it ended. Side-bets are a separate pool and are unaffected.',
+            tostring(matchId))
+        return {}
+    end
 
     context = type(context) == 'table' and context or {}
     local payouts, houseCut = Arena.ComputePayouts({

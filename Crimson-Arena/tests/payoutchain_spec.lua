@@ -347,5 +347,27 @@ t.test('a pot that DID pay says so too, so a quiet console means nothing ran', f
     t.equals(server.cash(1), 6000)
 end)
 
+t.test('an empty pot says so rather than returning in silence', function()
+    -- The path that made this hardest to diagnose. Settle returns
+    -- immediately on an empty pot, before any of the other reporting, so a
+    -- match that paid nobody produced no console output at all -- while
+    -- side-bets, a separate pool, paid normally. That combination reads as
+    -- "the pot is broken" and is not.
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+
+    server.betting.Settle('m1', {
+        players = { { id = 1, stake = 0 }, { id = 2, stake = 0 } },
+        winners = { 1 },
+        teams = false,
+        contestants = 2,
+    })
+
+    local console = server.log()
+    t.contains(console, 'NOTHING IN THE POT')
+    t.contains(console, 'entry fee', 'the likely cause is not named')
+    t.contains(console, 'Side-bets', 'the thing that DID pay is not distinguished')
+    t.equals(server.cash(1), 5000, 'money moved from an empty pot')
+end)
+
 print('payoutchain_spec')
 os.exit(t.summary())

@@ -887,10 +887,17 @@ end
 -- everybody WAS a moment ago -- long enough to plan with, stale enough to
 -- be wrong about.
 --
--- Opt-in per player and remembered for the session. The preference lives
--- here rather than on the server because it changes nothing anybody else
--- can see: it is a display setting, and round-tripping it would put a
--- personal toggle on the wire for no reason.
+-- THE HOST'S SETTING, NOT EACH PLAYER'S.
+--
+-- This used to be a per-player toggle kept only on this side, on the
+-- reasoning that a display setting nobody else can see does not belong on
+-- the wire. That reasoning was wrong about what the setting is: a radar is
+-- not a display preference, it is how much of the other side a round lets
+-- you see, and letting every fighter decide that for themselves made a
+-- match only as dark as its least patient player.
+--
+-- So it comes in with `enterArena`, the host having set it on the match,
+-- and this side holds no preference of its own to disagree with it.
 -- ----------------------------------------------------------------------
 
 --- @return table
@@ -899,25 +906,26 @@ local function radarConfig()
     return type(block) == 'table' and block or {}
 end
 
---- nil until the player has expressed a preference, so the operator's
---- default is used until they do -- rather than "off" masquerading as a
---- choice they never made.
-local radarChosen = nil
+--- What the match said when we entered it. nil between rounds, which is
+--- the same as off: there is no sweep to run outside a match.
+local radarForMatch = nil
 
 --- @return boolean
 local function radarOn()
-    if radarConfig().allowChoose == false then return false end
-    if radarChosen ~= nil then return radarChosen end
-    return radarConfig().defaultOn == true
+    -- The operator's switch still wins. A server that has turned the radar
+    -- off entirely does not run one because a host's stale panel said so.
+    if radarConfig().allowChoose == false then return radarConfig().defaultOn == true end
+    return radarForMatch == true
 end
 
---- Set from the panel. Takes effect on the next sweep rather than
---- immediately: switching it on should not hand somebody an instant fix on
---- everybody, which would make the sweep interval free to bypass.
+--- Set from `enterArena` -- never from the panel, which no longer has a
+--- control that reaches this side. Takes effect on the next sweep rather
+--- than immediately: the sweep interval is the whole point of the setting,
+--- and a switch that lit one instantly would be a way around it.
 --- @param on boolean
 function ArenaMatch.SetRadar(on)
-    radarChosen = on == true
-    if not radarChosen then removeAllPlayerBlips() end
+    radarForMatch = on == true
+    if not radarForMatch then removeAllPlayerBlips() end
 end
 
 --- @return boolean
@@ -1060,6 +1068,11 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
         -- player back up means handing them the same loadout again.
         loadout = data.loadout,
     }
+
+    -- BEFORE the blip thread starts, so the first sweep already knows which
+    -- way it goes. Applied even when false: this is also what clears the
+    -- setting left behind by the last match we were in.
+    ArenaMatch.SetRadar(data.radar == true)
 
     -- Last round's board must not seed this round's blips.
     roster = {}

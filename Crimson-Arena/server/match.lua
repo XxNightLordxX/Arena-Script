@@ -743,6 +743,12 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
         spawn = toPoint((match.spawnPlan and match.spawnPlan[player.src])
             or Arena.PickSpawn(match.arenaKey, teamKey, index)),
         scatterRadius = scatterRadius(),
+        -- The host's radar decision, carried in with everything else the
+        -- round is fought under. The client keeps no preference of its own
+        -- any more, so this is the only thing that turns a sweep on. Sent
+        -- on entry only: the respawn payload does not repeat it, because a
+        -- death is not an opportunity to re-decide the rules of the match.
+        radar = match.radar == true,
         loadout = player.loadout,
         boundary = boundaryPayload(arena),
         weatherOverride = arena.weatherOverride,

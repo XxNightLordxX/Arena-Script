@@ -1,18 +1,26 @@
 /*
     crimson_arena/tests/panel/radar.test.js
 
-    THE RADAR TOGGLE.
+    THE RADAR -- A MATCH SETTING THE HOST PICKS.
 
     Permanent blips on every fighter turn a round into a map to be read
-    rather than a place to be searched, so they ship off. This is what
-    replaced them: opt-in, per player, and a SWEEP rather than a live feed.
+    rather than a place to be searched, so they ship off. The radar is what
+    replaced them: a SWEEP rather than a live feed.
 
-    The panel's job is small -- draw the control where the operator allows
-    one, and put the player's decision on the wire. So that is what these
-    assert: the payload, and whether the control exists at all.
+    It used to be per player, toggled down in the lobby and never sent
+    anywhere. That made a round only as dark as its least patient fighter --
+    anyone who wanted enemies on their map switched them on for themselves,
+    and the sweep interval the whole setting exists for was a formality.
+
+    So it is the host's now, and it lives in the box that creates and edits
+    a match. These assert the three things that move: it is drawn in the
+    MATCHES tab and not the lobby, it is dead for anyone who is not hosting
+    an open lobby, and the decision rides out on createMatch/updateMatch
+    rather than on a post of its own.
 */
 
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 const { loadPanel } = require('./harness');
 
@@ -32,11 +40,15 @@ function test(name, fn) {
     }
 }
 
-function snapshot(radar) {
+/* `host` is who the panel's own player is against this match: 'host' makes
+   them its host and so the one person who may edit it, 'guest' puts them in
+   it as an ordinary fighter, 'none' leaves them outside every match. */
+function snapshot(radar, host) {
     const match = {
         id: 'm1', arenaKey: 'a', arenaLabel: 'Arena',
         modeKey: 'ffa', modeLabel: 'FFA', state: 'lobby',
         playerCount: 1, hostName: 'John Allday', players: [], teams: [],
+        radar: false,
     };
     return {
         config: {
@@ -52,21 +64,43 @@ function snapshot(radar) {
             teams: { list: [] },
             ui: {},
         },
-        player: { matchId: 'm1' },
+        player: host === 'none'
+            ? { matchId: null }
+            : { matchId: 'm1', isHost: host === 'host' },
         matches: [match],
         leaderboard: [],
     };
 }
 
-function opened(radar) {
+function opened(radar, host) {
     const panel = loadPanel(ROOT);
-    const snap = snapshot(radar);
+    const snap = snapshot(radar, host || 'host');
     panel.send('open', snap);
     panel.send('state', snap);
     return panel;
 }
 
-console.log('==> the radar toggle');
+console.log('==> the radar, a host-set match rule');
+
+test('the control lives in the MATCHES tab, not the lobby', () => {
+    /* The point of the whole change. Asserted against the markup rather
+       than the panel state because this is a question about where the
+       element SITS, and app.js cannot answer it -- byId finds a node
+       wherever it is. */
+    const html = fs.readFileSync(path.join(ROOT, 'html', 'index.html'), 'utf8');
+
+    const matches = html.indexOf('id="tab-matches"');
+    const lobby = html.indexOf('id="tab-lobby"');
+    const radar = html.indexOf('id="create-radar-row"');
+
+    assert.ok(matches >= 0 && lobby > matches, 'the panel no longer has the two tabs this asserts about');
+    assert.ok(radar >= 0, 'there is no radar row in the markup at all');
+    assert.ok(radar > matches && radar < lobby,
+        'the radar row is outside the matches tab -- it must sit with the other match rules');
+
+    assert.strictEqual(html.indexOf('lobby-radar-row'), -1,
+        'the old per-player lobby row is still in the markup');
+});
 
 test('no control at all where the operator has not allowed one', () => {
     // A dead control reads as a broken feature. Absent is honest.
@@ -75,61 +109,131 @@ test('no control at all where the operator has not allowed one', () => {
     // attribute, so markup using the attribute would be hidden forever with
     // nothing able to reveal it. That was the first version of this row.
     const panel = opened(null);
-    assert.ok(panel.node('lobby-radar-row').classList.contains('hidden'),
+    assert.ok(panel.node('create-radar-row').classList.contains('hidden'),
         'the radar row was shown on a server that allows no radar');
 });
 
 test('and a control where they have', () => {
     const panel = opened({ defaultOn: false, intervalSeconds: 30 });
-    assert.ok(!panel.node('lobby-radar-row').classList.contains('hidden'),
+    assert.ok(!panel.node('create-radar-row').classList.contains('hidden'),
         'the radar row was hidden on a server that allows one');
 });
 
-test('it starts on the operator default, not on off', () => {
-    const on = opened({ defaultOn: true, intervalSeconds: 30 });
+test('a fresh form starts on the operator default, not on off', () => {
+    const on = opened({ defaultOn: true, intervalSeconds: 30 }, 'none');
     assert.strictEqual(on.node('btn-radar').textContent, 'Radar On',
         'a server defaulting the radar ON opened with it reading Off');
 
-    const off = opened({ defaultOn: false, intervalSeconds: 30 });
+    const off = opened({ defaultOn: false, intervalSeconds: 30 }, 'none');
     assert.strictEqual(off.node('btn-radar').textContent, 'Radar Off');
 });
 
-test('pressing it puts the decision on the wire', () => {
-    const panel = opened({ defaultOn: false, intervalSeconds: 30 });
-    panel.node('btn-radar').onclick();
+test('but a lobby already open shows ITS setting, not the default', () => {
+    /* The form is that match's settings once you are hosting one, so it has
+       to open showing what the match actually is. A host who set the radar
+       off, walked away and came back to a control reading On -- because the
+       server defaults it on -- would turn it on by pressing Apply. */
+    const panel = loadPanel(ROOT);
+    const snap = snapshot({ defaultOn: true, intervalSeconds: 30 }, 'host');
+    snap.matches[0].radar = false;
+    panel.send('open', snap);
+    panel.send('state', snap);
 
-    const sent = panel.posted.filter((p) => p.name === 'setRadar');
-    assert.strictEqual(sent.length, 1, 'nothing was posted');
-    assert.strictEqual(sent[0].body.on, true, 'the toggle posted ' + JSON.stringify(sent[0].body));
+    assert.strictEqual(panel.node('btn-radar').textContent, 'Radar Off',
+        'the form showed the server default over the match\'s own setting');
+
+    // And the other way, so this is reading the match rather than hard-off.
+    const other = loadPanel(ROOT);
+    const lit = snapshot({ defaultOn: false, intervalSeconds: 30 }, 'host');
+    lit.matches[0].radar = true;
+    other.send('open', lit);
+    other.send('state', lit);
+
+    assert.strictEqual(other.node('btn-radar').textContent, 'Radar On',
+        'a match with the radar on opened reading Off');
 });
 
-test('and pressing it again turns it back off', () => {
+test('HOST ONLY -- a fighter who is not the host cannot touch it', () => {
+    const panel = opened({ defaultOn: false, intervalSeconds: 30 }, 'guest');
+    const button = panel.node('btn-radar');
+
+    assert.strictEqual(button.disabled, true,
+        'a non-host was offered a live radar toggle for somebody else\'s match');
+
+    // And pressing it anyway changes nothing, so the guard is the handler's
+    // and not merely the attribute's -- a disabled attribute is a hint to a
+    // browser, not a permission check.
+    button.onclick();
+    assert.strictEqual(panel.node('btn-radar').textContent, 'Radar Off',
+        'a non-host pressing the disabled toggle still flipped it');
+});
+
+test('pressing it posts NOTHING -- it is applied by Create/Apply', () => {
+    /* Deliberate: the arena, the mode and the lives all wait for the button
+       at the bottom of the form, and a radar that committed itself on click
+       would be the one setting that behaved differently. */
     const panel = opened({ defaultOn: false, intervalSeconds: 30 });
     panel.node('btn-radar').onclick();
-    panel.node('btn-radar').onclick();
 
-    const sent = panel.posted.filter((p) => p.name === 'setRadar');
-    assert.strictEqual(sent.length, 2);
-    assert.strictEqual(sent[1].body.on, false, 'the second press did not turn it off');
+    assert.strictEqual(panel.posted.length, 0,
+        'the toggle posted on click: ' + JSON.stringify(panel.posted));
+    assert.strictEqual(panel.node('btn-radar').textContent, 'Radar On',
+        'the press did not flip the control');
+});
+
+test('Apply Changes carries the radar to the server', () => {
+    const panel = opened({ defaultOn: false, intervalSeconds: 30 });
+    panel.node('btn-radar').onclick();
+    panel.fire('create-submit', 'click');
+
+    const sent = panel.posted.filter((p) => p.name === 'updateMatch');
+    assert.strictEqual(sent.length, 1, 'nothing was posted: ' + JSON.stringify(panel.posted));
+    assert.strictEqual(sent[0].body.radar, true,
+        'Apply Changes posted ' + JSON.stringify(sent[0].body));
+});
+
+test('Create Match carries it too, on a host who is in no match yet', () => {
+    const panel = opened({ defaultOn: false, intervalSeconds: 30 }, 'none');
+    panel.node('btn-radar').onclick();
+    panel.fire('create-submit', 'click');
+
+    const sent = panel.posted.filter((p) => p.name === 'createMatch');
+    assert.strictEqual(sent.length, 1, 'nothing was posted: ' + JSON.stringify(panel.posted));
+    assert.strictEqual(sent[0].body.radar, true,
+        'Create Match posted ' + JSON.stringify(sent[0].body));
+});
+
+test('an untouched toggle still sends what the button says', () => {
+    /* The state key starts null so the operator's default applies. Sending
+       that null straight out would mean a host who read "Radar On" and
+       pressed Apply got a match with no radar in it -- the server reads a
+       missing value as "leave it alone". */
+    const panel = opened({ defaultOn: true, intervalSeconds: 30 }, 'none');
+    panel.fire('create-submit', 'click');
+
+    const sent = panel.posted.filter((p) => p.name === 'createMatch');
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0].body.radar, true,
+        'an untouched default-on toggle posted ' + JSON.stringify(sent[0].body));
 });
 
 test('turning OFF a radar the operator defaulted ON is sent, not swallowed', () => {
-    // The state key starts null so the operator's default applies. A player
-    // who then switches it off must produce a real `false` -- not nothing,
-    // which is what a naive falsy check on an untouched value would give.
-    const panel = opened({ defaultOn: true, intervalSeconds: 30 });
+    // The mirror of the above: a real `false`, not nothing, which is what a
+    // naive falsy check on an untouched value would give.
+    const panel = opened({ defaultOn: true, intervalSeconds: 30 }, 'none');
     panel.node('btn-radar').onclick();
+    panel.fire('create-submit', 'click');
 
-    const sent = panel.posted.filter((p) => p.name === 'setRadar');
+    const sent = panel.posted.filter((p) => p.name === 'createMatch');
     assert.strictEqual(sent.length, 1);
-    assert.strictEqual(sent[0].body.on, false,
+    assert.strictEqual(sent[0].body.radar, false,
         'switching off a defaulted-on radar posted ' + JSON.stringify(sent[0].body));
 });
 
-test('the label says how often it sweeps, so the wait is expected', () => {
+test('the hint says how often it sweeps, so the wait is expected', () => {
     const panel = opened({ defaultOn: false, intervalSeconds: 30 });
-    assert.ok(/30 seconds/.test(panel.node('btn-radar').title),
-        'the control does not say how long the gap is: ' + panel.node('btn-radar').title);
+    assert.ok(/30 seconds/.test(panel.node('create-radar-hint').textContent),
+        'the control does not say how long the gap is: ' + panel.node('create-radar-hint').textContent);
 });
 
 console.log('');

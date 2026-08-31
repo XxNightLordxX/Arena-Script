@@ -1075,6 +1075,33 @@ function Arena.ResolveLives(requested)
     return wanted, nil
 end
 
+--- Whether a match runs a radar, resolved from what the host asked for.
+---
+--- A MATCH SETTING, NOT A PERSONAL ONE. It used to be a per-player toggle
+--- in the lobby, which made it a setting each fighter could give themselves
+--- -- so a round was only as dark as its least patient player. It is the
+--- host's now: one decision, taken once, that everybody in that match
+--- fights under.
+---
+--- Unlike ResolveLives this never refuses. There is no out-of-range for a
+--- boolean, and a host who sent one to a server where `allowChoose` is off
+--- is a stale panel rather than a tampered payload -- the control it came
+--- from is not even drawn there. Falling back to the operator's default is
+--- the honest answer to that; an error would be a match that will not open
+--- because of a checkbox nobody can see.
+--- @param requested any
+--- @return boolean radar
+--- @return nil reason -- always; kept so callers read like ResolveLives
+function Arena.ResolveRadar(requested)
+    local radar = (Config.Match or {}).radar
+    if type(radar) ~= 'table' then return false, nil end
+
+    local fallback = radar.defaultOn == true
+    if radar.allowChoose ~= true then return fallback, nil end
+    if requested == true or requested == false then return requested, nil end
+    return fallback, nil
+end
+
 function Arena.ResolveEntryFee(requested)
     if Config.Betting.enabled ~= true then return nil, 'error.betting_disabled' end
 

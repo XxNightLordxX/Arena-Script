@@ -254,7 +254,8 @@ onClient('crimson_arena:server:createMatch', RATE.create, function(src, data)
 
     -- A missing mode or fee is a panel that was never touched; the lobby
     -- falls back to the operator's defaults for both.
-    local matchId, reason = ArenaLobby.Create(src, arenaKey, keyArg(payload.modeKey), intArg(payload.entryFee), intArg(payload.lives))
+    local matchId, reason = ArenaLobby.Create(src, arenaKey, keyArg(payload.modeKey),
+        intArg(payload.entryFee), intArg(payload.lives), boolArg(payload.radar))
     if not matchId then return refuse(src, reason) end
 
     ArenaNotifyKey(src, 'notify.match_created', 'success')
@@ -346,6 +347,10 @@ onClient('crimson_arena:server:updateMatch', RATE.choice, function(src, data)
         arenaKey = keyArg(data.arenaKey),
         modeKey = keyArg(data.modeKey),
         lives = intArg(data.lives),
+        -- boolArg, so anything that is not a real boolean arrives as nil and
+        -- UpdateMatch leaves the setting alone -- rather than a stray string
+        -- reading as `true` and switching a radar on nobody asked for.
+        radar = boolArg(data.radar),
     })
     if not ok then return refuse(src, reason) end
 end)

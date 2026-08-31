@@ -112,9 +112,11 @@
     // ==================================================================
 
     var state = {
-        /* null until the player decides, so the operator default applies
-           until then rather than 'off' pretending to be a choice. */
-        radarOn: null,
+        /* The host's radar choice for the match they are creating or
+           editing. null until they touch it, so the operator default applies
+           until then rather than 'off' pretending to be a choice. Seeded
+           from the match itself once a lobby is open, beside createLives. */
+        createRadar: null,
         open: false,
         config: null,
         player: null,
@@ -678,7 +680,20 @@
         render();
     }
 
-    function setWeaponAmmo(key, ammo) {
+    /* @param quiet -- true to update the draft WITHOUT re-rendering.
+
+       Typing needs it. render() rebuilds the weapon cards from scratch, and
+       the ammo box is one of them -- so a render between keystrokes destroys
+       the element being typed into and takes the focus and the caret with
+       it. That is why the box used to accept exactly one digit before
+       needing another click: it was not the same box any more.
+
+       Safe to skip precisely here: the amount changes nothing else on the
+       screen. The slot counters read which weapons are picked, not how much
+       ammunition they carry, and the box is only drawn on a weapon that is
+       already picked. Everything that DOES change layout -- the preset
+       chips, picking a weapon -- still renders. */
+    function setWeaponAmmo(key, ammo, quiet) {
         if (!canChooseLoadout()) return;
         var index = draftIndexOf(key);
         if (index < 0) {
@@ -690,6 +705,12 @@
         }
         state.draftWeapons[index].ammo = int(ammo, 0);
         state.loadoutDirty = true;
+        if (quiet) {
+            /* The save button still has to notice. It is a static element,
+               so updating it does not disturb anything being typed into. */
+            renderLoadoutSaveRow();
+            return;
+        }
         render();
     }
 
@@ -969,8 +990,13 @@
             state.createArena = editable.arenaKey || state.createArena;
             state.createMode = editable.modeKey || state.createMode;
             state.createLives = int(editable.lives, int(state.createLives, 1));
+            state.createRadar = editable.radar === true;
         } else if (!editable) {
             state.seededFromMatch = null;
+            /* Back to the operator default for the NEXT match rather than
+               carrying the last one's setting into a form for a different
+               match entirely. */
+            state.createRadar = null;
         }
 
         /* Joining a match is the moment the lobby screen becomes the
@@ -1322,6 +1348,12 @@
                         ? 'Only you can start the round.'
                         : 'Anyone in the lobby can start the round.');
         }
+
+        /* Last, because it needs `blocked`. A radar button that still looks
+           live to somebody who cannot submit this form is the same lie as a
+           control on a server that has no radar -- worse, because pressing
+           it appears to work right up until nothing happens. */
+        renderRadarToggle(blocked);
     }
 
     /* Options are rebuilt from config every render and the selection is
@@ -1550,13 +1582,23 @@
             : lead + 'Start Match Now is unavailable: ' + blocked;
     }
 
-    /* THE RADAR TOGGLE.
+    /* THE RADAR, A MATCH SETTING THE HOST PICKS.
 
-       Kept in the panel's own state rather than fetched back from the
-       server: it is a display setting on this player's own map, so the
-       server neither stores it nor has an opinion about it. `null` means
-       untouched, which is how the operator's default keeps applying until
-       the player actually decides something. */
+       This lived in the lobby and belonged to each player: their own toggle,
+       answered on their own client, never sent anywhere. That made a round
+       only as dark as its least patient fighter -- anyone who wanted enemies
+       on their map simply switched them on for themselves, and the sweep
+       interval the setting exists for was a formality.
+
+       So it moved up here beside Lives Each, into the box that creates and
+       edits a match, and it travels with the rest of the match rules. That
+       box is only ever an editor for a match you host, which is what makes
+       the setting host-only without a second permission check to keep in
+       step with the first.
+
+       Nothing is posted on the click. Like the arena, the mode and the
+       lives, it is applied by Create Match or Apply Changes -- so a host can
+       change their mind twice before committing to either. */
     function radarSettings() {
         return (cfg().match || {}).radar || null;
     }
@@ -1564,12 +1606,17 @@
     function radarIsOn() {
         var settings = radarSettings();
         if (!settings) return false;
-        if (state.radarOn === null || state.radarOn === undefined) return settings.defaultOn === true;
-        return state.radarOn === true;
+        if (state.createRadar === null || state.createRadar === undefined) {
+            return settings.defaultOn === true;
+        }
+        return state.createRadar === true;
     }
 
-    function renderRadarToggle() {
-        var host = byId('lobby-radar-row');
+    /* @param blocked string|null -- why this form cannot be submitted, if
+       it cannot. Anything but null and the toggle is dead: whoever is
+       looking at it is not the host of an open lobby. */
+    function renderRadarToggle(blocked) {
+        var host = byId('create-radar-row');
         if (!has(host)) return;
 
         var settings = radarSettings();
@@ -1582,20 +1629,30 @@
         if (!has(button)) return;
 
         var on = radarIsOn();
+        var every = int(settings.intervalSeconds, 30);
+        var editable = blocked === null || blocked === undefined;
+
         button.textContent = on ? 'Radar On' : 'Radar Off';
         button.classList.toggle('btn-primary', on);
-        button.title = on
-            ? 'Sweeping every ' + int(settings.intervalSeconds, 30) + ' seconds. You see where everyone WAS, not where they are.'
-            : 'Off. Turn it on for a sweep every ' + int(settings.intervalSeconds, 30) + ' seconds showing where everyone was.';
+        button.disabled = !editable;
+        button.title = editable ? '' : blocked;
         button.onclick = function () {
-            state.radarOn = !radarIsOn();
-            post('setRadar', { on: state.radarOn });
-            renderRadarToggle();
+            if (!editable) return;
+            state.createRadar = !radarIsOn();
+            render();
         };
+
+        var hint = byId('create-radar-hint');
+        if (has(hint)) {
+            hint.textContent = on
+                ? 'Every fighter gets a sweep every ' + every + ' seconds: the other side flashes '
+                    + 'onto the map for a moment and goes dark again. Your own team is always on the map.'
+                : 'Off. Nobody sees the other side on the map at all — only their own team. '
+                    + 'Turn it on for a sweep every ' + every + ' seconds.';
+        }
     }
 
     function renderLobbyActions(match) {
-        renderRadarToggle();
         var inMatch = playerMatchId() === match.id;
         var isHost = inMatch && player().isHost === true;
         var counting = match.state === 'countdown';
@@ -2127,8 +2184,15 @@
                 box.addEventListener('input', function (event) {
                     event.stopPropagation();
                     var wanted = clampInt(event.target.value, 0, int(ammo.max, 0));
-                    setWeaponAmmo(weapon.key, wanted);
+                    /* Quiet: see setWeaponAmmo. Re-rendering here is what
+                       made this box accept one digit at a time. */
+                    setWeaponAmmo(weapon.key, wanted, true);
                 });
+
+                /* Clicking away is the end of typing, so the panel catches
+                   up then -- the chips re-light against whatever was typed,
+                   and a value the box clamped is written back visibly. */
+                box.addEventListener('blur', function () { render(); });
 
                 /* ENTER LOCKS IT IN.
                    Typing already updates the draft, so Enter is not what
@@ -3119,7 +3183,11 @@
             post('updateMatch', {
                 arenaKey: state.createArena,
                 modeKey: state.createMode,
-                lives: int(state.createLives, 1)
+                lives: int(state.createLives, 1),
+                /* radarIsOn(), not state.createRadar: an untouched toggle is
+                   null, and null on the wire means "leave it alone" -- which
+                   is not what the host sees on a button reading Radar Off. */
+                radar: radarIsOn()
             });
             return;
         }
@@ -3128,7 +3196,8 @@
             arenaKey: state.createArena,
             modeKey: state.createMode,
             entryFee: int(state.createFee, 0),
-            lives: int(state.createLives, 1)
+            lives: int(state.createLives, 1),
+            radar: radarIsOn()
         });
     });
 

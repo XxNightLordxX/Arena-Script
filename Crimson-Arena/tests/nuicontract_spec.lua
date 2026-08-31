@@ -71,10 +71,20 @@ local function panelPayload(name)
 end
 
 --- Field names in an object literal, ignoring nested ones.
+---
+--- COMMENTS ARE STRIPPED FIRST, and that is not tidiness. A field preceded
+--- by a `/* ... */` note does not match the pattern below -- the comma and
+--- the field name are no longer adjacent -- so the field is simply not seen,
+--- and every test built on this list passes without checking it.
+---
+--- That is exactly the failure this whole file exists to catch, one level
+--- up: a guard that reports success because it never looked. It happened
+--- here, to `radar`, the first time a payload was given an explanatory note.
 local function fieldsOf(literal)
     local names = {}
     if not literal then return names end
-    for field in literal:gmatch("[{,]%s*([%a_][%w_]*)%s*:") do names[#names + 1] = field end
+    local bare = literal:gsub('/%*.-%*/', ' '):gsub('//[^\n]*', ' ')
+    for field in bare:gmatch("[{,]%s*([%a_][%w_]*)%s*:") do names[#names + 1] = field end
     return names
 end
 
@@ -147,6 +157,35 @@ t.test('updateMatch exists, so Apply changes reaches the server', function()
     t.contains(body, 'crimson_arena:server:updateMatch',
         'updateMatch is registered but does not trigger the server event the server is listening for')
     t.contains(body, 'data.lives', 'the host can edit a lobby but not the thing they most want to edit')
+end)
+
+t.test('both payloads forward the host\'s radar choice', function()
+    -- The radar stopped being a per-player display toggle and became a rule
+    -- of the match, set by the host in the same box as the arena and the
+    -- lives. That put it on exactly the seam this file watches: a name left
+    -- out of the relay would leave every match running the operator default,
+    -- whatever the host's own panel showed them.
+    for _, name in ipairs({ 'createMatch', 'updateMatch' }) do
+        local body = relayBody(name)
+        t.isNotNil(body, ('client/ui.lua does not register %s'):format(name))
+        t.contains(body, 'data.radar',
+            ('%s does not forward the radar, so the host\'s choice never leaves their own client'):format(name))
+    end
+end)
+
+t.test('and the payload extractor actually SEES the radar field', function()
+    -- Guards the guard. The generic per-field test above is only as good as
+    -- fieldsOf, and fieldsOf silently missed `radar` on updateMatch for as
+    -- long as there was a comment above it -- reporting a pass while
+    -- checking nothing.
+    for _, name in ipairs({ 'createMatch', 'updateMatch' }) do
+        local found = false
+        for _, field in ipairs(fieldsOf(panelPayload(name))) do
+            if field == 'radar' then found = true end
+        end
+        t.isTrue(found,
+            ('fieldsOf cannot see the radar field in the %s payload, so the test that forwards it proves nothing'):format(name))
+    end
 end)
 
 t.test('and updateMatch does NOT send an entry fee, which the server refuses', function()

@@ -452,10 +452,11 @@ local function snapshotConfig()
                     max = math.max(minimum, Arena.ToInt(lives.max) or minimum),
                 }
             end)(),
-            -- The radar toggle: whether to draw it at all, and where it
-            -- starts for somebody who has never touched it. The preference
-            -- itself never comes here -- it is a display setting the client
-            -- owns, and the server has no opinion about it.
+            -- The radar control: whether to draw it at all, and where it
+            -- starts for a host who has not touched it. What a particular
+            -- match settled on is not here -- it rides on that match, as
+            -- `radar` beside `lives`, because it is a rule of that round and
+            -- not a property of the server.
             radar = (function()
                 local block = Config.Match.radar
                 if type(block) ~= 'table' or block.allowChoose == false then return nil end
@@ -559,6 +560,10 @@ local function snapshotMatches()
             -- looked identical whatever was picked, so the only way to find
             -- out was to die three times and count.
             lives = match.lives,
+            -- On the wire for the same reason `lives` is: the panel draws
+            -- the host's own control from it, and every other player needs
+            -- to know whether the round they are joining has a radar in it.
+            radar = match.radar == true,
             pot = ArenaBetting.GetPot(match.id),
             playerCount = #roster,
             teamCounts = Arena.CountTeams(roster),
@@ -721,7 +726,7 @@ end
 --- @param entryFee any
 --- @return string|nil matchId
 --- @return string|nil reasonKey
-function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives)
+function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar)
     local host = tonumber(src)
     if not host then return nil, 'error.invalid_request' end
     if not ArenaCanCreate(host) then return nil, 'error.no_permission' end
@@ -756,6 +761,11 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives)
     local resolvedLives, livesReason = Arena.ResolveLives(lives)
     if not resolvedLives then return nil, livesReason end
 
+    -- Never refuses (see Arena.ResolveRadar), so there is nothing to check
+    -- here -- a host on a server that does not offer the choice simply gets
+    -- the operator's default written onto their match.
+    local resolvedRadar = Arena.ResolveRadar(radar)
+
     local id = ArenaNewId()
     local hostName = ArenaPlayerName(host)
 
@@ -773,6 +783,10 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives)
         -- joins would give a late joiner a different number to everybody
         -- else the moment an operator edited the config mid-session.
         lives = resolvedLives,
+        -- THE HOST'S, NOT EACH PLAYER'S. Stored beside `lives` because it is
+        -- the same kind of thing: a rule of this match, chosen once, that
+        -- everybody in it fights under.
+        radar = resolvedRadar,
         createdAt = os.time(),
         -- 0, not nil, until server/match.lua schedules them: a nil field
         -- would simply be absent from the snapshot the panel receives.
@@ -1109,7 +1123,7 @@ end
 ---   Anything at all once the round has STARTED. A match being fought is not
 ---   a form.
 --- @param src any
---- @param data any -- { arenaKey?, modeKey?, lives? }
+--- @param data any -- { arenaKey?, modeKey?, lives?, radar? }
 --- @return boolean ok
 --- @return string|nil reasonKey
 function ArenaLobby.UpdateMatch(src, data)
@@ -1125,6 +1139,7 @@ function ArenaLobby.UpdateMatch(src, data)
     -- Everything is validated BEFORE anything is written, so a request that
     -- is half legal does not leave the match half changed.
     local arenaKey, modeKey, lives = match.arenaKey, match.modeKey, match.lives
+    local radar = match.radar == true
 
     if data.arenaKey ~= nil then
         local arena = Arena.GetArenaByKey(data.arenaKey)
@@ -1144,6 +1159,10 @@ function ArenaLobby.UpdateMatch(src, data)
         lives = resolved
     end
 
+    if data.radar ~= nil then
+        radar = Arena.ResolveRadar(data.radar)
+    end
+
     -- A mode change can strand players on a team the new mode does not have,
     -- or leave them teamless in one that needs sides. Cleared rather than
     -- guessed at: the panel puts the team picker back in front of them, and
@@ -1153,6 +1172,7 @@ function ArenaLobby.UpdateMatch(src, data)
     match.arenaKey = arenaKey
     match.modeKey = modeKey
     match.lives = lives
+    match.radar = radar
     match.label = locale('match.label', match.hostName,
         (Arena.GetModeByKey(modeKey) or {}).label or modeKey)
 

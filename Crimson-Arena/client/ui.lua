@@ -215,6 +215,7 @@ register('createMatch', function(data)
         modeKey = data.modeKey,
         entryFee = data.entryFee,
         lives = data.lives,
+        radar = data.radar,
     })
 end)
 
@@ -236,6 +237,7 @@ register('updateMatch', function(data)
         arenaKey = data.arenaKey,
         modeKey = data.modeKey,
         lives = data.lives,
+        radar = data.radar,
     })
 end)
 
@@ -275,17 +277,16 @@ register('cancelMatch', function()
     TriggerServerEvent('crimson_arena:server:cancelMatch')
 end)
 
---- THE RADAR TOGGLE, and the one callback here that never reaches the
---- server.
+--- THE RADAR IS NOT RELAYED FROM HERE ANY MORE, on purpose.
 ---
---- It changes nothing anybody else can see -- it is a display setting on
---- this player's own map -- so putting it on the wire would be a round trip
---- for a preference the server has no opinion about and no use for.
-register('setRadar', function(data)
-    if type(ArenaMatch) == 'table' and type(ArenaMatch.SetRadar) == 'function' then
-        ArenaMatch.SetRadar(data.on == true)
-    end
-end)
+--- There was a `setRadar` callback in this spot: the panel's own toggle,
+--- answered on this side and never put on the wire, because a display
+--- setting on one player's map is nothing the server has an opinion about.
+---
+--- The setting is the host's now, so it travels the way every other match
+--- rule travels -- `createMatch` and `updateMatch` above carry it up, and
+--- `enterArena` carries it back down to ArenaMatch.SetRadar. A player with
+--- no match has no radar to set, which is why nothing here answers for one.
 
 register('spectate', function(data)
     TriggerServerEvent('crimson_arena:server:spectateMatch', { matchId = data.matchId })

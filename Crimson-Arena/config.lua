@@ -1078,6 +1078,20 @@ Config.Match = {
     -- more players than spawn points never stack inside each other.
     spawnScatterRadius = 2.5,
 
+    -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS PUT DOWN, in metres.
+    --
+    -- Insurance against a spawn Z written slightly low, not a parachute
+    -- drop. The world takes a few frames to stream in around a player who
+    -- has just been teleported, and until it does there is nothing under
+    -- them -- which is how a spawn point a fraction below the surface puts
+    -- somebody under the map instead of on it.
+    --
+    -- The player is held still until the ground exists and is then placed on
+    -- the surface the game reports, so this only has to cover the gap. Raise
+    -- it if you still land inside geometry; there is no need to make it
+    -- large.
+    spawnHeightOffset = 1.0,
+
     -- Eliminated players watch the rest of the match instead of being sent
     -- straight back to the lobby.
     spectateOnElimination = true,

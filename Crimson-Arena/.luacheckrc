@@ -164,7 +164,7 @@ files['client/'] = {
         'AddEventHandler',
         'CreateThread',
         'GetCurrentResourceName',
-        'GetGameTimer',
+        'GetGameTimer', 'GetGroundZFor_3dCoord',
         'RegisterCommand',
         'RegisterNetEvent',
         'TriggerEvent',

@@ -224,8 +224,23 @@ end
 --- @param y number
 --- @param z number
 --- @param heading number
-local function placeAt(ped, x, y, z, heading)
-    SetEntityCoordsNoOffset(ped, x, y, z, false, false, false)
+--- @param leaveFrozen boolean -- the freeze state to leave the ped in
+local function placeAt(ped, x, y, z, heading, leaveFrozen)
+    -- LIFTED, AND FROZEN, BECAUSE THE GROUND IS NOT THERE YET.
+    --
+    -- This used to drop the ped on the exact spawn Z and only then wait for
+    -- collision -- so for the frames the world took to stream in there was
+    -- nothing under them, gravity applied, and they arrived below the map.
+    -- Entry got away with it because its caller froze the ped first; the
+    -- respawn path did not, which is why it bit hardest mid-round.
+    --
+    -- So: freeze first, place slightly high, and let go only once there is
+    -- something to stand on. The lift is small on purpose -- it is insurance
+    -- against a spawn Z written a few centimetres low, not a parachute drop.
+    local lift = tonumber(Config.Match.spawnHeightOffset) or 1.0
+
+    FreezeEntityPosition(ped, true)
+    SetEntityCoordsNoOffset(ped, x, y, z + lift, false, false, false)
     SetEntityHeading(ped, heading)
 
     RequestCollisionAtCoord(x, y, z)
@@ -234,6 +249,21 @@ local function placeAt(ped, x, y, z, heading)
         RequestCollisionAtCoord(x, y, z)
         Wait(0)
     end
+
+    -- The ground exists now, so ask where it actually is rather than trusting
+    -- the number in config. An operator who noted a spawn point while
+    -- standing on a crate, or off by a metre either way, gets put on the
+    -- surface regardless -- and a spawn Z that is WRONG stops being a hole
+    -- in the map and becomes a small step.
+    local found, groundZ = GetGroundZFor_3dCoord(x, y, z + lift, false)
+    if found and groundZ then
+        SetEntityCoordsNoOffset(ped, x, y, groundZ + 0.05, false, false, false)
+    end
+
+    -- Restored explicitly rather than assumed: entry wants the ped held still
+    -- for the countdown, a respawn wants it moving immediately, and guessing
+    -- wrong either strands a fighter or lets them run before the round.
+    FreezeEntityPosition(ped, leaveFrozen == true)
 end
 
 -- ======================================================================
@@ -598,8 +628,12 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- arena, and a shot fired during it is still a shot fired.
     ArenaDispatch.Enter(data.matchId)
 
-    FreezeEntityPosition(ped, true)
-    placeAt(ped, scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius))
+    -- Captured into locals first. scatter() returns FOUR values, and a call
+    -- in the middle of an argument list is truncated to one -- so passing it
+    -- inline alongside the freeze flag would hand placeAt an x and nothing
+    -- else.
+    local sx, sy, sz, sheading = scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
+    placeAt(ped, sx, sy, sz, sheading, true)
 
     -- placeAt waits for the ground to stream in, so this handler YIELDS for
     -- up to five seconds and an exitArena can be delivered inside that
@@ -653,7 +687,7 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     -- below sets the position, so this only restores the ped's properties.
     ArenaDispatch.ReleaseDeadState(ped)
     ClearPedBloodDamage(ped)
-    placeAt(ped, x, y, z, heading)
+    placeAt(ped, x, y, z, heading, false)
 
     -- The same yield the entry handler guards: a round that ended while this
     -- player was being put back on their feet has already restored their own

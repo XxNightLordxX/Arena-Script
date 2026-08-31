@@ -172,6 +172,40 @@ local function readyCount(match)
     return total
 end
 
+--- Out of the round but still on the roster.
+---
+--- An eliminated fighter keeps their row -- the results board ranks off it
+--- -- so "has a row in match.players" and "is still in the fight" are two
+--- different questions. Somebody lying down waiting out respawnDelaySeconds
+--- is not standing either, but they still have lives and are still in it.
+--- @param match table
+--- @param src number
+--- @return boolean
+local function isEliminated(match, src)
+    local player = match.players[src]
+    if not player then return false end
+    return player.alive ~= true and (Arena.ToInt(player.lives) or 0) <= 0
+end
+
+--- Whether ArenaMatch.Start has already put this match's fighters in the
+--- arena.
+---
+--- `state` cannot answer that, which is the whole reason this exists:
+--- ArenaMatch.Begin uses 'countdown' for the lobby countdown, where nobody
+--- has been moved anywhere, and ArenaMatch.Start uses the SAME name for the
+--- frozen start countdown, after teleporting the room in -- only goLive
+--- promotes it to 'live'. The dispatch flag is a record of what has actually
+--- been DONE to a player rather than of what the match calls itself, and
+--- server/match.lua raises it on the same choke point that teleports them.
+--- @param match table
+--- @return boolean
+local function playersArePlaced(match)
+    for src in pairs(match.players) do
+        if ArenaDispatch.IsPlayerInArena(src) then return true end
+    end
+    return false
+end
+
 --- The "not right now" gates from Config.Match. They read qbx's own
 --- metadata rather than the ped, because that is what the rest of the
 --- server agrees a dead or cuffed player is.
@@ -717,6 +751,17 @@ function ArenaLobby.Leave(src, reasonKey)
     playerIndex[target] = nil
     removeFromOrder(match, target)
 
+    -- An eliminated fighter sits in match.players AND in match.spectators --
+    -- AddSpectator admits them so the camera they were handed survives the
+    -- next broadcast -- so walking out has to detach both. server/match.lua's
+    -- sweep puts anyone the registry still calls a spectator into that
+    -- match's routing bucket, and a leftover entry would keep pulling this
+    -- player back into an instance of a round they have left.
+    if spectatorIndex[target] == match.id then
+        spectatorIndex[target] = nil
+        match.spectators[target] = nil
+    end
+
     -- Join order is the fairest claim on the room: whoever has been waiting
     -- longest takes it over.
     if match.hostSource == target then
@@ -756,6 +801,31 @@ function ArenaLobby.Destroy(matchId, reasonKey)
     ArenaBetting.Clear(match.id)
 
     for src in pairs(match.players) do
+        -- BELT AND BRACES, and it belongs here rather than at the call
+        -- sites because this is the ONE teardown every path funnels through
+        -- and the step that makes the match unreachable: after this loop
+        -- there is no record left of who was in it, so a caller that gets
+        -- here without having sent its players home has stranded them for
+        -- good -- left standing in the arena holding the issued loadout, with
+        -- their own weapons, armour and health unrecoverable and a flag
+        -- suppressing their police and medical alerts for the rest of the
+        -- session. End, Abort and RemovePlayer all go through
+        -- server/match.lua's exit choke point first, which clears the flag,
+        -- so on every path that exists today this does nothing.
+        --
+        -- THE FLAG IS THE TEST, not match.state: the flag records who was
+        -- actually teleported in, while 'countdown' names both the lobby
+        -- countdown and the frozen one Start leaves behind after moving
+        -- everybody.
+        if ArenaDispatch.IsPlayerInArena(src) then
+            ArenaDispatch.Clear(src)
+            ArenaDispatch.ExitBucket(src)
+            -- No returnCoords: the client falls back to its own copy of
+            -- Config.Lobby.returnCoords, which is the value every other exit
+            -- path sends it anyway.
+            TriggerClientEvent('crimson_arena:client:exitArena', src, {})
+        end
+
         playerIndex[src] = nil
         ArenaNotifyKey(src, notice, 'warning')
     end
@@ -801,6 +871,15 @@ function ArenaLobby.Cancel(src)
     if match.state ~= 'lobby' and match.state ~= 'countdown' then
         return false, 'error.match_in_progress'
     end
+
+    -- ...and the state alone cannot carry that intent, because 'countdown'
+    -- names two phases and only the first of them is a lobby. Once
+    -- ArenaMatch.Start has teleported the room in, a cancel used to run
+    -- Destroy over players standing in an arena whose record then stopped
+    -- existing: nobody was sent home, nobody's own weapons came back, and
+    -- every one of them kept a dispatch flag they had no way to clear. So ask
+    -- what has been done to them rather than what the match calls itself.
+    if playersArePlaced(match) then return false, 'error.match_in_progress' end
 
     -- THE STAKES. With refundOnCancel on -- the default -- nothing happens
     -- here and Destroy hands every one of them straight back. With it off
@@ -948,7 +1027,18 @@ function ArenaLobby.AddSpectator(src, matchId)
 
     local match = ArenaLobby.Get(matchId)
     if not match then return false, 'error.match_not_found' end
-    if playerIndex[target] then return false, 'error.already_in_match' end
+
+    -- WHAT THIS REFUSES IS A FIGHTER, not merely a row in match.players. An
+    -- eliminated player keeps their row -- the results board ranks off it --
+    -- and they are exactly who the spectator camera exists for, so reading
+    -- "already in a match" off playerIndex alone refused the one case
+    -- server/match.lua calls this for. Watching any OTHER match is still
+    -- refused whether they are out or not: being knocked out of your own
+    -- round is not a pass into somebody else's.
+    local attachedTo = playerIndex[target]
+    if attachedTo and (attachedTo ~= match.id or not isEliminated(match, target)) then
+        return false, 'error.already_in_match'
+    end
 
     ArenaLobby.RemoveSpectator(target)      -- one match at a time
     match.spectators[target] = true

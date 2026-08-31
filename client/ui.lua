@@ -24,6 +24,13 @@ local isOpen = false
 --- interaction twice gets two panels open and one stale focus grab.
 local isOpening = false
 
+--- Bumped by every Close(). Open() reads it before it yields and abandons
+--- the open if it has moved since -- a close that lands while the snapshot
+--- is still in flight would otherwise be undone by the open it could not
+--- know about, which on the enterArena path leaves the player holding NUI
+--- focus in a live round: the exact failure closing on entry exists to stop.
+local closeToken = 0
+
 --- Sends the raw `{ action, data }` envelope the panel listens for. Every
 --- other Send* helper funnels through here so the shape is defined once.
 --- @param action string
@@ -72,9 +79,11 @@ function ArenaUI.Open()
     if isOpen or isOpening then return end
     isOpening = true
 
+    local token = closeToken
     local state = lib.callback.await('crimson_arena:server:getState', false)
 
     isOpening = false
+    if token ~= closeToken then return end
     if not state then
         ArenaUI.Notify(locale('error.state_unavailable'), 'error')
         return
@@ -89,9 +98,24 @@ end
 --- releasing focus we do not hold costs nothing and failing to release
 --- focus we do hold costs the player their character.
 function ArenaUI.Close()
+    -- Nothing to say if it was not open. Without this guard every ESC press
+    -- outside the arena, and every defensive Close() on a path that may or
+    -- may not have opened anything, would send the server a message.
+    local wasOpen = isOpen
+
     isOpen = false
+    closeToken = closeToken + 1
     ArenaUI.Send('close')
     SetNuiFocus(false, false)
+
+    -- The server pushes a fresh snapshot to everyone it believes has the
+    -- panel up, on every ready toggle, join and team switch in any lobby. It
+    -- learns a panel OPENED from the state request; until this line it had no
+    -- way to learn one closed, so a player who opened the menu once kept
+    -- receiving those pushes for the rest of their session.
+    if wasOpen then
+        TriggerServerEvent('crimson_arena:server:panelClosed')
+    end
 end
 
 -- ======================================================================
@@ -129,9 +153,13 @@ function ArenaUI.Countdown(seconds, label)
     ArenaUI.Send('countdown', { seconds = seconds, label = label })
 end
 
---- End-of-match scoreboard.
+--- End-of-match scoreboard. Drawn over gameplay rather than inside the
+--- panel: it arrives as the player is teleported home with the panel already
+--- closed, and taking NUI focus back to show it would take their controls
+--- away at the moment they get them back.
 --- @param results table
 function ArenaUI.Results(results)
+    if type(results) ~= 'table' then return end
     ArenaUI.Send('results', { results = results })
 end
 
@@ -257,6 +285,14 @@ end)
 RegisterNetEvent('crimson_arena:client:countdown', function(data)
     if type(data) ~= 'table' then return end
     ArenaUI.Countdown(data.seconds, data.label)
+end)
+
+RegisterNetEvent('crimson_arena:client:results', function(data)
+    if type(data) ~= 'table' then return end
+    -- The board itself, or an envelope carrying it under `results`. Both are
+    -- read because this is the one payload built on the server and drawn on
+    -- the page with no shared code between the two ends to keep them agreed.
+    ArenaUI.Results(type(data.results) == 'table' and data.results or data)
 end)
 
 -- The panel dies with the resource, but focus does not: a restart with the

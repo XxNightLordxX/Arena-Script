@@ -51,8 +51,16 @@ end
 -- NOTIFICATIONS
 -- ======================================================================
 
---- ox_lib toast, always titled Config.NotifyTitle so a player can tell an
---- arena message from every other resource's.
+--- One player-visible message, handed to client/ui.lua to place.
+---
+--- SENT AS THIS RESOURCE'S OWN EVENT rather than straight to ox_lib because
+--- WHERE it lands is a client-side question: ArenaUI.Notify puts it on the
+--- panel's toast rail while the panel is up and falls through to ox_lib when
+--- it is not. Triggering 'ox_lib:notify' from here answers that question for
+--- it -- and answers it wrong for every refusal a player triggers from
+--- inside the panel, which is most of them, since ox_lib draws its own toast
+--- underneath the panel's full-screen scrim. The title comes back on the
+--- ox_lib path in ArenaUI.Notify, so an arena message still names itself.
 ---
 --- A nil, zero or negative source is a bug further up. TriggerClientEvent
 --- would take it without complaint and the message would simply never
@@ -68,8 +76,7 @@ function ArenaNotify(src, description, notifyType)
         return false
     end
 
-    TriggerClientEvent('ox_lib:notify', target, {
-        title = Config.NotifyTitle,
+    TriggerClientEvent('crimson_arena:client:notify', target, {
         description = tostring(description or ''),
         type = notifyType or 'info',
     })

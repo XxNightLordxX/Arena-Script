@@ -493,41 +493,50 @@ end)
 -- ======================================================================
 
 t.test('PickSpawn hands out spawn points round-robin and wraps past the end', function()
-    local spawns = Config.Arenas.warehouse.spawns
-    t.equals(#spawns, 4)
+    -- Counts are DERIVED, never written down here. An operator adding a spawn
+    -- point to a shipped arena -- which this resource actively invites -- must
+    -- not turn a spec red, and the round-robin is the behaviour under test,
+    -- not how many points happen to be in the config today.
+    local spawns = Config.Arenas.airfield.spawns
+    local count = #spawns
+    t.isTrue(count >= 2, 'the round-robin cannot be shown with fewer than two spawn points')
 
-    for index = 1, #spawns do
-        t.equals(Arena.PickSpawn('warehouse', nil, index), spawns[index], 'index ' .. index)
+    for index = 1, count do
+        t.equals(Arena.PickSpawn('airfield', nil, index), spawns[index], 'index ' .. index)
     end
-    -- Twenty players, four spawn points: the fifth player starts the list over.
-    t.equals(Arena.PickSpawn('warehouse', nil, 5), spawns[1])
-    t.equals(Arena.PickSpawn('warehouse', nil, 6), spawns[2])
-    t.equals(Arena.PickSpawn('warehouse', nil, 9), spawns[1])
-    t.equals(Arena.PickSpawn('warehouse', nil, 400), spawns[4])
+    -- More players than spawn points: the list starts over rather than running out.
+    t.equals(Arena.PickSpawn('airfield', nil, count + 1), spawns[1])
+    t.equals(Arena.PickSpawn('airfield', nil, count + 2), spawns[2])
+    t.equals(Arena.PickSpawn('airfield', nil, (count * 2) + 1), spawns[1])
+    -- A number no lobby will ever reach still lands somewhere real.
+    t.equals(Arena.PickSpawn('airfield', nil, (count * 100)), spawns[count])
 end)
 
 t.test('PickSpawn uses a team own spawn list, and wraps that too', function()
-    local crimson = Config.Arenas.warehouse.teamSpawns.crimson
-    t.equals(#crimson, 2)
-    t.equals(Arena.PickSpawn('warehouse', 'crimson', 1), crimson[1])
-    t.equals(Arena.PickSpawn('warehouse', 'crimson', 2), crimson[2])
-    t.equals(Arena.PickSpawn('warehouse', 'crimson', 3), crimson[1])
+    local crimson = Config.Arenas.airfield.teamSpawns.crimson
+    local count = #crimson
+    t.isTrue(count >= 2, 'a team needs at least two spawn points to show the wrap')
+
+    for index = 1, count do
+        t.equals(Arena.PickSpawn('airfield', 'crimson', index), crimson[index], 'index ' .. index)
+    end
+    t.equals(Arena.PickSpawn('airfield', 'crimson', count + 1), crimson[1], 'the team list wraps too')
 end)
 
 t.test('PickSpawn falls back from an empty or missing teamSpawns to the shared list', function()
-    local spawns = Config.Arenas.warehouse.spawns
+    local spawns = Config.Arenas.airfield.spawns
     -- 'bone' ships disabled and has no spawns anywhere: this is what an
     -- operator enabling a third team gets before they edit any arena.
-    t.equals(Arena.PickSpawn('warehouse', 'bone', 1), spawns[1])
-    t.equals(Arena.PickSpawn('warehouse', 'bone', 5), spawns[1])
+    t.equals(Arena.PickSpawn('airfield', 'bone', 1), spawns[1])
+    t.equals(Arena.PickSpawn('airfield', 'bone', #spawns + 1), spawns[1])
 
-    local arena, config = tweaked(function(c) c.Arenas.warehouse.teamSpawns.crimson = {} end)
-    t.equals(arena.PickSpawn('warehouse', 'crimson', 1), config.Arenas.warehouse.spawns[1])
-    t.equals(arena.PickSpawn('warehouse', 'crimson', 2), config.Arenas.warehouse.spawns[2])
+    local arena, config = tweaked(function(c) c.Arenas.airfield.teamSpawns.crimson = {} end)
+    t.equals(arena.PickSpawn('airfield', 'crimson', 1), config.Arenas.airfield.spawns[1])
+    t.equals(arena.PickSpawn('airfield', 'crimson', 2), config.Arenas.airfield.spawns[2])
 
     -- A teamSpawns table that is not a table is worth no more than a missing one.
-    local broken, brokenConfig = tweaked(function(c) c.Arenas.warehouse.teamSpawns = 'nope' end)
-    t.equals(broken.PickSpawn('warehouse', 'crimson', 2), brokenConfig.Arenas.warehouse.spawns[2])
+    local broken, brokenConfig = tweaked(function(c) c.Arenas.airfield.teamSpawns = 'nope' end)
+    t.equals(broken.PickSpawn('airfield', 'crimson', 2), brokenConfig.Arenas.airfield.spawns[2])
 end)
 
 t.test('PickSpawn returns nil for an unknown arena', function()
@@ -539,34 +548,34 @@ t.test('PickSpawn returns nil for an unknown arena', function()
 
     -- A disabled arena is unknown as far as everything outside config is
     -- concerned, spawn points or not.
-    local arena = tweaked(function(config) config.Arenas.warehouse.enabled = false end)
-    t.isNil(arena.PickSpawn('warehouse', nil, 1))
+    local arena = tweaked(function(config) config.Arenas.airfield.enabled = false end)
+    t.isNil(arena.PickSpawn('airfield', nil, 1))
 end)
 
 t.test('PickSpawn returns nil for an arena with nowhere to land', function()
     local emptied = tweaked(function(config)
-        config.Arenas.warehouse.spawns = {}
-        config.Arenas.warehouse.teamSpawns = nil
+        config.Arenas.airfield.spawns = {}
+        config.Arenas.airfield.teamSpawns = nil
     end)
-    t.isNil(emptied.PickSpawn('warehouse', nil, 1))
-    t.isNil(emptied.PickSpawn('warehouse', 'crimson', 1))
+    t.isNil(emptied.PickSpawn('airfield', nil, 1))
+    t.isNil(emptied.PickSpawn('airfield', 'crimson', 1))
 
     local removed = tweaked(function(config)
-        config.Arenas.warehouse.spawns = nil
-        config.Arenas.warehouse.teamSpawns = nil
+        config.Arenas.airfield.spawns = nil
+        config.Arenas.airfield.teamSpawns = nil
     end)
-    t.isNil(removed.PickSpawn('warehouse', nil, 1))
+    t.isNil(removed.PickSpawn('airfield', nil, 1))
 end)
 
 t.test('PickSpawn puts a junk index on the first spawn rather than nowhere', function()
-    local spawns = Config.Arenas.warehouse.spawns
-    t.equals(Arena.PickSpawn('warehouse', nil, 0), spawns[1])
-    t.equals(Arena.PickSpawn('warehouse', nil, -3), spawns[1])
-    t.equals(Arena.PickSpawn('warehouse', nil, nil), spawns[1])
-    t.equals(Arena.PickSpawn('warehouse', nil, 'first'), spawns[1])
-    t.equals(Arena.PickSpawn('warehouse', nil, {}), spawns[1])
-    t.equals(Arena.PickSpawn('warehouse', nil, '3'), spawns[3])
-    t.equals(Arena.PickSpawn('warehouse', nil, 2.9), spawns[2])
+    local spawns = Config.Arenas.airfield.spawns
+    t.equals(Arena.PickSpawn('airfield', nil, 0), spawns[1])
+    t.equals(Arena.PickSpawn('airfield', nil, -3), spawns[1])
+    t.equals(Arena.PickSpawn('airfield', nil, nil), spawns[1])
+    t.equals(Arena.PickSpawn('airfield', nil, 'first'), spawns[1])
+    t.equals(Arena.PickSpawn('airfield', nil, {}), spawns[1])
+    t.equals(Arena.PickSpawn('airfield', nil, '3'), spawns[3])
+    t.equals(Arena.PickSpawn('airfield', nil, 2.9), spawns[2])
 end)
 
 -- ======================================================================
@@ -642,22 +651,22 @@ t.test('ValidateConfig catches an ammo option above the weapon max', function()
 end)
 
 t.test('ValidateConfig catches an arena with no spawns', function()
-    local emptied = tweaked(function(config) config.Arenas.yard.spawns = {} end)
+    local emptied = tweaked(function(config) config.Arenas.beach.spawns = {} end)
     local problems = emptied.ValidateConfig()
     t.equals(#problems, 1, table.concat(problems, ' | '))
-    t.contains(problems[1], 'yard')
+    t.contains(problems[1], 'beach')
     t.contains(problems[1], 'no spawns')
 
     -- A spawns key that was deleted rather than emptied is the same fault.
-    local removed = tweaked(function(config) config.Arenas.yard.spawns = nil end)
+    local removed = tweaked(function(config) config.Arenas.beach.spawns = nil end)
     local removedProblems = removed.ValidateConfig()
     t.equals(#removedProblems, 1, table.concat(removedProblems, ' | '))
-    t.contains(removedProblems[1], 'yard')
+    t.contains(removedProblems[1], 'beach')
 end)
 
 t.test('ValidateConfig reports rather than throws, and finds every fault at once', function()
     local arena = tweaked(function(config)
-        config.Arenas.yard.spawns = {}
+        config.Arenas.beach.spawns = {}
         config.Loadouts.weapons[1].key = nil
         config.Match.lives = 0
     end)

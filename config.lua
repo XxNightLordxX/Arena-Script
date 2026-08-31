@@ -73,7 +73,11 @@ Config.Lobby = {
         model = 'g_m_m_armboss_01',
         -- x, y, z, heading. z should be the GROUND z -- the resource drops
         -- the ped by one unit itself so it does not float.
-        coords = vector4(-268.16, -2023.42, 30.14, 267.5),
+        -- OUTSIDE the airfield hangar at Sandy Shores, facing the tarmac the
+        -- fights happen on. Deliberately not inside a building: an interior
+        -- puts the NPC behind a door players have to find, and interiors are
+        -- their own can of worms once a match teleports people out of one.
+        coords = vector4(1737.20, 3308.40, 41.22, 195.0),
         -- An idle animation so the NPC is not a statue. Set to nil for none.
         scenario = 'WORLD_HUMAN_GUARD_STAND',
         freeze = true,
@@ -87,7 +91,7 @@ Config.Lobby = {
 
     marker = {
         type = 27,
-        coords = vector3(-268.16, -2023.42, 29.14),
+        coords = vector3(1737.20, 3308.40, 40.22),
         size = vector3(1.6, 1.6, 0.6),
         -- Crimson, to match the panel.
         color = { r = 200, g = 16, b = 32, a = 140 },
@@ -111,91 +115,140 @@ Config.Lobby = {
     -- Where a player is put back when they leave, die out, or the match
     -- ends. Also where they are returned to if the resource restarts while
     -- they are mid-match, so make sure it is somewhere safe to stand.
-    returnCoords = vector4(-265.41, -2019.88, 30.14, 90.0),
+    returnCoords = vector4(1740.10, 3305.60, 41.22, 195.0),
 }
 
 -- ======================================================================
 -- ARENAS -- the grounds people actually fight on.
 --
--- Add as many as you like. `enabled = false` hides one without deleting it.
+-- ADD AS MANY AS YOU LIKE. This is an ordinary list: paste another block in,
+-- give it a key nothing else uses, and it appears in the panel at the next
+-- restart. Nothing else needs editing -- no code, no second list, no
+-- registration step. Delete a block and it is gone; set `enabled = false` and
+-- it is hidden without losing the coordinates you spent time collecting.
 --
--- SPAWNS: you do not need one spawn point per player. Spawn points are
--- handed out round-robin and each player is scattered within
--- `Config.Match.spawnScatterRadius` of the point they draw, so twenty
--- players can share four spawn points without stacking inside each other.
+-- THE TWO SHIPPED ARENAS ARE OPEN GROUND ON PURPOSE, and their coordinates
+-- are a starting point rather than gospel. Stand where you want a spawn
+-- point, take the coordinates with whatever command your server has for it,
+-- and paste them in. The heading is the last number -- the direction the
+-- player faces when they land.
+--
+-- COPY THIS TO ADD ONE:
+--
+--     ['pier'] = {
+--         label = 'Del Perro Pier',
+--         description = 'Whatever players see under the name in the panel.',
+--         enabled = true,
+--         spawns = {
+--             vector4(x, y, z, heading),
+--             vector4(x, y, z, heading),
+--         },
+--         teamSpawns = {                      -- optional; omit for FFA-only
+--             crimson = { vector4(x, y, z, heading) },
+--             ash     = { vector4(x, y, z, heading) },
+--         },
+--         boundary = {
+--             enabled = true,
+--             center = vector3(x, y, z),
+--             radius = 110.0,                 -- metres
+--             warningSeconds = 5,
+--             damagePerTick = 8,
+--             tickMs = 1000,
+--         },
+--         weatherOverride = nil,              -- e.g. 'THUNDER'
+--         timeOverride = nil,                 -- e.g. { hour = 22, minute = 0 }
+--     },
+--
+-- An arena with no spawn points is named in the server console at startup
+-- rather than failing quietly when somebody tries to fight in it.
+--
+-- SPAWNS: you do not need one spawn point per player. They are handed out
+-- round-robin and each player is scattered within
+-- `Config.Match.spawnScatterRadius` of the point they draw, so twenty players
+-- can share four spawn points without stacking inside each other. Two is
+-- enough to start; more simply spreads people out.
+--
+-- TEAM SPAWNS: a team with no list here falls back to the shared `spawns`,
+-- so enabling a third team does not force you to edit every arena. Give the
+-- sides opposite ends of the ground if you want the match to open cleanly.
 -- ======================================================================
 Config.Arenas = {
-    ['warehouse'] = {
-        label = 'Crimson Warehouse',
-        description = 'Tight indoor lanes. Shotguns and SMGs eat here.',
+    ['airfield'] = {
+        label = 'Sandy Shores Airfield',
+        description = 'Open tarmac. Nowhere to hide, long sightlines, rifles win.',
         enabled = true,
 
-        -- Used in free-for-all modes, and as the fallback for any team
-        -- that has no entry in `teamSpawns` below.
+        -- Used in free-for-all, and as the fallback for any team with no
+        -- entry in `teamSpawns` below. Spread wide across the apron so
+        -- nobody lands on top of anybody.
         spawns = {
-            vector4(1088.51, -3099.44, -38.99, 180.0),
-            vector4(1077.28, -3091.12, -38.99, 270.0),
-            vector4(1097.63, -3091.55, -38.99, 90.0),
-            vector4(1088.02, -3082.10, -38.99, 0.0),
+            vector4(1692.40, 3231.80, 41.09, 30.0),
+            vector4(1751.60, 3230.10, 41.09, 330.0),
+            vector4(1690.90, 3300.20, 41.15, 150.0),
+            vector4(1753.80, 3298.70, 41.15, 210.0),
+            vector4(1722.30, 3266.50, 41.12, 90.0),
+            vector4(1722.90, 3324.10, 41.16, 180.0),
         },
 
-        -- Used in team modes. Keys must match `Config.Teams.list` keys.
-        -- A team missing here falls back to `spawns` above.
+        -- Team modes. Keys must match `Config.Teams.list`. A team missing
+        -- here falls back to `spawns` above.
         teamSpawns = {
             crimson = {
-                vector4(1077.28, -3091.12, -38.99, 270.0),
-                vector4(1078.94, -3095.60, -38.99, 270.0),
+                vector4(1692.40, 3231.80, 41.09, 30.0),
+                vector4(1699.10, 3238.60, 41.09, 30.0),
+                vector4(1686.20, 3239.40, 41.09, 30.0),
             },
             ash = {
-                vector4(1097.63, -3091.55, -38.99, 90.0),
-                vector4(1096.10, -3086.90, -38.99, 90.0),
+                vector4(1753.80, 3298.70, 41.15, 210.0),
+                vector4(1746.90, 3292.10, 41.15, 210.0),
+                vector4(1760.20, 3291.40, 41.15, 210.0),
             },
         },
 
-        -- Players who wander outside this sphere are warned, then damaged
-        -- until they come back. Set `enabled = false` for an open arena.
+        -- Wide, because the ground is. A boundary tight enough for a
+        -- warehouse would have people bleeding out crossing the apron.
         boundary = {
             enabled = true,
-            center = vector3(1088.51, -3091.44, -38.99),
-            radius = 60.0,
+            center = vector3(1722.00, 3270.00, 41.12),
+            radius = 130.0,
             warningSeconds = 5,
             damagePerTick = 8,
             tickMs = 1000,
         },
 
-        -- Optional atmosphere while the match runs. nil = leave the world
-        -- exactly as it is.
         weatherOverride = nil,
-        timeOverride = nil,     -- e.g. { hour = 22, minute = 0 }
+        timeOverride = nil,
     },
 
-    ['yard'] = {
-        label = 'The Yard',
-        description = 'Open ground with hard cover. Rifles rule.',
+    ['beach'] = {
+        label = 'Vespucci Sands',
+        description = 'Flat open sand at the waterline. No cover at all -- pure aim.',
         enabled = true,
 
         spawns = {
-            vector4(-1605.30, -1108.10, 2.20, 140.0),
-            vector4(-1571.44, -1080.63, 2.20, 320.0),
-            vector4(-1588.90, -1120.55, 2.20, 40.0),
-            vector4(-1560.12, -1099.80, 2.20, 220.0),
+            vector4(-1222.60, -1531.40, 4.35, 35.0),
+            vector4(-1288.10, -1483.20, 2.30, 215.0),
+            vector4(-1246.90, -1489.70, 3.10, 125.0),
+            vector4(-1263.80, -1524.90, 3.20, 305.0),
+            vector4(-1210.40, -1494.30, 3.90, 180.0),
+            vector4(-1299.20, -1528.60, 2.10, 0.0),
         },
 
         teamSpawns = {
             crimson = {
-                vector4(-1605.30, -1108.10, 2.20, 140.0),
-                vector4(-1601.88, -1112.44, 2.20, 140.0),
+                vector4(-1222.60, -1531.40, 4.35, 35.0),
+                vector4(-1215.30, -1524.10, 4.30, 35.0),
             },
             ash = {
-                vector4(-1571.44, -1080.63, 2.20, 320.0),
-                vector4(-1567.02, -1076.35, 2.20, 320.0),
+                vector4(-1288.10, -1483.20, 2.30, 215.0),
+                vector4(-1295.40, -1490.60, 2.25, 215.0),
             },
         },
 
         boundary = {
             enabled = true,
-            center = vector3(-1585.00, -1094.00, 2.20),
-            radius = 90.0,
+            center = vector3(-1255.00, -1507.00, 3.20),
+            radius = 110.0,
             warningSeconds = 5,
             damagePerTick = 8,
             tickMs = 1000,
@@ -332,8 +385,16 @@ Config.Teams = {
 --
 -- AMMO: each weapon carries its own `ammo` block. `options` is what the
 -- player may pick from in the panel; `max` is the hard ceiling the server
--- clamps to no matter what arrives on the wire. A weapon with
--- `ammo.options = nil` is handed out at `ammo.default` with no picker.
+-- clamps to no matter what arrives on the wire, and an off-list request is
+-- refused back to `default` rather than rounded.
+--
+-- A weapon with `ammo.options = nil` has no picker: the panel offers no ammo
+-- choice for it, so an honest client sends nothing but `ammo.default` and
+-- that is what the player is handed. It is FREE-FORM on the wire, though --
+-- with no list to check a request against, the only limit left is `max`, so
+-- a modified client asking for a number in between is given it. Set
+-- `max = default`, the way the melee entries below do, for a weapon whose
+-- count is meant to be fixed.
 -- ======================================================================
 Config.Loadouts = {
     -- Players choose their own weapons. With this off, everyone is given
@@ -350,10 +411,14 @@ Config.Loadouts = {
         { weapon = 'WEAPON_KNIFE', ammo = 1 },
     },
 
-    -- Used only when `allowChoose = false`.
+    -- Used only when `allowChoose = false`. Keys from the weapon list below,
+    -- and keys only: with choosing switched off there is no request to
+    -- resolve, so every weapon here is handed out at its OWN `ammo.default`.
+    -- Change the amount in the weapon's entry, not here -- an `ammo` written
+    -- next to one of these lines is a number nothing reads.
     fixed = {
-        { key = 'rifle', ammo = 250 },
-        { key = 'pistol', ammo = 100 },
+        { key = 'rifle' },
+        { key = 'pistol' },
     },
 
     -- Purely for grouping the picker into tabs. A weapon whose `category`
@@ -367,6 +432,33 @@ Config.Loadouts = {
     },
 
     -- THE WEAPON LIST.
+    --
+    -- ADD AND REMOVE FREELY. Paste a block in and it appears in the picker at
+    -- the next restart; delete one and it is gone from the arena for everybody,
+    -- including anyone whose panel was still showing it -- the server checks
+    -- every request against this list before it hands out a single round, so a
+    -- weapon that is not here cannot be obtained by asking for it.
+    --
+    -- `enabled = false` does exactly the same as deleting, while keeping the
+    -- entry to switch back on later. There is no difference the player can see.
+    --
+    -- COPY THIS TO ADD ONE:
+    --
+    --     {
+    --         key = 'microsmg',                 -- unique; the panel and wire use it
+    --         weapon = 'WEAPON_MICROSMG',       -- the real GTA name; this is what is given
+    --         label = 'Micro SMG',              -- what the player reads
+    --         category = 'automatic',           -- a key from `categories` above
+    --         enabled = true,
+    --         ammo = { default = 120, options = { 60, 120, 250 }, max = 400 },
+    --         components = {},
+    --         tint = 0,
+    --     },
+    --
+    -- Two keys the same, or an ammo option above that weapon's own max, are
+    -- named in the server console at startup rather than failing quietly in
+    -- front of a player.
+    --
     --   key      -- what the panel and the wire use. Must be unique.
     --   weapon   -- the real GTA weapon name. This is what is actually given.
     --   ammo     -- default/options/max, see the note above this table.
@@ -468,8 +560,9 @@ Config.Loadouts = {
             label = 'Knife',
             category = 'melee',
             enabled = true,
-            -- No `options` -- melee has nothing to pick, so the panel shows
-            -- no ammo row for it and the server hands out `default`.
+            -- No `options` -- melee has nothing to pick, so the panel offers
+            -- no ammo choice for it. `max` matches `default` so there is no
+            -- room above it for a modified client to ask into either.
             ammo = { default = 1, options = nil, max = 1 },
             components = {},
             tint = 0,
@@ -544,9 +637,14 @@ Config.Betting = {
         -- Quick-pick buttons in the panel. Any value between min and max is
         -- still accepted if the player types it.
         presets = { 500, 1000, 5000, 25000 },
-        -- The host sets one fee for the whole match and everyone pays it.
-        -- With this off, each player stakes whatever they like and the
-        -- payout is weighted by stake.
+        -- The host sets one fee for the whole match and everyone in it pays
+        -- that. NOTHING READS THIS SWITCH YET: joining always charges the
+        -- host's fee -- the join payload carries no fee of its own -- and no
+        -- payout mode weights a share by what a player staked, so turning it
+        -- off changes nothing an operator or a player can observe. It is
+        -- recorded under "Config keys nothing reads yet" in the README rather
+        -- than quietly dropped, because a key that vanishes from config.lua
+        -- reads as a key that broke.
         hostSetsForEveryone = true,
     },
 
@@ -714,7 +812,7 @@ Config.UI = {
     -- Command that opens the panel from anywhere, for testing or for
     -- servers that would rather not use a ped at all. Set to nil to
     -- register no command.
-    command = 'arena',
+    command = nil,
 
     -- Sound the panel plays on open/close/ready. false = silent panel.
     sounds = true,
@@ -739,15 +837,33 @@ Config.Permissions = {
 }
 
 -- ======================================================================
--- DATABASE -- the leaderboard only.
+-- DATABASE -- the leaderboard only. OFF, so this resource is drag and drop.
 --
--- Turning this off costs you nothing but the all-time leaderboard: matches,
--- betting and payouts all work exactly the same in memory. oxmysql stays a
--- hard dependency in fxmanifest.lua either way -- FiveM checks that before
--- this file is ever read, so no setting here can route around it.
+-- SHIPPED OFF ON PURPOSE. With it off there is no SQL to import, no table to
+-- create, no database user to grant anything to, and nothing to go wrong on
+-- first start. Drop the folder in, ensure it, play. That is the whole install.
+--
+-- WHAT YOU LOSE, and it is only this one thing: the leaderboard resets when
+-- the server restarts. Wins, kills and earnings are still counted and still
+-- shown during a session -- they simply are not written down anywhere, so a
+-- restart starts the table fresh.
+--
+-- WHAT YOU DO NOT LOSE: matches, teams, weapon and ammo choice, the whole
+-- betting system including escrow, payouts and refunds, the panel, dispatch
+-- suppression. None of it touches the database. Every money guarantee this
+-- resource makes holds exactly the same with this off.
+--
+-- TURNING IT ON LATER is one word here and a restart. The table creates
+-- itself on first start; sql/install.sql is there only for servers whose
+-- database user is not allowed to create tables at runtime.
+--
+-- oxmysql stays a hard dependency in fxmanifest.lua either way -- FiveM
+-- checks that list before this file is ever read, so no setting here can
+-- route around it. Every Qbox server already runs oxmysql (qbx_core needs
+-- it), so this costs you nothing in practice.
 -- ======================================================================
 Config.Database = {
-    enabled = true,
+    enabled = false,
     -- Flush queued stat writes this often, in ms. Also flushed on stop.
     flushIntervalMs = 60000,
     leaderboardSize = 25,
@@ -1008,9 +1124,16 @@ Config.Dispatch = {
         ignorePlayer = true,
         -- Stop the game dispatching units for them.
         stopDispatch = true,
-        -- Stash the stars they walked in with, pin them at zero for the
-        -- match, and hand them back on the way out. Without the pin, stars
-        -- come straight back the first time somebody shoots near an NPC.
+        -- Stash the stars they walked in with, clear them on the way in, and
+        -- hand back exactly what was captured on the way out -- including
+        -- zero, if that is what they arrived with.
+        --
+        -- The wanted CEILING is deliberately not touched. Pinning it would
+        -- hold stars at zero for the whole match, but there is no native to
+        -- read the ceiling back, so the arena could only "restore" it to the
+        -- stock 5 -- silently undoing a server that had deliberately set its
+        -- own. A setting this resource cannot read back is one it does not
+        -- set. Stars gained inside a round are cleared on exit either way.
         stashWantedLevel = true,
     },
 
@@ -1033,8 +1156,4 @@ Config.Dispatch = {
     -- die. For those, use `custom` above. This is not a substitute for it.
     -- ==================================================================
     clearDeadStateImmediately = true,
-
-    -- Keep the player out of the game's own injured/recovery handling for
-    -- the length of the match.
-    disableHealthRecharge = true,
 }

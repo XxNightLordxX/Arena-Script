@@ -18,7 +18,10 @@
     EVERY exit path goes through Stop(). Stop() is idempotent: leaving a
     player invisible with a dead camera is the one failure mode that
     genuinely ruins a session, so it is written to be safe to call at any
-    time, including when nothing is running.
+    time, including when nothing is running. The camera always goes; the ped
+    is put back only when this file is the reason it is down -- an eliminated
+    fighter is held by client/dispatch.lua, and client/match.lua releases
+    that on the way out of the arena. See Stop().
 ]]
 
 ArenaSpectate = {}
@@ -243,6 +246,20 @@ function ArenaSpectate.Start(matchIdentifier)
 end
 
 --- Safe at any time, including when not spectating.
+---
+--- THE CAMERA ALWAYS GOES; THE PED DOES NOT ALWAYS GET UP. Somebody who is
+--- watching a match AND is inside one is an eliminated fighter -- the server
+--- registers nobody else as both -- and the only thing keeping them out of a
+--- live round is the hold client/dispatch.lua has on their ped. This
+--- function is reached without the round being over at all: the server can
+--- simply take them off the spectator list, and the camera thread below
+--- stops itself the moment it runs out of fighters it can follow. Standing
+--- that ped up on either of those would hand a dead player back their feet,
+--- their collision and the arena loadout they died holding, mid-round.
+---
+--- So the hold is left exactly as it was found. client/match.lua releases it
+--- on the way out of the arena, which is the one place that knows the player
+--- is really finished with the round.
 function ArenaSpectate.Stop()
     if not active then return end
     active = false
@@ -255,12 +272,19 @@ function ArenaSpectate.Stop()
     ClearFocus()
 
     local ped = PlayerPedId()
-    SetEntityVisible(ped, true, false)
-    SetEntityCollision(ped, true, true)
+
+    -- Unconditional, held or not: this file is the only thing that hides the
+    -- ped from its OWN player, so nothing else would ever put it back and
+    -- they would spend the rest of the session unable to see themselves.
     SetLocalPlayerVisibleLocally(true)
-    if frozeLocalPed then
-        FreezeEntityPosition(ped, false)
-        frozeLocalPed = false
+
+    if not ArenaDispatch.IsInArena() then
+        SetEntityVisible(ped, true, false)
+        SetEntityCollision(ped, true, true)
+        if frozeLocalPed then
+            FreezeEntityPosition(ped, false)
+            frozeLocalPed = false
+        end
     end
 
     matchId = nil

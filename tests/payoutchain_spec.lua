@@ -1,0 +1,216 @@
+--[[
+    crimson_arena/tests/payoutchain_spec.lua
+
+    The seam between three files that were each individually correct.
+
+    THE BUG THIS EXISTS FOR. When a player quits mid-round, the roster handed
+    to the payout maths is the SURVIVING one -- and that is deliberate, because
+    every refund branch pays `player.stake` back off that list, so listing a
+    quitter would hand back the stake that leaving was supposed to forfeit.
+
+    But `Config.Betting.minPlayersToPayOut` is asking a different question:
+    was this a real fight, or two friends farming each other? That question is
+    about how many people FOUGHT, not how many are still standing. Judged on
+    survivors, a 1v1 where one player quits arrives with one name on the list,
+    falls under the minimum, and refunds everybody -- handing the quitter back
+    the stake they forfeited and paying the winner nothing for a fight they won.
+
+    server/match.lua records `contestants` for exactly this. shared/arena.lua
+    reads it. Both landed, both correct, and the exploit stayed live anyway,
+    because server/betting.lua's Settle rebuilds the context FIELD BY FIELD and
+    quietly dropped the one field they had just agreed on.
+
+    Every existing spec passed. matchflow_spec asserts at the Settle boundary,
+    so it sees the field going in. rulesdefects_spec calls ComputePayouts
+    directly, so it sees the field being read. Neither crosses the line where
+    it was lost. THAT is why this file drives the whole chain instead of
+    either end of it.
+]]
+
+local t = dofile('testkit.lua')
+local Sandbox = dofile('fixtures/sandbox.lua')
+
+--- @param wallets table<number, integer>
+--- @param mutate fun(config: table)?
+--- @return table server
+local function newServer(wallets, mutate)
+    local roster = {}
+    for id, cash in pairs(wallets) do
+        roster[id] = {
+            citizenid = ('CID%05d'):format(id),
+            name = 'Player' .. id,
+            money = { cash = cash, bank = 0 },
+        }
+    end
+
+    local qbx = Sandbox.newQbxCore(roster)
+    local console = {}
+
+    local env = Sandbox.newArenaEnv({
+        exports = qbx.exports,
+        lib = Sandbox.newOxLib(),
+        TriggerClientEvent = function() end,
+        TriggerEvent = function() end,
+        print = function(line) console[#console + 1] = line end,
+    })
+    if mutate then mutate(env.Config) end
+
+    Sandbox.loadInto('../server/util.lua', env)
+    Sandbox.loadInto('../server/betting.lua', env)
+
+    return {
+        env = env,
+        betting = env.ArenaBetting,
+        config = env.Config,
+        cash = function(id) return qbx.players[id].money.cash end,
+        --- Money created or destroyed across every account. Always zero: the
+        --- pot only ever moves money between players.
+        ledgerTotal = function()
+            local total = 0
+            for _, entry in ipairs(qbx.ledger) do total = total + entry.delta end
+            return total
+        end,
+        log = function() return table.concat(console, '\n') end,
+    }
+end
+
+--- A 1v1 where both players staked, then one walked out mid-round. The
+--- survivor won. This is the exact shape the bug needed.
+--- @param server table
+--- @return table context -- as server/match.lua builds it at End
+local function quitterContext(server)
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+
+    return {
+        -- The SURVIVING roster. Player 2 quit and is deliberately absent:
+        -- their stake stays in the pot, which is what forfeiting means.
+        players = { { id = 1, team = nil, kills = 1, stake = 1000, placement = 1 } },
+        winners = { 1 },
+        teams = false,
+        -- How many the round was fought with.
+        contestants = 2,
+    }
+end
+
+-- ========================================================================
+-- The chain
+-- ========================================================================
+
+t.test('the numbers below are the shipped ones', function()
+    local config = newServer({}).config
+    t.equals(config.Betting.minPlayersToPayOut, 2)
+    t.equals(config.Betting.houseCutPercent, 0)
+    t.equals(config.Betting.payout, 'winner_takes_all')
+end)
+
+t.test('a 1v1 quitter does not turn the winner\'s pot back into a refund', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local payouts = server.betting.Settle('m1', quitterContext(server))
+
+    t.equals(#payouts, 1, 'the winner should be paid, and only the winner')
+    t.equals(payouts[1].id, 1)
+    t.equals(payouts[1].reason, 'winner',
+        'reason "refund_too_few" here is the bug: the round was fought by two people')
+    t.equals(payouts[1].amount, 2000, 'the winner takes both stakes')
+end)
+
+t.test('the quitter does not get their forfeited stake back', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    server.betting.Settle('m1', quitterContext(server))
+
+    -- 5000 - 1000 staked, and nothing returned.
+    t.equals(server.cash(2), 4000, 'leaving mid-round forfeits the stake')
+    -- 5000 - 1000 staked + 2000 won.
+    t.equals(server.cash(1), 6000)
+end)
+
+t.test('money is conserved across the settlement', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    server.betting.Settle('m1', quitterContext(server))
+    t.equals(server.ledgerTotal(), 0, 'the pot moved money between players, it did not create any')
+end)
+
+t.test('Settle forwards contestants rather than rebuilding the context without it', function()
+    -- The direct statement of the defect. With the field dropped, the
+    -- surviving roster of one falls under minPlayersToPayOut and every payout
+    -- comes back as a refund.
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local payouts = server.betting.Settle('m1', quitterContext(server))
+
+    for _, payout in ipairs(payouts) do
+        t.isTrue(payout.reason:sub(1, 6) ~= 'refund',
+            ('payout for %s came back as "%s" -- contestants never reached the maths')
+                :format(tostring(payout.id), tostring(payout.reason)))
+    end
+end)
+
+-- ========================================================================
+-- The cases the fix must NOT change
+-- ========================================================================
+
+t.test('a genuinely tiny match still refunds', function()
+    -- One person, who fought alone. contestants agrees with the roster, so
+    -- the minimum still bites -- the fix must not become a way to pay out a
+    -- match nobody contested.
+    local server = newServer({ [1] = 5000 })
+    server.betting.TakeStake(1, 'm2', 1000)
+
+    local payouts = server.betting.Settle('m2', {
+        players = { { id = 1, kills = 0, stake = 1000, placement = 1 } },
+        winners = { 1 },
+        teams = false,
+        contestants = 1,
+    })
+
+    t.equals(#payouts, 1)
+    t.equals(payouts[1].reason, 'refund_too_few')
+    t.equals(server.cash(1), 5000, 'the stake came back')
+end)
+
+t.test('a context with no contestants at all still works off the roster', function()
+    -- Every caller sets it today, but a caller that forgets must degrade to
+    -- the old behaviour rather than erroring or paying out wrongly.
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    server.betting.TakeStake(1, 'm3', 1000)
+    server.betting.TakeStake(2, 'm3', 1000)
+
+    local payouts = server.betting.Settle('m3', {
+        players = {
+            { id = 1, kills = 1, stake = 1000, placement = 1 },
+            { id = 2, kills = 0, stake = 1000, placement = 2 },
+        },
+        winners = { 1 },
+        teams = false,
+    })
+
+    t.equals(#payouts, 1)
+    t.equals(payouts[1].reason, 'winner')
+    t.equals(payouts[1].amount, 2000)
+end)
+
+t.test('an eliminated player who stayed is still owed a refund when the round does not qualify', function()
+    -- Eliminated is not the same as gone. They fought to the end, so they stay
+    -- on the roster and a refunding round owes them their stake back.
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    server.betting.TakeStake(1, 'm4', 1000)
+    server.betting.TakeStake(2, 'm4', 1000)
+
+    local payouts = server.betting.Settle('m4', {
+        players = {
+            { id = 1, kills = 0, stake = 1000, placement = 1 },
+            { id = 2, kills = 0, stake = 1000, placement = 2 },
+        },
+        winners = {},
+        teams = false,
+        contestants = 2,
+    })
+
+    t.equals(#payouts, 2, 'both are owed')
+    t.equals(server.cash(1), 5000)
+    t.equals(server.cash(2), 5000)
+    t.equals(server.ledgerTotal(), 0)
+end)
+
+print('payoutchain_spec')
+os.exit(t.summary())

@@ -196,7 +196,7 @@ local function newMatch(fixture, modeKey, picks)
     local match = {
         id = 'm1',
         label = 'test match',
-        arenaKey = 'warehouse',
+        arenaKey = 'airfield',
         modeKey = modeKey,
         hostSource = 1,
         state = 'lobby',

@@ -46,8 +46,9 @@
     EVERYTHING HERE IS PER-MATCH AND REVERSIBLE. A player who walks into the
     arena with two wanted stars walks back out with two wanted stars. This
     file is not allowed to leak a single setting into the rest of someone's
-    session, which is why every Enter() has a matching Exit() and Exit() is
-    safe to call when nothing is active.
+    session, which is why every Enter() has a matching Exit(), why Exit() is
+    safe to call when nothing is active, and why a setting this file cannot
+    read back is one it does not set at all -- see ENTER / EXIT below.
 ]]
 
 ArenaDispatch = {}
@@ -116,6 +117,31 @@ end
 
 -- ======================================================================
 -- ENTER / EXIT
+--
+-- THREE NATIVES ARE DELIBERATELY NOT CALLED HERE, and naming them is worth
+-- more than the suppression they would have bought: SetMaxWantedLevel,
+-- SetCreateRandomCops and SetPlayerHealthRechargeMultiplier can all be set
+-- and none of them can be read -- CitizenFX ships no getter for any of the
+-- three. A match that changed one could only put it back by assuming the
+-- stock value, and an assumption is not a restore: on a server that caps
+-- wanted levels, keeps NPC patrols off its streets, or turns passive health
+-- regeneration off through its medical script, handing back 5 / true / 1.0
+-- on the way out would silently undo that operator's setting for the rest of
+-- that player's session, off the back of one arena round. So the ceiling, the
+-- ambient patrols and the recharge multiplier are left exactly as they were
+-- found.
+--
+-- Config.Dispatch.disableHealthRecharge was removed rather than left sitting
+-- in the config doing nothing. Putting it back honestly needs a second key
+-- carrying the value to restore TO, since the multiplier cannot be read; if
+-- that is ever wanted, add both keys together or not at all.
+--
+-- The two suppressions that remain -- SetPoliceIgnorePlayer and
+-- SetDispatchCopsForPlayer -- have no getter either, but they are per-player
+-- rather than world-wide, so putting them back reaches no further than the
+-- player who was just in the match. The wanted level is the one value here
+-- that CAN be read, so it is the one that is captured on the way in and
+-- handed back exactly as captured.
 -- ======================================================================
 
 --- Silences everything this resource is able to silence, and records what
@@ -143,7 +169,7 @@ function ArenaDispatch.Enter(matchId)
     -- OFF unless an operator asks for it. A server running a custom dispatch
     -- script has almost certainly disabled the vanilla wanted system already,
     -- and plenty of custom systems drive their own logic off the native
-    -- wanted level -- pinning it to zero mid-match would fight them for it.
+    -- wanted level -- zeroing it mid-match would fight them for it.
     local vanilla = config.vanillaPolice or {}
     if vanilla.enabled == true and config.suppressPoliceShotsFired ~= false then
         if vanilla.ignorePlayer ~= false then
@@ -153,21 +179,13 @@ function ArenaDispatch.Enter(matchId)
         if vanilla.stopDispatch ~= false then
             restore.touchedDispatch = true
             SetDispatchCopsForPlayer(player, false)
-            SetCreateRandomCops(false)
         end
         if vanilla.stashWantedLevel ~= false then
             restore.touchedWanted = true
             restore.wantedLevel = GetPlayerWantedLevel(player)
-            -- Clearing without also locking the maximum lets the stars come
-            -- straight back the first time somebody fires at a passing NPC.
             SetPlayerWantedLevel(player, 0, false)
             SetPlayerWantedLevelNow(player, false)
-            SetMaxWantedLevel(0)
         end
-    end
-
-    if config.disableHealthRecharge == true then
-        SetPlayerHealthRechargeMultiplier(player, 0.0)
     end
 
     callDisableExports(true)
@@ -180,7 +198,6 @@ end
 function ArenaDispatch.Exit()
     if not restore then return end
 
-    local config = Config.Dispatch or {}
     local player = PlayerId()
     local previous = restore
 
@@ -196,22 +213,15 @@ function ArenaDispatch.Exit()
 
     if previous.touchedDispatch then
         SetDispatchCopsForPlayer(player, true)
-        SetCreateRandomCops(true)
     end
 
     if previous.touchedWanted then
-        SetMaxWantedLevel(5)
-        -- Handed back rather than cleared: walking into an arena is not an
-        -- amnesty, and a player who used it as one would be a bug worth
-        -- reporting.
-        if previous.wantedLevel > 0 then
-            SetPlayerWantedLevel(player, previous.wantedLevel, false)
-            SetPlayerWantedLevelNow(player, false)
-        end
-    end
-
-    if config.disableHealthRecharge == true then
-        SetPlayerHealthRechargeMultiplier(player, 1.0)
+        -- Set to the captured number rather than only when that number is
+        -- above zero: walking into an arena is not an amnesty, and walking
+        -- out of one is not a conviction either -- stars earned inside the
+        -- round belong to the round.
+        SetPlayerWantedLevel(player, previous.wantedLevel, false)
+        SetPlayerWantedLevelNow(player, false)
     end
 
     callDisableExports(false)

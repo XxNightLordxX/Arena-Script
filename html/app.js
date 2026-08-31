@@ -68,6 +68,12 @@
        forty-player match from building forty nodes every second. */
     var HUD_SCORE_ROWS = 10;
 
+    /* How long the end-of-match board stays up. It is drawn over gameplay
+       with NUI focus released, so there is no button on it and nobody to
+       press one: long enough to read a scoreboard, gone before the next
+       round starts. */
+    var RESULTS_MS = 12000;
+
     // ==================================================================
     // STATE
     //
@@ -1539,6 +1545,25 @@
         renderHudScoreboard(arrayOf(hud.scoreboard));
     }
 
+    /* One row, name first. `entry.name` is another player's, so it is a
+       text node and never markup. Shared with the end-of-match board below:
+       the class is styled by a bare `.hud-score-row` rule, not by anything
+       scoped to the overlay, so it draws the same in both places. */
+    function scoreRow(entry, me) {
+        var row = makeEl('div', 'hud-score-row');
+        if (int(entry.id, -1) === me) row.classList.add('self');
+        if (entry.alive === false) row.classList.add('dead');
+
+        var team = teamByKey(entry.team);
+        var name = makeEl('span', null, entry.name || ('#' + int(entry.id, 0)));
+        if (team) name.style.borderLeft = '3px solid ' + teamColor(team);
+        row.appendChild(name);
+
+        row.appendChild(makeEl('span', null, String(int(entry.kills, 0))));
+        row.appendChild(makeEl('span', null, String(int(entry.deaths, 0))));
+        return row;
+    }
+
     function renderHudScoreboard(rows) {
         var host = byId('hud-scoreboard');
         if (!has(host)) return;
@@ -1547,18 +1572,7 @@
         var me = int(player().serverId, -1);
         rows.slice(0, HUD_SCORE_ROWS).forEach(function (entry) {
             if (!entry) return;
-            var row = makeEl('div', 'hud-score-row');
-            if (int(entry.id, -1) === me) row.classList.add('self');
-            if (entry.alive === false) row.classList.add('dead');
-
-            var team = teamByKey(entry.team);
-            var name = makeEl('span', null, entry.name || ('#' + int(entry.id, 0)));
-            if (team) name.style.borderLeft = '3px solid ' + teamColor(team);
-            row.appendChild(name);
-
-            row.appendChild(makeEl('span', null, String(int(entry.kills, 0))));
-            row.appendChild(makeEl('span', null, String(int(entry.deaths, 0))));
-            host.appendChild(row);
+            host.appendChild(scoreRow(entry, me));
         });
     }
 
@@ -1586,6 +1600,11 @@
             hideCountdown();
             return;
         }
+
+        /* A new round is starting, so the last one's board has had its say --
+           and a countdown drawn through it would be two overlays arguing over
+           the same screen. */
+        hideResults();
 
         var digits = byId('countdown-value');
         if (has(digits)) digits.textContent = String(value);
@@ -1658,25 +1677,127 @@
         });
     });
 
-    /* The round is over: the overlay comes down with it, and the outcome is
-       said once as a notification. There is no results element in the
-       page -- a modal scoreboard would need NUI focus, and taking focus
-       from a player who has just been dropped back at the lobby ped is
-       exactly the wrong moment. */
+    /* The end-of-match board. It is built here and thrown away again rather
+       than declared in index.html, because it is on screen for twelve
+       seconds a match and an element that exists the rest of the time is one
+       more thing that can be left showing. Styled inline from the same
+       custom properties applyTheme writes, so recolouring the panel
+       recolours this with it. */
+    var resultsTimer = null;
+    /* Held rather than looked up again: this node is the page's only one that
+       is not in index.html, and the reference is what guarantees the board
+       being replaced is the board that gets removed. */
+    var resultsNode = null;
+
+    function styled(node, styles) {
+        Object.keys(styles).forEach(function (key) { node.style[key] = styles[key]; });
+        return node;
+    }
+
+    function hideResults() {
+        if (resultsTimer !== null) {
+            window.clearTimeout(resultsTimer);
+            resultsTimer = null;
+        }
+        if (resultsNode && resultsNode.parentNode) resultsNode.parentNode.removeChild(resultsNode);
+        resultsNode = null;
+    }
+
+    /* Placement, kills, deaths and earnings as one line -- and only the
+       parts this payload actually carries. A spectator's block has no
+       placement and no kill count, and '0 kill(s), 0 death(s)' would be a
+       claim about them rather than a blank. */
+    function resultsSummary(results) {
+        var bits = [];
+        if (results.placement) bits.push('Placed #' + int(results.placement, 0));
+        if (results.kills !== undefined || results.deaths !== undefined) {
+            bits.push(int(results.kills, 0) + ' kill(s), ' + int(results.deaths, 0) + ' death(s)');
+        }
+        /* Read off the number rather than off the betting switch: earnings
+           only exist when there was a pot, and the switch lives in a
+           snapshot this client may never have fetched. */
+        if (int(results.earnings, 0) > 0) bits.push('Won ' + money(results.earnings));
+        return bits.join('  ·  ');
+    }
+
+    /* The round is over: the live overlay and the countdown come down with
+       it, and the board goes up in their place. It is inert and under the
+       panel, like every other thing drawn over gameplay -- a scoreboard that
+       took NUI focus would take the controls of a player who has just been
+       dropped back at the lobby ped, and one drawn over the modal would be
+       the failure the HUD's own z-index note is written against. */
     function showResults(results) {
         state.hudVisible = false;
         state.hud = null;
         renderHud();
         hideCountdown();
+        hideResults();
 
         if (!results || typeof results !== 'object') return;
 
-        var bits = [results.won === true ? 'You won.' : 'Match over.'];
-        if (results.placement) bits.push('Placed #' + int(results.placement, 0));
-        bits.push(int(results.kills, 0) + ' kill(s), ' + int(results.deaths, 0) + ' death(s)');
-        if (bettingOn() && int(results.earnings, 0) > 0) bits.push('Won ' + money(results.earnings));
+        var won = results.won === true;
 
-        toast(bits.join('  ·  '), results.won === true ? 'success' : 'info');
+        var root = styled(makeEl('div', null), {
+            position: 'fixed',
+            top: '18%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: '24rem',
+            maxWidth: '90vw',
+            padding: '0.9rem 1.1rem',
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderLeft: '3px solid ' + (won ? 'var(--success)' : 'var(--accent)'),
+            boxShadow: '0 1rem 3rem rgba(0, 0, 0, 0.75)',
+            zIndex: '7',
+            /* Inherited by every node below, so a click on the board goes
+               into the game the way one on the HUD does. */
+            pointerEvents: 'none'
+        });
+        root.id = 'arena-results';
+
+        root.appendChild(styled(makeEl('div', null, won ? 'You Won' : 'Match Over'), {
+            fontFamily: 'var(--font-display)',
+            fontSize: '1.6rem',
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            textAlign: 'center',
+            color: won ? 'var(--success)' : 'var(--accent-bright)'
+        }));
+
+        var summary = resultsSummary(results);
+        if (summary !== '') {
+            root.appendChild(styled(makeEl('div', null, summary), {
+                marginTop: '0.3rem',
+                textAlign: 'center',
+                color: 'var(--text-muted)'
+            }));
+        }
+
+        var rows = arrayOf(results.scoreboard);
+        if (rows.length > 0) {
+            var board = styled(makeEl('div', null), {
+                marginTop: '0.8rem',
+                borderTop: '1px solid var(--border)'
+            });
+            var me = int(player().serverId, -1);
+            rows.slice(0, HUD_SCORE_ROWS).forEach(function (entry) {
+                if (entry) board.appendChild(scoreRow(entry, me));
+            });
+            root.appendChild(board);
+        }
+
+        resultsNode = root;
+        document.body.appendChild(root);
+        resultsTimer = window.setTimeout(hideResults, RESULTS_MS);
+
+        /* The board sits under the panel, so a player who still has the menu
+           open would see nothing at all. The toast rail is inside the panel
+           and is exactly what they are looking at. */
+        if (state.open) {
+            var said = (won ? 'You won.' : 'Match over.') + (summary === '' ? '' : '  ·  ' + summary);
+            toast(said, won ? 'success' : 'info');
+        }
     }
 
     // ==================================================================

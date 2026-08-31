@@ -237,9 +237,14 @@ CreateThread(function()
         TriggerEvent('chat:addSuggestion', '/' .. Config.UI.command, locale('cmd.open_panel'))
     end
 
-    -- A resource restart leaves clients with a stale (or absent) snapshot,
-    -- so ask for a fresh one rather than waiting for the next broadcast.
-    TriggerServerEvent('crimson_arena:server:requestState')
+    -- NO STATE REQUEST FROM HERE, deliberately. The server reads one as
+    -- "a panel just opened" and adds the asker to the set every broadcast is
+    -- serialised for; asked on behalf of every client at start, that set
+    -- became "everybody connected", for the whole session, for a panel nobody
+    -- had touched -- so a ready toggle in a two-player lobby cost the other
+    -- ninety-eight players a snapshot each. ArenaUI.Open fetches its own
+    -- snapshot before it draws anything, and the cache above is refilled by
+    -- every push after that, so nothing here needs one up front.
 end)
 
 AddEventHandler('onResourceStop', function(resource)

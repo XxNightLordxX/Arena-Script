@@ -208,6 +208,13 @@ lib.callback.register('crimson_arena:server:getState', function(src)
     return ArenaLobby.BuildState(src)
 end)
 
+-- The other half of MarkPanelOpen. Cheap, idempotent, and rate-limited on the
+-- same tempo as the state request it undoes -- a client that spams it only
+-- costs a table write it has already paid for.
+onClient('crimson_arena:server:panelClosed', RATE.state, function(src)
+    ArenaLobby.MarkPanelClosed(src)
+end)
+
 onClient('crimson_arena:server:requestState', RATE.state, function(src)
     ArenaLobby.MarkPanelOpen(src)
     TriggerClientEvent('crimson_arena:client:state', src, ArenaLobby.BuildState(src))

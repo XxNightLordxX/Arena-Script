@@ -12,7 +12,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 - An NPC at `Config.Lobby.ped.coords` with an ox_target option, a ground marker with a keypress, or both — `Config.Lobby.interaction` picks. Ships as `'ped'`.
 - A map blip at the lobby. On by default.
-- `/arena` opens the same panel from anywhere. Set `Config.UI.command = nil` to register no command.
+- **No slash command ships.** The NPC is the way in, deliberately. `Config.UI.command` is `nil`; set it to a name like `'arena'` if you want a command as well, which is mostly useful for testing.
 
 **Staying out of everyone else's way**
 
@@ -22,12 +22,12 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 - Vanilla HTML/CSS/JS, no framework and no build step. Five screens — Matches, Lobby, Loadout, Bets, Leaderboard — plus a live scoreboard overlay during a round (`Config.UI.showMatchHud`).
 - Every colour comes from `Config.UI.theme` at runtime. Recolouring config recolours the panel; nothing is hard-coded.
-- `Config.UI.sounds` is read into the snapshot the panel receives, but **nothing in the panel plays a sound**. The switch currently does nothing.
+- `Config.UI.sounds` switches the panel's own feedback tones on and off. They are short notes synthesised in the page rather than audio files, and the first panel of a session can be silent until the page has seen a click of its own — a browser will not start audio off the keypress that opened it.
 
 **Weapons and ammo**
 
 - The weapon list is `Config.Loadouts.weapons`. Delete an entry or set `enabled = false` and it is gone from the arena — the server refuses it even when a modified client asks for it by name.
-- Each weapon carries its own ammo block: `options` is what the picker offers, `max` is the ceiling the server clamps to. A weapon with no `options` (melee) is handed out at `default` and shows no ammo row.
+- Each weapon carries its own ammo block: `options` is what the picker offers, `max` is the ceiling the server clamps to. A weapon with no `options` (melee) offers no ammo choice and is handed out at `default` — with `max` left as the only limit on the wire for it, so the shipped melee entries set the two to the same number.
 - `weaponSlots` caps how many weapons one player may take. `alwaysGive` is added on top and cannot be spent away.
 - Body armour is picked the same way. `Config.Loadouts.allowChoose = false` hides both pickers and hands everyone `Config.Loadouts.fixed`.
 
@@ -37,12 +37,12 @@ Everything below is in the shipped code. Where something is off by default, or i
 - **Uneven teams are legal by default** (`allowUnequal = true`). 7v1 starts. The pot splits evenly across the winning team, so stacking a side dilutes what winning on it is worth rather than guaranteeing it.
 - Four teams ship; two are enabled. Enabling a third needs no code change — give it spawn points in each arena's `teamSpawns` or it falls back to the shared list.
 - `Config.Teams.friendlyFire` does **not** block the damage. It decides whether a teammate's kill is *credited*: with it off the victim still dies and still spends a life, but nobody scores.
-- `showTeamBlips` and `showEnemyBlips` are **not implemented**. No blips are drawn during a round whatever they are set to.
+- `showTeamBlips` and `showEnemyBlips` put blips on the living fighters of your own match, tinted with the team's `blipColor`. They ship on and off respectively. A free-for-all has no teammates, so `showEnemyBlips` alone decides there.
 
 **Matches**
 
 - `Config.Match.maxPlayers = 0` — any number of players in one match. Several matches can run side by side (`maxConcurrentMatches = 0` for no ceiling).
-- Modes: **Free For All** and **Team Deathmatch** are on. **Gun Game ships disabled and its weapon ladder is not implemented** — turning it on gives you a second free-for-all in which players keep their own chosen loadouts.
+- Modes: **Free For All** and **Team Deathmatch** are on. **Gun Game ships disabled**, and turning it on is not a second free-for-all: `gunGameLadder` replaces every player's own loadout with the rung they are standing on — on entry, on every promotion and on every respawn — each kill moves them up one, and finishing the ladder wins the round outright, ahead of whatever `Config.Match.winCondition` says. A rung naming a weapon that is not in the enabled catalogue is dropped and the ladder is that much shorter.
 - Win conditions: `last_standing` (default), `most_kills`, `score_limit`. A tie is a draw and refunds rather than picking one of two equal scores.
 - Lives, respawn delay, a round clock (`roundTimeSeconds = 0` for none), a lobby countdown players can still back out of, and a frozen start countdown.
 - Per-arena boundary sphere: a warning, then damage per tick until the player comes back. `boundary.enabled = false` for an open arena.
@@ -55,7 +55,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 - One switch — `Config.Betting.enabled` — hides every bet control and makes the server reject any bet that arrives anyway.
 - Entry fees are held in escrow, not tracked against a balance. Payout is `winner_takes_all` (default), `top_three` or `per_kill`, with an optional house cut.
 - Spectator side-bets on a team or a fighter, on by default, paid at a fixed `oddsMultiplier` by the house. They never touch the fighters' pot.
-- A match below `minPlayersToPayOut` refunds the pot instead of paying it out.
+- A match fought by fewer than `minPlayersToPayOut` refunds the pot instead of paying it out — judged on the head count the round started with, so a player leaving cannot turn a decided match into a refund.
 
 **Leaderboard**
 
@@ -137,11 +137,13 @@ Add an entry to `Config.Loadouts.weapons`. `key` is what the panel and the wire 
 
 An **off-list request is refused, not rounded** — asking for 121 rounds gets you `default`, not 120. Rounding to the nearest legal value would let a modified client walk a number up past a preset by asking for one just above it.
 
-A weapon with no choice to make sets `options = nil`. The panel shows no ammo row and the server hands out `default`:
+A weapon with no choice to make sets `options = nil`. The panel offers no chips for it — it prints the count as fixed instead — and the player is handed `default`:
 
 ```lua
 ammo = { default = 1, options = nil, max = 1 },
 ```
+
+With no list to check a request against, `max` is the only limit that weapon has left on the wire: a modified client asking for a number between `default` and `max` is given it, because that is what `max` means everywhere else in the file. **Set `max` equal to `default` for a weapon whose count is meant to be fixed** — both melee entries ship that way, which is why nothing on the shipped catalogue has any headroom to ask into. Leave the two apart only when free-form ammo up to the ceiling is what you meant.
 
 Removing a weapon is `enabled = false`. That genuinely removes it — it does not merely hide a button.
 
@@ -189,6 +191,8 @@ maxTeamSizeDifference = 1,      -- only consulted when allowUnequal = false
 requireBothTeamsOccupied = true,
 maxTeamSize = 0,                -- 0 = unlimited players per team
 ```
+
+`maxTeamSize` is enforced in all three places a player can end up on a side: picking one, being auto-assigned one at join with `allowChoose = false`, and being dropped onto the smallest side at start with `autoAssignIfUnchosen`. A player nobody has room for is left without a side and the start is refused for capacity, rather than being wedged onto a full team the lobby then cannot start with. **Set it against `Config.Match.maxPlayers`**: a lobby that admits more players than the sides have seats between them can be filled into a match that cannot start until somebody leaves.
 
 ### Adding an arena and its spawns
 
@@ -489,18 +493,24 @@ Turn it on only if NPC police still respond to gunfire on your server. It stops 
 
 ### Config keys nothing reads yet
 
-None. Every key in `config.lua` is read by something.
+One.
 
-This section used to list six that were not, and it is kept — empty — on
-purpose: it is the right place to record the next one, and an operator who
-has read this file once will come back looking for it before they conclude a
-setting is broken.
+| Key | What it looks like it does | What actually happens |
+|---|---|---|
+| `Config.Betting.entryFee.hostSetsForEveryone` | Off, each player would stake what they liked and the payout would be weighted by stake | Nothing. Joining always charges the host's fee — the join request carries no fee of its own — and no payout mode weights a share by what a player staked. The value reaches the panel in the state snapshot and nothing there reads it either. Setting it either way changes nothing you or a player can observe. |
+
+It is left in `config.lua` rather than deleted, because a key that vanishes
+from a config file an operator has already edited reads as a key that broke.
+
+This section is kept whether or not it has anything in it: it is the right
+place to record the next one, and an operator who has read this file once
+will come back looking for it before they conclude a setting is broken.
 
 ---
 
 ## How a round plays out
 
-1. **The lobby.** A player walks up to the NPC and picks the ox_target option, stands in the marker and presses E, or types `/arena`. The panel fetches the current snapshot from the server before it takes focus, so it never opens on an empty frame.
+1. **The lobby.** A player walks up to the NPC and picks the ox_target option, or stands in the marker and presses E. The panel fetches the current snapshot from the server before it takes focus, so it never opens on an empty frame.
 
 2. **Create or join.** The Matches screen lists every open match with its arena, mode, head count, pot and state. Creating one asks for an arena, a mode and — when entry fees are on and `hostSetsForEveryone = true` — one fee everybody in that match pays.
 
@@ -553,7 +563,7 @@ Three rules hold the invariant up:
 | A lobby sits idle past `idleLobbyTimeoutSeconds` with nobody ready | Closed, every stake refunded. |
 | Everybody disconnects mid-round | The round is aborted, not settled. Every stake and every side-bet goes back — there is nobody to declare a winner over. |
 | The round ends in a draw | Refunded. Paying one of two equal scores out of the other's stake is a coin toss with somebody else's money. |
-| The round ends below `minPlayersToPayOut` | Refunded. This is what stops two friends farming each other. |
+| The round was **fought** by fewer than `minPlayersToPayOut` | Refunded. This is what stops two friends farming each other. It counts who the round started with, not who is left at the end: otherwise the losing half of a 1v1 could turn a decided match into a refund by walking out of it, and collect the stake that leaving is supposed to forfeit. |
 | An admin runs `/arenaadmin stop` or `wipe` | Aborted and refunded, whatever state the match was in. |
 | **The resource stops or the server restarts** | Every live match is aborted on the way down, which refunds every stake in full, and only then are queued stat rows flushed. The handler is deliberately synchronous — a stop handler that yields may never be resumed, and a refund that never resumes is the exact bug it exists to prevent. |
 
@@ -591,7 +601,7 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 
 | Command | Where | Who |
 |---|---|---|
-| `/arena` | client | anyone. Opens the panel. The name comes from `Config.UI.command`; set it to `nil` to register nothing. |
+| *(none by default)* | client | `Config.UI.command` is `nil`, so no command is registered and the NPC is the only way in. Set it to a name to add one. |
 | `/arenaadmin list` | server | admins. Lists every match with its state, head count and pot. |
 | `/arenaadmin stop <id>` | server | admins. Aborts one match and refunds everybody. |
 | `/arenaadmin wipe` | server | admins. Aborts every match and refunds everybody. |

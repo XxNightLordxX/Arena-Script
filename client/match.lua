@@ -274,7 +274,15 @@ local function startBoundaryThread(boundary)
         while matchLive and matchToken == token do
             local ped = PlayerPedId()
 
-            if #(GetEntityCoords(ped) - center) > radius then
+            -- A reported death has not been answered yet, so this ped is
+            -- either a corpse or one parked inside ClearDeadState's hold --
+            -- neither is a fighter who could walk back inside the sphere,
+            -- and both are frozen where they fell. Bleeding one kills it a
+            -- second time, and the live thread reports and clears a death
+            -- once: that second one stays, which is the casualty
+            -- clearDeadStateImmediately exists to stop a medical script
+            -- ever finding.
+            if not deathReported and #(GetEntityCoords(ped) - center) > radius then
                 if not leftAt then
                     leftAt = GetGameTimer()
                     notify('match.boundary_warning', 'error', boundary.warningSeconds or 0)
@@ -558,6 +566,15 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
     FreezeEntityPosition(ped, true)
     placeAt(ped, scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius))
+
+    -- placeAt waits for the ground to stream in, so this handler YIELDS for
+    -- up to five seconds and an exitArena can be delivered inside that
+    -- window. By the time placeAt returns, leaveArena has already taken this
+    -- player home and given them their own weapons back: arming them with
+    -- the arena loadout now would strip exactly what was just restored, in
+    -- the open world, with nothing left that would ever take it away again.
+    if matchToken ~= token or not currentMatch then return end
+
     applyLoadout(ped, data.loadout)
 
     if data.weatherOverride then SetWeatherTypeNowPersist(data.weatherOverride) end
@@ -593,6 +610,7 @@ end)
 RegisterNetEvent('crimson_arena:client:respawn', function(data)
     if not currentMatch or type(data) ~= 'table' or type(data.spawn) ~= 'table' then return end
 
+    local token = matchToken
     local x, y, z, heading = scatter(data.spawn, Config.Match.spawnScatterRadius)
     NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
 
@@ -602,6 +620,12 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     ArenaDispatch.ReleaseDeadState(ped)
     ClearPedBloodDamage(ped)
     placeAt(ped, x, y, z, heading)
+
+    -- The same yield the entry handler guards: a round that ended while this
+    -- player was being put back on their feet has already restored their own
+    -- gear and moved them to the lobby.
+    if matchToken ~= token or not currentMatch then return end
+
     applyLoadout(ped, data.loadout)
 
     -- Only now: a death that has already been reported must not be
@@ -612,14 +636,16 @@ end)
 RegisterNetEvent('crimson_arena:client:eliminated', function(data)
     if type(data) ~= 'table' then return end
 
-    -- The hold ClearDeadState put them in STAYS unless spectating is about
-    -- to replace it. When Config.Match.spectateOnElimination is off the
-    -- server sends nothing more until the match ends, so releasing here
-    -- would stand an eliminated player back up, armed, in a live round --
-    -- they were only ever inert before because they were lying dead.
-    -- leaveArena releases it on the way out, whichever path gets there.
+    -- The hold ClearDeadState put them in STAYS, camera or no camera, and
+    -- leaveArena is the only thing that releases it. Releasing it here stood
+    -- an eliminated player back up, armed, in a live round the moment the
+    -- camera stopped -- and the camera stops on its own, whenever the last
+    -- fighter it could follow goes out of scope.
+    --
+    -- Spectating needs nothing released: it hides and freezes a ped that is
+    -- already hidden and frozen, and leaving invincibility where it found it
+    -- is what keeps the parked body from being killed a second time.
     if data.spectate and ArenaSpectate then
-        ArenaDispatch.ReleaseDeadState(PlayerPedId())
         ArenaSpectate.Start(data.matchId)
     end
 end)

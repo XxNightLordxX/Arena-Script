@@ -561,14 +561,19 @@ end
 ---
 --- IT HAS TO BE SELF-HEALING, because not every departure comes through
 --- those choke points. A spectator is attached and detached by
---- server/lobby.lua from call sites this file does not own. And a player who
---- leaves during the frozen countdown -- after Start() has already put them
---- in the arena, before goLive() flips the match to 'live' -- is routed by
---- main.lua's detach() to ArenaLobby.Leave rather than RemovePlayer, so no
---- exit is ever sent for them. A leaked flag on that path is a bug somebody
---- else's script has to live with for one session; a leaked BUCKET is a
---- player alone in an invisible copy of the map with no way out. The sweep
---- puts them back within a tick, whichever path dropped them.
+--- server/lobby.lua from call sites this file does not own.
+---
+--- The frozen countdown used to be the other one: main.lua's detach() asked
+--- ArenaMatch.IsLive, which is false while Start() has already put everybody
+--- in the arena and goLive() has not yet flipped the match to 'live', so a
+--- player leaving in that window was routed to ArenaLobby.Leave and no exit
+--- was sent. That is fixed -- detach() now asks RemovePlayer, whose own
+--- predicate covers both phases -- and tests/countdownexit_spec.lua holds it
+--- fixed. This sweep is no longer the thing standing between that bug and a
+--- stranded player, and it stays anyway: a leaked flag is a bug somebody
+--- else's script lives with for one session, but a leaked BUCKET is a player
+--- alone in an invisible copy of the map with no way out, and that is worth
+--- a table walk a second against the departure nobody has written yet.
 --- @type table<number, string>
 local instanced = {}
 
@@ -686,6 +691,14 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
     -- sendExitArena: split them and they can disagree.
     ArenaDispatch.EnterBucket(player.src, match.id)
     instanced[player.src] = match.id
+
+    -- The panel is where a player waits to be readied, so it is very often
+    -- still open -- and still holding NUI focus -- at this exact moment.
+    -- Focus routes every movement, aim and fire input into the browser, so a
+    -- player who is not told to shut it stands in a live round as a
+    -- motionless target behind a modal that also hides the countdown.
+    -- Unconditional because ArenaUI.Close is safe on a panel already closed.
+    TriggerClientEvent('crimson_arena:client:closePanel', player.src)
 
     TriggerClientEvent('crimson_arena:client:enterArena', player.src, {
         matchId = match.id,
@@ -814,6 +827,19 @@ local function goLive(matchId)
     -- closes the side-bet window `closeAfterStartSeconds` after this, and a
     -- startsAt still sitting in the future would leave it uncloseable.
     match.startsAt = os.time()
+
+    -- HOW MANY THE ROUND IS FOUGHT WITH, and this is the last moment it can
+    -- be counted: ArenaLobby.Join refuses anything but a lobby, so from here
+    -- the roster only ever shrinks, and every player in it has already paid
+    -- a stake that is now in the pot. End() hands this to the payout as
+    -- `contestants` -- read it there for what depends on it.
+    --
+    -- Counted here rather than in Start() because the two disagree: somebody
+    -- who walks out during the frozen countdown is refunded by
+    -- ArenaLobby.Leave -- that phase is still "before start" to the refund
+    -- rules -- so counting them would judge the pot against a stake that has
+    -- gone home.
+    match.contestants = #players
 
     local roundTime = math.max(0, Arena.ToInt(Config.Match.roundTimeSeconds) or 0)
     match.endsAt = roundTime > 0 and (match.startsAt + roundTime) or nil
@@ -1035,9 +1061,20 @@ function ArenaMatch.OnDeath(src, killerSrc)
         scheduleRespawn(match, player)
     else
         player.placement = placementFor(match)
+
+        -- REGISTERED FIRST, AND THE CLIENT IS TOLD WHAT THE SERVER ACTUALLY
+        -- DID. `spectate` is the client's instruction to come out of the
+        -- dead-state hold and open the camera, and the only thing that keeps
+        -- them out of the round afterwards is the registry listing them as a
+        -- spectator: the very next Broadcast tells them `spectating = false`
+        -- otherwise, and client/spectate.lua answers that by standing them
+        -- back up -- visible, unfrozen and still holding the arena loadout,
+        -- in a round they are out of. Refused registration therefore means
+        -- refused camera: the hold stays, which is inert and recoverable.
         local spectate = Config.Match.spectateOnElimination == true
+            and ArenaLobby.AddSpectator(id, match.id) == true
+
         TriggerClientEvent('crimson_arena:client:eliminated', id, { matchId = match.id, spectate = spectate })
-        if spectate then ArenaLobby.AddSpectator(id, match.id) end
         ArenaNotifyKey(id, 'notify.eliminated', 'error')
     end
 
@@ -1098,7 +1135,35 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         for index = 1, math.min(3, #ranked) do payoutWinners[index] = ranked[index] end
     end
 
-    local context = { teams = teamMode, winners = payoutWinners, players = {} }
+    -- TWO DIFFERENT HEAD COUNTS, and conflating them is what let a mid-round
+    -- quitter take their stake home.
+    --
+    -- `players` is who is still here to be PAID, and it stays the surviving
+    -- roster: Arena.ComputePayouts hands `stake` back off this list and
+    -- splits per_kill across it, so a player who walked out must not be on
+    -- it -- their stake was forfeited to the pot the moment they left, and
+    -- listing them would hand it straight back. An ELIMINATED player is a
+    -- different thing and stays: they fought the round to the end, and a
+    -- round that refunds owes them their stake like anybody else.
+    --
+    -- `contestants` is how many the round was FOUGHT with, recorded at
+    -- goLive. THE CONTRACT THIS RELIES ON: whatever judges Config.Betting
+    -- .minPlayersToPayOut counts THIS, not #players. Counted off the
+    -- survivors instead, a 1v1 that one side quits reads as "too few
+    -- players" and refunds the whole pot -- which pays the winner nothing
+    -- and hands the quitter back the stake that leaving was supposed to
+    -- forfeit. It has to survive ArenaBetting.Settle, which rebuilds this
+    -- table field by field on its way to Arena.ComputePayouts.
+    --
+    -- The fallback is for a round that never reached goLive and so has no
+    -- fought-with count to have; the roster it still holds is the closest
+    -- true answer available.
+    local context = {
+        teams = teamMode,
+        winners = payoutWinners,
+        contestants = match.contestants or #players,
+        players = {},
+    }
     for _, player in ipairs(players) do
         context.players[#context.players + 1] = {
             id = player.src,
@@ -1148,29 +1213,48 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             ArenaNotifyKey(player.src, endReason, 'info')
         end
 
-        sendExitArena(player.src, {
-            returnCoords = returnCoords,
-            results = {
-                matchId = match.id,
-                reason = endReason,
-                won = won[player.src] == true,
-                placement = player.placement,
-                kills = math.max(0, Arena.ToInt(player.kills) or 0),
-                deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
-                earnings = earned[player.src] or 0,
-                scoreboard = board,
-            },
-        })
+        local results = {
+            matchId = match.id,
+            reason = endReason,
+            won = won[player.src] == true,
+            placement = player.placement,
+            kills = math.max(0, Arena.ToInt(player.kills) or 0),
+            deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
+            earnings = earned[player.src] or 0,
+            scoreboard = board,
+        }
+
+        -- THE BOARD GOES OUT TWICE, and the second one is the one a player
+        -- sees. It has ridden the exitArena payload since before anything on
+        -- the client drew it, and that payload is this round's teardown
+        -- message -- the numbers are there for a client that wants them at
+        -- the moment it goes home. The board itself is a PANEL message:
+        -- client/ui.lua registers `crimson_arena:client:results` for it, and
+        -- with nothing firing that event the payout board this file spends
+        -- the whole of End() working out was never drawn for anybody.
+        --
+        -- Sent after the exit rather than before it because the exit is what
+        -- closes the round down on the client -- the HUD, the countdown, the
+        -- teleport home. A board drawn ahead of that is cleared by the tidy
+        -- up behind it.
+        sendExitArena(player.src, { returnCoords = returnCoords, results = results })
+        TriggerClientEvent('crimson_arena:client:results', player.src, results)
     end
 
     -- Spectators watched it, so they see the board; they were never in the
-    -- arena, so they win nothing and are owed nothing.
+    -- arena, so they win nothing and are owed nothing. The board is the only
+    -- reason they are sent anything at all at the end of a round.
     for src in pairs(match.spectators or {}) do
         if not match.players[src] then
-            sendExitArena(src, {
-                returnCoords = returnCoords,
-                results = { matchId = match.id, reason = endReason, won = false, earnings = 0, scoreboard = board },
-            })
+            local results = {
+                matchId = match.id,
+                reason = endReason,
+                won = false,
+                earnings = 0,
+                scoreboard = board,
+            }
+            sendExitArena(src, { returnCoords = returnCoords, results = results })
+            TriggerClientEvent('crimson_arena:client:results', src, results)
         end
     end
 
@@ -1357,11 +1441,12 @@ end
 ---
 --- TWO: EVERY LEAK, INCLUDING THE ONES NOT WRITTEN YET. sendExitArena is the
 --- exit this file controls, and it is not the only way out of a countdown or
---- a live round. main.lua's detach() sends a player who leaves during the
---- frozen countdown to ArenaLobby.Leave instead of RemovePlayer, and no exit
---- is sent for them at all. Rather than trust that every current and future
---- departure remembers, anyone holding a bucket who is no longer in a
---- countdown or live match is put back where they came from within a tick.
+--- a live round. The frozen-countdown hole it was written for is closed --
+--- main.lua's detach() now routes through RemovePlayer, which handles both
+--- phases -- but this does not depend on that staying true. Rather than trust
+--- that every current and future departure remembers, anyone holding a bucket
+--- who is no longer in a countdown or live match is put back where they came
+--- from within a tick.
 --- A stranded player cannot fix this themselves and an operator cannot
 --- easily see it, so it is worth a table walk a second.
 local function syncMatchBuckets()

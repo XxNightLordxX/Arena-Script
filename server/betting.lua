@@ -106,10 +106,21 @@ end
 --- (still held, still owed, try again later) and a payout (the pot has
 --- already been divided, so it is logged instead), which is why this returns
 --- the failure rather than handling it.
+---
+--- `citizenid` is the identity captured against that money when it was
+--- taken, and it is checked here because a server id is a slot rather than a
+--- person: FXServer hands a departed player's id to the next connection, and
+--- a stake outlives its owner exactly when they have gone. An id that now
+--- answers to somebody else is therefore "not on the server", not "here
+--- under a new name" -- so the caller takes the branch it already has for
+--- money it could not deliver, which says out loud who is still owed, rather
+--- than paying a stranger quietly. Money recorded without an identity passes
+--- nil and is paid on the id alone.
 --- @return boolean
-local function credit(src, amount, reason)
+local function credit(src, amount, reason, citizenid)
     local player = ArenaGetPlayer(src)
     if not player then return false end
+    if citizenid and (player.PlayerData and player.PlayerData.citizenid) ~= citizenid then return false end
     return player.Functions.AddMoney(Config.Betting.account, amount, reason) == true
 end
 
@@ -173,6 +184,29 @@ local function lobbyMatch(matchId)
     return match
 end
 
+--- The players a match currently has seated, or nil when the registry
+--- cannot answer at all. The two callers below want opposite things from
+--- "cannot answer" -- one treats it as seated, the other as not a fighter --
+--- so that choice stays theirs rather than being flattened into an empty
+--- table here.
+--- @return table<integer, table>|nil
+local function fightersOf(matchId)
+    local match = lobbyMatch(matchId)
+    if not match or type(match.players) ~= 'table' then return nil end
+    return match.players
+end
+
+--- Whether this player has money riding on the outcome of this match as a
+--- spectator. A settled bet does not count: it has already been paid, lost
+--- or handed back, so it is no longer money on the result.
+--- @return boolean
+local function holdsSideBet(matchId, src)
+    for _, bet in ipairs(sideBets[matchId] or {}) do
+        if bet.src == src and not bet.settled then return true end
+    end
+    return false
+end
+
 --- Whether side-bets on this match are still open: all through the lobby and
 --- the countdown, then `closeAfterStartSeconds` into the live round
 --- (0 = closed the moment it begins).
@@ -230,7 +264,7 @@ end
 local function returnSideBet(bet, matchId)
     if bet.settled then return false end
 
-    if not credit(bet.src, bet.amount, transaction('sidebet_refund', matchId)) then
+    if not credit(bet.src, bet.amount, transaction('sidebet_refund', matchId), bet.citizenid) then
         ArenaLog('SIDE-BET REFUND FAILED: %d owed to %s (citizenid %s) on match %s -- the bet stays held.',
             bet.amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
         incidentWebhook('Side-bet not returned',
@@ -300,17 +334,49 @@ function ArenaBetting.TakeStake(src, matchId, amount)
     local id = serverId(src)
     if not id or not Arena.IsKey(matchId) then return false, 'error.bet_invalid' end
 
+    -- A SEAT AND A SIDE-BET ON THE SAME MATCH ARE EXCLUSIVE, and this is the
+    -- half of that rule ordering used to walk round: PlaceSpectatorBet
+    -- refuses a fighter, so the way in was to back the match first and take
+    -- a seat afterwards. It is the door that closes rather than the bet that
+    -- is handed back, because a bet its holder can cancel at a moment of
+    -- their choosing -- by joining and walking straight out again -- is a bet
+    -- with no downside. SettleSpectatorBets voids what gets past here.
+    if holdsSideBet(matchId, id) then return false, 'error.bet_not_spectator' end
+
     local fee, reason = Arena.ResolveEntryFee(amount)
     if not fee then return false, reason or 'error.bet_invalid' end
     if fee <= 0 then return true, nil end
 
     local held = stakesOf(matchId)[id]
     if held and not held.settled then
-        -- A second take for one seat would remove the fee twice while only
-        -- one of the two could ever be refunded.
-        ArenaLog('DOUBLE STAKE REFUSED: %s already holds %d on match %s. Nothing was taken.',
-            tostring(held.citizenid or id), held.amount, tostring(matchId))
-        return false, 'error.bet_already_staked'
+        -- An unsettled stake is not by itself a seat. Somebody who left a
+        -- lobby under `refundOnDisconnectBeforeStart = false` forfeited their
+        -- fee INTO this match's pot, and that record outlives their row --
+        -- refusing on the record alone locked them out of a match with open
+        -- seats for as long as it existed, printing another refusal at the
+        -- operator on every retry. Their money is still in this pot, so
+        -- sitting back down is not a second stake; it is the first one, never
+        -- handed back, and nothing moves.
+        --
+        -- Both halves have to hold. The registry has to actually say the seat
+        -- is empty -- no answer means seated, because a second take for one
+        -- seat would remove the fee twice while only one of the two could
+        -- ever be refunded -- and the stake has to be THIS player's, since an
+        -- id belongs to whoever holds it now and seating a new connection on
+        -- a departed player's money is the same bug pointed the other way.
+        local fighters = fightersOf(matchId)
+        local vacated = fighters ~= nil and fighters[id] == nil
+        local theirs = held.citizenid ~= nil and held.citizenid == citizenIdOf(id)
+
+        if not vacated or not theirs then
+            ArenaLog('DOUBLE STAKE REFUSED: %s already holds %d on match %s. Nothing was taken.',
+                tostring(held.citizenid or id), held.amount, tostring(matchId))
+            return false, 'error.bet_already_staked'
+        end
+
+        trace('%s took a seat on match %s back on the %d already forfeited to its pot -- nothing taken',
+            tostring(held.citizenid or id), tostring(matchId), held.amount)
+        return true, nil
     end
 
     local ceiling = Arena.ToInt(Config.Betting.maxPot) or 0
@@ -358,7 +424,7 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
         return false
     end
 
-    if not credit(id, stake.amount, transaction('refund', matchId)) then
+    if not credit(id, stake.amount, transaction('refund', matchId), stake.citizenid) then
         -- Left unsettled deliberately: this is money still held and still
         -- owed, so a later RefundAll tries again and Clear goes on refusing
         -- to drop the match until it lands. Writing it off here would be the
@@ -384,8 +450,10 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
 end
 
 --- Everybody still in escrow gets their own stake back -- their own, not an
---- even share, because with `hostSetsForEveryone = false` they did not all
---- pay the same.
+--- even share of the pot. Escrow is the record of what each player actually
+--- paid, and only the amount recorded against a stake can be handed back to
+--- the player it was taken from; an even share balances the books while
+--- quietly moving money between them.
 --- @param matchId string
 --- @param reasonKey string?
 --- @return boolean ok -- true only when nothing is still owed
@@ -500,7 +568,7 @@ end
 --- the pot is a report, escrow is the fact, and paying out against a report
 --- is how a pot ends up bigger than the money behind it.
 --- @param matchId string
---- @param context table -- Arena.ComputePayouts' context: { players = { { id, team, kills, stake, placement } }, winners = { id }, teams = boolean }
+--- @param context table -- Arena.ComputePayouts' context: { players = { { id, team, kills, stake, placement } }, winners = { id }, teams = boolean, contestants = integer }
 --- @return table[] payouts -- { { id, amount, reason } } as computed
 function ArenaBetting.Settle(matchId, context)
     if not Arena.IsKey(matchId) then return {} end
@@ -514,6 +582,22 @@ function ArenaBetting.Settle(matchId, context)
         players = context.players,
         winners = context.winners,
         teams = context.teams,
+        -- FORWARDED, and it has to be. This table is rebuilt field by field
+        -- rather than passed through, so a field the caller sets and the
+        -- maths reads is silently dropped unless it is named here. That is
+        -- exactly what happened to `contestants`: server/match.lua recorded
+        -- it and shared/arena.lua read it, both correctly, and the value
+        -- never crossed this line -- so the bug they were each fixing stayed
+        -- live between them.
+        --
+        -- What it costs when missing: `players` is the SURVIVING roster, so
+        -- a 1v1 where one player quits mid-round arrives here with one name
+        -- on it. Below Config.Betting.minPlayersToPayOut, the maths refunds
+        -- everybody -- handing the quitter back the stake that leaving was
+        -- meant to forfeit, and paying the winner nothing for a fight they
+        -- won. `contestants` is how many the round was FOUGHT with, which is
+        -- the number that question was always asking about.
+        contestants = context.contestants,
     })
 
     -- Every payout being a refund means the match did not qualify to pay out
@@ -685,6 +769,13 @@ end
 --- A nil `winningPick` means the match produced no result at all. There is
 --- nothing to judge a bet against then, so the house has no claim on it and
 --- every bet is returned rather than swallowed.
+---
+--- A BET HELD BY A FIGHTER IS VOID and goes back unjudged, whichever way it
+--- would have gone. The rule that a fighter may not back their own match is
+--- checked when the bet is placed, and that check alone is defeated by doing
+--- the two things in the other order -- bet, then join. This is the check
+--- that cannot be ordered around, because it runs where the money moves and
+--- reads the roster as it finally stood.
 --- @param matchId string
 --- @param winningPick any -- team key, winning fighter's server id, or nil
 --- @return integer paid -- winning bets settled
@@ -693,12 +784,20 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
     local bets = sideBets[matchId]
     if type(bets) ~= 'table' then return 0, 0 end
 
+    -- No answer from the registry means no fighter can be identified, so
+    -- every bet is judged on the rule it was placed under. The callers that
+    -- matter -- End and Abort -- both settle before the record is dropped.
+    local fighters = fightersOf(matchId) or {}
     local wanted = canonicalPick(winningPick)
     local paid, total, kept, lines = 0, 0, 0, {}
 
     for _, bet in ipairs(bets) do
         if not bet.settled then
-            if not wanted then
+            if fighters[bet.src] then
+                ArenaLog('SIDE-BET VOID: %s backed "%s" on match %s and then fought in it -- returning %d unjudged.',
+                    tostring(bet.name or bet.src), tostring(bet.pick), tostring(matchId), bet.amount)
+                returnSideBet(bet, matchId)
+            elseif not wanted then
                 returnSideBet(bet, matchId)
             elseif bet.pick == wanted then
                 local amount = Arena.ComputeSpectatorPayout(bet.amount)
@@ -708,7 +807,7 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                 bet.settledAs = 'won'
                 paid = paid + 1
                 total = total + amount
-                if amount > 0 and credit(bet.src, amount, transaction('sidebet_payout', matchId)) then
+                if amount > 0 and credit(bet.src, amount, transaction('sidebet_payout', matchId), bet.citizenid) then
                     lines[#lines + 1] = ('%s: %s on "%s"'):format(tostring(bet.name or bet.src), money(amount), bet.pick)
                     ArenaNotifyKey(bet.src, 'notify.spectator_bet_won', 'success', money(amount))
                 elseif amount > 0 then
@@ -758,9 +857,27 @@ end
 --- Unresolved side-bets are the other case: they are the house's action
 --- rather than the pot, and once the match is gone there is nothing left to
 --- judge them against, so they are handed back here instead of kept.
+---
+--- THE ORDER IS LOAD-BEARING, and the returns run before the escrow check
+--- for that reason. The two pools are independent -- an entry fee that could
+--- not be handed back is not a reason to keep somebody's unjudged bet -- and
+--- the refusal below does not stop the match record being dropped:
+--- ArenaLobby.Destroy drops it whatever this returns. A side-bet still
+--- sitting here at that moment is one nobody can reach again, with no id
+--- left to call Clear with and, unlike a stranded stake, not one line
+--- printed with its name on it.
 --- @param matchId string
 --- @return boolean ok -- false when something is still owed; nothing is dropped then
 function ArenaBetting.Clear(matchId)
+    local owed = 0
+    for _, bet in ipairs(sideBets[matchId] or {}) do
+        if not bet.settled then
+            ArenaLog('CLEAR: match %s had an unresolved side-bet of %d from %s -- returning it.',
+                tostring(matchId), bet.amount, tostring(bet.name or bet.src))
+            if not returnSideBet(bet, matchId) then owed = owed + bet.amount end
+        end
+    end
+
     local held = ArenaBetting.GetPot(matchId)
     if held > 0 then
         ArenaLog('CLEAR REFUSED: match %s still holds %d in escrow. Settle or refund it first -- nothing was dropped.',
@@ -770,22 +887,12 @@ function ArenaBetting.Clear(matchId)
                 { name = 'Match', value = tostring(matchId) },
                 { name = 'Held', value = money(held) },
             })
-        return false
-    end
-
-    local owed = 0
-    for _, bet in ipairs(sideBets[matchId] or {}) do
-        if not bet.settled then
-            ArenaLog('CLEAR: match %s had an unresolved side-bet of %d from %s -- returning it.',
-                tostring(matchId), bet.amount, tostring(bet.name or bet.src))
-            if not returnSideBet(bet, matchId) then owed = owed + bet.amount end
-        end
     end
     if owed > 0 then
         ArenaLog('CLEAR REFUSED: match %s still owes %d in side-bets that could not be returned. Nothing was dropped.',
             tostring(matchId), owed)
-        return false
     end
+    if held > 0 or owed > 0 then return false end
 
     escrow[matchId] = nil
     sideBets[matchId] = nil

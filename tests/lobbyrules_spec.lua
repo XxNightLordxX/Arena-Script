@@ -206,12 +206,16 @@ local function newArena(wallets, mutate, jobs)
 
     --- What one player was told, in order. Only the toasts: the state
     --- snapshot goes to the same players down the same native.
+    ---
+    --- ArenaNotify sends this resource's own relay rather than 'ox_lib:notify'
+    --- -- client/ui.lua is what chooses between the panel's toast rail and
+    --- ox_lib, and it cannot choose once the server has chosen for it.
     --- @param id integer
     --- @return string
     function server.told(id)
         local said = {}
         for _, message in ipairs(sent) do
-            if message.event == 'ox_lib:notify' and message.target == id then
+            if message.event == 'crimson_arena:client:notify' and message.target == id then
                 said[#said + 1] = message.payload.description
             end
         end
@@ -229,7 +233,7 @@ end
 --- @param ids integer[]
 --- @return string matchId
 local function openLobby(server, fee, ids)
-    server.fire('createMatch', ids[1], { arenaKey = 'warehouse', modeKey = 'ffa', entryFee = fee })
+    server.fire('createMatch', ids[1], { arenaKey = 'airfield', modeKey = 'ffa', entryFee = fee })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')
@@ -609,7 +613,7 @@ t.test('a host joinJobs excludes cannot open a match either', function()
         config.Permissions.joinJobs = { 'police' }
     end)
 
-    server.fire('createMatch', 1, { arenaKey = 'warehouse', modeKey = 'ffa', entryFee = 1000 })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 1000 })
 
     t.equals(#server.lobby.All(), 0, 'a lobby its own host may not enter was left open')
     t.equals(server.movements(1), 0)
@@ -631,7 +635,7 @@ t.test('createJobs and joinJobs stay two separate lists', function()
     local matchId = openLobby(server, 1000, { 1, 2 })
     t.equals(server.betting.GetPot(matchId), 2000)
 
-    server.fire('createMatch', 2, { arenaKey = 'yard', modeKey = 'ffa', entryFee = 1000 })
+    server.fire('createMatch', 2, { arenaKey = 'beach', modeKey = 'ffa', entryFee = 1000 })
     t.equals(#server.lobby.All(), 1, 'an unlisted job opened a second match')
 end)
 

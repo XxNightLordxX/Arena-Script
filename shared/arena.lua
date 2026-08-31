@@ -317,7 +317,7 @@ end
 --- rubbish gets a knife and a bad match, not a stuck lobby. The one thing
 --- it will not do is exceed `weaponSlots` or hand out a weapon that is not
 --- in the enabled catalogue.
---- @param request table? -- { weapons = { { key = string, ammo = any }, ... }, armor = any }
+--- @param request table? -- { weapons = { { key = string, ammo = any }, ... }, armor = any }; a weapons entry flagged `alwaysGive` is the operator's own and is skipped, since the list below re-appends it
 --- @return table loadout -- { weapons = { { weapon = string, ammo = integer, components = table, tint = integer } }, armor = integer, health = integer }
 --- @return string[] rejected -- keys that were dropped, for logging/telemetry
 function Arena.ResolveLoadout(request)
@@ -340,25 +340,38 @@ function Arena.ResolveLoadout(request)
     for _, entry in ipairs(wanted) do
         if #resolved >= slots then break end
 
-        local key = type(entry) == 'table' and entry.key or entry
-        local weapon = Arena.GetWeaponByKey(key)
+        -- An `alwaysGive` entry coming back round. A loadout is stored
+        -- resolved and re-resolved at match start, so the operator's list
+        -- below arrives here as part of the request, under a GTA weapon name
+        -- that is not a catalogue key. Ignored rather than read: the loop
+        -- below appends it again regardless, so honouring it here would spend
+        -- a player's slot on the house weapon, and rejecting it would name
+        -- that weapon in the dropped-weapon log of every match ever started.
+        if not (type(entry) == 'table' and entry.alwaysGive == true) then
+            local key = type(entry) == 'table' and entry.key or entry
+            local weapon = Arena.GetWeaponByKey(key)
 
-        if not weapon then
-            rejected[#rejected + 1] = tostring(key)
-        elseif seen[weapon.key] then
-            -- Asking for the same gun twice would otherwise burn two slots
-            -- for one weapon and silently short-change the player.
-            rejected[#rejected + 1] = weapon.key
-        else
-            seen[weapon.key] = true
-            resolved[#resolved + 1] = {
-                key = weapon.key,
-                weapon = weapon.weapon,
-                label = weapon.label or weapon.key,
-                ammo = Arena.ResolveAmmo(weapon, type(entry) == 'table' and entry.ammo or nil),
-                components = type(weapon.components) == 'table' and weapon.components or {},
-                tint = Arena.ToInt(weapon.tint) or 0,
-            }
+            if not weapon then
+                rejected[#rejected + 1] = tostring(key)
+            elseif seen[weapon.key] then
+                -- Asking for the same gun twice would otherwise burn two slots
+                -- for one weapon and silently short-change the player.
+                rejected[#rejected + 1] = weapon.key
+            else
+                -- BOTH SPELLINGS, because the two loops speak different ones:
+                -- a picked weapon is known by its catalogue key, and the
+                -- `alwaysGive` guard below has only the GTA name to test with.
+                seen[weapon.key] = true
+                seen[weapon.weapon] = true
+                resolved[#resolved + 1] = {
+                    key = weapon.key,
+                    weapon = weapon.weapon,
+                    label = weapon.label or weapon.key,
+                    ammo = Arena.ResolveAmmo(weapon, type(entry) == 'table' and entry.ammo or nil),
+                    components = type(weapon.components) == 'table' and weapon.components or {},
+                    tint = Arena.ToInt(weapon.tint) or 0,
+                }
+            end
         end
     end
 
@@ -406,16 +419,25 @@ function Arena.CountTeams(players)
 end
 
 --- The team a newly joining player should land on when they did not pick
---- one: the smallest enabled team, ties broken by config order so the
---- choice is deterministic rather than dependent on pairs() ordering.
+--- one: the smallest enabled team WITH ROOM IN IT, ties broken by config
+--- order so the choice is deterministic rather than dependent on pairs()
+--- ordering.
+---
+--- `Config.Teams.maxTeamSize` is read here as well as in
+--- Arena.TeamsAreStartable because a suggestion that ignored it does not
+--- avoid the refusal, it only moves it to the start button -- with the
+--- over-capacity side already written onto the player, and with the switch
+--- they would need to fix it themselves refused for the same reason.
 --- @param players table[]
---- @return string|nil teamKey -- nil only when no team is enabled at all
+--- @return string|nil teamKey -- nil when no team is enabled, and when every enabled team is full
 function Arena.SuggestTeam(players)
     local counts = Arena.CountTeams(players)
+    local cap = Arena.ToInt(Config.Teams.maxTeamSize) or 0
     local best, bestCount
     for _, team in ipairs(Arena.GetEnabledTeams()) do
         local count = counts[team.key] or 0
-        if not bestCount or count < bestCount then
+        local hasRoom = cap <= 0 or count < cap
+        if hasRoom and (not bestCount or count < bestCount) then
             best, bestCount = team.key, count
         end
     end
@@ -426,7 +448,8 @@ end
 ---
 --- UNEVEN TEAMS: with `Config.Teams.allowUnequal` on (the default) this
 --- only ever refuses for a reason that is not about balance -- a team with
---- nobody in it, or a team over its size cap. 7v1 passes.
+--- nobody in it, a team over its size cap, or more players still without a
+--- side than the caps have seats left for them. 7v1 passes.
 --- @param players table[]
 --- @return boolean ok
 --- @return string|nil reason -- a locale key, not a sentence
@@ -436,15 +459,30 @@ function Arena.TeamsAreStartable(players)
 
     if #teams == 0 then return false, 'error.no_teams_enabled' end
 
-    local occupied = 0
+    local cap = Arena.ToInt(Config.Teams.maxTeamSize) or 0
+    local occupied, freeSeats = 0, 0
     for _, team in ipairs(teams) do
         local count = counts[team.key] or 0
         if count > 0 then occupied = occupied + 1 end
 
-        local cap = Arena.ToInt(Config.Teams.maxTeamSize) or 0
-        if cap > 0 and count > cap then
-            return false, 'error.team_over_capacity'
+        if cap > 0 then
+            if count > cap then return false, 'error.team_over_capacity' end
+            freeSeats = freeSeats + (cap - count)
         end
+    end
+
+    -- Anybody who has not picked is dropped onto the smallest team with room
+    -- at start (Arena.SuggestTeam), so a roster carrying more of them than
+    -- the caps have seats for cannot be made startable by that assignment.
+    -- Refused here rather than started: a team match that ran anyway would
+    -- carry a fighter with no side, which no win condition can rank and no
+    -- friendly-fire rule can place.
+    if cap > 0 then
+        local unassigned = 0
+        for _, player in ipairs(players or {}) do
+            if not Arena.IsKey(player.team) then unassigned = unassigned + 1 end
+        end
+        if unassigned > freeSeats then return false, 'error.team_over_capacity' end
     end
 
     if Config.Teams.requireBothTeamsOccupied ~= false and occupied < 2 then
@@ -627,10 +665,12 @@ end
 ---
 --- `context` is deliberately plain data, not a live match object, so this
 --- can be tested exhaustively without a server:
----   pot      -- integer, everything staked
----   players  -- array of { id, team, kills, stake, placement }
----   winners  -- array of ids (already decided by the match, not here)
----   teams    -- boolean, whether this was a team mode
+---   pot         -- integer, everything staked
+---   players     -- array of { id, team, kills, stake, placement }
+---   winners     -- array of ids (already decided by the match, not here)
+---   teams       -- boolean, whether this was a team mode
+---   contestants -- integer, how many the round was FOUGHT with; optional,
+---                  and only ever read for the minPlayersToPayOut threshold
 ---
 --- RETURNS `payouts` (array of { id, amount, reason }) plus the house cut.
 --- A `reason` of 'refund' means the match did not qualify to pay out and
@@ -659,8 +699,19 @@ function Arena.ComputePayouts(context)
     if pot <= 0 then return {}, 0 end
 
     -- Too few players for the pot to mean anything: give it all back.
+    --
+    -- Judged on how many FOUGHT the round, not on how many are left to be
+    -- paid. Read off the survivors, a 1v1 whose loser walked out mid-round
+    -- becomes a one-player match and refunds the pot -- handing the quitter
+    -- back the stake that leaving was supposed to forfeit, and paying the
+    -- winner nothing but their own. A caller that does not know the figure --
+    -- a lobby closed before it ever went live -- passes none, where the two
+    -- numbers are the same one anyway. Never below the roster in hand: this
+    -- count only ever grows the head count, so a stale or missing one cannot
+    -- refund a match that is standing in front of it.
+    local contestants = math.max(#players, Arena.ToInt(context.contestants) or 0)
     local minimum = Arena.ToInt(Config.Betting.minPlayersToPayOut) or 0
-    if #players < minimum then return refundEveryone('refund_too_few') end
+    if contestants < minimum then return refundEveryone('refund_too_few') end
 
     -- Nobody won (everyone left, double knockout, clock ran out on a tie
     -- the match could not break): refund rather than invent a winner.

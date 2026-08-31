@@ -142,7 +142,7 @@ end
 --- @return string matchId
 local function frozenCountdown()
     local server = newServer()
-    server.fire('createMatch', 1, { arenaKey = 'warehouse', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')
@@ -229,7 +229,7 @@ t.test('leaving a plain lobby still does NOT send an arena exit', function()
     -- A fix that sent one here would be firing arena teardown at a player
     -- standing in the lobby.
     local server = newServer()
-    server.fire('createMatch', 1, { arenaKey = 'warehouse', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
     local match = server.lobby.All()[1]
     server.fire('joinMatch', 2, { matchId = match.id })
 

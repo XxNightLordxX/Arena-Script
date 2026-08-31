@@ -688,6 +688,51 @@ t.test('and an operator can say how much room their own props need', function()
         'the configured clearance was ignored in favour of the default')
 end)
 
+t.test('the separation holds across SIXTY different random sequences', function()
+    -- THE CLAIM WAS MEASURED ON ONE SEQUENCE, which is not the same as being
+    -- true. Placement is rejection sampling: it consumes random numbers, and
+    -- a run that is comfortable on the default sequence can be tight on
+    -- another. "It passed when I ran it" is exactly the evidence this
+    -- project has been burned by.
+    --
+    -- Sixty seeds across seven roster sizes is four hundred and twenty
+    -- rosters, and every one of them has to make the stated distance.
+    local Arena = growingEnv().Arena
+
+    local worstSeen, short = math.huge, nil
+    for seed = 1, 60 do
+        math.randomseed(seed)
+        for _, players in ipairs({ 4, 8, 12, 16, 20, 24, 32 }) do
+            local factor = Arena.SizeFactor('sky', players)
+            local area = Arena.GetSpawnArea('sky', factor)
+
+            local roster = {}
+            for id = 1, players do roster[#roster + 1] = { src = id } end
+            local plan = Arena.PlanSpawns('sky', roster, nil, factor)
+
+            local points = {}
+            for _, point in pairs(plan) do points[#points + 1] = point end
+
+            local closest = math.huge
+            for i = 1, #points do
+                for j = i + 1, #points do
+                    local dx, dy = points[i].x - points[j].x, points[i].y - points[j].y
+                    closest = math.min(closest, math.sqrt(dx * dx + dy * dy))
+                end
+            end
+
+            worstSeen = math.min(worstSeen, closest)
+            if closest < area.minSeparation - 1e-9 and not short then
+                short = ('seed %d, %d fighters: %0.3fm against a stated %0.1f')
+                    :format(seed, players, closest, area.minSeparation)
+            end
+        end
+    end
+
+    t.isNil(short, short or '')
+    t.isTrue(worstSeen < 1e9, 'no roster was measured at all')
+end)
+
 t.test('and the shipped skydome is the one that grows', function()
     -- The operator asked for an arena that holds twenty. This is the setting
     -- that makes the one they run do it.

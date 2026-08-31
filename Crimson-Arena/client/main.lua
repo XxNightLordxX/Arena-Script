@@ -254,6 +254,13 @@ end
 -- as well would send the panel two copies of every update.
 RegisterNetEvent('crimson_arena:client:state', function(newState)
     ArenaState.Set(newState)
+
+    -- The fence round any arena being fought in that this player is not in.
+    -- Handed on here rather than read out of the cache by the fence itself,
+    -- so a match ending stops it in the same instant the state says so.
+    if type(ArenaMatch) == 'table' and type(ArenaMatch.SetKeepOut) == 'function' then
+        ArenaMatch.SetKeepOut(type(newState) == 'table' and newState.keepOut or nil)
+    end
 end)
 
 CreateThread(function()

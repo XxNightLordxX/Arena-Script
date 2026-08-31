@@ -534,6 +534,117 @@ local function startBoundaryThread(boundary)
 end
 
 -- ======================================================================
+-- THE FENCE ROUND A LIVE ARENA
+--
+-- Isolation already stops an outsider seeing a fight, shooting into it, or
+-- being shot out of it -- a live match is in its own routing bucket and that
+-- is the strongest answer there is. This is the PHYSICAL half of the same
+-- idea: without it somebody who is not in the round can walk into the middle
+-- of it, invisible to everybody there, and on a server that has turned
+-- isolation off they are standing in a live firefight.
+--
+-- ONE THREAD FOR THE WHOLE RESOURCE, started once and parked when there is
+-- nothing to keep anybody out of. A thread per zone would be a thread per
+-- live match on every client on the server.
+-- ======================================================================
+
+--- This file's own namespace, which it did not have until the fence needed
+--- one. Everything else here is local or an event handler; this is the single
+--- thing client/main.lua has to be able to call.
+-- Assigned, never read-then-assigned: boot_spec loads every file in manifest
+-- order and treats a READ of an undefined global as the error it usually is,
+-- so `ArenaMatch or {}` fails the boot for a name this file itself owns.
+ArenaMatch = {}
+
+--- The zones the server says this player must stay out of. Replaced whole on
+--- every state push rather than merged: a match that has ended must stop
+--- fencing immediately, and the absence of a zone is the only way the server
+--- says so.
+local keepOut = {}
+
+--- Whether a warning has already been given for the zone being stood in, so
+--- crossing the line says something once rather than four times a second.
+local warnedZone = nil
+
+--- @param zones table[]|nil
+function ArenaMatch.SetKeepOut(zones)
+    keepOut = type(zones) == 'table' and zones or {}
+    if #keepOut == 0 then warnedZone = nil end
+end
+
+--- The zone a point is inside, or nil.
+--- @return table|nil zone
+--- @return number|nil distance -- from the zone centre
+local function zoneAt(x, y)
+    for _, zone in ipairs(keepOut) do
+        local zx, zy = tonumber(zone.x), tonumber(zone.y)
+        local radius = tonumber(zone.radius)
+        if zx and zy and radius then
+            local dx, dy = x - zx, y - zy
+            local distance = math.sqrt(dx * dx + dy * dy)
+            if distance < radius then return zone, distance end
+        end
+    end
+    return nil, nil
+end
+
+CreateThread(function()
+    while true do
+        local barrier = (Config.Match or {}).keepOutBarrier
+        local on = type(barrier) == 'table' and barrier.enabled == true
+
+        -- Parked, not spinning. With no live match anywhere -- which is most
+        -- of the time on most servers -- this costs one wake a second.
+        if not on or #keepOut == 0 then
+            warnedZone = nil
+            Wait(1000)
+        else
+            local ped = PlayerPedId()
+            local coords = GetEntityCoords(ped)
+            local zone, distance = zoneAt(coords.x, coords.y)
+
+            if zone then
+                local radius = tonumber(zone.radius) or 0
+                local push = math.max(1.0, tonumber(barrier.pushBackMetres) or 6.0)
+
+                -- Pushed straight back out along the line from the centre, so
+                -- they leave the way they came in rather than being spun
+                -- round to somewhere they were not heading.
+                --
+                -- Dead centre has no direction to push along, so one is
+                -- chosen: any edge is better than standing in the middle of
+                -- a round.
+                local dx, dy = coords.x - zone.x, coords.y - zone.y
+                local length = math.max(0.01, distance or 0.01)
+                if (distance or 0) < 0.5 then dx, dy, length = 1.0, 0.0, 1.0 end
+
+                local target = radius + push
+                local nx = zone.x + (dx / length) * target
+                local ny = zone.y + (dy / length) * target
+
+                -- Asked from well above, for the same reason the spawn probe
+                -- is: the query starts where it is told and searches DOWN, so
+                -- asking from the player's own height finds nothing when the
+                -- ground outside is higher than the ground inside.
+                local found, groundZ = GetGroundZFor_3dCoord(nx, ny, coords.z + 200.0, false)
+                local nz = (found and groundZ and groundZ > -190.0) and (groundZ + 0.15) or coords.z
+
+                SetEntityCoordsNoOffset(ped, nx, ny, nz, false, false, false)
+
+                if barrier.notify ~= false and warnedZone ~= zone.label then
+                    warnedZone = zone.label
+                    notify('match.keep_out', 'error', zone.label or '')
+                end
+            else
+                warnedZone = nil
+            end
+
+            Wait(math.max(50, Arena.ToInt(barrier.tickMs) or 250))
+        end
+    end
+end)
+
+-- ======================================================================
 -- FIGHTER BLIPS
 --
 -- `Config.Teams.showTeamBlips` and `Config.Teams.showEnemyBlips`, drawn on

@@ -126,7 +126,7 @@ files['fxmanifest.lua'] = {
 
 files['client/'] = {
     -- This realm's own exports, in the order fxmanifest.lua loads them.
-    globals = { 'ArenaUI', 'ArenaDispatch', 'ArenaState', 'ArenaSpectate' },
+    globals = { 'ArenaUI', 'ArenaDispatch', 'ArenaState', 'ArenaSpectate', 'ArenaMatch' },
 
     read_globals = {
         -- Shared realm, read-only from here: the client never writes a rule.

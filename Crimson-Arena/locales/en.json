@@ -69,7 +69,8 @@
         "ended_score_limit": "Match over. Score limit hit.",
         "ended_time_up": "Match over. Clock ran out.",
         "label": "%s's %s",
-        "left": "You walked out of the match."
+        "left": "You walked out of the match.",
+        "keep_out": "A match is being fought at %s. You have been moved outside it."
     },
     "meta": {
         "locale_probe": "en",

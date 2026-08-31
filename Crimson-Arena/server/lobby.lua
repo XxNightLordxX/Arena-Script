@@ -589,6 +589,59 @@ end
 
 --- @param src number
 --- @return table snapshot
+--- The arenas a player must be kept OUT of, because a round is being fought
+--- in them and they are not in it.
+---
+--- WHY THIS EXISTS AT ALL, given isolation. A live match is fought in its own
+--- routing bucket, so an outsider already cannot see the fighters, cannot
+--- shoot them, and cannot be shot -- that half is settled at the strongest
+--- level there is and this adds nothing to it.
+---
+--- What it adds is the PHYSICAL half. Without it an outsider can stand in the
+--- middle of an arena, invisible to everybody fighting there, wandering
+--- through a round nobody can see them in -- and if an operator ever turns
+--- isolation off, they are standing in a live firefight.
+---
+--- Per player, and only ever the matches they are NOT in: a fighter must not
+--- be pushed out of their own round.
+--- @param src any
+--- @return table[] zones -- { { x, y, z, radius, label } }
+local function snapshotKeepOut(src)
+    local barrier = (Config.Match or {}).keepOutBarrier
+    if type(barrier) ~= 'table' or barrier.enabled ~= true then return {} end
+
+    local id = tonumber(src)
+    local zones = {}
+
+    for _, match in pairs(matches) do
+        -- Lobby matches are not fought in yet, so there is nothing to keep
+        -- anybody out of and no reason to fence off a field early.
+        if match.state == 'live' and not (type(match.players) == 'table' and match.players[id]) then
+            local arena = Arena.GetArenaByKey(match.arenaKey)
+            local boundary = type(arena) == 'table' and arena.boundary or nil
+
+            -- The BOUNDARY is the fence, deliberately -- the same circle the
+            -- fighters themselves are bled for leaving. One arena has one
+            -- edge, and two different ones would be a question with two
+            -- answers on the same field.
+            if type(boundary) == 'table' and boundary.enabled ~= false and boundary.center then
+                local radius = tonumber(boundary.radius) or 0
+                if radius > 0 then
+                    zones[#zones + 1] = {
+                        x = tonumber(boundary.center.x),
+                        y = tonumber(boundary.center.y),
+                        z = tonumber(boundary.center.z),
+                        radius = radius,
+                        label = arena.label or match.arenaKey,
+                    }
+                end
+            end
+        end
+    end
+
+    return zones
+end
+
 function ArenaLobby.BuildState(src)
     refreshLeaderboard()
     return {
@@ -596,6 +649,7 @@ function ArenaLobby.BuildState(src)
         player = snapshotPlayer(src),
         matches = snapshotMatches(),
         leaderboard = leaderboard,
+        keepOut = snapshotKeepOut(src),
     }
 end
 

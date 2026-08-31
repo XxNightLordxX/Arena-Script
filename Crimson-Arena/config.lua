@@ -2134,6 +2134,38 @@ Config.Match = {
     -- probe happens in client/match.lua.
     spawnHeightOffset = 3.0,
 
+    -- KEEPING EVERYONE ELSE OUT OF A LIVE ARENA.
+    --
+    -- A live match is already fought in its own routing bucket, so an
+    -- outsider cannot see the fighters, cannot shoot them and cannot be shot
+    -- -- that half is settled and this adds nothing to it.
+    --
+    -- What this adds is the physical half: somebody who is not in the round
+    -- is pushed back out of the arena's boundary circle and held there for as
+    -- long as it is being fought in. Without it they can stand in the middle
+    -- of a firefight nobody can see them in -- and on a server that has
+    -- turned isolation off, in one they can be shot in.
+    --
+    -- The fence is the arena's own `boundary`, deliberately: the same circle
+    -- the fighters are bled for leaving. One field, one edge.
+    keepOutBarrier = {
+        enabled = true,
+
+        -- How far OUTSIDE the boundary somebody is put when they cross it.
+        -- Far enough that they are not immediately pushed again by the next
+        -- tick, close enough that it reads as a wall and not a teleport.
+        pushBackMetres = 6.0,
+
+        -- How often the fence is checked, in milliseconds. A quarter second
+        -- catches a sprint; every frame would be a loop running on every
+        -- player on the server for the length of every round.
+        tickMs = 250,
+
+        -- Tell them why they were moved, once per crossing rather than once
+        -- per tick.
+        notify = true,
+    },
+
     -- Eliminated players watch the rest of the match instead of being sent
     -- straight back to the lobby.
     spectateOnElimination = true,

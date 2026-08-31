@@ -124,6 +124,13 @@
         createMode: null,
         createFee: null,
 
+        /* Declared, and that is not a formality: without the key here it is
+           `undefined` rather than null, the `=== null` guard that seeds it
+           from config never fires, and every match is created with the
+           fallback -- one life -- whatever the operator's default says and
+           whatever the host picked before touching the box. */
+        createLives: null,
+
         /* The match the browser has highlighted. Bets and spectating read
            it, so it survives a re-render of the list. */
         selectedMatchId: null,
@@ -899,6 +906,12 @@
         }
         if (state.createFee === null) {
             state.createFee = int(((config.betting || {}).entryFee || {}).default, 0);
+        }
+        /* Its own guard, not the fee's. Sharing one meant a server with
+           betting off never seeded the lives box at all, and coupling two
+           unrelated fields to one flag is how the second one quietly stops
+           being initialised when the first changes. */
+        if (state.createLives === null) {
             state.createLives = int((config.match || {}).lives, 1);
         }
         if (state.betAmount === null) {

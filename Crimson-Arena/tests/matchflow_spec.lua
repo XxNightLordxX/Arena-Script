@@ -808,6 +808,9 @@ local function newClientFixture()
         released = {},
         cleared = 0,
         given = {},
+        -- Where the player has been put, in order. A placement that happens
+        -- AFTER they have gone home is the defect the last test covers.
+        placements = {},
     }
 
     local env = Sandbox.newArenaEnv({
@@ -846,7 +849,9 @@ local function newClientFixture()
 
         FreezeEntityPosition = function() end,
         ClearPedBloodDamage = function() end,
-        SetEntityCoordsNoOffset = function() end,
+        SetEntityCoordsNoOffset = function(_ped, x, y, z)
+            f.placements[#f.placements + 1] = { x = x, y = y, z = z }
+        end,
         SetEntityHeading = function() end,
         RequestCollisionAtCoord = function() end,
         HasCollisionLoadedAroundEntity = function() return f.groundReady end,
@@ -1030,8 +1035,12 @@ t.test('a round that ends mid-placement still lets the player out of the hold', 
     -- The token guard below the placement returns without arming anybody,
     -- and it must not return without releasing either: leaveArena has
     -- already spent its one release by then, and placeAt has re-frozen the
-    -- ped since. Anything that bails out ahead of the release strands the
-    -- player frozen and invisible in the lobby.
+    -- ped since. Anything that bails out ahead of the release leaves the
+    -- player FROZEN -- and only frozen. Not invisible and not in the lobby:
+    -- leaveArena made them visible and mortal on its way past, and it sent
+    -- them home. Frozen on its own is enough to strand somebody, which is
+    -- the whole point; the earlier wording here overstated it and an
+    -- adversarial check caught that before it could mislead anybody.
     local f = newClientFixture()
     f.toFirstDeath()
 
@@ -1049,6 +1058,33 @@ t.test('a round that ends mid-placement still lets the player out of the hold', 
     t.equals(#f.released, releasedByExit + 2,
         'the parked respawn re-froze the ped on its way out and left nothing to unfreeze it')
     t.equals(#f.given, 1, 'a player already home was re-armed with the arena loadout')
+end)
+
+t.test('and does not teleport a player who has gone home back to the arena', function()
+    -- FOUND BY AN ADVERSARIAL CHECK ON THE FIX ABOVE, not by the fix itself.
+    -- placeAt waits up to five seconds for the world to stream in, and a
+    -- round can end inside that wait: the player is sent home, given their
+    -- own gear back, and put in the lobby -- and then the parked placement
+    -- wakes up and puts them back at the arena spawn. Nothing downstream
+    -- undid it, because the exit had already run by then.
+    --
+    -- The release count says nothing about this, which is exactly why it
+    -- stayed invisible. What is asserted is the teleport.
+    local f = newClientFixture()
+    f.toFirstDeath()
+
+    f.groundReady = false
+    f.respawn()
+    f.step()
+
+    f.fire('crimson_arena:client:exitArena', {})
+    local afterExit = #f.placements
+
+    f.groundReady = true
+    f.step()
+
+    t.equals(#f.placements, afterExit,
+        'the parked placement fired after the player had already left, dragging them back into the arena')
 end)
 
 os.exit(t.summary())

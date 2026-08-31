@@ -225,7 +225,9 @@ end
 --- @param z number
 --- @param heading number
 --- @param leaveFrozen boolean -- the freeze state to leave the ped in
-local function placeAt(ped, x, y, z, heading, leaveFrozen)
+--- @param stillWanted fun(): boolean|nil -- re-asked after the yield below
+--- @return boolean placed -- false when the caller stopped wanting this
+local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted)
     -- FROZEN IS WHAT STOPS THE FALL. HEIGHT IS ONLY FOR THE PROBE.
     --
     -- Two separate things, and conflating them cost a round: this used to
@@ -254,6 +256,21 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen)
     while not HasCollisionLoadedAroundEntity(ped) and GetGameTimer() < deadline do
         RequestCollisionAtCoord(x, y, z + lift)
         Wait(0)
+    end
+
+    -- ASKED AGAIN AFTER THE YIELD, and this is a real bug rather than
+    -- caution. That loop can wait five seconds, and a round can end inside
+    -- it: the player is sent home, given their own gear back, and put in the
+    -- lobby -- and then this function, still parked mid-placement, wakes up
+    -- and teleports them BACK to the arena spawn they no longer belong at.
+    -- Nothing downstream undid it, because by then the exit had already run.
+    --
+    -- The freeze is dropped on the way out. The caller's own guard cannot do
+    -- it: it does not run until this returns, and by then the damage is a
+    -- teleport that has already happened.
+    if stillWanted and not stillWanted() then
+        FreezeEntityPosition(ped, false)
+        return false
     end
 
     -- PROBED FROM HIGH ABOVE -- the query, not the player.
@@ -291,6 +308,7 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen)
     -- for the countdown, a respawn wants it moving immediately, and guessing
     -- wrong either strands a fighter or lets them run before the round.
     FreezeEntityPosition(ped, leaveFrozen == true)
+    return true
 end
 
 -- ======================================================================
@@ -813,18 +831,28 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     -- target again rather than the start of a five-second wait. Nothing is
     -- made invincible here that was not already -- the hold is simply not
     -- dropped early any more.
-    placeAt(ped, x, y, z, heading, true)
+    -- The guard is handed IN rather than checked after. placeAt can wait five
+    -- seconds for the world, and a round that ends inside that wait sends
+    -- this player home -- so a placement decided before the wait and applied
+    -- after it would teleport somebody who has already left back to the
+    -- arena spawn. Asked again on the far side of the yield, it simply does
+    -- not place them.
+    local placed = placeAt(ped, x, y, z, heading, true, function()
+        return matchToken == token and currentMatch ~= nil
+    end)
 
-    -- Unconditional, and ahead of the guard below: placeAt has just re-frozen
-    -- this ped, and a round that ended during its yield already spent its one
-    -- release in leaveArena. Returning without this would leave the player
-    -- frozen and invisible in the lobby with nothing left to free them.
+    -- Unconditional, and ahead of the guard below: placeAt re-freezes this
+    -- ped, and a round that ended during its yield already spent its one
+    -- release in leaveArena. Without this the player is left FROZEN AT THE
+    -- ARENA SPAWN -- not invisible, and not in the lobby: leaveArena has
+    -- already made them visible and mortal on its way past. Frozen alone is
+    -- enough to strand them, which is what this line is for.
     ArenaDispatch.ReleaseDeadState(ped)
 
     -- The same yield the entry handler guards: a round that ended while this
     -- player was being put back on their feet has already restored their own
     -- gear and moved them to the lobby.
-    if matchToken ~= token or not currentMatch then return end
+    if not placed or matchToken ~= token or not currentMatch then return end
 
     applyLoadout(ped, data.loadout)
 end)

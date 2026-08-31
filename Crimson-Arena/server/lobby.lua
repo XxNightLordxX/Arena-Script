@@ -533,6 +533,12 @@ local function snapshotMatches()
             hostName = match.hostName,
             state = match.state,
             entryFee = match.entryFee,
+            -- SENT, because the host chose it and nothing else can tell them
+            -- what they chose. Stored on the match and never put on the wire,
+            -- it was a setting that appeared to do nothing: the lobby card
+            -- looked identical whatever was picked, so the only way to find
+            -- out was to die three times and count.
+            lives = match.lives,
             pot = ArenaBetting.GetPot(match.id),
             playerCount = #roster,
             teamCounts = Arena.CountTeams(roster),

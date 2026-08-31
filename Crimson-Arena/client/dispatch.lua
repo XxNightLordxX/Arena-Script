@@ -284,10 +284,15 @@ function ArenaDispatch.ClearDeadState(ped)
     return true
 end
 
---- Undoes ClearDeadState's holding pattern. client/match.lua calls this
---- from its respawn and elimination handlers, both of which own where the
---- ped ends up themselves -- so this restores the ped's properties and
+--- Undoes ClearDeadState's holding pattern. client/match.lua calls it from
+--- exactly two places -- leaveArena and the respawn handler -- and both put
+--- the ped somewhere themselves, so this restores its properties and
 --- deliberately does not touch its position.
+---
+--- NOT the elimination handler, which this used to claim. That one keeps the
+--- hold on purpose and says so where it decides: releasing there stood an
+--- eliminated player back up, armed, in a live round the moment the
+--- spectator camera stopped.
 --- @param ped integer
 function ArenaDispatch.ReleaseDeadState(ped)
     SetEntityInvincible(ped, false)

@@ -588,38 +588,30 @@ end)
 -- console honestly reported running it while the player stayed on the floor.
 -- ========================================================================
 
-t.test('the resource grants itself permission for the command it is configured with', function()
-    local f = newFixture(reviveConfig('revive %s'))
-    f.step()
-
-    local ran = table.concat(f.commands, '\n')
-    t.contains(ran, 'add_ace', 'no permission was granted, so the command is refused in silence')
-    t.contains(ran, 'command.revive', 'the wrong permission was granted')
-    t.contains(ran, 'resource.crimson_arena', 'the permission was not granted to this resource')
-end)
-
-t.test('the wider grant stays off unless it is asked for', function()
-    -- THE CONTRACT CHANGED, and this test used to assert the opposite: that
-    -- admin was never granted at all. That was the right default and it was
-    -- not enough -- a revive gated on something other than its own ACE still
-    -- answered "access denied" with only the narrow grant, and the operator
-    -- asked for the wider one.
+t.test('nothing is granted unless the operator asked for it', function()
+    -- THE CONTRACT CHANGED TWICE, and both changes are worth recording.
     --
-    -- What is pinned now is that it is a DECISION rather than a default:
-    -- nothing wide happens unless grantSelfAdmin says so.
+    -- It first granted `command.revive` and nothing else, on the reasoning
+    -- that the narrowest grant which works is the right one. It did not
+    -- work: this server's revive is not gated on a permission named after
+    -- itself, it asks whether the caller is an ADMIN, and no amount of
+    -- permission to run one command answers that question. So the narrow
+    -- grant is gone rather than kept as decoration.
+    --
+    -- What is pinned now is that granting anything is a DECISION.
     local f = newFixture(reviveConfig('revive %s'))
     f.step()
 
     local ran = table.concat(f.commands, '\n')
-    t.contains(ran, 'command.revive', 'the narrow grant stopped happening')
+    t.notContains(ran, 'add_ace', 'a permission was granted without being asked for')
     t.notContains(ran, 'add_principal', 'a group was joined without being asked for')
-    t.notContains(ran, 'command allow', 'every command was allowed without being asked for')
 end)
 
-t.test('and when it is asked for, it covers both ways a revive can be gated', function()
-    -- Two mechanisms, because either could be the one in the way: an ACE
-    -- list, which `command allow` covers, and group membership, which a
-    -- script testing groups looks at instead and which no ace would satisfy.
+t.test('and when it is asked for, it grants the ROLE rather than the command', function()
+    -- Two shapes of check, because either could be the one in the way: group
+    -- membership, which a script testing roles reads and which no
+    -- command-specific ace would ever satisfy, and the ace list, which a
+    -- "may this caller run commands at all" check reads instead.
     local config = reviveConfig('revive %s')
     config.revive.grantSelfAdmin = true
 
@@ -627,10 +619,29 @@ t.test('and when it is asked for, it covers both ways a revive can be gated', fu
     f.step()
 
     local ran = table.concat(f.commands, '\n')
-    t.contains(ran, 'add_ace resource.crimson_arena command allow',
-        'full command rights were not granted')
     t.contains(ran, 'add_principal resource.crimson_arena group.admin',
-        'the admin group was not joined')
+        'the admin role was not granted')
+    t.contains(ran, 'add_ace resource.crimson_arena command allow',
+        'command rights were not granted alongside the role')
+    t.notContains(ran, 'command.revive',
+        'it is still gating on the command name, which is what did not work')
+end)
+
+t.test('the console is granted too, since that is who the command runs as', function()
+    -- The identity that was missing. ExecuteCommand from a server script runs
+    -- on the console's behalf, so a command asking whether its INVOKER is an
+    -- admin is asking about the console and never about this resource --
+    -- which is how the arena could hold admin and still be told access
+    -- denied.
+    local config = reviveConfig('revive %s')
+    config.revive.grantSelfAdmin = true
+
+    local f = newFixture(config)
+    f.step()
+
+    local ran = table.concat(f.commands, '\n')
+    t.contains(ran, 'add_principal system.console group.admin',
+        'only the resource was granted the role, not the identity the command runs as')
 end)
 
 t.test('the groups it joins come from config, not a name baked in here', function()
@@ -655,24 +666,16 @@ t.test('the shipped config really does turn it on, so this file states what ship
         'the shipped config no longer grants admin -- if that is deliberate, this test is where to say so')
 end)
 
-t.test('the permission follows the config: rename the command, rename the grant', function()
-    local f = newFixture(reviveConfig('heal %s'))
-    f.step()
-
-    local ran = table.concat(f.commands, '\n')
-    t.contains(ran, 'command.heal')
-    t.notContains(ran, 'command.revive', 'a permission was granted for a command nobody configured')
-end)
-
 t.test('an operator who would rather grant it themselves can turn it off', function()
     local config = reviveConfig('revive %s')
-    config.revive.grantSelfPermission = false
+    config.revive.grantSelfAdmin = false
 
     local f = newFixture(config)
     f.step()
 
-    t.notContains(table.concat(f.commands, '\n'), 'add_ace',
-        'the grant ran despite being switched off')
+    local ran = table.concat(f.commands, '\n')
+    t.notContains(ran, 'add_ace', 'the grant ran despite being switched off')
+    t.notContains(ran, 'add_principal', 'the role was granted despite being switched off')
 end)
 
 t.test('a client-side revive is sent to that player, and to nobody else', function()

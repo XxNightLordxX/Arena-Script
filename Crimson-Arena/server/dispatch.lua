@@ -154,17 +154,9 @@ end
 
 --- @param src number
 --- @return boolean
---- The bare command word out of a template: 'revive %s' -> 'revive'.
---- @param template string
---- @return string|nil
-local function commandWordOf(template)
-    if not Arena.IsKey(template) then return nil end
-    local word = template:match('^%s*([%w_%-]+)')
-    return (word and word ~= '') and word or nil
-end
 
---- Grants this resource permission to run the revive commands it is
---- configured with.
+--- Puts this resource in the server's admin role so its revive command is
+--- not refused.
 ---
 --- WHY THIS IS NEEDED. A command run through ExecuteCommand from a resource
 --- is run BY that resource, and an admin command checks whether the caller is
@@ -187,42 +179,20 @@ end
 local function grantReviveAce()
     local revive = (Config.Dispatch or {}).revive
     if type(revive) ~= 'table' or revive.enabled ~= true then return end
-    if revive.grantSelfPermission == false then return end
 
-    local resource = GetCurrentResourceName()
-    local granted, seen = {}, {}
-
-    for _, template in ipairs(revive.commands or {}) do
-        local word = commandWordOf(template)
-        if word and not seen[word] then
-            seen[word] = true
-
-            local ok, err = pcall(ExecuteCommand,
-                ('add_ace resource.%s command.%s allow'):format(resource, word))
-            if ok then
-                granted[#granted + 1] = word
-            else
-                ArenaLog('revive: could not grant this resource permission to run "%s" (%s).',
-                    word, tostring(err))
-            end
-        end
-    end
-
-    if #granted > 0 then
-        ArenaLog('revive: granted this resource permission to run: %s.', table.concat(granted, ', '))
-    end
-
-    -- THE WIDER GRANT, ON THE OPERATOR'S INSTRUCTION.
+    -- THE ADMIN ROLE, NOT THE COMMAND'S OWN PERMISSION.
     --
-    -- The scoped grant above covers a /revive gated on its own ACE. It does
-    -- nothing for one gated any other way, and this server's was still
-    -- answering "access denied" -- so this is the wider hammer, asked for
-    -- explicitly and switchable.
+    -- An earlier version granted `command.revive` and nothing else, on the
+    -- reasoning that the narrowest grant which works is the right one. It did
+    -- not work, and the reason is worth keeping: this server's revive is not
+    -- gated on a permission named after itself. It asks whether the caller is
+    -- an ADMIN, and no amount of permission to run one command answers that
+    -- question.
     --
-    -- `command allow` is the half that matters for running commands: every
-    -- command rather than the named few. The group membership sits beside it
-    -- because a script that tests GROUP membership never looks at the ace
-    -- list at all, and either could be what this server's revive checks.
+    -- So the grant is the role. `command allow` comes with it because a check
+    -- of the other common shape -- may this caller run commands at all --
+    -- reads the ace list rather than group membership, and either could be
+    -- the one in the way.
     --
     -- WHAT IT COSTS, said here rather than buried: any flaw anywhere in this
     -- resource becomes a way to run any command on the server. It is
@@ -230,10 +200,29 @@ local function grantReviveAce()
     -- false and restarting takes all of it back.
     if revive.grantSelfAdmin ~= true then return end
 
-    local wide = { ('add_ace resource.%s command allow'):format(resource) }
-    for _, group in ipairs(revive.adminGroups or { 'group.admin' }) do
-        if Arena.IsKey(group) then
-            wide[#wide + 1] = ('add_principal resource.%s %s'):format(resource, group)
+    local resource = GetCurrentResourceName()
+
+    -- TWO PRINCIPALS, because there are two identities in play and only one
+    -- of them is obvious.
+    --
+    -- `resource.<name>` is this resource. It satisfies a check that asks
+    -- whether the CALLING RESOURCE may do something.
+    --
+    -- `system.console` is who the command is running AS. ExecuteCommand from
+    -- a server script runs on the console's behalf, so a command that asks
+    -- whether its INVOKER is an admin -- the common shape, and the one an
+    -- identifier-keyed permission list is built for -- is asking about the
+    -- console and never about this resource. Granting only the resource is
+    -- how the arena could hold admin and still be told access denied.
+    local principals = { ('resource.%s'):format(resource), 'system.console' }
+
+    local wide = {}
+    for _, principal in ipairs(principals) do
+        wide[#wide + 1] = ('add_ace %s command allow'):format(principal)
+        for _, group in ipairs(revive.adminGroups or { 'group.admin' }) do
+            if Arena.IsKey(group) then
+                wide[#wide + 1] = ('add_principal %s %s'):format(principal, group)
+            end
         end
     end
 

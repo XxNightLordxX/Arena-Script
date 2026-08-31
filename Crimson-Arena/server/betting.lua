@@ -92,13 +92,67 @@ local function citizenIdOf(src)
     return player and player.PlayerData and player.PlayerData.citizenid or nil
 end
 
+--- What one player currently holds in the account bets are settled in, or
+--- nil when it cannot be read.
+--- @param player table|nil
+--- @return integer|nil
+local function balanceOf(player)
+    -- Named `wallet` rather than `money`: this file already has a `money`
+    -- upvalue for formatting figures, and one shadowing the other is a
+    -- misread waiting to happen in a file where every variable is currency.
+    local wallet = player and player.PlayerData and player.PlayerData.money
+    if type(wallet) ~= 'table' then return nil end
+    return Arena.ToInt(wallet[Config.Betting.account])
+end
+
+--- Did `amount` actually move, in the direction expected?
+---
+--- WHY THIS DOES NOT JUST READ THE RETURN VALUE. It used to, and required it
+--- to be exactly `true` -- and a framework function that returns nil on
+--- success, as some builds of these do, then read as failure. The
+--- consequences were not symmetrical and not obvious: money was taken from
+--- the player and the stake was recorded as never taken, so the pot stayed
+--- empty and a match nobody appeared to have paid for paid nobody out. Every
+--- test passed throughout, because the fixture returned `true` like the
+--- documentation says and unlike the server.
+---
+--- So the balance is the authority. `>=` rather than `==` because another
+--- resource may move the same account in the same instant, and the question
+--- here is only whether OUR movement happened.
+--- @param before integer|nil
+--- @param after integer|nil
+--- @param amount integer
+--- @param outward boolean
+--- @return boolean|nil moved -- nil when the balance could not be read
+local function moved(before, after, amount, outward)
+    if not before or not after then return nil end
+    local delta = outward and (before - after) or (after - before)
+    return delta >= amount
+end
+
 --- Money OUT. False means nothing moved, so the caller must record nothing --
 --- otherwise escrow claims a stake the player still has in their pocket.
 --- @return boolean
 local function debit(src, amount, reason)
     local player = ArenaGetPlayer(src)
     if not player then return false end
-    return player.Functions.RemoveMoney(Config.Betting.account, amount, reason) == true
+
+    local before = balanceOf(player)
+    local answer = player.Functions.RemoveMoney(Config.Betting.account, amount, reason)
+
+    -- An explicit refusal is believed immediately: it is the one answer that
+    -- means something unambiguous, and re-reading a balance to second-guess
+    -- it would only find the money still there and agree.
+    if answer == false then return false end
+
+    local confirmed = moved(before, balanceOf(ArenaGetPlayer(src)), amount, true)
+    if confirmed ~= nil then return confirmed end
+
+    -- The balance was unreadable, so the return value is all there is. Only
+    -- an explicit false counts against it -- checked above -- because a nil
+    -- from a framework that reports success by staying quiet must not be
+    -- read as a refusal.
+    return true
 end
 
 --- Money IN. False means the player could not be paid, almost always because
@@ -121,7 +175,15 @@ local function credit(src, amount, reason, citizenid)
     local player = ArenaGetPlayer(src)
     if not player then return false end
     if citizenid and (player.PlayerData and player.PlayerData.citizenid) ~= citizenid then return false end
-    return player.Functions.AddMoney(Config.Betting.account, amount, reason) == true
+
+    local before = balanceOf(player)
+    local answer = player.Functions.AddMoney(Config.Betting.account, amount, reason)
+    if answer == false then return false end
+
+    local confirmed = moved(before, balanceOf(ArenaGetPlayer(src)), amount, false)
+    if confirmed ~= nil then return confirmed end
+
+    return true
 end
 
 --- The transaction note qbx_core stores next to the movement. Operator

@@ -323,8 +323,30 @@ end
 --- both leave the same balance behind.
 --- @param players table<number, table>? -- { [serverId] = { citizenid, name, money } }
 --- @return table fake
-function Sandbox.newQbxCore(players)
+--- @param players table
+--- @param opts table? -- { quiet = boolean }
+function Sandbox.newQbxCore(players, opts)
     local fake = { players = players or {}, ledger = {} }
+
+    -- A FRAMEWORK THAT REPORTS SUCCESS BY SAYING NOTHING. `quiet` makes the
+    -- money functions return nil when they succeed instead of true, which
+    -- some builds of these frameworks do -- and which this fixture used to be
+    -- unable to express at all.
+    --
+    -- That gap hid a live defect through seventy-three passing tests: the
+    -- code required exactly `true`, so on a quiet server every stake read as
+    -- refused after the money had already left the player's pocket, and the
+    -- pot stayed empty while the players were charged. The fixture agreed
+    -- with the documentation and the server did not.
+    --
+    -- Failure is still reported as `false` under `quiet`: that is the one
+    -- answer that is unambiguous in every build, and a fixture that made it
+    -- ambiguous too would be modelling nothing real.
+    local quiet = type(opts) == 'table' and opts.quiet == true
+    local function yes()
+        if quiet then return nil end
+        return true
+    end
 
     local function wrap(serverId, record)
         record.money = record.money or { cash = 0, bank = 0 }
@@ -343,13 +365,13 @@ function Sandbox.newQbxCore(players)
                     if amount <= 0 or balance < amount then return false end
                     record.money[account] = balance - amount
                     fake.ledger[#fake.ledger + 1] = { id = serverId, account = account, delta = -amount, reason = reason }
-                    return true
+                    return yes()
                 end,
                 AddMoney = function(account, amount, reason)
                     if amount <= 0 then return false end
                     record.money[account] = (record.money[account] or 0) + amount
                     fake.ledger[#fake.ledger + 1] = { id = serverId, account = account, delta = amount, reason = reason }
-                    return true
+                    return yes()
                 end,
                 GetMoney = function(account) return record.money[account] or 0 end,
             },

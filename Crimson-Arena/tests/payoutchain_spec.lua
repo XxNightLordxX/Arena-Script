@@ -33,7 +33,7 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 --- @param wallets table<number, integer>
 --- @param mutate fun(config: table)?
 --- @return table server
-local function newServer(wallets, mutate)
+local function newServer(wallets, mutate, opts)
     local roster = {}
     for id, cash in pairs(wallets) do
         roster[id] = {
@@ -43,7 +43,7 @@ local function newServer(wallets, mutate)
         }
     end
 
-    local qbx = Sandbox.newQbxCore(roster)
+    local qbx = Sandbox.newQbxCore(roster, opts)
     local console = {}
 
     local env = Sandbox.newArenaEnv({
@@ -209,6 +209,78 @@ t.test('an eliminated player who stayed is still owed a refund when the round do
     t.equals(#payouts, 2, 'both are owed')
     t.equals(server.cash(1), 5000)
     t.equals(server.cash(2), 5000)
+    t.equals(server.ledgerTotal(), 0)
+end)
+
+-- ========================================================================
+-- A FRAMEWORK THAT SAYS NOTHING WHEN IT SUCCEEDS
+--
+-- The live defect these cover, and the reason the whole file above did not
+-- catch it: every money movement was believed only if the framework returned
+-- exactly `true`. Some builds return nil on success. On one of those, the
+-- money left the player's pocket and the stake was recorded as never taken --
+-- so the pot stayed empty, and a match everybody had paid for paid nobody
+-- anything.
+--
+-- Nothing about the arithmetic was wrong. The fixture returned `true`, like
+-- the documentation, and unlike the server. Seventy-three betting tests
+-- passed against an API more generous than the real one.
+--
+-- The balance is the authority now, not the return value. These tests run the
+-- same chain against a framework that reports success by staying quiet.
+-- ========================================================================
+
+t.test('a stake is recorded when the framework reports success by saying nothing', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 }, nil, { quiet = true })
+
+    t.isTrue(server.betting.TakeStake(1, 'm1', 1000), 'the stake was refused after the money moved')
+    t.equals(server.cash(1), 4000, 'the player was charged')
+    t.equals(server.betting.GetPot('m1'), 1000,
+        'the money left the player and the pot never saw it')
+end)
+
+t.test('and the pot pays out, which is the symptom that was actually reported', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 }, nil, { quiet = true })
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+
+    t.equals(server.betting.GetPot('m1'), 2000)
+    t.equals(server.cash(1), 4000)
+    t.equals(server.cash(2), 4000)
+
+    server.betting.Settle('m1', {
+        players = { { id = 1, stake = 1000, kills = 1 }, { id = 2, stake = 1000, kills = 0 } },
+        winners = { 1 },
+        teams = false,
+        contestants = 2,
+    })
+
+    t.equals(server.cash(1), 6000, 'the winner was not paid')
+    t.equals(server.cash(2), 4000, 'the loser got money back')
+    t.equals(server.ledgerTotal(), 0, 'money was created or destroyed')
+end)
+
+t.test('an explicit refusal is still a refusal on a quiet framework', function()
+    -- The one answer that means the same thing in every build. A fixture that
+    -- blurred this too would be modelling nothing real -- and the fix must
+    -- not turn "you cannot afford it" into a free stake.
+    local server = newServer({ [1] = 100 }, nil, { quiet = true })
+
+    t.isFalse(server.betting.TakeStake(1, 'm1', 1000), 'a player staked money they do not have')
+    t.equals(server.cash(1), 100, 'and were charged for it')
+    t.equals(server.betting.GetPot('m1'), 0)
+end)
+
+t.test('a refund reaches the player on a quiet framework too', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 }, nil, { quiet = true })
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+
+    server.betting.RefundAll('m1', 'cancelled')
+
+    t.equals(server.cash(1), 5000)
+    t.equals(server.cash(2), 5000)
+    t.equals(server.betting.GetPot('m1'), 0, 'the pot still claims to hold money')
     t.equals(server.ledgerTotal(), 0)
 end)
 

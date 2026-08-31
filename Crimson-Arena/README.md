@@ -418,6 +418,44 @@ maxTeamSize = 0,                -- 0 = unlimited players per team
 
 `teamSpawns` keys must match `Config.Teams.list` keys. A team with no entry falls back to `spawns`.
 
+### The arena grows with the match
+
+Twenty fighters in a circle sized for six is a different game. `minSeparation`
+stops being satisfiable, and the placement used to quietly settle for less —
+so a stated ten metres was never the ten metres anybody got, and the first
+thing twenty players saw was each other.
+
+An arena can say it should grow instead:
+
+```lua
+scale = {
+    enabled = true,
+    baseline  = 6,     -- the roster the radii below are written for
+    perPlayer = 1.6,   -- metres of spawn radius added per fighter above it
+    maxGrowth = 2.0,   -- never bigger than twice the configured size
+},
+```
+
+**One number scales all of it** — the spawn area, the floor, the boundary, and
+where the cover sits. That is the point: the relationships between them are
+the arena's design, and two of them are what keep people alive (spawns inside
+the floor, floor inside the boundary). Scaling any one on its own breaks one
+of those, silently.
+
+The server works the factor out once, when the round starts, from the roster
+it is starting with — and sends it to every client, because the client builds
+the floor and cannot see a roster. It is not recomputed later: a factor
+re-derived from a roster that has since lost a player would shrink the arena
+under the people standing in it.
+
+The shipped `skydome` uses it, so six fighters get the 35 m circle in config
+and twenty get a 57 m one on a floor to match. Every roster size from four to
+thirty-two lands the full stated separation, checked over two hundred rosters
+each in `tests/skyarena_spec.lua`.
+
+Leave the block out and nothing changes — which is what every arena on the
+map does, including the trailer park.
+
 ### maxPlayers = 0 means unlimited
 
 ```lua
@@ -712,11 +750,15 @@ Turn it on only if NPC police still respond to gunfire on your server. It stops 
 
 None. Every key in `config.lua` is read by something.
 
-Two were removed rather than left sitting here doing nothing:
+Four were removed rather than left sitting here doing nothing:
 `Config.Betting.entryFee.hostSetsForEveryone`, because joining always charges
-the host's fee and no payout mode weights a share by what a player staked; and
+the host's fee and no payout mode weights a share by what a player staked;
 `Config.Dispatch.disableHealthRecharge`, because the multiplier it set cannot
-be read back, so the arena could only "restore" it to a guess. Per-player
+be read back, so the arena could only "restore" it to a guess; and
+`Config.Dispatch.revive.grantSelfPermission` and `.grantSelfAdmin`, which are
+covered under *Getting back up after a death* below — one of them had a page
+of documentation, a stated default that disagreed with its own value, and no
+code reading it at all. Per-player
 stakes and a stake-weighted payout are a real feature if you want them, but a
 switch that silently does nothing is worse than no switch at all.
 
@@ -782,22 +824,24 @@ grant itself permissions — correctly, since a server where it could is a
 server with no permissions at all. Both doors are shut, which is why the
 arena stopped knocking on them.
 
-`commands`, `grantSelfPermission` and `grantSelfAdmin` therefore all ship
-**off**. `grantSelfAdmin` in particular meant any flaw anywhere in this
-resource was a way to run any command on your box, and it was paying that for
-a capability nothing uses any more.
+So the settings that tried to open them are **gone**, not merely switched
+off. The arena no longer writes an ace, no longer joins a group, and has no
+setting to make it try. The admin one in particular meant any flaw anywhere
+in this resource was a way to run any command on your box — paid for a
+capability nothing uses any more.
+
+`commands` still ships empty for the same reason: with nothing granting
+itself anything, a configured command on a server that gates it is an
+"Access denied" line per death.
 
 If you still want the arena to run a command — because your medical script's
-revive *is* a command — add it, and grant the right in `server.cfg`, where
-the console is doing the granting and it actually works:
+revive *is* a command — name it in `commands` and grant the right in
+`server.cfg`, where the console is doing the granting and it needs
+permission from nobody:
 
 ```cfg
 add_ace resource.Crimson-Arena command.revive allow
 ```
-
-Whatever the grant does, the result is now checked with
-`IsPrincipalAceAllowed` rather than trusted, so a refusal prints the exact
-lines to paste instead of a false "granted" line.
 
 ---
 

@@ -73,6 +73,50 @@ function Arena.IsKey(value)
 end
 
 --- Counts entries in a map-shaped table (`#` only works on arrays).
+--- Coerces a size factor into something safe to multiply by. An arena never
+--- shrinks: a factor under one would put spawns outside a floor built for
+--- the full size, which is the one mistake here that is fatal.
+--- How far a spawn is kept from the MIDDLE of a piece of cover, by default.
+---
+--- NOT minSeparation, and that distinction is the fix for a real defect.
+--- Cover used to be excluded at the full player separation -- ten metres
+--- from the centre of every barrier -- which took a 314 square-metre bite
+--- out of the arena per piece. Twenty pieces did that to more than the whole
+--- arena, so every placement fell through to the relaxation and NOBODY was
+--- ever minSeparation apart, at any roster size.
+---
+--- MEASURED FROM THE PIECE'S ORIGIN, which is why it is not smaller still: a
+--- shipping container is twelve metres long, so its own half-length is six.
+--- Under that and a spawn "clear of the cover" is inside it, lengthwise,
+--- with nowhere to walk to.
+---
+--- Unlike the separation between fighters this is never relaxed. A crowded
+--- arena is a worse round; a spawn inside a wall is a player who cannot move.
+local COVER_CLEARANCE = 7.0
+
+--- The clearance this arena keeps around its cover.
+---
+--- Configurable because it depends on the props: an arena built out of
+--- traffic cones wants less, one built out of shipping containers wants
+--- exactly the default.
+--- @param arenaKey any
+--- @return number
+function Arena.CoverClearance(arenaKey)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    local cover = type(arena) == 'table' and arena.cover or nil
+    local configured = type(cover) == 'table' and tonumber(cover.clearance) or nil
+    if configured and configured >= 0 then return configured end
+    return COVER_CLEARANCE
+end
+
+--- @param factor number|nil
+--- @return number
+local function sizeFactor(factor)
+    local value = tonumber(factor) or 1.0
+    if value < 1.0 then return 1.0 end
+    return value
+end
+
 --- @param tbl table?
 --- @return integer
 function Arena.Count(tbl)
@@ -877,12 +921,14 @@ end
 --- out.
 --- @param arenaKey any
 --- @return table|nil -- { models, model, tileSize, radius, z, maxTiles }
-function Arena.GetPlatform(arenaKey)
+function Arena.GetPlatform(arenaKey, factor)
     local arena = Arena.GetArenaByKey(arenaKey)
     if type(arena) ~= 'table' then return nil end
 
     local platform = arena.platform
     if type(platform) ~= 'table' or platform.enabled == false then return nil end
+
+    local grow = sizeFactor(factor)
 
     local models = Arena.ModelChain(platform)
     if #models == 0 then return nil end
@@ -894,6 +940,7 @@ function Arena.GetPlatform(arenaKey)
     local tileSize = tonumber(platform.tileSize) or 0
     local radius = tonumber(platform.radius) or 0
     if tileSize <= 0 or radius <= 0 then return nil end
+    radius = radius * grow
 
     return {
         -- The chain, and the first of it under the old name so nothing that
@@ -908,7 +955,14 @@ function Arena.GetPlatform(arenaKey)
         -- operator sets rather than a thing they discover.
         z = tonumber(platform.z) or 0.0,
         -- 0 means no ceiling. See Arena.PlatformTiles.
-        maxTiles = tonumber(platform.maxTiles) or 0,
+        --
+        -- GROWN WITH THE AREA, and by the SQUARE of the factor, because a
+        -- floor is a disc and a disc's area goes up with the square of its
+        -- radius. A ceiling that did not grow would cap a scaled-up arena
+        -- back to the piece count of a small one -- which does not make it
+        -- smaller, it makes it a small floor with a big spawn ring hanging
+        -- off the edge.
+        maxTiles = math.floor((tonumber(platform.maxTiles) or 0) * grow * grow),
     }
 end
 
@@ -1024,12 +1078,21 @@ end
 --- world coordinate.
 --- @param arenaKey any
 --- @return table[] -- { { model, x, y, z, heading }, ... }, offsets
-function Arena.GetCover(arenaKey)
+function Arena.GetCover(arenaKey, factor)
     local arena = Arena.GetArenaByKey(arenaKey)
     if type(arena) ~= 'table' then return {} end
 
     local cover = arena.cover
     if type(cover) ~= 'table' or cover.enabled == false then return {} end
+
+    -- THE LAYOUT SCALES, THE PIECES DO NOT. Offsets are multiplied so a
+    -- grown arena keeps the shape somebody laid out -- an outer ring on the
+    -- rim, a pinwheel in the middle -- rather than the same huddle of
+    -- barriers marooned in the centre of a much larger floor. The props
+    -- themselves are a fixed size, so a bigger arena has proportionally more
+    -- open ground, which is the right way round: more fighters need more
+    -- room to move, not more walls.
+    local grow = sizeFactor(factor)
 
     local out = {}
     for _, piece in ipairs(cover.pieces or {}) do
@@ -1038,8 +1101,8 @@ function Arena.GetCover(arenaKey)
             out[#out + 1] = {
                 models = models,
                 model = models[1],
-                x = tonumber(piece.x) or 0.0,
-                y = tonumber(piece.y) or 0.0,
+                x = (tonumber(piece.x) or 0.0) * grow,
+                y = (tonumber(piece.y) or 0.0) * grow,
                 z = tonumber(piece.z) or 0.0,
                 heading = tonumber(piece.heading) or 0.0,
             }
@@ -1059,10 +1122,10 @@ end
 --- @return table[] -- { { kind, model, x, y, z, heading }, ... }, absolute
 --- @param measured table|number|nil -- the floor prop's real size, measured
 ---        by the client. See Arena.PlatformTiles.
-function Arena.ArenaProps(arenaKey, measured)
+function Arena.ArenaProps(arenaKey, measured, factor)
     local out = {}
 
-    local area = Arena.GetSpawnArea(arenaKey)
+    local area = Arena.GetSpawnArea(arenaKey, factor)
     local arena = Arena.GetArenaByKey(arenaKey)
     if type(arena) ~= 'table' then return out end
 
@@ -1077,7 +1140,7 @@ function Arena.ArenaProps(arenaKey, measured)
                    z = tonumber(boundary.z) or 0.0 }
     end
 
-    local platform = Arena.GetPlatform(arenaKey)
+    local platform = Arena.GetPlatform(arenaKey, factor)
     if platform then
         for _, tile in ipairs(Arena.PlatformTiles(platform, centre.x, centre.y, measured)) do
             out[#out + 1] = {
@@ -1096,7 +1159,7 @@ function Arena.ArenaProps(arenaKey, measured)
         end
     end
 
-    for _, piece in ipairs(Arena.GetCover(arenaKey)) do
+    for _, piece in ipairs(Arena.GetCover(arenaKey, factor)) do
         out[#out + 1] = {
             kind = 'cover',
             models = piece.models,
@@ -1151,12 +1214,61 @@ end
 --- should not have to write out twenty coordinates to do it.
 --- @param arenaKey any
 --- @return table|nil
-function Arena.GetSpawnArea(arenaKey)
+--- HOW MUCH BIGGER THIS ARENA IS FOR THIS MATCH.
+---
+--- The radii in config describe an arena sized for a small round. Twenty
+--- fighters in the same circle is not the same game: `minSeparation` stops
+--- being satisfiable, the placement quietly relaxes it (see scatterWithin),
+--- and everybody opens the round inside somebody else's sights.
+---
+--- So the arena grows with the roster, and one number does all of it. Every
+--- radius is multiplied by the same factor, which is the point: the
+--- relationships an operator set up between the spawn area, the floor and
+--- the boundary are the arena's design, and scaling them independently would
+--- quietly break the two that keep people alive -- spawns inside the floor,
+--- and the floor inside the boundary.
+---
+--- Returns 1.0 for an arena that does not ask to grow, which is every arena
+--- that shipped before this existed.
+--- @param arenaKey any
+--- @param players integer|nil
+--- @return number factor -- always >= 1.0
+function Arena.SizeFactor(arenaKey, players)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    if type(arena) ~= 'table' then return 1.0 end
+
+    local scale = arena.scale
+    if type(scale) ~= 'table' or scale.enabled ~= true then return 1.0 end
+
+    local count = Arena.ToInt(players) or 0
+    local baseline = Arena.ToInt(scale.baseline) or 6
+    local extra = math.max(0, count - baseline)
+    if extra == 0 then return 1.0 end
+
+    -- Written as metres per fighter rather than as a multiplier, because
+    -- metres are what an operator can picture. Converted here against the
+    -- arena's own size, so the same setting means the same thing whether the
+    -- arena is thirty metres across or a hundred.
+    local area = arena.spawnArea
+    local base = (type(area) == 'table' and tonumber(area.radius)) or 0
+    if base <= 0 then return 1.0 end
+
+    local perPlayer = tonumber(scale.perPlayer) or 0
+    if perPlayer <= 0 then return 1.0 end
+
+    local factor = 1.0 + (extra * perPlayer) / base
+    local ceiling = math.max(1.0, tonumber(scale.maxGrowth) or 2.0)
+    return math.min(factor, ceiling)
+end
+
+function Arena.GetSpawnArea(arenaKey, factor)
     local arena = Arena.GetArenaByKey(arenaKey)
     if type(arena) ~= 'table' then return nil end
 
     local area = arena.spawnArea
     if type(area) ~= 'table' or area.enabled == false then return nil end
+
+    local grow = sizeFactor(factor)
 
     local centre = area.center or area.centre
     local x = centre and tonumber(centre.x) or (centre and tonumber(centre[1]))
@@ -1164,7 +1276,7 @@ function Arena.GetSpawnArea(arenaKey)
     local z = centre and tonumber(centre.z) or (centre and tonumber(centre[3]))
     if not x or not y or not z then return nil end
 
-    local radius = math.max(1.0, tonumber(area.radius) or 60.0)
+    local radius = math.max(1.0, tonumber(area.radius) or 60.0) * grow
 
     return {
         x = x, y = y, z = z,
@@ -1177,7 +1289,15 @@ function Arena.GetSpawnArea(arenaKey)
         -- How tightly a team lands together. Defaults to a quarter of the
         -- area, which reads as "same corner of the field" rather than "same
         -- square metre".
-        teamRadius = math.max(1.0, tonumber(area.teamRadius) or (radius * 0.25)),
+        -- MULTIPLIED, LIKE THE RADIUS. `radius` above already carries the
+        -- growth, so a teamRadius read from config has to be grown to match
+        -- or a bigger arena lands each team in the same small huddle it did
+        -- before -- which is the crowding this exists to fix, moved rather
+        -- than solved. The default is a quarter of the area, and the area is
+        -- already grown, so that branch needs nothing.
+        teamRadius = tonumber(area.teamRadius)
+            and math.max(1.0, tonumber(area.teamRadius) * grow)
+            or math.max(1.0, radius * 0.25),
     }
 end
 
@@ -1228,6 +1348,22 @@ end
 --- last round accepts whatever it is given. A placement loop that can spin
 --- forever on a crowded arena is worse than one that occasionally puts two
 --- players a little close together, because the first one hangs the match
+--- How many points to try per round before asking for less room.
+---
+--- IT WAS TWELVE, AND TWELVE WAS THE REASON THE SEPARATION WAS NOT KEPT.
+--- Placement is rejection sampling: throw a dart, keep it if it is far
+--- enough from everything already placed. As the arena fills, the share of
+--- the disc that still qualifies shrinks, so twelve darts start missing --
+--- and a miss here does not report anything, it quietly asks for less room
+--- and tries again. Four fighters in an arena with plenty of space for them
+--- were coming out under the stated separation once in every seventy
+--- rounds, for no reason but bad luck.
+---
+--- This is one calculation per match, before anybody is placed, on a few
+--- dozen points. Being generous with it costs nothing anybody can measure
+--- and it is the difference between a rule and a preference.
+local SAMPLES_PER_ROUND = 96
+
 --- start and the second is survivable.
 --- @return table[] points
 local function scatterWithin(rng, area, centreX, centreY, radius, separation, count, placed)
@@ -1239,11 +1375,16 @@ local function scatterWithin(rng, area, centreX, centreY, radius, separation, co
         local floor = wanted
 
         for round = 1, 5 do
-            for _ = 1, 12 do
+            for _ = 1, SAMPLES_PER_ROUND do
                 local candidate = sampleDisc(rng, area, centreX, centreY, radius)
                 local ok = true
                 for _, other in ipairs(placed) do
-                    if distanceSquared(candidate, other) < floor * floor then ok = false break end
+                    -- A piece of cover carries its own clearance and keeps
+                    -- it: the relaxation below is about fitting people
+                    -- around each other, and no amount of crowding makes
+                    -- spawning inside a wall acceptable.
+                    local need = other.clearance or floor
+                    if distanceSquared(candidate, other) < need * need then ok = false break end
                 end
                 if ok then chosen = candidate break end
             end
@@ -1280,8 +1421,8 @@ end
 --- @param rng fun():number|nil -- injectable; defaults to math.random
 --- @return table<number, table>|nil plan -- src -> { x, y, z, w }, or nil when
 ---         the arena defines no spawn area and the point list should be used
-function Arena.PlanSpawns(arenaKey, roster, rng)
-    local area = Arena.GetSpawnArea(arenaKey)
+function Arena.PlanSpawns(arenaKey, roster, rng, factor)
+    local area = Arena.GetSpawnArea(arenaKey, factor)
     if not area or type(roster) ~= 'table' or #roster == 0 then return nil end
 
     rng = rng or math.random
@@ -1310,8 +1451,21 @@ function Arena.PlanSpawns(arenaKey, roster, rng)
     -- those -- otherwise a random spawn inside a shipping container is only a
     -- matter of time, and from inside one there is nowhere to walk to.
     local placed = {}
-    for _, piece in ipairs(Arena.GetCover(arenaKey)) do
-        placed[#placed + 1] = { x = area.x + piece.x, y = area.y + piece.y }
+    local clearance = Arena.CoverClearance(arenaKey)
+    for _, piece in ipairs(Arena.GetCover(arenaKey, factor)) do
+        -- ITS OWN CLEARANCE, MUCH SMALLER THAN A PLAYER'S. A barrier is
+        -- three metres wide; keeping ten metres from the middle of one --
+        -- which is what happened when cover shared minSeparation -- excluded
+        -- a 314 square-metre disc per piece. Twenty pieces did that to more
+        -- than the whole arena, so EVERY placement fell through to the
+        -- relaxation below and nobody was ever minSeparation apart, at any
+        -- roster size. The number that matters here is "not standing inside
+        -- it", and that is a couple of metres.
+        placed[#placed + 1] = {
+            x = area.x + piece.x,
+            y = area.y + piece.y,
+            clearance = clearance,
+        }
     end
 
     -- FREE FOR ALL, or a team mode nobody has picked a side in yet.
@@ -1396,7 +1550,7 @@ end
 --- @param rng fun():number|nil -- injectable; defaults to math.random
 --- @return table|nil point -- { x, y, z, w }, or nil when the arena has neither
 ---         a spawn area nor any points to choose from
-function Arena.PickRespawn(arenaKey, teamKey, avoid, rng)
+function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor)
     rng = rng or math.random
 
     local threats = {}
@@ -1408,7 +1562,7 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng)
     -- THE CANDIDATES. An arena with an area gets fresh random points; one
     -- with only a point list gets the list, which is every choice there is.
     local candidates = {}
-    local area = Arena.GetSpawnArea(arenaKey)
+    local area = Arena.GetSpawnArea(arenaKey, factor)
     if area then
         for _ = 1, RESPAWN_CANDIDATES do
             candidates[#candidates + 1] = sampleDisc(rng, area, area.x, area.y, area.radius)

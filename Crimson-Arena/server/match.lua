@@ -86,14 +86,18 @@ end
 
 --- @param arena table -- a raw Config.Arenas entry
 --- @return table|nil boundary -- nil for an open arena
-local function boundaryPayload(arena)
+local function boundaryPayload(arena, factor)
     local boundary = arena.boundary
     if type(boundary) ~= 'table' or boundary.enabled ~= true then return nil end
 
     return {
         enabled = true,
         center = toPoint(boundary.center),
-        radius = tonumber(boundary.radius) or 0.0,
+        -- GROWN WITH THE REST OF THE ARENA. The floor and the spawn ring
+        -- both scale with the roster, and a boundary that did not would put
+        -- solid ground -- and spawns -- outside the sphere that bleeds you
+        -- for leaving it.
+        radius = (tonumber(boundary.radius) or 0.0) * math.max(1.0, tonumber(factor) or 1.0),
         warningSeconds = math.max(0, Arena.ToInt(boundary.warningSeconds) or 0),
         damagePerTick = math.max(0, Arena.ToInt(boundary.damagePerTick) or 0),
         tickMs = math.max(100, Arena.ToInt(boundary.tickMs) or 1000),
@@ -750,6 +754,12 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
         -- inside a barrier. The round-robin `spawns` list makes none of
         -- those promises, so it still gets the scatter it has always needed.
         scatterRadius = (match.spawnPlan and match.spawnPlan[player.src]) and 0.0 or scatterRadius(),
+        -- The client builds the floor and the cover, so it needs the same
+        -- number the spawns and the boundary were worked out from. Sent
+        -- rather than recomputed on that side: the roster is not a thing the
+        -- client can see, and two ends deriving the same number separately
+        -- is how they come to disagree.
+        sizeFactor = match.sizeFactor,
         -- The host's radar decision, carried in with everything else the
         -- round is fought under. The client keeps no preference of its own
         -- any more, so this is the only thing that turns a sweep on. Sent
@@ -757,7 +767,7 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
         -- death is not an opportunity to re-decide the rules of the match.
         radar = match.radar == true,
         loadout = player.loadout,
-        boundary = boundaryPayload(arena),
+        boundary = boundaryPayload(arena, match.sizeFactor),
         weatherOverride = arena.weatherOverride,
         timeOverride = arena.timeOverride,
         freezeSeconds = freezeSeconds,
@@ -846,7 +856,8 @@ local function scheduleRespawn(match, player)
         -- (from a random start) on an arena with no area. The cursor is kept
         -- only for that fallback.
         local team = teamOf(current, entry)
-        local planned = Arena.PickRespawn(current.arenaKey, team, liveOpponentPositions(current, entry))
+        local planned = Arena.PickRespawn(current.arenaKey, team, liveOpponentPositions(current, entry),
+            nil, current.sizeFactor)
         local point = planned or Arena.PickSpawn(current.arenaKey, team, current.spawnCursor)
 
         TriggerClientEvent('crimson_arena:client:respawn', src, {
@@ -1150,17 +1161,33 @@ function ArenaMatch.Start(matchId)
     -- for everybody here rather than answered per player inside the loop
     -- below. Nil when the arena defines no spawn area, and the exact point
     -- list is used exactly as before.
+    -- HOW BIG THIS ARENA IS FOR THIS MATCH, decided once, here, and carried
+    -- on the match for the rest of the round.
+    --
+    -- Twenty fighters in a circle sized for six cannot be minSeparation
+    -- apart, so the placement quietly settled for less and everybody opened
+    -- the round in somebody's sights. An arena that says so in config grows
+    -- to fit the roster instead -- spawn area, floor, boundary and cover
+    -- together, so the relationships between them survive.
+    --
+    -- DECIDED ONCE because every part of the round has to agree about it:
+    -- the plan below, the boundary each client is given, the floor each
+    -- client builds, and every respawn for the rest of the match. A factor
+    -- recomputed later from a roster that has since lost a player would
+    -- shrink the arena under the people standing in it.
+    match.sizeFactor = Arena.SizeFactor(match.arenaKey, #players)
+
     match.spawnPlan = Arena.PlanSpawns(match.arenaKey, (function()
         local roster = {}
         for _, entry in ipairs(players) do
             roster[#roster + 1] = { src = entry.src, team = teamOf(match, entry) }
         end
         return roster
-    end)())
+    end)(), nil, match.sizeFactor)
 
     if match.spawnPlan then
-        ArenaDebug('spawns: planned %d placement(s) inside %s\'s spawn area.',
-            #players, tostring(match.arenaKey))
+        ArenaDebug('spawns: planned %d placement(s) inside %s\'s spawn area (size factor %.2f).',
+            #players, tostring(match.arenaKey), match.sizeFactor)
     end
 
     for index, player in ipairs(players) do

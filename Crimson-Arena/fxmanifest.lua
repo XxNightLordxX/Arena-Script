@@ -127,6 +127,20 @@ server_scripts {
 -- passive HUD) -- client/ui.lua takes and releases NUI focus around it.
 ui_page 'html/index.html'
 
+-- ----------------------------------------------------------------------
+-- STREAMED ASSETS. None ship with this resource, and none need to.
+--
+-- The arena's props are named in config.lua and every one of them names a
+-- CHAIN, ending in a base-game model -- so a build missing a DLC still has a
+-- floor. See stream/README.md for how to check your own build, and for how
+-- to stream a custom platform if you want one.
+--
+-- Anything you drop in stream/ with a .ydr or .ytd extension is picked up
+-- automatically and needs no line here. A .ytyp does need one, like so:
+--
+--     data_file 'DLC_ITYP_REQUEST' 'stream/my_platform.ytyp'
+-- ----------------------------------------------------------------------
+
 files {
     'html/index.html',
     'html/style.css',

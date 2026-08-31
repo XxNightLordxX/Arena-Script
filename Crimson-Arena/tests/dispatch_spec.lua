@@ -727,119 +727,85 @@ t.test('the revive command runs with the player id substituted in', function()
 end)
 
 -- ========================================================================
--- THE RESOURCE HAS TO BE ALLOWED TO RUN THE COMMAND
+-- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS
 --
--- THE DEFECT THIS EXISTS FOR, and it is the reason the revive appeared to
--- work and did nothing. A command run through ExecuteCommand from a resource
--- is run BY that resource, and an admin command checks whether its caller is
--- allowed. This resource is not an admin, so `revive` was refused -- and a
--- refused command is not an error, it is a command that did nothing. The
--- console honestly reported running it while the player stayed on the floor.
+-- It used to try to grant itself the rights its revive command needed: an
+-- ace for the command, and failing that membership of the admin group. Both
+-- are removed, and this section is what stops either coming back.
+--
+--   THEY DID NOT WORK. A server that lets a resource write its own
+--   permissions is a server with no permissions, so the sensible ones
+--   refuse -- and a refusal is not an error. ExecuteCommand returns
+--   normally and the console prints "Access denied", so the resource
+--   carried a page of settings for a capability it did not have.
+--
+--   THEY WERE NOT NEEDED. The arena revives its own players in code and
+--   asks nobody's permission to undo something it did itself.
+--
+--   AND THE ADMIN ONE COST SOMETHING REAL. Group membership made any flaw
+--   anywhere in this resource a way to run any command on the box.
 -- ========================================================================
 
-t.test('nothing is granted unless the operator asked for it', function()
-    -- THE CONTRACT CHANGED TWICE, and both changes are worth recording.
-    --
-    -- It first granted `command.revive` and nothing else, on the reasoning
-    -- that the narrowest grant which works is the right one. It did not
-    -- work: this server's revive is not gated on a permission named after
-    -- itself, it asks whether the caller is an ADMIN, and no amount of
-    -- permission to run one command answers that question. So the narrow
-    -- grant is gone rather than kept as decoration.
-    --
-    -- What is pinned now is that granting anything is a DECISION.
+t.test('nothing is granted, ever, whatever the revive is configured to do', function()
+    -- Not "unless asked for" -- there is nothing left to ask with. A
+    -- resource that never writes a permission cannot hold one it should not.
     local f = newFixture(reviveConfig('revive %s'))
     f.step()
 
     local ran = table.concat(f.commands, '\n')
-    t.notContains(ran, 'add_ace', 'a permission was granted without being asked for')
-    t.notContains(ran, 'add_principal', 'a group was joined without being asked for')
+    t.notContains(ran, 'add_ace', 'this resource granted itself a permission')
+    t.notContains(ran, 'add_principal', 'this resource put itself in a group')
 end)
 
-t.test('and when it is asked for, it grants the ROLE rather than the command', function()
-    -- Two shapes of check, because either could be the one in the way: group
-    -- membership, which a script testing roles reads and which no
-    -- command-specific ace would ever satisfy, and the ace list, which a
-    -- "may this caller run commands at all" check reads instead.
-    local config = reviveConfig('revive %s')
-    config.revive.grantSelfAdmin = true
-
-    local f = newFixture(config)
-    f.step()
-
-    local ran = table.concat(f.commands, '\n')
-    t.contains(ran, 'add_principal resource.crimson_arena group.admin',
-        'the admin role was not granted')
-    t.contains(ran, 'add_ace resource.crimson_arena command allow',
-        'command rights were not granted alongside the role')
-    t.notContains(ran, 'command.revive',
-        'it is still gating on the command name, which is what did not work')
-end)
-
-t.test('the console is granted too, since that is who the command runs as', function()
-    -- The identity that was missing. ExecuteCommand from a server script runs
-    -- on the console's behalf, so a command asking whether its INVOKER is an
-    -- admin is asking about the console and never about this resource --
-    -- which is how the arena could hold admin and still be told access
-    -- denied.
-    local config = reviveConfig('revive %s')
-    config.revive.grantSelfAdmin = true
-
-    local f = newFixture(config)
-    f.step()
-
-    local ran = table.concat(f.commands, '\n')
-    t.contains(ran, 'add_principal system.console group.admin',
-        'only the resource was granted the role, not the identity the command runs as')
-end)
-
-t.test('the groups it joins come from config, not a name baked in here', function()
-    local config = reviveConfig('revive %s')
-    config.revive.grantSelfAdmin = true
-    config.revive.adminGroups = { 'group.superadmin', 'group.god' }
-
-    local f = newFixture(config)
-    f.step()
-
-    local ran = table.concat(f.commands, '\n')
-    t.contains(ran, 'group.superadmin')
-    t.contains(ran, 'group.god')
-end)
-
-t.test('the shipped config asks the server for no permission at all', function()
-    -- A default the tests never look at is a default nobody is checking, and
-    -- this one has a real security cost, so it is stated here rather than
-    -- only in a comment.
+t.test('and the settings that used to do it are gone from config, not merely off', function()
+    -- OFF IS NOT ENOUGH FOR THESE TWO. A setting that ships false but is
+    -- documented as something you may switch on is an invitation, and what
+    -- it invites here is "any flaw in this resource runs any command".
     --
-    -- It ships OFF, and it ships off because it buys nothing: the arena
-    -- revives its own players in code (see below), so the admin group was
-    -- paying "any flaw in this resource runs any command on the box" for a
-    -- capability that is no longer used. Most servers refuse the grant
-    -- anyway -- correctly -- and every refusal is another console line.
-    --
-    -- If a future change genuinely needs elevated rights, this is the test to
-    -- come and argue with first.
-    local env = Sandbox.newArenaEnv()
-    local revive = env.Config.Dispatch.revive
+    -- It is also the shape that caused the last round of this: one of the
+    -- pair had a page of config describing when to turn it on, a stated
+    -- default that disagreed with its own value, and no code reading it at
+    -- all. Removing them is what makes the documentation true.
+    local revive = Sandbox.newArenaEnv().Config.Dispatch.revive
 
-    t.isFalse(revive.grantSelfAdmin,
-        'the shipped config grants itself admin again -- that trade needs a reason stated here')
-    t.isFalse(revive.grantSelfPermission,
-        'the shipped config grants itself an ace again -- same question')
+    t.isNil(revive.grantSelfAdmin, 'grantSelfAdmin is back in config')
+    t.isNil(revive.grantSelfPermission, 'grantSelfPermission is back in config')
+    t.isNil(revive.adminGroups, "the revive's own admin group list is back in config")
+end)
+
+t.test('and no source file reaches for the permission natives at all', function()
+    -- The removal is only real if nothing anywhere still calls them. Read
+    -- off the files rather than trusted: a second copy of this in another
+    -- file would pass every test above.
+    for _, path in ipairs({ '../server/dispatch.lua', '../server/main.lua', '../server/util.lua',
+                            '../server/match.lua', '../server/lobby.lua', '../server/ammo.lua',
+                            '../server/betting.lua', '../server/stats.lua' }) do
+        local handle = assert(io.open(path, 'r'))
+        local source = handle:read('a')
+        handle:close()
+
+        -- COMMENTS DO NOT COUNT. Both files explain, in prose, the
+        -- server.cfg line an operator would write for themselves -- which is
+        -- the whole point of the removal and must not be what fails this.
+        local code = source:gsub('%-%-[^\n]*', '')
+
+        -- The ExecuteCommand LINES, not the words: server/util.lua reads
+        -- Config.Permissions.adminGroups to decide who may force-stop a
+        -- match, which is a different thing entirely and stays.
+        t.isNil(code:match('add_ace%s'), ('%s still writes an ace'):format(path))
+        t.isNil(code:match('add_principal%s'), ('%s still writes a principal'):format(path))
+        t.isNil(code:match('IsPrincipalAceAllowed'),
+            ('%s still checks a permission it can no longer be granted'):format(path))
+    end
+end)
+
+t.test('the shipped config still runs no console command at all', function()
+    -- The remaining half of the same decision: with nothing granting itself
+    -- anything, a configured command on a server that gates it is an
+    -- "Access denied" line per death.
+    local revive = Sandbox.newArenaEnv().Config.Dispatch.revive
     t.equals(#revive.commands, 0,
-        'the shipped config runs a console command again -- on a server that refuses it, that is an "Access denied" line per death')
-end)
-
-t.test('an operator who would rather grant it themselves can turn it off', function()
-    local config = reviveConfig('revive %s')
-    config.revive.grantSelfAdmin = false
-
-    local f = newFixture(config)
-    f.step()
-
-    local ran = table.concat(f.commands, '\n')
-    t.notContains(ran, 'add_ace', 'the grant ran despite being switched off')
-    t.notContains(ran, 'add_principal', 'the role was granted despite being switched off')
+        'the shipped config runs a console command again -- on a server that gates it, that is an "Access denied" line per death')
 end)
 
 -- ========================================================================

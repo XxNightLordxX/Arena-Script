@@ -159,7 +159,7 @@ local function newClient(opts)
     --- config through the real Arena so it cannot drift from production.
     --- @param arenaKey string
     --- @param spawn table?
-    function c.enter(arenaKey, spawn)
+    function c.enter(arenaKey, spawn, factor)
         local arena = env.Config.Arenas[arenaKey]
         spawn = spawn or env.Arena.PickSpawn(arenaKey, nil, 1)
         c.fire('crimson_arena:client:enterArena', {
@@ -173,12 +173,16 @@ local function newClient(opts)
             -- because a random offset makes "is there a floor here" a
             -- different question every run.
             scatterRadius = 0.0,
+            -- How much bigger the arena is for this match. The server works
+            -- it out from the roster and sends it; this side cannot see a
+            -- roster.
+            sizeFactor = factor,
             radar = false,
             loadout = { weapons = {} },
             boundary = arena.boundary and {
                 enabled = true,
                 center = { x = arena.boundary.center.x, y = arena.boundary.center.y, z = arena.boundary.center.z },
-                radius = arena.boundary.radius,
+                radius = arena.boundary.radius * math.max(1.0, factor or 1.0),
                 warningSeconds = 5, damagePerTick = 20, tickMs = 500,
             } or nil,
             freezeSeconds = 0,
@@ -478,6 +482,72 @@ t.test('two clients in two matches each build their own, and neither touches the
     t.equals(#a.world.live(), 0)
     t.isTrue(#b.world.live() > 0,
         "one client leaving took down the other client's arena")
+end)
+
+-- ======================================================================
+-- TWENTY FIGHTERS
+-- ======================================================================
+
+t.test('a twenty-player match builds a bigger floor, and every spawn is on it', function()
+    -- THE REQUIREMENT, run rather than calculated. skyarena_spec proves the
+    -- spawns are far enough apart; this proves there is a floor under all
+    -- twenty of them once the client has actually built one.
+    local roster = {}
+    for id = 1, 20 do roster[#roster + 1] = { src = id } end
+
+    local sizing = newClient()
+    local factor = sizing.Arena.SizeFactor('skydome', 20)
+    t.isTrue(factor > 1.2, ('twenty players grew the arena by only %0.2f'):format(factor))
+
+    local plan = sizing.Arena.PlanSpawns('skydome', roster, nil, factor)
+    t.isNotNil(plan)
+
+    -- One client, entering at each of the twenty planned points in turn.
+    -- The floor it builds is the same floor every one of them gets, so this
+    -- is the same question asked twenty times.
+    for src, point in pairs(plan) do
+        local c = newClient()
+        c.enter('skydome', { x = point.x, y = point.y, z = point.z, w = point.w or 0.0 }, factor)
+
+        local surface = c.world.surfaceUnder(c.pos().x, c.pos().y)
+        t.isNotNil(surface, ('fighter %d is standing over open air'):format(src))
+        t.isTrue(math.abs(c.pos().z - (surface or 0)) < 0.5,
+            ('fighter %d is not standing on the floor'):format(src))
+    end
+end)
+
+t.test('and the grown floor really is bigger than the ungrown one', function()
+    -- The growth has to reach the props. A factor that stopped at the spawn
+    -- planner would put the twentieth fighter off the edge of a floor built
+    -- for six -- which is the failure this whole feature exists to stop, and
+    -- it looks identical to it working right up until somebody falls.
+    local small = newClient()
+    small.enter('skydome', nil, 1.0)
+    local large = newClient()
+    large.enter('skydome', nil, large.Arena.SizeFactor('skydome', 20))
+
+    t.isTrue(#large.world.live() > #small.world.live(),
+        ('the arena for twenty built %d pieces against %d for six')
+            :format(#large.world.live(), #small.world.live()))
+
+    -- And it reaches further out. Measured rather than assumed: the tiles
+    -- deliberately overhang the configured radius (coverage beats tidiness,
+    -- see PlatformTiles), so how far a floor actually reaches is a question
+    -- for the floor, not for the number it was built from.
+    local area = small.Arena.GetSpawnArea('skydome', 1.0)
+    local function reach(client)
+        local furthest = 0.0
+        for step = 1, 400 do
+            if client.world.surfaceUnder(area.x + step * 0.5, area.y) then
+                furthest = step * 0.5
+            end
+        end
+        return furthest
+    end
+
+    local near, far = reach(small), reach(large)
+    t.isTrue(far > near + 5.0,
+        ('the arena for twenty reaches %0.1fm against %0.1fm for six'):format(far, near))
 end)
 
 -- ======================================================================

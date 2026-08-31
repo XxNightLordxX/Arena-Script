@@ -423,7 +423,14 @@ t.test('NO SPAWN LANDS INSIDE A WALL', function()
     -- and from inside one there is nowhere to walk to.
     --
     -- The planner keeps fighters minSeparation apart already, so the cover is
-    -- seeded into the same list of things to stay away from.
+    -- seeded into the same list of things to stay away from -- but with its
+    -- OWN clearance, not the player one. Excluding ten metres around every
+    -- barrier took a bigger bite out of the arena than the arena had, so
+    -- every placement fell through to the relaxation and nobody was ever
+    -- minSeparation from anybody. Cover's number only has to mean "not
+    -- inside it": Arena.CoverClearance, measured from the piece's origin,
+    -- which is why it is a container's half-length rather than a token
+    -- metre.
     local env = envWith()
     local Arena = env.Arena
     local area = Arena.GetSpawnArea('sky')
@@ -446,7 +453,7 @@ t.test('NO SPAWN LANDS INSIDE A WALL', function()
             for _, wall in ipairs(cover) do
                 local dx, dy = point.x - wall.x, point.y - wall.y
                 local gap = math.sqrt(dx * dx + dy * dy)
-                t.isTrue(gap >= area.minSeparation * 0.6,
+                t.isTrue(gap >= Arena.CoverClearance('sky'),
                     ('player %s spawned %0.1fm from a wall, inside it'):format(tostring(src), gap))
             end
         end
@@ -486,6 +493,208 @@ t.test('a spawn Z below the floor is a typo an operator cannot diagnose', functi
     -- The client clamps to this number; what is asserted here is that the
     -- number exists and is the floor, which is what makes the clamp possible.
     t.equals(floor, 1200.0)
+end)
+
+-- ======================================================================
+-- THE ARENA GROWS WITH THE MATCH
+--
+-- Twenty fighters in a circle sized for six cannot be minSeparation apart.
+-- The placement did not say so -- it quietly settled for less -- so an
+-- operator's stated separation was never the separation anybody got, at any
+-- roster size, and the first thing twenty players saw was each other.
+-- ======================================================================
+
+--- An env whose sky arena grows with the roster.
+local function growingEnv(mutate)
+    return envWith(function(arena)
+        arena.scale = { enabled = true, baseline = 6, perPlayer = 1.6, maxGrowth = 2.0 }
+        if mutate then mutate(arena) end
+    end)
+end
+
+t.test('an arena that does not ask to grow never does', function()
+    -- Every arena that shipped before this existed, and every arena on the
+    -- ground. A geometry change nobody asked for is a change nobody can
+    -- diagnose.
+    local Arena = envWith().Arena
+    for _, players in ipairs({ 0, 1, 6, 20, 200 }) do
+        t.equals(Arena.SizeFactor('sky', players), 1.0)
+    end
+end)
+
+t.test('and one that does stays exactly as configured up to its baseline', function()
+    local Arena = growingEnv().Arena
+    for _, players in ipairs({ 0, 2, 5, 6 }) do
+        t.equals(Arena.SizeFactor('sky', players), 1.0,
+            ('%d players moved an arena sized for six'):format(players))
+    end
+    t.equals(Arena.GetSpawnArea('sky', Arena.SizeFactor('sky', 6)).radius, 35.0)
+end)
+
+t.test('and grows past it, in metres of spawn radius per fighter', function()
+    local Arena = growingEnv().Arena
+    -- Fourteen fighters over the baseline at 1.6m each is 22.4m on a 35m
+    -- radius: the arena is 64% bigger.
+    local factor = Arena.SizeFactor('sky', 20)
+    t.isTrue(math.abs(factor - (1.0 + (14 * 1.6) / 35.0)) < 0.0001,
+        ('the growth came out at %0.4f'):format(factor))
+    t.isTrue(Arena.GetSpawnArea('sky', factor).radius > 57.0)
+end)
+
+t.test('and never past the ceiling, however many turn up', function()
+    local Arena = growingEnv().Arena
+    t.equals(Arena.SizeFactor('sky', 500), 2.0, 'the ceiling was not applied')
+end)
+
+t.test('DEFECT: every radius grows together, so the arena stays a valid arena', function()
+    -- THE RELATIONSHIPS ARE THE DESIGN. Spawns inside the floor, floor
+    -- inside the boundary -- scaling any one of the three on its own breaks
+    -- one of the two rules that keep people alive, and does it silently.
+    local Arena = growingEnv().Arena
+
+    for _, players in ipairs({ 6, 10, 16, 20, 32, 100 }) do
+        local factor = Arena.SizeFactor('sky', players)
+        local area = Arena.GetSpawnArea('sky', factor)
+        local platform = Arena.GetPlatform('sky', factor)
+        local boundary = 60.0 * factor
+
+        t.isTrue(area.radius < platform.radius,
+            ('%d players: the spawn ring (%0.1f) is wider than the floor (%0.1f)')
+                :format(players, area.radius, platform.radius))
+        t.isTrue(platform.radius < boundary,
+            ('%d players: the floor (%0.1f) is wider than the boundary (%0.1f)')
+                :format(players, platform.radius, boundary))
+        t.isTrue(area.teamRadius < area.radius,
+            ('%d players: a team spreads wider than the area it is in'):format(players))
+    end
+end)
+
+t.test('and the cover layout grows with it rather than staying in a huddle', function()
+    -- An outer ring that did not move would be an inner ring on a bigger
+    -- floor, leaving the whole rim as open ground.
+    local Arena = growingEnv().Arena
+    local small = Arena.GetCover('sky', 1.0)
+    local large = Arena.GetCover('sky', 2.0)
+
+    t.equals(#small, #large, 'growing the arena changed how many pieces it has')
+    for index, piece in ipairs(small) do
+        t.isTrue(math.abs(large[index].x - piece.x * 2.0) < 0.0001,
+            'a cover piece did not move out with the arena')
+        t.equals(large[index].z, piece.z, 'growing the arena changed a cover height')
+    end
+end)
+
+t.test('and the tile ceiling grows by the SQUARE, because a floor is a disc', function()
+    -- A ceiling that grew linearly would cap a doubled arena back to a
+    -- quarter of the floor it needs -- which is not a smaller arena, it is a
+    -- small floor with a large spawn ring hanging off it.
+    local Arena = growingEnv(function(arena) arena.platform.maxTiles = 100 end).Arena
+    t.equals(Arena.GetPlatform('sky', 1.0).maxTiles, 100)
+    t.equals(Arena.GetPlatform('sky', 2.0).maxTiles, 400)
+end)
+
+t.test('TWENTY FIGHTERS ALL LAND THE FULL minSeparation APART', function()
+    -- THE REQUIREMENT, stated as a test. Twenty is the roster this arena was
+    -- asked to hold, and "holds twenty" means twenty people who are not
+    -- standing on each other when the countdown ends.
+    --
+    -- Before the arena grew, this was 6.11m against a stated 10.
+    local Arena = growingEnv().Arena
+    local factor = Arena.SizeFactor('sky', 20)
+    local area = Arena.GetSpawnArea('sky', factor)
+
+    -- Many rosters: one lucky arrangement proves nothing about the next one.
+    for attempt = 1, 25 do
+        local roster = {}
+        for id = 1, 20 do roster[#roster + 1] = { src = id } end
+
+        local plan = Arena.PlanSpawns('sky', roster, nil, factor)
+        t.isNotNil(plan, 'twenty fighters produced no plan at all')
+
+        local points = {}
+        for _, point in pairs(plan) do points[#points + 1] = point end
+        t.equals(#points, 20, 'not everybody got a spawn')
+
+        local closest = math.huge
+        for i = 1, #points do
+            -- Inside the arena they were planned for, too.
+            local dx, dy = points[i].x - area.x, points[i].y - area.y
+            t.isTrue(math.sqrt(dx * dx + dy * dy) <= area.radius + 0.001,
+                'a spawn landed outside the spawn area')
+            for j = i + 1, #points do
+                local ax, ay = points[i].x - points[j].x, points[i].y - points[j].y
+                closest = math.min(closest, math.sqrt(ax * ax + ay * ay))
+            end
+        end
+
+        t.isTrue(closest >= area.minSeparation,
+            ('attempt %d: the closest two of twenty are %0.2fm apart, against a stated %0.1f')
+                :format(attempt, closest, area.minSeparation))
+    end
+end)
+
+t.test('DEFECT: cover does not eat the arena it is standing in', function()
+    -- THE BUG THIS SEPARATES FROM. Cover used to be excluded at the full
+    -- player separation -- ten metres from the centre of every barrier --
+    -- which takes a 314 square-metre bite out of the arena per piece.
+    -- Twenty pieces did that to more than the whole arena, so every
+    -- placement fell through to the relaxation and NOBODY was ever
+    -- minSeparation from anybody, at any roster size.
+    --
+    -- THE REAL ARENA, WITH ITS GROWTH SWITCHED OFF, and both halves of that
+    -- are deliberate. It needs the shipped arena's twenty-odd cover pieces,
+    -- because two test barriers do not eat an arena; and it needs the
+    -- ungrown size, because a big enough circle has room for the mistake --
+    -- which is exactly why a test of the grown arena would not notice this
+    -- coming back.
+    local env = Sandbox.newArenaEnv()
+    env.Config.Arenas.skydome.scale.enabled = false
+    local Arena = env.Arena
+
+    local area = Arena.GetSpawnArea('skydome')
+    t.isTrue(#Arena.GetCover('skydome') >= 12,
+        'the shipped arena no longer has enough cover for this test to mean anything')
+
+    -- SIXTY ROSTERS, because the failure this guards is probabilistic. The
+    -- placement is rejection sampling: a defect here does not fail every
+    -- round, it fails one in eight, which is exactly the kind of thing a
+    -- five-attempt test lets through and a player notices.
+    for attempt = 1, 60 do
+        local roster = {}
+        for id = 1, 8 do roster[#roster + 1] = { src = id } end
+
+        local plan = Arena.PlanSpawns('skydome', roster)
+        local points = {}
+        for _, point in pairs(plan) do points[#points + 1] = point end
+
+        local closest = math.huge
+        for i = 1, #points do
+            for j = i + 1, #points do
+                local dx, dy = points[i].x - points[j].x, points[i].y - points[j].y
+                closest = math.min(closest, math.sqrt(dx * dx + dy * dy))
+            end
+        end
+
+        t.isTrue(closest >= area.minSeparation,
+            ('attempt %d: eight fighters in an arena sized for them came out %0.2fm apart, against a stated %0.1f -- the cover is eating the arena')
+                :format(attempt, closest, area.minSeparation))
+    end
+end)
+
+t.test('and an operator can say how much room their own props need', function()
+    local Arena = envWith(function(arena) arena.cover.clearance = 1.0 end).Arena
+    t.equals(Arena.CoverClearance('sky'), 1.0)
+    t.isTrue(Arena.CoverClearance('sky') < envWith().Arena.CoverClearance('sky'),
+        'the configured clearance was ignored in favour of the default')
+end)
+
+t.test('and the shipped skydome is the one that grows', function()
+    -- The operator asked for an arena that holds twenty. This is the setting
+    -- that makes the one they run do it.
+    local sky = Sandbox.shippedConfig().Arenas.skydome
+    t.isNotNil(sky.scale, 'the shipped sky arena no longer scales')
+    t.isTrue(sky.scale.enabled, 'scaling is switched off on the arena that needs it')
+    t.isTrue(sky.scale.perPlayer > 0, 'it grows by nothing per player')
 end)
 
 -- ======================================================================

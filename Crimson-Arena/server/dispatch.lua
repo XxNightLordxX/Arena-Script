@@ -155,119 +155,35 @@ end
 --- @param src number
 --- @return boolean
 
---- Puts this resource in the server's admin role so its revive command is
---- not refused.
----
---- WHY THIS IS NEEDED. A command run through ExecuteCommand from a resource
---- is run BY that resource, and an admin command checks whether the caller is
---- allowed. crimson_arena is not an admin, so the command was refused --
---- silently, because a refused command is not an error, it is just a command
---- that did nothing. That is why the console could report running `revive 3`
---- while the player stayed on the floor.
----
---- WHY IT GRANTS THE COMMAND AND NOT ADMIN. The obvious version of this is
---- one line -- add this resource to the admin group -- and it would work. It
---- would also mean every command on the server was reachable from inside the
---- arena, so any flaw in any part of this resource became a way to run
---- anything. What is granted here is exactly the commands the operator named
---- in Config.Dispatch.revive.commands and nothing else: `command.revive`
---- lets it revive, and lets it do nothing else at all.
----
---- Runtime only. Nothing is written to a .cfg and nothing survives a restart
---- -- it is re-granted at every start, from config, so removing the command
---- from config removes the permission with it.
-local function grantReviveAce()
-    local revive = (Config.Dispatch or {}).revive
-    if type(revive) ~= 'table' or revive.enabled ~= true then return end
-
-    -- THE ADMIN ROLE, NOT THE COMMAND'S OWN PERMISSION.
-    --
-    -- An earlier version granted `command.revive` and nothing else, on the
-    -- reasoning that the narrowest grant which works is the right one. It did
-    -- not work, and the reason is worth keeping: this server's revive is not
-    -- gated on a permission named after itself. It asks whether the caller is
-    -- an ADMIN, and no amount of permission to run one command answers that
-    -- question.
-    --
-    -- So the grant is the role. `command allow` comes with it because a check
-    -- of the other common shape -- may this caller run commands at all --
-    -- reads the ace list rather than group membership, and either could be
-    -- the one in the way.
-    --
-    -- WHAT IT COSTS, said here rather than buried: any flaw anywhere in this
-    -- resource becomes a way to run any command on the server. It is
-    -- runtime-only and re-applied at every start, so setting grantSelfAdmin
-    -- false and restarting takes all of it back.
-    if revive.grantSelfAdmin ~= true then return end
-
-    local resource = GetCurrentResourceName()
-
-    -- TWO PRINCIPALS, because there are two identities in play and only one
-    -- of them is obvious.
-    --
-    -- `resource.<name>` is this resource. It satisfies a check that asks
-    -- whether the CALLING RESOURCE may do something.
-    --
-    -- `system.console` is who the command is running AS. ExecuteCommand from
-    -- a server script runs on the console's behalf, so a command that asks
-    -- whether its INVOKER is an admin -- the common shape, and the one an
-    -- identifier-keyed permission list is built for -- is asking about the
-    -- console and never about this resource. Granting only the resource is
-    -- how the arena could hold admin and still be told access denied.
-    local principals = { ('resource.%s'):format(resource), 'system.console' }
-
-    local wide = {}
-    for _, principal in ipairs(principals) do
-        wide[#wide + 1] = ('add_ace %s command allow'):format(principal)
-        for _, group in ipairs(revive.adminGroups or { 'group.admin' }) do
-            if Arena.IsKey(group) then
-                wide[#wide + 1] = ('add_principal %s %s'):format(principal, group)
-            end
-        end
-    end
-
-    for _, line in ipairs(wide) do
-        pcall(ExecuteCommand, line)
-    end
-
-    -- CHECKED, NOT ASSUMED, and the earlier version of this was a lie worth
-    -- describing. It counted a pcall that did not throw as a grant that
-    -- worked -- but ExecuteCommand does not throw when a command is refused,
-    -- it returns normally and the refusal appears on the console as
-    -- "Access denied for command add_ace". So the resource announced it had
-    -- been given full admin at the exact moment the server was refusing to
-    -- give it anything, which is the worst thing a diagnostic can do: it
-    -- sends whoever reads it looking somewhere else.
-    --
-    -- IsPrincipalAceAllowed asks the permission system itself, which is the
-    -- only answer worth having.
-    local ok, held = pcall(IsPrincipalAceAllowed, ('resource.%s'):format(resource), 'command')
-    if ok and held == true then
-        ArenaLog('revive: this resource now holds full command rights and admin group membership, because Config.Dispatch.revive.grantSelfAdmin is on. Any flaw in it can run any command -- turn it off once the revive works another way.')
-        return
-    end
-
-    -- A resource may not grant itself permissions, which is correct and is
-    -- the whole reason that door is shut. Said once, with the exact lines to
-    -- paste, rather than left as four "Access denied" lines an operator has
-    -- to work backwards from.
-    ArenaLog('revive: this resource is NOT allowed to grant itself permissions -- the add_ace lines above were refused by the server, which is correct behaviour. Nothing was granted.')
-    ArenaLog('revive: it does not matter. The arena revives its own players directly and needs no permission for that. These lines are only needed if you want it to run YOUR revive command as well, in server.cfg:')
-    ArenaLog('    add_ace resource.%s command allow', resource)
-    for _, group in ipairs(revive.adminGroups or { 'group.admin' }) do
-        if Arena.IsKey(group) then
-            ArenaLog('    add_principal resource.%s %s', resource, group)
-        end
-    end
-end
-
--- At start, and every start: the grant is runtime-only and deliberately does
--- not persist, so it is made again from whatever config says now.
-CreateThread(function()
-    -- One tick, so the command system is up before anything is added to it.
-    Wait(0)
-    grantReviveAce()
-end)
+-- ======================================================================
+-- NO PERMISSIONS ARE ASKED FOR, AND NONE ARE GRANTED
+--
+-- This resource used to try to give ITSELF the rights its revive command
+-- needed -- `add_ace` for the command, and failing that `add_principal` into
+-- the admin group. Both are gone, and neither is coming back.
+--
+-- IT DID NOT WORK. A server that lets a resource write its own permissions
+-- is a server with no permissions, so the sensible ones refuse, and a
+-- refusal is not an error: ExecuteCommand returns normally, the console
+-- prints "Access denied", and the arena carried a page of config explaining
+-- a capability it did not have.
+--
+-- IT WAS NOT NEEDED EITHER. The arena revives its own players directly --
+-- NetworkResurrectLocalPlayer plus the flags it set itself -- and asks
+-- nobody's permission to undo something it did. The command hooks below
+-- exist only to tell a SEPARATE medical script, which keeps its own death
+-- list that no amount of resurrecting a ped reaches.
+--
+-- AND IT COST SOMETHING REAL. Admin group membership made any flaw anywhere
+-- in this resource a way to run any command on the box, in exchange for a
+-- capability that was no longer used.
+--
+-- If your own revive command is gated on an ace and you want the arena to be
+-- able to run it, grant that yourself in server.cfg, where the console is
+-- doing the granting and nothing has to ask:
+--
+--     add_ace resource.Crimson-Arena command.revive allow
+-- ======================================================================
 
 --- Tells whatever handles death on this server that a player is alive again.
 ---

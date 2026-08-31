@@ -1312,4 +1312,66 @@ t.test('and a round-robin spawn still gets the scatter it needs', function()
         'an arena using its point list was sent no scatter, so its players land in a pile')
 end)
 
+-- ======================================================================
+-- THE ARENA GROWS WITH THE ROSTER, AND EVERY CLIENT IS TOLD THE SAME NUMBER
+-- ======================================================================
+
+--- An airfield that grows, so a roster can be measured against it.
+local function growing(config)
+    instantRound(config)
+    config.Arenas.airfield.scale = {
+        enabled = true, baseline = 2, perPlayer = 4.0, maxGrowth = 3.0,
+    }
+end
+
+t.test('the size factor is sent to every client, and it is the same one', function()
+    -- The client builds the floor. If it works the growth out for itself it
+    -- has to see the roster, which it cannot -- and two ends deriving the
+    -- same number separately is how they come to disagree about where the
+    -- floor ends.
+    local f = newFixture(growing)
+    local match = newMatch(f, 3)
+    goLive(f, match)
+
+    local first = f.lastPayload('crimson_arena:client:enterArena', 1)
+    t.isNotNil(first)
+    t.isTrue((first.sizeFactor or 0) > 1.0,
+        ('three fighters over a baseline of two produced a factor of %s')
+            :format(tostring(first.sizeFactor)))
+
+    for src = 2, 3 do
+        t.equals(f.lastPayload('crimson_arena:client:enterArena', src).sizeFactor,
+            first.sizeFactor, ('fighter %d was told a different arena size'):format(src))
+    end
+end)
+
+t.test('DEFECT: and the boundary grows with it, so the floor is never outside the sphere', function()
+    -- The boundary is the only one of the three radii the client does not
+    -- work out for itself -- it arrives on this payload. A boundary that
+    -- stayed at its configured size while the floor and the spawn ring grew
+    -- would leave solid ground, and spawns, outside the sphere that bleeds
+    -- you for leaving it.
+    local f = newFixture(growing)
+    local match = newMatch(f, 3)
+    goLive(f, match)
+
+    local configured = f.Config.Arenas.airfield.boundary.radius
+    local entry = f.lastPayload('crimson_arena:client:enterArena', 1)
+
+    t.isNotNil(entry.boundary, 'the arena sent no boundary at all')
+    t.isTrue(math.abs(entry.boundary.radius - configured * entry.sizeFactor) < 0.001,
+        ('the boundary came through at %0.1f -- configured %0.1f, arena grown by %0.2f')
+            :format(entry.boundary.radius, configured, entry.sizeFactor))
+end)
+
+t.test('and an arena that does not scale is sent exactly what config says', function()
+    local f = newFixture(instantRound)
+    local match = newMatch(f, 3)
+    goLive(f, match)
+
+    local entry = f.lastPayload('crimson_arena:client:enterArena', 1)
+    t.equals(entry.sizeFactor, 1.0)
+    t.equals(entry.boundary.radius, f.Config.Arenas.airfield.boundary.radius)
+end)
+
 os.exit(t.summary())

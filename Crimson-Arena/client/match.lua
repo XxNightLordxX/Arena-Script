@@ -1123,12 +1123,17 @@ end
 --- fall, and the caller would rather refuse to place anybody than drop them
 --- into one. Cover failing is a worse round, not a broken one.
 --- @param arenaKey any
+--- @param factor number|nil -- how much bigger this arena is for this match
 --- @return boolean floorReady
-local function buildArenaProps(arenaKey)
+local function buildArenaProps(arenaKey, factor)
     removeArenaProps()
     arenaSurfaceZ = nil
 
-    local platform = Arena.GetPlatform(arenaKey)
+    -- THE SAME FACTOR THE SERVER PLANNED THE SPAWNS WITH. It arrives on the
+    -- entry payload rather than being worked out here, because this side
+    -- cannot see the roster -- and two ends deriving the same number
+    -- separately is how they come to disagree about where the floor ends.
+    local platform = Arena.GetPlatform(arenaKey, factor)
 
     -- THE FLOOR IS MEASURED BEFORE IT IS LAID.
     --
@@ -1158,7 +1163,7 @@ local function buildArenaProps(arenaKey)
         end
     end
 
-    local wanted = Arena.ArenaProps(arenaKey, measured)
+    local wanted = Arena.ArenaProps(arenaKey, measured, factor)
     if #wanted == 0 then
         -- Nothing to build is not a failure: every arena on the ground is
         -- this case, and the ground is already there.
@@ -1304,6 +1309,10 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
         -- from config by key, on this side, rather than serialised into every
         -- entry payload.
         arenaKey = data.arenaKey,
+        -- How much bigger this arena is for this match. Kept because the
+        -- respawn path reads the arena's geometry again and has to read the
+        -- same arena the floor was built for.
+        sizeFactor = data.sizeFactor,
         -- Kept rather than used and dropped: a death during the start
         -- countdown is answered on this side alone, and standing that
         -- player back up means handing them the same loadout again.
@@ -1366,7 +1375,7 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- there. Placing somebody into that is a very long fall, so they are
     -- taken back out instead -- and the server is told, or it keeps a fighter
     -- in a match it can never put anywhere.
-    if not buildArenaProps(data.arenaKey) then
+    if not buildArenaProps(data.arenaKey, data.sizeFactor) then
         removeArenaProps()
 
         local home = Config.Lobby.returnCoords
@@ -1608,4 +1617,87 @@ end)
 AddEventHandler('onResourceStop', function(resource)
     if resource ~= GetCurrentResourceName() then return end
     leaveArena(nil)
+end)
+
+-- ======================================================================
+-- WHICH PROPS THIS BUILD ACTUALLY HAS
+--
+-- An arena that carries its own floor names prop models, and a name being
+-- real is not the same as it being on THIS server: a build without a DLC, or
+-- one whose assets have been stripped, has fewer objects than the game's own
+-- list does. That is why every prop names a CHAIN rather than one model.
+--
+-- The chains make it survivable. This makes it KNOWABLE -- before somebody
+-- finds out mid-round, on their own, with no way to tell a missing prop from
+-- a broken script.
+--
+-- Client-side because that is the only realm that can ask: IsModelInCdimage
+-- reads the game's object index, and the server does not have one.
+--
+-- SILENT WHEN EVERYTHING IS FINE, unless Config.Debug is on. The one line
+-- worth interrupting somebody for is the one that says a chain has run out.
+-- ======================================================================
+
+CreateThread(function()
+    -- After the world is up; asking the object index before then answers
+    -- for a game that has not finished loading.
+    Wait(2000)
+
+    -- A DIAGNOSTIC MAY NOT BE THE THING THAT BREAKS THE RESOURCE. This is
+    -- the only place in the client that touches the object index, and a
+    -- build without that native -- or a test harness that has not stubbed it
+    -- -- would otherwise take this whole thread down. The lobby NPC was lost
+    -- to exactly this shape once already: a raise inside a startup thread,
+    -- and everything after it silently never ran.
+    if type(IsModelInCdimage) ~= 'function' or type(joaat) ~= 'function' then return end
+
+    local checked, missing = {}, {}
+
+    --- @param entry table -- anything with `model` / `models`
+    --- @param where string
+    local function inspect(entry, where)
+        local chain = Arena.ModelChain(entry)
+        if #chain == 0 then return end
+
+        local have = {}
+        for _, model in ipairs(chain) do
+            if IsModelInCdimage(joaat(model)) then have[#have + 1] = model end
+        end
+
+        checked[#checked + 1] = ('%s: %d of %d (%s)')
+            :format(where, #have, #chain, have[1] or 'NONE')
+        if #have == 0 then
+            missing[#missing + 1] = ('%s -- none of: %s'):format(where, table.concat(chain, ', '))
+        end
+    end
+
+    for _, entry in ipairs(Arena.GetEnabledArenas()) do
+        local arena = Arena.GetArenaByKey(entry.key)
+        if type(arena) == 'table' then
+            if type(arena.platform) == 'table' and arena.platform.enabled ~= false then
+                inspect(arena.platform, entry.key .. ' floor')
+            end
+            if type(arena.cover) == 'table' and arena.cover.enabled ~= false then
+                local seen = {}
+                for index, piece in ipairs(arena.cover.pieces or {}) do
+                    -- One line per DISTINCT chain rather than per piece:
+                    -- twenty barriers off the same chain is one fact.
+                    local signature = table.concat(Arena.ModelChain(piece), '|')
+                    if signature ~= '' and not seen[signature] then
+                        seen[signature] = true
+                        inspect(piece, ('%s cover #%d'):format(entry.key, index))
+                    end
+                end
+            end
+        end
+    end
+
+    if #missing > 0 then
+        print('[crimson_arena] PROPS MISSING ON THIS BUILD -- an arena below cannot be built and will refuse to start:')
+        for _, line in ipairs(missing) do print('    ' .. line) end
+        print('[crimson_arena] Add those models to a stream/ folder in this resource, or name props your build does have. See stream/README.md.')
+    elseif Config.Debug and #checked > 0 then
+        print('[crimson_arena] arena props, checked against this build:')
+        for _, line in ipairs(checked) do print('    ' .. line) end
+    end
 end)

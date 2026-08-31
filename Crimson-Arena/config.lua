@@ -1,42 +1,54 @@
 --[[
-    crimson_arena/config.lua
+    CRIMSON ARENA -- config.lua
 
-    Crimson Roleplay -- Arena.
+    THE ONLY FILE YOU EDIT, and nothing in it needs code to go with it.
+    Paste an arena in and it appears in the panel. Delete a weapon and it
+    leaves the game. There is no second list to register anything with.
 
-    THE ONLY FILE AN OPERATOR NEEDS TO EDIT. Everything the arena does is
-    driven from this table: which weapons and how much ammo players may
-    pick from, whether betting is on, which teams exist and whether they
-    are allowed to be lopsided, how many people may join, and where the
-    lobby ped stands.
+    THE FILE IS ORDERED BY HOW OFTEN YOU TOUCH IT: the settings first, then
+    the two long lists -- arenas and weapons -- then the optional
+    integrations most servers never open. The map below is the fast way in.
 
-    HOW TO READ THIS FILE
-      Config.Lobby ........ the ped (or marker) players walk up to in order
-                            to open the arena menu, and where they are put
-                            back afterwards.
-      Config.Arenas ....... the fighting grounds themselves: spawn points,
-                            per-team spawn points, the boundary.
-      Config.Modes ........ free-for-all / team deathmatch / gun game etc.
-      Config.Teams ........ the team list, whether players pick their own,
-                            and whether uneven teams are allowed.
-      Config.Loadouts ..... THE WEAPON AND AMMO LIST players choose from.
-      Config.Betting ...... the pot: entry fees, payout split, spectator
-                            side-bets. One `enabled` flag turns all of it off.
-      Config.Match ........ round rules: player counts, lives, timers,
-                            win condition.
-      Config.UI ........... the red/black theme, and what the panel is called.
-      Config.Permissions .. who may create a match, who may force-stop one.
-      Config.Database ..... optional persistence for the leaderboard.
+    ------------------------------------------------------------------------------
+     line   setting       what it is
+    ------------------------------------------------------------------------------
+       73   Lobby         The NPC players walk up to
+      144   Match         Lives, timers, player counts, win condition
+      321   Teams         The sides, and whether they may be uneven
+      423   Modes         Free-for-all, team deathmatch, gun game
+      457   DefaultMode   Which of them a new lobby opens on
+      476   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      664   UI            Panel colours, logo and title
+      727   Permissions   Who may open a match, who may force-stop one
+      806   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1321   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     2749   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2759   Webhook       Optional: a Discord line per finished match
+     2797   Dispatch      Optional: keeping police and EMS out of the arena
+    ------------------------------------------------------------------------------
 
-    TWO THINGS THAT TRIP PEOPLE UP
-      1. `maxPlayers = 0` means UNLIMITED, not "nobody". The same is true of
-         `maxTeamSize`, `maxPot` and `maxConcurrentMatches`. Zero is the
-         "no ceiling" value everywhere in this file, and it is always
-         spelled out in the comment next to it.
-      2. Nothing a player's game client claims is trusted. The weapon and
-         ammo the client asks for are re-checked against the lists below by
-         the server before a single round is handed out, so shortening a
-         weapon list here genuinely removes that weapon from the arena --
-         it does not merely hide a button.
+    (Those line numbers are checked by tests/configmap_spec.lua, so a map
+    that has gone stale fails the suite instead of sending you to the wrong
+    part of the file.)
+
+    FOUR THINGS THAT TRIP PEOPLE UP
+
+      1. ZERO MEANS UNLIMITED, not "none". `maxPlayers = 0`, `maxTeamSize`,
+         `maxPot`, `maxConcurrentMatches` -- zero is the no-ceiling value
+         everywhere in this file, and it is spelled out next to each one.
+
+      2. AN EMPTY LIST DOES NOT MEAN THE SAME THING TWICE. Empty job and
+         group lists in Config.Permissions mean EVERYONE; an empty list in
+         Config.Dispatch means NOTHING IS CALLED. Each one says which.
+
+      3. NOTHING A PLAYER'S CLIENT CLAIMS IS TRUSTED. The weapon and ammo a
+         client asks for are re-checked against the lists here by the server
+         before a round is handed out, so shortening a list genuinely removes
+         that weapon -- it does not merely hide a button.
+
+      4. THE ARENAS AND THE LOBBY ARE SEPARATE SETTINGS. Config.Lobby is
+         where players come to join. Config.Arenas is where they fight.
+         Moving one does not move the other.
 ]]
 
 Config = {}
@@ -124,6 +136,601 @@ Config.Lobby = {
     -- ends. Also where they are returned to if the resource restarts while
     -- they are mid-match, so make sure it is somewhere safe to stand.
     returnCoords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
+}
+
+-- ======================================================================
+-- MATCH RULES
+-- ======================================================================
+Config.Match = {
+    -- Fewest players a match will start with.
+    minPlayers = 2,
+
+    -- 0 = UNLIMITED. Any number of players may join one match.
+    maxPlayers = 0,
+
+    -- 0 = unlimited matches running side by side.
+    maxConcurrentMatches = 0,
+
+    -- Only the player who created the match may start it. With this off,
+    -- anyone in the lobby can.
+    onlyHostCanStart = true,
+
+    -- Start on its own once everybody has readied up and `minPlayers` is
+    -- met, without waiting for the host to press start.
+    autoStartWhenAllReady = true,
+
+    -- The countdown shown in the lobby once a start is triggered. Players
+    -- may still back out during it.
+    lobbyCountdownSeconds = 10,
+
+    -- The frozen countdown after everyone is teleported in, before weapons
+    -- go live.
+    startCountdownSeconds = 5,
+
+    -- 0 = no time limit. When the clock runs out the win condition is
+    -- decided on kills.
+    roundTimeSeconds = 600,
+
+    -- LIVES PER PLAYER. 1 = eliminated on the first death. Above that, a
+    -- player who dies is put back at a fresh spawn point with a full
+    -- loadout, and is only out once their last life is spent.
+    --
+    -- Three changes how a round feels more than any other number here: a
+    -- single unlucky opening exchange no longer ends somebody's match, and
+    -- the round lasts long enough for position and ammunition to matter.
+    -- Watch roundTimeSeconds alongside it -- three lives each across a full
+    -- lobby is a much longer fight than one.
+    -- Set a plain number here instead -- `lives = 3` -- to fix it for every
+    -- match and take the choice away.
+    lives = {
+        allowChoose = true,
+        min = 1,
+        max = 10,
+        default = 3,
+    },
+
+    -- How long a player lies there before being put back in. Long enough to
+    -- feel like a death, short enough not to be a punishment on its own.
+    respawnDelaySeconds = 5,
+
+    -- HOW A MATCH IS WON.
+    --   'last_standing' -- everyone else eliminated
+    --   'most_kills'    -- highest kill count when the clock runs out
+    --   'score_limit'   -- first to `scoreLimit` kills
+    winCondition = 'last_standing',
+    scoreLimit = 25,
+
+    -- Metres a player may be scattered from the spawn point they drew, so
+    -- more players than spawn points never stack inside each other.
+    spawnScatterRadius = 2.5,
+
+    -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS PUT DOWN, in metres.
+    --
+    -- The player is held motionless this far above the spawn point while the
+    -- world streams in, and is then put down on whatever surface the game
+    -- reports underneath -- so they never fall, and never stand where there
+    -- is nothing yet.
+    --
+    -- KEEP IT SMALL. Being frozen is what stops the fall through an unloaded
+    -- world; height has nothing to do with it. A big number would hang every
+    -- player in the air where the whole arena can see them, which broadcasts
+    -- exactly where the spawn points are.
+    --
+    -- Finding the real ground is a separate job and is handled by searching
+    -- down from well overhead -- a maths query nobody is ever at, and the
+    -- part that actually fixes a spawn Z written below the surface. That
+    -- height is not configurable because it is not a gameplay decision.
+    -- RAISED FROM 1.0, because a metre was not clearing it.
+    --
+    -- Three metres is still not a skydive -- nobody watching learns where
+    -- anybody spawned from it, which is the reason this is not simply set to
+    -- fifty -- but it is enough head-room that a ped placed a moment before
+    -- the ground finishes streaming falls onto terrain instead of through it.
+    --
+    -- This is the height a player is HELD at. It is not the height the ground
+    -- is searched from: that is fixed, much higher, and explained where the
+    -- probe happens in client/match.lua.
+    spawnHeightOffset = 3.0,
+
+    -- THE RADAR, which replaced permanent blips.
+    --
+    -- Off for every player until they switch it on themselves in the panel,
+    -- and even then it is not a live feed: it SWEEPS. Every `intervalMs` the
+    -- fighters' positions appear for `visibleMs` and then go dark again, so
+    -- what a player gets is where everybody WAS a moment ago, not where they
+    -- are now. Long enough to plan, stale enough to be wrong about.
+    --
+    -- The two Config.Teams blip switches above override this: a server that
+    -- wants permanent dots turns those on and the radar never runs.
+    radar = {
+        -- Whether the toggle appears in the panel at all. Off, nobody has a
+        -- radar and the control is not drawn -- rather than drawn and dead.
+        allowChoose = true,
+
+        -- Whether a player who has never touched it starts with it on.
+        defaultOn = false,
+
+        -- How long between sweeps, and how long a sweep is visible for.
+        -- 30 seconds dark, most of a second lit.
+        intervalMs = 30000,
+        visibleMs = 800,
+    },
+
+    -- KEEPING EVERYONE ELSE OUT OF A LIVE ARENA.
+    --
+    -- A live match is already fought in its own routing bucket, so an
+    -- outsider cannot see the fighters, cannot shoot them and cannot be shot
+    -- -- that half is settled and this adds nothing to it.
+    --
+    -- What this adds is the physical half: somebody who is not in the round
+    -- is pushed back out of the arena's boundary circle and held there for as
+    -- long as it is being fought in. Without it they can stand in the middle
+    -- of a firefight nobody can see them in -- and on a server that has
+    -- turned isolation off, in one they can be shot in.
+    --
+    -- The fence is the arena's own `boundary`, deliberately: the same circle
+    -- the fighters are bled for leaving. One field, one edge.
+    keepOutBarrier = {
+        enabled = true,
+
+        -- How far OUTSIDE the boundary somebody is put when they cross it.
+        -- Far enough that they are not immediately pushed again by the next
+        -- tick, close enough that it reads as a wall and not a teleport.
+        pushBackMetres = 6.0,
+
+        -- How often the fence is checked, in milliseconds. A quarter second
+        -- catches a sprint; every frame would be a loop running on every
+        -- player on the server for the length of every round.
+        tickMs = 250,
+
+        -- Tell them why they were moved, once per crossing rather than once
+        -- per tick.
+        notify = true,
+    },
+
+    -- Eliminated players watch the rest of the match instead of being sent
+    -- straight back to the lobby.
+    spectateOnElimination = true,
+
+    -- Give players back the weapons and armour they walked in with when
+    -- they leave. Strongly recommended on.
+    restoreLoadoutOnExit = true,
+
+    -- Wipe a player's carried weapons on entry so only arena weapons are
+    -- in play. Turning this off lets people bring their own guns in.
+    stripWeaponsOnEntry = true,
+
+    -- A match sitting in the lobby with nobody readying up is closed after
+    -- this long, and any stakes refunded. 0 = never.
+    idleLobbyTimeoutSeconds = 900,
+
+    -- Refuse to let a player join while they are dead, cuffed or in a
+    -- vehicle. Server-checked.
+    blockWhileDead = true,
+    blockWhileInVehicle = true,
+}
+
+-- ======================================================================
+-- TEAMS
+--
+-- UNEVEN TEAMS ARE ALLOWED BY DEFAULT -- `allowUnequal = true` below. Nine
+-- players against one is a legal match. Set it to false only if you want
+-- the server to refuse a start while the sides differ by more than
+-- `maxTeamSizeDifference`.
+-- ======================================================================
+Config.Teams = {
+    -- Players pick their own side from the panel. With this off, everyone
+    -- is auto-assigned and the team picker is hidden.
+    allowChoose = true,
+
+    -- THE UNEVEN-TEAMS SWITCH. true = any split is fine (5v1, 8v2, 11v0
+    -- as long as `requireBothTeamsOccupied` allows it).
+    allowUnequal = true,
+
+    -- Only consulted when `allowUnequal = false`. The largest difference in
+    -- head count the server will start a match with.
+    maxTeamSizeDifference = 1,
+
+    -- Even with uneven teams allowed, a team match with everyone on one
+    -- side is not a match. Set false only if you genuinely want that.
+    requireBothTeamsOccupied = true,
+
+    -- 0 = unlimited players per team.
+    maxTeamSize = 0,
+
+    -- Someone who joins a team match without picking a side is dropped onto
+    -- the smallest team when the match starts. With this off they are asked
+    -- to pick and the start is refused until they do.
+    autoAssignIfUnchosen = true,
+
+    -- Can teammates hurt each other?
+    friendlyFire = false,
+
+    -- Team blips on the map during a match.
+    -- BOTH OFF. A permanent dot on every fighter turns a round into a map to
+    -- be read rather than a place to be searched -- nobody flanks anybody
+    -- when everybody's position is drawn continuously.
+    --
+    -- Config.Match.radar below is the replacement, and it is opt-in per
+    -- player: a sweep that shows where everyone was for a moment and then
+    -- goes dark again. Turn these back on for a server that wants the old
+    -- permanent behaviour; they override the radar entirely.
+    -- YOUR OWN SIDE, ALWAYS. Knowing where your team is is not intelligence
+    -- -- it is the difference between a team mode and four people in the
+    -- same field -- so teammates stay on the map for the whole round.
+    showTeamBlips = true,
+
+    -- THE OTHER SIDE, NEVER. A permanent dot on every enemy turns a round
+    -- into a map to be read rather than a place to be searched. The radar
+    -- below is how an enemy position is learned: opt-in, and a sweep that
+    -- goes dark again. Turn this on for a server that wants the old
+    -- permanent behaviour, and the radar stops running.
+    showEnemyBlips = false,
+
+    -- A COLOURED EDGE ROUND YOUR TEAMMATES, in that team's own colour --
+    -- the same value the panel is tinted with and the same team the map
+    -- blip belongs to, so the outline and the dot match by construction
+    -- rather than by keeping two settings in step.
+    --
+    -- Teammates only, and it cannot be turned on for enemies: an outline
+    -- draws THROUGH walls, which is the point of it for finding a friend
+    -- and exactly the problem with it for finding a target.
+    showTeamOutline = true,
+
+    list = {
+        ['crimson'] = {
+            label = 'Crimson',
+            -- Panel accent for this team, and the tint used on its blips.
+            color = '#c81020',
+            blipColor = 1,      -- red
+            enabled = true,
+            order = 1,
+        },
+        ['ash'] = {
+            label = 'Ash',
+            color = '#4a4a52',
+            blipColor = 40,     -- grey
+            enabled = true,
+            order = 2,
+        },
+        -- A third and fourth side ship disabled. Turn one on and every team
+        -- mode immediately offers it -- no code change needed. Give it
+        -- spawn points in each arena's `teamSpawns` or it falls back to the
+        -- shared `spawns` list.
+        ['bone'] = {
+            label = 'Bone',
+            color = '#d8d2c4',
+            blipColor = 0,
+            enabled = false,
+            order = 3,
+        },
+        ['ember'] = {
+            label = 'Ember',
+            color = '#ff6a1a',
+            blipColor = 47,
+            enabled = false,
+            order = 4,
+        },
+    },
+}
+
+-- ======================================================================
+-- MODES
+--
+-- `teams = false` is a free-for-all: everyone against everyone, and the
+-- team picker is not shown at all. `teams = true` shows the team picker.
+-- ======================================================================
+Config.Modes = {
+    ['ffa'] = {
+        label = 'Free For All',
+        description = 'Every player for themselves. Last one breathing takes the pot.',
+        enabled = true,
+        teams = false,
+        icon = 'fas fa-skull-crossbones',
+    },
+
+    ['tdm'] = {
+        label = 'Team Deathmatch',
+        description = 'Pick a side. Wipe the other one out.',
+        enabled = true,
+        teams = true,
+        icon = 'fas fa-users',
+    },
+
+    ['gungame'] = {
+        label = 'Gun Game',
+        description = 'Every kill moves you up the weapon ladder. First to the end wins.',
+        -- OFF. Switched off at the operator's request, not because anything
+        -- about it is broken: the ladder below is intact and tested, and
+        -- setting this back to true is the whole of turning the mode on.
+        enabled = false,
+        teams = false,
+        icon = 'fas fa-arrow-up-9-1',
+        -- Weapon keys from Config.Loadouts.weapons, in order. When this mode
+        -- is on, the player's own weapon choice is ignored -- the ladder
+        -- replaces it.
+        gunGameLadder = { 'pistol', 'smg', 'shotgun', 'rifle', 'sniper', 'knife' },
+    },
+}
+
+--- Which mode a newly created match starts on before the host changes it.
+Config.DefaultMode = 'ffa'
+
+-- ======================================================================
+-- BETTING
+--
+-- ONE SWITCH TURNS ALL OF IT OFF: `Config.Betting.enabled = false` hides
+-- every bet control in the panel and makes the server reject any bet that
+-- arrives anyway. Nothing else needs changing.
+--
+-- HOW THE MONEY MOVES: a player's entry fee leaves their account the moment
+-- they lock in, and is held by the match. It is paid out to the winner(s)
+-- when the match ends, or refunded in full if the match fails to start, is
+-- closed by the server, or ends with nobody eligible to be paid.
+--
+-- The two exceptions are both settings, both default to refunding, and both
+-- are spelled out where they live below: `refundOnCancel` (a host closing
+-- their own lobby) and `refundOnDisconnectBeforeStart` (leaving one). Turn
+-- either off and that stake stops coming back.
+-- ======================================================================
+Config.Betting = {
+    enabled = true,
+
+    -- 'cash' or 'bank'.
+    account = 'cash',
+
+    -- WHERE A STAKE IS TAKEN FROM, in the order tried.
+    --
+    -- One account was 'cash' and nothing else, so a player with the price in
+    -- the bank and an empty pocket was told they could not afford it. Each is
+    -- tried in turn for the WHOLE amount; a stake is never split across two.
+    --
+    -- Splitting has a failure mode nothing else here does: half the money
+    -- leaves, the second half is refused, and the player is out of pocket for
+    -- a stake that was never taken. Refunding a split is also two movements
+    -- that can each fail on their own. One account or none is the honest
+    -- trade, and it keeps a refund a single reversible movement.
+    --
+    -- Money always goes back where it came from. Refunding bank money as
+    -- cash is a way to launder through the arena, and refunding cash into the
+    -- bank is a surprise for somebody carrying it on purpose.
+    accounts = { 'cash', 'bank' },
+
+    -- FIGHTERS BACKING THEMSELVES.
+    --
+    -- Separate from the entry fee, which is one fixed price everybody pays.
+    -- This is a real bet at whatever size the player chooses, on themselves
+    -- in a free-for-all or on their own team in a team mode.
+    --
+    -- HOW A WINNING BET IS PAID, and it is the same question for both kinds.
+    --
+    --   'pool' -- PARIMUTUEL. Every bet on the match goes into a pool and the
+    --             winners split it in PROPORTION TO WHAT THEY STAKED. A
+    --             winner is paid with the losers' money, the sum handed out
+    --             equals the pool exactly, and the server creates nothing. So
+    --             what you win depends on how much you put in AND on how many
+    --             people bet -- a big pool with one winner pays enormously, a
+    --             small pool split four ways pays little.
+    --
+    --   'odds'  -- FIXED PRICE. The stake is multiplied by
+    --             spectatorBets.oddsMultiplier below and paid by the server.
+    --             Predictable, and it costs the server money on every win.
+    --
+    -- BOTH DEFAULT TO 'pool', because 'odds' on a bet placed by somebody who
+    -- can influence the result is a money printer: a fighter backs themselves
+    -- to win a round they were going to win anyway and the server pays for
+    -- it. With 'pool' that same bet can only ever take money other bettors
+    -- put up.
+    -- NAMED betPayout, NOT `payout`. `Config.Betting.payout` already exists
+    -- further down and is a different question entirely -- how the POT is
+    -- split between the winners of the round. Calling this one `payout` too
+    -- meant the second assignment silently replaced the first, so this whole
+    -- block did nothing and every bet quietly fell back to the default. It
+    -- was luacheck that noticed, not a test.
+    betPayout = {
+        fighters = 'pool',
+        spectators = 'pool',
+
+        -- ONE POOL FOR BOTH, or one each.
+        --
+        -- Shared, a spectator's stake can be won by a fighter and the other
+        -- way round, which makes a small arena's pool worth betting into.
+        -- Separate keeps the two crowds' money apart, which is fairer when
+        -- fighters can see things spectators cannot.
+        --
+        -- Only ever pools bets that are actually on 'pool' -- an 'odds' bet
+        -- is server-funded and never enters, or it would be paying itself
+        -- out of other people's stakes as well.
+        sharedPool = true,
+
+        -- THE ENTRY FEES JOIN THE POOL TOO.
+        --
+        -- On, a fighter's entry fee IS their bet: it is added to the pool as
+        -- a stake on their own side, so paying to enter puts you in rather
+        -- than funding other people's bets for nothing. The pot is no longer
+        -- paid out separately -- there is one pot and one set of winners.
+        --
+        -- What that guarantees: a fighter who wins always profits, because
+        -- the pool holds every loser's fee as well as their own. Off, the
+        -- entry pot is paid to the match winners by Config.Betting.payout
+        -- below and the bets settle on their own, which is two prizes for
+        -- two different things.
+        includeEntryPot = true,
+    },
+
+    fighterBets = {
+        enabled = true,
+
+        -- The band one fighter may stake. Nothing to do with the entry fee.
+        min = 100,
+        max = 50000,
+
+        -- A fighter may only back THEMSELVES, or their own team in a team
+        -- mode. Off, they may back any side -- which on most servers is a
+        -- way to throw a round for money, so it ships on.
+        ownSideOnly = true,
+
+        -- One bet each. Off, a fighter may keep adding to their position
+        -- while the lobby is open.
+        oneBetPerMatch = true,
+    },
+    currencySymbol = '$',
+
+    -- THE ENTRY FEE each player stakes to take part.
+    entryFee = {
+        -- With this off, matches are free to enter and the pot is only ever
+        -- filled by spectator side-bets (if those are on).
+        enabled = true,
+        min = 0,
+        max = 50000,
+        -- FREE UNLESS THE HOST ASKS FOR A FEE. Creating a match should not
+        -- quietly put a price on it: a host who never touches the field
+        -- opens a free round, and anybody who wants money on the outcome
+        -- backs themselves with a fighter bet instead, which is voluntary,
+        -- their own size, and paid out of the pool rather than by the server.
+        default = 0,
+        -- Quick-pick buttons in the panel. Any value between min and max is
+        -- still accepted if the player types it.
+        presets = { 500, 1000, 5000, 25000 },
+    },
+
+    -- Taken off the top of the pot before it is paid out. 0 = no cut.
+    houseCutPercent = 0,
+
+    -- HOW THE POT IS SPLIT.
+    --   'winner_takes_all' -- one player (or the winning team, split evenly)
+    --   'top_three'        -- split by `topThreeSplit` below, FFA only
+    --   'per_kill'         -- divided by share of total kills
+    payout = 'winner_takes_all',
+    topThreeSplit = { 60, 30, 10 },
+
+    -- Below this head count the match still runs, but the pot is refunded
+    -- rather than paid out -- stops two friends farming each other.
+    minPlayersToPayOut = 2,
+
+    -- 0 = no ceiling on the total pot.
+    maxPot = 0,
+
+    -- A HOST CLOSING THEIR OWN LOBBY. With this on -- the default -- every
+    -- stake goes straight back. With it off they are FORFEITED, and the
+    -- money goes nowhere at all: it is kept the way the house cut and a
+    -- losing side-bet are kept, because this resource has no house account
+    -- to credit and handing the pot to somebody would only move the abuse to
+    -- whoever received it. That is the point of the setting -- it deters a
+    -- host who fills a lobby, takes everyone's stake and closes it. Every
+    -- forfeit is logged and webhooked whatever `logPayouts` says, because an
+    -- operator running a house account by hand is the only person who can
+    -- put that money anywhere.
+    --
+    -- ONLY a host cancelling forfeits. An idle-timeout close, an admin
+    -- force-stop, the last player walking out and a resource restart all
+    -- still refund in full: punishing a host who calls their own match off
+    -- is not the same as punishing a lobby the server itself closed.
+    refundOnCancel = true,
+
+    -- LEAVING A LOBBY THAT HAS NOT STARTED. On, the stake comes back. Off,
+    -- it stays in the pot and is won by whoever takes the match.
+    --
+    -- Like its mid-match sibling below, this does NOT distinguish a
+    -- deliberate quit from a crash, and deliberately so: a rule that charged
+    -- only genuine disconnects would take money from players whose game
+    -- crashed and hand it back to the ones who left on purpose, which is
+    -- worse than either answer applied evenly.
+    refundOnDisconnectBeforeStart = true,
+
+    -- Someone who disconnects mid-match forfeits their stake to the pot.
+    -- With this on they get it back instead.
+    refundOnDisconnectDuringMatch = false,
+
+    -- SPECTATOR SIDE-BETS: people who are not fighting can back a team (in
+    -- team modes) or a specific player (in free-for-all).
+    spectatorBets = {
+        enabled = true,
+        min = 100,
+        max = 25000,
+        -- Bets close this many seconds after the match starts. 0 closes
+        -- them the moment the round begins.
+        closeAfterStartSeconds = 30,
+        -- Winning side-bets pay stake x this. Losing ones are lost.
+        oddsMultiplier = 2.0,
+        -- One bet per spectator per match.
+        oneBetPerMatch = true,
+    },
+}
+
+-- ======================================================================
+-- UI -- the red/black panel.
+-- ======================================================================
+Config.UI = {
+    title = 'CRIMSON',
+    subtitle = 'ROLEPLAY ARENA',
+
+    -- HOW THE LOGO IS USED. Two shapes of logo exist and they want opposite
+    -- treatment, so this picks which one you have:
+    --
+    --   'mark'   -- a small square badge sitting to the LEFT of the title
+    --               above. Right for a simple icon: a skull, a monogram, a
+    --               shield. It is drawn small, so anything with words in it
+    --               is unreadable.
+    --
+    --   'banner' -- the logo spans the top of the panel and `title` and
+    --               `subtitle` are NOT drawn. Right for a finished lockup
+    --               that already contains your server name, because in
+    --               'mark' mode that name is printed twice: once as text,
+    --               once as pixels too small to read.
+    --
+    -- A full-scene artwork -- skyline, vehicles, effects -- will still be
+    -- small at panel size whichever you choose. It reads far better cropped
+    -- down to the part that identifies you: the badge alone for 'mark', the
+    -- wordmark strip for 'banner'.
+    --
+    -- Anything else is treated as 'mark' and a warning is printed at start.
+    logoStyle = 'mark',
+
+    -- Drop your own logo in html/images/logo.png and it appears in the
+    -- panel header. If you change the FILENAME you must also add the new
+    -- file to fxmanifest.lua's `files` block, or it silently will not load.
+    logo = 'images/logo.png',
+
+    theme = {
+        accent = '#c81020',         -- the crimson everything is keyed off
+        accentBright = '#ff2038',
+        accentDim = '#7a0a14',
+        background = '#0a0a0c',
+        surface = '#121216',
+        surfaceRaised = '#1a1a20',
+        border = '#2a2a32',
+        text = '#f2f2f4',
+        textMuted = '#8e8e98',
+        danger = '#ff3b3b',
+        success = '#37d67a',
+    },
+
+    -- Command that opens the panel from anywhere, for testing or for
+    -- servers that would rather not use a ped at all. Set to nil to
+    -- register no command.
+    command = nil,
+
+    -- Sound the panel plays on open/close/ready. false = silent panel.
+    sounds = true,
+
+    -- Show the live scoreboard overlay during a match.
+    showMatchHud = true,
+}
+
+-- ======================================================================
+-- PERMISSIONS
+--
+-- Empty job/group lists mean "everyone" -- that is the default, because an
+-- arena is usually open to the whole server.
+-- ======================================================================
+Config.Permissions = {
+    -- Jobs allowed to CREATE a match. Empty = anyone may.
+    createJobs = {},
+    -- ACE/ox_lib admin groups allowed to force-stop or wipe a match.
+    adminGroups = { 'admin', 'god' },
+    -- Anyone may join a match someone else created.
+    joinJobs = {},
 }
 
 -- ======================================================================
@@ -595,6 +1202,45 @@ Config.Arenas = {
             },
         },
 
+        -- THE ARENA GROWS WITH THE MATCH.
+        --
+        -- The radii below describe an arena sized for a small round. Twenty
+        -- fighters in the same circle is a different game: `minSeparation`
+        -- stops being satisfiable, the placement quietly settles for less,
+        -- and everybody opens the round already in somebody's sights.
+        --
+        -- So one number scales all of it -- the spawn area, the floor, the
+        -- boundary and where the cover sits -- which keeps the relationships
+        -- between them intact. Those relationships are what stop people
+        -- spawning off the floor or out of bounds, so they are not something
+        -- to let a growth setting quietly break.
+        --
+        -- WORTH KNOWING: the floor is TILED, so a bigger arena is more
+        -- pieces. `maxTiles` above grows with it (by the square, because a
+        -- disc does), and the ceiling only ever bites on the container
+        -- fallback.
+        scale = {
+            enabled = true,
+
+            -- The roster the radii below are written for. At or under this,
+            -- nothing changes and the arena is exactly as configured.
+            baseline = 6,
+
+            -- Metres of spawn radius added per fighter above the baseline.
+            -- Written in metres rather than as a multiplier because metres
+            -- are what you can picture; it is converted against this
+            -- arena's own size, so the same number means the same thing on
+            -- a small arena and a large one.
+            --
+            -- At 1.6: six players fight in the 35m circle below, twenty
+            -- fight in a 57m one, and the floor and boundary grow with it.
+            perPlayer = 1.6,
+
+            -- However many turn up, it never grows past this multiple of
+            -- the configured size. A ceiling, not a target.
+            maxGrowth = 2.0,
+        },
+
         -- THE SPAWN Z IS EXACT HERE. Without this the client asks the game
         -- where the ground is, the game answers with the real terrain a
         -- kilometre below, and every fighter is teleported out of the sky
@@ -648,152 +1294,6 @@ Config.Arenas = {
 
         weatherOverride = nil,
         timeOverride = nil,
-    },
-}
-
--- ======================================================================
--- MODES
---
--- `teams = false` is a free-for-all: everyone against everyone, and the
--- team picker is not shown at all. `teams = true` shows the team picker.
--- ======================================================================
-Config.Modes = {
-    ['ffa'] = {
-        label = 'Free For All',
-        description = 'Every player for themselves. Last one breathing takes the pot.',
-        enabled = true,
-        teams = false,
-        icon = 'fas fa-skull-crossbones',
-    },
-
-    ['tdm'] = {
-        label = 'Team Deathmatch',
-        description = 'Pick a side. Wipe the other one out.',
-        enabled = true,
-        teams = true,
-        icon = 'fas fa-users',
-    },
-
-    ['gungame'] = {
-        label = 'Gun Game',
-        description = 'Every kill moves you up the weapon ladder. First to the end wins.',
-        -- OFF. Switched off at the operator's request, not because anything
-        -- about it is broken: the ladder below is intact and tested, and
-        -- setting this back to true is the whole of turning the mode on.
-        enabled = false,
-        teams = false,
-        icon = 'fas fa-arrow-up-9-1',
-        -- Weapon keys from Config.Loadouts.weapons, in order. When this mode
-        -- is on, the player's own weapon choice is ignored -- the ladder
-        -- replaces it.
-        gunGameLadder = { 'pistol', 'smg', 'shotgun', 'rifle', 'sniper', 'knife' },
-    },
-}
-
---- Which mode a newly created match starts on before the host changes it.
-Config.DefaultMode = 'ffa'
-
--- ======================================================================
--- TEAMS
---
--- UNEVEN TEAMS ARE ALLOWED BY DEFAULT -- `allowUnequal = true` below. Nine
--- players against one is a legal match. Set it to false only if you want
--- the server to refuse a start while the sides differ by more than
--- `maxTeamSizeDifference`.
--- ======================================================================
-Config.Teams = {
-    -- Players pick their own side from the panel. With this off, everyone
-    -- is auto-assigned and the team picker is hidden.
-    allowChoose = true,
-
-    -- THE UNEVEN-TEAMS SWITCH. true = any split is fine (5v1, 8v2, 11v0
-    -- as long as `requireBothTeamsOccupied` allows it).
-    allowUnequal = true,
-
-    -- Only consulted when `allowUnequal = false`. The largest difference in
-    -- head count the server will start a match with.
-    maxTeamSizeDifference = 1,
-
-    -- Even with uneven teams allowed, a team match with everyone on one
-    -- side is not a match. Set false only if you genuinely want that.
-    requireBothTeamsOccupied = true,
-
-    -- 0 = unlimited players per team.
-    maxTeamSize = 0,
-
-    -- Someone who joins a team match without picking a side is dropped onto
-    -- the smallest team when the match starts. With this off they are asked
-    -- to pick and the start is refused until they do.
-    autoAssignIfUnchosen = true,
-
-    -- Can teammates hurt each other?
-    friendlyFire = false,
-
-    -- Team blips on the map during a match.
-    -- BOTH OFF. A permanent dot on every fighter turns a round into a map to
-    -- be read rather than a place to be searched -- nobody flanks anybody
-    -- when everybody's position is drawn continuously.
-    --
-    -- Config.Match.radar below is the replacement, and it is opt-in per
-    -- player: a sweep that shows where everyone was for a moment and then
-    -- goes dark again. Turn these back on for a server that wants the old
-    -- permanent behaviour; they override the radar entirely.
-    -- YOUR OWN SIDE, ALWAYS. Knowing where your team is is not intelligence
-    -- -- it is the difference between a team mode and four people in the
-    -- same field -- so teammates stay on the map for the whole round.
-    showTeamBlips = true,
-
-    -- THE OTHER SIDE, NEVER. A permanent dot on every enemy turns a round
-    -- into a map to be read rather than a place to be searched. The radar
-    -- below is how an enemy position is learned: opt-in, and a sweep that
-    -- goes dark again. Turn this on for a server that wants the old
-    -- permanent behaviour, and the radar stops running.
-    showEnemyBlips = false,
-
-    -- A COLOURED EDGE ROUND YOUR TEAMMATES, in that team's own colour --
-    -- the same value the panel is tinted with and the same team the map
-    -- blip belongs to, so the outline and the dot match by construction
-    -- rather than by keeping two settings in step.
-    --
-    -- Teammates only, and it cannot be turned on for enemies: an outline
-    -- draws THROUGH walls, which is the point of it for finding a friend
-    -- and exactly the problem with it for finding a target.
-    showTeamOutline = true,
-
-    list = {
-        ['crimson'] = {
-            label = 'Crimson',
-            -- Panel accent for this team, and the tint used on its blips.
-            color = '#c81020',
-            blipColor = 1,      -- red
-            enabled = true,
-            order = 1,
-        },
-        ['ash'] = {
-            label = 'Ash',
-            color = '#4a4a52',
-            blipColor = 40,     -- grey
-            enabled = true,
-            order = 2,
-        },
-        -- A third and fourth side ship disabled. Turn one on and every team
-        -- mode immediately offers it -- no code change needed. Give it
-        -- spawn points in each arena's `teamSpawns` or it falls back to the
-        -- shared `spawns` list.
-        ['bone'] = {
-            label = 'Bone',
-            color = '#d8d2c4',
-            blipColor = 0,
-            enabled = false,
-            order = 3,
-        },
-        ['ember'] = {
-            label = 'Ember',
-            color = '#ff6a1a',
-            blipColor = 47,
-            enabled = false,
-            order = 4,
-        },
     },
 }
 
@@ -2219,455 +2719,6 @@ Config.Loadouts = {
 }
 
 -- ======================================================================
--- BETTING
---
--- ONE SWITCH TURNS ALL OF IT OFF: `Config.Betting.enabled = false` hides
--- every bet control in the panel and makes the server reject any bet that
--- arrives anyway. Nothing else needs changing.
---
--- HOW THE MONEY MOVES: a player's entry fee leaves their account the moment
--- they lock in, and is held by the match. It is paid out to the winner(s)
--- when the match ends, or refunded in full if the match fails to start, is
--- closed by the server, or ends with nobody eligible to be paid.
---
--- The two exceptions are both settings, both default to refunding, and both
--- are spelled out where they live below: `refundOnCancel` (a host closing
--- their own lobby) and `refundOnDisconnectBeforeStart` (leaving one). Turn
--- either off and that stake stops coming back.
--- ======================================================================
-Config.Betting = {
-    enabled = true,
-
-    -- 'cash' or 'bank'.
-    account = 'cash',
-
-    -- WHERE A STAKE IS TAKEN FROM, in the order tried.
-    --
-    -- One account was 'cash' and nothing else, so a player with the price in
-    -- the bank and an empty pocket was told they could not afford it. Each is
-    -- tried in turn for the WHOLE amount; a stake is never split across two.
-    --
-    -- Splitting has a failure mode nothing else here does: half the money
-    -- leaves, the second half is refused, and the player is out of pocket for
-    -- a stake that was never taken. Refunding a split is also two movements
-    -- that can each fail on their own. One account or none is the honest
-    -- trade, and it keeps a refund a single reversible movement.
-    --
-    -- Money always goes back where it came from. Refunding bank money as
-    -- cash is a way to launder through the arena, and refunding cash into the
-    -- bank is a surprise for somebody carrying it on purpose.
-    accounts = { 'cash', 'bank' },
-
-    -- FIGHTERS BACKING THEMSELVES.
-    --
-    -- Separate from the entry fee, which is one fixed price everybody pays.
-    -- This is a real bet at whatever size the player chooses, on themselves
-    -- in a free-for-all or on their own team in a team mode.
-    --
-    -- HOW A WINNING BET IS PAID, and it is the same question for both kinds.
-    --
-    --   'pool' -- PARIMUTUEL. Every bet on the match goes into a pool and the
-    --             winners split it in PROPORTION TO WHAT THEY STAKED. A
-    --             winner is paid with the losers' money, the sum handed out
-    --             equals the pool exactly, and the server creates nothing. So
-    --             what you win depends on how much you put in AND on how many
-    --             people bet -- a big pool with one winner pays enormously, a
-    --             small pool split four ways pays little.
-    --
-    --   'odds'  -- FIXED PRICE. The stake is multiplied by
-    --             spectatorBets.oddsMultiplier below and paid by the server.
-    --             Predictable, and it costs the server money on every win.
-    --
-    -- BOTH DEFAULT TO 'pool', because 'odds' on a bet placed by somebody who
-    -- can influence the result is a money printer: a fighter backs themselves
-    -- to win a round they were going to win anyway and the server pays for
-    -- it. With 'pool' that same bet can only ever take money other bettors
-    -- put up.
-    -- NAMED betPayout, NOT `payout`. `Config.Betting.payout` already exists
-    -- further down and is a different question entirely -- how the POT is
-    -- split between the winners of the round. Calling this one `payout` too
-    -- meant the second assignment silently replaced the first, so this whole
-    -- block did nothing and every bet quietly fell back to the default. It
-    -- was luacheck that noticed, not a test.
-    betPayout = {
-        fighters = 'pool',
-        spectators = 'pool',
-
-        -- ONE POOL FOR BOTH, or one each.
-        --
-        -- Shared, a spectator's stake can be won by a fighter and the other
-        -- way round, which makes a small arena's pool worth betting into.
-        -- Separate keeps the two crowds' money apart, which is fairer when
-        -- fighters can see things spectators cannot.
-        --
-        -- Only ever pools bets that are actually on 'pool' -- an 'odds' bet
-        -- is server-funded and never enters, or it would be paying itself
-        -- out of other people's stakes as well.
-        sharedPool = true,
-
-        -- THE ENTRY FEES JOIN THE POOL TOO.
-        --
-        -- On, a fighter's entry fee IS their bet: it is added to the pool as
-        -- a stake on their own side, so paying to enter puts you in rather
-        -- than funding other people's bets for nothing. The pot is no longer
-        -- paid out separately -- there is one pot and one set of winners.
-        --
-        -- What that guarantees: a fighter who wins always profits, because
-        -- the pool holds every loser's fee as well as their own. Off, the
-        -- entry pot is paid to the match winners by Config.Betting.payout
-        -- below and the bets settle on their own, which is two prizes for
-        -- two different things.
-        includeEntryPot = true,
-    },
-
-    fighterBets = {
-        enabled = true,
-
-        -- The band one fighter may stake. Nothing to do with the entry fee.
-        min = 100,
-        max = 50000,
-
-        -- A fighter may only back THEMSELVES, or their own team in a team
-        -- mode. Off, they may back any side -- which on most servers is a
-        -- way to throw a round for money, so it ships on.
-        ownSideOnly = true,
-
-        -- One bet each. Off, a fighter may keep adding to their position
-        -- while the lobby is open.
-        oneBetPerMatch = true,
-    },
-    currencySymbol = '$',
-
-    -- THE ENTRY FEE each player stakes to take part.
-    entryFee = {
-        -- With this off, matches are free to enter and the pot is only ever
-        -- filled by spectator side-bets (if those are on).
-        enabled = true,
-        min = 0,
-        max = 50000,
-        -- FREE UNLESS THE HOST ASKS FOR A FEE. Creating a match should not
-        -- quietly put a price on it: a host who never touches the field
-        -- opens a free round, and anybody who wants money on the outcome
-        -- backs themselves with a fighter bet instead, which is voluntary,
-        -- their own size, and paid out of the pool rather than by the server.
-        default = 0,
-        -- Quick-pick buttons in the panel. Any value between min and max is
-        -- still accepted if the player types it.
-        presets = { 500, 1000, 5000, 25000 },
-    },
-
-    -- Taken off the top of the pot before it is paid out. 0 = no cut.
-    houseCutPercent = 0,
-
-    -- HOW THE POT IS SPLIT.
-    --   'winner_takes_all' -- one player (or the winning team, split evenly)
-    --   'top_three'        -- split by `topThreeSplit` below, FFA only
-    --   'per_kill'         -- divided by share of total kills
-    payout = 'winner_takes_all',
-    topThreeSplit = { 60, 30, 10 },
-
-    -- Below this head count the match still runs, but the pot is refunded
-    -- rather than paid out -- stops two friends farming each other.
-    minPlayersToPayOut = 2,
-
-    -- 0 = no ceiling on the total pot.
-    maxPot = 0,
-
-    -- A HOST CLOSING THEIR OWN LOBBY. With this on -- the default -- every
-    -- stake goes straight back. With it off they are FORFEITED, and the
-    -- money goes nowhere at all: it is kept the way the house cut and a
-    -- losing side-bet are kept, because this resource has no house account
-    -- to credit and handing the pot to somebody would only move the abuse to
-    -- whoever received it. That is the point of the setting -- it deters a
-    -- host who fills a lobby, takes everyone's stake and closes it. Every
-    -- forfeit is logged and webhooked whatever `logPayouts` says, because an
-    -- operator running a house account by hand is the only person who can
-    -- put that money anywhere.
-    --
-    -- ONLY a host cancelling forfeits. An idle-timeout close, an admin
-    -- force-stop, the last player walking out and a resource restart all
-    -- still refund in full: punishing a host who calls their own match off
-    -- is not the same as punishing a lobby the server itself closed.
-    refundOnCancel = true,
-
-    -- LEAVING A LOBBY THAT HAS NOT STARTED. On, the stake comes back. Off,
-    -- it stays in the pot and is won by whoever takes the match.
-    --
-    -- Like its mid-match sibling below, this does NOT distinguish a
-    -- deliberate quit from a crash, and deliberately so: a rule that charged
-    -- only genuine disconnects would take money from players whose game
-    -- crashed and hand it back to the ones who left on purpose, which is
-    -- worse than either answer applied evenly.
-    refundOnDisconnectBeforeStart = true,
-
-    -- Someone who disconnects mid-match forfeits their stake to the pot.
-    -- With this on they get it back instead.
-    refundOnDisconnectDuringMatch = false,
-
-    -- SPECTATOR SIDE-BETS: people who are not fighting can back a team (in
-    -- team modes) or a specific player (in free-for-all).
-    spectatorBets = {
-        enabled = true,
-        min = 100,
-        max = 25000,
-        -- Bets close this many seconds after the match starts. 0 closes
-        -- them the moment the round begins.
-        closeAfterStartSeconds = 30,
-        -- Winning side-bets pay stake x this. Losing ones are lost.
-        oddsMultiplier = 2.0,
-        -- One bet per spectator per match.
-        oneBetPerMatch = true,
-    },
-}
-
--- ======================================================================
--- MATCH RULES
--- ======================================================================
-Config.Match = {
-    -- Fewest players a match will start with.
-    minPlayers = 2,
-
-    -- 0 = UNLIMITED. Any number of players may join one match.
-    maxPlayers = 0,
-
-    -- 0 = unlimited matches running side by side.
-    maxConcurrentMatches = 0,
-
-    -- Only the player who created the match may start it. With this off,
-    -- anyone in the lobby can.
-    onlyHostCanStart = true,
-
-    -- Start on its own once everybody has readied up and `minPlayers` is
-    -- met, without waiting for the host to press start.
-    autoStartWhenAllReady = true,
-
-    -- The countdown shown in the lobby once a start is triggered. Players
-    -- may still back out during it.
-    lobbyCountdownSeconds = 10,
-
-    -- The frozen countdown after everyone is teleported in, before weapons
-    -- go live.
-    startCountdownSeconds = 5,
-
-    -- 0 = no time limit. When the clock runs out the win condition is
-    -- decided on kills.
-    roundTimeSeconds = 600,
-
-    -- LIVES PER PLAYER. 1 = eliminated on the first death. Above that, a
-    -- player who dies is put back at a fresh spawn point with a full
-    -- loadout, and is only out once their last life is spent.
-    --
-    -- Three changes how a round feels more than any other number here: a
-    -- single unlucky opening exchange no longer ends somebody's match, and
-    -- the round lasts long enough for position and ammunition to matter.
-    -- Watch roundTimeSeconds alongside it -- three lives each across a full
-    -- lobby is a much longer fight than one.
-    -- Set a plain number here instead -- `lives = 3` -- to fix it for every
-    -- match and take the choice away.
-    lives = {
-        allowChoose = true,
-        min = 1,
-        max = 10,
-        default = 3,
-    },
-
-    -- How long a player lies there before being put back in. Long enough to
-    -- feel like a death, short enough not to be a punishment on its own.
-    respawnDelaySeconds = 5,
-
-    -- HOW A MATCH IS WON.
-    --   'last_standing' -- everyone else eliminated
-    --   'most_kills'    -- highest kill count when the clock runs out
-    --   'score_limit'   -- first to `scoreLimit` kills
-    winCondition = 'last_standing',
-    scoreLimit = 25,
-
-    -- Metres a player may be scattered from the spawn point they drew, so
-    -- more players than spawn points never stack inside each other.
-    spawnScatterRadius = 2.5,
-
-    -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS PUT DOWN, in metres.
-    --
-    -- The player is held motionless this far above the spawn point while the
-    -- world streams in, and is then put down on whatever surface the game
-    -- reports underneath -- so they never fall, and never stand where there
-    -- is nothing yet.
-    --
-    -- KEEP IT SMALL. Being frozen is what stops the fall through an unloaded
-    -- world; height has nothing to do with it. A big number would hang every
-    -- player in the air where the whole arena can see them, which broadcasts
-    -- exactly where the spawn points are.
-    --
-    -- Finding the real ground is a separate job and is handled by searching
-    -- down from well overhead -- a maths query nobody is ever at, and the
-    -- part that actually fixes a spawn Z written below the surface. That
-    -- height is not configurable because it is not a gameplay decision.
-    -- RAISED FROM 1.0, because a metre was not clearing it.
-    --
-    -- Three metres is still not a skydive -- nobody watching learns where
-    -- anybody spawned from it, which is the reason this is not simply set to
-    -- fifty -- but it is enough head-room that a ped placed a moment before
-    -- the ground finishes streaming falls onto terrain instead of through it.
-    --
-    -- This is the height a player is HELD at. It is not the height the ground
-    -- is searched from: that is fixed, much higher, and explained where the
-    -- probe happens in client/match.lua.
-    spawnHeightOffset = 3.0,
-
-    -- THE RADAR, which replaced permanent blips.
-    --
-    -- Off for every player until they switch it on themselves in the panel,
-    -- and even then it is not a live feed: it SWEEPS. Every `intervalMs` the
-    -- fighters' positions appear for `visibleMs` and then go dark again, so
-    -- what a player gets is where everybody WAS a moment ago, not where they
-    -- are now. Long enough to plan, stale enough to be wrong about.
-    --
-    -- The two Config.Teams blip switches above override this: a server that
-    -- wants permanent dots turns those on and the radar never runs.
-    radar = {
-        -- Whether the toggle appears in the panel at all. Off, nobody has a
-        -- radar and the control is not drawn -- rather than drawn and dead.
-        allowChoose = true,
-
-        -- Whether a player who has never touched it starts with it on.
-        defaultOn = false,
-
-        -- How long between sweeps, and how long a sweep is visible for.
-        -- 30 seconds dark, most of a second lit.
-        intervalMs = 30000,
-        visibleMs = 800,
-    },
-
-    -- KEEPING EVERYONE ELSE OUT OF A LIVE ARENA.
-    --
-    -- A live match is already fought in its own routing bucket, so an
-    -- outsider cannot see the fighters, cannot shoot them and cannot be shot
-    -- -- that half is settled and this adds nothing to it.
-    --
-    -- What this adds is the physical half: somebody who is not in the round
-    -- is pushed back out of the arena's boundary circle and held there for as
-    -- long as it is being fought in. Without it they can stand in the middle
-    -- of a firefight nobody can see them in -- and on a server that has
-    -- turned isolation off, in one they can be shot in.
-    --
-    -- The fence is the arena's own `boundary`, deliberately: the same circle
-    -- the fighters are bled for leaving. One field, one edge.
-    keepOutBarrier = {
-        enabled = true,
-
-        -- How far OUTSIDE the boundary somebody is put when they cross it.
-        -- Far enough that they are not immediately pushed again by the next
-        -- tick, close enough that it reads as a wall and not a teleport.
-        pushBackMetres = 6.0,
-
-        -- How often the fence is checked, in milliseconds. A quarter second
-        -- catches a sprint; every frame would be a loop running on every
-        -- player on the server for the length of every round.
-        tickMs = 250,
-
-        -- Tell them why they were moved, once per crossing rather than once
-        -- per tick.
-        notify = true,
-    },
-
-    -- Eliminated players watch the rest of the match instead of being sent
-    -- straight back to the lobby.
-    spectateOnElimination = true,
-
-    -- Give players back the weapons and armour they walked in with when
-    -- they leave. Strongly recommended on.
-    restoreLoadoutOnExit = true,
-
-    -- Wipe a player's carried weapons on entry so only arena weapons are
-    -- in play. Turning this off lets people bring their own guns in.
-    stripWeaponsOnEntry = true,
-
-    -- A match sitting in the lobby with nobody readying up is closed after
-    -- this long, and any stakes refunded. 0 = never.
-    idleLobbyTimeoutSeconds = 900,
-
-    -- Refuse to let a player join while they are dead, cuffed or in a
-    -- vehicle. Server-checked.
-    blockWhileDead = true,
-    blockWhileInVehicle = true,
-}
-
--- ======================================================================
--- UI -- the red/black panel.
--- ======================================================================
-Config.UI = {
-    title = 'CRIMSON',
-    subtitle = 'ROLEPLAY ARENA',
-
-    -- HOW THE LOGO IS USED. Two shapes of logo exist and they want opposite
-    -- treatment, so this picks which one you have:
-    --
-    --   'mark'   -- a small square badge sitting to the LEFT of the title
-    --               above. Right for a simple icon: a skull, a monogram, a
-    --               shield. It is drawn small, so anything with words in it
-    --               is unreadable.
-    --
-    --   'banner' -- the logo spans the top of the panel and `title` and
-    --               `subtitle` are NOT drawn. Right for a finished lockup
-    --               that already contains your server name, because in
-    --               'mark' mode that name is printed twice: once as text,
-    --               once as pixels too small to read.
-    --
-    -- A full-scene artwork -- skyline, vehicles, effects -- will still be
-    -- small at panel size whichever you choose. It reads far better cropped
-    -- down to the part that identifies you: the badge alone for 'mark', the
-    -- wordmark strip for 'banner'.
-    --
-    -- Anything else is treated as 'mark' and a warning is printed at start.
-    logoStyle = 'mark',
-
-    -- Drop your own logo in html/images/logo.png and it appears in the
-    -- panel header. If you change the FILENAME you must also add the new
-    -- file to fxmanifest.lua's `files` block, or it silently will not load.
-    logo = 'images/logo.png',
-
-    theme = {
-        accent = '#c81020',         -- the crimson everything is keyed off
-        accentBright = '#ff2038',
-        accentDim = '#7a0a14',
-        background = '#0a0a0c',
-        surface = '#121216',
-        surfaceRaised = '#1a1a20',
-        border = '#2a2a32',
-        text = '#f2f2f4',
-        textMuted = '#8e8e98',
-        danger = '#ff3b3b',
-        success = '#37d67a',
-    },
-
-    -- Command that opens the panel from anywhere, for testing or for
-    -- servers that would rather not use a ped at all. Set to nil to
-    -- register no command.
-    command = nil,
-
-    -- Sound the panel plays on open/close/ready. false = silent panel.
-    sounds = true,
-
-    -- Show the live scoreboard overlay during a match.
-    showMatchHud = true,
-}
-
--- ======================================================================
--- PERMISSIONS
---
--- Empty job/group lists mean "everyone" -- that is the default, because an
--- arena is usually open to the whole server.
--- ======================================================================
-Config.Permissions = {
-    -- Jobs allowed to CREATE a match. Empty = anyone may.
-    createJobs = {},
-    -- ACE/ox_lib admin groups allowed to force-stop or wipe a match.
-    adminGroups = { 'admin', 'god' },
-    -- Anyone may join a match someone else created.
-    joinJobs = {},
-}
-
--- ======================================================================
 -- DATABASE -- the leaderboard only. OFF, so this resource is drag and drop.
 --
 -- SHIPPED OFF ON PURPOSE. With it off there is no SQL to import, no table to
@@ -3188,66 +3239,30 @@ Config.Dispatch = {
         --     clientCommands = { 'revive' },
         clientCommands = {},
 
-        -- GIVE THIS RESOURCE PERMISSION TO RUN THOSE COMMANDS. On by
-        -- default, and the reason the revive appeared to do nothing.
+        -- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS, and there is
+        -- deliberately no setting here to make it try.
         --
-        -- A command run from a resource is run BY that resource, and an admin
-        -- command checks whether its caller is allowed. This resource is not
-        -- an admin, so `revive` was refused -- silently, because a refused
-        -- command is not an error, it is a command that did nothing. The
-        -- console could honestly report running it while the player stayed on
-        -- the floor.
+        -- It used to have two: one to grant itself an ace for the commands
+        -- above, one to put itself in the admin group. Both are removed.
         --
-        -- What is granted is exactly the commands named above and nothing
-        -- else: `command.revive` lets this resource revive, and lets it do
-        -- nothing more. NOT admin. Adding the arena to an admin group would
-        -- also work and would mean every command on your server was reachable
-        -- from inside it -- so any flaw anywhere in this resource became a
-        -- way to run anything on the box. That trade is not worth making for
-        -- one command.
+        --   THEY DID NOT WORK. A server that lets a resource write its own
+        --   permissions is a server with no permissions, so the sensible
+        --   ones refuse -- and a refusal is not an error. ExecuteCommand
+        --   returns normally and the console prints "Access denied", so the
+        --   arena carried a page of settings for a capability it did not
+        --   have.
         --
-        -- Runtime only: nothing is written to a .cfg and nothing survives a
-        -- restart. It is granted again at every start, from this config, so
-        -- deleting a command above deletes its permission with it.
+        --   THEY WERE NOT NEEDED. The arena revives its own players in code
+        --   and asks nobody's permission to undo something it did itself.
+        --   The command hooks above exist only to tell a SEPARATE medical
+        --   script, which keeps a death list no resurrect reaches.
         --
-        -- Set true only if you added a `commands` line above AND that command
-        -- is gated on its own ACE. Off by default: most servers refuse a
-        -- resource's attempt to grant itself anything -- correctly -- and the
-        -- refusal is itself another console line per death.
+        --   AND THE ADMIN ONE COST SOMETHING. Group membership made any flaw
+        --   anywhere in this resource a way to run any command on the box.
         --
-        -- If you do want it granted, the honest way is one line in server.cfg,
-        -- which needs no permission from anybody because you are the console:
+        -- If a command you named above is gated on an ace, grant it yourself
+        -- in server.cfg -- the console needs permission from nobody:
         --     add_ace resource.Crimson-Arena command.revive allow
-        grantSelfPermission = false,
-
-        -- PUT THIS RESOURCE IN THE ADMIN GROUP AS WELL.
-        --
-        -- The narrow grant above covers a revive command gated on its own
-        -- ACE. It does nothing for one gated any other way -- and this
-        -- server's still answered "access denied" with it on, which is what
-        -- this is for.
-        --
-        -- It does two things: `command allow`, which is every command rather
-        -- than the named few, and membership of the groups below, because a
-        -- script that tests GROUP membership never looks at the ace list.
-        -- Either could be what your revive checks, so both are applied.
-        --
-        -- BE CLEAR ABOUT THE TRADE, WHICH IS WHY THIS IS OFF.
-        --
-        -- With this on, any flaw anywhere in this resource is a way to run any
-        -- command on your server. The arena no longer needs that for anything
-        -- -- it revives players itself -- so paying that price buys nothing.
-        --
-        -- It is also usually refused anyway: a server that lets a resource
-        -- write its own permissions is a server with no permissions. If you
-        -- genuinely want the arena in the admin group, put it in server.cfg
-        -- yourself, where the console is doing the granting:
-        --     add_principal resource.Crimson-Arena group.admin
-        grantSelfAdmin = false,
-
-        -- The groups to join. `group.admin` is the usual one; add your own if
-        -- your permissions are named differently.
-        adminGroups = { 'group.admin' },
 
         -- HOW LONG AFTER A MID-MATCH RESPAWN TO REVIVE, in milliseconds.
         --

@@ -35,7 +35,13 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 local function newServer(pockets, mutate)
     local inv, console, handlers, hooks = {}, {}, {}, {}
     local stashes = {}
-    local fail = {}     -- which operation to break: register/read/stash/clear/give
+    -- Which operation to break, and HOW. The distinction is the whole point
+    -- of half the tests below: a call that THROWS is caught by pcall, and a
+    -- call that RETURNS FALSE is ox_inventory politely refusing -- which for
+    -- a long time this resource could not tell from success.
+    --   register / read / readStash / stash / clear : throw
+    --   stashRefuse / clearRefuse / give            : return false
+    local fail = {}
 
     for src, items in pairs(pockets or {}) do
         inv[src] = {}
@@ -70,6 +76,9 @@ local function newServer(pockets, mutate)
         end,
         AddItem = function(_self, id, name, count, metadata)
             if fail.stash and type(id) == 'string' then error('stash is full') end
+            -- REFUSED, not thrown. This is what a full stash, or an item the
+            -- operator's ox_inventory data does not know, actually does.
+            if fail.stashRefuse and type(id) == 'string' then return false end
             if fail.give and type(id) == 'number' then return false end
             local into = bucket(id)
             into[#into + 1] = { name = name, count = count, metadata = metadata }
@@ -87,6 +96,7 @@ local function newServer(pockets, mutate)
         end,
         ClearInventory = function(_self, id)
             if fail.clear and type(id) == 'number' then error('cannot clear') end
+            if fail.clearRefuse and type(id) == 'number' then return false end
             if type(id) == 'number' then inv[id] = {} else stashes[id] = {} end
             return true
         end,
@@ -151,6 +161,20 @@ local function newServer(pockets, mutate)
             inv[src][#inv[src] + 1] = { name = name, count = count }
         end,
         breakOn = function(what) fail[what] = true end,
+        --- What is sitting in one player's arena stash, by name. The stash is
+        --- the promise: anything that could not be handed back has to still
+        --- be in it, because a player can be pointed at a real ox_inventory
+        --- stash and cannot be pointed at a deleted item.
+        stashed = function(src)
+            local names = {}
+            for id, items in pairs(stashes) do
+                if tostring(id):find(tostring(src), 1, true) then
+                    for _, item in ipairs(items) do names[#names + 1] = item.name end
+                end
+            end
+            table.sort(names)
+            return table.concat(names, ',')
+        end,
         hook = function(name) return hooks[name] end,
         log = function() return table.concat(console, '\n') end,
         stopResource = function() handlers['onResourceStop']('crimson_arena') end,
@@ -389,6 +413,66 @@ t.test('a stash that will not register leaves them carrying their own kit', func
     t.equals(s.carrying(1), 'phone,water', 'not stripped, because it could not be put anywhere safe')
     t.isFalse(s.ammo.IsHolding(1), 'and nothing is owed back to them')
     t.isTrue(s.log():find('keep their own kit', 1, true) ~= nil)
+end)
+
+t.test('DEFECT: a stash that REFUSES the write must not strip them either', function()
+    -- THE DIFFERENCE BETWEEN A THROW AND A NO. Every write in this file was
+    -- written as
+    --
+    --     local moved = pcall(function() return ox:AddItem(...) end)
+    --
+    -- where `moved` is the pcall flag and nothing else -- true whenever the
+    -- call did not throw, INCLUDING when ox_inventory returned false to say
+    -- it refused the item. A full stash, or an item the operator's own
+    -- ox_inventory data does not know, returns false rather than throwing.
+    --
+    -- So the loop reported success on a stash that had taken nothing, and the
+    -- ClearInventory behind it destroyed everything the player owned. The one
+    -- promise this resource makes is that a match cannot cost anyone
+    -- anything.
+    --
+    -- The test above proves the THROWING case was handled. Nothing proved
+    -- this one, and the whole suite passed with the bug in place.
+    local s = newServer({ [1] = OWN })
+    s.breakOn('stashRefuse')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water',
+        'THE PLAYER WAS STRIPPED INTO A STASH THAT REFUSED THEIR KIT -- it is gone')
+    t.isFalse(s.ammo.IsHolding(1), 'and nothing is owed back to them')
+end)
+
+t.test('and a clear that REFUSES puts the stashed kit back rather than losing it', function()
+    -- The other half of the same mistake, one line further down: the clear
+    -- reported success, so the kit stayed in the stash while the player was
+    -- treated as stripped -- and the record saying whose stash it was is what
+    -- the exit path reads to give it back.
+    local s = newServer({ [1] = OWN })
+    s.breakOn('clearRefuse')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water',
+        'a refused clear left the player without their kit')
+    t.isFalse(s.ammo.IsHolding(1))
+end)
+
+t.test('DEFECT: an item the player cannot be GIVEN back is left in the stash, not deleted', function()
+    -- restore() read the same value the same wrong way, and then removed the
+    -- item from the stash on the strength of it. So an item ox_inventory
+    -- refused to hand back was deleted from the one place it was safe --
+    -- and the exit reported the kit as returned.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(s.ammo.IsHolding(1), 'nothing was stashed, so this proves nothing')
+
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+
+    -- Not on the player (ox refused), so it must still be in the stash.
+    t.isTrue(s.stashed(1):find('phone', 1, true) ~= nil,
+        'AN ITEM THAT COULD NOT BE RETURNED WAS DELETED FROM THE STASH')
+    t.isTrue(s.log():find('still in stash', 1, true) ~= nil,
+        'and the player was never told where their belongings are')
 end)
 
 t.test('an inventory that cannot be read leaves them carrying their own kit', function()

@@ -121,6 +121,44 @@ end
 --- @param src number
 --- @param citizenid string
 --- @return boolean stowed
+--- Calls one ox_inventory export and answers the only question that
+--- matters: did it actually do the thing.
+---
+--- THE BUG THIS EXISTS TO KILL. `pcall` returns (ok, result). Written as
+---
+---     local moved = pcall(function() return ox:AddItem(...) end)
+---
+--- `moved` is the pcall flag and NOTHING ELSE -- it is true whenever the call
+--- did not throw, including when ox_inventory returned `false` to say it
+--- refused the item. Every write in stow() and restore() was written that
+--- way, and issueWeapons a hundred lines below was not, so the same file held
+--- both the right pattern and the wrong one.
+---
+--- What that cost: stow() moves a player's inventory into their stash and
+--- then calls ClearInventory. A stash that REFUSED the write -- full, or an
+--- item its data does not know -- reported success, the loop carried on, and
+--- the clear destroyed everything the player owned. The one promise this
+--- resource makes is that a match cannot cost anyone anything.
+---
+--- A nil return is treated as success on purpose: several ox_inventory
+--- exports return nothing at all on success, and demanding `true` from them
+--- would turn every one of those calls into a false failure.
+--- @param label string -- what to call this in the log
+--- @param fn fun():any
+--- @return boolean did
+local function oxDid(label, fn)
+    local ok, result = pcall(fn)
+    if not ok then
+        ArenaLog('door: %s threw -- %s', label, tostring(result))
+        return false
+    end
+    if result == false then
+        ArenaLog('door: %s was REFUSED by ox_inventory.', label)
+        return false
+    end
+    return true
+end
+
 local function stow(src, citizenid)
     local ox = inventory()
     if not ox then return false end
@@ -129,7 +167,7 @@ local function stow(src, citizenid)
 
     -- Registered every time rather than once: ox_inventory forgets stashes on
     -- its own restart, and a stash it does not know about accepts nothing.
-    local registered = pcall(function()
+    local registered = oxDid('registering stash ' .. stash, function()
         return ox:RegisterStash(stash, 'Arena Belongings', 100, 1000000, citizenid)
     end)
     if not registered then
@@ -146,7 +184,7 @@ local function stow(src, citizenid)
     -- Nothing to put away is a success, not a failure: an empty-handed player
     -- is still stripped-and-restored correctly, they simply have nothing.
     for _, item in ipairs(items) do
-        local moved = pcall(function()
+        local moved = oxDid(('stashing %s x%s'):format(tostring(item.name), tostring(item.count)), function()
             return ox:AddItem(stash, item.name, item.count, item.metadata)
         end)
         if not moved then
@@ -162,7 +200,9 @@ local function stow(src, citizenid)
     end
 
     -- LAST. Everything is provably in the stash before anything is taken.
-    local cleared = pcall(function() return ox:ClearInventory(src) end)
+    local cleared = oxDid('clearing ' .. tostring(src) .. "'s inventory", function()
+        return ox:ClearInventory(src)
+    end)
     if not cleared then
         ArenaLog('door: stashed %s\'s kit but could not clear their inventory -- putting it back.', tostring(src))
         for _, item in ipairs(items) do
@@ -188,7 +228,19 @@ local function restore(src, record)
 
     -- Everything the arena produced goes, whatever it is and however they came
     -- by it. This is the line that makes looting and floor-scavenging moot.
-    pcall(function() return ox:ClearInventory(src) end)
+    --
+    -- ITS RESULT IS READ NOW. It used to be thrown away entirely, so a clear
+    -- that failed let the whole issued loadout walk out of the arena on top
+    -- of the player's own kit -- the exact leak this line exists to prevent,
+    -- reported as a clean exit. It is not fatal to the restore below (their
+    -- own belongings still have to come back either way), so it is logged
+    -- loudly and carried, rather than returned on.
+    if not oxDid('clearing the arena kit from ' .. tostring(src), function()
+        return ox:ClearInventory(src)
+    end) then
+        ArenaLog('door: %s LEFT THE ARENA STILL HOLDING THE KIT IT ISSUED -- their own is being returned on top of it.',
+            tostring(src))
+    end
 
     local ok, items = pcall(function() return ox:GetInventoryItems(record.stash) end)
     if not ok or type(items) ~= 'table' then
@@ -199,7 +251,11 @@ local function restore(src, record)
 
     local failures = 0
     for _, item in ipairs(items) do
-        local given = pcall(function()
+        -- The return value, not just the absence of a throw. Read wrong, an
+        -- item ox_inventory REFUSED was removed from the stash on the next
+        -- line -- so the one thing the stash exists to guarantee, that
+        -- nothing is destroyed, was destroyed here.
+        local given = oxDid(('returning %s x%s'):format(tostring(item.name), tostring(item.count)), function()
             return ox:AddItem(src, item.name, item.count, item.metadata)
         end)
         if given then

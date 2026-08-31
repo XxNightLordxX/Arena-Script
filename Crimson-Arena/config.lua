@@ -1498,23 +1498,107 @@ Config.Dispatch = {
         -- event name does not say whether it is a police alert or a medical
         -- one. Empty this list to switch it off.
         cancelEvents = {
-            -- ---- sc-dispatch, from its published integration guide --------
-            -- Both entry points that raise an EVENT are listed. sc-dispatch
-            -- also offers a direct server export, and a script that calls
-            -- that raises no event at all -- nothing here or anywhere else
-            -- can see those. See the note under this list.
+            -- ---- sc-dispatch / sc-ambulance, READ OFF THEIR OWN SOURCE ----
+            -- These four are the events those two resources ACTUALLY raise on
+            -- this box. The two names that used to sit here --
+            -- 'sc-dispatch:server:AddNotification' and
+            -- 'sc-dispatch:AddNotification' -- exist in neither resource and
+            -- never fired once, so this whole layer was listening to silence.
+            -- AddNotification is an EXPORT, not an event:
+            -- `exports['sc-dispatch']:AddNotification(data)`. Nothing can
+            -- register a handler on an export call, which is why `retract`
+            -- below exists, and why these are the events one step UPSTREAM of
+            -- it -- the ones a client actually triggers.
 
-            -- The client -> server path. A script that spots gunfire or a
-            -- death on the player's own client sends it this way, so FXServer
-            -- stamps `source` with that player and the arena can pin it
-            -- exactly. This is the one that should silence arena alerts.
-            'sc-dispatch:server:AddNotification',
+            -- Gunfire. sc-dispatch's client polls IsPedShooting on the
+            -- SHOOTER's own machine and sends this, so FXServer stamps
+            -- `source` with the fighter and the arena can pin it exactly.
+            'sc-dispatch:server:ShotsFired',
 
-            -- The server-side event path. There is no player behind it and
-            -- the payload carries no server id, only a location -- so it is
-            -- pinned on WHERE instead, and cancelled only when that spot is
-            -- inside an arena with a live match in it.
-            { event = 'sc-dispatch:AddNotification', coordsArg = 1 },
+            -- "10-52 Person Down". Raised by sc-ambulance when a downed
+            -- player asks for EMS, and again `source` is that player.
+            'hospital:server:EMSDownAlert',
+
+            -- The default QBCore ambulance alert. sc-ambulance only raises
+            -- this while its own Config.MDTIntegration.DisableDefaultAlerts
+            -- is off, so on this box it is usually quiet -- listed because it
+            -- costs nothing and turning that key back on must not silently
+            -- reopen the hole.
+            'hospital:server:ambulanceAlert',
+
+            -- sc-dispatch's second EMS entry point.
+            'mydispatch:requestEMS',
+        },
+
+        -- ---- FORM 5: this resource WITHDRAWS the alert -------------------
+        -- WHAT TO USE WHEN FORM 4 CANNOT WORK, AND FOR sc-dispatch IT CANNOT.
+        --
+        -- CancelEvent() raises a flag and stops nothing: by Cfx's own
+        -- documentation it does not prevent another resource's handler from
+        -- running, and sc-dispatch never calls WasEventCanceled(). So every
+        -- name in the list above WILL still create its call. Form 4 is kept
+        -- because it is free, and because its console lines are how you tell
+        -- a hook that never fires from one that fires and declines -- but on
+        -- this server it is diagnostics, not suppression.
+        --
+        -- This form is the one that actually removes the call. Most dispatch
+        -- scripts, sc-dispatch included, expose a "clear this call" export
+        -- and build the call's id out of facts this resource can see. Name
+        -- the export and the id shape and an arena alert is withdrawn the
+        -- moment it is created: the map blip goes, the MDT row is marked
+        -- inactive, and the call stops being dispatchable.
+        --
+        -- THE HONEST LIMIT, and it is why this is not called a fix. The alert
+        -- is created before it is withdrawn. An officer on duty in that
+        -- moment still hears the notification sound and may see the entry
+        -- blink in and out. What this stops is the call PERSISTING -- units
+        -- driving to an arena, a blip sitting on the map for the length of
+        -- AutoClearTime, a round's worth of 10-71s stacking up in the MDT.
+        -- Stopping the sound too takes one line inside the sending resource,
+        -- which is what `stateBagKey` above is for.
+        --
+        -- Set `resource` to nil to switch the whole form off.
+        retract = {
+            -- The resource holding the "clear a call" export, and the export
+            -- itself. Skipped with one console line if it is not running.
+            resource = 'sc-dispatch',
+            export = 'ClearNotification',
+
+            -- How long to wait before withdrawing, in milliseconds.
+            --
+            -- NOT ZERO, AND THIS IS THE ONE NUMBER WORTH UNDERSTANDING. Both
+            -- handlers -- sc-dispatch's and this one -- hang off the same
+            -- event, and nothing decides which runs first. Withdrawing a call
+            -- that has not been created yet clears nothing at all, so this
+            -- waits long enough for the other handler to have finished its
+            -- database insert. Raise it if calls still linger; every
+            -- millisecond here is time the alert is live on an officer's
+            -- screen, so do not raise it further than you have to.
+            delayMs = 250,
+
+            -- Seconds either side of the current clock to also withdraw.
+            --
+            -- sc-dispatch files a call under '<kind>_<serverId>_<os.time()>'.
+            -- This resource rebuilds that string from the same two facts,
+            -- which agrees unless the two handlers straddle a one-second
+            -- boundary. Clearing one second either way closes that gap, and
+            -- it cannot reach anybody else's call: the server id in the
+            -- middle is the arena player's own.
+            clockSlack = 1,
+
+            -- The id shape each event's call is filed under, keyed by the
+            -- event that leads to it. The first '%d' is the player's server
+            -- id and the second is the unix timestamp -- the order both
+            -- sc-dispatch and sc-ambulance build them in.
+            --
+            -- An event with no entry here is cancelled (Form 4) and not
+            -- withdrawn, which is the safe direction: an id shape that is
+            -- close but wrong clears nothing rather than clearing the wrong
+            -- call.
+            idTemplates = {
+                ['sc-dispatch:server:ShotsFired'] = 'shots_%d_%d',
+                ['hospital:server:EMSDownAlert'] = 'emsdown_%d_%d',
+            },
         },
     },
 

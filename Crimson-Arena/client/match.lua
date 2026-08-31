@@ -380,6 +380,86 @@ end
 --- lying on the floor. The blocked controls come earlier for the same
 --- reason -- the pause menu was an open exit for the length of the
 --- countdown.
+--- One arena death, handled exactly once however it was spotted.
+---
+--- Pulled out of the watch loop below so the game-event hook can call the
+--- same code. `deathReported` is what makes calling it twice in one frame
+--- harmless, and it is set BEFORE anything else so a second caller inside
+--- the same frame finds the door already shut.
+--- @param ped integer
+local function handleDeath(ped)
+    if deathReported or not IsEntityDead(ped) then return end
+
+    if not matchLive then
+        -- Still counting down, so there is no round for this to have
+        -- happened in. `deathReported` stays down on purpose: the death that
+        -- counts is the next one.
+        reviveForCountdown(ped)
+        return
+    end
+
+    deathReported = true
+
+    -- A hint, not a verdict. The server checks the claim against its own
+    -- record of who was alive and on which team.
+    local killerServerId
+    local source = GetPedSourceOfDeath(ped)
+    if source ~= 0 and source ~= ped and IsEntityAPed(source) and IsPedAPlayer(source) then
+        local index = NetworkGetPlayerIndexFromPed(source)
+        if index and index ~= -1 then
+            killerServerId = GetPlayerServerId(index)
+        end
+    end
+
+    TriggerServerEvent('crimson_arena:server:reportDeath', { killerServerId = killerServerId })
+
+    -- Reported first, cleared second. The server's record of the kill must
+    -- not depend on how fast this runs, and this must run before any medical
+    -- script comes round and finds a casualty to send an ambulance to.
+    ArenaDispatch.ClearDeadState(ped)
+end
+
+-- ----------------------------------------------------------------------
+-- THE SAME FRAME THE DEATH HAPPENS IN, and it is the difference between the
+-- ambulance being called and not.
+--
+-- The watch loop below finds a body on its NEXT pass, which is the next
+-- frame at the earliest. A medical script does not wait that long: Qbox's
+-- and this server's both hang off `gameEventTriggered` /
+-- CEventNetworkEntityDamage, which is raised in the frame the ped dies, and
+-- their handler's first question is `IsEntityDead(PlayerPedId())`. Ours ran
+-- a frame later, so the answer was always yes -- the player went into the
+-- medical script's bleed-out state, which is what puts the "press G for EMS"
+-- prompt on screen and is where every 10-52 out of this arena came from.
+--
+-- Resurrecting from inside the same event dispatch is what makes that
+-- question answer NO, and a medical script that answers no does nothing at
+-- all: no laststand, no dead metadata, no prompt, no alert to suppress
+-- afterwards. It is the only layer in this resource that stops a medical
+-- alert at the source rather than chasing it.
+--
+-- IT DEPENDS ON HANDLER ORDER, and that is worth saying plainly rather than
+-- discovering later: handlers on a shared event run in the order their
+-- resources registered them, so this wins only when crimson_arena starts
+-- BEFORE the medical script in server.cfg. It costs nothing when it loses --
+-- the watch loop below still catches the death one frame later, exactly as
+-- it did before -- so there is no case where having this is worse.
+--
+-- Guarded on `currentMatch` and not on a token: this is registered once, at
+-- load, and lives for the resource. A death outside a match is not ours.
+-- ----------------------------------------------------------------------
+AddEventHandler('gameEventTriggered', function(event, data)
+    if event ~= 'CEventNetworkEntityDamage' then return end
+    if not currentMatch or deathReported then return end
+
+    local victim, victimDied = data[1], data[4]
+    if victimDied ~= 1 and victimDied ~= true then return end
+    if not victim or not DoesEntityExist(victim) then return end
+    if victim ~= PlayerPedId() then return end
+
+    handleDeath(victim)
+end)
+
 local function startArenaThread()
     local token = matchToken
 
@@ -393,38 +473,11 @@ local function startArenaThread()
                 SetFrontendActive(false)
             end
 
-            local ped = PlayerPedId()
-            if not deathReported and IsEntityDead(ped) then
-                if not matchLive then
-                    -- Still counting down, so there is no round for this to
-                    -- have happened in. `deathReported` stays down on
-                    -- purpose: the death that counts is the next one.
-                    reviveForCountdown(ped)
-                else
-                    deathReported = true
-
-                    -- A hint, not a verdict. The server checks the claim
-                    -- against its own record of who was alive and on which
-                    -- team.
-                    local killerServerId
-                    local source = GetPedSourceOfDeath(ped)
-                    if source ~= 0 and source ~= ped and IsEntityAPed(source) and IsPedAPlayer(source) then
-                        local index = NetworkGetPlayerIndexFromPed(source)
-                        if index and index ~= -1 then
-                            killerServerId = GetPlayerServerId(index)
-                        end
-                    end
-
-                    TriggerServerEvent('crimson_arena:server:reportDeath', { killerServerId = killerServerId })
-
-                    -- Reported first, cleared second. The server's record of
-                    -- the kill must not depend on how fast this runs, and
-                    -- this must run before any medical script's polling loop
-                    -- comes round and finds a casualty to send an ambulance
-                    -- to.
-                    ArenaDispatch.ClearDeadState(ped)
-                end
-            end
+            -- The backstop. The hook above catches the ordinary case a frame
+            -- earlier; this catches a death no CEventNetworkEntityDamage was
+            -- raised for at all -- drowning, a fall, the boundary bleed --
+            -- and every case where the hook lost the ordering race.
+            handleDeath(PlayerPedId())
 
             Wait(0)
         end

@@ -319,6 +319,12 @@ files['server/'] = {
         -- before it tries to hand anybody anything.
         'GetResourceState',
 
+        -- server/dispatch.lua defers withdrawing an arena alert until after
+        -- the sending resource's own handler has created it. Clearing a call
+        -- that does not exist yet clears nothing, so the delay is the whole
+        -- mechanism rather than a tidy-up.
+        'SetTimeout',
+
         -- Shared realm. The server is the authority ON these rules, not over
         -- them: it reads the same functions the client does and never edits.
         'Arena',

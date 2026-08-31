@@ -35,6 +35,9 @@ local function newFixture(dispatchConfig)
     local netRegistered = {} -- every RegisterNetEvent name, in order
     local threads = {}       -- every CreateThread body, in order
     local registeredCommands = {}  -- name -> handler
+    local timeouts = {}      -- every SetTimeout body, in order
+    local exportCalls = {}   -- every exports['res']:Name(...) call, in order
+    local resourceStates = {}      -- name -> what GetResourceState reports
 
     local env = Sandbox.newEnv({
         ExecuteCommand = function(line) commands[#commands + 1] = line end,
@@ -74,7 +77,33 @@ local function newFixture(dispatchConfig)
             handlers[name][#handlers[name] + 1] = fn
         end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
-        exports = setmetatable({}, { __call = function() end }),
+        -- 'missing' unless a spec says otherwise, which is the state the
+        -- retract layer has to survive: an operator naming a resource they do
+        -- not run must get one console line, never a broken alert handler.
+        GetResourceState = function(name) return resourceStates[name] or 'missing' end,
+        -- CAPTURED, NOT RUN, for the same reason CreateThread is. The
+        -- withdrawal is deliberately deferred past the sending resource's own
+        -- handler, and a spec that ran it inline would be testing an ordering
+        -- the server never produces. runTimeouts() below is how a test asks
+        -- for it.
+        SetTimeout = function(_ms, fn) timeouts[#timeouts + 1] = fn end,
+        -- __call is `exports('Name', fn)`, which this file uses to publish
+        -- its own exports. __index is `exports['res']:Name(...)`, which the
+        -- retract layer uses to reach somebody else's -- recorded rather than
+        -- performed, so a spec can assert on exactly what was asked of it.
+        exports = setmetatable({}, {
+            __call = function() end,
+            __index = function(_t, resource)
+                return setmetatable({}, {
+                    __index = function(_t2, name)
+                        return function(_self, ...)
+                            exportCalls[#exportCalls + 1] =
+                                { resource = resource, export = name, args = { ... } }
+                        end
+                    end,
+                })
+            end,
+        }),
         ArenaLog = function(fmt, ...) logs[#logs + 1] = (select('#', ...) > 0) and fmt:format(...) or fmt end,
         ArenaDebug = function() end,
     })
@@ -131,6 +160,16 @@ local function newFixture(dispatchConfig)
         step = function()
             local pending = threads
             threads = {}
+            for _, fn in ipairs(pending) do fn() end
+        end,
+        --- Every exports['res']:Name(...) the code under test made, in order.
+        exportCalls = exportCalls,
+        --- Tells GetResourceState that `name` is running.
+        setResource = function(name, state) resourceStates[name] = state or 'started' end,
+        --- Runs every SetTimeout body this load queued, once, in order.
+        runTimeouts = function()
+            local pending = timeouts
+            timeouts = {}
             for _, fn in ipairs(pending) do fn() end
         end,
         eventNames = function()
@@ -442,15 +481,115 @@ t.test('every cancelEvents entry is registered for the network, not just listene
     t.equals(f.netRegistered[1], 'alerts:raise')
 end)
 
-t.test('the shipped sc-dispatch entries are both registered', function()
-    -- The config that actually ships, rather than a fixture's. Both entries
-    -- exist because a dispatch script can raise its alert from either realm.
+t.test('the shipped sc-dispatch entries are the events those resources really raise', function()
+    -- The config that actually ships, rather than a fixture's.
+    --
+    -- THIS TEST USED TO PASS ON TWO EVENT NAMES THAT DO NOT EXIST.
+    -- 'sc-dispatch:server:AddNotification' and 'sc-dispatch:AddNotification'
+    -- appear nowhere in sc-dispatch or sc-ambulance -- AddNotification is an
+    -- EXPORT, and the events one step upstream of it are the four below. The
+    -- old assertions were green the whole time the layer was listening to
+    -- silence, which is exactly the failure a test is supposed to catch, so
+    -- this one now names the events read off those resources' own source.
     local f = newFixture()
 
     local names = table.concat(f.netRegistered, ',')
-    t.contains(names, 'sc-dispatch:server:AddNotification',
-        'the client -> server path is not registered -- it is the one that carries arena gunfire')
-    t.contains(names, 'sc-dispatch:AddNotification')
+    t.contains(names, 'sc-dispatch:server:ShotsFired',
+        'the gunfire path is not registered -- it is the one that carries arena shots-fired alerts')
+    t.contains(names, 'hospital:server:EMSDownAlert',
+        'the "10-52 person down" path is not registered')
+    t.contains(names, 'hospital:server:ambulanceAlert')
+    t.contains(names, 'mydispatch:requestEMS')
+end)
+
+-- ========================================================================
+-- WITHDRAWING AN ALERT THAT WAS ALREADY CREATED
+--
+-- THE DEFECT THESE EXIST FOR. CancelEvent() raises a flag and stops nothing:
+-- Cfx's own documentation is explicit that it does not prevent another
+-- resource's handler running, and sc-dispatch never calls
+-- WasEventCanceled(). So the cancel layer above -- with the right event
+-- names or the wrong ones -- was never going to stop a single 10-71. Police
+-- and EMS were paged to every round, and the config said the alerts were
+-- handled.
+--
+-- Withdrawal is what actually removes the call. These specs pin the two
+-- halves that make it safe: it fires for a player who is IN a match, and it
+-- rebuilds the id out of that player's OWN server id, so it can never reach
+-- somebody else's call.
+-- ========================================================================
+
+t.test('an arena alert is withdrawn, not merely cancelled', function()
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    f.fire('sc-dispatch:server:ShotsFired', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+
+    -- Nothing yet: the withdrawal is deferred past the sending resource's own
+    -- handler on purpose. Clearing a call that has not been inserted clears
+    -- nothing at all, which is the failure this delay exists for.
+    t.equals(#f.exportCalls, 0,
+        'the withdrawal ran inline, so it would clear a call sc-dispatch has not created yet')
+
+    f.runTimeouts()
+
+    t.isTrue(#f.exportCalls > 0, 'the call was cancelled and then left standing')
+    t.equals(f.exportCalls[1].resource, 'sc-dispatch')
+    t.equals(f.exportCalls[1].export, 'ClearNotification')
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    t.contains(table.concat(ids, ','), ('shots_7_%d'):format(at),
+        'the id withdrawn is not the one sc-dispatch files a shots-fired call under')
+end)
+
+t.test('every id withdrawn carries the arena player\'s own server id', function()
+    -- THE SAFETY OF THE WHOLE LAYER. The clock slack widens the TIMESTAMP,
+    -- because the two handlers can straddle a one-second boundary. It must
+    -- never widen the PLAYER: withdrawing a stranger's call is the same harm
+    -- as cancelling their alert, arrived at from the other direction.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    f.env.source = 7
+    f.fire('sc-dispatch:server:ShotsFired', {})
+    f.runTimeouts()
+
+    for _, call in ipairs(f.exportCalls) do
+        t.contains(tostring(call.args[1]), '_7_',
+            'an id was withdrawn for somebody other than the arena player')
+    end
+end)
+
+t.test('nothing is withdrawn for a player who is not in a match', function()
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+
+    f.env.source = 7
+    f.fire('sc-dispatch:server:ShotsFired', {})
+    f.runTimeouts()
+
+    t.equals(#f.exportCalls, 0,
+        'a real shots-fired call from an ordinary player was withdrawn')
+end)
+
+t.test('a retract resource that is not running costs one line, not a broken handler', function()
+    -- This runs inside somebody else's event handler. An error raised here
+    -- would surface as that resource misbehaving, which is a worse bug than
+    -- the one being fixed -- so a missing resource must degrade, never throw.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+
+    f.env.source = 7
+    f.fire('sc-dispatch:server:ShotsFired', {})
+    f.runTimeouts()
+
+    t.equals(#f.exportCalls, 0)
+    t.contains(table.concat(f.logs, '\n'), 'not started')
 end)
 
 t.test('the jobs an alert names are reported, so EMS and police can be told apart', function()

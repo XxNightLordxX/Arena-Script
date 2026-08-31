@@ -1678,9 +1678,16 @@
         if (match.state === 'live' || match.state === 'ended') {
             return 'The round is under way. Leaving now gives up your place in it.';
         }
+        /* WHAT READYING UP ACTUALLY DOES ON THIS SERVER. The second half was
+           said unconditionally and is false wherever autoStartWhenAllReady
+           is on -- which is how it ships. It is the last sentence a player
+           reads before pressing the button it is wrong about. */
+        var autoStart = (cfg().match || {}).autoStartWhenAllReady === true;
         var lead = player().ready === true
             ? 'You are marked ready. '
-            : 'Ready Up only tells the others you are set — it does not start the round. ';
+            : (autoStart
+                ? 'Ready Up marks you set — and once everybody is ready the round starts on its own. '
+                : 'Ready Up only tells the others you are set — it does not start the round. ');
         return blocked === null
             ? lead + 'Start Match Now begins the round for everybody in this lobby.'
             : lead + 'Start Match Now is unavailable: ' + blocked;

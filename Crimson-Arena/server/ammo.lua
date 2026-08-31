@@ -756,8 +756,28 @@ end
 CreateThread(function()
     if doorConfig().blockDropsInArena == false then return end
 
+    -- WAITED FOR, not assumed present. This ran once at load and returned if
+    -- ox_inventory was not started YET -- which is not a rare state: resource
+    -- start order is not guaranteed, and this resource is deliberately asked
+    -- to start early (before the medical script, for the death race). So on
+    -- any server where ox_inventory came up second, the hook was never
+    -- installed, drops were allowed for the whole session, and nothing said
+    -- so: the one branch that logs is the one where ox_inventory refuses the
+    -- hook, and this never reached it.
+    --
+    -- Thirty seconds, then it gives up LOUDLY. A resource that is not going
+    -- to start in half a minute is not going to start.
     local ox = inventory()
-    if not ox then return end
+    for _ = 1, 30 do
+        if ox then break end
+        Wait(1000)
+        ox = inventory()
+    end
+
+    if not ox then
+        ArenaLog('door: ox_inventory never started, so dropping in an arena cannot be blocked. Anything dropped stays on the floor.')
+        return
+    end
 
     local ok = pcall(function()
         return ox:registerHook('swapItems', function(payload)

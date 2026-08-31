@@ -528,6 +528,13 @@ local function snapshotConfig()
             roundTimeSeconds = math.max(0, Arena.ToInt(Config.Match.roundTimeSeconds) or 0),
             winCondition = Config.Match.winCondition,
             onlyHostCanStart = Config.Match.onlyHostCanStart ~= false,
+            -- WHETHER READYING UP IS WHAT STARTS THE ROUND. It ships ON, and
+            -- the panel told every player the opposite in as many words --
+            -- "Ready Up only tells the others you are set, it does not start
+            -- the round" -- because it had no way to know. That is the one
+            -- sentence a player reads immediately before pressing the button
+            -- it is wrong about.
+            autoStartWhenAllReady = Config.Match.autoStartWhenAllReady == true,
             lobbyCountdownSeconds = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0),
         },
     }

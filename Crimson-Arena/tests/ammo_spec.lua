@@ -32,8 +32,14 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 --- @param pockets table<number, table[]>? -- { [src] = { {name, count, metadata} } }
 --- @param mutate fun(config: table)?
 --- @return table fixture
-local function newServer(pockets, mutate)
+--- @param opts table? -- { inventoryStartsAfter = integer } -- how many Waits
+---        ox_inventory takes to come up, for the late-start path
+local function newServer(pockets, mutate, opts)
+    opts = opts or {}
     local inv, console, handlers, hooks = {}, {}, {}, {}
+    -- How many times anything has yielded, which is the only clock this
+    -- fixture has and what the late-start test counts against.
+    local waits = 0
     local stashes = {}
     -- Which operation to break, and HOW. The distinction is the whole point
     -- of half the tests below: a call that THROWS is caught by pcall, and a
@@ -118,7 +124,14 @@ local function newServer(pockets, mutate)
 
     local env = Sandbox.newArenaEnv({
         exports = setmetatable({ ox_inventory = ox }, { __call = function() end }),
-        GetResourceState = function(name) return name == 'ox_inventory' and 'started' or 'missing' end,
+        -- ox_inventory can come up AFTER this resource. Resource start order
+        -- is not guaranteed and Crimson-Arena is deliberately asked to start
+        -- early, so "not started yet" is an ordinary state and not an error.
+        GetResourceState = function(name)
+            if name ~= 'ox_inventory' then return 'missing' end
+            return waits >= (opts.inventoryStartsAfter or 0) and 'started' or 'missing'
+        end,
+        Wait = function() waits = waits + 1 end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         AddEventHandler = function(name, fn) handlers[name] = fn end,
         CreateThread = function(fn) fn() end,
@@ -544,6 +557,31 @@ t.test('and it still refuses while somebody is owed their kit', function()
 
     t.isFalse(s.ammo.Clear('m1'), 'a match still holding somebody\'s inventory was dropped')
     t.isTrue(s.ammo.IsHolding(1), 'and their kit is now unreachable')
+end)
+
+t.test('DEFECT: the drop block waits for an ox_inventory that starts late', function()
+    -- It ran once at load and returned if ox_inventory was not started YET.
+    -- That is not a rare state: start order is not guaranteed, and this
+    -- resource is deliberately asked to start early, before the medical
+    -- script, to win the death race. So on any server where ox_inventory
+    -- came up second the hook was never installed, dropping in an arena was
+    -- allowed for the whole session, and nothing said so -- the only branch
+    -- that logs is the one where ox_inventory REFUSES the hook, which this
+    -- never reached.
+    local s = newServer({ [1] = OWN }, nil, { inventoryStartsAfter = 3 })
+
+    t.isNotNil(s.hook('swapItems'),
+        'ox_inventory started three seconds late and the drop block was never installed')
+end)
+
+t.test('and gives up loudly on one that never starts', function()
+    -- Thirty seconds, then it says so. Silence here reads as "drops are
+    -- blocked" to an operator, which is the opposite of what is true.
+    local s = newServer({ [1] = OWN }, nil, { inventoryStartsAfter = 9999 })
+
+    t.isNil(s.hook('swapItems'))
+    t.isTrue(s.log():find('never started', 1, true) ~= nil,
+        'dropping is allowed and the console does not mention it')
 end)
 
 t.test('an inventory that cannot be read leaves them carrying their own kit', function()

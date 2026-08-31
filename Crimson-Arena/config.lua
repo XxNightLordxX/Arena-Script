@@ -1794,10 +1794,23 @@ Config.Loadouts = {
         -- here and they get 2.
         roundsPerItem = 1,
 
-        -- Give the weapon even when its ammo item could not be handed over.
-        -- On means a player with a full inventory fights with an empty gun
-        -- rather than being refused the round; off means the match refuses to
-        -- start them. On is friendlier and is the default.
+        -- Give the weapon even when its ammo item could not be handed over --
+        -- a full inventory, or an item name this server does not have.
+        --
+        -- ON  (default): they fight with an empty gun rather than being
+        --     refused it. Friendlier, and the failure is in the console for
+        --     the operator either way.
+        -- OFF: that WEAPON is taken back off them. They keep their place in
+        --     the round and everything else they picked -- what goes is the
+        --     one gun that would have looked loaded and was not.
+        --
+        -- The old wording here said `off` made the match refuse to start the
+        -- player. It never did: nothing read this setting at all, and both
+        -- values behaved as `on`. Ejecting somebody mid-placement would mean
+        -- unwinding a dispatch flag, a routing bucket and a stash already set
+        -- for them, so taking the gun is what it does instead -- which is
+        -- what the setting is FOR, without inventing a new way to strand a
+        -- player.
         allowWeaponWithoutAmmoItem = true,
     },
 

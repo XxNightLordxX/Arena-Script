@@ -1614,9 +1614,17 @@
            error -- so the counts are stated plainly and nothing is
            flagged. Only an operator who switched the allowance off wants
            to see a warning here. */
-        if (teams.allowUnequal === false && list.length > 0 && highest - lowest > 0) {
+        /* AGAINST THE SERVER'S OWN ALLOWANCE, not against zero. The rule is
+           "no more than maxTeamSizeDifference apart", and warning on any
+           difference at all told a 3v2 lobby the round could not start when
+           it perfectly well could -- so a host levelled sides the server had
+           never objected to. Defaults to 1 to match the server's own
+           fallback for an unset value. */
+        var allowedGap = int(teams.maxTeamSizeDifference, 1);
+        if (teams.allowUnequal === false && list.length > 0 && highest - lowest > allowedGap) {
             host.appendChild(makeEl('div', 'hint',
-                'Sides are uneven (' + lowest + ' vs ' + highest + '). This server will not start a match until they are level.'));
+                'Sides are uneven (' + lowest + ' vs ' + highest + '). This server will not start a match '
+                + 'while they differ by more than ' + plural(allowedGap, 'player') + '.'));
         }
         if (occupied < 2) {
             host.appendChild(makeEl('div', 'hint', 'Both sides need at least one player before the round can start.'));

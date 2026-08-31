@@ -389,6 +389,12 @@ local function snapshotConfig()
         teams = {
             allowChoose = Config.Teams.allowChoose ~= false,
             allowUnequal = Config.Teams.allowUnequal ~= false,
+            -- THE ALLOWANCE, not just the switch. Arena.TeamsAreStartable
+            -- refuses a start only when the sides differ by MORE than this,
+            -- and the panel had no way to know the number -- so it warned on
+            -- any difference at all and told a 3v2 lobby the server would
+            -- not start it. The server starts it: 1 is within 1.
+            maxTeamSizeDifference = math.max(0, Arena.ToInt(Config.Teams.maxTeamSizeDifference) or 1),
             list = Arena.GetEnabledTeams(),
         },
 
@@ -511,6 +517,14 @@ local function snapshotConfig()
                     intervalSeconds = math.max(1, math.floor((Arena.ToInt(block.intervalMs) or 30000) / 1000)),
                 }
             end)(),
+            -- WHAT HAPPENS TO THE GUNS THEY WALKED IN WITH. The panel has a
+            -- line about this and reads it off here, deliberately saying
+            -- NOTHING when the field is absent rather than guessing -- so
+            -- never sending it meant the line could not appear on any
+            -- server, and the question every player asks before their first
+            -- round went unanswered by a panel that had the answer written
+            -- into it.
+            restoreLoadoutOnExit = Config.Match.restoreLoadoutOnExit == true,
             roundTimeSeconds = math.max(0, Arena.ToInt(Config.Match.roundTimeSeconds) or 0),
             winCondition = Config.Match.winCondition,
             onlyHostCanStart = Config.Match.onlyHostCanStart ~= false,

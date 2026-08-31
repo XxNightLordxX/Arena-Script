@@ -856,4 +856,59 @@ t.test('and the panel really does hide with a class, so that rule is the right o
         'show() no longer hides with a class, so the markup rule above is now backwards')
 end)
 
+-- ========================================================================
+-- THE GUN-GAME PROMOTION, WHICH REACHED NOBODY
+-- ========================================================================
+
+t.test('DEFECT: a promotion for THIS match is acted on', function()
+    -- THE BUG. enterArena builds currentMatch with the field called `id`,
+    -- and the promotion handler guarded on `currentMatch.matchId` -- which
+    -- nothing ever writes. So it compared a real match id against nil, was
+    -- never once equal, and dropped every promotion the server sent.
+    --
+    -- Silent at both ends: the server had sent its message, and this side had
+    -- "checked" the message belonged to the right match. A climber kept the
+    -- bottom rung's weapon for the whole round while the server's idea of
+    -- what they were holding walked up the ladder without them.
+    local f = newMatchFixture()
+    f.enter()
+    local before = #f.given
+
+    f.fire('crimson_arena:client:gunGameRung', {
+        matchId = 'match-1',
+        weapon = 'WEAPON_SMG',
+        ammo = 90,
+        remove = 'WEAPON_PISTOL',
+    })
+
+    t.equals(#f.given, before + 1,
+        'the promotion was dropped -- the climber keeps the rung they started on')
+    t.equals(f.given[#f.given].weapon, 'WEAPON_SMG')
+    t.equals(f.given[#f.given].ammo, 90)
+end)
+
+t.test('and a promotion for a DIFFERENT match is still ignored', function()
+    -- The guard has to keep working, not merely stop refusing everything: a
+    -- message from a match this player is not in must not arm them.
+    local f = newMatchFixture()
+    f.enter()
+    local before = #f.given
+
+    f.fire('crimson_arena:client:gunGameRung', {
+        matchId = 'some-other-match',
+        weapon = 'WEAPON_SMG',
+        ammo = 90,
+    })
+
+    t.equals(#f.given, before, 'a promotion from somebody else\'s match armed this player')
+end)
+
+t.test('and one arriving with no match at all is ignored', function()
+    local f = newMatchFixture()
+    f.fire('crimson_arena:client:gunGameRung', {
+        matchId = 'match-1', weapon = 'WEAPON_SMG', ammo = 90,
+    })
+    t.equals(#f.given, 0, 'a player who is in no match was armed by a promotion')
+end)
+
 os.exit(t.summary())

@@ -1006,4 +1006,121 @@ t.test('a fixed-loadout server sends the picker no choice and still answers the 
     t.equals(#preview.weapons, #loadout.weapons)
 end)
 
+-- ========================================================================
+-- EVERY CONFIG FIELD THE PANEL READS MUST ACTUALLY ARRIVE
+--
+-- The general form of the defect the rest of this file catches one field at
+-- a time. html/app.js reads settings off the snapshot's `config` block, and
+-- a name that never arrives is not an error -- it is `undefined`, which the
+-- panel treats as "the operator did not set that", so it renders a default
+-- and reports nothing.
+--
+-- Two shipped settings were lost exactly that way, both enforced by the
+-- server and neither ever sent:
+--
+--   restoreLoadoutOnExit  the panel has a written line about what happens
+--                         to a player's own guns, and deliberately says
+--                         NOTHING when the field is absent. So the line
+--                         could not appear on any server, and the question
+--                         every player asks before their first round went
+--                         unanswered by a panel that had the answer in it.
+--
+--   maxTeamSizeDifference the server refuses a start only when the sides
+--                         differ by MORE than this. The panel, not knowing
+--                         the number, warned on any difference at all -- so
+--                         a 3v2 lobby was told the round could not start
+--                         when it could, and hosts levelled sides nobody
+--                         had objected to.
+--
+-- So this reads the panel's own source for what it asks for, and checks the
+-- snapshot against it. Named fields cannot drift out one at a time again.
+-- ========================================================================
+
+--- Every (block, field) html/app.js reads off the snapshot's config.
+---
+--- Both spellings the file actually uses: the direct
+--- `(cfg().match || {}).minPlayers`, and the two-step
+--- `var teams = cfg().teams || {}` followed by `teams.allowUnequal`.
+--- betting() is a named accessor for `cfg().betting`, so it is a third.
+--- @return table<string, table<string, boolean>>
+local function panelConfigReads()
+    local handle = assert(io.open('../html/app.js', 'r'), 'cannot open html/app.js')
+    local source = handle:read('a')
+    handle:close()
+
+    local reads = {}
+    local function want(block, field)
+        if not block or not field then return end
+        reads[block] = reads[block] or {}
+        reads[block][field] = true
+    end
+
+    -- (cfg().block || {}).field
+    for block, field in source:gmatch("%(cfg%(%)%.(%w+)%s*||%s*{}%)%.(%w+)") do
+        want(block, field)
+    end
+
+    -- var name = cfg().block || {}   ...then...   name.field
+    for name, block in source:gmatch("var%s+(%w+)%s*=%s*cfg%(%)%.(%w+)%s*||%s*{}") do
+        for field in source:gmatch(name .. "%.(%w+)") do want(block, field) end
+    end
+
+    -- betting() is cfg().betting under another name.
+    for field in source:gmatch("betting%(%)%.(%w+)") do want('betting', field) end
+
+    return reads
+end
+
+--- Field names the panel reads that are NOT config settings -- helpers and
+--- locals that happen to share a variable name with a config block. Listed
+--- rather than pattern-matched, so adding one is a decision somebody makes
+--- on purpose.
+local NOT_SETTINGS = {
+    -- `ui` is also the name of a local holding an already-extracted block,
+    -- and `teams` is a per-MATCH boolean on the match card as well as a
+    -- config block. Neither is a setting this file can look for.
+    teams = { teams = true },
+    ui = { ui = true },
+}
+
+t.test('every config field html/app.js reads is present in the snapshot', function()
+    local server = newArena()
+    local config = server.snapshot(1).config
+    t.isNotNil(config, 'the snapshot carries no config block at all')
+
+    local reads = panelConfigReads()
+    t.isTrue(next(reads) ~= nil,
+        'no config reads were found in html/app.js, so this test proved nothing')
+
+    local missing = {}
+    for block, fields in pairs(reads) do
+        local sent = config[block]
+        if sent == nil then
+            missing[#missing + 1] = block .. ' (the whole block)'
+        else
+            for field in pairs(fields) do
+                local skip = (NOT_SETTINGS[block] or {})[field]
+                if not skip and sent[field] == nil then
+                    missing[#missing + 1] = block .. '.' .. field
+                end
+            end
+        end
+    end
+    table.sort(missing)
+
+    t.equals(table.concat(missing, ', '), '',
+        'the panel reads these off the snapshot and the server never sends them. They arrive as '
+        .. 'undefined, which the panel reads as "the operator did not set that" -- so it renders a '
+        .. 'default and says nothing, on every server')
+end)
+
+t.test('and the two that were actually lost are named, so a failure says which', function()
+    local config = newArena().snapshot(1).config
+
+    t.isNotNil(config.match.restoreLoadoutOnExit,
+        'the loadout tab cannot tell a player whether their own guns come back')
+    t.isNotNil(config.teams.maxTeamSizeDifference,
+        'the team picker is back to warning about any difference at all, including ones the server allows')
+end)
+
 os.exit(t.summary())

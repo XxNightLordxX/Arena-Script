@@ -1227,7 +1227,14 @@ end)
 --- so this side does the announcing and leaves the weapons alone.
 RegisterNetEvent('crimson_arena:client:gunGameRung', function(data)
     if not currentMatch or type(data) ~= 'table' then return end
-    if data.matchId ~= currentMatch.matchId then return end
+    -- `.id`, NOT `.matchId`. enterArena builds currentMatch with the field
+    -- called `id`, so this compared a real match id against nil and was never
+    -- once equal: every promotion the server sent was dropped here, and a
+    -- climber kept the bottom rung's weapon for the whole round while the
+    -- server's idea of what they were holding walked up the ladder without
+    -- them. Silent at both ends -- the server had sent its message and this
+    -- side had "checked" it belonged to the right match.
+    if data.matchId ~= currentMatch.id then return end
     if not Arena.IsKey(data.weapon) then return end
 
     if GetResourceState('ox_inventory') == 'started' then return end

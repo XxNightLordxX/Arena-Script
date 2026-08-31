@@ -451,6 +451,47 @@ end
 -- ISSUING
 -- ======================================================================
 
+--- Takes back the weapons named by `keys`, and forgets them from the issued
+--- record so the exit does not try to remove them a second time.
+---
+--- Keys, not weapon names, because that is what Issue collects: the loadout
+--- entry carries both and the failure list is built from `entry.key or
+--- entry.weapon`, so it may hold either spelling. Both are matched.
+--- @param ox table
+--- @param src number
+--- @param matchId string
+--- @param keys string[]
+--- @param loadout table
+--- @return string[] removed -- weapon names actually taken back
+local function removeWeaponsByKey(ox, src, matchId, keys, loadout)
+    local wanted = {}
+    for _, key in ipairs(keys) do wanted[key] = true end
+
+    local removed = {}
+    for _, entry in ipairs(loadout.weapons or {}) do
+        local name = entry.weapon
+        if Arena.IsKey(name) and (wanted[entry.key] or wanted[name]) then
+            if oxDid('taking back ' .. name, function() return ox:RemoveItem(src, name, 1) end) then
+                removed[#removed + 1] = name
+            end
+        end
+    end
+
+    -- Forgotten from the issued record too. A weapon this took back is no
+    -- longer on the player, and leaving it listed would have the exit try to
+    -- remove it again -- which on a name that happens to collide with
+    -- something of their own removes theirs.
+    local held = (issuedWeapons[matchId] or {})[src]
+    if type(held) == 'table' then
+        for index = #held, 1, -1 do
+            local record = held[index]
+            if type(record) == 'table' and wanted[record.name] then table.remove(held, index) end
+        end
+    end
+
+    return removed
+end
+
 --- Puts the player's own kit away, then gives them what the loadout says.
 ---
 --- Returns the weapon keys whose ammo item could not be handed over.
@@ -529,6 +570,32 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     end
 
     issued[matchId][src] = given
+
+    -- ALLOWWEAPONWITHOUTAMMOITEM, and until now it decided nothing at all.
+    --
+    -- The setting has always shipped documented -- "on means a player with a
+    -- full inventory fights with an empty gun rather than being refused the
+    -- round; off means the match refuses to start them" -- and nothing in
+    -- this resource read it. Both values behaved identically: the weapon was
+    -- issued, the missing rounds were logged, and the player walked into the
+    -- arena holding a gun that looked loaded and was not.
+    --
+    -- WHAT `false` DOES HERE, and it is narrower than that wording: the
+    -- WEAPON is taken back, not the player. Ejecting somebody mid-placement
+    -- means unwinding a dispatch flag, a routing bucket and a stash that have
+    -- already been set for them, and every one of those has leaked in this
+    -- codebase before. Taking the gun honours what the setting is for -- do
+    -- not let anyone fight with an empty weapon that looks loaded -- without
+    -- inventing a new way to strand a player. config.lua says so in these
+    -- words now, rather than describing something that never happened.
+    if #failed > 0 and (Config.Loadouts.ammoItems or {}).allowWeaponWithoutAmmoItem == false then
+        local dropped = removeWeaponsByKey(ox, src, matchId, failed, loadout)
+        if #dropped > 0 then
+            ArenaLog('ammo: took back %s from %s -- their rounds could not be issued and this server does not arm an empty gun.',
+                table.concat(dropped, ', '), tostring(src))
+        end
+    end
+
     return failed
 end
 

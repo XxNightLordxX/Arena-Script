@@ -80,6 +80,15 @@ local function newServer(pockets, mutate)
             -- operator's ox_inventory data does not know, actually does.
             if fail.stashRefuse and type(id) == 'string' then return false end
             if fail.give and type(id) == 'number' then return false end
+            -- ONLY the ammo item, never the weapon. `give` above refuses
+            -- everything a player is handed, so a test using it to break the
+            -- ammunition also stops the weapon being issued -- and then
+            -- "the player is not carrying that weapon" is true for the wrong
+            -- reason.
+            if fail.ammoItem and type(id) == 'number'
+                and type(name) == 'string' and name:find('^ammo') then
+                return false
+            end
             local into = bucket(id)
             into[#into + 1] = { name = name, count = count, metadata = metadata }
             return true
@@ -161,6 +170,7 @@ local function newServer(pockets, mutate)
             inv[src][#inv[src] + 1] = { name = name, count = count }
         end,
         breakOn = function(what) fail[what] = true end,
+        config = env.Config,
         --- What is sitting in one player's arena stash, by name. The stash is
         --- the promise: anything that could not be handed back has to still
         --- be in it, because a player can be pointed at a real ox_inventory
@@ -473,6 +483,37 @@ t.test('DEFECT: an item the player cannot be GIVEN back is left in the stash, no
         'AN ITEM THAT COULD NOT BE RETURNED WAS DELETED FROM THE STASH')
     t.isTrue(s.log():find('still in stash', 1, true) ~= nil,
         'and the player was never told where their belongings are')
+end)
+
+t.test('DEFECT: allowWeaponWithoutAmmoItem off takes the empty gun back', function()
+    -- The setting shipped documented and READ BY NOTHING: both values issued
+    -- the weapon, logged the missing rounds, and sent the player in holding a
+    -- gun that looked loaded and was not.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+    end)
+    s.breakOn('ammoItem')   -- ox refuses the ROUNDS, and issues the weapon
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-test', 60))
+
+    t.isFalse(s.carrying(1):find('WEAPON_TEST', 1, true) ~= nil,
+        'the weapon was left on a player who could not be given a single round for it')
+    t.isTrue(s.log():find('took back', 1, true) ~= nil,
+        'and nothing in the console says why they are unarmed')
+end)
+
+t.test('and ON -- the default -- it is left with them, empty', function()
+    -- The other half, so the test above is not passing on a build that simply
+    -- stopped issuing weapons.
+    local s = newServer({ [1] = OWN })
+    t.isTrue(s.config.Loadouts.ammoItems.allowWeaponWithoutAmmoItem,
+        'the shipped default changed, and this test is about the old one')
+    s.breakOn('ammoItem')
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-test', 60))
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST', 1, true) ~= nil,
+        'the weapon was taken back on a server that allows an empty gun')
 end)
 
 t.test('an inventory that cannot be read leaves them carrying their own kit', function()

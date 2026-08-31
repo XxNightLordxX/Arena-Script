@@ -972,7 +972,15 @@
             state.createLives = int((config.match || {}).lives, 1);
         }
         if (state.betAmount === null) {
-            state.betAmount = int(((config.betting || {}).spectatorBets || {}).min, 0);
+            /* Whichever kind of bet this server actually offers. Seeding
+               from the spectator minimum on a server that only lets fighters
+               bet opened the box at 0 -- under the minimum, so the button was
+               dead until the player found the number themselves. */
+            var betCfg = (config.betting || {});
+            var seedFrom = ((betCfg.spectatorBets || {}).enabled === true)
+                ? betCfg.spectatorBets
+                : ((betCfg.fighterBets || {}).enabled === true ? betCfg.fighterBets : {});
+            state.betAmount = int(seedFrom.min, 0);
         }
 
         /* SEEDED FROM THE MATCH, ONCE PER MATCH. Becoming the host of a lobby
@@ -2533,6 +2541,34 @@
     /* The pick a side-bet names: a team key in team modes, the fighter's
        server id as a string in a free-for-all. Matches what
        server/betting.lua's canonicalPick accepts. */
+    /* WHETHER THIS PLAYER IS FIGHTING IN THE MATCH THEY ARE LOOKING AT.
+       The whole bet screen branches on it: a fighter and a spectator are
+       betting under different rules, out of different bands, on a different
+       set of picks. */
+    function betAsFighter(match) {
+        return !!match && playerMatchId() === match.id;
+    }
+
+    /* The band and the switch that apply to THIS player on THIS match.
+       Reading spectatorBets for a fighter is how a fighter came to be told
+       the biggest bet was a number that was never theirs. */
+    function betRules(match) {
+        return betAsFighter(match)
+            ? (betting().fighterBets || {})
+            : (betting().spectatorBets || {});
+    }
+
+    /* The one side a fighter is allowed to back, or null where they may back
+       anybody. Computed exactly as ownSideOf does on the server -- their team
+       in a team mode, their own server id otherwise -- because a panel that
+       computes it differently offers a chip the server then refuses. */
+    function ownSide(match) {
+        if (!betAsFighter(match)) return null;
+        if ((betting().fighterBets || {}).ownSideOnly === false) return null;
+        if (match.teams === true && player().team) return String(player().team);
+        return String(int(player().serverId, 0));
+    }
+
     function betPickOptions(match) {
         if (!match) return [];
         if (match.teams === true) {
@@ -2583,13 +2619,25 @@
         if (!has(host)) return;
 
         var spectator = betting().spectatorBets || {};
+        var fighter = betting().fighterBets || {};
         /* True whichever payout rule this server runs: the stake stays in
            the pot, and what the pot then does is the clause above. */
         var text = 'Every fighter pays the entry fee into the pot, and at the end of the round '
             + payoutPhrase() + '. Being eliminated ends your round and your fee stays in the pot.';
         if (spectator.enabled === true) {
-            text += ' A side-bet below is separate: you are not fighting, the house pays it, and it '
-                + 'never changes what the winners take.';
+            text += ' A side-bet below is separate from the pot, and it never changes what the '
+                + 'winners take.';
+        }
+        if (fighter.enabled === true) {
+            /* Said plainly because it is the part people get wrong: a
+               winning bet is a share of what everybody staked, so it is
+               bigger when more people were wrong and smaller when they
+               were not. Nothing is created to pay it. */
+            text += ' You can also back yourself'
+                + (fighter.ownSideOnly === false ? '' : ' — and only yourself')
+                + ' in a match you are fighting in. Winning bets share out the whole betting pool '
+                + 'in proportion to what each backer staked; the money comes from the other bets, '
+                + 'never from the server.';
         }
         host.textContent = text;
     }
@@ -2630,16 +2678,23 @@
         if (!has(host)) return;
         clear(host);
 
-        var spectator = betting().spectatorBets || {};
-        if (spectator.enabled !== true) {
+        if (betRules(match).enabled !== true) {
             host.appendChild(makeEl('div', 'hint',
-                'Side-bets are switched off on this server. You can still fight for the pot: '
-                + 'join a match on the Matches tab.'));
+                betAsFighter(match)
+                    ? 'Fighters cannot bet on this server. You are already playing for the pot.'
+                    : 'Side-bets are switched off on this server. You can still fight for the pot: '
+                        + 'join a match on the Matches tab.'));
             return;
         }
         if (!match) return;
 
-        var options = betPickOptions(match);
+        /* A FIGHTER HELD TO THEIR OWN SIDE IS OFFERED ONLY THAT SIDE. The
+           other chips are not disabled, they are absent: a row of names you
+           may not click, on a screen about money, reads as a bug. */
+        var own = ownSide(match);
+        var options = betPickOptions(match).filter(function (option) {
+            return own === null || String(option.pick) === own;
+        });
         if (options.length === 0) {
             host.appendChild(makeEl('div', 'hint',
                 'Nobody has joined this match yet, so there is nobody to back.'));
@@ -2668,16 +2723,43 @@
        null. Same courtesy as the join button: the server decides, this
        explains. */
     function betBlockedReason(match) {
-        var spectator = betting().spectatorBets || {};
-        if (spectator.enabled !== true) return 'Side-bets are switched off on this server.';
         if (!match) return 'Pick a match on the Matches tab first.';
-        if (playerMatchId() === match.id) return 'You are fighting in this match. You cannot bet on yourself.';
+
+        var fighting = betAsFighter(match);
+        var rules = betRules(match);
+
+        /* THE LINE THAT USED TO BE HERE:
+
+               if (playerMatchId() === match.id)
+                   return 'You are fighting in this match. You cannot bet on yourself.'
+
+           It was true when it was written and stopped being true when
+           fighterBets shipped. server/betting.lua takes a fighter's bet,
+           holds it to their own side, settles it out of the pool and pays it
+           like any other -- and this refused every one before it reached the
+           wire. The feature was on, correct and unreachable. */
+        if (rules.enabled !== true) {
+            return fighting
+                ? 'Fighters cannot bet on this server. Your entry fee is already on the line.'
+                : 'Side-bets are switched off on this server.';
+        }
+
         if (match.state === 'ended') return 'This match has finished.';
         if (!state.betPick) return 'Choose who you are backing.';
 
+        /* Held to their own side, and told so BEFORE the click rather than
+           by a refusal after it. Backing the other side is being paid to
+           lose on purpose, which an arena is exactly the place for. */
+        var own = ownSide(match);
+        if (own !== null && String(state.betPick) !== own) {
+            return match.teams === true
+                ? 'You are fighting in this match, so you can only back your own team.'
+                : 'You are fighting in this match, so you can only back yourself.';
+        }
+
         var amount = int(state.betAmount, 0);
-        var min = int(spectator.min, 0);
-        var max = int(spectator.max, 0);
+        var min = int(rules.min, 0);
+        var max = int(rules.max, 0);
         if (amount < min) return 'The smallest bet is ' + money(min) + '.';
         if (max > 0 && amount > max) return 'The biggest bet is ' + money(max) + '.';
         if (amount > int(player().money, 0)) return 'You do not have ' + money(amount) + '.';
@@ -2685,14 +2767,17 @@
     }
 
     function renderBetControls(match) {
-        var spectator = betting().spectatorBets || {};
-        var usable = spectator.enabled === true;
+        /* Whichever rule applies to this player. A server with spectator
+           bets off and fighter bets on used to draw no form at all, so the
+           fighters it was switched on for could not see it. */
+        var rules = betRules(match);
+        var usable = rules.enabled === true;
 
         var input = byId('bet-amount');
         show(byId('bet-amount-row'), usable);
         if (has(input) && usable) {
-            input.min = String(int(spectator.min, 0));
-            if (int(spectator.max, 0) > 0) input.max = String(int(spectator.max, 0));
+            input.min = String(int(rules.min, 0));
+            if (int(rules.max, 0) > 0) input.max = String(int(rules.max, 0));
             if (document.activeElement !== input) input.value = String(int(state.betAmount, 0));
         }
 
@@ -2706,8 +2791,12 @@
         if (has(hint) && usable) {
             if (reason !== null) {
                 hint.textContent = reason;
+            } else if (betAsFighter(match)) {
+                hint.textContent = 'Backing yourself with ' + money(int(state.betAmount, 0))
+                    + ' on top of your entry fee. If you win you take a share of the whole betting '
+                    + 'pool, in proportion to what you staked. If you lose, the stake is gone.';
             } else {
-                var odds = Number(spectator.oddsMultiplier) || 2;
+                var odds = Number((betting().spectatorBets || {}).oddsMultiplier) || 2;
                 hint.textContent = 'If they win you are paid ' + money(int(state.betAmount, 0) * odds)
                     + '. If they lose, the stake is gone.';
             }
@@ -3204,8 +3293,17 @@
     bind('loadout-save', 'click', saveLoadout);
 
     bind('bet-amount', 'input', function (event) {
-        var spectator = betting().spectatorBets || {};
-        state.betAmount = clampInt(event.target.value, 0, int(spectator.max, 0));
+        /* The ceiling that applies to THIS player on the match in front of
+           them: a fighter's band is not the spectators'. The floor stays 0
+           rather than the minimum, so the box can be cleared and retyped --
+           betBlockedReason is what refuses an amount under the minimum, with
+           a sentence saying what it is.
+
+           Unlike the weapon ammo box this one may re-render: it is a static
+           element in index.html, so nothing rebuilds it under the caret, and
+           renderBetControls will not write back into it while it has focus. */
+        var rules = betRules(focusedMatch());
+        state.betAmount = clampInt(event.target.value, 0, int(rules.max, 0));
         render();
     });
 

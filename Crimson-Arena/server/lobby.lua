@@ -379,6 +379,7 @@ local function snapshotConfig()
 
     local fee = Config.Betting.entryFee or {}
     local spectator = Config.Betting.spectatorBets or {}
+    local fighter = Config.Betting.fighterBets or {}
 
     configBlock = {
         ui = Config.UI,
@@ -433,6 +434,25 @@ local function snapshotConfig()
                 min = math.max(0, Arena.ToInt(spectator.min) or 0),
                 max = math.max(0, Arena.ToInt(spectator.max) or 0),
                 oddsMultiplier = tonumber(spectator.oddsMultiplier) or 2.0,
+            },
+            -- A FIGHTER BACKING THEMSELVES. Its own band, because staking
+            -- money on a round you are in is a different act to backing one
+            -- you are watching, and the operator sets the two separately.
+            --
+            -- THIS WAS NOT SENT AT ALL, and the panel had no way to know the
+            -- feature existed. server/betting.lua takes these bets, settles
+            -- them out of the pool and has done since fighterBets shipped --
+            -- but the panel refused every one of them before it reached the
+            -- wire, with "You are fighting in this match. You cannot bet on
+            -- yourself." So the setting was on, correct, tested, and dead.
+            fighterBets = {
+                enabled = fighter.enabled == true,
+                min = math.max(0, Arena.ToInt(fighter.min) or 0),
+                max = math.max(0, Arena.ToInt(fighter.max) or 0),
+                -- Whether they are held to their own side. The panel needs
+                -- it to say WHY a chip is refused, rather than letting the
+                -- server refuse it after the click.
+                ownSideOnly = fighter.ownSideOnly ~= false,
             },
         },
 

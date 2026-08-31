@@ -105,6 +105,78 @@ test('a typed amount is what gets posted, not the nearest preset', () => {
         'typed 119, posted ' + entry.ammo + ' -- the value did not survive the form');
 });
 
+test('typing several digits builds ONE number, not one digit at a time', () => {
+    /* THE BUG THIS GUARDS, reported from a live server: "when typing a
+       number it doesn't back off after hitting 1 number ... when I hit 1 I
+       have to click it again to hit 0".
+
+       setWeaponAmmo ended in render(), and render() REBUILDS the weapon
+       cards -- so the <input> being typed into was destroyed on every
+       keystroke and rebuilt as a new element, taking the focus and the caret
+       with it. One digit per click.
+
+       The lives box never had this because it is a static element in
+       index.html; only the controls the panel builds are torn down.
+
+       Node identity is the probe, because it is exactly what the browser
+       loses: the harness re-registers a built node under its id, so a rebuilt
+       box is a DIFFERENT object under the same name. */
+    const panel = opened(snapshot(true));
+    panel.fire('weapon-card-pistol', 'click');
+
+    const box = panel.node('weapon-ammo-custom-pistol');
+    assert.ok(panel.built('weapon-ammo-custom-pistol'), 'the box was never built');
+
+    // 1, then 0, then 0 -- three keystrokes, one element.
+    ['1', '10', '100'].forEach((sofar) => {
+        box.value = sofar;
+        panel.fire('weapon-ammo-custom-pistol', 'input', { target: { value: sofar } });
+
+        assert.strictEqual(panel.node('weapon-ammo-custom-pistol'), box,
+            'the box was rebuilt after typing "' + sofar + '" -- in a browser that is the '
+            + 'caret gone and the player clicking back in for every digit');
+    });
+
+    panel.fire('loadout-save', 'click');
+    const sent = panel.posted.find((p) => p.name === 'setLoadout');
+    assert.ok(sent, 'nothing was posted at all');
+    const entry = (sent.body.weapons || []).find((w) => w.key === 'pistol');
+    assert.ok(entry, 'the pistol never reached the payload');
+    assert.strictEqual(entry.ammo, 100,
+        'typed 100 one digit at a time and posted ' + entry.ammo);
+});
+
+test('and the save button still notices, though nothing was re-rendered', () => {
+    /* The quiet path skips render(), so the one thing render() would have
+       done that still matters has to be done by hand: a player who types an
+       amount and is left looking at a greyed-out Save button reads it as the
+       panel having ignored them. */
+    const panel = opened(snapshot(true));
+    panel.fire('weapon-card-pistol', 'click');
+    panel.fire('loadout-save', 'click');
+    assert.strictEqual(panel.node('loadout-save').disabled, true,
+        'the button was not clean after a save, so this proves nothing');
+
+    panel.type('weapon-ammo-custom-pistol', '77');
+    assert.strictEqual(panel.node('loadout-save').disabled, false,
+        'typing an amount left Save greyed out -- the panel looks like it ignored the change');
+});
+
+test('clicking away writes back a value the box could not keep', () => {
+    /* The box is capped at the weapon's max for guidance, but nothing is
+       re-rendered while typing -- so a number over the cap sits on screen
+       looking accepted. Blur is the end of typing and where the panel
+       catches up, so the clamp becomes visible rather than a surprise at
+       save time. */
+    const panel = opened(snapshot(true));
+    panel.fire('weapon-card-pistol', 'click');
+    panel.type('weapon-ammo-custom-pistol', '9999');    // max is 250
+
+    panel.fire('weapon-ammo-custom-pistol', 'blur');
+    assert.strictEqual(panel.node('weapon-ammo-custom-pistol').value, '250',
+        'the box still showed a number the server would never hand out');
+});
+
 test('and a preset still works, because the chips did not go away', () => {
     const panel = opened(snapshot(true));
     panel.fire('weapon-card-pistol', 'click');

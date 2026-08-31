@@ -146,7 +146,21 @@ function loadPanel(root) {
          * the moment you look. This asks the real question.
          */
         built(id) { return Object.prototype.hasOwnProperty.call(nodes, id); },
-        /** Fires one DOM event on a node, the way a player would. */
+        /**
+         * Fires one DOM event on a node, the way a player would.
+         *
+         * BOTH WIRINGS, because app.js uses both. Most controls are bound
+         * with addEventListener, but the ones a render re-wires every pass --
+         * Ready Up, Start, Cancel, Leave, the radar, the bet button -- are
+         * assigned to `.onclick` instead, so the handler is replaced rather
+         * than stacked.
+         *
+         * This dispatched only to the listener list, so every one of those
+         * six was unreachable through fire(): a test could click them and
+         * assert against a panel that had done nothing, and pass. That is not
+         * hypothetical -- the fighter-bet tests were written against
+         * `bet-submit` and posted nothing at all.
+         */
         fire(id, type, event) {
             const node = this.node(id);
             // A real event carries these and the panel calls them: controls
@@ -159,6 +173,12 @@ function loadPanel(root) {
                 preventDefault() {},
             }, event || {});
             (node.listeners[type] || []).forEach((fn) => fn(detail));
+
+            // A disabled control is inert in a browser, so it is inert here:
+            // asserting that a greyed-out button does nothing is a real test
+            // and it must not pass merely because the handler was called.
+            const inline = node['on' + type];
+            if (typeof inline === 'function' && node.disabled !== true) inline.call(node, detail);
         },
         /**
          * All text rendered inside a node, children included.

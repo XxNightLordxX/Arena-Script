@@ -1084,12 +1084,17 @@ end
 --- nothing to judge a bet against then, so the house has no claim on it and
 --- every bet is returned rather than swallowed.
 ---
---- A BET HELD BY A FIGHTER IS VOID and goes back unjudged, whichever way it
---- would have gone. The rule that a fighter may not back their own match is
---- checked when the bet is placed, and that check alone is defeated by doing
---- the two things in the other order -- bet, then join. This is the check
---- that cannot be ordered around, because it runs where the money moves and
---- reads the roster as it finally stood.
+--- A BET HELD BY A FIGHTER IS RE-JUDGED, not automatically void. With
+--- fighterBets on, backing your own side is a bet like any other and is
+--- settled out of the pool; backing the OTHER side is being paid to lose on
+--- purpose, and goes back unjudged. With fighterBets off, any bet held by a
+--- fighter is void -- the original rule, unchanged.
+---
+--- Checked here as well as at placement because the placement check alone is
+--- defeated by doing the two things in the other order: bet on the side you
+--- are about to fight against, then join. This is the check that cannot be
+--- ordered around, because it runs where the money moves and reads the
+--- roster as it finally stood. See `voided` for the rule itself.
 --- @param matchId string
 --- @param winningPick any -- team key, winning fighter's server id, or nil
 --- @return integer paid -- winning bets settled

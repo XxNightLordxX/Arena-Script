@@ -19,6 +19,8 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 --- @param state table -- dead, health, ragdoll
 local function newClient(state)
     local calls = {}
+    local threads = {}
+    local netHandlers = {}
     local function record(name)
         return function(...)
             calls[#calls + 1] = { name = name, args = { ... } }
@@ -37,6 +39,7 @@ local function newClient(state)
         GetEntityHealth = function() return health end,
         IsEntityDead = function() return state.dead == true end,
         IsPedRagdoll = function() return state.ragdoll == true end,
+        IsPedInWrithe = function() return state.writhe == true end,
 
         SetEntityHealth = function(ped, value)
             health = value
@@ -57,10 +60,15 @@ local function newClient(state)
 
         -- Load-time surface. None of it is what this file is about; it is
         -- here so the real production file can be loaded unmodified.
-        RegisterNetEvent = function() end,
+        RegisterNetEvent = function(name, fn)
+            if type(fn) == 'function' then netHandlers[name] = fn end
+        end,
         AddEventHandler = function() end,
         RegisterCommand = function() end,
-        CreateThread = function() end,
+        -- CAPTURED, not run. The assert window lives in a thread, and a spec
+        -- that cannot step it cannot tell a window that watches from one that
+        -- never looks again.
+        CreateThread = function(fn) threads[#threads + 1] = fn end,
         Wait = function() end,
         TriggerServerEvent = function() end,
         TriggerEvent = function() end,
@@ -77,12 +85,31 @@ local function newClient(state)
     return {
         env = env,
         D = env.ArenaDispatch,
+        state = state,
         health = function() return health end,
         called = function(name)
             for _, c in ipairs(calls) do
                 if c.name == name then return true end
             end
             return false
+        end,
+        countOf = function(name)
+            local n = 0
+            for _, c in ipairs(calls) do
+                if c.name == name then n = n + 1 end
+            end
+            return n
+        end,
+        fireNet = function(name, ...)
+            local fn = netHandlers[name]
+            if not fn then error('no net event registered called ' .. tostring(name), 2) end
+            fn(...)
+        end,
+        --- Runs every thread started so far, once, to completion.
+        step = function()
+            local pending = threads
+            threads = {}
+            for _, fn in ipairs(pending) do fn() end
         end,
     }
 end
@@ -240,6 +267,113 @@ t.test('the net event the server sends lands on the same function', function()
 
     local ok, err = pcall(handler)
     t.isTrue(ok, 'the handler errored on the no-argument call the server actually makes: ' .. tostring(err))
+end)
+
+-- ------------------------------------------------------------------
+-- STAYING UP -- the assert window, and why start order stopped mattering
+-- ------------------------------------------------------------------
+
+t.test('a player put back down after the revive is stood up again', function()
+    -- THE ORDER PROBLEM, in one test. A medical script that registered its
+    -- death handler before ours has already decided this player is a
+    -- casualty, and drops them into bleed-out a few frames after our revive
+    -- has been and gone. One revive loses. The window does not.
+    local c = newClient({ dead = true, health = 0 })
+
+    c.D.RevivePersistently()
+    local afterFirst = c.countOf('NetworkResurrectLocalPlayer')
+
+    -- Something else puts them down again.
+    c.state.dead = true
+    c.step()
+
+    t.isTrue(c.countOf('NetworkResurrectLocalPlayer') > afterFirst,
+        'the player was put back down after the revive and left there -- this is exactly what losing the start-order race looks like')
+end)
+
+t.test('and so is one left writhing rather than dead, which is what bleed-out is', function()
+    -- The state that produces the "press G for EMS" prompt. The ped is not
+    -- dead, so a check for death alone would walk straight past it.
+    local c = newClient({ dead = true, health = 0 })
+
+    c.D.RevivePersistently()
+    local afterFirst = c.countOf('ClearPedTasksImmediately')
+
+    c.state.dead = false
+    c.state.writhe = true
+    c.step()
+
+    t.isTrue(c.countOf('ClearPedTasksImmediately') > afterFirst,
+        'a player writhing on the floor was left there -- dead is not the only way a medical script puts somebody down')
+end)
+
+t.test('a player who stays up is left completely alone', function()
+    local c = newClient({ dead = true, health = 0 })
+
+    c.D.RevivePersistently()
+    local afterFirst = c.countOf('NetworkResurrectLocalPlayer')
+
+    -- Nothing puts them down. The window looks, finds them fine, does nothing.
+    c.state.dead = false
+    c.state.writhe = false
+    c.step()
+
+    t.equals(c.countOf('NetworkResurrectLocalPlayer'), afterFirst,
+        'the window revived a player who was already on their feet')
+end)
+
+t.test('THE HOLD IS NOT A BLEED-OUT: an eliminated player is not dragged out of it', function()
+    -- The dangerous case, and the reason the watcher tests for dead-or-
+    -- writhing rather than for anything that looks wrong.
+    --
+    -- ClearDeadState resurrects an eliminated player and then holds them
+    -- invincible, invisible and frozen while the spectator camera starts.
+    -- That hold leaves the ped ALIVE. A watcher that fired on "invisible" or
+    -- "frozen" would release them mid-elimination -- standing them up armed,
+    -- visible, in a round they are out of.
+    local c = newClient({ dead = false, health = 200 })
+
+    c.D.RevivePersistently()
+    local afterFirst = c.countOf('SetEntityVisible')
+
+    -- The arena's own hold: alive, but held.
+    c.state.dead = false
+    c.state.writhe = false
+    c.step()
+
+    t.equals(c.countOf('SetEntityVisible'), afterFirst,
+        'the assert window released a player the arena was deliberately holding -- an eliminated player would be stood back up in a live round')
+end)
+
+t.test('the window can be switched off, and then it is one revive again', function()
+    local c = newClient({ dead = true, health = 0 })
+    c.env.Config.Dispatch.revive.assertWindowMs = 0
+
+    c.D.RevivePersistently()
+    local afterFirst = c.countOf('NetworkResurrectLocalPlayer')
+
+    c.state.dead = true
+    c.step()
+
+    t.equals(c.countOf('NetworkResurrectLocalPlayer'), afterFirst,
+        'assertWindowMs = 0 still started a watcher')
+end)
+
+t.test('the net event the server sends goes through the persistent path', function()
+    -- The whole point is that this is what the SERVER's revive reaches. A
+    -- handler still wired to the one-shot revive would leave every real
+    -- revive in the resource exposed to the ordering race, while these tests
+    -- passed against a function nothing calls.
+    local c = newClient({ dead = true, health = 0 })
+
+    c.fireNet('crimson_arena:client:revive')
+    local afterFirst = c.countOf('NetworkResurrectLocalPlayer')
+
+    c.state.dead = true
+    c.step()
+
+    t.isTrue(c.countOf('NetworkResurrectLocalPlayer') > afterFirst,
+        'the net event calls the one-shot revive, so nothing the server sends is protected by the window')
 end)
 
 print('clientrevive_spec')

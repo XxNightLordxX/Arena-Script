@@ -365,7 +365,17 @@ function ArenaDispatch.Revive(health)
     -- the very thing the expensive half needs to test.
     local maximum = GetEntityMaxHealth(ped)
     local wasDead = IsEntityDead(ped)
-    local wasHurt = wasDead or IsPedRagdoll(ped) or GetEntityHealth(ped) < maximum
+    -- WRITHE COUNTS, and leaving it out was a bug the specs caught.
+    --
+    -- A medical script's bleed-out puts the player on the floor writhing and
+    -- often at FULL health -- it is a state, not an injury. So a check for
+    -- "dead, ragdolling or hurt" walked straight past the one case the
+    -- assert window exists to undo, skipped ClearPedTasksImmediately, and
+    -- left them writhing exactly where they were.
+    local wasHurt = wasDead
+        or IsPedInWrithe(ped)
+        or IsPedRagdoll(ped)
+        or GetEntityHealth(ped) < maximum
 
     if wasDead then
         NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
@@ -424,8 +434,71 @@ function ArenaDispatch.Revive(health)
     -- server, with nothing to switch it back on.
 end
 
+-- ======================================================================
+-- STANDING BACK UP AND STAYING UP, whoever else is listening.
+--
+-- WHY ONE REVIVE IS NOT ENOUGH. A medical script hooks the same death event
+-- this resource does, and handlers on a shared event run in the order their
+-- resources STARTED. Win that race and the medical script asks "is this
+-- player dead", is told no, and does nothing. Lose it and it has already
+-- decided the player is a casualty, and it puts them into its bleed-out
+-- state a frame or several later -- after our single revive has been and
+-- gone. The player ends up on the floor with the EMS prompt up, and the
+-- console shows a revive that ran perfectly.
+--
+-- Start order is a line in server.cfg, which is a thing to get wrong once
+-- and then never think about again. So the arena stops depending on it: it
+-- revives, and then keeps an eye out for a short window afterwards, and puts
+-- the player back up if something else puts them down.
+--
+-- WHAT IT WATCHES FOR, and this is the part that has to be exact. The arena
+-- has its own holding pattern -- ClearDeadState resurrects and then holds
+-- the ped invincible, invisible, frozen, which is how an eliminated player
+-- waits for the spectator camera. That hold leaves the ped ALIVE. A medical
+-- bleed-out does not: it leaves them dead, or writhing on the ground. So
+-- IsEntityDead / IsPedInWrithe names the second and never the first, and the
+-- watcher cannot pull an eliminated player out of a hold this resource put
+-- them in on purpose.
+--
+-- It costs one check every quarter second for two seconds after a death, and
+-- nothing at all the rest of the time.
+-- ======================================================================
+
+--- Supersedes any window still running: a newer revive is a newer truth,
+--- and two watchers arguing over one ped is worse than one.
+local reviveToken = 0
+
+--- @param health number|nil
+function ArenaDispatch.RevivePersistently(health)
+    ArenaDispatch.Revive(health)
+
+    local revive = (Config.Dispatch or {}).revive or {}
+    local windowMs = math.max(0, Arena.ToInt(revive.assertWindowMs) or 2000)
+    local intervalMs = math.max(50, Arena.ToInt(revive.assertIntervalMs) or 250)
+    if windowMs <= 0 then return end
+
+    reviveToken = reviveToken + 1
+    local token = reviveToken
+
+    CreateThread(function()
+        local waited = 0
+        while waited < windowMs and token == reviveToken do
+            Wait(intervalMs)
+            waited = waited + intervalMs
+
+            local ped = PlayerPedId()
+            if ped ~= 0 and (IsEntityDead(ped) or IsPedInWrithe(ped)) then
+                -- Put down again by something that is not this resource.
+                -- Nothing here asks who: the arena knows this player should
+                -- be on their feet, and that is the whole of the decision.
+                ArenaDispatch.Revive(health)
+            end
+        end
+    end)
+end
+
 --- Sent by the server whenever the arena stands somebody back up: on a
 --- mid-match respawn, on elimination, and on the way out.
 RegisterNetEvent('crimson_arena:client:revive', function(health)
-    ArenaDispatch.Revive(tonumber(health))
+    ArenaDispatch.RevivePersistently(tonumber(health))
 end)

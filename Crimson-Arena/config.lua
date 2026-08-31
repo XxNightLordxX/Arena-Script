@@ -1767,6 +1767,37 @@ Config.Dispatch = {
         -- reviving immediately, which is almost certainly not what you want.
         afterRespawnDelayMs = 2000,
 
+        -- KEEPING THEM UP, whatever your server.cfg order is.
+        --
+        -- A medical script hooks the same death event this resource does, and
+        -- handlers on a shared event run in the order their resources
+        -- STARTED. Win that race and the medical script asks "is this player
+        -- dead", is told no, and does nothing at all. Lose it and it has
+        -- already decided they are a casualty, and drops them into bleed-out
+        -- a frame or several after our revive has been and gone -- player on
+        -- the floor with the EMS prompt up, console showing a clean revive.
+        --
+        -- Rather than asking you to get a line in server.cfg right, the arena
+        -- watches for this long after standing somebody up, and puts them
+        -- back up if something else puts them down. Start order stops
+        -- mattering for the part this resource can reach.
+        --
+        -- It looks for DEAD or WRITHING specifically -- a medical bleed-out
+        -- -- and never for the arena's own hold, which leaves an eliminated
+        -- player alive while the spectator camera starts. So it cannot pull
+        -- somebody out of a hold this resource put them in on purpose.
+        --
+        -- 0 turns it off and goes back to a single revive.
+        assertWindowMs = 2000,
+        assertIntervalMs = 250,
+
+        -- WHAT THIS CANNOT DO, said plainly. It fixes the PLAYER: on their
+        -- feet, out of the animation, off the floor. It does not reach a
+        -- medical script's own list of who is dead, because nothing can from
+        -- outside that script. If yours keeps one, name its revive in
+        -- serverEvents / clientEvents / exports below and set enabled = true;
+        -- that is the half this cannot cover, and the only half.
+
         -- ONE MORE SWEEP AFTER THE MATCH, in milliseconds. 0 turns it off.
         --
         -- The per-player revive runs as each player is sent home -- before

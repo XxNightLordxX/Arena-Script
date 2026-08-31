@@ -107,7 +107,11 @@ Drag, drop, one line in `server.cfg`, start.
    Use whatever the folder is actually called. Nothing else needs adding, and there is no order to get right beyond being after qbx_core.
 
 3. **You do not have to import any SQL.** `Config.Database.enabled` ships `false`, and nothing is created or queried while it is. Turn it on and `crimson_arena_stats` is created on first start; `sql/install.sql` holds the identical statement for the case where your database user cannot `CREATE TABLE` at runtime, which is a reasonable way to run a production server.
-4. **Optional, and the arena works before you do any of it.** Edit `config.lua`: move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere that suits your map, and check the two shipped arenas suit you — they are open ground at **Sandy Shores Airfield** and on the sand at **Vespucci beach**, with the coordinates offered as a starting point rather than a finished map.
+4. **Optional, and the arena works before you do any of it.** Edit `config.lua`: move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere that suits your map, and check the two shipped arenas suit you.
+
+   They are deliberately different animals. **Trailer Park** (`trailerpark`) is a real place on the map — it has its own trailers and fences to fight around, so it spawns nothing of its own. **The Skydome** (`skydome`) is built rather than found: a floor of props tiled into a disc at 1201 m over open water, with cover on top, spawned per match and deleted when it ends, and it grows with the roster. Coordinates are a starting point rather than a finished map.
+
+   Two older ground arenas — Sandy Shores Airfield and Vespucci beach — ship **switched off** rather than deleted, so turning one back on is one word.
 5. Start the server and read the console. Config problems are printed by name at start — they are warnings, not failures, and the resource keeps running:
 
    ```
@@ -1016,6 +1020,51 @@ Anything you build on those is subject to the same rule the rest of the resource
 - `Config.Lobby.ped.coords.z` is the **ground z**. The resource drops the ped one unit itself. A ped hovering a metre in the air means the z came from a `/coords` reading taken while standing on something.
 - The NPC standing there with no option to press is ox_target not running.
 - Two NPCs standing on the same spot means something spawned one this resource did not. Its own ped is deleted on `onResourceStop`, so a plain restart cannot leave a duplicate behind.
+
+### The sky arena does nothing, or I fall through it
+
+Everything here is in **F8 on a client**, not the server console — the checks
+are client-side because only a client can ask the game what models it has.
+
+- **The round starts for everyone else and not for you.** The client refuses to
+  place anybody into an arena whose floor did not build, because the
+  alternative is a kilometre of air. It says so:
+
+  ```
+  [crimson_arena] arena scenery: NO FLOOR was built for an arena that supplies its own. Nobody is being placed into it -- there is nothing under it.
+  ```
+
+  You are taken back to the lobby and the server is told, so you are not left
+  holding a place in a match you were never put into.
+
+- **`PROPS MISSING ON THIS BUILD` at start** names which chain ran out. Every
+  prop names five models across four DLCs ending in a base-game one, so a stock
+  install should never see this — see `stream/README.md` if you do.
+
+- **With `Config.Debug = true`** the build reports itself:
+
+  ```
+  [crimson_arena] arena scenery: 29 piece(s) built, 9 of them floor; the floor prop measures 40.00 x 40.00m and its surface is at 1201.00.
+  ```
+
+  **`0 of them floor` is the number that matters** — barriers built and the
+  floor did not. A piece count of zero entirely means the pieces were asked
+  for somewhere the engine was not holding the map.
+
+- **You are standing in the floor rather than on it, or the barriers are
+  buried.** `platform.z` is the surface people stand on, not where the pieces
+  are created — the client lowers each piece by its own measured height to
+  meet it. That number has to agree with `spawnArea.center.z` and the arena's
+  `boundary.center.z`; all three ship at 1201.
+
+- **There is solid ground out past the boundary at the corners.** Deliberate.
+  The floor is tiled and a tile is kept whenever any part of it falls inside
+  the radius, because trimming to the radius leaves a hole and a hole here is
+  fatal. Standing out there bleeds you exactly as leaving any other arena does.
+
+- **Props left standing at 1201 after a match.** They are client-side local
+  objects deleted on every exit path, including a resource stop. If you ever
+  see one, it is a bug worth reporting — say what ended the round.
 
 ### Weapons are not being given
 

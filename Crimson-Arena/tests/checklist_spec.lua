@@ -24,6 +24,12 @@
       were Sandy Shores Airfield and Vespucci beach. Both had been switched
       off for a while by then, and the two that ship now are somewhere else
       entirely. Somebody following that would go and stand in an empty field.
+
+    THAT SECOND ONE IS CHECKED IN BOTH DOCUMENTS, and the reason is that
+    fixing it in one was not enough. DEPLOYMENT.md was corrected and README.md
+    was left saying the identical wrong thing, in its INSTALL section -- the
+    first page a new operator reads. A guard over one file would have passed
+    the whole time.
 ]]
 
 local t = dofile('testkit.lua')
@@ -31,14 +37,25 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 
 print('checklist_spec')
 
+--- @param path string
 --- @return string
-local function checklist()
-    local handle = assert(io.open('../DEPLOYMENT.md', 'r'),
-        'DEPLOYMENT.md is missing -- it is the only verification the native half of this build gets')
+local function read(path)
+    local handle = assert(io.open(path, 'r'),
+        ('%s is missing'):format(path))
     local text = handle:read('a')
     handle:close()
     return text
 end
+
+--- @return string
+local function checklist()
+    return read('../DEPLOYMENT.md')
+end
+
+--- The documents that tell an operator where to go and what to expect. Both
+--- of them, because correcting one and leaving the other is exactly what
+--- happened.
+local OPERATOR_DOCS = { '../DEPLOYMENT.md', '../README.md' }
 
 t.test('it never cross-references itself by NUMBER', function()
     -- THE FRAGILITY, REMOVED RATHER THAN TESTED AROUND. A numeric reference
@@ -81,17 +98,57 @@ t.test('and they are numbered 1..N with nothing skipped or repeated', function()
     end
 end)
 
-t.test('it names the arenas that actually ship enabled', function()
-    -- An operator reads this to know where to stand. Naming an arena that is
-    -- switched off sends them to an empty field, and the two it named for a
-    -- while had both been off for longer than anybody noticed.
-    local text = checklist()
+t.test('both operator documents name the arenas that actually ship enabled', function()
+    -- An operator reads these to know where to go. Naming an arena that is
+    -- switched off sends them to an empty field, and the two that were named
+    -- for a while had both been off for longer than anybody noticed.
+    --
+    -- BOTH FILES, because fixing one and leaving the other is the mistake
+    -- this test was written a day late for.
     local config = Sandbox.shippedConfig()
 
-    for key, arena in pairs(config.Arenas) do
-        if arena.enabled ~= false then
-            t.contains(text, key,
-                ('%s ships enabled and the deployment checklist never mentions it'):format(key))
+    for _, path in ipairs(OPERATOR_DOCS) do
+        local text = read(path)
+        local lower = text:lower()
+        for key, arena in pairs(config.Arenas) do
+            if arena.enabled ~= false then
+                -- By KEY or by LABEL. The key is what an operator searches
+                -- config.lua for; the label is what reads naturally in
+                -- prose. Either identifies the arena, and demanding the key
+                -- in a sentence would only produce worse sentences.
+                local named = lower:find(key:lower(), 1, true)
+                    or lower:find(tostring(arena.label or key):lower(), 1, true)
+                t.isTrue(named ~= nil,
+                    ('%s ships enabled and %s names neither its key nor its label (%s / %s)')
+                        :format(key, path:gsub('^%.%./', ''), key, tostring(arena.label)))
+            end
+        end
+    end
+end)
+
+t.test('and neither of them still points at an arena that ships switched off', function()
+    -- The other half. An arena named as somewhere to go, which is off, is
+    -- worse than one not named at all: the reader goes there.
+    --
+    -- Only the ones described as SHIPPED are a problem -- both files may
+    -- mention a disabled arena to say it is disabled, which is useful. So
+    -- this looks for the old claim rather than for the name.
+    local config = Sandbox.shippedConfig()
+
+    for _, path in ipairs(OPERATOR_DOCS) do
+        local text = read(path):lower()
+        for key, arena in pairs(config.Arenas) do
+            if arena.enabled == false then
+                local label = tostring(arena.label or key):lower()
+                for _, claim in ipairs({
+                    'two shipped arenas are open ground at ' .. label,
+                    'shipped arenas suit you — they are open ground at ' .. label,
+                }) do
+                    t.isNil(text:find(claim, 1, true),
+                        ('%s still describes %s as shipped, and it is switched off')
+                            :format(path:gsub('^%.%./', ''), label))
+                end
+            end
         end
     end
 end)

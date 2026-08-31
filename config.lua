@@ -401,9 +401,20 @@ Config.Loadouts = {
     -- `Config.Loadouts.fixed` instead and the picker is hidden.
     allowChoose = true,
 
-    -- How many weapons one player may take into a match. Raise it for
+    -- How many SHOOTABLE weapons one player may take. Raise it for
     -- loadout-style play, drop it to 1 for a duel server.
     weaponSlots = 2,
+
+    -- How many MELEE weapons, counted separately from the above.
+    --
+    -- Separate on purpose: with one shared count a player who fancies a knife
+    -- has to give up a rifle for it, so nobody ever does and the whole melee
+    -- list is decoration. Two firearms and one blade is a loadout; "any three
+    -- things" is not.
+    --
+    -- 0 removes melee from the arena entirely while leaving the weapons in the
+    -- list below, ready to switch back on.
+    meleeSlots = 1,
 
     -- Handed to everyone on top of what they picked. Use it for a knife,
     -- a parachute, or nothing at all.

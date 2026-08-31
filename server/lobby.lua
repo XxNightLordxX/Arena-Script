@@ -326,6 +326,10 @@ local function snapshotConfig()
             key = weapon.key,
             label = weapon.label or weapon.key,
             category = weapon.category,
+            -- Which allowance this one is counted against. Resolved here
+            -- rather than inferred from the category in JavaScript, so the
+            -- panel and the server can never disagree about what a bat is.
+            melee = Arena.IsMeleeWeapon(weapon),
             ammo = {
                 default = Arena.ToInt(ammo.default) or 0,
                 options = Arena.GetAmmoOptions(weapon),
@@ -362,6 +366,7 @@ local function snapshotConfig()
         loadouts = {
             allowChoose = Config.Loadouts.allowChoose ~= false,
             weaponSlots = math.max(0, Arena.ToInt(Config.Loadouts.weaponSlots) or 1),
+            meleeSlots = math.max(0, Arena.ToInt(Config.Loadouts.meleeSlots) or 1),
             categories = Config.Loadouts.categories or {},
             armor = Config.Loadouts.armor,
             weapons = weapons,

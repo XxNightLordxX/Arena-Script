@@ -272,6 +272,26 @@ function Arena.ResolveAmmo(weapon, requested)
     return Arena.ClampInt(wanted, 0, maximum) or default
 end
 
+--- Whether a weapon is melee, which is the one distinction this resource
+--- draws between kinds of weapon. It decides two things: that the weapon
+--- takes no ammunition choice of any sort, and that it is counted against
+--- `Config.Loadouts.meleeSlots` rather than `weaponSlots`.
+---
+--- EITHER test is enough. `category = 'melee'` is the honest declaration and
+--- what an operator should write, but a weapon whose ammo ceiling is one round
+--- is a bat whatever it was filed under, and treating it as a firearm would
+--- offer a player an ammunition dropdown for a knife.
+--- @param weapon table -- a Config.Loadouts.weapons entry
+--- @return boolean
+function Arena.IsMeleeWeapon(weapon)
+    if type(weapon) ~= 'table' then return false end
+    if weapon.category == 'melee' then return true end
+
+    local ammo = weapon.ammo
+    local maximum = type(ammo) == 'table' and (Arena.ToInt(ammo.max) or 0) or 0
+    return maximum <= 1
+end
+
 -- ======================================================================
 -- AMMO TYPES
 --
@@ -310,11 +330,9 @@ function Arena.GetAmmoTypes(weapon)
 
     local list = weapon.ammoTypes
     if type(list) ~= 'table' then
-        -- Melee never inherits the shared list. A weapon whose ceiling is one
-        -- round is not carrying ammunition, it is carrying a bat.
-        local ammo = weapon.ammo
-        local maximum = type(ammo) == 'table' and (Arena.ToInt(ammo.max) or 0) or 0
-        if maximum <= 1 then return {} end
+        -- Melee never inherits the shared list: it is not carrying
+        -- ammunition, it is carrying a bat.
+        if Arena.IsMeleeWeapon(weapon) then return {} end
 
         list = Config.Loadouts.defaultAmmoTypes
     end
@@ -425,8 +443,21 @@ function Arena.ResolveLoadout(request)
     local resolved = {}
     local seen = {}
 
+    -- TWO SEPARATE ALLOWANCES, deliberately. With one shared count a player
+    -- who wants a knife spends a rifle slot on it, so nobody ever takes one
+    -- and the whole melee list is decoration. Counting them apart means a
+    -- loadout is "two guns and a blade" rather than "any three things".
     local slots = Arena.ToInt(Config.Loadouts.weaponSlots) or 1
     if slots < 0 then slots = 0 end
+
+    -- Absent rather than zero means "the operator has not thought about it",
+    -- and one blade is the sane answer -- zero would silently remove every
+    -- melee weapon from an arena whose config still lists them.
+    local meleeSlots = Arena.ToInt(Config.Loadouts.meleeSlots)
+    if meleeSlots == nil then meleeSlots = 1 end
+    if meleeSlots < 0 then meleeSlots = 0 end
+
+    local usedFirearm, usedMelee = 0, 0
 
     -- With choosing switched off the request is ignored entirely and the
     -- operator's `fixed` list is what everybody gets.
@@ -438,7 +469,10 @@ function Arena.ResolveLoadout(request)
     local wanted = (type(source) == 'table' and type(source.weapons) == 'table') and source.weapons or {}
 
     for _, entry in ipairs(wanted) do
-        if #resolved >= slots then break end
+        -- Not a break: a melee weapon further down the list is still takeable
+        -- once the firearm slots are full, and vice versa. Breaking here would
+        -- make the answer depend on the order the panel happened to send.
+        if usedFirearm >= slots and usedMelee >= meleeSlots then break end
 
         -- An `alwaysGive` entry coming back round. A loadout is stored
         -- resolved and re-resolved at match start, so the operator's list
@@ -457,7 +491,20 @@ function Arena.ResolveLoadout(request)
                 -- Asking for the same gun twice would otherwise burn two slots
                 -- for one weapon and silently short-change the player.
                 rejected[#rejected + 1] = weapon.key
+            elseif Arena.IsMeleeWeapon(weapon) and usedMelee >= meleeSlots then
+                -- Their melee allowance is spent. Rejected by name rather
+                -- than dropped silently, so the panel can say which one did
+                -- not make it in.
+                rejected[#rejected + 1] = weapon.key
+            elseif not Arena.IsMeleeWeapon(weapon) and usedFirearm >= slots then
+                rejected[#rejected + 1] = weapon.key
             else
+                if Arena.IsMeleeWeapon(weapon) then
+                    usedMelee = usedMelee + 1
+                else
+                    usedFirearm = usedFirearm + 1
+                end
+
                 -- BOTH SPELLINGS, because the two loops speak different ones:
                 -- a picked weapon is known by its catalogue key, and the
                 -- `alwaysGive` guard below has only the GTA name to test with.

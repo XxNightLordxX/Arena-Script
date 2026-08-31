@@ -229,20 +229,87 @@ t.test('ResolveLoadout burns one slot for the same weapon asked for twice, not t
     t.equals(loadout.weapons[3].weapon, 'WEAPON_KNIFE')
 end)
 
-t.test('ResolveLoadout stops at weaponSlots', function()
+t.test('ResolveLoadout stops at weaponSlots, and names what did not fit', function()
     t.equals(Config.Loadouts.weaponSlots, 2)
 
     local loadout, rejected = Arena.ResolveLoadout({
         weapons = { { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' }, { key = 'shotgun' } },
     })
 
-    -- Two picks plus the house knife. The overflow is not "rejected" -- the
-    -- loop stops reading the request once the slots are gone.
+    -- Two picks plus the house knife.
     t.equals(#loadout.weapons, 3)
-    t.equals(#rejected, 0)
     t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
     t.equals(loadout.weapons[2].weapon, 'WEAPON_ASSAULTRIFLE')
     t.equals(loadout.weapons[3].weapon, 'WEAPON_KNIFE')
+
+    -- The overflow is REPORTED, not silently swallowed. This changed when
+    -- melee got an allowance of its own: the loop can no longer stop at the
+    -- first weapon that does not fit, because a blade further down the list is
+    -- still takeable after the firearm slots are gone. Everything it skips is
+    -- named instead, which is strictly more useful -- the panel can tell a
+    -- player which weapon did not make it rather than quietly dropping one.
+    t.equals(#rejected, 2)
+    t.equals(rejected[1], 'sniper')
+    t.equals(rejected[2], 'shotgun')
+end)
+
+t.test('melee has its own allowance and does not compete with firearms', function()
+    t.equals(Config.Loadouts.meleeSlots, 1)
+
+    -- Two guns AND a blade, from a request that would have cost three shared
+    -- slots. The whole point of the separate count.
+    local loadout, rejected = Arena.ResolveLoadout({
+        weapons = { { key = 'pistol' }, { key = 'rifle' }, { key = 'machete' } },
+    })
+
+    local names = {}
+    for _, weapon in ipairs(loadout.weapons) do names[weapon.weapon] = true end
+
+    t.isTrue(names['WEAPON_PISTOL'])
+    t.isTrue(names['WEAPON_ASSAULTRIFLE'])
+    t.isTrue(names['WEAPON_MACHETE'], 'the blade did not cost a gun slot')
+    t.equals(#rejected, 0)
+end)
+
+t.test('a second blade is refused while a firearm slot is still free', function()
+    local loadout, rejected = Arena.ResolveLoadout({
+        weapons = { { key = 'machete' }, { key = 'bat' }, { key = 'pistol' } },
+    })
+
+    local names = {}
+    for _, weapon in ipairs(loadout.weapons) do names[weapon.weapon] = true end
+
+    t.isTrue(names['WEAPON_MACHETE'])
+    t.isFalse(names['WEAPON_BAT'] == true, 'one melee slot means one blade')
+    t.isTrue(names['WEAPON_PISTOL'], 'and a spent melee allowance does not block a gun behind it')
+    t.equals(#rejected, 1)
+    t.equals(rejected[1], 'bat')
+end)
+
+t.test('meleeSlots = 0 removes melee without touching the firearm allowance', function()
+    local noMelee = tweaked(function(config) config.Loadouts.meleeSlots = 0 end)
+    local loadout = noMelee.ResolveLoadout({
+        weapons = { { key = 'machete' }, { key = 'pistol' }, { key = 'rifle' } },
+    })
+
+    local names = {}
+    for _, weapon in ipairs(loadout.weapons) do names[weapon.weapon] = true end
+
+    t.isFalse(names['WEAPON_MACHETE'] == true)
+    t.isTrue(names['WEAPON_PISTOL'])
+    t.isTrue(names['WEAPON_ASSAULTRIFLE'])
+end)
+
+t.test('a melee weapon is offered no ammo types, whatever the shared list says', function()
+    -- A knife with an armour-piercing dropdown would be nonsense, and the
+    -- shared default list applies to every OTHER weapon.
+    for _, key in ipairs({ 'knife', 'bat', 'machete' }) do
+        local weapon = Arena.GetWeaponByKey(key)
+        t.isNotNil(weapon, key .. ' is missing from the catalogue')
+        t.isTrue(Arena.IsMeleeWeapon(weapon), key .. ' should read as melee')
+        t.equals(#Arena.GetAmmoTypes(weapon), 0, key .. ' should offer no ammo types')
+        t.isNil(Arena.ResolveAmmoType(weapon, 'ap'), key .. ' should refuse a type outright')
+    end
 end)
 
 t.test('ResolveLoadout honours a smaller weaponSlots, and zero slots', function()

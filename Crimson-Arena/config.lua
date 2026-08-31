@@ -362,6 +362,108 @@ Config.Arenas = {
     -- their own copy at the same coordinates, so it is solid for all of
     -- them and invisible to everybody else on the server.
     -- ==================================================================
+    ['trailerpark'] = {
+        label = 'Trailer Park',
+        description = 'Close ground between the vans. Corners everywhere, nothing to see across.',
+        enabled = true,
+
+        -- ON REAL GROUND, unlike the skydome. There is already a map under
+        -- this one, so there is no `platform` block and no `exactSpawnZ`:
+        -- the client asks the game where the ground is and puts people on
+        -- it, which is what every arena did before the sky one existed.
+
+        -- OFF, BECAUSE THIS ONE IS A REAL PLACE. The trailer park is on the
+        -- map and already has trailers, fences and vehicles to fight around
+        -- -- that is the reason to hold a match here. Dropping shipping
+        -- containers on top of it at fixed offsets does not add cover, it
+        -- puts a container through somebody's caravan: these coordinates are
+        -- relative to the middle of the arena and know nothing about what is
+        -- already standing there.
+        --
+        -- The skydome needs this because it is built over open air and has
+        -- nothing of its own. This does not.
+        --
+        -- IT IS LEFT HERE, LAID OUT AND READY, for the one case it is worth
+        -- having: turn `enabled` on, fly out, and nudge the pieces that
+        -- landed somewhere silly. Offsets are from the spawn-area centre
+        -- below, so `z = 0` is ground level in the middle of the arena and a
+        -- piece on a slope is moved with its own `z`. Nobody is ever placed
+        -- ONTO these, so a piece sitting slightly proud is untidy rather
+        -- than a fall.
+        cover = {
+            enabled = false,
+            pieces = {
+                -- AN OUTER RING with gaps to run through, turned side-on so
+                -- the long face is what you take cover behind.
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 26.0, y = 0.0, z = 0.0, heading = 90.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 18.4, y = 18.4, z = 0.0, heading = 135.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 0.0, y = 26.0, z = 0.0, heading = 180.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -18.4, y = 18.4, z = 0.0, heading = 225.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -26.0, y = 0.0, z = 0.0, heading = 270.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -18.4, y = -18.4, z = 0.0, heading = 315.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 0.0, y = -26.0, z = 0.0, heading = 0.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 18.4, y = -18.4, z = 0.0, heading = 45.0 },
+
+                -- FOUR POCKETS, each open from one side only.
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 10.5, y = 10.5, z = 0.0, heading = 135.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -10.5, y = 10.5, z = 0.0, heading = 225.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -10.5, y = -10.5, z = 0.0, heading = 315.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 10.5, y = -10.5, z = 0.0, heading = 45.0 },
+
+                -- THE MIDDLE: a pinwheel, so the centre can be crossed but
+                -- is never open ground.
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 5.5, y = 0.0, z = 0.0, heading = 45.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 0.0, y = 5.5, z = 0.0, heading = 135.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -5.5, y = 0.0, z = 0.0, heading = 225.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 0.0, y = -5.5, z = 0.0, heading = 315.0 },
+            },
+        },
+
+        spawnArea = {
+            enabled = true,
+            -- The operator's own coordinates, and the middle of everything
+            -- else in this block.
+            center = vector3(2344.4294, 2565.0552, 46.6677),
+            radius = 38.0,
+            minSeparation = 10.0,
+            teamRadius = 18.0,
+        },
+
+        -- Used only if spawnArea is switched off. The heading is the one the
+        -- operator stood at, pointed back towards the middle from each side.
+        spawns = {
+            vector4(2374.4294, 2565.0552, 46.6677, 270.0),
+            vector4(2314.4294, 2565.0552, 46.6677, 90.0),
+            vector4(2344.4294, 2595.0552, 46.6677, 180.0),
+            vector4(2344.4294, 2535.0552, 46.6677, 0.0),
+        },
+
+        teamSpawns = {
+            crimson = {
+                vector4(2374.4294, 2565.0552, 46.6677, 270.0),
+                vector4(2374.4294, 2553.0552, 46.6677, 270.0),
+            },
+            ash = {
+                vector4(2314.4294, 2565.0552, 46.6677, 90.0),
+                vector4(2314.4294, 2577.0552, 46.6677, 90.0),
+            },
+        },
+
+        boundary = {
+            enabled = true,
+            center = vector3(2344.4294, 2565.0552, 46.6677),
+            -- Outside the spawn ring and outside the cover, so nothing this
+            -- arena builds is standing in the bleed.
+            radius = 60.0,
+            warningSeconds = 5,
+            damagePerTick = 20,
+            tickMs = 500,
+        },
+
+        weatherOverride = nil,
+        timeOverride = nil,
+    },
+
     ['skydome'] = {
         label = 'The Skydome',
         description = 'A platform in the clouds. Step off the edge and there is nothing under you.',
@@ -396,9 +498,18 @@ Config.Arenas = {
             -- being real is not the same as it being on YOUR server: a build
             -- without the Cunning Stunts DLC has none of the first two, and
             -- the shipping container is base game and always there.
+            --
+            -- FIVE DEEP, and the first four are the same shape from four
+            -- different DLCs -- Cunning Stunts, Bikers, Import/Export and
+            -- Arena War. A server missing all four has been stripped hard.
+            -- The fifth is a base-game shipping container, which every build
+            -- has and which tiles into a floor perfectly well; it just takes
+            -- a few hundred pieces to do it, which is what `maxTiles` is for.
             models = {
                 'stt_prop_stunt_bblock_huge_01',
-                'stt_prop_stunt_bblock_xl1',
+                'bkr_prop_biker_bblock_huge_01',
+                'imp_prop_impexp_bblock_huge_01',
+                'ar_prop_ar_bblock_huge_01',
                 'prop_container_01a',
             },
 
@@ -417,11 +528,26 @@ Config.Arenas = {
             -- stretch of open air you can stand in while bleeding.
             radius = 45.0,
 
-            -- Where the PIECES are created. Their walkable surface is worked
-            -- out from the model's own height, so there is nothing to
-            -- measure by hand: whatever prop is named above, fighters are
-            -- placed on top of it.
-            z = 1200.0,
+            -- THE SURFACE PEOPLE STAND ON. Not where the pieces are
+            -- created -- the client measures the prop and lowers it by its
+            -- own height so that its TOP lands exactly here, whichever model
+            -- out of the chain above this build turned out to have.
+            --
+            -- So this is the one number that has to agree with `spawnArea`
+            -- and `cover` below, and they are all 1201. It used to be the
+            -- other way round: the pieces were created at this Z and the
+            -- surface came out at "1201 plus however tall that prop is",
+            -- which left the cover buried inside the floor and the spawn
+            -- height wrong by the height of a prop nobody had measured.
+            z = 1201.0,
+
+            -- A CEILING ON THE PIECE COUNT, and it only ever bites on the
+            -- container fallback: a big block tiles this arena in nine
+            -- pieces, a container needs a few hundred. The middle is kept
+            -- and the outer rim is dropped, so what a capped floor loses is
+            -- edge nobody spawns on rather than a hole under somebody.
+            -- 0 means no ceiling.
+            maxTiles = 400,
         },
 
         -- SOMETHING TO GET BEHIND. Without it a flat disc is a staring

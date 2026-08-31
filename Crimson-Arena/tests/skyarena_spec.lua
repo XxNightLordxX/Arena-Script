@@ -109,44 +109,190 @@ t.test('a platform with no model or no size is not a platform', function()
     end
 end)
 
-t.test('the tiles cover a DISC, and every one is inside the radius', function()
-    -- A square floor would put its corners outside the boundary sphere, so a
-    -- fighter standing in one would be bleeding while on solid ground.
+--- Whether a world point lands on any of these tiles.
+--- @param tiles table[]
+--- @param px number
+--- @param py number
+--- @param sizeX number
+--- @param sizeY number
+local function onSomeTile(tiles, px, py, sizeX, sizeY)
+    for _, tile in ipairs(tiles) do
+        if math.abs(px - tile.x) <= sizeX * 0.5 + 1e-6
+            and math.abs(py - tile.y) <= sizeY * 0.5 + 1e-6 then
+            return true
+        end
+    end
+    return false
+end
+
+t.test('the tiles COVER the disc -- every point inside the radius is on one', function()
+    -- THE INVARIANT THAT MATTERS, and the one the first version got wrong.
+    -- It kept a tile when its CENTRE was inside the radius, which is a
+    -- different question: the diagonals come up bare, because a point can be
+    -- inside the arena while every tile whose centre is inside it is too far
+    -- away to reach.
+    --
+    -- A floor is not judged on where its pieces are. It is judged on whether
+    -- there is a piece under every point somebody can stand.
     local Arena = envWith().Arena
     local platform = Arena.GetPlatform('sky')
-    local tiles = Arena.PlatformTiles(platform, CENTRE.x, CENTRE.y)
+    local size = 8.0
+    local tiles = Arena.PlatformTiles(platform, CENTRE.x, CENTRE.y, size)
 
     t.isTrue(#tiles > 20, ('a 45m floor of 8m tiles produced only %d pieces'):format(#tiles))
 
-    local corners = 0
-    for _, tile in ipairs(tiles) do
-        local out = plane(tile, CENTRE)
-        t.isTrue(out <= platform.radius,
-            ('a floor tile sits %0.1fm out, past a %0.1fm platform'):format(out, platform.radius))
-        if out > platform.radius - platform.tileSize then corners = corners + 1 end
+    local hole = nil
+    for ring = 0, math.floor(platform.radius) do
+        for step = 0, 47 do
+            local angle = (step / 48) * math.pi * 2
+            local px = CENTRE.x + ring * math.cos(angle)
+            local py = CENTRE.y + ring * math.sin(angle)
+            if not onSomeTile(tiles, px, py, size, size) and not hole then
+                hole = ('%0.1f, %0.1f'):format(px - CENTRE.x, py - CENTRE.y)
+            end
+        end
     end
-    t.isTrue(corners > 0, 'nothing reaches the rim, so the floor is smaller than it claims')
+    t.isNil(hole, hole and ('a hole in the floor at offset %s -- that is a fall'):format(hole) or '')
+
+    -- And it is still a DISC rather than a square: nothing is built out at
+    -- the far corner, which would be solid ground a long way out of bounds.
+    t.isTrue(not onSomeTile(tiles, CENTRE.x + platform.radius, CENTRE.y + platform.radius, size, size),
+        'the floor is square, so its corners are solid ground outside the arena')
 end)
 
-t.test('and they all sit at the platform height, not the spawn height', function()
-    -- Two different numbers on purpose: the prop ORIGIN and the surface a
-    -- player stands on are not the same place, and how far apart depends on
-    -- the model.
+t.test('DEFECT: a prop WIDER than the arena still makes a floor, not one tile', function()
+    -- The failure the coverage rule exists for, and the one that broke the
+    -- shipped arena. A 40m block on a 45m radius used to inset by half a
+    -- tile, floor(25/40) = 0, and lay exactly ONE piece in the middle --
+    -- twenty metres of floor under a thirty-five metre spawn ring. Everybody
+    -- who did not draw the centre spawned on air.
+    local Arena = envWith().Arena
+    local platform = Arena.GetPlatform('sky')
+    local tiles = Arena.PlatformTiles(platform, CENTRE.x, CENTRE.y, 40.0)
+
+    t.isTrue(#tiles >= 9, ('a 40m prop laid only %d piece(s) on a 45m floor'):format(#tiles))
+
+    -- Every spawn the arena can hand out has a piece under it.
+    local hole = nil
+    for step = 0, 23 do
+        local angle = (step / 24) * math.pi * 2
+        local px = CENTRE.x + 35.0 * math.cos(angle)
+        local py = CENTRE.y + 35.0 * math.sin(angle)
+        if not onSomeTile(tiles, px, py, 40.0, 40.0) and not hole then
+            hole = ('%0.1f, %0.1f'):format(px - CENTRE.x, py - CENTRE.y)
+        end
+    end
+    t.isNil(hole, hole and ('the spawn ring hangs over nothing at %s'):format(hole) or '')
+end)
+
+t.test('DEFECT: a long thin prop is tiled on BOTH axes, not on its longest side', function()
+    -- A shipping container is 12.2m by 2.5m. Taking max(width, depth) and
+    -- spacing both axes on it -- which is what measuring a single "width"
+    -- forces -- lays the pieces out with ten-metre gaps between the rows,
+    -- and a floor with gaps in it is a floor people fall through.
+    local Arena = envWith().Arena
+    local platform = Arena.GetPlatform('sky')
+    local tiles = Arena.PlatformTiles(platform, CENTRE.x, CENTRE.y, { x = 12.2, y = 2.5 })
+
+    local hole = nil
+    for ring = 0, math.floor(platform.radius) do
+        for step = 0, 23 do
+            local angle = (step / 24) * math.pi * 2
+            local px = CENTRE.x + ring * math.cos(angle)
+            local py = CENTRE.y + ring * math.sin(angle)
+            if not onSomeTile(tiles, px, py, 12.2, 2.5) and not hole then
+                hole = ('%0.1f, %0.1f'):format(px - CENTRE.x, py - CENTRE.y)
+            end
+        end
+    end
+    t.isNil(hole, hole and ('a gap between the rows at %s'):format(hole) or '')
+end)
+
+t.test('DEFECT: the floor hangs from its SURFACE -- the prop is lowered by its own height', function()
+    -- `platform.z` is where people STAND, not where the pieces are created.
+    --
+    -- The other way round is what shipped, and it is why the arena did not
+    -- work: the pieces were created at the configured Z and the walkable
+    -- surface came out at "that, plus however tall the prop turned out to
+    -- be". Cover is positioned from the spawn centre in config, so every
+    -- barrier was then buried that far underneath the floor -- and the
+    -- height nobody could measure was the height everything else depended
+    -- on.
+    local Arena = envWith().Arena
+    local platform = Arena.GetPlatform('sky')
+
+    for _, tile in ipairs(Arena.PlatformTiles(platform, CENTRE.x, CENTRE.y, { x = 8.0, y = 8.0, top = 3.5 })) do
+        t.equals(tile.z, platform.z - 3.5,
+            'the piece was not lowered by its own height, so the surface is not where config says')
+    end
+
+    -- A taller prop is dropped further, and the surface does not move.
+    for _, tile in ipairs(Arena.PlatformTiles(platform, CENTRE.x, CENTRE.y, { x = 8.0, y = 8.0, top = 12.0 })) do
+        t.equals(tile.z, platform.z - 12.0)
+    end
+end)
+
+t.test('maxTiles keeps the middle and drops the rim', function()
+    -- The container fallback needs a few hundred pieces where a block needs
+    -- nine, and several hundred objects per client per round is where the
+    -- game starts to suffer. What a capped floor loses has to be edge nobody
+    -- spawns on, never a hole in the middle.
+    local Arena = envWith(function(arena) arena.platform.maxTiles = 12 end).Arena
+    local platform = Arena.GetPlatform('sky')
+    local tiles = Arena.PlatformTiles(platform, CENTRE.x, CENTRE.y, 8.0)
+
+    t.equals(#tiles, 12, 'the ceiling was not applied')
+
+    -- The centre piece survived, and the furthest one did not.
+    t.isTrue(onSomeTile(tiles, CENTRE.x, CENTRE.y, 8.0, 8.0), 'the cap ate the middle of the floor')
+    local furthest = 0.0
+    for _, tile in ipairs(tiles) do
+        furthest = math.max(furthest, plane(tile, CENTRE))
+    end
+    t.isTrue(furthest < platform.radius, 'the cap kept the rim and dropped the middle')
+end)
+
+t.test('and no ceiling is the default, so an uncapped floor is whole', function()
+    local Arena = envWith().Arena
+    local platform = Arena.GetPlatform('sky')
+    t.equals(platform.maxTiles, 0)
+    t.isTrue(#Arena.PlatformTiles(platform, CENTRE.x, CENTRE.y, 8.0) > 50,
+        'an uncapped floor came back small')
+end)
+
+t.test('and they all sit at the platform height when nothing has been measured', function()
+    -- Nothing measured means nothing to lower the piece by. The surface is
+    -- then the configured Z exactly, which is the best answer available and
+    -- the one the server-side planner works from.
     local Arena = envWith().Arena
     for _, tile in ipairs(Arena.PlatformTiles(Arena.GetPlatform('sky'), CENTRE.x, CENTRE.y)) do
         t.equals(tile.z, 1200.0)
     end
 end)
 
-t.test('the whole floor fits inside the boundary that kills for leaving it', function()
-    -- The relationship that makes stepping off the edge lethal without a
-    -- line of falling code: the floor ends before the sphere does.
+t.test('the spawn ring sits inside the floor, and the floor inside the boundary', function()
+    -- THE TWO RELATIONSHIPS THAT KEEP PEOPLE ALIVE, in order of severity.
+    --
+    -- A spawn outside the floor is a fall, and a fall out of this arena is
+    -- a kilometre. A spawn outside the boundary is a fighter bleeding from
+    -- the first second of the round. Both are silent: neither reads as an
+    -- error at either end, and both are one mistyped radius away.
+    --
+    -- The floor's PIECES may overhang the boundary at the corners, because
+    -- coverage beats tidiness: a piece is kept whenever any part of it is
+    -- inside the radius, so a prop wider than the inset reaches further out
+    -- than `platform.radius` says. That is deliberate and it is safe -- the
+    -- worst it produces is solid ground somebody bleeds on, which is what
+    -- walking out of any arena does. The alternative, trimming to the
+    -- radius, is a hole, and a hole here is fatal.
     local config = envWith().Config
     local arena = config.Arenas.sky
-    t.isTrue(arena.platform.radius < arena.boundary.radius,
-        'the floor reaches past the boundary, so there is solid ground out of bounds')
     t.isTrue(arena.spawnArea.radius < arena.platform.radius,
         'a spawn can land past the edge of the floor')
+    t.isTrue(arena.spawnArea.radius < arena.boundary.radius,
+        'a spawn can land out of bounds, bleeding from the first second')
+    t.isTrue(arena.platform.radius < arena.boundary.radius,
+        'the floor is described as wider than the arena it is the floor of')
 end)
 
 -- ======================================================================
@@ -472,23 +618,27 @@ end)
 -- WHAT SHIPS
 -- ======================================================================
 
-t.test('the skydome is the arena this server runs, and the only one', function()
-    -- The operator asked for the ground arenas off. What matters is that
-    -- SOMETHING is enabled: an arena list with nothing switched on is a panel
-    -- that offers no match to create, which reads as a broken resource rather
+t.test('the skydome and the trailer park are the arenas this server runs', function()
+    -- The operator asked for the two shipped ground arenas off, and later
+    -- for a third at their own coordinates. What matters is that SOMETHING
+    -- is enabled: an arena list with nothing switched on is a panel that
+    -- offers no match to create, which reads as a broken resource rather
     -- than as a decision.
     -- The SHIPPED config, untouched: newArenaEnv deliberately switches every
     -- arena on so the other specs can drive a match without caring which
     -- ones an operator runs.
     local config = Sandbox.shippedConfig()
 
+    -- SORTED, because `pairs` has no order and this assertion used to depend
+    -- on one. It passed for as long as the answer was a single key.
     local on = {}
     for key, arena in pairs(config.Arenas) do
         if arena.enabled ~= false then on[#on + 1] = key end
     end
+    table.sort(on)
 
-    t.equals(table.concat(on, ', '), 'skydome',
-        'the enabled arenas are not the one this server was set up to run')
+    t.equals(table.concat(on, ', '), 'skydome, trailerpark',
+        'the enabled arenas are not the ones this server was set up to run')
 end)
 
 t.test('and the ground arenas are switched off, not deleted', function()

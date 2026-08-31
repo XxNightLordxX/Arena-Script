@@ -1057,15 +1057,19 @@ local arenaSurfaceZ = nil
 --- config leaves gaps to fall through when it is too big and a flickering
 --- overlap where it is too small, and an operator looking at the result
 --- cannot tell which.
+--- PER AXIS, and that is the whole point of measuring rather than guessing.
+--- A shipping container is twelve metres by two and a half; collapsing that
+--- to one number and tiling on it either leaves ten-metre holes to fall
+--- through or stacks the pieces four deep.
 --- @param hash integer
---- @return number width, number top -- footprint across, and height above origin
+--- @return number sizeX, number sizeY, number top -- footprint, and height above origin
 local function modelFootprint(hash)
     local minimum, maximum = GetModelDimensions(hash)
-    if type(minimum) ~= 'table' and type(minimum) ~= 'userdata' then return 0.0, 0.0 end
+    if type(minimum) ~= 'table' and type(minimum) ~= 'userdata' then return 0.0, 0.0, 0.0 end
 
-    local width = math.max((maximum.x or 0.0) - (minimum.x or 0.0),
-                           (maximum.y or 0.0) - (minimum.y or 0.0))
-    return width, (maximum.z or 0.0)
+    return (maximum.x or 0.0) - (minimum.x or 0.0),
+           (maximum.y or 0.0) - (minimum.y or 0.0),
+           (maximum.z or 0.0)
 end
 
 --- Loads the first model in a chain this build actually has.
@@ -1136,9 +1140,17 @@ local function buildArenaProps(arenaKey)
     if platform then
         local hash, name = loadPropModel(platform.models)
         if hash then
-            local width, top = modelFootprint(hash)
-            if width > 0.0 then measured = width end
-            arenaSurfaceZ = platform.z + top
+            local sizeX, sizeY, top = modelFootprint(hash)
+            if sizeX > 0.0 and sizeY > 0.0 then
+                measured = { x = sizeX, y = sizeY, top = top }
+            end
+            -- THE SURFACE IS THE NUMBER IN CONFIG, because the pieces are
+            -- lowered by their own height to meet it. It used to be derived
+            -- the other way -- config Z plus whatever that prop's height
+            -- turned out to be -- which put the walkable floor metres above
+            -- the spawn Z and the cover metres below it, buried inside the
+            -- platform.
+            arenaSurfaceZ = platform.z
             if name ~= platform.models[1] then
                 print(('[crimson_arena] arena scenery: the floor fell back to \'%s\' -- this build does not have \'%s\'.')
                     :format(tostring(name), tostring(platform.models[1])))
@@ -1311,23 +1323,67 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- in the middle of an argument list is truncated to one -- so passing it
     -- inline alongside the freeze flag would hand placeAt an x and nothing
     -- else.
-    -- THE FLOOR BEFORE THE FIGHTER, always. An arena that supplies its own
-    -- surface has none until this runs, and a player placed first is a player
-    -- falling. Returns false only when the floor could not be built at all,
-    -- which is the one case where NOT placing them is the kinder outcome --
-    -- they stay in the lobby with a line in the console instead of dropping
-    -- out of the sky.
+    local sx, sy, sz, sheading = scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
+
+    -- THE PLAYER IS MOVED FIRST, FROZEN, AND THE FLOOR IS BUILT AROUND THEM.
+    --
+    -- THIS IS WHY THE ARENA IN THE SKY DID NOTHING AT ALL. CreateObject
+    -- builds into the streamed world, and the world is streamed around the
+    -- player. Asking for a floor a kilometre above somebody standing in the
+    -- city is asking for scenery in a part of the map the engine is not
+    -- holding, and what comes back is nothing -- so the floor check below
+    -- failed, the handler returned, and the round simply never started for
+    -- them. Nothing in the console said so, because refusing to place
+    -- somebody over a kilometre of air is the CORRECT response to a floor
+    -- that is not there; the floor not being there was the bug.
+    --
+    -- Safe in the order it now runs because the FREEZE is what stops the
+    -- fall, not the floor: a frozen ped hangs in the air over nothing. That
+    -- is the same guarantee placeAt has always relied on, used a few hundred
+    -- milliseconds earlier.
+    -- ONLY FOR AN ARENA THAT BUILDS SOMETHING. An arena that is just a
+    -- place on the map has nothing to stream in around the player, so it
+    -- keeps the order it always had and pays none of the delay below.
+    if Arena.GetPlatform(data.arenaKey) or #Arena.GetCover(data.arenaKey) > 0 then
+        FreezeEntityPosition(ped, true)
+        SetEntityCoordsNoOffset(ped, sx, sy, sz + (tonumber(Config.Match.spawnHeightOffset) or 1.0),
+            false, false, false)
+        SetEntityHeading(ped, sheading)
+        RequestCollisionAtCoord(sx, sy, sz)
+        -- Long enough for the streamer to have followed the player to the
+        -- new position, short enough that nobody notices. Bounded rather
+        -- than a wait on collision: an arena in the sky has none to wait for.
+        Wait(150)
+    end
+
+    -- Returns false only when a floor that was supposed to be built is not
+    -- there. Placing somebody into that is a very long fall, so they are
+    -- taken back out instead -- and the server is told, or it keeps a fighter
+    -- in a match it can never put anywhere.
     if not buildArenaProps(data.arenaKey) then
         removeArenaProps()
+
+        local home = Config.Lobby.returnCoords
+        SetEntityCoordsNoOffset(ped, home.x, home.y, home.z, false, false, false)
+        SetEntityHeading(ped, home.w or 0.0)
+        FreezeEntityPosition(ped, false)
+        TriggerServerEvent('crimson_arena:server:leaveMatch')
         return
     end
 
-    local sx, sy, sz, sheading = scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
     -- The floor this client actually BUILT beats the one config described.
     -- A surface measured from the model is right whatever prop an operator
     -- swapped in; a number typed beside it is right until they swap one.
-    placeAt(ped, sx, sy, sz, sheading, true, nil,
-        Arena.UsesExactSpawnZ(data.arenaKey), arenaSurfaceZ or Arena.SpawnFloor(data.arenaKey))
+    --
+    -- The guard is handed IN, exactly as the respawn path does it. placeAt
+    -- waits up to five seconds for the world, and a round that ends inside
+    -- that wait has already sent this player home and given them their gear
+    -- back -- a placement decided before the wait and applied after it drags
+    -- them back to an arena spawn they no longer belong at, and nothing
+    -- downstream undoes it.
+    placeAt(ped, sx, sy, sz, sheading, true, function()
+        return matchToken == token and currentMatch ~= nil
+    end, Arena.UsesExactSpawnZ(data.arenaKey), arenaSurfaceZ or Arena.SpawnFloor(data.arenaKey))
 
     -- placeAt waits for the ground to stream in, so this handler YIELDS for
     -- up to five seconds and an exitArena can be delivered inside that

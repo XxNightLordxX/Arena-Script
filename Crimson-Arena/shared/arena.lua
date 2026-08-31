@@ -876,7 +876,7 @@ end
 --- `tileSize` are the two numbers that describe it, and this works the rest
 --- out.
 --- @param arenaKey any
---- @return table|nil -- { model, tileSize, radius, z }
+--- @return table|nil -- { models, model, tileSize, radius, z, maxTiles }
 function Arena.GetPlatform(arenaKey)
     local arena = Arena.GetArenaByKey(arenaKey)
     if type(arena) ~= 'table' then return nil end
@@ -902,7 +902,13 @@ function Arena.GetPlatform(arenaKey)
         model = models[1],
         tileSize = tileSize,
         radius = radius,
+        -- THE SURFACE, not where the pieces are created. The client lowers
+        -- each piece by the prop's own measured height so its top lands on
+        -- this number, which is what makes the walkable height a thing an
+        -- operator sets rather than a thing they discover.
         z = tonumber(platform.z) or 0.0,
+        -- 0 means no ceiling. See Arena.PlatformTiles.
+        maxTiles = tonumber(platform.maxTiles) or 0,
     }
 end
 
@@ -911,33 +917,98 @@ end
 --- A DISC, not a square: the boundary is a sphere and a square floor would
 --- put its corners outside it, so a fighter standing in one would be bleeding
 --- while still on solid ground.
+---
+--- TWO THINGS HERE ARE NOT OBVIOUS AND BOTH WERE WRONG.
+---
+--- 1. THE GRID IS PER AXIS. A shipping container is twelve metres one way
+---    and two and a half the other. Spacing both axes on the larger number
+---    -- which is what taking max(width, depth) does -- lays the pieces out
+---    with ten-metre holes between them, and a floor with holes in it is a
+---    floor people fall through. Each axis gets its own step.
+---
+--- 2. A TILE IS KEPT ON ITS NEAREST CORNER, not its centre. Keeping tiles
+---    whose CENTRE is inside the radius leaves the diagonals bare: with a
+---    forty-metre prop and a forty-five-metre radius, the point at (32, 32)
+---    is inside the arena and inside no tile. Asking whether the closest
+---    point of the tile is within reach covers the disc exactly, because
+---    every point in it then falls inside some tile that was kept.
 --- @param platform table -- Arena.GetPlatform output
---- @return table[] -- { { x, y, z }, ... }, relative to the centre given
---- @param measuredSize number|nil -- the prop's real width, when the client
----        has asked the game for it. Beats the configured guess: a floor
----        tiled on a number somebody typed has gaps to fall through when the
----        number is too big and a flickering mess where it is too small, and
----        nobody can tell which from outside the game.
-function Arena.PlatformTiles(platform, centreX, centreY, measuredSize)
+--- @param measured table|number|nil -- the prop's real size, when the client
+---        has asked the game for it: { x = width, y = depth, top = height
+---        above its own origin }. A bare number is read as a square prop.
+---        Beats the configured guess, which is only a fallback for a model
+---        that will not load -- and nobody can get it right by hand.
+--- @return table[] -- { { x, y, z }, ... }, absolute
+function Arena.PlatformTiles(platform, centreX, centreY, measured)
     if type(platform) ~= 'table' then return {} end
 
-    local out = {}
-    local step = tonumber(measuredSize) or platform.tileSize
-    if not step or step <= 0 then step = platform.tileSize end
-    local reach = platform.radius
-    -- The half-tile inset keeps a piece's OUTER edge on the radius rather
-    -- than its centre, so the floor really is as wide as it says.
-    local limit = math.max(0.0, reach - (step * 0.5))
+    local sizeX, sizeY, top
+    if type(measured) == 'table' then
+        sizeX, sizeY, top = tonumber(measured.x), tonumber(measured.y), tonumber(measured.top)
+    else
+        sizeX = tonumber(measured)
+        sizeY = sizeX
+    end
+    if not sizeX or sizeX <= 0 then sizeX = platform.tileSize end
+    if not sizeY or sizeY <= 0 then sizeY = platform.tileSize end
+    if not sizeX or sizeX <= 0 or not sizeY or sizeY <= 0 then return {} end
+    top = tonumber(top) or 0.0
 
-    local steps = math.floor(limit / step)
-    for ix = -steps, steps do
-        for iy = -steps, steps do
-            local x, y = ix * step, iy * step
-            if math.sqrt(x * x + y * y) <= limit then
-                out[#out + 1] = { x = centreX + x, y = centreY + y, z = platform.z }
+    local reach = platform.radius
+    if not reach or reach <= 0 then return {} end
+
+    -- THE FLOOR IS HUNG FROM ITS SURFACE, not stood on its base.
+    --
+    -- `platform.z` is where people STAND. The piece is lowered by its own
+    -- height so its top lands exactly there, whichever prop out of the chain
+    -- the client got and whatever shape it is.
+    --
+    -- The other way round -- placing the piece at a configured Z and working
+    -- the surface out afterwards -- is what this used to do, and it put the
+    -- walkable surface at "1200 plus however tall that prop happens to be".
+    -- Every cover piece, which is positioned from the spawn centre in
+    -- config, was then buried that far under the floor.
+    local z = platform.z - top
+
+    local out = {}
+    -- Far enough out that a tile still overlapping the edge is generated
+    -- before it is tested.
+    local stepsX = math.ceil((reach + sizeX * 0.5) / sizeX)
+    local stepsY = math.ceil((reach + sizeY * 0.5) / sizeY)
+    for ix = -stepsX, stepsX do
+        for iy = -stepsY, stepsY do
+            local x, y = ix * sizeX, iy * sizeY
+            -- The closest point of this tile to the middle of the arena.
+            local nx = math.max(0.0, math.abs(x) - sizeX * 0.5)
+            local ny = math.max(0.0, math.abs(y) - sizeY * 0.5)
+            if math.sqrt(nx * nx + ny * ny) <= reach then
+                out[#out + 1] = {
+                    x = centreX + x,
+                    y = centreY + y,
+                    z = z,
+                    distance = math.sqrt(x * x + y * y),
+                }
             end
         end
     end
+
+    -- A CEILING ON THE PIECE COUNT, because the fallback prop decides it.
+    -- A floor tiled out of shipping containers needs a few hundred pieces
+    -- where one tiled out of a stunt block needs nine, and several hundred
+    -- objects per client per round is where the game starts to suffer.
+    -- The middle is kept and the rim is dropped, so what is lost is the
+    -- outside edge rather than a hole under somebody's feet.
+    local maxTiles = tonumber(platform.maxTiles) or 0
+    if maxTiles > 0 and #out > maxTiles then
+        table.sort(out, function(a, b)
+            if a.distance ~= b.distance then return a.distance < b.distance end
+            if a.x ~= b.x then return a.x < b.x end
+            return a.y < b.y
+        end)
+        for i = #out, maxTiles + 1, -1 do out[i] = nil end
+    end
+
+    for _, tile in ipairs(out) do tile.distance = nil end
     return out
 end
 
@@ -986,9 +1057,9 @@ end
 --- thousand metres.
 --- @param arenaKey any
 --- @return table[] -- { { model, x, y, z, heading }, ... }, absolute
---- @param measuredSize number|nil -- the floor prop's real width, measured
+--- @param measured table|number|nil -- the floor prop's real size, measured
 ---        by the client. See Arena.PlatformTiles.
-function Arena.ArenaProps(arenaKey, measuredSize)
+function Arena.ArenaProps(arenaKey, measured)
     local out = {}
 
     local area = Arena.GetSpawnArea(arenaKey)
@@ -1008,7 +1079,7 @@ function Arena.ArenaProps(arenaKey, measuredSize)
 
     local platform = Arena.GetPlatform(arenaKey)
     if platform then
-        for _, tile in ipairs(Arena.PlatformTiles(platform, centre.x, centre.y, measuredSize)) do
+        for _, tile in ipairs(Arena.PlatformTiles(platform, centre.x, centre.y, measured)) do
             out[#out + 1] = {
                 models = platform.models,
                 model = platform.model,

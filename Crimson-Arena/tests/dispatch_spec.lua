@@ -598,17 +598,61 @@ t.test('the resource grants itself permission for the command it is configured w
     t.contains(ran, 'resource.crimson_arena', 'the permission was not granted to this resource')
 end)
 
-t.test('and grants the command, never admin', function()
-    -- Adding the arena to an admin group would also make the revive work,
-    -- and would make every command on the server reachable from inside this
-    -- resource. That trade is not worth making for one command, so the test
-    -- pins the narrow grant rather than merely a working one.
+t.test('the wider grant stays off unless it is asked for', function()
+    -- THE CONTRACT CHANGED, and this test used to assert the opposite: that
+    -- admin was never granted at all. That was the right default and it was
+    -- not enough -- a revive gated on something other than its own ACE still
+    -- answered "access denied" with only the narrow grant, and the operator
+    -- asked for the wider one.
+    --
+    -- What is pinned now is that it is a DECISION rather than a default:
+    -- nothing wide happens unless grantSelfAdmin says so.
     local f = newFixture(reviveConfig('revive %s'))
     f.step()
 
     local ran = table.concat(f.commands, '\n')
-    t.notContains(ran, 'add_principal', 'the resource was added to a group instead of given one command')
-    t.notContains(ran, 'group.admin')
+    t.contains(ran, 'command.revive', 'the narrow grant stopped happening')
+    t.notContains(ran, 'add_principal', 'a group was joined without being asked for')
+    t.notContains(ran, 'command allow', 'every command was allowed without being asked for')
+end)
+
+t.test('and when it is asked for, it covers both ways a revive can be gated', function()
+    -- Two mechanisms, because either could be the one in the way: an ACE
+    -- list, which `command allow` covers, and group membership, which a
+    -- script testing groups looks at instead and which no ace would satisfy.
+    local config = reviveConfig('revive %s')
+    config.revive.grantSelfAdmin = true
+
+    local f = newFixture(config)
+    f.step()
+
+    local ran = table.concat(f.commands, '\n')
+    t.contains(ran, 'add_ace resource.crimson_arena command allow',
+        'full command rights were not granted')
+    t.contains(ran, 'add_principal resource.crimson_arena group.admin',
+        'the admin group was not joined')
+end)
+
+t.test('the groups it joins come from config, not a name baked in here', function()
+    local config = reviveConfig('revive %s')
+    config.revive.grantSelfAdmin = true
+    config.revive.adminGroups = { 'group.superadmin', 'group.god' }
+
+    local f = newFixture(config)
+    f.step()
+
+    local ran = table.concat(f.commands, '\n')
+    t.contains(ran, 'group.superadmin')
+    t.contains(ran, 'group.god')
+end)
+
+t.test('the shipped config really does turn it on, so this file states what ships', function()
+    -- A default the tests never look at is a default nobody is checking.
+    -- This one has a real cost, so it is worth being visible here rather
+    -- than only in a comment.
+    local env = Sandbox.newArenaEnv()
+    t.isTrue(env.Config.Dispatch.revive.grantSelfAdmin,
+        'the shipped config no longer grants admin -- if that is deliberate, this test is where to say so')
 end)
 
 t.test('the permission follows the config: rename the command, rename the grant', function()

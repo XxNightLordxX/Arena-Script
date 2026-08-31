@@ -1620,6 +1620,30 @@ Config.Dispatch = {
         --     add_ace resource.Crimson-Arena command.revive allow
         grantSelfPermission = true,
 
+        -- PUT THIS RESOURCE IN THE ADMIN GROUP AS WELL.
+        --
+        -- The narrow grant above covers a revive command gated on its own
+        -- ACE. It does nothing for one gated any other way -- and this
+        -- server's still answered "access denied" with it on, which is what
+        -- this is for.
+        --
+        -- It does two things: `command allow`, which is every command rather
+        -- than the named few, and membership of the groups below, because a
+        -- script that tests GROUP membership never looks at the ace list.
+        -- Either could be what your revive checks, so both are applied.
+        --
+        -- BE CLEAR ABOUT THE TRADE. With this on, any flaw anywhere in this
+        -- resource is a way to run any command on your server. That is a real
+        -- cost and it is worth turning off again once the revive is working
+        -- through an export or an event instead. Runtime only -- nothing is
+        -- written to a .cfg -- so switching it off and restarting takes all
+        -- of it back.
+        grantSelfAdmin = true,
+
+        -- The groups to join. `group.admin` is the usual one; add your own if
+        -- your permissions are named differently.
+        adminGroups = { 'group.admin' },
+
         -- HOW LONG AFTER A MID-MATCH RESPAWN TO REVIVE, in milliseconds.
         --
         -- The revive has to come AFTER the client has stood the player up,

@@ -209,8 +209,47 @@ local function grantReviveAce()
     end
 
     if #granted > 0 then
-        ArenaLog('revive: granted this resource permission to run: %s. Nothing else -- not admin, just those.',
-            table.concat(granted, ', '))
+        ArenaLog('revive: granted this resource permission to run: %s.', table.concat(granted, ', '))
+    end
+
+    -- THE WIDER GRANT, ON THE OPERATOR'S INSTRUCTION.
+    --
+    -- The scoped grant above covers a /revive gated on its own ACE. It does
+    -- nothing for one gated any other way, and this server's was still
+    -- answering "access denied" -- so this is the wider hammer, asked for
+    -- explicitly and switchable.
+    --
+    -- `command allow` is the half that matters for running commands: every
+    -- command rather than the named few. The group membership sits beside it
+    -- because a script that tests GROUP membership never looks at the ace
+    -- list at all, and either could be what this server's revive checks.
+    --
+    -- WHAT IT COSTS, said here rather than buried: any flaw anywhere in this
+    -- resource becomes a way to run any command on the server. It is
+    -- runtime-only and re-applied at every start, so setting grantSelfAdmin
+    -- false and restarting takes all of it back.
+    if revive.grantSelfAdmin ~= true then return end
+
+    local wide = { ('add_ace resource.%s command allow'):format(resource) }
+    for _, group in ipairs(revive.adminGroups or { 'group.admin' }) do
+        if Arena.IsKey(group) then
+            wide[#wide + 1] = ('add_principal resource.%s %s'):format(resource, group)
+        end
+    end
+
+    local applied = 0
+    for _, line in ipairs(wide) do
+        local ok, err = pcall(ExecuteCommand, line)
+        if ok then
+            applied = applied + 1
+        else
+            ArenaLog('revive: "%s" failed (%s).', line, tostring(err))
+        end
+    end
+
+    if applied > 0 then
+        ArenaLog('revive: granted this resource full command rights and admin group membership (%d grant(s)), because Config.Dispatch.revive.grantSelfAdmin is on. Any flaw in this resource can now run any command. Turn it off once the revive works another way.',
+            applied)
     end
 end
 

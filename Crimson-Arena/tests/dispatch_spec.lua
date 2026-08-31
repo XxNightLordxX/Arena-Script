@@ -34,10 +34,14 @@ local function newFixture(dispatchConfig)
     local toClients = {}     -- every TriggerClientEvent, in order
     local netRegistered = {} -- every RegisterNetEvent name, in order
     local threads = {}       -- every CreateThread body, in order
+    local registeredCommands = {}  -- name -> handler
 
     local env = Sandbox.newEnv({
         ExecuteCommand = function(line) commands[#commands + 1] = line end,
         CancelEvent = function() cancelled = cancelled + 1 end,
+        -- /arenarevive registers at load. Captured so a spec can run it
+        -- directly instead of needing a whole round to reach the revive.
+        RegisterCommand = function(name, fn) registeredCommands[name] = fn end,
         -- CAPTURED, NOT RUN. The permission grant runs in a thread so the
         -- command system is up before it adds to it; running it inline at
         -- load would test a different order to the real one. step() below is
@@ -118,6 +122,12 @@ local function newFixture(dispatchConfig)
         toClients = toClients,
         netRegistered = netRegistered,
         --- Runs every thread this load started, once, in order.
+        --- Runs a registered command as `src` with `args`.
+        runCommand = function(name, src, args)
+            local fn = registeredCommands[name]
+            if not fn then error('no command registered called ' .. tostring(name), 2) end
+            fn(src, args or {})
+        end,
         step = function()
             local pending = threads
             threads = {}
@@ -676,6 +686,58 @@ t.test('an operator who would rather grant it themselves can turn it off', funct
     local ran = table.concat(f.commands, '\n')
     t.notContains(ran, 'add_ace', 'the grant ran despite being switched off')
     t.notContains(ran, 'add_principal', 'the role was granted despite being switched off')
+end)
+
+-- ========================================================================
+-- TESTING THE REVIVE WITHOUT PLAYING A MATCH
+--
+-- The revive has been the hardest thing in this resource to get right, and
+-- the reason is the feedback loop rather than the code: every attempt cost a
+-- full round to learn one bit of information. /arenarevive fires the same
+-- path on demand.
+-- ========================================================================
+
+t.test('/arenarevive runs the same path a finished match runs', function()
+    local f = newFixture(reviveConfig('revive %s'))
+    f.env.ArenaIsAdmin = function() return true end
+
+    f.runCommand('arenarevive', 1, { '7' })
+
+    t.equals(f.commands[1], 'revive 7', 'the command ran against the wrong player, or not at all')
+end)
+
+t.test('and defaults to whoever ran it, since that is the common case', function()
+    -- An admin lying on the floor testing this on themselves should not have
+    -- to look up their own server id first.
+    local f = newFixture(reviveConfig('revive %s'))
+    f.env.ArenaIsAdmin = function() return true end
+
+    f.runCommand('arenarevive', 4, {})
+
+    t.equals(f.commands[1], 'revive 4')
+end)
+
+t.test('a non-admin gets nothing, not even a revive of themselves', function()
+    local f = newFixture(reviveConfig('revive %s'))
+    f.env.ArenaIsAdmin = function() return false end
+
+    f.runCommand('arenarevive', 9, { '9' })
+
+    t.equals(#f.commands, 0, 'anybody could revive anybody by typing a command')
+end)
+
+t.test('it says so rather than staying quiet when revive is switched off', function()
+    local config = reviveConfig('revive %s')
+    config.revive.enabled = false
+
+    local f = newFixture(config)
+    f.env.ArenaIsAdmin = function() return true end
+
+    f.runCommand('arenarevive', 1, { '3' })
+
+    t.equals(#f.commands, 0)
+    t.contains(table.concat(f.logs, '\n'), 'enabled is off',
+        'a disabled revive did nothing and explained nothing')
 end)
 
 t.test('a client-side revive is sent to that player, and to nobody else', function()

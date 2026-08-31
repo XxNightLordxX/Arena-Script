@@ -103,6 +103,9 @@ local function newFixture(dispatchConfig, world)
             calls[#calls + 1] = { kind = 'event', name = name, args = { ... } }
         end,
         RegisterNetEvent = function() end,
+        -- /arenarevive registers at load. Dropped rather than captured: this
+        -- fixture is about routing buckets and never runs a command.
+        RegisterCommand = function() end,
         -- The permission grant runs in a thread at load. Captured and
         -- dropped: this fixture is about routing buckets, and running it
         -- would only add noise to every assertion below.
@@ -694,6 +697,9 @@ local function newArena(world)
         Player = function() return { state = { set = function() end } } end,
         TriggerEvent = function() end,
         RegisterNetEvent = function() end,
+        -- /arenarevive registers at load. Dropped: this fixture is about
+        -- routing buckets and never runs a command.
+        RegisterCommand = function() end,
         AddEventHandler = function(name, fn)
             handlers[name] = handlers[name] or {}
             handlers[name][#handlers[name] + 1] = fn

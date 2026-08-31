@@ -375,6 +375,47 @@ function ArenaDispatch.Revive(src)
     end
 end
 
+-- ======================================================================
+-- TESTING THE REVIVE WITHOUT PLAYING A MATCH
+--
+-- The revive has been the hardest thing here to get right, and the reason is
+-- the feedback loop rather than the code: every attempt cost a full round --
+-- open a lobby, join, start, die, wait for the end -- to learn one bit of
+-- information. That is a terrible way to test a one-line integration.
+--
+-- /arenarevive <id> fires exactly the same path ArenaDispatch.Revive takes at
+-- the end of a match, on demand, against any player. Lie on the floor, run
+-- it, and the console says what it did.
+-- ======================================================================
+RegisterCommand('arenarevive', function(src, args)
+    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
+        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
+            ArenaNotifyKey(src, 'error.no_permission', 'error')
+        end
+        return
+    end
+
+    -- Defaults to whoever ran it, because the common case is an admin lying
+    -- on the floor testing this on themselves.
+    local target = Arena.ToInt(args and args[1]) or (src > 0 and src or nil)
+    if not target or target <= 0 then
+        ArenaLog('arenarevive: give a server id -- /arenarevive 3.')
+        return
+    end
+
+    local revive = (Config.Dispatch or {}).revive
+    if type(revive) ~= 'table' or revive.enabled ~= true then
+        ArenaLog('arenarevive: Config.Dispatch.revive.enabled is off, so nothing would be called. Nothing was.')
+        return
+    end
+
+    ArenaLog('arenarevive: running the end-of-match revive against %d. Everything below is what a real match would do.',
+        target)
+    ArenaDispatch.Revive(target)
+    ArenaLog('arenarevive: done. If %d is still on the floor, the lines above are the whole of what this resource can do -- the revive is gated on something no permission grant reaches, and it needs that script\'s own export or event in Config.Dispatch.revive instead.',
+        target)
+end, false)
+
 function ArenaDispatch.IsPlayerInArena(src)
     return active[src] ~= nil
 end

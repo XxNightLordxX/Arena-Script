@@ -339,8 +339,17 @@ function ArenaCompat.RegisterAdapter(adapter)
         say('compat: refused the adapter for "%s" -- mute must be a function or nil.', adapter.resource)
         return false
     end
+    if adapter.reviveClientEvent ~= nil and not Arena.IsKey(adapter.reviveClientEvent) then
+        say('compat: refused the adapter for "%s" -- reviveClientEvent must be an event name or nil.', adapter.resource)
+        return false
+    end
 
-    local entry = { resource = adapter.resource, kind = adapter.kind, mute = adapter.mute }
+    local entry = {
+        resource = adapter.resource,
+        kind = adapter.kind,
+        mute = adapter.mute,
+        reviveClientEvent = adapter.reviveClientEvent,
+    }
     local existing = byResource[adapter.resource]
 
     if existing then
@@ -400,11 +409,28 @@ local CATALOGUE = {
     { resource = 'sc-dispatch', kind = 'both' },            -- dispatch for police AND EMS on this family of scripts
 
     -- ---- EMS -------------------------------------------------------
-    { resource = 'qbx_ambulancejob', kind = 'ambulance' },
+    --
+    -- `reviveClientEvent` IS THE HANDOFF, and it is the one thing the arena
+    -- genuinely cannot do for itself. Resurrecting a ped is not the problem;
+    -- a medical script keeps its OWN record of who is down, and nothing about
+    -- standing a ped up reaches it. Until that record is cleared the player
+    -- is up and walking while the script still has them listed as a casualty.
+    --
+    -- 'hospital:client:Revive' is the QBCore-family convention: no arguments,
+    -- sent to the player concerned, and it clears both the dead flag AND the
+    -- laststand. VERIFIED by reading sc-ambulance's own source --
+    -- client/main.lua registers it and its handler opens with
+    -- `if isDead or InLaststand then`, which is exactly the pair that has to
+    -- come down. qb-ambulancejob has used the same name for years.
+    --
+    -- Naming one that a resource does not listen for costs nothing: an event
+    -- with no handler is a no-op. Naming the WRONG one would be the harm, and
+    -- that is why none of these is a guess.
+    { resource = 'qbx_ambulancejob', kind = 'ambulance', reviveClientEvent = 'hospital:client:Revive' },
     { resource = 'qbx_medical', kind = 'ambulance' },       -- Qbox's death and injury system: the one that watches the dead state
-    { resource = 'qb-ambulancejob', kind = 'ambulance' },
+    { resource = 'qb-ambulancejob', kind = 'ambulance', reviveClientEvent = 'hospital:client:Revive' },
     { resource = 'wasabi_ambulance', kind = 'ambulance' },
-    { resource = 'sc-ambulance', kind = 'ambulance' },
+    { resource = 'sc-ambulance', kind = 'ambulance', reviveClientEvent = 'hospital:client:Revive' },
 }
 
 for _, entry in ipairs(CATALOGUE) do
@@ -471,6 +497,33 @@ end
 --- match start or a match end down with it, which is the same rule
 --- server/dispatch.lua's announce() and client/dispatch.lua's
 --- callDisableExports() both already follow.
+--- The client events that clear a RUNNING medical script's own death record.
+---
+--- THE HALF THE ARENA CANNOT DO ITSELF. Standing a ped up is entirely within
+--- this resource's gift and needs nobody's permission. A medical script's
+--- list of who is a casualty is not: it lives inside that script, nothing
+--- outside it can reach in, and a player left on that list is up and walking
+--- while everything that script does to a corpse is still being done to them.
+--- That is the state an operator reports as "the revive is not working" --
+--- and the ped really is standing up, which is why it reads as a lie.
+---
+--- Only DETECTED resources are asked. A name from the catalogue that this box
+--- does not run is not an event anybody is listening for.
+--- @return string[] -- event names, each sent to the one player concerned
+function ArenaCompat.ReviveClientEvents()
+    local events, seen = {}, {}
+    for _, adapter in ipairs(ArenaCompat.Detect()) do
+        local name = adapter.reviveClientEvent
+        -- De-duplicated: the QBCore family shares one event name, so a box
+        -- running two of them would otherwise be told twice.
+        if Arena.IsKey(name) and not seen[name] then
+            seen[name] = true
+            events[#events + 1] = name
+        end
+    end
+    return events
+end
+
 --- @param src number -- server id
 --- @param active boolean -- true entering a match, false leaving it
 --- @return integer called -- how many adapters were asked

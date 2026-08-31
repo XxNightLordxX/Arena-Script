@@ -1499,5 +1499,82 @@ t.test('suppressAmbulanceDown, the switch that survived, works on a stock config
     t.isFalse(off.called('NetworkResurrectLocalPlayer'))
 end)
 
+-- ========================================================================
+-- THE HANDOFF TO A MEDICAL SCRIPT, WIRED FROM THE CATALOGUE
+--
+-- The half the arena cannot do by resurrecting. sc-ambulance keeps its own
+-- `isDead` and `InLaststand`, and nothing about standing a ped up touches
+-- either -- so the player is up and walking while everything that script
+-- does to a casualty is still being done to them. That is the state reported
+-- as "the revive is not working", and the ped genuinely is standing up,
+-- which is exactly what makes it read as a lie.
+--
+-- 'hospital:client:Revive' is what clears the pair. Read out of
+-- sc-ambulance's own client/main.lua, whose handler opens
+--     if isDead or InLaststand then
+-- which is the pair, named by the script itself. Not a guess, and not a name
+-- that merely sounds right -- this file's own rule.
+-- ========================================================================
+
+t.test('a running medical script is told, without the operator naming a thing', function()
+    local env = compatWith({ 'sc-ambulance' })
+    local events = env.ArenaCompat.ReviveClientEvents()
+
+    t.equals(#events, 1, 'sc-ambulance is running and nothing would be sent to it')
+    t.equals(events[1], 'hospital:client:Revive',
+        'the wrong event would be sent -- sc-ambulance clears isDead and InLaststand on hospital:client:Revive and on nothing else')
+end)
+
+t.test('a medical script this box does NOT run is not told', function()
+    -- The catalogue is a list of names to look for, never a census. Firing at
+    -- a resource that is not running is harmless but it would make the report
+    -- claim a handoff that is not happening.
+    local env = compatWith({})
+    t.equals(#env.ArenaCompat.ReviveClientEvents(), 0,
+        'an event was aimed at a medical script this box is not running')
+end)
+
+t.test('two scripts sharing the event name are told once, not twice', function()
+    -- The QBCore family shares 'hospital:client:Revive'. A box running two of
+    -- them would otherwise get the same event fired at it repeatedly.
+    local env = compatWith({ 'sc-ambulance', 'qb-ambulancejob' })
+    t.equals(#env.ArenaCompat.ReviveClientEvents(), 1,
+        'the same revive event is sent once per resource rather than once per name')
+end)
+
+t.test('the arena revive really sends it, not just knows it', function()
+    -- The gap this whole session kept falling into: a value correct at one end
+    -- and never arriving. Knowing the event name is worth nothing unless
+    -- ArenaDispatch.Revive actually fires it.
+    local f = newFixture()
+    f.env.ArenaCompat = {
+        ReviveClientEvents = function() return { 'hospital:client:Revive' } end,
+    }
+
+    f.D.Revive(4)
+
+    local told = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'hospital:client:Revive' then told = message end
+    end
+
+    t.isNotNil(told, 'the arena knows the medical script\'s revive event and never sends it')
+    t.equals(told.target, 4, 'the wrong player was handed off')
+end)
+
+t.test('and it still stands the player up first, whatever the handoff does', function()
+    -- Order matters and so does independence: a medical script that is absent,
+    -- broken or throwing must not cost the player their own revive.
+    local f = newFixture()
+    f.env.ArenaCompat = { ReviveClientEvents = function() return {} end }
+
+    f.D.Revive(4)
+
+    local own = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:revive' then own = message end
+    end
+    t.isNotNil(own, 'with no medical script detected the arena stopped reviving its own player')
+end)
 
 os.exit(t.summary())

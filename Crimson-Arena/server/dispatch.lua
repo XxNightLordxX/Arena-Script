@@ -309,6 +309,27 @@ function ArenaDispatch.Revive(src)
     -- records, which the arena cannot see and will not guess at.
     TriggerClientEvent('crimson_arena:client:revive', src)
 
+    -- AND THE MEDICAL SCRIPT'S OWN RECORD, for every one this box is really
+    -- running, without the operator naming a thing.
+    --
+    -- This is the half the arena cannot do by resurrecting: a medical script
+    -- keeps its own list of who is down, nothing outside it can reach that
+    -- list, and a player still on it is up and walking while everything that
+    -- script does to a casualty is still being done to them. It is the exact
+    -- state reported as "the revive is not working" -- and the ped genuinely
+    -- is standing up, which is what makes it read as a lie.
+    --
+    -- The names come from shared/compat/dispatch.lua's catalogue and only for
+    -- resources actually detected. An event no running resource listens for
+    -- is a no-op, so this cannot do harm; a WRONG name would, which is why
+    -- every one in that catalogue was read out of the script's own source.
+    if type(ArenaCompat) == 'table' and type(ArenaCompat.ReviveClientEvents) == 'function' then
+        for _, name in ipairs(ArenaCompat.ReviveClientEvents()) do
+            TriggerClientEvent(name, src)
+            ArenaDebug('revive: also told %s for %d.', name, src)
+        end
+    end
+
     if revive.enabled ~= true then return end
 
     -- COMMANDS, and this is the form most servers actually have. An

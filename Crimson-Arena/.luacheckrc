@@ -293,6 +293,10 @@ files['server/'] = {
     -- The whole cross-file API, in the order fxmanifest.lua loads it:
     -- util.lua's helpers, then the four namespaces.
     globals = {
+        -- Defined in shared/compat/dispatch.lua, which the server manifest
+        -- loads first. Read here to find the revive event of whichever
+        -- medical script this box actually runs.
+        'ArenaCompat',
         'ArenaCanCreate',
         'ArenaCanJoin',
         'ArenaDebug',

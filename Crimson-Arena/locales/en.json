@@ -14,6 +14,7 @@
     "error": {
         "already_in_match": "You are already in a match.",
         "arena_unavailable": "That ground is closed.",
+        "arena_in_use": "That arena is being fought in. Wait for it, or pick another.",
         "bet_already_placed": "One side-bet per match. Yours is down.",
         "bet_already_staked": "Your stake is already in.",
         "bet_invalid": "That bet makes no sense.",

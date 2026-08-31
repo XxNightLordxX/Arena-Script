@@ -832,6 +832,39 @@ function Arena.PickSpawn(arenaKey, teamKey, index)
     return list[((position - 1) % #list) + 1]
 end
 
+--- A prop and its stand-ins, as a list to try in order.
+---
+--- FALLBACKS EXIST BECAUSE A MODEL NAME IS JUST A STRING until the game is
+--- asked, and the first floor model shipped in this file was one I had
+--- remembered rather than looked up. It did not exist, and an arena whose
+--- floor model does not exist is an arena with no floor.
+---
+--- The name is checked against the game's own object list by a spec now, so
+--- that particular mistake cannot recur -- but a name being real is not the
+--- same as a name being on THIS server: a build without a DLC, or an
+--- operator who has stripped assets, has fewer objects than the list does.
+--- So each prop names a chain, and the client uses the first one the game
+--- actually gives it.
+---
+--- Accepts either spelling, so a single `model = 'x'` stays valid.
+--- @param entry table -- anything with `models` and/or `model`
+--- @return string[]
+function Arena.ModelChain(entry)
+    if type(entry) ~= 'table' then return {} end
+
+    local out, seen = {}, {}
+    local function want(name)
+        if Arena.IsKey(name) and not seen[name] then
+            seen[name] = true
+            out[#out + 1] = name
+        end
+    end
+
+    want(entry.model)
+    for _, name in ipairs(entry.models or {}) do want(name) end
+    return out
+end
+
 --- THE FLOOR AN ARENA BRINGS WITH IT.
 ---
 --- An arena in the sky has nothing under it, so it carries its own surface:
@@ -850,7 +883,9 @@ function Arena.GetPlatform(arenaKey)
 
     local platform = arena.platform
     if type(platform) ~= 'table' or platform.enabled == false then return nil end
-    if not Arena.IsKey(platform.model) then return nil end
+
+    local models = Arena.ModelChain(platform)
+    if #models == 0 then return nil end
 
     -- tileSize is a FALLBACK now, not the answer: the client measures the
     -- model with GetModelDimensions and tiles on what is really there. It
@@ -861,7 +896,10 @@ function Arena.GetPlatform(arenaKey)
     if tileSize <= 0 or radius <= 0 then return nil end
 
     return {
-        model = platform.model,
+        -- The chain, and the first of it under the old name so nothing that
+        -- only wants "which prop is this" has to know about fallbacks.
+        models = models,
+        model = models[1],
         tileSize = tileSize,
         radius = radius,
         z = tonumber(platform.z) or 0.0,
@@ -924,9 +962,11 @@ function Arena.GetCover(arenaKey)
 
     local out = {}
     for _, piece in ipairs(cover.pieces or {}) do
-        if type(piece) == 'table' and Arena.IsKey(piece.model) then
+        local models = Arena.ModelChain(piece)
+        if type(piece) == 'table' and #models > 0 then
             out[#out + 1] = {
-                model = piece.model,
+                models = models,
+                model = models[1],
                 x = tonumber(piece.x) or 0.0,
                 y = tonumber(piece.y) or 0.0,
                 z = tonumber(piece.z) or 0.0,
@@ -970,6 +1010,7 @@ function Arena.ArenaProps(arenaKey, measuredSize)
     if platform then
         for _, tile in ipairs(Arena.PlatformTiles(platform, centre.x, centre.y, measuredSize)) do
             out[#out + 1] = {
+                models = platform.models,
                 model = platform.model,
                 x = tile.x, y = tile.y, z = tile.z,
                 heading = 0.0,
@@ -979,6 +1020,7 @@ function Arena.ArenaProps(arenaKey, measuredSize)
 
     for _, piece in ipairs(Arena.GetCover(arenaKey)) do
         out[#out + 1] = {
+            models = piece.models,
             model = piece.model,
             x = centre.x + piece.x,
             y = centre.y + piece.y,

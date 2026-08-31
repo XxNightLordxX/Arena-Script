@@ -1068,19 +1068,36 @@ local function modelFootprint(hash)
     return width, (maximum.z or 0.0)
 end
 
---- Loads a model, or gives up. Bounded, because a model that will never
---- arrive must not hold the entry handler open for the whole round.
+--- Loads the first model in a chain this build actually has.
+---
+--- THE CHAIN IS THE POINT. A model name being real is not the same as it
+--- being on THIS server -- a build without a DLC, or an operator who has
+--- stripped assets, has fewer objects than the game's own list does. And the
+--- first floor model this resource shipped was one that had been remembered
+--- rather than looked up and did not exist anywhere at all.
+---
+--- IsModelInCdimage is what separates "this build has never heard of it"
+--- from "it is taking a while", so an unknown name costs nothing and the
+--- next one in the chain is tried immediately.
+--- @param models string[]|string
 --- @return integer|nil hash
-local function loadPropModel(model)
-    local hash = joaat(model)
-    if not IsModelInCdimage(hash) or not IsModelValid(hash) then return nil end
+--- @return string|nil name -- which one of them it turned out to be
+local function loadPropModel(models)
+    if type(models) == 'string' then models = { models } end
 
-    RequestModel(hash)
-    local deadline = GetGameTimer() + 10000
-    while not HasModelLoaded(hash) and GetGameTimer() < deadline do Wait(0) end
+    for _, model in ipairs(models or {}) do
+        local hash = joaat(model)
+        if IsModelInCdimage(hash) and IsModelValid(hash) then
+            RequestModel(hash)
+            -- Bounded, because a model that will never arrive must not hold
+            -- the entry handler open for the whole round.
+            local deadline = GetGameTimer() + 10000
+            while not HasModelLoaded(hash) and GetGameTimer() < deadline do Wait(0) end
+            if HasModelLoaded(hash) then return hash, model end
+        end
+    end
 
-    if not HasModelLoaded(hash) then return nil end
-    return hash
+    return nil, nil
 end
 
 --- Takes down everything this client built. Idempotent, and synchronous so
@@ -1117,11 +1134,15 @@ local function buildArenaProps(arenaKey)
     -- load -- and a model that will not load has no floor to space out.
     local measured = nil
     if platform then
-        local hash = loadPropModel(platform.model)
+        local hash, name = loadPropModel(platform.models)
         if hash then
             local width, top = modelFootprint(hash)
             if width > 0.0 then measured = width end
             arenaSurfaceZ = platform.z + top
+            if name ~= platform.models[1] then
+                print(('[crimson_arena] arena scenery: the floor fell back to \'%s\' -- this build does not have \'%s\'.')
+                    :format(tostring(name), tostring(platform.models[1])))
+            end
         end
     end
 
@@ -1136,7 +1157,7 @@ local function buildArenaProps(arenaKey)
     local built, failed = 0, {}
 
     for _, piece in ipairs(wanted) do
-        local hash = loadPropModel(piece.model)
+        local hash = loadPropModel(piece.models or piece.model)
         if hash then
             local object = CreateObject(hash, piece.x, piece.y, piece.z, false, false, false)
             if object and object ~= 0 then
@@ -1152,7 +1173,10 @@ local function buildArenaProps(arenaKey)
             end
             SetModelAsNoLongerNeeded(hash)
         else
-            failed[piece.model] = true
+            -- The whole chain came up empty, so name all of it: "the floor
+            -- is missing" is not actionable, and "none of these three exist
+            -- on this build" is.
+            failed[table.concat(piece.models or { piece.model }, ' / ')] = true
         end
     end
 

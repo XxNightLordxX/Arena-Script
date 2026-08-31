@@ -1016,6 +1016,35 @@ function ArenaMatch.Begin(matchId, requestedBy)
     })
     if not ok then return false, reason end
 
+    -- THE FALLBACK FOR WHEN INSTANCING IS NOT DOING ITS JOB.
+    --
+    -- Two matches can share one arena because each is fought in its own
+    -- routing bucket -- they are in different instances of the world and
+    -- cannot see, shoot or collide with each other. That is what makes ONE
+    -- arena, in the sky or anywhere else, enough for a whole server.
+    --
+    -- It is also the single assumption the whole arrangement rests on. With
+    -- Config.Dispatch.isolation switched off, or on a build where the routing
+    -- natives do nothing, that separation is simply absent -- and then two
+    -- matches in one arena is two groups of armed strangers dropped on top of
+    -- each other, on a platform sized for one round.
+    --
+    -- So the sharing is allowed only while the thing that makes it safe is
+    -- actually in force. Asked of ArenaDispatch rather than of the config,
+    -- because the config is what an operator INTENDED and this is about what
+    -- the server is really doing.
+    if ArenaDispatch.GetBucket(matchId) == nil then
+        for _, other in ipairs(ArenaLobby.All()) do
+            if other.id ~= matchId and other.arenaKey == match.arenaKey
+                and (other.state == 'live' or other.state == 'countdown')
+            then
+                ArenaLog('MATCH REFUSED: %s cannot start in arena "%s" while match %s is being fought there -- this server is not instancing matches, so they would share the ground.',
+                    tostring(matchId), tostring(match.arenaKey), tostring(other.id))
+                return false, 'error.arena_in_use'
+            end
+        end
+    end
+
     local countdown = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
     match.state = 'countdown'
     -- An estimate for the panel's clock. goLive replaces it with the real

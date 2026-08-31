@@ -359,22 +359,35 @@ local function realObjects()
     return names
 end
 
---- Every prop model config.lua names, across every arena.
+--- Every prop model config.lua names, across every arena -- INCLUDING THE
+--- FALLBACKS.
+---
+--- Checking only the first of each chain would be worse than not checking:
+--- a fallback is exactly the name nobody looks at, right up to the day the
+--- primary is missing and it is the only thing standing between a round and
+--- an arena with no floor.
 local function configuredModels(config)
+    local Arena = Sandbox.newArenaEnv().Arena
     local out, seen = {}, {}
-    local function want(model, where)
-        if type(model) ~= 'string' or seen[model] then return end
-        seen[model] = true
-        out[#out + 1] = { model = model, where = where }
+    local function want(entry, where)
+        for index, model in ipairs(Arena.ModelChain(entry)) do
+            if not seen[model] then
+                seen[model] = true
+                out[#out + 1] = {
+                    model = model,
+                    where = ('%s#%d'):format(where, index),
+                }
+            end
+        end
     end
 
     for key, arena in pairs(config.Arenas or {}) do
         if type(arena) == 'table' then
             if type(arena.platform) == 'table' then
-                want(arena.platform.model, key .. '.platform')
+                want(arena.platform, key .. '.platform')
             end
             for _, piece in ipairs((arena.cover or {}).pieces or {}) do
-                if type(piece) == 'table' then want(piece.model, key .. '.cover') end
+                want(piece, key .. '.cover')
             end
         end
     end
@@ -398,6 +411,8 @@ t.test('EVERY prop model config.lua names is a real GTA V object', function()
 
     local models = configuredModels(Sandbox.shippedConfig())
     t.isTrue(#models > 0, 'no arena names any prop models, so this test proves nothing')
+    t.isTrue(#models >= 5,
+        ('only %d model(s) were found -- the fallback chains are not being walked'):format(#models))
 
     local missing = {}
     for _, entry in ipairs(models) do
@@ -411,6 +426,36 @@ t.test('EVERY prop model config.lua names is a real GTA V object', function()
         'these prop models are not real GTA V objects. The game will never load them, so the '
         .. 'props simply do not appear -- an arena with no floor, and nothing to say why. If one '
         .. 'is a model your own server streams, that is fine and this test needs to know about it')
+end)
+
+t.test('every prop has a fallback, so one missing model is not a missing arena', function()
+    -- A name being real is not the same as it being on a given server: a
+    -- build without a DLC has fewer objects than the game's own list does.
+    -- And the first floor model this resource shipped was invented, which is
+    -- the case a fallback is really for.
+    local env = Sandbox.newArenaEnv()
+    local sky = env.Config.Arenas.skydome
+
+    t.isTrue(#env.Arena.ModelChain(sky.platform) >= 2,
+        'the floor has no stand-in -- one missing model and the arena has no ground')
+
+    for index, piece in ipairs(sky.cover.pieces) do
+        t.isTrue(#env.Arena.ModelChain(piece) >= 2,
+            ('cover piece %d has no stand-in'):format(index))
+    end
+end)
+
+t.test('and a chain is tried in order, first name first', function()
+    local Arena = Sandbox.newArenaEnv().Arena
+
+    -- Both spellings, because `model = 'x'` stays valid on its own.
+    t.equals(table.concat(Arena.ModelChain({ model = 'a', models = { 'b', 'c' } }), ','), 'a,b,c')
+    t.equals(table.concat(Arena.ModelChain({ models = { 'b', 'c' } }), ','), 'b,c')
+    t.equals(table.concat(Arena.ModelChain({ model = 'a' }), ','), 'a')
+    -- A name twice is one name: it would only be tried twice for nothing.
+    t.equals(table.concat(Arena.ModelChain({ model = 'a', models = { 'a', 'b' } }), ','), 'a,b')
+    t.equals(#Arena.ModelChain({}), 0)
+    t.equals(#Arena.ModelChain(nil), 0)
 end)
 
 t.test('and the model that was actually wrong is named, so a failure says which', function()

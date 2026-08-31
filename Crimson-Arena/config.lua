@@ -391,7 +391,16 @@ Config.Arenas = {
             -- which would have meant no floor at all -- tests/skyarena_spec
             -- now pins every model named in this file against a dump of all
             -- 21,631 real ones.
-            model = 'stt_prop_stunt_bblock_huge_01',
+            -- TRIED IN ORDER; the first one this build actually has is used,
+            -- and the console says which if it was not the first. A name
+            -- being real is not the same as it being on YOUR server: a build
+            -- without the Cunning Stunts DLC has none of the first two, and
+            -- the shipping container is base game and always there.
+            models = {
+                'stt_prop_stunt_bblock_huge_01',
+                'stt_prop_stunt_bblock_xl1',
+                'prop_container_01a',
+            },
 
             -- A FALLBACK, not the answer. The client asks the game for the
             -- model's real footprint with GetModelDimensions and lays the
@@ -431,32 +440,32 @@ Config.Arenas = {
             pieces = {
                 -- THE OUTER RING: containers turned side-on to the middle, with
                 -- gaps between them to run through rather than a solid wall.
-                { model = 'prop_container_01a', x = 28.0, y = 0.0, z = 0.0, heading = 90.0 },
-                { model = 'prop_container_01a', x = 19.8, y = 19.8, z = 0.0, heading = 135.0 },
-                { model = 'prop_container_01a', x = 0.0, y = 28.0, z = 0.0, heading = 180.0 },
-                { model = 'prop_container_01a', x = -19.8, y = 19.8, z = 0.0, heading = 225.0 },
-                { model = 'prop_container_01a', x = -28.0, y = 0.0, z = 0.0, heading = 270.0 },
-                { model = 'prop_container_01a', x = -19.8, y = -19.8, z = 0.0, heading = 315.0 },
-                { model = 'prop_container_01a', x = -0.0, y = -28.0, z = 0.0, heading = 0.0 },
-                { model = 'prop_container_01a', x = 19.8, y = -19.8, z = 0.0, heading = 45.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 28.0, y = 0.0, z = 0.0, heading = 90.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 19.8, y = 19.8, z = 0.0, heading = 135.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 0.0, y = 28.0, z = 0.0, heading = 180.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -19.8, y = 19.8, z = 0.0, heading = 225.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -28.0, y = 0.0, z = 0.0, heading = 270.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -19.8, y = -19.8, z = 0.0, heading = 315.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -0.0, y = -28.0, z = 0.0, heading = 0.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 19.8, y = -19.8, z = 0.0, heading = 45.0 },
 
                 -- FOUR CORNERS, each a long wall and a short return. A pocket
                 -- you can hold, open from one side only.
-                { model = 'prop_container_01a', x = 11.3, y = 11.3, z = 0.0, heading = 135.0 },
-                { model = 'prop_mp_barrier_02b', x = 6.7, y = 15.9, z = 0.0, heading = 45.0 },
-                { model = 'prop_container_01a', x = -11.3, y = 11.3, z = 0.0, heading = 225.0 },
-                { model = 'prop_mp_barrier_02b', x = -15.9, y = 6.7, z = 0.0, heading = 135.0 },
-                { model = 'prop_container_01a', x = -11.3, y = -11.3, z = 0.0, heading = 315.0 },
-                { model = 'prop_mp_barrier_02b', x = -6.7, y = -15.9, z = 0.0, heading = 225.0 },
-                { model = 'prop_container_01a', x = 11.3, y = -11.3, z = 0.0, heading = 45.0 },
-                { model = 'prop_mp_barrier_02b', x = 15.9, y = -6.7, z = 0.0, heading = 315.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 11.3, y = 11.3, z = 0.0, heading = 135.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 6.7, y = 15.9, z = 0.0, heading = 45.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -11.3, y = 11.3, z = 0.0, heading = 225.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -15.9, y = 6.7, z = 0.0, heading = 135.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -11.3, y = -11.3, z = 0.0, heading = 315.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -6.7, y = -15.9, z = 0.0, heading = 225.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 11.3, y = -11.3, z = 0.0, heading = 45.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 15.9, y = -6.7, z = 0.0, heading = 315.0 },
 
                 -- THE MIDDLE: a pinwheel, so the centre can be crossed but is
                 -- never open ground.
-                { model = 'prop_mp_barrier_02b', x = 6.5, y = 0.0, z = 0.0, heading = 45.0 },
-                { model = 'prop_mp_barrier_02b', x = 0.0, y = 6.5, z = 0.0, heading = 135.0 },
-                { model = 'prop_mp_barrier_02b', x = -6.5, y = 0.0, z = 0.0, heading = 225.0 },
-                { model = 'prop_mp_barrier_02b', x = -0.0, y = -6.5, z = 0.0, heading = 315.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 6.5, y = 0.0, z = 0.0, heading = 45.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 0.0, y = 6.5, z = 0.0, heading = 135.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -6.5, y = 0.0, z = 0.0, heading = 225.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -0.0, y = -6.5, z = 0.0, heading = 315.0 },
             },
         },
 

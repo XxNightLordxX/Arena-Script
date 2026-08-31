@@ -344,4 +344,83 @@ t.test('a third match opens into an instance of its own', function()
     end
 end)
 
+-- ======================================================================
+-- AND WHAT HAPPENS IF THE INSTANCING IS NOT THERE
+-- ======================================================================
+
+t.test('with instancing OFF, a second match is refused the arena in use', function()
+    -- The whole arrangement above rests on one assumption: that each match
+    -- really is in its own instance. With Config.Dispatch.isolation switched
+    -- off -- or on a build where the routing natives do nothing -- that
+    -- separation is simply absent, and two matches in one arena becomes two
+    -- groups of armed strangers dropped on top of each other, on ground
+    -- sized for one round.
+    --
+    -- So the sharing is allowed only while the thing that makes it safe is
+    -- in force. Asked of ArenaDispatch rather than of the config, because
+    -- the config is what an operator INTENDED.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 }, [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 }, [4] = { cash = 50000, bank = 50000 },
+    }, function(config)
+        config.Match.minPlayers = 2
+        config.Match.lobbyCountdownSeconds = 0
+        config.Match.maxConcurrentMatches = 0
+        config.Dispatch.isolation.enabled = false
+    end)
+
+    runMatch(server, 'airfield', { 1, 2 })
+    t.isNil(server.dispatch.GetBucket('anything'), 'isolation is still on, so this proves nothing')
+
+    -- The second lobby opens -- that is not what is refused -- but it cannot
+    -- be STARTED into ground somebody is already fighting on.
+    server.fire('createMatch', 3, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    local second
+    for _, entry in ipairs(server.lobby.All()) do
+        if entry.hostSource == 3 then second = entry end
+    end
+    t.isNotNil(second, 'the second lobby could not even be opened')
+    server.fire('joinMatch', 4, { matchId = second.id })
+
+    server.fire('startMatch', 3)
+    server.step(4)
+
+    t.equals(server.lobby.Get(second.id).state, 'lobby',
+        'TWO MATCHES WERE STARTED ON THE SAME GROUND with nothing keeping them apart')
+    t.isTrue(server.log():find('MATCH REFUSED', 1, true) ~= nil,
+        'and nothing in the console says why the round would not start')
+end)
+
+t.test('but a DIFFERENT arena is still fine with instancing off', function()
+    -- The guard is about sharing ground, not about running two matches. Two
+    -- arenas are two places, instanced or not.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 }, [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 }, [4] = { cash = 50000, bank = 50000 },
+    }, function(config)
+        config.Match.minPlayers = 2
+        config.Match.lobbyCountdownSeconds = 0
+        config.Match.maxConcurrentMatches = 0
+        config.Dispatch.isolation.enabled = false
+    end)
+
+    local first = runMatch(server, 'airfield', { 1, 2 })
+    local second = runMatch(server, 'beach', { 3, 4 })
+
+    t.equals(server.lobby.Get(first).state, 'live')
+    t.equals(server.lobby.Get(second).state, 'live',
+        'a match on its own separate ground was refused')
+end)
+
+t.test('and with instancing ON the same arena is shared, as designed', function()
+    -- The other side of the guard: it must not cost the feature it protects.
+    local server = fourPlayers()
+    local first = runMatch(server, 'airfield', { 1, 2 })
+    local second = runMatch(server, 'airfield', { 3, 4 })
+
+    t.equals(server.lobby.Get(first).state, 'live')
+    t.equals(server.lobby.Get(second).state, 'live',
+        'the fallback is refusing the very thing routing buckets make safe')
+end)
+
 os.exit(t.summary())

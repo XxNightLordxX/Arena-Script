@@ -114,6 +114,14 @@
                     <button id="btn-start" class="btn btn-primary" type="button">Start Match Now</button>
                     <button id="btn-leave" class="btn btn-danger" type="button">Leave Match</button>
                 </div>
+                <!-- THE RADAR, on its own row rather than beside the match
+                     actions: it is a setting about your own map, not a thing
+                     you do to the match, and sitting it next to Leave Match
+                     would invite the wrong click. Hidden entirely where the
+                     operator has not allowed one. -->
+                <div id="lobby-radar-row" class="hidden">
+                    <button id="btn-radar" class="btn" type="button">Radar Off</button>
+                </div>
             </div>
         </section>
 

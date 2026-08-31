@@ -452,6 +452,18 @@ local function snapshotConfig()
                     max = math.max(minimum, Arena.ToInt(lives.max) or minimum),
                 }
             end)(),
+            -- The radar toggle: whether to draw it at all, and where it
+            -- starts for somebody who has never touched it. The preference
+            -- itself never comes here -- it is a display setting the client
+            -- owns, and the server has no opinion about it.
+            radar = (function()
+                local block = Config.Match.radar
+                if type(block) ~= 'table' or block.allowChoose == false then return nil end
+                return {
+                    defaultOn = block.defaultOn == true,
+                    intervalSeconds = math.max(1, math.floor((Arena.ToInt(block.intervalMs) or 30000) / 1000)),
+                }
+            end)(),
             roundTimeSeconds = math.max(0, Arena.ToInt(Config.Match.roundTimeSeconds) or 0),
             winCondition = Config.Match.winCondition,
             onlyHostCanStart = Config.Match.onlyHostCanStart ~= false,

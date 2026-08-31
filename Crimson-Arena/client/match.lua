@@ -805,19 +805,92 @@ local function refreshBlips()
     end
 end
 
+-- ----------------------------------------------------------------------
+-- THE RADAR
+--
+-- A permanent dot on every fighter turns a round into a map to be read
+-- rather than a place to be searched, so the blips above ship off and this
+-- is what replaces them: a SWEEP. Every interval the positions appear for
+-- under a second and then go dark again, so what a player gets is where
+-- everybody WAS a moment ago -- long enough to plan with, stale enough to
+-- be wrong about.
+--
+-- Opt-in per player and remembered for the session. The preference lives
+-- here rather than on the server because it changes nothing anybody else
+-- can see: it is a display setting, and round-tripping it would put a
+-- personal toggle on the wire for no reason.
+-- ----------------------------------------------------------------------
+
+--- @return table
+local function radarConfig()
+    local block = (Config.Match or {}).radar
+    return type(block) == 'table' and block or {}
+end
+
+--- nil until the player has expressed a preference, so the operator's
+--- default is used until they do -- rather than "off" masquerading as a
+--- choice they never made.
+local radarChosen = nil
+
+--- @return boolean
+local function radarOn()
+    if radarConfig().allowChoose == false then return false end
+    if radarChosen ~= nil then return radarChosen end
+    return radarConfig().defaultOn == true
+end
+
+--- Set from the panel. Takes effect on the next sweep rather than
+--- immediately: switching it on should not hand somebody an instant fix on
+--- everybody, which would make the sweep interval free to bypass.
+--- @param on boolean
+function ArenaMatch.SetRadar(on)
+    radarChosen = on == true
+    if not radarChosen then removeAllPlayerBlips() end
+end
+
+--- @return boolean
+function ArenaMatch.RadarOn()
+    return radarOn()
+end
+
 --- Started with the other match-only loops, on the same token, and left to
 --- die with them. Removal is leaveArena's job, not this loop's -- see the
 --- section note above.
 local function startBlipThread()
-    if not currentMatch or not blipsEnabled(currentMatch.modeKey) then return end
+    if not currentMatch then return end
 
     local token = matchToken
+    local permanent = blipsEnabled(currentMatch.modeKey)
 
     CreateThread(function()
         while matchLive and matchToken == token do
-            refreshBlips()
-            Wait(BLIP_REFRESH_MS)
+            if permanent then
+                -- The old behaviour, for a server that asked for it.
+                refreshBlips()
+                Wait(BLIP_REFRESH_MS)
+            elseif radarOn() then
+                -- LIT, then DARK. The removal is not optional and not
+                -- deferred to the next pass: a sweep that failed to clear
+                -- itself would be a permanent blip with extra steps.
+                refreshBlips()
+                Wait(math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800))
+                removeAllPlayerBlips()
+
+                local interval = math.max(1000, Arena.ToInt(radarConfig().intervalMs) or 30000)
+                local visible = math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800)
+                Wait(math.max(500, interval - visible))
+            else
+                -- Off. Checked often enough that switching it on in the
+                -- panel is felt within a sweep rather than within a round.
+                removeAllPlayerBlips()
+                Wait(1000)
+            end
         end
+
+        -- The loop owns whatever it lit. leaveArena clears everything on the
+        -- way out, but a match that ends between two sweeps must not leave
+        -- the last one burning until it does.
+        removeAllPlayerBlips()
     end)
 end
 

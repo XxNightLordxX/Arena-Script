@@ -275,6 +275,18 @@ register('cancelMatch', function()
     TriggerServerEvent('crimson_arena:server:cancelMatch')
 end)
 
+--- THE RADAR TOGGLE, and the one callback here that never reaches the
+--- server.
+---
+--- It changes nothing anybody else can see -- it is a display setting on
+--- this player's own map -- so putting it on the wire would be a round trip
+--- for a preference the server has no opinion about and no use for.
+register('setRadar', function(data)
+    if type(ArenaMatch) == 'table' and type(ArenaMatch.SetRadar) == 'function' then
+        ArenaMatch.SetRadar(data.on == true)
+    end
+end)
+
 register('spectate', function(data)
     TriggerServerEvent('crimson_arena:server:spectateMatch', { matchId = data.matchId })
 end)

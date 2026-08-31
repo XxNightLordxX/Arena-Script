@@ -795,6 +795,15 @@ option {
    panel body -- and the page under it -- from ever growing a scrollbar over
    the running game. With one section switched off the other fills the row
    with no rule needed to say so. */
+/* The radar toggle, set apart from the match actions above it: it changes
+   your own map, not the match, and the gap is what says so. */
+#lobby-radar-row {
+    display: flex;
+    margin-top: 0.6rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+}
+
 #loadout-lists {
     grid-column: 1;
     grid-row: 2;

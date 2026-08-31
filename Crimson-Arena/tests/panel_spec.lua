@@ -806,4 +806,48 @@ t.test('the form is seeded from the match once, not on every broadcast', functio
 end)
 
 print('panel_spec')
+-- ======================================================================
+-- HOW THIS PANEL HIDES THINGS, and it is a class rather than an attribute
+--
+-- app.js's show() does `classList.toggle('hidden', ...)` and never touches
+-- the `hidden` ATTRIBUTE. So an element written with a bare `hidden` in the
+-- markup is hidden by the attribute, and nothing in the panel can ever
+-- reveal it -- show(node, true) removes a class that was not what was
+-- hiding it. The element is invisible for the life of the resource.
+--
+-- That is not hypothetical: the radar row shipped that way for ten minutes.
+-- It is also invisible to the panel tests, which load app.js and never read
+-- index.html -- so the guard has to live here, on the markup itself.
+-- ======================================================================
+
+t.test('nothing in index.html hides with the attribute this panel cannot clear', function()
+    local handle = assert(io.open('../html/index.html', 'r'), 'cannot open index.html')
+    local markup = handle:read('a')
+    handle:close()
+
+    local offenders = {}
+    for tag in markup:gmatch('<[^>!][^>]*>') do
+        -- The attribute, standing on its own -- not `class="hidden"`, and
+        -- not a word ending in `hidden` like `data-hidden`.
+        if tag:match('%shidden%s*/?>') or tag:match('%shidden%s') then
+            local id = tag:match('id="([^"]+)"') or tag:sub(1, 40)
+            offenders[#offenders + 1] = id
+        end
+    end
+
+    t.equals(table.concat(offenders, ', '), '',
+        'these elements hide with the `hidden` attribute, which app.js never clears -- they can never be shown. Use class="hidden".')
+end)
+
+t.test('and the panel really does hide with a class, so that rule is the right one', function()
+    -- Guards the guard: if show() ever switched to the attribute, the test
+    -- above would be enforcing the opposite of the truth.
+    local handle = assert(io.open('../html/app.js', 'r'))
+    local source = handle:read('a')
+    handle:close()
+
+    t.contains(source, "classList.toggle('hidden'",
+        'show() no longer hides with a class, so the markup rule above is now backwards')
+end)
+
 os.exit(t.summary())

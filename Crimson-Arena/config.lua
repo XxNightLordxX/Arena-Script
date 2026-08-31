@@ -409,7 +409,15 @@ Config.Teams = {
     friendlyFire = false,
 
     -- Team blips on the map during a match.
-    showTeamBlips = true,
+    -- BOTH OFF. A permanent dot on every fighter turns a round into a map to
+    -- be read rather than a place to be searched -- nobody flanks anybody
+    -- when everybody's position is drawn continuously.
+    --
+    -- Config.Match.radar below is the replacement, and it is opt-in per
+    -- player: a sweep that shows where everyone was for a moment and then
+    -- goes dark again. Turn these back on for a server that wants the old
+    -- permanent behaviour; they override the radar entirely.
+    showTeamBlips = false,
     showEnemyBlips = false,
 
     list = {
@@ -2133,6 +2141,30 @@ Config.Match = {
     -- is searched from: that is fixed, much higher, and explained where the
     -- probe happens in client/match.lua.
     spawnHeightOffset = 3.0,
+
+    -- THE RADAR, which replaced permanent blips.
+    --
+    -- Off for every player until they switch it on themselves in the panel,
+    -- and even then it is not a live feed: it SWEEPS. Every `intervalMs` the
+    -- fighters' positions appear for `visibleMs` and then go dark again, so
+    -- what a player gets is where everybody WAS a moment ago, not where they
+    -- are now. Long enough to plan, stale enough to be wrong about.
+    --
+    -- The two Config.Teams blip switches above override this: a server that
+    -- wants permanent dots turns those on and the radar never runs.
+    radar = {
+        -- Whether the toggle appears in the panel at all. Off, nobody has a
+        -- radar and the control is not drawn -- rather than drawn and dead.
+        allowChoose = true,
+
+        -- Whether a player who has never touched it starts with it on.
+        defaultOn = false,
+
+        -- How long between sweeps, and how long a sweep is visible for.
+        -- 30 seconds dark, most of a second lit.
+        intervalMs = 30000,
+        visibleMs = 800,
+    },
 
     -- KEEPING EVERYONE ELSE OUT OF A LIVE ARENA.
     --

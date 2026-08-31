@@ -112,6 +112,9 @@
     // ==================================================================
 
     var state = {
+        /* null until the player decides, so the operator default applies
+           until then rather than 'off' pretending to be a choice. */
+        radarOn: null,
         open: false,
         config: null,
         player: null,
@@ -1547,7 +1550,52 @@
             : lead + 'Start Match Now is unavailable: ' + blocked;
     }
 
+    /* THE RADAR TOGGLE.
+
+       Kept in the panel's own state rather than fetched back from the
+       server: it is a display setting on this player's own map, so the
+       server neither stores it nor has an opinion about it. `null` means
+       untouched, which is how the operator's default keeps applying until
+       the player actually decides something. */
+    function radarSettings() {
+        return (cfg().match || {}).radar || null;
+    }
+
+    function radarIsOn() {
+        var settings = radarSettings();
+        if (!settings) return false;
+        if (state.radarOn === null || state.radarOn === undefined) return settings.defaultOn === true;
+        return state.radarOn === true;
+    }
+
+    function renderRadarToggle() {
+        var host = byId('lobby-radar-row');
+        if (!has(host)) return;
+
+        var settings = radarSettings();
+        /* Drawn only where the operator allows one. A dead control is worse
+           than no control -- it reads as a broken feature. */
+        show(host, !!settings);
+        if (!settings) return;
+
+        var button = byId('btn-radar');
+        if (!has(button)) return;
+
+        var on = radarIsOn();
+        button.textContent = on ? 'Radar On' : 'Radar Off';
+        button.classList.toggle('btn-primary', on);
+        button.title = on
+            ? 'Sweeping every ' + int(settings.intervalSeconds, 30) + ' seconds. You see where everyone WAS, not where they are.'
+            : 'Off. Turn it on for a sweep every ' + int(settings.intervalSeconds, 30) + ' seconds showing where everyone was.';
+        button.onclick = function () {
+            state.radarOn = !radarIsOn();
+            post('setRadar', { on: state.radarOn });
+            renderRadarToggle();
+        };
+    }
+
     function renderLobbyActions(match) {
+        renderRadarToggle();
         var inMatch = playerMatchId() === match.id;
         var isHost = inMatch && player().isHost === true;
         var counting = match.state === 'countdown';

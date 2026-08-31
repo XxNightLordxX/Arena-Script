@@ -437,6 +437,55 @@ for _, entry in ipairs(CATALOGUE) do
     ArenaCompat.RegisterAdapter(entry)
 end
 
+-- ======================================================================
+-- WHO STARTED FIRST, and it decides whether the arena can stop an EMS call
+-- at all.
+--
+-- THE CHAIN, read out of sc-ambulance and sc-dispatch rather than guessed:
+--
+--   1. The player goes down. sc-ambulance's own gameEventTriggered handler
+--      asks IsEntityDead, and if the answer is yes it enters laststand.
+--   2. laststand sends hospital:server:SetLaststandStatus first, which sets
+--      the player's `inlaststand` metadata.
+--   3. It then sends hospital:server:EMSDownAlert, whose server handler
+--      admits the call only for a player carrying that very metadata --
+--      which step 2 has just set.
+--
+-- Both are TriggerServerEvent, raised from the victim's OWN client, in that
+-- order. No resource can cancel another resource's event, and the flag the
+-- guard reads is set before the guard runs. So once laststand is entered the
+-- call is going out, and nothing this resource does afterwards retracts it.
+--
+-- Which leaves exactly one place to win: step 1. The arena resurrects from
+-- inside the same event dispatch, so IsEntityDead answers NO and laststand
+-- is never entered -- no flag, no alert, nothing to suppress.
+--
+-- AND THAT IS A RACE. Handlers on a shared event run in the order their
+-- resources STARTED, so the arena only gets to answer first if it started
+-- first. That is one line in server.cfg, it is invisible when wrong, and it
+-- looks exactly like the arena being broken.
+--
+-- So it is detected rather than assumed. A catalogued resource already
+-- reporting 'started' while this file is still loading is a resource that
+-- started BEFORE the arena -- and one this resource will lose to.
+--- @type string[]
+local startedBeforeUs = {}
+
+for _, entry in ipairs(CATALOGUE) do
+    if GetResourceState(entry.resource) == 'started' then
+        startedBeforeUs[#startedBeforeUs + 1] = entry.resource
+    end
+end
+
+--- Catalogued emergency resources that were already running when the arena
+--- loaded, and therefore registered their death handler first.
+--- @return string[]
+function ArenaCompat.StartedBeforeUs()
+    local out = {}
+    for _, name in ipairs(startedBeforeUs) do out[#out + 1] = name end
+    return out
+end
+
 -- HOW TO ADD A MUTE YOU HAVE ACTUALLY CONFIRMED. Copy this under the
 -- catalogue, with the export name read out of that script's own
 -- documentation -- never one that merely sounds right:
@@ -754,6 +803,24 @@ function ArenaCompat.Report()
     -- and is still dead to that script -- which reads as the arena being
     -- broken, with nothing anywhere saying why. So it says why, here, at
     -- every start.
+    -- START ORDER, and on this shape of server it is the whole ball game.
+    --
+    -- The arena stops an EMS call by resurrecting inside the same event
+    -- dispatch the medical script is reading, so its IsEntityDead check
+    -- answers no and laststand is never entered. Answer second and laststand
+    -- IS entered, the metadata flag is set, and the 10-52 goes out past
+    -- anything this resource can reach -- see the note above the catalogue.
+    local late = ArenaCompat.StartedBeforeUs()
+    if #late > 0 then
+        lines[#lines + 1] = ('start order: %s started BEFORE this resource, so it answers a death first.')
+            :format(table.concat(late, ', '))
+        lines[#lines + 1] = '  That is the one thing here that cannot be fixed from inside this resource.'
+        lines[#lines + 1] = '  An EMS call raised that way is already past anything the arena can cancel.'
+        lines[#lines + 1] = '  Fix: in server.cfg, put `ensure ' .. GetCurrentResourceName() .. '` ABOVE those lines and restart.'
+    else
+        lines[#lines + 1] = 'start order: this resource started first, so it answers a death before any emergency script does.'
+    end
+
     local revive = (Config.Dispatch or {}).revive
     local named = type(revive) == 'table'
         and (#(revive.commands or {}) + #(revive.serverEvents or {})

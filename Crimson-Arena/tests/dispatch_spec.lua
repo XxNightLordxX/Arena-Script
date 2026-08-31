@@ -1577,4 +1577,83 @@ t.test('and it still stands the player up first, whatever the handoff does', fun
     t.isNotNil(own, 'with no medical script detected the arena stopped reviving its own player')
 end)
 
+-- ========================================================================
+-- START ORDER, which decides whether an EMS call can be stopped at all
+--
+-- Read out of sc-ambulance and sc-dispatch rather than reasoned about:
+--
+--   laststand.lua sends hospital:server:SetLaststandStatus (which sets the
+--   player's `inlaststand` metadata) and THEN hospital:server:EMSDownAlert,
+--   whose server handler admits the call only for a player carrying that
+--   metadata. Both are TriggerServerEvent from the victim's own client, in
+--   that order, so the guard's own condition is satisfied before it runs --
+--   and no resource can cancel another resource's event.
+--
+-- So the only winnable moment is before laststand is entered at all, which
+-- the arena does by resurrecting inside the same event dispatch. That is a
+-- race decided by resource start order, and when it is lost the failure is
+-- silent and looks exactly like the arena being broken. Hence a report line.
+-- ========================================================================
+
+--- A compat env loaded while `runningNames` are ALREADY started.
+---
+--- Different from compatWith on purpose: that one patches resource state
+--- after the load, which is right for detection (re-read every time) and
+--- useless for start order (captured once, at load). Getting these two mixed
+--- up is how a start-order check turns into a permanent false warning.
+--- @param runningNames string[]
+--- @return table env
+local function compatLoadedAfter(runningNames)
+    local started = {}
+    for _, name in ipairs(runningNames) do started[name] = true end
+
+    local env = Sandbox.newArenaEnv({
+        IsDuplicityVersion = function() return true end,
+        GetResourceState = function(name) return started[name] and 'started' or 'missing' end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        CreateThread = function() end,
+        AddEventHandler = function() end,
+        RegisterCommand = function() end,
+        Wait = function() end,
+        ArenaIsAdmin = function() return false end,
+        ArenaNotify = function() end,
+        ArenaNotifyKey = function() end,
+    })
+    Sandbox.loadInto('../shared/compat/dispatch.lua', env)
+    return env
+end
+
+t.test('an emergency script that started first is named, with the fix', function()
+    local env = compatLoadedAfter({ 'sc-ambulance' })
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'start order', 'nothing tells the operator who answers a death first')
+    t.contains(report, 'sc-ambulance', 'the report warns about start order without naming the resource')
+    t.contains(report, 'server.cfg', 'the operator is told there is a problem and not where to fix it')
+end)
+
+t.test('and when the arena started first it says so, rather than staying quiet', function()
+    -- Silence would be ambiguous: an operator who has just fixed their
+    -- server.cfg needs to see that it took.
+    local env = compatLoadedAfter({})
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'started first',
+        'a correct start order is reported as nothing at all, so it cannot be confirmed')
+end)
+
+t.test('start order is judged at LOAD, not whenever the report is read', function()
+    -- The whole signal is "was it already running while we were loading".
+    -- Ask later and everything reports 'started', including resources that
+    -- started after this one -- which would turn a correct setup into a
+    -- permanent false warning.
+    local env = compatLoadedAfter({})
+    t.equals(#env.ArenaCompat.StartedBeforeUs(), 0)
+
+    -- Everything comes up afterwards. The answer must not change.
+    env.GetResourceState = function() return 'started' end
+    t.equals(#env.ArenaCompat.StartedBeforeUs(), 0,
+        'the check re-reads resource state after load, so a resource that started LATER is blamed for starting first')
+end)
+
 os.exit(t.summary())

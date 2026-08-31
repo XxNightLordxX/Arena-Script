@@ -1269,4 +1269,47 @@ t.test('the outline colour is the team own colour, not a guess', function()
     t.equals(f.outlineColor.b, b)
 end)
 
+-- ======================================================================
+-- THE SPAWN IS NOT NUDGED OFF THE POINT THAT WAS CHOSEN FOR IT
+--
+-- Two different spawn mechanisms, and only one of them wants scattering.
+--
+-- The `spawns` LIST is round-robin: twenty players can share four points, so
+-- without a scatter they land inside each other. The spawn PLAN is not --
+-- Arena.PlanSpawns spread this roster across the area itself, kept them
+-- minSeparation apart, and placed them clear of the arena's own cover.
+-- Scattering that result undoes all three, and on an arena with barriers it
+-- can put somebody inside one.
+-- ======================================================================
+
+t.test('a planned spawn is sent with no extra scatter', function()
+    local f = newFixture(instantRound)
+    local match = newMatch(f, 3)
+    goLive(f, match)
+
+    for src = 1, 3 do
+        local entry = f.lastPayload('crimson_arena:client:enterArena', src)
+        t.isNotNil(entry, ('fighter %d was never placed'):format(src))
+        t.equals(entry.scatterRadius, 0.0,
+            'a planned spawn was sent a scatter radius, which undoes the separation it was planned for')
+    end
+end)
+
+t.test('and a round-robin spawn still gets the scatter it needs', function()
+    -- The other half, and the reason this is a condition rather than a
+    -- deletion: four points and twenty players without a scatter is twenty
+    -- players in four piles.
+    local f = newFixture(function(config)
+        instantRound(config)
+        config.Arenas.airfield.spawnArea.enabled = false
+    end)
+    local match = newMatch(f, 3)
+    goLive(f, match)
+
+    local entry = f.lastPayload('crimson_arena:client:enterArena', 1)
+    t.isNotNil(entry)
+    t.equals(entry.scatterRadius, f.Config.Match.spawnScatterRadius,
+        'an arena using its point list was sent no scatter, so its players land in a pile')
+end)
+
 os.exit(t.summary())

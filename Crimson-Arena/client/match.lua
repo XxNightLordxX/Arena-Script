@@ -1166,13 +1166,19 @@ local function buildArenaProps(arenaKey)
     end
 
     local needsFloor = platform ~= nil
-    local built, failed = 0, {}
+    -- COUNTED SEPARATELY, and that is not tidiness. `built` alone answers
+    -- "did anything appear", and a sky arena whose FLOOR model is missing
+    -- but whose barriers are present answers yes to that -- so the guard
+    -- below passed and everybody was placed into open air, past the one
+    -- check written to stop it.
+    local built, builtFloor, failed = 0, 0, {}
 
     for _, piece in ipairs(wanted) do
         local hash = loadPropModel(piece.models or piece.model)
         if hash then
             local object = CreateObject(hash, piece.x, piece.y, piece.z, false, false, false)
             if object and object ~= 0 then
+                if piece.kind == 'floor' then builtFloor = builtFloor + 1 end
                 SetEntityHeading(object, piece.heading or 0.0)
                 -- Frozen and collidable: it is scenery to stand on and hide
                 -- behind, not something to shove off the edge.
@@ -1198,13 +1204,13 @@ local function buildArenaProps(arenaKey)
     end
 
     if built > 0 and measured then
-        print(('[crimson_arena] arena scenery: %d piece(s) built; the floor measured %.2fm across and its surface is at %.2f.')
-            :format(built, measured, arenaSurfaceZ or 0.0))
+        print(('[crimson_arena] arena scenery: %d piece(s) built, %d of them floor; the floor prop measures %.2f x %.2fm and its surface is at %.2f.')
+            :format(built, builtFloor, measured.x, measured.y, arenaSurfaceZ or 0.0))
     end
 
-    if needsFloor and built == 0 then
+    if needsFloor and builtFloor == 0 then
         arenaSurfaceZ = nil
-        print('[crimson_arena] arena scenery: NOTHING was built for an arena that supplies its own floor. Nobody is being placed into it -- there is nothing under it.')
+        print('[crimson_arena] arena scenery: NO FLOOR was built for an arena that supplies its own. Nobody is being placed into it -- there is nothing under it.')
         return false
     end
 
@@ -1436,7 +1442,13 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     if not currentMatch or type(data) ~= 'table' or type(data.spawn) ~= 'table' then return end
 
     local token = matchToken
-    local x, y, z, heading = scatter(data.spawn, Config.Match.spawnScatterRadius)
+    -- THE SERVER'S NUMBER, not config's. It was sending one and this side
+    -- was reading config instead, so the whole field was decorative: a
+    -- respawn onto a planned point is sent with no scatter precisely so it
+    -- is not nudged off it, and that instruction was being dropped on
+    -- arrival. The fallback keeps an older server working.
+    local x, y, z, heading = scatter(data.spawn,
+        tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
     NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
 
     local ped = PlayerPedId()

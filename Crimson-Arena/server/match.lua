@@ -742,7 +742,14 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
         -- spawnArea behaves exactly as it always did.
         spawn = toPoint((match.spawnPlan and match.spawnPlan[player.src])
             or Arena.PickSpawn(match.arenaKey, teamKey, index)),
-        scatterRadius = scatterRadius(),
+        -- NO EXTRA SCATTER ON A PLANNED SPAWN. The plan has already spread
+        -- this roster across the area, kept them minSeparation apart, and
+        -- placed them clear of the arena's own cover. Nudging the result a
+        -- few more metres on the client undoes all three: it can halve the
+        -- separation the plan just guaranteed and it can drop somebody
+        -- inside a barrier. The round-robin `spawns` list makes none of
+        -- those promises, so it still gets the scatter it has always needed.
+        scatterRadius = (match.spawnPlan and match.spawnPlan[player.src]) and 0.0 or scatterRadius(),
         -- The host's radar decision, carried in with everything else the
         -- round is fought under. The client keeps no preference of its own
         -- any more, so this is the only thing that turns a sweep on. Sent
@@ -839,12 +846,15 @@ local function scheduleRespawn(match, player)
         -- (from a random start) on an arena with no area. The cursor is kept
         -- only for that fallback.
         local team = teamOf(current, entry)
-        local point = Arena.PickRespawn(current.arenaKey, team, liveOpponentPositions(current, entry))
-            or Arena.PickSpawn(current.arenaKey, team, current.spawnCursor)
+        local planned = Arena.PickRespawn(current.arenaKey, team, liveOpponentPositions(current, entry))
+        local point = planned or Arena.PickSpawn(current.arenaKey, team, current.spawnCursor)
 
         TriggerClientEvent('crimson_arena:client:respawn', src, {
             spawn = toPoint(point),
-            scatterRadius = scatterRadius(),
+            -- Same rule as entry: a point chosen to be as far from the
+            -- nearest live opponent as the area allows, and clear of the
+            -- cover, is not improved by moving it again at random.
+            scatterRadius = planned and 0.0 or scatterRadius(),
             loadout = loadout,
         })
 

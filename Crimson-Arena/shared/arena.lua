@@ -1056,7 +1056,7 @@ end
 --- it are torn down by another is two chances to leave something behind at a
 --- thousand metres.
 --- @param arenaKey any
---- @return table[] -- { { model, x, y, z, heading }, ... }, absolute
+--- @return table[] -- { { kind, model, x, y, z, heading }, ... }, absolute
 --- @param measured table|number|nil -- the floor prop's real size, measured
 ---        by the client. See Arena.PlatformTiles.
 function Arena.ArenaProps(arenaKey, measured)
@@ -1081,6 +1081,13 @@ function Arena.ArenaProps(arenaKey, measured)
     if platform then
         for _, tile in ipairs(Arena.PlatformTiles(platform, centre.x, centre.y, measured)) do
             out[#out + 1] = {
+                -- WHICH PIECES ARE THE FLOOR, and the client counts them
+                -- separately for it. Without this the only question it could
+                -- ask was "did ANYTHING get built", and an arena whose floor
+                -- model is missing but whose barriers are not answers yes --
+                -- then drops everybody into a kilometre of air past a check
+                -- that exists to stop exactly that.
+                kind = 'floor',
                 models = platform.models,
                 model = platform.model,
                 x = tile.x, y = tile.y, z = tile.z,
@@ -1091,6 +1098,7 @@ function Arena.ArenaProps(arenaKey, measured)
 
     for _, piece in ipairs(Arena.GetCover(arenaKey)) do
         out[#out + 1] = {
+            kind = 'cover',
             models = piece.models,
             model = piece.model,
             x = centre.x + piece.x,

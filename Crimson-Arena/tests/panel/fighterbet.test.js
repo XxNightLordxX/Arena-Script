@@ -55,6 +55,7 @@ function snapshot(options) {
     const o = Object.assign({
         who: 'fighter',
         teams: false,
+        betPayout: null,
         fighter: { enabled: true, min: 100, max: 50000, ownSideOnly: true },
         spectator: { enabled: true, min: 50, max: 1000, oddsMultiplier: 2 },
     }, options || {});
@@ -84,6 +85,7 @@ function snapshot(options) {
                 entryFee: { enabled: false, min: 0, max: 0, default: 0 },
                 spectatorBets: o.spectator,
                 fighterBets: o.fighter,
+                betPayout: o.betPayout || { fighters: 'pool', spectators: 'pool', sharedPool: true },
             },
             loadouts: { allowChoose: false, chooser: 'player', weapons: [], armor: { allowChoose: false, options: [], default: 100 } },
             teams: {
@@ -255,6 +257,70 @@ test('and the note tells them the money comes from the pool, not the server', ()
     assert.ok(/never from the server/.test(note),
         'the note does not say where the money comes from: ' + note);
     assert.ok(!/the house pays it/.test(note), 'the note still claims the house pays: ' + note);
+});
+
+console.log('');
+console.log('==> what a bet is said to pay');
+
+test('under the POOL rule the panel promises a share, not a multiplier', () => {
+    /* The defect: the hint quoted spectatorBets.oddsMultiplier whatever the
+       payout rule was, so on a pool server every spectator was told they
+       would be paid exactly twice their stake -- by a rule that was not
+       running. A pool share is not knowable while bets are open; it depends
+       on who else backs what. */
+    const panel = opened({ who: 'spectator', teams: false });
+    panel.type('bet-amount', '500');
+    const chip = panel.node('bet-pick').children.find((c) => c.textContent === 'Rival');
+    (chip.listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+
+    const hint = panel.text('bet-hint');
+    assert.ok(/share of the whole betting pool/.test(hint),
+        'the hint does not say the payout is a pool share: ' + hint);
+    assert.ok(!/you are paid \$1,?000/.test(hint),
+        'the hint still quotes a fixed x2 payout under the pool rule: ' + hint);
+});
+
+test('and the summary strip says the same thing', () => {
+    const panel = opened({ who: 'spectator' });
+    const summary = panel.text('bet-summary');
+    assert.ok(/Share of pool/.test(summary),
+        'the summary still advertises a multiplier: ' + summary);
+    assert.ok(!/x2/.test(summary), 'the summary quotes odds under the pool rule: ' + summary);
+});
+
+test('but a server really running fixed odds still quotes them', () => {
+    // The escape hatch stays honest: this rule IS server-funded and the
+    // figure IS knowable, so it should be on screen.
+    const panel = opened({
+        who: 'spectator',
+        betPayout: { fighters: 'pool', spectators: 'odds', sharedPool: true },
+    });
+    panel.type('bet-amount', '500');
+    const chip = panel.node('bet-pick').children.find((c) => c.textContent === 'Rival');
+    (chip.listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+
+    assert.ok(/x2/.test(panel.text('bet-summary')),
+        'a fixed-odds server did not say what it pays: ' + panel.text('bet-summary'));
+    assert.ok(/you are paid/.test(panel.text('bet-hint')),
+        'a fixed-odds server did not quote the figure: ' + panel.text('bet-hint'));
+});
+
+test('a fighter and a spectator can be paid by DIFFERENT rules', () => {
+    // fighters and spectators are separate keys, so the panel has to read
+    // the one that applies to whoever is looking.
+    const asFighter = opened({
+        who: 'fighter',
+        betPayout: { fighters: 'pool', spectators: 'odds', sharedPool: true },
+    });
+    assert.ok(/Share of pool/.test(asFighter.text('bet-summary')),
+        'a fighter was quoted the spectators\' rule: ' + asFighter.text('bet-summary'));
+
+    const asSpectator = opened({
+        who: 'spectator',
+        betPayout: { fighters: 'pool', spectators: 'odds', sharedPool: true },
+    });
+    assert.ok(/x2/.test(asSpectator.text('bet-summary')),
+        'a spectator was quoted the fighters\' rule: ' + asSpectator.text('bet-summary'));
 });
 
 console.log('');

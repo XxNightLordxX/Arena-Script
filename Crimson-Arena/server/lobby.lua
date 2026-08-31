@@ -445,6 +445,27 @@ local function snapshotConfig()
             -- but the panel refused every one of them before it reached the
             -- wire, with "You are fighting in this match. You cannot bet on
             -- yourself." So the setting was on, correct, tested, and dead.
+            -- HOW A WINNING BET IS PAID, which the panel has to know before it
+            -- can tell anybody what they stand to win.
+            --
+            -- 'pool' is a share of everything staked, in proportion to what
+            -- each backer put in -- so the figure is not knowable in advance
+            -- and the panel must not pretend it is. 'odds' is the fixed
+            -- multiplier below, funded by the server.
+            --
+            -- NOT SENT BEFORE THIS, so the panel quoted the multiplier
+            -- whatever the mode: on a pool server every spectator was told
+            -- they would be paid exactly twice their stake, by a rule that
+            -- was not running.
+            betPayout = (function()
+                local block = Config.Betting.betPayout
+                if type(block) ~= 'table' then return { fighters = 'pool', spectators = 'pool' } end
+                return {
+                    fighters = block.fighters == 'odds' and 'odds' or 'pool',
+                    spectators = block.spectators == 'odds' and 'odds' or 'pool',
+                    sharedPool = block.sharedPool ~= false,
+                }
+            end)(),
             fighterBets = {
                 enabled = fighter.enabled == true,
                 min = math.max(0, Arena.ToInt(fighter.min) or 0),

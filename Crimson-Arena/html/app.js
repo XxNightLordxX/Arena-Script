@@ -2611,6 +2611,21 @@
         return String(int(player().serverId, 0));
     }
 
+    /* HOW A WINNING BET IS PAID, for this bettor on this match.
+
+       'pool' is a share of everything staked, split in proportion to what
+       each backer put in. The figure is not knowable while bets are still
+       open -- it depends on who else backs what -- so the panel must not
+       quote one. 'odds' is the fixed multiplier, funded by the server.
+
+       Defaults to 'pool', which is what the server does with an unset value:
+       guessing 'odds' would put a number on screen that nothing pays. */
+    function betMode(match) {
+        var block = betting().betPayout || {};
+        var mode = betAsFighter(match) ? block.fighters : block.spectators;
+        return mode === 'odds' ? 'odds' : 'pool';
+    }
+
     function betPickOptions(match) {
         if (!match) return [];
         if (match.teams === true) {
@@ -2705,8 +2720,14 @@
         stat('Pot goes to', labelFor(PAYOUT_SHORT, betting().payout, 'The winner'));
 
         var spectator = betting().spectatorBets || {};
-        if (spectator.enabled === true) {
-            stat('Side-bet pays', 'x' + String(Number(spectator.oddsMultiplier) || 2));
+        if (spectator.enabled === true || (betting().fighterBets || {}).enabled === true) {
+            /* 'x2' is only true under the fixed-odds rule. Under the pool
+               rule the figure does not exist yet -- it depends on who else
+               backs what -- and printing one anyway is the panel promising
+               something nothing pays. */
+            stat('Bets pay', betMode(match) === 'odds'
+                ? 'x' + String(Number(spectator.oddsMultiplier) || 2)
+                : 'Share of pool');
         }
 
         if (!match) {
@@ -2833,14 +2854,20 @@
         if (has(hint) && usable) {
             if (reason !== null) {
                 hint.textContent = reason;
-            } else if (betAsFighter(match)) {
-                hint.textContent = 'Backing yourself with ' + money(int(state.betAmount, 0))
-                    + ' on top of your entry fee. If you win you take a share of the whole betting '
-                    + 'pool, in proportion to what you staked. If you lose, the stake is gone.';
-            } else {
+            } else if (betMode(match) === 'odds') {
                 var odds = Number((betting().spectatorBets || {}).oddsMultiplier) || 2;
                 hint.textContent = 'If they win you are paid ' + money(int(state.betAmount, 0) * odds)
                     + '. If they lose, the stake is gone.';
+            } else if (betAsFighter(match)) {
+                hint.textContent = 'Backing yourself with ' + money(int(state.betAmount, 0))
+                    + ' on top of your entry fee. If you win you take a share of the whole betting '
+                    + 'pool, in proportion to what you staked — so it is worth more when more '
+                    + 'people backed the other side. If you lose, the stake is gone.';
+            } else {
+                hint.textContent = 'Staking ' + money(int(state.betAmount, 0))
+                    + '. If they win you take a share of the whole betting pool, in proportion to '
+                    + 'what you staked — so it is worth more when more people backed the other '
+                    + 'side. If they lose, the stake is gone.';
             }
         }
 

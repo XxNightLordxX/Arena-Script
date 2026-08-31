@@ -115,7 +115,14 @@ Drag, drop, one line in `server.cfg`, start.
    [crimson_arena] Crimson Arena ready
    ```
 
-6. Replace `html/images/logo.png` with your own. Keep the filename — an image `fxmanifest.lua` does not list is silently not sent to clients and renders as nothing, with no error saying why.
+6. Replace `html/images/logo.png` with your own. Keep the filename — an image `fxmanifest.lua` does not list is silently not sent to clients and renders as nothing, with no error saying why. Then pick how it is used:
+
+   | `Config.UI.logoStyle` | What it draws | Right for |
+   |---|---|---|
+   | `'mark'` (default) | a small square badge to the left of `title` and `subtitle` | a simple icon — a skull, a monogram, a shield |
+   | `'banner'` | the logo across the header, with `title` and `subtitle` **not** drawn | a finished lockup that already contains your server name |
+
+   Use `'banner'` when your logo has your server's name in it. In `'mark'` mode that name is printed twice: once as the panel's title, once as pixels too small to read. A full-scene artwork — skyline, vehicles, effects — is small at panel size either way, and reads far better cropped down to the part that identifies you: the badge alone for `'mark'`, the wordmark strip for `'banner'`.
 
 Player-facing text lives in `locales/en.json`. To translate it, copy the file to `locales/<code>.json`, **add that filename to the `files` block in `fxmanifest.lua`** — a locale file the manifest does not list is never sent to clients — and set ox_lib's locale convar.
 

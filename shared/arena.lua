@@ -1134,6 +1134,15 @@ function Arena.ValidateConfig()
         complain('Config.Match.lives must be at least 1.')
     end
 
+    -- A typo here is silent otherwise: the panel falls back to 'mark' and an
+    -- operator who wrote 'Banner' sees their full lockup drawn as a badge
+    -- the size of a fingernail and concludes the setting does nothing.
+    local logoStyle = Config.UI.logoStyle
+    if logoStyle ~= nil and logoStyle ~= 'mark' and logoStyle ~= 'banner' then
+        complain(("Config.UI.logoStyle is \"%s\" -- it must be 'mark' or 'banner'. Treating it as 'mark'.")
+            :format(tostring(logoStyle)))
+    end
+
     return problems
 end
 

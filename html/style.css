@@ -139,11 +139,32 @@ body {
     border-bottom: 1px solid var(--border);
 }
 
+/* 'mark' -- a small square badge beside the title. The default, and what a
+   simple icon wants. */
 #arena-logo {
     width: 2.6rem;
     height: 2.6rem;
     object-fit: contain;
     flex: none;
+}
+
+/* 'banner' -- the logo IS the header. The title and subtitle are hidden by
+   app.js in this mode, so the whole row is the logo's to use.
+
+   Capped by HEIGHT with the width left free, so the aspect ratio decides the
+   rest: a wide wordmark strip fills the row, a square lockup sits at the
+   left as a large badge, and neither is stretched. contain rather than cover
+   because a logo cropped to fill is a logo with its edges cut off. */
+#arena-header.logo-banner {
+    padding: 0.6rem 1.2rem;
+}
+
+#arena-header.logo-banner #arena-logo {
+    width: auto;
+    height: 4.4rem;
+    max-width: min(28rem, 45%);
+    object-fit: contain;
+    object-position: left center;
 }
 
 #arena-title {

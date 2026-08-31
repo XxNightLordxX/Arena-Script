@@ -935,16 +935,38 @@
     function renderHeader() {
         var ui = cfg().ui || {};
 
+        /* A finished logo already carries the server's name. Printing the
+           title beside it says the same thing twice, in two sizes, one of
+           them too small to read -- so banner mode hands the header over to
+           the image and draws no text of its own. */
+        var banner = ui.logoStyle === 'banner';
+
+        var header = byId('arena-header');
+        if (has(header)) header.classList.toggle('logo-banner', banner);
+
         var title = byId('arena-title');
-        if (has(title)) title.textContent = typeof ui.title === 'string' ? ui.title : 'CRIMSON';
+        if (has(title)) {
+            title.textContent = typeof ui.title === 'string' ? ui.title : 'CRIMSON';
+            show(title, !banner);
+        }
 
         var subtitle = byId('arena-subtitle');
-        if (has(subtitle)) subtitle.textContent = typeof ui.subtitle === 'string' ? ui.subtitle : '';
+        if (has(subtitle)) {
+            subtitle.textContent = typeof ui.subtitle === 'string' ? ui.subtitle : '';
+            show(subtitle, !banner);
+        }
 
         var logo = byId('arena-logo');
         if (has(logo)) {
             var src = typeof ui.logo === 'string' && ui.logo !== '' ? ui.logo : 'images/logo.png';
             if (logo.getAttribute('src') !== src) logo.setAttribute('src', src);
+
+            /* The title is gone in banner mode, so the logo becomes the only
+               thing naming the panel. An empty alt would leave a screen
+               reader with nothing at all to announce. */
+            logo.setAttribute('alt', banner
+                ? (typeof ui.title === 'string' ? ui.title : 'CRIMSON') + ' arena'
+                : '');
         }
 
         var wallet = byId('arena-money');

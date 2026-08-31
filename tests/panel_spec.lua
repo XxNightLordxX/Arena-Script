@@ -23,6 +23,24 @@
 local t = dofile('testkit.lua')
 local Sandbox = dofile('fixtures/sandbox.lua')
 
+--- Reads one file out of html/ as text.
+---
+--- There is no DOM in this suite and adding one would mean a browser
+--- dependency for the whole build. Where a panel behaviour spans files that
+--- cannot see each other -- config names a setting, the stylesheet draws it,
+--- the script decides which -- text is enough to prove the three ends still
+--- agree, which is the failure that actually happens. It does not prove a
+--- browser lays the result out correctly; DEPLOYMENT.md's smoke checklist
+--- is where that is answered.
+--- @param name string -- e.g. 'app.js'
+--- @return string body
+local function readPanelFile(name)
+    local handle = assert(io.open('../html/' .. name, 'r'), 'html/' .. name .. ' is missing')
+    local body = handle:read('a')
+    handle:close()
+    return body
+end
+
 -- ========================================================================
 -- client/ui.lua -- the NUI bridge
 -- ========================================================================
@@ -360,6 +378,64 @@ t.test('with ox_target stopped the marker takes the NPC\'s place and the rest of
     t.equals(f.built.command, f.env.Config.UI.command,
         'the fallback command was never registered')
     t.equals(#f.serverEvents, 0)
+end)
+
+-- ------------------------------------------------------------------------
+-- THE LOGO, AND THE TWO SHAPES ONE CAN BE
+--
+-- Config.UI.logoStyle picks between a small badge beside the title and a
+-- banner that replaces the title. The reason it exists: a finished server
+-- logo usually already contains the server's name, so drawing the title
+-- beside it prints that name twice -- once as text, once as pixels too
+-- small to read.
+--
+-- The setting spans three files that cannot see each other -- config.lua
+-- names it, style.css draws it, app.js decides which -- which is the exact
+-- shape that has silently come apart four times in this build. Asserted
+-- here as text because there is no DOM in this suite; the point is that all
+-- three ends still agree, not that a browser lays it out correctly.
+-- ------------------------------------------------------------------------
+
+t.test('the panel reads logoStyle and hands the header over in banner mode', function()
+    local app = readPanelFile('app.js')
+
+    t.contains(app, "ui.logoStyle === 'banner'",
+        'app.js no longer reads the setting, so choosing banner does nothing')
+    t.contains(app, "classList.toggle('logo-banner'",
+        'app.js reads the setting but never puts the class on the header')
+end)
+
+t.test('banner mode hides the title rather than drawing the name twice', function()
+    local app = readPanelFile('app.js')
+    t.contains(app, 'show(title, !banner)',
+        'the title is still drawn in banner mode, so the server name appears twice')
+    t.contains(app, 'show(subtitle, !banner)')
+end)
+
+t.test('the logo keeps a name for screen readers once it is the only heading', function()
+    -- alt="" is correct while a real <h1> sits beside it and wrong the
+    -- moment the logo IS the heading.
+    local app = readPanelFile('app.js')
+    t.contains(app, "logo.setAttribute('alt'",
+        'the logo never gets an alt, so in banner mode the panel announces nothing')
+end)
+
+t.test('the stylesheet actually draws the class app.js sets', function()
+    local css = readPanelFile('style.css')
+    t.contains(css, '.logo-banner',
+        'app.js sets a class the stylesheet never mentions, so banner mode looks identical to mark')
+    t.contains(css, '#arena-header.logo-banner #arena-logo',
+        'the banner class exists but never resizes the logo')
+end)
+
+t.test('the shipped setting is one the panel understands', function()
+    -- tweaked() covers the typo case; this covers the file as it ships,
+    -- since a default the panel silently ignores is the same defect with
+    -- nobody to blame for it.
+    local env = Sandbox.newArenaEnv()
+    local style = env.Config.UI.logoStyle
+    t.isTrue(style == 'mark' or style == 'banner',
+        'config.lua ships logoStyle = ' .. tostring(style) .. ', which the panel does not recognise')
 end)
 
 print('panel_spec')

@@ -1090,6 +1090,28 @@ Config.UI = {
     title = 'CRIMSON',
     subtitle = 'ROLEPLAY ARENA',
 
+    -- HOW THE LOGO IS USED. Two shapes of logo exist and they want opposite
+    -- treatment, so this picks which one you have:
+    --
+    --   'mark'   -- a small square badge sitting to the LEFT of the title
+    --               above. Right for a simple icon: a skull, a monogram, a
+    --               shield. It is drawn small, so anything with words in it
+    --               is unreadable.
+    --
+    --   'banner' -- the logo spans the top of the panel and `title` and
+    --               `subtitle` are NOT drawn. Right for a finished lockup
+    --               that already contains your server name, because in
+    --               'mark' mode that name is printed twice: once as text,
+    --               once as pixels too small to read.
+    --
+    -- A full-scene artwork -- skyline, vehicles, effects -- will still be
+    -- small at panel size whichever you choose. It reads far better cropped
+    -- down to the part that identifies you: the badge alone for 'mark', the
+    -- wordmark strip for 'banner'.
+    --
+    -- Anything else is treated as 'mark' and a warning is printed at start.
+    logoStyle = 'mark',
+
     -- Drop your own logo in html/images/logo.png and it appears in the
     -- panel header. If you change the FILENAME you must also add the new
     -- file to fxmanifest.lua's `files` block, or it silently will not load.

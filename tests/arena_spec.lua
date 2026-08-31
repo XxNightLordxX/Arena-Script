@@ -702,6 +702,27 @@ end)
 -- ValidateConfig
 -- ======================================================================
 
+t.test("ValidateConfig accepts both logo styles and nothing else", function()
+    -- The panel falls back to 'mark' for anything it does not recognise, so
+    -- a typo here is otherwise SILENT: an operator who wrote 'Banner' sees
+    -- their full lockup drawn as a fingernail-sized badge and concludes the
+    -- setting does nothing rather than that they misspelled it.
+    for _, style in ipairs({ 'mark', 'banner' }) do
+        local arena = tweaked(function(config) config.UI.logoStyle = style end)
+        t.equals(#arena.ValidateConfig(), 0, style .. ' should be accepted')
+    end
+
+    -- Absent is fine too: the key is optional and the panel has a default.
+    local absent = tweaked(function(config) config.UI.logoStyle = nil end)
+    t.equals(#absent.ValidateConfig(), 0, 'an unset logoStyle should not complain')
+
+    local wrong = tweaked(function(config) config.UI.logoStyle = 'Banner' end)
+    local problems = wrong.ValidateConfig()
+    t.equals(#problems, 1, table.concat(problems, ' | '))
+    t.contains(problems[1], 'Banner', 'the complaint should quote what was actually written')
+    t.contains(problems[1], 'mark')
+end)
+
 t.test('ValidateConfig catches a duplicate weapon key', function()
     local arena = tweaked(function(config)
         local weapons = config.Loadouts.weapons

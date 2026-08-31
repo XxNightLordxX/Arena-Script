@@ -154,6 +154,65 @@ end
 
 --- @param src number
 --- @return boolean
+--- Tells whatever handles death on this server that a player is alive again.
+---
+--- WHY THIS IS NEEDED AT ALL. The arena stands its own players back up with
+--- NetworkResurrectLocalPlayer, and for the PED that is the whole job. It is
+--- not the whole job for the SERVER: an ambulance or medical script keeps its
+--- own death state -- metadata, a table, a state bag -- and nothing about
+--- resurrecting a ped tells it anything. So a player who died in a match
+--- walks out of the arena on their feet and their medical script still has
+--- them dead: downed on the next check, or refused a respawn, or simply
+--- unable to do anything until someone revives them.
+---
+--- NOTHING IS GUESSED HERE. Every name comes from config; an empty config
+--- calls nothing. A guessed export or event name is worse than none, because
+--- it detects as wired up and then silently does nothing -- the same reason
+--- the catalogue further down this file is detection-only.
+--- @param src number
+function ArenaDispatch.Revive(src)
+    if type(src) ~= 'number' or src <= 0 then return end
+
+    local revive = (Config.Dispatch or {}).revive
+    if type(revive) ~= 'table' or revive.enabled ~= true then return end
+
+    for _, name in ipairs(revive.serverEvents or {}) do
+        if Arena.IsKey(name) then
+            -- pcall because these are other people's handlers: one that
+            -- throws must not take the arena's exit path down with it and
+            -- strand the player mid-transfer.
+            local ok, err = pcall(TriggerEvent, name, src)
+            if not ok then
+                ArenaLog('revive: server event %s errored (%s). The player is out of the arena either way.',
+                    name, tostring(err))
+            end
+        end
+    end
+
+    for _, name in ipairs(revive.clientEvents or {}) do
+        if Arena.IsKey(name) then
+            TriggerClientEvent(name, src)
+        end
+    end
+
+    for _, entry in ipairs(revive.exports or {}) do
+        local resource = type(entry) == 'table' and entry.resource or nil
+        local method = type(entry) == 'table' and entry.export or nil
+
+        if Arena.IsKey(resource) and Arena.IsKey(method) then
+            if GetResourceState(resource) ~= 'started' then
+                ArenaLog('revive: %s is not started, so %s was not called.', resource, method)
+            else
+                local ok, err = pcall(function() return exports[resource][method](nil, src) end)
+                if not ok then
+                    ArenaLog('revive: exports.%s:%s failed (%s). Check the name and its arguments.',
+                        resource, method, tostring(err))
+                end
+            end
+        end
+    end
+end
+
 function ArenaDispatch.IsPlayerInArena(src)
     return active[src] ~= nil
 end

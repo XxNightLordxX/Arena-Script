@@ -52,7 +52,8 @@
         "team_over_capacity": "That side is full.",
         "team_unavailable": "That side is not in play.",
         "teams_unbalanced": "The sides are too lopsided to start.",
-        "too_many_matches": "Too many matches already running. Wait for one to finish."
+        "too_many_matches": "Too many matches already running. Wait for one to finish.",
+        "host_picks_loadout": "The host picks the loadout for this match."
     },
     "match": {
         "aborted": "Match called off. Every stake went back.",

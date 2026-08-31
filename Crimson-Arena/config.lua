@@ -401,6 +401,23 @@ Config.Teams = {
 Config.Loadouts = {
     -- Players choose their own weapons. With this off, everyone is given
     -- `Config.Loadouts.fixed` instead and the picker is hidden.
+    -- WHO PICKS, and this is a rule about the match rather than a menu
+    -- option -- it decides whether an arena round is a test of skill or a
+    -- test of who picked the better gun.
+    --
+    --   'host'   -- the host picks ONCE and every player in that match
+    --               fights with it. Everyone carries the same weapons, so
+    --               the only variable left is the players. This is the
+    --               default. The picker is read-only for everyone else, and
+    --               the server refuses their request as well as the panel
+    --               hiding it. Somebody who joins after the host has picked
+    --               inherits it rather than starting on the default.
+    --
+    --   'player' -- everybody picks their own from the lists below.
+    --
+    -- Anything else is treated as 'host' and a warning is printed at start.
+    chooser = 'host',
+
     allowChoose = true,
 
     -- How many SHOOTABLE weapons one player may take. Raise it for
@@ -1441,6 +1458,48 @@ Config.Dispatch = {
     -- server. Everything it changes is restored on the way out, wanted stars
     -- included: walking into an arena is not an amnesty.
     -- ==================================================================
+    -- ---- TELLING YOUR AMBULANCE SCRIPT THEY ARE ALIVE ----------------
+    -- SEPARATE FROM EVERYTHING ELSE IN THIS BLOCK, and the one setting
+    -- most likely to be the reason a player "is still dead" after a match.
+    --
+    -- The arena stands its own players back up itself, and for the
+    -- character model that is the whole job. It is not the whole job for
+    -- your server: an ambulance or medical script keeps its OWN record of
+    -- who is dead -- player metadata, a table, a state bag -- and nothing
+    -- about standing a body up tells it anything. So a player who died in
+    -- a match walks back to the lobby on their feet while that script
+    -- still has them down, and they stay stuck until somebody revives
+    -- them properly.
+    --
+    -- Name whatever your script uses to revive somebody and it will be
+    -- called for that player twice: when the arena respawns them
+    -- mid-match, and again when they leave.
+    --
+    -- NOTHING IS GUESSED AND NOTHING SHIPS ON. There is no default here
+    -- for the same reason the catalogue below only detects: an event name
+    -- that is close but not right looks wired up and does nothing.
+    revive = {
+        enabled = false,
+
+        -- Server events. Each is triggered with the player's server id.
+        --     serverEvents = { 'my_ambulance:server:revivePlayer' },
+        serverEvents = {},
+
+        -- Client events. Each is sent to that player only, with no
+        -- arguments -- the client already knows who it is.
+        --     clientEvents = { 'my_ambulance:client:revive' },
+        clientEvents = {},
+
+        -- Exports, called as exports.<resource>:<export>(src).
+        --     exports = {
+        --         { resource = 'my_ambulance', export = 'RevivePlayer' },
+        --     },
+        -- A resource that is not started, or an export that errors, is
+        -- reported once in the console and skipped. It will not stop a
+        -- match ending.
+        exports = {},
+    },
+
     vanillaPolice = {
         enabled = false,
 

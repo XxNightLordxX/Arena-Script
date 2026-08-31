@@ -155,26 +155,43 @@ end
 local function applyLoadout(ped, loadout)
     if type(loadout) ~= 'table' then return end
 
-    if Config.Match.stripWeaponsOnEntry == true then
+    -- WHO OWNS THE WEAPON. With ox_inventory running, a weapon is an item and
+    -- ox_inventory reconciles the ped against the inventory continuously:
+    -- anything handed to the ped here that has no item behind it is taken
+    -- back off the player within moments, and SetPedAmmo goes the same way.
+    -- server/ammo.lua adds the item instead, magazine and all, and this side
+    -- keeps its hands off -- two writers for one weapon is how you get a
+    -- player standing in a live round unarmed.
+    local inventoryOwnsWeapons = GetResourceState('ox_inventory') == 'started'
+
+    if Config.Match.stripWeaponsOnEntry == true and not inventoryOwnsWeapons then
+        -- Skipped under ox_inventory as well: the door already emptied the
+        -- player's inventory, and wiping the ped afterwards would delete the
+        -- arena weapon the server had just issued as an item.
         RemoveAllPedWeapons(ped, true)
         givenWeapons = {}
     end
 
-    for _, entry in ipairs(loadout.weapons or {}) do
-        local hash = joaat(entry.weapon)
-        GiveWeaponToPed(ped, hash, entry.ammo, false, false)
-        SetPedAmmo(ped, hash, entry.ammo)
+    if not inventoryOwnsWeapons then
+        for _, entry in ipairs(loadout.weapons or {}) do
+            local hash = joaat(entry.weapon)
+            GiveWeaponToPed(ped, hash, entry.ammo, false, false)
+            SetPedAmmo(ped, hash, entry.ammo)
 
-        for _, component in ipairs(entry.components or {}) do
-            GiveWeaponComponentToPed(ped, hash, joaat(component))
-        end
-        if (entry.tint or 0) > 0 then
-            SetPedWeaponTintIndex(ped, hash, entry.tint)
-        end
+            for _, component in ipairs(entry.components or {}) do
+                GiveWeaponComponentToPed(ped, hash, joaat(component))
+            end
+            if (entry.tint or 0) > 0 then
+                SetPedWeaponTintIndex(ped, hash, entry.tint)
+            end
 
-        givenWeapons[#givenWeapons + 1] = hash
+            givenWeapons[#givenWeapons + 1] = hash
+        end
     end
 
+    -- Health and armour are the ped's either way -- no inventory resource
+    -- has an opinion about them, and starting every round full is a rule
+    -- rather than a loadout choice.
     SetEntityHealth(ped, loadout.health or Config.Loadouts.health)
     SetPedArmour(ped, loadout.armor or 0)
 end

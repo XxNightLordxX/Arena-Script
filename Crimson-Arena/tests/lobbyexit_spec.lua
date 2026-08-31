@@ -104,6 +104,13 @@ local function newServer(mutate)
                 flags[src] = nil
                 dispatch.cleared[#dispatch.cleared + 1] = src
             end,
+            -- Recorded like the rest: the exit path now tells whatever handles
+            -- death that the player is alive again, and a stub missing it is a
+            -- nil call rather than a silent no-op.
+            Revive = function(src)
+                dispatch.revived = dispatch.revived or {}
+                dispatch.revived[#dispatch.revived + 1] = src
+            end,
             IsPlayerInArena = function(src) return flags[src] ~= nil end,
             GetPlayerMatchId = function(src) return flags[src] end,
             EnterBucket = function(src, matchId) buckets[src] = matchId end,

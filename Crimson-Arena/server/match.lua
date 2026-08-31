@@ -610,6 +610,15 @@ local function sendExitArena(src, payload)
     -- instance they are leaving.
     ArenaDispatch.ExitBucket(src)
     instanced[src] = nil
+
+    -- The ped is stood back up by the client on the way out, but a medical
+    -- or ambulance script keeps its OWN death state and nothing about
+    -- resurrecting a ped reaches it. Without this a player who died in the
+    -- match leaves the arena on their feet and is still dead as far as that
+    -- script is concerned. Fired before the client is told, so the state is
+    -- already clean when they land in the lobby.
+    ArenaDispatch.Revive(src)
+
     TriggerClientEvent('crimson_arena:client:exitArena', src, payload)
 end
 
@@ -761,6 +770,11 @@ local function scheduleRespawn(match, player)
         local loadout = loadoutFor(current, entry)
         entry.loadout = loadout
         entry.alive = true
+
+        -- Same reason as the exit path: the arena puts them back on their
+        -- feet, and the script that recorded the death has to be told too or
+        -- the player fights the rest of the round flagged as a casualty.
+        ArenaDispatch.Revive(src)
 
         TriggerClientEvent('crimson_arena:client:respawn', src, {
             spawn = toPoint(Arena.PickSpawn(current.arenaKey, teamOf(current, entry), current.spawnCursor)),

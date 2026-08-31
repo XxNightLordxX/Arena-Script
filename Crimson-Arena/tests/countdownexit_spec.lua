@@ -86,6 +86,10 @@ local function newServer()
         ArenaDispatch = {
             Set = function(src) dispatch.set[#dispatch.set + 1] = src end,
             Clear = function(src) dispatch.cleared[#dispatch.cleared + 1] = src end,
+            -- Recorded like the rest: the exit path now tells whatever handles
+            -- death that the player is alive again, and a stub missing it is a
+            -- nil call rather than a silent no-op.
+            Revive = function(src) dispatch.revived = (dispatch.revived or {}); dispatch.revived[#dispatch.revived + 1] = src end,
             IsPlayerInArena = function() return false end,
             EnterBucket = function(src) dispatch.bucketIn[#dispatch.bucketIn + 1] = src end,
             ExitBucket = function(src) dispatch.bucketOut[#dispatch.bucketOut + 1] = src end,

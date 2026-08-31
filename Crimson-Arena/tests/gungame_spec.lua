@@ -136,6 +136,10 @@ local function newFixture(mutate)
         ArenaDispatch = {
             Set = function() end,
             Clear = function() end,
+            -- Recorded like the rest: the exit path now tells whatever handles
+            -- death that the player is alive again, and a stub missing it is a
+            -- nil call rather than a silent no-op.
+            Revive = function() end,
             EnterBucket = function() end,
             ExitBucket = function() end,
             GetBucket = function() end,

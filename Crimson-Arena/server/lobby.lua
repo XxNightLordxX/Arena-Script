@@ -155,6 +155,29 @@ end
 --- @param src number
 --- @return table|nil match
 --- @return table|nil player
+--- The loadout a player joining `match` should start with.
+---
+--- In host mode that is whatever the host is currently holding, so a late
+--- joiner is armed the same as everybody else rather than being the one
+--- player carrying the default. A fresh resolve otherwise.
+---
+--- Always a NEW table. Handing back the host's own would tie two players'
+--- loadouts together for the rest of the match, and gun game rewrites a
+--- player's loadout in place as they climb.
+--- @param match table
+--- @return table loadout
+local function hostLoadoutFor(match)
+    if Arena.LoadoutChooser() ~= 'host' then return (Arena.ResolveLoadout(nil)) end
+
+    local host = match.players and match.players[match.hostSource]
+    if not host or type(host.loadout) ~= 'table' then return (Arena.ResolveLoadout(nil)) end
+
+    -- Re-resolved from the host's own loadout rather than deep-copied: it
+    -- goes back through the same validation every other loadout passes, so a
+    -- weapon disabled since the host picked it cannot reach a joiner.
+    return (Arena.ResolveLoadout(host.loadout))
+end
+
 local function findPlayer(src)
     local match = ArenaLobby.GetByPlayer(src)
     local player = match and match.players[src] or nil
@@ -365,6 +388,11 @@ local function snapshotConfig()
 
         loadouts = {
             allowChoose = Config.Loadouts.allowChoose ~= false,
+            -- Sent for the same reason ammoTypeSlots below is: the SERVER
+            -- enforces it, refusing a non-host's request outright, so a
+            -- panel that does not know would offer every player a picker
+            -- and then reject what they chose with no explanation on screen.
+            chooser = Arena.LoadoutChooser(),
             weaponSlots = math.max(0, Arena.ToInt(Config.Loadouts.weaponSlots) or 1),
             meleeSlots = math.max(0, Arena.ToInt(Config.Loadouts.meleeSlots) or 1),
             -- Sent because the SERVER enforces it. Arena.ResolveLoadout caps
@@ -725,8 +753,11 @@ function ArenaLobby.Join(src, matchId, teamKey)
         team = team,
         ready = false,
         -- Resolved rather than nil so somebody who never opens the loadout
-        -- tab still walks in carrying the operator's alwaysGive list.
-        loadout = (Arena.ResolveLoadout(nil)),
+        -- tab still walks in carrying the operator's alwaysGive list. In
+        -- host mode the host's pick is inherited instead, so somebody who
+        -- joins after it was made is armed the same as everyone else rather
+        -- than being the one player holding the default.
+        loadout = hostLoadoutFor(match),
         kills = 0,
         deaths = 0,
         alive = true,
@@ -991,6 +1022,15 @@ function ArenaLobby.SetLoadout(src, request)
     if not match then return false, 'error.not_in_match' end
     if match.state ~= 'lobby' then return false, 'error.match_in_progress' end
 
+    -- ONE LOADOUT FOR THE WHOLE MATCH, when the operator asked for that.
+    -- The panel greys the picker out for everyone but the host, but the
+    -- panel is a suggestion and this is the rule: a crafted request from
+    -- anyone else is refused here, not merely undrawn there.
+    local hostPicks = Arena.LoadoutChooser() == 'host'
+    if hostPicks and match.hostSource ~= target then
+        return false, 'error.host_picks_loadout'
+    end
+
     -- What is STORED is what Arena.ResolveLoadout allowed, never the
     -- request: the panel's copy is a preview, this one is handed out.
     local loadout, rejected = Arena.ResolveLoadout(type(request) == 'table' and request or nil)
@@ -1003,7 +1043,21 @@ function ArenaLobby.SetLoadout(src, request)
         ArenaNotifyKey(target, 'notify.loadout_rejected', 'warning', table.concat(rejected, ', '))
     end
 
+    if hostPicks then
+        -- Everyone gets the host's pick, including anyone who joined before
+        -- it was made. Copied per player rather than shared by reference:
+        -- gun game rewrites a player's loadout as they climb the ladder, and
+        -- one shared table would climb it for the whole match at once.
+        for _, other in pairs(match.players) do
+            if other.src ~= target then
+                other.loadout = (Arena.ResolveLoadout(request))
+                pushState(other.src)
+            end
+        end
+    end
+
     -- Nobody else's snapshot changed: a loadout is not in the match list.
+    -- (In host mode the loop above has already told the ones that did.)
     pushState(target)
     return true, nil
 end

@@ -128,6 +128,16 @@ local function newServer(pockets, mutate)
             table.sort(names)
             return table.concat(names, ',')
         end,
+        --- One item as it actually sits in the inventory, metadata and all.
+        --- `carrying` flattens to names, which is the right shape for asking
+        --- WHAT somebody holds and useless for asking what state it is in --
+        --- and a weapon's magazine lives in its metadata.
+        itemNamed = function(src, name)
+            for _, item in ipairs(inv[src] or {}) do
+                if item.name == name then return item end
+            end
+            return nil
+        end,
         stashContents = function(src)
             local names = {}
             for _, item in ipairs(stashes['crimson_arena_CID' .. tostring(src)] or {}) do
@@ -184,9 +194,17 @@ t.test('everything the arena gave them is destroyed on the way out', function()
     local s = newServer({ [1] = OWN }, function(c) c.Loadouts.ammoItems.enabled = true end)
     s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 250))
 
-    t.equals(s.carrying(1), 'ammo-rifle-ap', 'in the arena they have only the issued round')
+    -- THE WEAPON IS AN ITEM TOO, and this line is the change. On an
+    -- ox_inventory server a weapon handed to the ped is reconciled straight
+    -- back off the player, because ox_inventory decides what a ped holds
+    -- from what the inventory contains -- and the door has just emptied it.
+    -- So the arena issues the weapon here, as an item, and the client no
+    -- longer touches the ped. Before this the assertion read
+    -- 'ammo-rifle-ap' alone and every player spawned unarmed.
+    t.equals(s.carrying(1), 'WEAPON_TEST,ammo-rifle-ap',
+        'in the arena they have the issued weapon and the issued round, and nothing of their own')
     s.ammo.Reclaim(1, 'match ended')
-    t.equals(s.carrying(1), 'phone,water', 'and none of it leaves with them')
+    t.equals(s.carrying(1), 'phone,water', 'and none of it leaves with them -- weapon included')
 end)
 
 t.test('ammunition LOOTED off a body does not leave either', function()
@@ -204,10 +222,97 @@ end)
 t.test('a player who owned nothing gets nothing back', function()
     local s = newServer(nil, function(c) c.Loadouts.ammoItems.enabled = true end)
     s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
-    t.equals(s.carrying(1), 'ammo-rifle')
+    t.equals(s.carrying(1), 'WEAPON_TEST,ammo-rifle', 'the weapon is issued as an item as well')
 
     s.ammo.Reclaim(1)
     t.equals(s.carrying(1), '')
+end)
+
+-- ========================================================================
+-- THE WEAPON IS AN ITEM
+--
+-- The bug this covers spawned every player in the arena unarmed, on the
+-- exact configuration this resource was written for.
+--
+-- Two of my own features collided. ox_inventory owns weapons: it decides
+-- what a ped holds from what the inventory contains, and reconciles the two
+-- continuously. The door empties the player's inventory into a stash on
+-- entry. So a weapon handed to the ped by the client was a weapon with no
+-- item behind it, and ox_inventory took it straight back off them -- with
+-- nothing in any console, because neither half was doing anything wrong.
+--
+-- The weapon is issued as an ITEM now, from the server, magazine in its
+-- metadata, and the client does not touch the ped when ox_inventory is
+-- running. These tests are about the item, which is the part that decides
+-- whether a player is armed.
+-- ========================================================================
+
+t.test('the loadout weapon is handed over as an item, not left to the ped', function()
+    -- Deliberately with ammo items OFF -- the shipped setting. Weapons must
+    -- not be behind that toggle: putting them there is what would leave a
+    -- default install issuing nobody anything at all.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.equals(s.carrying(1), 'WEAPON_TEST',
+        'the weapon did not arrive as an item, so ox_inventory will disarm the player on sight')
+end)
+
+t.test('the magazine rides in the item metadata rather than being set on the ped', function()
+    -- SetPedAmmo is reconciled away exactly like the weapon, so a weapon
+    -- whose rounds are not in its metadata arrives empty.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    local weapon = s.itemNamed(1, 'WEAPON_TEST')
+    t.isNotNil(weapon, 'no weapon item to inspect')
+    t.equals(weapon.metadata and weapon.metadata.ammo, 60,
+        'the weapon was issued without its magazine')
+end)
+
+t.test('melee is issued with no ammo in its metadata at all', function()
+    -- Not zero -- absent. ox_inventory reads a missing ammo key as "this is
+    -- not an ammo weapon"; a present zero reads as an empty one.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', {
+        weapons = { { key = 'blade', weapon = 'WEAPON_TEST', ammo = 0, components = {} } },
+        armor = 100, health = 200,
+    })
+
+    local weapon = s.itemNamed(1, 'WEAPON_TEST')
+    t.isNotNil(weapon)
+    t.isNil(weapon.metadata and weapon.metadata.ammo,
+        'a blade was issued carrying a magazine')
+end)
+
+t.test('DEFECT: with the door OFF the arena weapon has to be taken back by name', function()
+    -- The door is what usually destroys the arena kit: it clears the whole
+    -- inventory on the way out. Switch it off and nothing does -- Reclaim
+    -- returned early the moment it found no stash, so every weapon the arena
+    -- issued stayed in the player's pockets, permanently, and the arena
+    -- became a weapon shop.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.equals(s.carrying(1), 'WEAPON_TEST,phone,water',
+        'with the door off they keep their own kit AND get the arena weapon')
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.carrying(1), 'phone,water',
+        'the arena weapon left with them -- the arena is now a way to acquire guns')
+end)
+
+t.test('and taking it back does not touch anything of the player\'s own', function()
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.equals(s.carrying(1), 'phone,water', 'their own kit is untouched, in order')
 end)
 
 -- ========================================================================

@@ -1048,6 +1048,21 @@ end
 -- ======================================================================
 
 --- @return string[] problems -- empty when the config is clean
+--- Who picks the loadout everyone fights with.
+---
+--- 'host'   -- the host picks once and every player in the match carries it.
+--- 'player' -- each player picks their own.
+---
+--- One reader for both realms so the panel and the server can never disagree
+--- about whose choice counts, and anything unrecognised falls back to 'host'
+--- -- the safer of the two, because it cannot let a player arm themselves on
+--- a server that meant to take that decision away from them.
+--- @return string chooser
+function Arena.LoadoutChooser()
+    local chooser = (Config.Loadouts or {}).chooser
+    return chooser == 'player' and 'player' or 'host'
+end
+
 function Arena.ValidateConfig()
     local problems = {}
     local function complain(message)
@@ -1137,6 +1152,12 @@ function Arena.ValidateConfig()
     -- A typo here is silent otherwise: the panel falls back to 'mark' and an
     -- operator who wrote 'Banner' sees their full lockup drawn as a badge
     -- the size of a fingernail and concludes the setting does nothing.
+    local chooser = (Config.Loadouts or {}).chooser
+    if chooser ~= nil and chooser ~= 'host' and chooser ~= 'player' then
+        complain(("Config.Loadouts.chooser is \"%s\" -- it must be 'host' or 'player'. Treating it as 'host'.")
+            :format(tostring(chooser)))
+    end
+
     local logoStyle = Config.UI.logoStyle
     if logoStyle ~= nil and logoStyle ~= 'mark' and logoStyle ~= 'banner' then
         complain(("Config.UI.logoStyle is \"%s\" -- it must be 'mark' or 'banner'. Treating it as 'mark'.")

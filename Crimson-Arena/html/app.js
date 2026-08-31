@@ -449,8 +449,23 @@
         return Math.max(0, int((cfg().loadouts || {}).ammoTypeSlots, 0));
     }
 
+    /* 'host' means one loadout for the whole match, picked by the host and
+       carried by everybody. Anything unrecognised falls back to 'host', the
+       same way the server's reader does -- the two must agree or the panel
+       offers a picker whose every request comes back refused. */
+    function hostPicksLoadout() {
+        return (cfg().loadouts || {}).chooser !== 'player';
+    }
+
     function canChooseLoadout() {
-        return (cfg().loadouts || {}).allowChoose !== false;
+        if ((cfg().loadouts || {}).allowChoose === false) return false;
+
+        /* In host mode the picker belongs to the host alone. Read-only for
+           everyone else rather than hidden: what it shows is what they will
+           be handed, which is worth seeing even when it cannot be changed. */
+        if (hostPicksLoadout()) return player().isHost === true;
+
+        return true;
     }
 
     /* What the money in this panel is called -- 'cash', 'bank', whatever the
@@ -1657,10 +1672,22 @@
         clear(host);
 
         if (!canChooseLoadout()) {
-            host.appendChild(makeEl('div', 'hint',
-                'This server issues a fixed loadout. The panel on the right is what you will be '
-                + 'handed when a round starts; nothing here can be changed.'));
+            /* Two different reasons a picker is read-only, and telling them
+               apart matters: one is permanent and one lasts until you host a
+               match of your own. */
+            host.appendChild(makeEl('div', 'hint', hostPicksLoadout()
+                ? 'The host picks one loadout and everyone in the match fights with it, so every '
+                  + 'player carries the same weapons. What you see here is what you will be handed '
+                  + 'when the round starts. Host a match yourself to choose it.'
+                : 'This server issues a fixed loadout. The panel on the right is what you will be '
+                  + 'handed when a round starts; nothing here can be changed.'));
             return;
+        }
+
+        if (hostPicksLoadout()) {
+            host.appendChild(makeEl('div', 'hint',
+                'You are the host, so this is the loadout EVERY player in your match will carry — '
+                + 'yourself included. Anyone who joins after you pick inherits it.'));
         }
 
         var guns = weaponSlots();

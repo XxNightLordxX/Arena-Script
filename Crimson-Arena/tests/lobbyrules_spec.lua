@@ -135,6 +135,10 @@ local function newArena(wallets, mutate, jobs)
         ArenaDispatch = {
             Set = function() end,
             Clear = function() end,
+            -- Recorded like the rest: the exit path now tells whatever handles
+            -- death that the player is alive again, and a stub missing it is a
+            -- nil call rather than a silent no-op.
+            Revive = function() end,
             IsPlayerInArena = function() return false end,
             EnterBucket = function() end,
             ExitBucket = function() end,
@@ -648,6 +652,111 @@ t.test('createJobs and joinJobs stay two separate lists', function()
 
     server.fire('createMatch', 2, { arenaKey = 'beach', modeKey = 'ffa', entryFee = 1000 })
     t.equals(#server.lobby.All(), 1, 'an unlisted job opened a second match')
+end)
+
+-- ========================================================================
+-- ONE LOADOUT FOR THE WHOLE MATCH
+--
+-- Config.Loadouts.chooser = 'host' makes the host pick once for everybody,
+-- so a round is decided by the players rather than by who picked the better
+-- gun. The panel greys the picker out for everyone else, but the panel is a
+-- suggestion: these tests are about the server, which is the only thing that
+-- can actually refuse.
+-- ========================================================================
+
+--- What one player will be handed when the round starts.
+--- @return string
+local function weaponsOf(server, matchId, src)
+    local player = server.lobby.Get(matchId).players[src]
+    local names = {}
+    for _, entry in ipairs(player.loadout.weapons or {}) do
+        names[#names + 1] = entry.key or entry.weapon
+    end
+    table.sort(names)
+    return table.concat(names, ',')
+end
+
+--- A loadout request naming one weapon by its config key.
+local function pick(key)
+    return { weapons = { { key = key } } }
+end
+
+t.test("in host mode the host's pick is what every player carries", function()
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Loadouts.chooser = 'host'
+    end)
+    local matchId = openLobby(server, 0, { 1, 2, 3 })
+
+    server.fire('setLoadout', 1, pick('sniper'))
+
+    local host = weaponsOf(server, matchId, 1)
+    t.contains(host, 'sniper', 'the host did not get their own pick')
+    t.equals(weaponsOf(server, matchId, 2), host, 'player 2 is carrying something else')
+    t.equals(weaponsOf(server, matchId, 3), host, 'player 3 is carrying something else')
+end)
+
+t.test('a player who is not the host cannot change it, panel or no panel', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Loadouts.chooser = 'host'
+    end)
+    local matchId = openLobby(server, 0, { 1, 2 })
+
+    server.fire('setLoadout', 1, pick('sniper'))
+    local before = weaponsOf(server, matchId, 2)
+
+    -- A crafted request, exactly as a modified client would send it.
+    server.fire('setLoadout', 2, pick('pistol'))
+
+    t.equals(weaponsOf(server, matchId, 2), before,
+        'a guest armed themselves past the host')
+    t.equals(weaponsOf(server, matchId, 1), before,
+        "and did not rewrite the host's either")
+end)
+
+t.test('somebody who joins after the pick inherits it rather than the default', function()
+    -- The one that would otherwise be missed: everything looks right for the
+    -- players who were present, and the late joiner is the only one on the
+    -- shipped default, holding a different gun to the rest of the match.
+    local server = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Loadouts.chooser = 'host'
+    end)
+    local matchId = openLobby(server, 0, { 1 })
+
+    server.fire('setLoadout', 1, pick('sniper'))
+    server.fire('joinMatch', 2, { matchId = matchId })
+
+    t.equals(weaponsOf(server, matchId, 2), weaponsOf(server, matchId, 1),
+        'the late joiner is armed differently to everybody else')
+end)
+
+t.test('the copies are separate tables, so one player cannot climb for everyone', function()
+    -- Gun game rewrites a player's loadout in place as they climb the
+    -- ladder. Share one table between players and the first kill promotes
+    -- the entire match at once.
+    local server = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Loadouts.chooser = 'host'
+    end)
+    local matchId = openLobby(server, 0, { 1, 2 })
+    server.fire('setLoadout', 1, pick('sniper'))
+
+    local match = server.lobby.Get(matchId)
+    t.isFalse(match.players[1].loadout == match.players[2].loadout,
+        'two players share one loadout table')
+end)
+
+t.test("in player mode everybody picks their own again", function()
+    local server = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Loadouts.chooser = 'player'
+    end)
+    local matchId = openLobby(server, 0, { 1, 2 })
+
+    server.fire('setLoadout', 1, pick('sniper'))
+    server.fire('setLoadout', 2, pick('pistol'))
+
+    t.contains(weaponsOf(server, matchId, 1), 'sniper')
+    t.contains(weaponsOf(server, matchId, 2), 'pistol')
+    t.isFalse(weaponsOf(server, matchId, 1) == weaponsOf(server, matchId, 2),
+        'host mode is still in force with chooser set to player')
 end)
 
 os.exit(t.summary())

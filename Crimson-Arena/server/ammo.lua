@@ -221,6 +221,96 @@ local function restore(src, record)
 end
 
 -- ======================================================================
+-- THE ARENA'S WEAPONS
+--
+-- WHY THE SERVER HANDS THESE OUT AND NOT THE CLIENT. Without an inventory
+-- resource a weapon is a property of the ped, and GiveWeaponToPed on the
+-- client is the whole story. With ox_inventory it is not: a weapon is an
+-- ITEM, and ox_inventory continuously reconciles what the ped holds against
+-- what the inventory contains. Give the ped a weapon it has no item for and
+-- ox_inventory takes it straight back off them.
+--
+-- That is invisible until the door is switched on, and then it is total: the
+-- door empties the player's inventory into a stash, so every arena weapon is
+-- one ox_inventory has no item for, and every player spawns unarmed.
+--
+-- So on an ox_inventory server the weapon is added as an item here, with the
+-- magazine in its metadata, and client/match.lua does not touch the ped.
+-- ======================================================================
+
+--- Weapon items handed out, per match, per player. Only consulted when the
+--- door is OFF: with it on, the whole inventory is cleared on the way out and
+--- these go with it, tracked or not.
+--- @type table<string, table<number, table[]>>
+local issuedWeapons = {}
+
+--- Gives one player the loadout's weapons as ox_inventory items.
+--- @param ox table -- ox_inventory exports
+--- @param src number
+--- @param matchId string
+--- @param loadout table
+--- @return string[] failed -- weapon keys that could not be handed over
+local function issueWeapons(ox, src, matchId, loadout)
+    local failed = {}
+    local given = {}
+
+    for _, entry in ipairs(loadout.weapons or {}) do
+        local name = entry.weapon
+        if Arena.IsKey(name) then
+            -- The magazine rides in metadata rather than being set on the ped
+            -- afterwards: on an ox_inventory server SetPedAmmo is reconciled
+            -- away exactly like the weapon itself. Melee carries no ammo and
+            -- ResolveAmmo already returns 0 for it, which ox_inventory reads
+            -- as "not an ammo weapon" rather than "an empty one".
+            local metadata = {}
+            local rounds = Arena.ToInt(entry.ammo) or 0
+            if rounds > 0 then metadata.ammo = rounds end
+
+            -- BOTH have to be true, for the same reason the ammo items below
+            -- check both: a pcall that did not throw is not ox_inventory
+            -- saying yes. It returns false for an item it does not know, and
+            -- a weapon missing from an operator's ox_inventory data is the
+            -- single most likely thing to go wrong here.
+            local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
+            if ok and accepted ~= false then
+                given[#given + 1] = { name = name, metadata = metadata }
+            else
+                failed[#failed + 1] = entry.key or name
+                ArenaLog('weapons: ox_inventory would not give %s to %s. Check that item exists in your ox_inventory weapon data -- the player is in the arena unarmed.',
+                    tostring(name), tostring(src))
+            end
+        end
+    end
+
+    issuedWeapons[matchId] = issuedWeapons[matchId] or {}
+    issuedWeapons[matchId][src] = given
+
+    return failed
+end
+
+--- Takes back weapon items when the door did not take everything anyway.
+--- @param ox table
+--- @param src number
+local function reclaimWeapons(ox, src)
+    for _, byPlayer in pairs(issuedWeapons) do
+        local given = byPlayer[src]
+        if given then
+            for _, item in ipairs(given) do
+                pcall(function() return ox:RemoveItem(src, item.name, 1, item.metadata) end)
+            end
+            byPlayer[src] = nil
+        end
+    end
+end
+
+--- Forgets a player's weapon record without removing anything -- for the
+--- door path, where the inventory was cleared wholesale.
+--- @param src number
+local function forgetWeapons(src)
+    for _, byPlayer in pairs(issuedWeapons) do byPlayer[src] = nil end
+end
+
+-- ======================================================================
 -- ISSUING
 -- ======================================================================
 
@@ -249,6 +339,15 @@ function ArenaAmmo.Issue(src, matchId, loadout)
             stashed[src] = { stash = stashFor(citizenid), matchId = matchId, citizenid = citizenid }
             ArenaDebug('door: stashed %s\'s kit for match %s', tostring(src), tostring(matchId))
         end
+    end
+
+    -- THE WEAPONS, and note where this sits: BEFORE the ammo-items check
+    -- below. Ammo items are an opt-in feature that ships off; the weapons
+    -- are the arena. Putting this behind that toggle is what would leave an
+    -- ox_inventory server issuing nobody anything at all.
+    if ox then
+        local missingWeapons = issueWeapons(ox, src, matchId, loadout)
+        for _, key in ipairs(missingWeapons) do failed[#failed + 1] = key end
     end
 
     if not ArenaAmmo.IsEnabled() then return failed end
@@ -298,10 +397,29 @@ function ArenaAmmo.Reclaim(src, reasonKey)
     if type(src) ~= 'number' or src <= 0 then return 0 end
 
     local record = stashed[src]
-    if not record then return 0 end
+
+    -- NO STASH IS NOT NOTHING TO DO. With the door switched off a player
+    -- keeps their own inventory and is simply handed the arena's weapons on
+    -- top of it -- so there is no wholesale clear on the way out, and the
+    -- arena's weapons are only removed if something removes them by name.
+    -- Returning early here left every issued weapon in the player's pockets,
+    -- permanently, on the one setting where nothing else would catch it.
+    if not record then
+        local ox = inventory()
+        if ox then reclaimWeapons(ox, src) end
+        return 0
+    end
+
     stashed[src] = nil
 
     local ok = restore(src, record)
+
+    -- Forgotten rather than removed: restore() clears the whole inventory
+    -- before putting their own kit back, so the arena's weapons are already
+    -- gone and removing them again would be removing items that no longer
+    -- exist -- or, worse, their own if a name happened to collide.
+    forgetWeapons(src)
+
     ArenaDebug('door: %s left (%s), kit %s', tostring(src), tostring(reasonKey),
         ok and 'returned' or 'STILL STASHED')
     return ok and 1 or 0
@@ -313,15 +431,28 @@ end
 function ArenaAmmo.ReclaimAll(matchId, reasonKey)
     if not Arena.IsKey(matchId) then return 0 end
 
-    local sources = {}
-    for src, record in pairs(stashed) do
-        if record.matchId == matchId then sources[#sources + 1] = src end
+    -- The UNION of both records, for the same reason Reclaim now handles
+    -- both: with the door off nobody has a stash, so walking `stashed` alone
+    -- would walk an empty table and reclaim nothing from a match where every
+    -- player is carrying arena weapons.
+    local sources, seen = {}, {}
+    local function add(src)
+        if seen[src] then return end
+        seen[src] = true
+        sources[#sources + 1] = src
     end
+
+    for src, record in pairs(stashed) do
+        if record.matchId == matchId then add(src) end
+    end
+    for src in pairs(issuedWeapons[matchId] or {}) do add(src) end
+
     for _, src in ipairs(sources) do
         ArenaAmmo.Reclaim(src, reasonKey)
     end
 
     issued[matchId] = nil
+    issuedWeapons[matchId] = nil
     return #sources
 end
 

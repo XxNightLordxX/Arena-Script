@@ -1,17 +1,23 @@
 --[[
     crimson_arena/tests/panel_spec.lua
 
-    The real client/ui.lua and client/main.lua, loaded into a sandbox.
+    The real client/ui.lua, client/main.lua and client/match.lua, loaded
+    into a sandbox.
 
-    Both files are deliberately thin -- they forward, they do not decide --
-    so what is worth testing about them is the wiring itself, and wiring is
-    the part that fails silently. An event the server fires that no handler
+    The first two are deliberately thin -- they forward, they do not decide
+    -- so what is worth testing about them is the wiring itself, and wiring
+    is the part that fails silently. An event the server fires that no handler
     answers looks exactly like a feature nobody built: the results board the
     README promises is computed, sent, and dropped on the floor, with nothing
     in either console. A state request made on every client's behalf at start
     looks exactly like nothing at all, right up until the server is
     serialising the whole match list to every player on it four times a
     second because it read that request as "my panel is open".
+
+    client/match.lua is here for the opposite reason: it DOES decide, once
+    per frame, and the decision it gets wrong is a timing one -- which phase
+    of a round a loop is allowed to run in. Its section is at the bottom,
+    with its own fixture and its own note.
 
     WHAT IS STUBBED, and no more than that: the NUI bridge (SendNUIMessage,
     SetNuiFocus, RegisterNUICallback), ox_lib's callback and notify, and --
@@ -436,6 +442,323 @@ t.test('the shipped setting is one the panel understands', function()
     local style = env.Config.UI.logoStyle
     t.isTrue(style == 'mark' or style == 'banner',
         'config.lua ships logoStyle = ' .. tostring(style) .. ', which the panel does not recognise')
+end)
+
+-- ========================================================================
+-- client/match.lua -- the loops that run while a player is in the arena
+--
+-- WHAT THESE ARE ABOUT. A round has two phases the player spends standing
+-- in the arena: the frozen start countdown, and the live round. Only the
+-- second one used to be watched, so a kill during the first was invisible
+-- to every part of the system at once -- see the countdown tests below.
+-- ========================================================================
+
+--- Just enough vector3 for the two things client/match.lua does with one:
+--- unpack it into three numbers, and take the length of a difference.
+---
+--- The shared sandbox stub is a plain { x, y, z } and says so, which is not
+--- enough for `#(GetEntityCoords(ped) - center)`. LENGTH LIVES ON THE
+--- DIFFERENCE rather than on the point: that is the only place production
+--- asks for it, and it leaves `#coords` alone, which is what table.unpack
+--- reads to decide how many values to hand back.
+--- @return table
+local function vec3(x, y, z)
+    return setmetatable({ x, y, z, x = x, y = y, z = z }, {
+        __sub = function(a, b)
+            local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+            local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+            return setmetatable({}, { __len = function() return distance end })
+        end,
+    })
+end
+
+--- One fresh, fully isolated load of the REAL client/match.lua.
+---
+--- THE PED IS MODELLED, NOT STUBBED TO A CONSTANT: whether it is dead, and
+--- the fact that a resurrect hands back a different handle, are the whole
+--- subject of the countdown tests. The per-frame loops run on the sandbox's
+--- thread runner so they can be stepped one pass at a time; collision is
+--- answered as already-loaded so placeAt never yields and the entry handler
+--- can be driven straight through.
+--- @return table fixture
+local function newMatchFixture()
+    local runner = Sandbox.newThreadRunner()
+    local handlers = {}
+
+    local f = {
+        ped = 100,
+        dead = false,
+        coords = vec3(0.0, 0.0, 0.0),
+        killerServerId = 7,
+        serverEvents = {},
+        notifications = {},
+        resurrects = {},
+        freezes = {},
+        given = {},
+        health = {},
+        damage = {},
+        cleared = 0,
+    }
+
+    local env = Sandbox.newArenaEnv({
+        CreateThread = runner.CreateThread,
+        Wait = runner.Wait,
+        vector3 = vec3,
+
+        RegisterNetEvent = function(name, fn) handlers[name] = fn end,
+        AddEventHandler = function(name, fn) handlers[name] = fn end,
+        TriggerServerEvent = function(name, payload)
+            f.serverEvents[#f.serverEvents + 1] = { name = name, payload = payload }
+        end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        -- No inventory resource, so the client is the one that hands out the
+        -- weapons -- which is the arrangement where "is this player armed"
+        -- is a question this file's own calls can answer.
+        GetResourceState = function() return 'missing' end,
+        lib = { notify = function(data) f.notifications[#f.notifications + 1] = data end },
+
+        -- The hash IS the name here. Nothing under test does arithmetic on
+        -- one, and a readable value makes an assertion about which weapon
+        -- was handed over readable too.
+        joaat = function(name) return name end,
+
+        PlayerPedId = function() return f.ped end,
+        IsEntityDead = function() return f.dead end,
+        GetEntityCoords = function() return f.coords end,
+        GetEntityHeading = function() return 90.0 end,
+        GetEntityHealth = function() return 200 end,
+        GetPedArmour = function() return 0 end,
+        GetSelectedPedWeapon = function() return 'WEAPON_UNARMED' end,
+        HasPedGotWeapon = function() return false end,
+        GetAmmoInPedWeapon = function() return 0 end,
+
+        NetworkResurrectLocalPlayer = function(x, y, z)
+            f.resurrects[#f.resurrects + 1] = { x = x, y = y, z = z }
+            f.dead = false
+            -- A resurrect can hand back a new ped, and production says so in
+            -- as many words. Modelled, so a call left pointing at the old
+            -- handle shows up as one.
+            f.ped = f.ped + 1
+        end,
+        FreezeEntityPosition = function(ped, frozen)
+            f.freezes[#f.freezes + 1] = { ped = ped, frozen = frozen }
+        end,
+        GiveWeaponToPed = function(ped, weapon, ammo)
+            f.given[#f.given + 1] = { ped = ped, weapon = weapon, ammo = ammo }
+        end,
+        SetEntityHealth = function(ped, health)
+            f.health[#f.health + 1] = { ped = ped, health = health }
+        end,
+        ApplyDamageToPed = function(ped, amount)
+            f.damage[#f.damage + 1] = { ped = ped, amount = amount }
+        end,
+
+        ClearPedBloodDamage = function() end,
+        SetPedAmmo = function() end,
+        SetPedArmour = function() end,
+        SetCurrentPedWeapon = function() end,
+        GiveWeaponComponentToPed = function() end,
+        SetPedWeaponTintIndex = function() end,
+        RemoveAllPedWeapons = function() end,
+        RemoveWeaponFromPed = function() end,
+
+        SetEntityCoordsNoOffset = function() end,
+        SetEntityHeading = function() end,
+        RequestCollisionAtCoord = function() end,
+        HasCollisionLoadedAroundEntity = function() return true end,
+        GetGroundZFor_3dCoord = function() return false, nil end,
+        GetGameTimer = function() return 0 end,
+
+        DisableControlAction = function() end,
+        IsPauseMenuActive = function() return false end,
+        SetFrontendActive = function() end,
+        GetPedSourceOfDeath = function() return 900 end,
+        IsEntityAPed = function() return true end,
+        IsPedAPlayer = function() return true end,
+        NetworkGetPlayerIndexFromPed = function() return 5 end,
+        GetPlayerServerId = function() return f.killerServerId end,
+
+        SetWeatherTypeNowPersist = function() end,
+        NetworkOverrideClockTime = function() end,
+        ClearOverrideWeather = function() end,
+        NetworkClearClockTimeOverride = function() end,
+
+        ArenaUI = { UpdateHud = function() end },
+        ArenaDispatch = {
+            Enter = function() end,
+            Exit = function() end,
+            ReleaseDeadState = function() end,
+            -- Counted rather than performed: whether the LIVE path still
+            -- routes a death through it is the contract, and the countdown
+            -- path deliberately does not.
+            ClearDeadState = function() f.cleared = f.cleared + 1 return true end,
+        },
+    })
+
+    Sandbox.loadInto('../client/match.lua', env)
+
+    f.env = env
+    f.step = runner.step
+    f.aliveThreads = runner.aliveCount
+
+    function f.fire(name, ...)
+        local handler = handlers[name]
+        if not handler then error('client/match.lua registered no handler for ' .. name) end
+        handler(...)
+    end
+
+    --- Puts this player in the arena the way ArenaMatch.Start does, and
+    --- leaves them where the server leaves them: placed, armed, frozen, and
+    --- with `startCountdownSeconds` still to run before the round is live.
+    --- @param overrides table? -- merged into the enterArena payload
+    function f.enter(overrides)
+        local payload = {
+            matchId = 'match-1',
+            spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+            scatterRadius = 0.0,
+            freezeSeconds = 5,
+            loadout = { weapons = { { weapon = 'WEAPON_PISTOL', ammo = 42 } }, health = 200, armor = 0 },
+        }
+        for key, value in pairs(overrides or {}) do payload[key] = value end
+        f.fire('crimson_arena:client:enterArena', payload)
+    end
+
+    return f
+end
+
+t.test('a death during the start countdown is caught at all', function()
+    -- THE DEFECT: the death watch was opened by the matchLive handler, and
+    -- players are put in the arena a whole countdown before that event
+    -- arrives. A kill in that window was reported to nobody, cleared for
+    -- nobody, and left the victim a real corpse -- one the operator's own
+    -- medical script sees, in a routing bucket no ambulance can reach.
+    local f = newMatchFixture()
+    f.enter()
+
+    t.equals(#f.resurrects, 0, 'nothing should have happened before the player dies')
+
+    f.dead = true
+    f.step()
+
+    t.equals(#f.resurrects, 1,
+        'the countdown death was never noticed -- the watch is still waiting for matchLive')
+    t.isFalse(f.dead, 'the player was left lying in the arena for the rest of the countdown')
+end)
+
+t.test('a countdown death is settled on the client, not reported and not held', function()
+    -- ArenaMatch.OnDeath refuses any report from a match that is not 'live'
+    -- yet, so sending one would set deathReported for a respawn that is
+    -- never coming -- and ClearDeadState's hold, which the respawn is what
+    -- releases, would keep the player invisible and frozen for the whole
+    -- round. The round has not started: nobody is out, so nothing is sent.
+    local f = newMatchFixture()
+    f.enter()
+
+    f.dead = true
+    f.step()
+
+    t.equals(#f.resurrects, 1, 'the countdown death was never noticed')
+    t.equals(#f.serverEvents, 0,
+        'a countdown death was reported to a server that refuses it, spending the round\'s one report')
+    t.equals(f.cleared, 0,
+        'the countdown death went into ClearDeadState\'s hold, which only a respawn releases')
+end)
+
+t.test('the countdown revive stands the player back up armed, still, and on the new handle', function()
+    local f = newMatchFixture()
+    f.enter()
+
+    t.equals(#f.given, 1, 'entry did not arm the player, so this test would prove nothing')
+
+    f.dead = true
+    f.step()
+    local revived = f.ped
+
+    t.equals(#f.given, 2, 'the revived player starts the round with empty hands')
+    t.equals(f.given[2].ped, revived, 'the weapon went to the handle the resurrect replaced')
+    t.equals(f.given[2].weapon, 'WEAPON_PISTOL')
+    t.equals(f.health[#f.health].health, 200, 'the revived player starts the round on a sliver of health')
+
+    local lastFreeze = f.freezes[#f.freezes]
+    t.equals(lastFreeze.ped, revived, 'the freeze was applied to a handle that no longer exists')
+    t.isTrue(lastFreeze.frozen, 'dying became a way to start moving before the countdown ends')
+end)
+
+t.test('a countdown death does not spend the round\'s one report -- the first real kill still counts', function()
+    local f = newMatchFixture()
+    f.enter()
+
+    f.dead = true
+    f.step()
+    t.equals(#f.resurrects, 1, 'the countdown death was never noticed')
+
+    f.fire('crimson_arena:client:matchLive')
+    f.dead = true
+    f.step()
+
+    t.equals(#f.serverEvents, 1, 'the death that actually counted was never reported')
+    t.equals(f.serverEvents[1].name, 'crimson_arena:server:reportDeath')
+    t.equals(f.serverEvents[1].payload.killerServerId, 7, 'the killer went unnamed, so nobody was credited')
+end)
+
+t.test('a death in the live round is still reported once and cleared once', function()
+    local f = newMatchFixture()
+    f.enter()
+    f.fire('crimson_arena:client:matchLive')
+
+    f.dead = true
+    f.step()
+    f.step()    -- the ped is still dead; a second pass must not report it again
+
+    t.equals(#f.serverEvents, 1, 'the live death was reported a number of times that is not once')
+    t.equals(f.cleared, 1, 'the live death was cleared a number of times that is not once')
+    t.equals(#f.resurrects, 0,
+        'a live death took the countdown path, which reports nothing and would leave it unscored')
+end)
+
+t.test('the boundary still waits for matchLive, and is not merely inert', function()
+    -- The gating that stays. Fighters are frozen for the countdown, so a
+    -- sphere that bit during it would bleed players who cannot walk back
+    -- inside -- which is why only the death watch moved to entry.
+    local f = newMatchFixture()
+    f.coords = vec3(500.0, 0.0, 0.0)
+    f.enter({
+        boundary = {
+            enabled = true,
+            center = { x = 0.0, y = 0.0, z = 0.0 },
+            radius = 50.0,
+            warningSeconds = 0,
+            damagePerTick = 25,
+            tickMs = 1000,
+        },
+    })
+
+    f.step()
+    f.step()
+    t.equals(#f.notifications, 0, 'the boundary warned a player frozen in place by the countdown')
+    t.equals(#f.damage, 0, 'the boundary bled a player frozen in place by the countdown')
+
+    f.fire('crimson_arena:client:matchLive')
+    f.step()    -- one pass: out of bounds, warned
+    f.step()    -- the grace period is zero, so the next pass bleeds
+
+    t.equals(#f.notifications, 1, 'the boundary never warned once the round was live')
+    t.equals(#f.damage, 1, 'the boundary warned and then never bled')
+end)
+
+t.test('leaving the arena ends the watch, countdown or not', function()
+    -- The loop's own gate changed from `matchLive` to `currentMatch`, and
+    -- leaveArena clearing that is the only thing that now stops it.
+    local f = newMatchFixture()
+    f.enter()
+    f.fire('crimson_arena:client:exitArena', {})
+
+    f.dead = true
+    f.step()
+    f.step()
+
+    t.equals(#f.serverEvents, 0, 'a death outside the arena was reported as an arena death')
+    t.equals(#f.resurrects, 0, 'a loop from a match this player has left is still touching their ped')
 end)
 
 print('panel_spec')

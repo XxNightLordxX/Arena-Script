@@ -226,38 +226,65 @@ end
 --- @param heading number
 --- @param leaveFrozen boolean -- the freeze state to leave the ped in
 local function placeAt(ped, x, y, z, heading, leaveFrozen)
-    -- LIFTED, AND FROZEN, BECAUSE THE GROUND IS NOT THERE YET.
+    -- FROZEN IS WHAT STOPS THE FALL. HEIGHT IS ONLY FOR THE PROBE.
     --
-    -- This used to drop the ped on the exact spawn Z and only then wait for
-    -- collision -- so for the frames the world took to stream in there was
-    -- nothing under them, gravity applied, and they arrived below the map.
-    -- Entry got away with it because its caller froze the ped first; the
-    -- respawn path did not, which is why it bit hardest mid-round.
+    -- Two separate things, and conflating them cost a round: this used to
+    -- drop the ped on the exact spawn Z and only then wait for collision, so
+    -- for the frames the world took to stream in there was nothing under
+    -- them, gravity applied, and they arrived below the map. Entry got away
+    -- with it because its caller happened to freeze first; the respawn path
+    -- did not.
     --
-    -- So: freeze first, place slightly high, and let go only once there is
-    -- something to stand on. The lift is small on purpose -- it is insurance
-    -- against a spawn Z written a few centimetres low, not a parachute drop.
+    -- The fix for THAT is the freeze, not altitude. A frozen ped does not
+    -- fall through anything, so the player is held just above the spawn
+    -- point -- close enough that nobody watching learns where the spawns
+    -- are, which lifting them into the sky would broadcast to the whole
+    -- arena.
+    --
+    -- The height belongs to the ground search below, which is a maths query
+    -- nobody can see.
     local lift = tonumber(Config.Match.spawnHeightOffset) or 1.0
 
     FreezeEntityPosition(ped, true)
     SetEntityCoordsNoOffset(ped, x, y, z + lift, false, false, false)
     SetEntityHeading(ped, heading)
 
-    RequestCollisionAtCoord(x, y, z)
+    RequestCollisionAtCoord(x, y, z + lift)
     local deadline = GetGameTimer() + 5000
     while not HasCollisionLoadedAroundEntity(ped) and GetGameTimer() < deadline do
-        RequestCollisionAtCoord(x, y, z)
+        RequestCollisionAtCoord(x, y, z + lift)
         Wait(0)
     end
 
-    -- The ground exists now, so ask where it actually is rather than trusting
-    -- the number in config. An operator who noted a spawn point while
-    -- standing on a crate, or off by a metre either way, gets put on the
-    -- surface regardless -- and a spawn Z that is WRONG stops being a hole
-    -- in the map and becomes a small step.
-    local found, groundZ = GetGroundZFor_3dCoord(x, y, z + lift, false)
-    if found and groundZ then
-        SetEntityCoordsNoOffset(ped, x, y, groundZ + 0.05, false, false, false)
+    -- PROBED FROM HIGH ABOVE -- the query, not the player.
+    --
+    -- GetGroundZFor_3dCoord searches DOWNWARD from the point it is given. Ask
+    -- it from just above a spawn Z that is itself below the surface and the
+    -- search starts underground, finds nothing above it, and reports failure
+    -- -- leaving the player exactly where they were put, which is under the
+    -- map. That is why raising the player did not fix this and asking from
+    -- higher up does: the altitude was only ever needed by the search.
+    --
+    -- These heights are fixed rather than configurable because they are not
+    -- a gameplay decision -- nobody is ever at them. They are where the
+    -- question is asked from, and asking from further up costs nothing.
+    -- Several are tried in the same frame: what makes them robust is
+    -- starting from DIFFERENT heights, not from different frames.
+    local placed = false
+    for _, probe in ipairs({ lift, 50.0, 200.0 }) do
+        local found, groundZ = GetGroundZFor_3dCoord(x, y, z + probe, false)
+        if found and groundZ and groundZ > -190.0 then
+            SetEntityCoordsNoOffset(ped, x, y, groundZ + 0.15, false, false, false)
+            placed = true
+            break
+        end
+    end
+
+    if not placed then
+        -- Nothing answered. Better a metre in the air, dropping onto ground
+        -- that has by now streamed in, than left at a Z the probe could not
+        -- confirm -- the fall is survivable and being under the map is not.
+        SetEntityCoordsNoOffset(ped, x, y, z + 1.0, false, false, false)
     end
 
     -- Restored explicitly rather than assumed: entry wants the ped held still
@@ -760,11 +787,39 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
 
     local ped = PlayerPedId()
-    -- Undoes the frozen, invisible hold ClearDeadState put them in. placeAt
-    -- below sets the position, so this only restores the ped's properties.
-    ArenaDispatch.ReleaseDeadState(ped)
+
+    -- THE WATCH IS RE-ARMED BEFORE THE PED IS KILLABLE, and the order of the
+    -- three steps below is the only reason this reads the way it does.
+    --
+    -- `deathReported` is what the watch checks before it will look at a body,
+    -- and ReleaseDeadState is what hands this ped back to the world. The flag
+    -- therefore has to go down BEFORE the release. It used to go down last,
+    -- after a placeAt that YIELDS for as long as the ground takes to stream:
+    -- for those frames the player stood in a live round mortal, visible and
+    -- unwatched, and a kill landed in them was reported to nobody, cleared
+    -- for nobody, and left the operator's medical script a real corpse to
+    -- page an ambulance to -- in a bucket no ambulance can reach.
+    --
+    -- Down only AFTER the resurrect, though: with the body still dead the
+    -- watch would find the death it has already reported and report it a
+    -- second time. Nothing between the resurrect above and this line yields,
+    -- so the watch cannot get a look in between the two.
+    deathReported = false
+
     ClearPedBloodDamage(ped)
-    placeAt(ped, x, y, z, heading, false)
+
+    -- Placed while STILL inside ClearDeadState's hold, and left frozen, so
+    -- that the release below is the single instant this player becomes a
+    -- target again rather than the start of a five-second wait. Nothing is
+    -- made invincible here that was not already -- the hold is simply not
+    -- dropped early any more.
+    placeAt(ped, x, y, z, heading, true)
+
+    -- Unconditional, and ahead of the guard below: placeAt has just re-frozen
+    -- this ped, and a round that ended during its yield already spent its one
+    -- release in leaveArena. Returning without this would leave the player
+    -- frozen and invisible in the lobby with nothing left to free them.
+    ArenaDispatch.ReleaseDeadState(ped)
 
     -- The same yield the entry handler guards: a round that ended while this
     -- player was being put back on their feet has already restored their own
@@ -772,10 +827,6 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     if matchToken ~= token or not currentMatch then return end
 
     applyLoadout(ped, data.loadout)
-
-    -- Only now: a death that has already been reported must not be
-    -- reported again, but the next one must be.
-    deathReported = false
 end)
 
 --- A gun game promotion: the rung below is taken away and the next one

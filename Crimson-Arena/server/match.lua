@@ -781,19 +781,45 @@ local function scheduleRespawn(match, player)
         entry.loadout = loadout
         entry.alive = true
 
-        -- Every time they are stood back up, not only on the way out. A
-        -- player who died mid-match is flagged dead by the medical script
-        -- from that moment, and the arena putting them on their feet does
-        -- not reach it -- so without this they fight the rest of the round
-        -- as a casualty, and whatever that script does to a dead player it
-        -- keeps doing.
-        ArenaDispatch.Revive(src)
-
         TriggerClientEvent('crimson_arena:client:respawn', src, {
             spawn = toPoint(Arena.PickSpawn(current.arenaKey, teamOf(current, entry), current.spawnCursor)),
             scatterRadius = scatterRadius(),
             loadout = loadout,
         })
+
+        -- REVIVED AFTER THE CLIENT HAS STOOD THEM UP, NOT BEFORE.
+        --
+        -- This used to run first, and that was the bug: the medical script
+        -- was told a player was alive while their body was still a corpse
+        -- waiting on an event that had not been sent yet. Whatever it did
+        -- then was undone by the resurrect and the teleport behind it, so a
+        -- player with lives left came back still dead.
+        --
+        -- The client needs a moment to resurrect, wait for collision and be
+        -- placed. Only once it has is there a living player for a revive to
+        -- be about.
+        -- Named apart from the respawn `delay` this function already has:
+        -- one is how long a player lies there, the other is how long after
+        -- they are up before the medical script is told. Confusing them
+        -- would be easy and silent.
+        local reviveAfter = math.max(0, Arena.ToInt(((Config.Dispatch or {}).revive or {}).afterRespawnDelayMs) or 0)
+        if reviveAfter > 0 then
+            CreateThread(function()
+                Wait(reviveAfter)
+
+                -- Re-checked rather than trusted: the round can end, or the
+                -- player leave, while this is waiting. Reviving somebody who
+                -- has gone home is harmless but pointless, and reviving into
+                -- a match that has ended would fight its teardown.
+                local live = ArenaLobby.Get(matchId)
+                if not live or live.state ~= 'live' then return end
+                if not live.players[src] then return end
+
+                ArenaDispatch.Revive(src)
+            end)
+        else
+            ArenaDispatch.Revive(src)
+        end
     end)
 end
 
@@ -1542,12 +1568,14 @@ end
 local function syncMatchBuckets()
     local wanted = {}
 
-    --- Of `wanted`, the ones who are in a match's instance ONLY because they
-    --- are watching it. The dispatch flag is raised for these and for nobody
-    --- else in this function -- see the enter loop for why that distinction
-    --- is load-bearing rather than tidiness.
+    --- Everyone SOME countdown or live match calls a FIGHTER. A separate
+    --- record rather than a read of `wanted`, because it answers a different
+    --- question and has to answer it the same way whichever order
+    --- ArenaLobby.All() handed the matches back in: an eliminated fighter is
+    --- in both of their match's tables, and "not claimed yet" would make the
+    --- answer depend on which loop reached them first.
     --- @type table<number, boolean>
-    local spectatorOnly = {}
+    local fighting = {}
 
     for _, match in ipairs(ArenaLobby.All()) do
         -- 'countdown' as well as 'live': Start() has already put the
@@ -1556,21 +1584,12 @@ local function syncMatchBuckets()
         if match.state == 'countdown' or match.state == 'live' then
             for src in pairs(match.players) do
                 wanted[src] = match.id
-                -- CLAIMED AS A FIGHTER WHICHEVER ORDER ArenaLobby.All() CAME
-                -- BACK IN. Nothing orders that array, so a player fighting in
-                -- one match while the registry still calls them a spectator of
-                -- another can be reached by the spectator loop below first.
-                -- Fighters win the tie either way: this assignment is
-                -- unconditional, and it takes the spectator claim back with it.
-                spectatorOnly[src] = nil
+                fighting[src] = true
             end
             -- An eliminated fighter who stayed to watch is in both tables and
             -- has already been claimed by the loop above.
             for src in pairs(match.spectators or {}) do
-                if wanted[src] == nil then
-                    wanted[src] = match.id
-                    spectatorOnly[src] = true
-                end
+                if wanted[src] == nil then wanted[src] = match.id end
             end
         end
     end
@@ -1594,7 +1613,7 @@ local function syncMatchBuckets()
             -- playersArePlaced read a filling lobby as a round in progress and
             -- refuse its host the cancel button. sendEnterArena is what raises
             -- a fighter's flag, and it runs when they are actually placed.
-            if spectatorOnly[src] then ArenaDispatch.Set(src, matchId) end
+            if not fighting[src] then ArenaDispatch.Set(src, matchId) end
             ArenaDispatch.EnterBucket(src, matchId)
             instanced[src] = matchId
         end

@@ -33,10 +33,17 @@ local function newFixture(dispatchConfig)
     local cancelled = 0      -- how many times CancelEvent() was called
     local toClients = {}     -- every TriggerClientEvent, in order
     local netRegistered = {} -- every RegisterNetEvent name, in order
+    local threads = {}       -- every CreateThread body, in order
 
     local env = Sandbox.newEnv({
         ExecuteCommand = function(line) commands[#commands + 1] = line end,
         CancelEvent = function() cancelled = cancelled + 1 end,
+        -- CAPTURED, NOT RUN. The permission grant runs in a thread so the
+        -- command system is up before it adds to it; running it inline at
+        -- load would test a different order to the real one. step() below is
+        -- how a test asks for it.
+        CreateThread = function(fn) threads[#threads + 1] = fn end,
+        Wait = function() end,
         -- The cancel layer registers each alert event for the network before
         -- listening: without that, FXServer never delivers a client-triggered
         -- event to this resource at all. Recorded so a spec can assert it.
@@ -110,6 +117,12 @@ local function newFixture(dispatchConfig)
         cancelled = function() return cancelled end,
         toClients = toClients,
         netRegistered = netRegistered,
+        --- Runs every thread this load started, once, in order.
+        step = function()
+            local pending = threads
+            threads = {}
+            for _, fn in ipairs(pending) do fn() end
+        end,
         eventNames = function()
             local out = {}
             for _, e in ipairs(events) do out[#out + 1] = e.name end
@@ -538,6 +551,60 @@ t.test('the revive command runs with the player id substituted in', function()
     t.equals(f.commands[1], 'revive 7', 'the wrong player was revived')
 end)
 
+-- ========================================================================
+-- THE RESOURCE HAS TO BE ALLOWED TO RUN THE COMMAND
+--
+-- THE DEFECT THIS EXISTS FOR, and it is the reason the revive appeared to
+-- work and did nothing. A command run through ExecuteCommand from a resource
+-- is run BY that resource, and an admin command checks whether its caller is
+-- allowed. This resource is not an admin, so `revive` was refused -- and a
+-- refused command is not an error, it is a command that did nothing. The
+-- console honestly reported running it while the player stayed on the floor.
+-- ========================================================================
+
+t.test('the resource grants itself permission for the command it is configured with', function()
+    local f = newFixture(reviveConfig('revive %s'))
+    f.step()
+
+    local ran = table.concat(f.commands, '\n')
+    t.contains(ran, 'add_ace', 'no permission was granted, so the command is refused in silence')
+    t.contains(ran, 'command.revive', 'the wrong permission was granted')
+    t.contains(ran, 'resource.crimson_arena', 'the permission was not granted to this resource')
+end)
+
+t.test('and grants the command, never admin', function()
+    -- Adding the arena to an admin group would also make the revive work,
+    -- and would make every command on the server reachable from inside this
+    -- resource. That trade is not worth making for one command, so the test
+    -- pins the narrow grant rather than merely a working one.
+    local f = newFixture(reviveConfig('revive %s'))
+    f.step()
+
+    local ran = table.concat(f.commands, '\n')
+    t.notContains(ran, 'add_principal', 'the resource was added to a group instead of given one command')
+    t.notContains(ran, 'group.admin')
+end)
+
+t.test('the permission follows the config: rename the command, rename the grant', function()
+    local f = newFixture(reviveConfig('heal %s'))
+    f.step()
+
+    local ran = table.concat(f.commands, '\n')
+    t.contains(ran, 'command.heal')
+    t.notContains(ran, 'command.revive', 'a permission was granted for a command nobody configured')
+end)
+
+t.test('an operator who would rather grant it themselves can turn it off', function()
+    local config = reviveConfig('revive %s')
+    config.revive.grantSelfPermission = false
+
+    local f = newFixture(config)
+    f.step()
+
+    t.notContains(table.concat(f.commands, '\n'), 'add_ace',
+        'the grant ran despite being switched off')
+end)
+
 t.test('a client-side revive is sent to that player, and to nobody else', function()
     -- The failure this covers is silent by construction. A command
     -- registered CLIENT-side does not exist as far as the server console is
@@ -700,6 +767,175 @@ t.test('enabled with nothing named counts as not configured', function()
     end)
 
     t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'revive: NOT configured')
+end)
+
+-- ========================================================================
+-- NOTHING IN THE REPORT MAY BE OPTIMISTIC
+--
+-- This block is the only diagnostic an operator has, and all three defects
+-- below are the same shape: the report sounding better than the setup it is
+-- describing. Every one of them was reassuring, and every one of them left
+-- police and EMS alerts going out of an arena.
+--
+-- The catalogue is the thread running through them. It is a list of names to
+-- LOOK FOR, never a census -- so "recognised nothing" says nothing at all
+-- about what this box runs, and must never be read as "nothing to do".
+-- ========================================================================
+
+--- newCompat, plus a say-so about which resources this box is running.
+---
+--- GetResourceState is re-read on every Detect() and never cached -- the
+--- file says so and means it -- so replacing the stub after the load is
+--- enough, and testing through the stub rather than around it keeps these
+--- tests honest about how detection really answers.
+--- @param runningNames string[] -- resources GetResourceState calls 'started'
+--- @param mutate fun(config: table)?
+--- @return table env
+local function compatWith(runningNames, mutate)
+    local env = newCompat(mutate)
+    local started = {}
+    for _, name in ipairs(runningNames) do started[name] = true end
+    env.GetResourceState = function(name)
+        return started[name] and 'started' or 'missing'
+    end
+    return env
+end
+
+t.test('the guard line is printed even when nothing was recognised by name', function()
+    -- THE DEFECT. The paste block was gated on a count only a DETECTED row
+    -- could ever raise, so it printed for a script the catalogue knew and
+    -- stayed silent for one it did not -- leaving the operator running an
+    -- uncatalogued dispatch script, the one person nothing else in this
+    -- resource can help, with a report that named their problem and then
+    -- withheld the fix.
+    local env = compatWith({})
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'no police or EMS resource recognised by name')
+    t.contains(report, 'Paste at the top of whatever sends the alert',
+        'nothing was recognised, so nothing is wired -- and the line was withheld')
+    t.contains(report, 'if Player(src).state.crimsonArena then return end')
+    t.contains(report, 'if LocalPlayer.state.crimsonArena then return end')
+end)
+
+t.test('and withheld once an operator hook really reaches a running script', function()
+    -- The other half of the same contract. A line that prints unconditionally
+    -- is wallpaper, and an operator who has done the work has to be able to
+    -- see that they have.
+    local env = compatWith({ 'my_dispatch' }, function(config)
+        config.Dispatch.custom.disableExports = {
+            { resource = 'my_dispatch', export = 'SetIgnoredPlayer' },
+        }
+    end)
+
+    t.notContains(table.concat(env.ArenaCompat.Report(), '\n'), 'Paste at the top')
+end)
+
+t.test('a disableExport naming a script that is not running counts for nothing', function()
+    -- client/dispatch.lua skips exactly this entry at run time and says so in
+    -- the console, so crediting it here would report an integration that
+    -- never fires -- the same lie by a different route.
+    local env = compatWith({}, function(config)
+        config.Dispatch.custom.disableExports = {
+            { resource = 'removed_dispatch', export = 'SetIgnoredPlayer' },
+        }
+    end)
+
+    t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'Paste at the top')
+end)
+
+t.test('cancelEvents on its own is never counted as wired up', function()
+    -- config.lua's own instruction, in its own words: if this is the only
+    -- form on the list you have filled in, assume the alerts are still being
+    -- sent. The report has to agree with the config that documents it.
+    local env = compatWith({ 'my_dispatch' })
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'cancelEvent(s)',
+        'the shipped config has none, so this test proves nothing')
+    t.contains(report, 'Paste at the top')
+end)
+
+t.test('isolation keeps its caveat when nothing is confirmed wired', function()
+    -- THE DEFECT. Isolation on plus nothing detected printed a flat "no OTHER
+    -- player's client can see the fight" -- true, and the most misleading true
+    -- sentence available, because the alerts an arena player's OWN client
+    -- raises are precisely the ones still going out. The caveat was dropped in
+    -- the one branch it exists for.
+    local env = compatWith({})
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'Isolation is on')
+    t.contains(report, 'own client still can',
+        'isolation was reported as though it settled the matter')
+    t.contains(report, 'nothing here is confirmed wired')
+end)
+
+t.test('and drops it once every detected resource is accounted for', function()
+    local env = compatWith({ 'ps-dispatch' }, function(config)
+        config.Dispatch.custom.disableExports = {
+            { resource = 'ps-dispatch', export = 'SetIgnoredPlayer' },
+        }
+    end)
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'Isolation is on')
+    t.notContains(report, 'own client still can')
+end)
+
+t.test('the caveat and the line it promises appear together or not at all', function()
+    -- The caveat ends "that is what the line below is for", so a run where one
+    -- prints without the other is a report contradicting itself on screen.
+    -- Isolation ships on, which is the case the caveat is written for.
+    local cases = { {}, { 'my_dispatch' }, { 'ps-dispatch' } }
+
+    for _, running in ipairs(cases) do
+        local report = table.concat(compatWith(running).ArenaCompat.Report(), '\n')
+        local promised = report:find('that is what the line below is for', 1, true) ~= nil
+        local printed = report:find('Paste at the top', 1, true) ~= nil
+
+        t.equals(promised, printed,
+            'the isolation caveat and the paste block disagreed about whether anything is wired')
+    end
+end)
+
+t.test('the shipped entry/exit event names are not reported as configuration', function()
+    -- THE DEFECT. config.lua ships both names non-nil, so hookLine() read an
+    -- untouched install as an operator who had wired up entry/exit events.
+    -- A name is not a listener: the events were firing into an empty room and
+    -- the report called it an integration.
+    local env = compatWith({})
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.notContains(report, 'Hooks configured: entry/exit events',
+        'a shipped default was counted as something the operator had built')
+    t.contains(report, 'nothing here can see a listener',
+        'the events do still fire, and the report has to say so rather than go quiet')
+end)
+
+t.test('but they are, once a resource named in resyncResources is running', function()
+    -- And not by comparing names against the shipped default: what earns the
+    -- credit is something demonstrably riding the events, so renaming them
+    -- changes nothing.
+    local env = compatWith({ 'my_dispatch' }, function(config)
+        config.Dispatch.custom.enterEvent = 'my_arena:enter'
+        config.Dispatch.custom.exitEvent = 'my_arena:exit'
+        config.Dispatch.custom.resyncResources = { 'my_dispatch' }
+    end)
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'Hooks configured: entry/exit events')
+    t.notContains(report, 'nothing here can see a listener')
+end)
+
+t.test('a resyncResources entry for a script that is not running earns nothing', function()
+    local env = compatWith({}, function(config)
+        config.Dispatch.custom.resyncResources = { 'my_dispatch' }
+    end)
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.notContains(report, 'Hooks configured: entry/exit events')
+    t.contains(report, 'Paste at the top')
 end)
 
 os.exit(t.summary())

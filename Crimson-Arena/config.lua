@@ -1097,16 +1097,20 @@ Config.Match = {
 
     -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS PUT DOWN, in metres.
     --
-    -- Insurance against a spawn Z written slightly low, not a parachute
-    -- drop. The world takes a few frames to stream in around a player who
-    -- has just been teleported, and until it does there is nothing under
-    -- them -- which is how a spawn point a fraction below the surface puts
-    -- somebody under the map instead of on it.
+    -- The player is held motionless this far above the spawn point while the
+    -- world streams in, and is then put down on whatever surface the game
+    -- reports underneath -- so they never fall, and never stand where there
+    -- is nothing yet.
     --
-    -- The player is held still until the ground exists and is then placed on
-    -- the surface the game reports, so this only has to cover the gap. Raise
-    -- it if you still land inside geometry; there is no need to make it
-    -- large.
+    -- KEEP IT SMALL. Being frozen is what stops the fall through an unloaded
+    -- world; height has nothing to do with it. A big number would hang every
+    -- player in the air where the whole arena can see them, which broadcasts
+    -- exactly where the spawn points are.
+    --
+    -- Finding the real ground is a separate job and is handled by searching
+    -- down from well overhead -- a maths query nobody is ever at, and the
+    -- part that actually fixes a spawn Z written below the surface. That
+    -- height is not configurable because it is not a gameplay decision.
     spawnHeightOffset = 1.0,
 
     -- Eliminated players watch the rest of the match instead of being sent
@@ -1568,6 +1572,45 @@ Config.Dispatch = {
         --     clientCommands = { 'revive' },
         clientCommands = {},
 
+        -- GIVE THIS RESOURCE PERMISSION TO RUN THOSE COMMANDS. On by
+        -- default, and the reason the revive appeared to do nothing.
+        --
+        -- A command run from a resource is run BY that resource, and an admin
+        -- command checks whether its caller is allowed. This resource is not
+        -- an admin, so `revive` was refused -- silently, because a refused
+        -- command is not an error, it is a command that did nothing. The
+        -- console could honestly report running it while the player stayed on
+        -- the floor.
+        --
+        -- What is granted is exactly the commands named above and nothing
+        -- else: `command.revive` lets this resource revive, and lets it do
+        -- nothing more. NOT admin. Adding the arena to an admin group would
+        -- also work and would mean every command on your server was reachable
+        -- from inside it -- so any flaw anywhere in this resource became a
+        -- way to run anything on the box. That trade is not worth making for
+        -- one command.
+        --
+        -- Runtime only: nothing is written to a .cfg and nothing survives a
+        -- restart. It is granted again at every start, from this config, so
+        -- deleting a command above deletes its permission with it.
+        --
+        -- Set false if you would rather grant it yourself in server.cfg:
+        --     add_ace resource.Crimson-Arena command.revive allow
+        grantSelfPermission = true,
+
+        -- HOW LONG AFTER A MID-MATCH RESPAWN TO REVIVE, in milliseconds.
+        --
+        -- The revive has to come AFTER the client has stood the player up,
+        -- not before. Told first, your medical script is being told somebody
+        -- is alive while their body is still a corpse -- and whatever it does
+        -- then is undone by the resurrect, the collision wait and the
+        -- teleport that follow. That is what put players back into a round
+        -- still dead.
+        --
+        -- Raise it if a respawned player is still down. 0 reverts to
+        -- reviving immediately, which is almost certainly not what you want.
+        afterRespawnDelayMs = 2000,
+
         -- ONE MORE SWEEP AFTER THE MATCH, in milliseconds. 0 turns it off.
         --
         -- The per-player revive runs as each player is sent home -- before
@@ -1580,7 +1623,7 @@ Config.Dispatch = {
         -- has finished and everybody is home. Reviving somebody already alive
         -- costs nothing, which is what makes a blanket sweep the safe answer
         -- rather than a clever one.
-        sweepAfterMatchMs = 2000,
+        sweepAfterMatchMs = 5000,
 
         -- Server events. Each is triggered with the player's server id.
         --     serverEvents = { 'my_ambulance:server:revivePlayer' },

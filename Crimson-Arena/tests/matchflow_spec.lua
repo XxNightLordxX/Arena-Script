@@ -6,10 +6,16 @@
     into the arena, a fighter is eliminated, another walks out mid-round, and
     the round is settled.
 
-    IT ASSERTS ON TWO EDGES AND NOTHING ELSE -- what went on the wire, and the
-    one table this file hands to the money. Everything past either of those
-    belongs to a client file or to server/betting.lua, and a spec that stubbed
-    its way across one would only be proving the stub.
+    THE SERVER HALF ASSERTS ON TWO EDGES AND NOTHING ELSE -- what went on the
+    wire, and the one table this file hands to the money. Everything past
+    either of those belongs to a client file or to server/betting.lua, and a
+    spec that stubbed its way across one would only be proving the stub.
+
+    ONE SECTION AT THE BOTTOM CROSSES THE WIRE ON PURPOSE, and says why: the
+    respawn is the one step of a round whose contract is about the ORDER the
+    client does things in during the frames after the message lands, which no
+    assertion on this side can see. It loads the real client/match.lua rather
+    than describing it.
 
     WHAT IS STUBBED, and no more: the lobby that owns the match record, the
     escrow, the leaderboard, the dispatch flag and the routing bucket, and
@@ -762,6 +768,287 @@ t.test('the sweep can be switched off without breaking the exit path', function(
 
     t.equals(#f.revived, duringExit, 'the sweep ran with its delay set to 0')
     t.isTrue(duringExit >= 2, 'and the per-player revives stopped happening too')
+end)
+
+-- ========================================================================
+-- THE CLIENT END OF A RESPAWN -- the REAL client/match.lua
+--
+-- Everything above stops at the wire, because everything above is a
+-- PAYLOAD question. A respawn is the one step of the round where the two
+-- sides have to agree about TIME instead: the server sends one message,
+-- and the client then spends however many frames the ground takes to
+-- stream standing that body back up. What the client does DURING those
+-- frames is not visible on any wire, so it is asserted here, against the
+-- real file, or nowhere.
+-- ========================================================================
+
+--- One fresh, fully isolated load of the REAL client/match.lua, with the
+--- respawn handler drivable a frame at a time.
+---
+--- THE GROUND IS THE FIXTURE'S TO GIVE, and that is the whole trick.
+--- placeAt waits for collision to stream in and that wait is a YIELD; the
+--- window these tests are about lives inside it. `f.groundReady` is what
+--- ends it, so a test can park the handler mid-placement, shoot the player,
+--- and only then let the placement finish.
+---
+--- ArenaDispatch is COUNTED, not performed: whether the hold is still on is
+--- a question about call order, which is what this section measures, and
+--- what the calls themselves do to a ped belongs to client/dispatch.lua and
+--- its own spec.
+--- @return table fixture
+local function newClientFixture()
+    local runner = Sandbox.newThreadRunner()
+    local handlers = {}
+
+    local f = {
+        ped = 100,
+        dead = false,
+        groundReady = true,
+        serverEvents = {},
+        released = {},
+        cleared = 0,
+        given = {},
+    }
+
+    local env = Sandbox.newArenaEnv({
+        CreateThread = runner.CreateThread,
+        Wait = runner.Wait,
+
+        RegisterNetEvent = function(name, fn) handlers[name] = fn end,
+        AddEventHandler = function(name, fn) handlers[name] = fn end,
+        TriggerServerEvent = function(name, payload)
+            f.serverEvents[#f.serverEvents + 1] = { name = name, payload = payload }
+        end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        -- No inventory resource: the client is the one handing out weapons,
+        -- which is the arrangement where "was this player re-armed" is a
+        -- question this file's own calls can answer.
+        GetResourceState = function() return 'missing' end,
+
+        joaat = function(name) return name end,
+
+        PlayerPedId = function() return f.ped end,
+        IsEntityDead = function() return f.dead end,
+        GetEntityHeading = function() return 90.0 end,
+        GetEntityHealth = function() return 200 end,
+        GetPedArmour = function() return 0 end,
+        GetSelectedPedWeapon = function() return 'WEAPON_UNARMED' end,
+        HasPedGotWeapon = function() return false end,
+        GetAmmoInPedWeapon = function() return 0 end,
+
+        NetworkResurrectLocalPlayer = function()
+            f.dead = false
+            -- A resurrect can hand back a new ped and production says so in
+            -- as many words, so a call left pointing at the old handle shows
+            -- up here as one.
+            f.ped = f.ped + 1
+        end,
+
+        FreezeEntityPosition = function() end,
+        ClearPedBloodDamage = function() end,
+        SetEntityCoordsNoOffset = function() end,
+        SetEntityHeading = function() end,
+        RequestCollisionAtCoord = function() end,
+        HasCollisionLoadedAroundEntity = function() return f.groundReady end,
+        GetGroundZFor_3dCoord = function() return false, nil end,
+        -- Frozen, so placeAt's five-second bail-out never trips and
+        -- `groundReady` stays the only thing that ends the wait.
+        GetGameTimer = function() return 0 end,
+
+        GiveWeaponToPed = function(ped, weapon, ammo)
+            f.given[#f.given + 1] = { ped = ped, weapon = weapon, ammo = ammo }
+        end,
+        SetPedAmmo = function() end,
+        SetPedArmour = function() end,
+        SetEntityHealth = function() end,
+        SetCurrentPedWeapon = function() end,
+        GiveWeaponComponentToPed = function() end,
+        SetPedWeaponTintIndex = function() end,
+        RemoveAllPedWeapons = function() end,
+        RemoveWeaponFromPed = function() end,
+
+        DisableControlAction = function() end,
+        IsPauseMenuActive = function() return false end,
+        SetFrontendActive = function() end,
+        GetPedSourceOfDeath = function() return 900 end,
+        IsEntityAPed = function() return true end,
+        IsPedAPlayer = function() return true end,
+        NetworkGetPlayerIndexFromPed = function() return 5 end,
+        GetPlayerServerId = function() return 7 end,
+
+        ClearOverrideWeather = function() end,
+        NetworkClearClockTimeOverride = function() end,
+
+        ArenaUI = { UpdateHud = function() end },
+        ArenaDispatch = {
+            Enter = function() end,
+            Exit = function() end,
+            ClearDeadState = function() f.cleared = f.cleared + 1 return true end,
+            ReleaseDeadState = function(ped)
+                f.released[#f.released + 1] = { ped = ped }
+            end,
+        },
+    })
+
+    Sandbox.loadInto('../client/match.lua', env)
+
+    f.step = runner.step
+
+    function f.fire(name, ...)
+        local handler = handlers[name]
+        if not handler then error('client/match.lua registered no handler for ' .. name) end
+        handler(...)
+    end
+
+    --- Fires a handler the way FiveM does -- inside a coroutine -- so the
+    --- yield in placeAt parks it instead of erroring out.
+    function f.fireThreaded(name, ...)
+        local args = table.pack(...)
+        runner.CreateThread(function() f.fire(name, table.unpack(args, 1, args.n)) end)
+    end
+
+    --- Into the arena, through the countdown, and one death down: the exact
+    --- state the server sends a respawn to.
+    function f.toFirstDeath()
+        f.fire('crimson_arena:client:enterArena', {
+            matchId = 'match-1',
+            spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+            scatterRadius = 0.0,
+            freezeSeconds = 0,
+            loadout = { weapons = { { weapon = 'WEAPON_PISTOL', ammo = 42 } }, health = 200, armor = 0 },
+        })
+        f.fire('crimson_arena:client:matchLive')
+
+        f.dead = true
+        f.step()
+    end
+
+    --- The message the server sends back. Threaded, because it yields.
+    function f.respawn()
+        f.fireThreaded('crimson_arena:client:respawn', {
+            spawn = { x = 11.0, y = 21.0, z = 31.0, w = 0.0 },
+            loadout = { weapons = { { weapon = 'WEAPON_PISTOL', ammo = 42 } }, health = 200, armor = 0 },
+        })
+    end
+
+    return f
+end
+
+t.test('the first death is reported and held, so the respawn tests below start where they claim to', function()
+    local f = newClientFixture()
+    f.toFirstDeath()
+
+    t.equals(#f.serverEvents, 1, 'the death nobody reported cannot be the one a respawn answers')
+    t.equals(f.serverEvents[1].name, 'crimson_arena:server:reportDeath')
+    t.equals(f.cleared, 1, 'the body was left lying there instead of going into the hold')
+    t.equals(#f.released, 0, 'nothing has released the hold yet -- the respawn has not been sent')
+end)
+
+t.test('a kill landed while the respawn is still streaming the ground in is still reported', function()
+    -- THE DEFECT: the handler used to release the hold FIRST -- mortal,
+    -- visible, collidable -- then call placeAt, which yields for as long as
+    -- the ground takes to arrive, and only reset `deathReported` after that.
+    -- For the whole of that wait the player stood in a live round killable
+    -- with the death watch switched off. A kill there was reported to
+    -- nobody, so the server never scored it and never sent a respawn; and it
+    -- was cleared for nobody, so it left a real corpse for the operator's
+    -- medical script to find and page an ambulance to -- into a routing
+    -- bucket no ambulance can reach.
+    local f = newClientFixture()
+    f.toFirstDeath()
+
+    f.groundReady = false
+    f.respawn()
+    f.step()
+
+    t.equals(#f.serverEvents, 1,
+        'the respawn re-reported the death it was sent to answer -- the watch was re-armed over a body')
+
+    -- Shot where they stand, mid-placement.
+    f.dead = true
+    f.step()
+
+    t.equals(#f.serverEvents, 2,
+        'a kill during the respawn placement was reported to nobody -- the server never scored it')
+    t.equals(f.cleared, 2,
+        'and it was never cleared, so the corpse is still there for the medical script to find')
+end)
+
+t.test('the respawn does not hand the ped back to the world until it has been placed', function()
+    -- The other half of the same contract, and the reason the re-arm alone
+    -- is not the whole fix: a ped released before placeAt is a ped that is
+    -- killable for the length of the wait. Left inside ClearDeadState's hold
+    -- across the yield instead, it cannot be shot at all -- and the release,
+    -- which is also what unfreezes it (client/dispatch.lua), is the single
+    -- instant it becomes a target again.
+    local f = newClientFixture()
+    f.toFirstDeath()
+
+    f.groundReady = false
+    f.respawn()
+    f.step()
+
+    t.equals(#f.released, 0,
+        'the hold was dropped before the player had been placed, leaving them killable mid-teleport')
+
+    f.groundReady = true
+    f.step()
+
+    t.equals(#f.released, 1, 'the placement finished and the player was never let out of the hold')
+    t.equals(f.released[1].ped, f.ped, 'the release went to a handle the resurrect had already replaced')
+end)
+
+t.test('a respawned fighter is re-armed, and only once the round still wants them', function()
+    local f = newClientFixture()
+    f.toFirstDeath()
+    local armedOnEntry = #f.given
+
+    f.respawn()
+    f.step()
+
+    t.equals(#f.given, armedOnEntry + 1, 'the respawned player came back empty-handed')
+    t.equals(f.given[#f.given].ped, f.ped, 'the weapon went to the handle the resurrect replaced')
+    t.equals(#f.released, 1, 'a respawn with the ground already streamed in still releases exactly once')
+end)
+
+t.test('the next death after a respawn is reported too -- the watch stays armed', function()
+    -- The re-arm moved, so this is the thing that must not have moved with
+    -- it: one respawn, then the next kill counts.
+    local f = newClientFixture()
+    f.toFirstDeath()
+
+    f.respawn()
+    f.step()
+
+    f.dead = true
+    f.step()
+
+    t.equals(#f.serverEvents, 2, 'the fighter the server put back in the round could never die again')
+end)
+
+t.test('a round that ends mid-placement still lets the player out of the hold', function()
+    -- The token guard below the placement returns without arming anybody,
+    -- and it must not return without releasing either: leaveArena has
+    -- already spent its one release by then, and placeAt has re-frozen the
+    -- ped since. Anything that bails out ahead of the release strands the
+    -- player frozen and invisible in the lobby.
+    local f = newClientFixture()
+    f.toFirstDeath()
+
+    f.groundReady = false
+    f.respawn()
+    f.step()
+
+    local releasedByExit = #f.released
+    f.fire('crimson_arena:client:exitArena', {})
+    t.equals(#f.released, releasedByExit + 1, 'leaveArena did not release the hold on the way home')
+
+    f.groundReady = true
+    f.step()
+
+    t.equals(#f.released, releasedByExit + 2,
+        'the parked respawn re-froze the ped on its way out and left nothing to unfreeze it')
+    t.equals(#f.given, 1, 'a player already home was re-armed with the arena loadout')
 end)
 
 os.exit(t.summary())

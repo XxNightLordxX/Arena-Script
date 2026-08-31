@@ -154,6 +154,74 @@ end
 
 --- @param src number
 --- @return boolean
+--- The bare command word out of a template: 'revive %s' -> 'revive'.
+--- @param template string
+--- @return string|nil
+local function commandWordOf(template)
+    if not Arena.IsKey(template) then return nil end
+    local word = template:match('^%s*([%w_%-]+)')
+    return (word and word ~= '') and word or nil
+end
+
+--- Grants this resource permission to run the revive commands it is
+--- configured with.
+---
+--- WHY THIS IS NEEDED. A command run through ExecuteCommand from a resource
+--- is run BY that resource, and an admin command checks whether the caller is
+--- allowed. crimson_arena is not an admin, so the command was refused --
+--- silently, because a refused command is not an error, it is just a command
+--- that did nothing. That is why the console could report running `revive 3`
+--- while the player stayed on the floor.
+---
+--- WHY IT GRANTS THE COMMAND AND NOT ADMIN. The obvious version of this is
+--- one line -- add this resource to the admin group -- and it would work. It
+--- would also mean every command on the server was reachable from inside the
+--- arena, so any flaw in any part of this resource became a way to run
+--- anything. What is granted here is exactly the commands the operator named
+--- in Config.Dispatch.revive.commands and nothing else: `command.revive`
+--- lets it revive, and lets it do nothing else at all.
+---
+--- Runtime only. Nothing is written to a .cfg and nothing survives a restart
+--- -- it is re-granted at every start, from config, so removing the command
+--- from config removes the permission with it.
+local function grantReviveAce()
+    local revive = (Config.Dispatch or {}).revive
+    if type(revive) ~= 'table' or revive.enabled ~= true then return end
+    if revive.grantSelfPermission == false then return end
+
+    local resource = GetCurrentResourceName()
+    local granted, seen = {}, {}
+
+    for _, template in ipairs(revive.commands or {}) do
+        local word = commandWordOf(template)
+        if word and not seen[word] then
+            seen[word] = true
+
+            local ok, err = pcall(ExecuteCommand,
+                ('add_ace resource.%s command.%s allow'):format(resource, word))
+            if ok then
+                granted[#granted + 1] = word
+            else
+                ArenaLog('revive: could not grant this resource permission to run "%s" (%s).',
+                    word, tostring(err))
+            end
+        end
+    end
+
+    if #granted > 0 then
+        ArenaLog('revive: granted this resource permission to run: %s. Nothing else -- not admin, just those.',
+            table.concat(granted, ', '))
+    end
+end
+
+-- At start, and every start: the grant is runtime-only and deliberately does
+-- not persist, so it is made again from whatever config says now.
+CreateThread(function()
+    -- One tick, so the command system is up before anything is added to it.
+    Wait(0)
+    grantReviveAce()
+end)
+
 --- Tells whatever handles death on this server that a player is alive again.
 ---
 --- WHY THIS IS NEEDED AT ALL. The arena stands its own players back up with
@@ -784,6 +852,11 @@ end
 --- @type table<string, boolean>
 local warnedCancel = {}
 
+--- Event names this resource has actually seen fire, so the line above is
+--- printed once per name rather than once per alert on a busy server.
+--- @type table<string, boolean>
+local sawFiring = {}
+
 --- One console line, the first time an entry turns out to be unusable.
 ---
 --- Once, and never per firing: an alert event on a busy server fires
@@ -843,6 +916,22 @@ local function registerCancelHandler(entry)
     RegisterNetEvent(entry.event)
 
     AddEventHandler(entry.event, function(...)
+        -- ONE LINE, THE FIRST TIME THIS HANDLER IS REACHED AT ALL.
+        --
+        -- It answers the only question worth asking when alerts keep coming
+        -- through: is the event even being raised? "Nothing was cancelled"
+        -- has two completely different causes and they need completely
+        -- different fixes -- the handler never ran, so the alert script is
+        -- calling an export instead of raising an event and NOTHING here can
+        -- ever reach it; or the handler ran and declined, which is a pinning
+        -- problem this file can solve. Without this line those are the same
+        -- silence, and an operator cannot tell which they are looking at.
+        if not sawFiring[entry.event] then
+            sawFiring[entry.event] = true
+            ArenaLog('cancelEvents: "%s" reached this resource for the first time -- the hook is live. If alerts still get through from here it is a pinning problem, not a plumbing one.',
+                entry.event)
+        end
+
         -- LOCATION FIRST, because it is the answer for the firings the player
         -- pin cannot see at all: an alert raised on the server with a payload
         -- describing where something happened and nothing about who.
@@ -862,7 +951,11 @@ local function registerCancelHandler(entry)
         -- player this resource is currently holding in a match, and nobody
         -- else. Read from the server's own record -- the same one the state
         -- bag is written from -- and never from anything the event carried.
-        if not ArenaDispatch.IsPlayerInArena(src) then return end
+        if not ArenaDispatch.IsPlayerInArena(src) then
+            ArenaDebug('cancelEvents: "%s" fired for %s, who is not in a match -- left alone, which is correct.',
+                entry.event, tostring(src))
+            return
+        end
 
         CancelEvent()
         ArenaDebug('dispatch: raised the cancel flag on "%s" for %s, who is in match %s. It only stops the alert if that resource checks WasEventCanceled().',

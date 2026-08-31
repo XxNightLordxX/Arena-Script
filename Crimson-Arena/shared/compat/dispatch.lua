@@ -185,6 +185,42 @@ local function inResyncList(resource)
     return false
 end
 
+--- Whether the operator named a disableExport for a resource this box is
+--- REALLY running. client/dispatch.lua skips an entry whose resource is not
+--- started, so one left behind for a script since uninstalled calls nothing
+--- -- and a report that read it as an integration would be describing a
+--- resource that is not there.
+--- @return boolean
+local function hasLiveDisableExport()
+    local list = customConfig().disableExports
+    if type(list) ~= 'table' then return false end
+
+    for _, entry in ipairs(list) do
+        if type(entry) == 'table' and Arena.IsKey(entry.resource) and Arena.IsKey(entry.export)
+            and GetResourceState(entry.resource) == 'started' then
+            return true
+        end
+    end
+    return false
+end
+
+--- Whether a resource named in resyncResources is running AND there is an
+--- entry event for it to hear -- the same pair statusOf() demands before it
+--- credits a detected row, held to here so the report cannot call one setup
+--- wired on one line and unwired on the next.
+--- @return boolean
+local function hasLiveResync()
+    if not enterEventName() then return false end
+
+    local list = customConfig().resyncResources
+    if type(list) ~= 'table' then return false end
+
+    for _, name in ipairs(list) do
+        if Arena.IsKey(name) and GetResourceState(name) == 'started' then return true end
+    end
+    return false
+end
+
 --- @param list any
 --- @return integer
 local function countList(list)
@@ -451,40 +487,99 @@ local function statusOf(adapter)
     return nil
 end
 
+--- Whether anything in this setup demonstrably reaches a dispatch script.
+--- It gates both the paste block and the caveat on the isolation line, and
+--- it is deliberately hard to satisfy.
+---
+--- THE DEFECT IT ANSWERS. "Nothing detected" used to read as "nothing to
+--- do", because the count it was gated on could only ever be raised by a
+--- row -- so the paste block printed for a script the catalogue recognised
+--- and stayed silent for one it had never heard of. The catalogue is a list
+--- of names to LOOK FOR, not a census: finding none of them says nothing
+--- whatsoever about what this box runs, and the operator running an unknown
+--- dispatch script is precisely the one with nobody else to tell them.
+---
+--- cancelEvents is NOT counted, on config.lua's own instruction: if it is
+--- the only form filled in, assume the alerts are still being sent.
+--- @param running table[] -- ArenaCompat.Detect()
+--- @param unhandled integer -- detected rows statusOf() could not account for
+--- @return boolean
+local function somethingWired(running, unhandled)
+    -- A detected row nothing covers settles it by itself: the report is
+    -- about to print "NOT muted -- needs the line below" against that row,
+    -- so the line had better be below it, whatever else is configured.
+    if unhandled > 0 then return false end
+    if #running > 0 then return true end
+
+    -- Nothing was recognised, so no row proved anything either way. What is
+    -- left is what the operator named themselves, for a resource that is
+    -- actually up.
+    return hasLiveDisableExport() or hasLiveResync()
+end
+
 --- One line about Config.Dispatch.isolation, and only when that block
 --- exists: it is another file's setting, and a report announcing
 --- "isolation is off" on a build that has no isolation would be inventing a
 --- feature rather than describing one.
 ---
---- It is what decides how much a row marked NOT muted actually matters:
---- with isolation on, the only machine left that can see the fight is a
---- fighter's own.
---- @param unhandled integer -- how many rows need the line pasting
+--- It is what decides how much an unwired setup actually matters: with
+--- isolation on, the only machine left that can see the fight is a
+--- fighter's own. That caveat used to be dropped whenever no row needed the
+--- paste line -- including when nothing had been detected at all, which is
+--- the branch it matters most in. An operator running an uncatalogued
+--- dispatch script was handed a bare "no OTHER player's client can see the
+--- fight" and every reason to stop reading.
+--- @param wired boolean -- somethingWired()
 --- @return string|nil
-local function isolationLine(unhandled)
+local function isolationLine(wired)
     local isolation = dispatchConfig().isolation
     if type(isolation) ~= 'table' then return nil end
 
     if isolation.enabled ~= true then
         return 'Isolation is off (Config.Dispatch.isolation) -- every client on the server can see arena gunfire and arena bodies. It is the one layer that needs nothing from anybody.'
     end
-    if unhandled > 0 then
-        return 'Isolation is on: no OTHER player\'s client can see the fight. An arena player\'s own client still can -- that is what the line below is for.'
+    if not wired then
+        return 'Isolation is on: no OTHER player\'s client can see the fight. An arena player\'s own client still can, and nothing here is confirmed wired -- that is what the line below is for.'
     end
     return 'Isolation is on: no OTHER player\'s client can see the fight.'
 end
 
+--- Whether anything this file can see actually rides the entry/exit events.
+---
+--- THE DEFECT THIS ANSWERS. Both event names ship non-nil in config.lua, so
+--- an install nobody has touched has them set -- and reading a name as
+--- configuration told every such operator they had wired up entry/exit
+--- events when what they had was a default firing into an empty room. A
+--- name is not a listener. What counts is something demonstrably riding
+--- them: a running resource the operator named in resyncResources, or a
+--- detected adapter carrying a mute this file calls off the entry event
+--- itself.
+--- @param running table[] -- ArenaCompat.Detect()
+--- @return boolean
+local function eventsAreRidden(running)
+    if enterEventName() then
+        for _, adapter in ipairs(running) do
+            if adapter.mute then return true end
+        end
+    end
+    return hasLiveResync()
+end
+
 --- What the operator has already wired up, so the report describes their
 --- setup rather than a template.
+--- @param running table[] -- ArenaCompat.Detect()
 --- @return string
-local function hookLine()
+local function hookLine(running)
     local parts = {}
     local enter, exit = enterEventName(), exitEventName()
+    local ridden = eventsAreRidden(running)
 
-    if enter and exit then
-        parts[#parts + 1] = 'entry/exit events'
-    elseif enter or exit then
-        parts[#parts + 1] = enter and 'entry event only' or 'exit event only'
+    if ridden then
+        if enter and exit then
+            parts[#parts + 1] = 'entry/exit events'
+        elseif enter or exit then
+            parts[#parts + 1] = enter and 'entry event only' or 'exit event only'
+        end
     end
 
     local exportCount = countList(customConfig().disableExports)
@@ -496,10 +591,20 @@ local function hookLine()
     local resyncCount = countList(customConfig().resyncResources)
     if resyncCount > 0 then parts[#parts + 1] = ('%d resyncResource(s)'):format(resyncCount) end
 
-    if #parts == 0 then
-        return 'Hooks configured: none -- the state bag is written either way. /arenadispatch re-runs this report.'
+    -- Named but unridden still earns a clause, because the events really do
+    -- fire: an operator who has written a listener this file cannot see
+    -- must not be told they have none. It is stated as a fact about the
+    -- events and paired with the one thing that would make it visible,
+    -- rather than banked as credit for an integration.
+    local tail = ''
+    if not ridden and (enter or exit) then
+        tail = ' The entry/exit events fire, but nothing here can see a listener -- name it in custom.resyncResources if you have one.'
     end
-    return ('Hooks configured: %s. /arenadispatch re-runs this report.'):format(table.concat(parts, ', '))
+
+    if #parts == 0 then
+        return ('Hooks configured: none -- the state bag is written either way.%s /arenadispatch re-runs this report.'):format(tail)
+    end
+    return ('Hooks configured: %s.%s /arenadispatch re-runs this report.'):format(table.concat(parts, ', '), tail)
 end
 
 --- The startup block, as lines. Kept to a handful on purpose: an operator
@@ -523,10 +628,16 @@ function ArenaCompat.Report()
         end
     end
 
-    local isolation = isolationLine(unhandled)
+    -- Both of the next two are the same question -- is anything actually
+    -- reaching a dispatch script -- so they are asked once and answered the
+    -- same way. The caveat promising "the line below" and the line itself
+    -- appear together or not at all.
+    local wired = somethingWired(running, unhandled)
+
+    local isolation = isolationLine(wired)
     if isolation then lines[#lines + 1] = isolation end
 
-    if unhandled > 0 then
+    if not wired then
         -- The exact line, and roughly where it goes. No resource can cancel
         -- another one's alert from outside it, so this is the arena
         -- declining from inside theirs -- and it is one line, at the top,
@@ -536,7 +647,7 @@ function ArenaCompat.Report()
         lines[#lines + 1] = ('      if LocalPlayer.state.%s then return end        -- client realm'):format(stateKey())
     end
 
-    lines[#lines + 1] = hookLine()
+    lines[#lines + 1] = hookLine(running)
 
     -- THE OTHER HALF OF THE PROBLEM, and worth its own line because nothing
     -- else in this report is about it. Everything above is about stopping

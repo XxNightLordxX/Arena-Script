@@ -275,8 +275,8 @@ function ArenaDispatch.ClearDeadState(ped)
 end
 
 --- Undoes ClearDeadState's holding pattern. client/match.lua calls this
---- from its respawn and elimination handlers, both of which place the ped
---- themselves afterwards -- so this restores the ped's properties and
+--- from its respawn and elimination handlers, both of which own where the
+--- ped ends up themselves -- so this restores the ped's properties and
 --- deliberately does not touch its position.
 --- @param ped integer
 function ArenaDispatch.ReleaseDeadState(ped)

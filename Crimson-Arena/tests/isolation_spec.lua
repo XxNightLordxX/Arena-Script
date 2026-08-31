@@ -103,6 +103,10 @@ local function newFixture(dispatchConfig, world)
             calls[#calls + 1] = { kind = 'event', name = name, args = { ... } }
         end,
         RegisterNetEvent = function() end,
+        -- The permission grant runs in a thread at load. Captured and
+        -- dropped: this fixture is about routing buckets, and running it
+        -- would only add noise to every assertion below.
+        CreateThread = function() end,
         AddEventHandler = function(name, fn)
             handlers[name] = handlers[name] or {}
             handlers[name][#handlers[name] + 1] = fn
@@ -837,6 +841,143 @@ t.test('a spectator attached mid-round is swept into the bucket the fight is in'
     f.lobby.RemoveSpectator(9)
     f.step()
     t.equals(f.bucketOf(9), 77)
+end)
+
+-- ========================================================================
+-- THE FLAG FOLLOWING THE BUCKET
+--
+-- The sweep above is wider than the arena's own choke point: sendEnterArena
+-- raises the dispatch flag for FIGHTERS as it instances them, while the
+-- sweep instances match.spectators too and raised nothing. So a spectator
+-- sat inside the match instance -- their client receiving every shot of the
+-- round -- while the state bag an operator's dispatch script reads still
+-- said they had never been near an arena, and nothing that client raised
+-- was suppressed.
+--
+-- These four hold the flag and the bucket together on the one call site
+-- that owns both: raised for a spectator, dropped for a spectator, NOT
+-- taken off an eliminated fighter who is in both tables, and NOT put on a
+-- lobby that is merely counting down.
+-- ========================================================================
+
+t.test('a spectator put in the arena instance is published as being in the arena', function()
+    local f = newArena({ [9] = 77 })
+    local match = f.newMatch('m1', { 1, 2 })
+    f.M.Start(match.id)
+    f.step()
+
+    f.lobby.AddSpectator(9, match.id)
+    -- Registered, but nothing has been done to them yet. Flagging at
+    -- registration rather than at the move is the same hole the flag has
+    -- always refused: it is a record of what has been DONE to a player.
+    t.isFalse(f.D.IsPlayerInArena(9))
+
+    f.step()
+    t.equals(f.bucketOf(9), 4210)
+    t.isTrue(f.D.IsPlayerInArena(9))
+    -- The match, not merely a boolean: a dispatch script keeping its own
+    -- ignore list keys it by match id, and the enter event carries the same.
+    t.equals(f.D.GetPlayerMatchId(9), 'm1')
+end)
+
+t.test('and the flag comes off in the same pass that lets the spectator out', function()
+    local f = newArena({ [9] = 77 })
+    local match = f.newMatch('m1', { 1, 2 })
+    f.M.Start(match.id)
+    f.step()
+
+    f.lobby.AddSpectator(9, match.id)
+    f.step()
+    t.isTrue(f.D.IsPlayerInArena(9))
+
+    f.lobby.RemoveSpectator(9)
+    f.step()
+
+    t.equals(f.bucketOf(9), 77)
+    -- A flag that outlived the bucket is the worse half of the pair: the
+    -- player is back in the ordinary world with their police and medical
+    -- alerts suppressed for the rest of the session, and nothing anywhere
+    -- says so.
+    t.isFalse(f.D.IsPlayerInArena(9))
+end)
+
+t.test('an eliminated fighter who stays to watch is NOT unflagged mid-round', function()
+    -- THE HAZARD IN THE PAIR ABOVE, and it is worse than the bug they fix.
+    -- An eliminated player sits in match.players AND in match.spectators, so
+    -- a clear driven off "the registry calls them a spectator" would strip
+    -- the flag from somebody still standing in the instance of a round that
+    -- is still being fought around them.
+    --
+    -- What holds it: match.players claims every fighter unconditionally
+    -- while match.spectators only fills the gaps, and the exit half of the
+    -- sweep reaches nobody a live match still claims.
+    local f = newArena()
+    local match = f.newMatch('m1', { 1, 2, 3 })
+    f.M.Start(match.id)
+    f.step()
+    t.equals(match.state, 'live')
+    t.isTrue(f.D.IsPlayerInArena(3))
+
+    f.M.OnDeath(3, 1)
+    -- In both tables, which is the whole point of this test.
+    t.isTrue(match.spectators[3])
+    t.isNotNil(match.players[3])
+    -- Two still standing, so the round carries on around them rather than
+    -- ending and sending everybody home before the sweep is asked anything.
+    f.step()
+    t.equals(match.state, 'live')
+
+    t.isTrue(f.D.IsPlayerInArena(3))
+    t.equals(f.D.GetPlayerMatchId(3), 'm1')
+    t.equals(f.bucketOf(3), 4210)
+
+    -- Still true a second later: a sweep that only got it right on the first
+    -- pass would be a bug on a two-minute round.
+    f.step()
+    t.isTrue(f.D.IsPlayerInArena(3))
+
+    -- AND FROM THE OTHER SIDE: they close the camera. server/lobby.lua drops
+    -- them out of match.spectators and leaves the fighter row alone, so a
+    -- clear keyed on "has stopped watching" rather than on the reconcile
+    -- would fire right here -- on somebody still standing in the instance of
+    -- a round still being fought around them.
+    f.lobby.RemoveSpectator(3)
+    f.step()
+
+    t.equals(match.state, 'live')
+    t.isTrue(f.D.IsPlayerInArena(3))
+    t.equals(f.bucketOf(3), 4210)
+end)
+
+t.test('a lobby still counting down is not published as a fight', function()
+    -- WHY THE SWEEP FLAGS SPECTATORS AND NOT FIGHTERS. `state` cannot tell
+    -- the two countdowns apart: ArenaMatch.Begin uses 'countdown' for the
+    -- LOBBY countdown, where nobody has been teleported anywhere, and
+    -- ArenaMatch.Start uses the same name for the frozen one after moving
+    -- the room in. Flagging everybody the sweep touches would therefore
+    -- suppress the police and medical alerts of players standing in the
+    -- middle of town waiting for a round to begin -- the exact hole
+    -- ArenaDispatch.Set's own comment refuses to open -- and would make
+    -- server/lobby.lua's playersArePlaced read a filling lobby as a round in
+    -- progress and refuse its host the cancel button.
+    --
+    -- Only sendEnterArena raises a fighter's flag, and it runs when they are
+    -- actually placed. This says nothing about where the lobby countdown
+    -- leaves their routing bucket; that is a separate question.
+    local f = newArena()
+    local match = f.newMatch('m1', { 1, 2 })
+
+    t.isTrue((f.M.Begin(match.id)))
+    t.equals(match.state, 'countdown')
+
+    -- Several sweeps' worth of the lobby countdown, which is ten seconds in
+    -- the shipped config -- comfortably long enough to matter.
+    f.step()
+    f.step()
+    f.step()
+
+    t.isFalse(f.D.IsPlayerInArena(1))
+    t.isFalse(f.D.IsPlayerInArena(2))
 end)
 
 t.test('a player who leaves by a path that sends no exit is swept back out within a tick', function()

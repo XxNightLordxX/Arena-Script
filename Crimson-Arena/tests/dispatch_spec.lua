@@ -31,10 +31,14 @@ local function newFixture(dispatchConfig)
     local logs = {}
     local commands = {}      -- every ExecuteCommand line, in order
     local cancelled = 0      -- how many times CancelEvent() was called
+    local toClients = {}     -- every TriggerClientEvent, in order
 
     local env = Sandbox.newEnv({
         ExecuteCommand = function(line) commands[#commands + 1] = line end,
         CancelEvent = function() cancelled = cancelled + 1 end,
+        TriggerClientEvent = function(name, target, ...)
+            toClients[#toClients + 1] = { name = name, target = target, args = { ... } }
+        end,
         Player = function(src)
             return {
                 state = {
@@ -99,6 +103,7 @@ local function newFixture(dispatchConfig)
         --- value at construction -- zero, forever -- and every assertion
         --- against it would pass without the code under test running.
         cancelled = function() return cancelled end,
+        toClients = toClients,
         eventNames = function()
             local out = {}
             for _, e in ipairs(events) do out[#out + 1] = e.name end
@@ -474,6 +479,59 @@ t.test('the revive command runs with the player id substituted in', function()
 
     t.equals(#f.commands, 1, 'the command did not run')
     t.equals(f.commands[1], 'revive 7', 'the wrong player was revived')
+end)
+
+t.test('a client-side revive is sent to that player, and to nobody else', function()
+    -- The failure this covers is silent by construction. A command
+    -- registered CLIENT-side does not exist as far as the server console is
+    -- concerned, so the server's own ExecuteCommand finds nothing, does
+    -- nothing, and reports nothing wrong -- the arena says it revived
+    -- everybody while every player is still on the floor.
+    local config = reviveConfig('revive %s')
+    config.revive.commands = {}
+    config.revive.clientCommands = { 'revive' }
+
+    local f = newFixture(config)
+    f.D.Revive(9)
+
+    t.equals(#f.commands, 0, 'a client command was run on the server console instead')
+    t.equals(#f.toClients, 1, 'the client was never asked to run anything')
+    t.equals(f.toClients[1].name, 'crimson_arena:client:runCommand')
+    t.equals(f.toClients[1].target, 9, 'the wrong player was asked')
+    t.equals(f.toClients[1].args[1], 'revive')
+end)
+
+t.test('a client template WITH a placeholder still gets the id', function()
+    local config = reviveConfig('revive %s')
+    config.revive.commands = {}
+    config.revive.clientCommands = { 'heal %s' }
+
+    local f = newFixture(config)
+    f.D.Revive(4)
+
+    t.equals(f.toClients[1].args[1], 'heal 4')
+end)
+
+t.test('both forms can run together, and each goes to its own realm', function()
+    local config = reviveConfig('revive %s')
+    config.revive.clientCommands = { 'revive' }
+
+    local f = newFixture(config)
+    f.D.Revive(6)
+
+    t.equals(f.commands[1], 'revive 6', 'the server console line is gone')
+    t.equals(#f.toClients, 1, 'the client line is gone')
+end)
+
+t.test('a server command that ran is reported, so a silent failure is visible', function()
+    -- Running a command that has no effect looks exactly like running no
+    -- command at all. An operator watching a player stay dead has to be able
+    -- to tell those apart.
+    local f = newFixture(reviveConfig('revive %s'))
+    f.D.Revive(5)
+
+    t.contains(table.concat(f.logs, '\n'), 'revive 5',
+        'nothing was logged, so there is no way to tell the command ran')
 end)
 
 t.test('a template with no placeholder gets the id appended', function()

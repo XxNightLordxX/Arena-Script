@@ -293,3 +293,24 @@ AddEventHandler('onResourceStop', function(resource)
     if resource ~= GetCurrentResourceName() then return end
     ArenaDispatch.Exit()
 end)
+
+--- Runs one command on this player's own client, at the server's request.
+---
+--- WHY THIS EXISTS. A revive is very often an admin command, and a command
+--- registered CLIENT-side does not exist as far as the server console is
+--- concerned -- the server's own ExecuteCommand finds nothing, does nothing,
+--- and reports nothing wrong. That is the quietest possible failure, and it
+--- is exactly what a server whose /revive lives on the client sees: the
+--- arena says it revived everybody and every player is still on the floor.
+---
+--- The string comes from Config.Dispatch.revive.clientCommands and from
+--- nowhere else. It is not player input and it is not carried in from
+--- another resource: the server builds it from the operator's own config and
+--- sends it to the one client it is about.
+RegisterNetEvent('crimson_arena:client:runCommand', function(line)
+    -- Typed rather than trusted. A net event handler is reachable by anything
+    -- the server sends, and a non-string here would take the handler down.
+    if type(line) ~= 'string' or line == '' then return end
+
+    ExecuteCommand(line)
+end)

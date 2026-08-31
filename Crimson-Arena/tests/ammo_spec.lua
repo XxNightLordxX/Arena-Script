@@ -285,6 +285,30 @@ t.test('melee is issued with no ammo in its metadata at all', function()
         'a blade was issued carrying a magazine')
 end)
 
+t.test('a weapon ox_inventory refuses is named in the console, not swallowed', function()
+    -- "No weapon appeared" has two completely different causes: the item was
+    -- refused, or it was accepted and something took it back afterwards.
+    -- Without a line for each they are the same silence, and the operator
+    -- has nothing to go on.
+    local s = newServer({ [1] = OWN })
+    s.breakOn('give')
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    local console = s.log()
+    t.contains(console, 'WEAPON_TEST', 'the refused weapon is not named')
+    t.contains(console, 'issued NOTHING', 'a player left unarmed is not called out')
+end)
+
+t.test('and a weapon that WAS accepted says so, with what it was loaded with', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    local console = s.log()
+    t.contains(console, 'gave WEAPON_TEST')
+    t.contains(console, 'ammo 60', 'the magazine it was issued with is not recorded')
+    t.notContains(console, 'issued NOTHING')
+end)
+
 t.test('DEFECT: with the door OFF the arena weapon has to be taken back by name', function()
     -- The door is what usually destroys the arena kit: it clears the whole
     -- inventory on the way out. Switch it off and nothing does -- Reclaim

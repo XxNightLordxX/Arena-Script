@@ -49,8 +49,8 @@ Config = {}
 Config.ResourceLabel = 'Crimson Arena'
 
 --- Extra console logging for anyone debugging a match that went wrong.
---- Leave off on a live server -- it is chatty.
-Config.Debug = false
+--- Chatty by design: turn it off once the arena is behaving.
+Config.Debug = true
 
 --- ox_lib notification title for every message this resource sends.
 Config.NotifyTitle = 'CRIMSON ARENA'
@@ -1518,6 +1518,21 @@ Config.Dispatch = {
         -- `%s` is where the player's server id goes. A line with no `%s` gets
         -- the id appended, so 'revive' and 'revive %s' both work.
         commands = { 'revive %s' },
+
+        -- THE SAME COMMANDS, RUN ON THE PLAYER'S OWN CLIENT.
+        --
+        -- Use these when the server console line above appears but nothing
+        -- happens. A command registered CLIENT-side does not exist as far as
+        -- the server console is concerned: `commands` finds nothing, does
+        -- nothing, and reports nothing wrong -- the quietest failure there
+        -- is, and the reason both forms exist.
+        --
+        -- Same `%s` rule. Many client-side revives revive whoever ran them
+        -- and take no id at all, so 'revive' on its own is the common case
+        -- here -- and unlike the server list, a template with no placeholder
+        -- is sent AS IS rather than having the id appended.
+        --     clientCommands = { 'revive' },
+        clientCommands = {},
 
         -- ONE MORE SWEEP AFTER THE MATCH, in milliseconds. 0 turns it off.
         --

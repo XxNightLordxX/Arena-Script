@@ -274,6 +274,12 @@ local function issueWeapons(ox, src, matchId, loadout)
             local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
             if ok and accepted ~= false then
                 given[#given + 1] = { name = name, metadata = metadata }
+                -- SUCCESS IS LOGGED TOO, and it has to be. "No weapon
+                -- appeared" has two completely different causes -- the item
+                -- was refused, or it was accepted and something took it back
+                -- afterwards -- and only one of them used to leave a trace.
+                -- Without this line those are the same silence.
+                ArenaLog('weapons: gave %s x1 to %s (ammo %d).', name, tostring(src), rounds)
             else
                 failed[#failed + 1] = entry.key or name
                 ArenaLog('weapons: ox_inventory would not give %s to %s. Check that item exists in your ox_inventory weapon data -- the player is in the arena unarmed.',
@@ -284,6 +290,11 @@ local function issueWeapons(ox, src, matchId, loadout)
 
     issuedWeapons[matchId] = issuedWeapons[matchId] or {}
     issuedWeapons[matchId][src] = given
+
+    if #given == 0 and #(loadout.weapons or {}) > 0 then
+        ArenaLog('weapons: %s was issued NOTHING despite a loadout of %d weapon(s). Every name was refused by ox_inventory -- check they exist in its weapon data, spelled exactly as in Config.Loadouts.weapons.',
+            tostring(src), #loadout.weapons)
+    end
 
     return failed
 end

@@ -130,7 +130,7 @@ files['client/'] = {
 
     read_globals = {
         -- Shared realm, read-only from here: the client never writes a rule.
-        'Arena',
+        'ExecuteCommand', 'Arena',
         'Config',
 
         -- Dispatch suppression (client/dispatch.lua). The wanted-level and

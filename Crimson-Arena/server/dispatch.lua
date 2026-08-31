@@ -201,9 +201,43 @@ function ArenaDispatch.Revive(src)
 
             if line then
                 local ok, err = pcall(ExecuteCommand, line)
-                if not ok then
+                if ok then
+                    -- SAID OUT LOUD, not traced. Running a command that has
+                    -- no effect looks exactly like running no command at all,
+                    -- and an operator watching a player stay dead needs to
+                    -- know which of those they are looking at. If this line
+                    -- appears and the player is still down, the command is
+                    -- not the right mechanism on this server -- try
+                    -- clientCommands below.
+                    ArenaLog('revive: ran "%s" on the server console.', line)
+                else
                     ArenaLog('revive: command "%s" errored (%s).', line, tostring(err))
                 end
+            end
+        end
+    end
+
+    -- THE SAME THING, ON THE PLAYER'S OWN CLIENT. A command registered
+    -- client-side does not exist as far as the server console is concerned:
+    -- ExecuteCommand above finds nothing, does nothing, and reports nothing
+    -- wrong -- which is the quietest possible failure and exactly what a
+    -- server whose /revive lives on the client would see.
+    for _, template in ipairs(revive.clientCommands or {}) do
+        if Arena.IsKey(template) then
+            local line
+            if template:find('%%') then
+                local ok, formatted = pcall(string.format, template, src)
+                line = ok and formatted or nil
+            else
+                line = template
+            end
+
+            if line then
+                TriggerClientEvent('crimson_arena:client:runCommand', src, line)
+                ArenaLog('revive: asked %s\'s client to run "%s".', tostring(src), line)
+            else
+                ArenaLog('revive: could not build a client command from "%s" -- use %%s where the player id goes.',
+                    template)
             end
         end
     end

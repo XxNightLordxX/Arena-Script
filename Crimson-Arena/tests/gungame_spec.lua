@@ -114,6 +114,16 @@ local function newFixture(mutate)
         -- through ArenaDebug, and a test asserts on it.
         print = function(line) console[#console + 1] = line end,
         GetPlayerName = function(src) return ('Fighter %d'):format(src) end,
+        -- The respawn picker asks where the live opponents are, so it can put
+        -- a returning player somewhere none of them is.
+        GetPlayerPed = function(src) return src end,
+        -- Where a live opponent is, which the respawn picker reads so a
+        -- player who lost a life does not come back next to whoever took it.
+        -- Spread apart by server id so "furthest from the nearest threat" has
+        -- a real answer rather than a tie between identical points.
+        GetEntityCoords = function(ped)
+            return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
+        end,
         exports = { qbx_core = { GetPlayer = function() return nil end } },
 
         ArenaLobby = lobby,
@@ -314,21 +324,27 @@ end
 -- WHAT SHIPS
 -- ======================================================================
 
-t.test('gun game now ships ENABLED, with a ladder behind it', function()
-    -- THE CONTRACT CHANGED, on the operator's instruction. This used to
-    -- assert the mode shipped off, and the reasoning was sound at the time:
-    -- an unfinished feature should not be live by default. It is finished
-    -- now -- the promotion event had no client handler at all until this
-    -- round, so climbing a rung changed the server's idea of what a player
-    -- held and never their hands -- and the operator has asked for it on.
+t.test('gun game ships OFF, and the ladder behind it is still sound', function()
+    -- THE CONTRACT HAS CHANGED TWICE, both times on the operator's
+    -- instruction, and neither time because anything was wrong with the mode.
+    -- It shipped off while it was unfinished, went on once the promotion
+    -- event had a client handler at last, and is off again now because this
+    -- server does not want to run it.
     --
-    -- A mode that is enabled with an empty ladder would be worse than one
-    -- that is off, so the ladder is asserted here rather than only in the
-    -- test below.
+    -- So what is asserted is BOTH halves: that it is off, and that it is
+    -- nonetheless ready -- the ladder intact, every rung a real weapon --
+    -- because the whole of turning it back on is flipping `enabled`, and a
+    -- mode that comes back on with a broken ladder promotes nobody.
     local f = newFixture()
-    t.isTrue(f.Config.Modes.gungame.enabled)
-    t.isTrue(#f.M.GetLadder('gungame') > 0,
-        'gun game is enabled with no ladder -- every kill would promote nobody')
+    t.isFalse(f.Config.Modes.gungame.enabled,
+        'gun game is live again -- the operator asked for it off')
+
+    -- Read with the mode forced on, since GetLadder answers with nothing for
+    -- a mode that is switched off. That IS the behaviour asserted below; here
+    -- it would only hide whether the ladder itself survived.
+    local ready = newFixture(function(config) config.Modes.gungame.enabled = true end)
+    t.isTrue(#ready.M.GetLadder('gungame') > 0,
+        'the ladder is empty, so switching gun game back on would promote nobody')
 end)
 
 t.test('and a mode switched OFF still plays no ladder', function()

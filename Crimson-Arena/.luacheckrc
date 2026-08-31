@@ -388,6 +388,11 @@ files['server/'] = {
         'GetPlayerPed',
         'GetVehiclePedIsIn',
         'IsPlayerAceAllowed',
+        -- Where a live fighter currently is, read by the respawn picker so a
+        -- player who lost a life is not put back next to whoever took it.
+        -- Server-side reads of a client-owned entity can legitimately fail,
+        -- so the caller treats an unreadable position as one to skip.
+        'GetEntityCoords',
 
         -- Routing buckets (server/dispatch.lua). A match is fought in its
         -- own network instance, which is set server-side and never on a

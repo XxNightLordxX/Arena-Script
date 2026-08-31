@@ -757,6 +757,43 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
     })
 end
 
+--- Where every LIVE OPPONENT of one player currently is.
+---
+--- Teammates are deliberately left out: coming back near your own side is
+--- the point of having one, and counting them as something to avoid would
+--- push a returning player out to the empty edge of the arena alone.
+---
+--- Read from the engine rather than from anything the arena stores, because
+--- what matters is where they are NOW, not where they started. A position
+--- the server cannot read -- a player mid-stream, or one whose ped has not
+--- been created yet -- is skipped rather than guessed at: an unreadable
+--- opponent placed at the origin would drag every respawn to the far side of
+--- the map.
+--- @param match table
+--- @param player table -- the one coming back
+--- @return table[] positions
+local function liveOpponentPositions(match, player)
+    local teams = Arena.ModeUsesTeams(match.modeKey)
+    local own = teams and teamOf(match, player) or nil
+
+    local out = {}
+    for src, entry in pairs(match.players or {}) do
+        local sameSide = teams and Arena.IsKey(own) and teamOf(match, entry) == own
+        if src ~= player.src and entry.alive == true and not sameSide then
+            local ped = GetPlayerPed(src)
+            if ped and ped ~= 0 then
+                local coords = GetEntityCoords(ped)
+                -- The origin is what this native returns for a ped that does
+                -- not really exist yet, and no arena is at 0,0,0.
+                if coords and (coords.x ~= 0.0 or coords.y ~= 0.0) then
+                    out[#out + 1] = coords
+                end
+            end
+        end
+    end
+    return out
+end
+
 --- Puts a player back in at a fresh point with a fresh loadout once
 --- `respawnDelaySeconds` is up.
 ---
@@ -779,8 +816,8 @@ local function scheduleRespawn(match, player)
         local entry = current.players[src]
         if not entry or entry.alive then return end
 
-        -- The cursor keeps walking the spawn list, so a player who dies
-        -- three times does not come back at the same corner three times.
+        -- Still counted, because it is what the fallback below uses on an
+        -- arena that defines no spawn area at all.
         current.spawnCursor = (current.spawnCursor or 0) + 1
 
         -- Gun game hands back the rung they are on rather than the loadout
@@ -790,8 +827,23 @@ local function scheduleRespawn(match, player)
         entry.loadout = loadout
         entry.alive = true
 
+        -- SOMEWHERE RANDOM, AND AWAY FROM WHOEVER IS STILL ALIVE TO SHOOT.
+        --
+        -- This used to be Arena.PickSpawn with the cursor above, which walks
+        -- the arena's point list in order -- predictable, and on a short list
+        -- that is the corner they died in a moment ago. Coming back inside
+        -- somebody's crosshair is not a respawn.
+        --
+        -- PickRespawn samples the spawn area and takes the point whose
+        -- nearest opponent is furthest away, falling back to the point list
+        -- (from a random start) on an arena with no area. The cursor is kept
+        -- only for that fallback.
+        local team = teamOf(current, entry)
+        local point = Arena.PickRespawn(current.arenaKey, team, liveOpponentPositions(current, entry))
+            or Arena.PickSpawn(current.arenaKey, team, current.spawnCursor)
+
         TriggerClientEvent('crimson_arena:client:respawn', src, {
-            spawn = toPoint(Arena.PickSpawn(current.arenaKey, teamOf(current, entry), current.spawnCursor)),
+            spawn = toPoint(point),
             scatterRadius = scatterRadius(),
             loadout = loadout,
         })

@@ -1027,6 +1027,113 @@ function Arena.PlanSpawns(arenaKey, roster, rng)
     return plan
 end
 
+--- How many points to sample before picking the one furthest from trouble.
+--- Enough that the choice is a real choice; small enough that a respawn is
+--- not a search.
+local RESPAWN_CANDIDATES = 16
+
+--- Coerces one position into { x, y, z }, or nil.
+---
+--- Accepts what the callers actually hold: a vector3 from the engine, a
+--- table with named fields, or a plain array. A position that cannot be read
+--- is dropped rather than defaulted to the origin -- an unreadable enemy at
+--- 0,0,0 would drag every respawn towards the far side of the map.
+local function asPoint(value)
+    if type(value) ~= 'table' and type(value) ~= 'userdata' then return nil end
+    local ok, x, y = pcall(function() return value.x, value.y end)
+    if not ok or type(x) ~= 'number' or type(y) ~= 'number' then
+        if type(value) ~= 'table' then return nil end
+        x, y = tonumber(value[1]), tonumber(value[2])
+        if not x or not y then return nil end
+    end
+    return { x = x, y = y }
+end
+
+--- Where to put a player who has just lost a life.
+---
+--- RANDOM, AND AWAY FROM WHOEVER KILLED THEM. The respawn used to walk the
+--- arena's point list with a cursor -- so a player came back at the next
+--- point along, which is predictable, and which on a small list is where
+--- they died a moment ago. Coming back inside somebody's crosshair is not a
+--- respawn, it is a second death with extra steps.
+---
+--- The rule is maximin: sample the area, then take the candidate whose
+--- NEAREST threat is furthest away. Not the one furthest from the average --
+--- an average is happily satisfied by landing between two enemies.
+---
+--- `avoid` is whoever must be kept away from, which is the caller's decision
+--- and not this function's: on a team mode it is the other side only,
+--- because coming back near your own team is the point of having one.
+---
+--- An empty `avoid` is not an error and not a fallback to the old cursor: it
+--- is a round where nobody is left to avoid, and the answer is still a random
+--- point rather than a predictable one.
+--- @param arenaKey any
+--- @param teamKey any -- the returning player's side, for the team point list
+--- @param avoid table[]|nil -- positions to stay away from
+--- @param rng fun():number|nil -- injectable; defaults to math.random
+--- @return table|nil point -- { x, y, z, w }, or nil when the arena has neither
+---         a spawn area nor any points to choose from
+function Arena.PickRespawn(arenaKey, teamKey, avoid, rng)
+    rng = rng or math.random
+
+    local threats = {}
+    for _, entry in ipairs(type(avoid) == 'table' and avoid or {}) do
+        local point = asPoint(entry)
+        if point then threats[#threats + 1] = point end
+    end
+
+    -- THE CANDIDATES. An arena with an area gets fresh random points; one
+    -- with only a point list gets the list, which is every choice there is.
+    local candidates = {}
+    local area = Arena.GetSpawnArea(arenaKey)
+    if area then
+        for _ = 1, RESPAWN_CANDIDATES do
+            candidates[#candidates + 1] = sampleDisc(rng, area, area.x, area.y, area.radius)
+        end
+    else
+        local arena = Arena.GetArenaByKey(arenaKey)
+        if type(arena) ~= 'table' then return nil end
+
+        local list
+        if Arena.IsKey(teamKey) and type(arena.teamSpawns) == 'table' then
+            local teamList = arena.teamSpawns[teamKey]
+            if type(teamList) == 'table' and #teamList > 0 then list = teamList end
+        end
+        if not list then list = arena.spawns end
+        if type(list) ~= 'table' or #list == 0 then return nil end
+
+        -- Walked from a RANDOM start rather than from the front, so that two
+        -- points which are equally good do not always resolve to the same
+        -- one. Without this a small list plus one enemy is a cursor again.
+        local offset = math.floor(rng() * #list)
+        for step = 1, #list do
+            candidates[#candidates + 1] = list[((offset + step - 1) % #list) + 1]
+        end
+    end
+
+    if #candidates == 0 then return nil end
+    if #threats == 0 then
+        -- Nobody to avoid. Still random: on an area the first sample already
+        -- is, and on a list the offset above made it one.
+        return candidates[1]
+    end
+
+    local best, bestScore = nil, -1
+    for _, candidate in ipairs(candidates) do
+        local nearest = math.huge
+        for _, threat in ipairs(threats) do
+            local gap = distanceSquared(candidate, threat)
+            if gap < nearest then nearest = gap end
+        end
+        -- Strictly greater, so the first of several equally distant
+        -- candidates wins -- and the first is already a random one.
+        if nearest > bestScore then best, bestScore = candidate, nearest end
+    end
+
+    return best
+end
+
 -- ======================================================================
 -- BETTING MATHS
 --

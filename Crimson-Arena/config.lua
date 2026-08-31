@@ -359,7 +359,10 @@ Config.Modes = {
     ['gungame'] = {
         label = 'Gun Game',
         description = 'Every kill moves you up the weapon ladder. First to the end wins.',
-        enabled = true,         -- the ladder below is what it plays
+        -- OFF. Switched off at the operator's request, not because anything
+        -- about it is broken: the ladder below is intact and tested, and
+        -- setting this back to true is the whole of turning the mode on.
+        enabled = false,
         teams = false,
         icon = 'fas fa-arrow-up-9-1',
         -- Weapon keys from Config.Loadouts.weapons, in order. When this mode

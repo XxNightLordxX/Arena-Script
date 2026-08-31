@@ -954,6 +954,13 @@ local function newClientFixture()
         DoesBlipExist = function() return true end,
         RemoveBlip = function() end,
         GetPlayerPed = function(player) return 1000 + (player or 0) end,
+        -- Where a live opponent is, which the respawn picker reads so a
+        -- player who lost a life does not come back next to whoever took it.
+        -- Spread apart by server id so "furthest from the nearest threat" has
+        -- a real answer rather than a tie between identical points.
+        GetEntityCoords = function(ped)
+            return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
+        end,
         SetEntityDrawOutline = function(ped, on)
             f.outlines = f.outlines or {}
             f.outlines[#f.outlines + 1] = { ped = ped, on = on == true }

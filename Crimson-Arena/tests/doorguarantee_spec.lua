@@ -114,6 +114,13 @@ local function newServer(ids, mutate)
         GetGameTimer = (function() local c = 0 return function() c = c + 60000 return c end end)(),
         GetPlayerName = function(src) return 'Player' .. tostring(src) end,
         GetPlayerPed = function(src) return src end,
+        -- Where a live opponent is, which the respawn picker reads so a
+        -- player who lost a life does not come back next to whoever took it.
+        -- Spread apart by server id so "furthest from the nearest threat" has
+        -- a real answer rather than a tie between identical points.
+        GetEntityCoords = function(ped)
+            return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
+        end,
         GetVehiclePedIsIn = function() return 0 end,
         -- The real server/dispatch.lua writes the arena flag through a state
         -- bag; this file cares only that it does not throw.

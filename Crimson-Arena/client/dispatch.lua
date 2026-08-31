@@ -390,7 +390,14 @@ function ArenaDispatch.Revive(health)
     -- The screen effects a death leaves on: without this a revived player
     -- can be alive and walking around a greyed-out, blurred world.
     AnimpostfxStopAll()
-    SetPlayerHealthRechargeMultiplier(PlayerId(), 0.0)
+
+    -- AND NOTHING WORLD-WIDE IS TOUCHED HERE. In particular the health
+    -- recharge multiplier is left alone -- see the note above ENTER / EXIT.
+    -- It cannot be read back, so a revive that set it could never put it
+    -- back, and this function runs on the way OUT of a match as well as
+    -- inside one: one arena round would have turned that player's health
+    -- regeneration off for the rest of their session, everywhere on the
+    -- server, with nothing to switch it back on.
 end
 
 --- Sent by the server whenever the arena stands somebody back up: on a

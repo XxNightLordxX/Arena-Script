@@ -236,8 +236,22 @@ onClient('crimson_arena:server:panelClosed', RATE.state, function(src)
     ArenaLobby.MarkPanelClosed(src)
 end)
 
-onClient('crimson_arena:server:requestState', RATE.state, function(src)
-    ArenaLobby.MarkPanelOpen(src)
+--- A snapshot on demand.
+---
+--- ASKING FOR ONE IS NOT THE SAME AS HAVING THE PANEL OPEN, and this used to
+--- treat them as the same thing. client/spectate.lua asks for a snapshot when
+--- the camera starts -- the roster it needs to name the living only exists
+--- there -- with the panel shut. That marked them present, and nothing ever
+--- unmarked them: they kept receiving every state broadcast on the server for
+--- the rest of their session, long after they had stopped watching anything.
+---
+--- The panel says `panel = true` when it is the one asking. Anything else --
+--- including an older client that sends no payload at all -- gets the
+--- snapshot without being counted as watching.
+onClient('crimson_arena:server:requestState', RATE.state, function(src, data)
+    if type(data) == 'table' and data.panel == true then
+        ArenaLobby.MarkPanelOpen(src)
+    end
     TriggerClientEvent('crimson_arena:client:state', src, ArenaLobby.BuildState(src))
 end)
 

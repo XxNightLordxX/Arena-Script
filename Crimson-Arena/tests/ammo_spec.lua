@@ -516,6 +516,36 @@ t.test('and ON -- the default -- it is left with them, empty', function()
         'the weapon was taken back on a server that allows an empty gun')
 end)
 
+t.test('DEFECT: a finished match\'s records are actually dropped', function()
+    -- ArenaAmmo.Clear has always existed and was called from NOWHERE, so
+    -- every match a server ran left its issued-weapon and issued-ammunition
+    -- tables behind for good -- an unbounded leak on a resource whose whole
+    -- job is running matches back to back.
+    --
+    -- And Clear itself only dropped one of the three tables it is supposed
+    -- to, so wiring it up alone would have fixed a third of it.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-test', 60))
+    t.isTrue(s.ammo.OnLoan('m1') > 0, 'nothing was issued, so this proves nothing')
+
+    -- Reclaimed first: Clear refuses while anybody is still owed their kit,
+    -- which is the guard and not the leak.
+    s.ammo.Reclaim(1, 'm1')
+    t.isTrue(s.ammo.Clear('m1'), 'a match nobody is owed anything on could not be dropped')
+
+    t.equals(s.ammo.OnLoan('m1'), 0, 'the match kept its issued-ammunition record for ever')
+end)
+
+t.test('and it still refuses while somebody is owed their kit', function()
+    -- The guard the leak fix must not trade away: dropping the record while
+    -- a stash is outstanding is how a kit becomes unreturnable.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-test', 60))
+
+    t.isFalse(s.ammo.Clear('m1'), 'a match still holding somebody\'s inventory was dropped')
+    t.isTrue(s.ammo.IsHolding(1), 'and their kit is now unreachable')
+end)
+
 t.test('an inventory that cannot be read leaves them carrying their own kit', function()
     local s = newServer({ [1] = OWN })
     s.breakOn('read')

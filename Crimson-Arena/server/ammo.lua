@@ -688,8 +688,37 @@ function ArenaAmmo.Clear(matchId)
         end
     end
 
+    -- ALL THREE, not just the count. `issued` is a running total per player,
+    -- `issuedAmmo` is what they were given BY NAME (which is what the exit
+    -- removes) and `issuedWeapons` is the same for guns. Dropping only the
+    -- first left the other two growing for the life of the server -- one
+    -- entry per match, never freed, on a resource whose whole job is running
+    -- matches back to back.
     issued[matchId] = nil
+    issuedAmmo[matchId] = nil
+    issuedWeapons[matchId] = nil
     return true
+end
+
+--- How many rounds one match is still on the hook for.
+---
+--- The observable form of an invariant that had none: a finished match must
+--- end up owing nothing. Nothing could see these tables from outside, so
+--- nothing noticed when ArenaAmmo.Clear turned out to be called from
+--- nowhere at all and every match a server ran left its records behind.
+---
+--- Several test doubles in this suite already stub an `OnLoan` -- written
+--- against a function that did not exist.
+--- @param matchId string
+--- @return integer rounds
+function ArenaAmmo.OnLoan(matchId)
+    if not Arena.IsKey(matchId) then return 0 end
+
+    local total = 0
+    for _, count in pairs(issued[matchId] or {}) do
+        total = total + (Arena.ToInt(count) or 0)
+    end
+    return total
 end
 
 --- Whether this resource is currently holding this player's inventory.

@@ -1062,6 +1062,14 @@ function ArenaLobby.Destroy(matchId, reasonKey)
     -- return and both calls are no-ops, which is what makes that order safe.
     ArenaBetting.RefundAll(match.id, notice)
     ArenaBetting.Clear(match.id)
+    -- AND THE INVENTORY RECORDS, which nothing called at all. ArenaAmmo.Clear
+    -- has always existed and always refused while anybody's kit is still
+    -- stashed -- exactly like the betting Clear above refuses over escrow --
+    -- and no path in this resource ever reached it. So every match this
+    -- server ran left its issued-weapon and issued-ammunition tables behind
+    -- for good. It sits beside the betting Clear because it is the same step:
+    -- the point where a finished match stops being owed anything.
+    ArenaAmmo.Clear(match.id)
 
     for src in pairs(match.players) do
         -- BELT AND BRACES, and it belongs here rather than at the call

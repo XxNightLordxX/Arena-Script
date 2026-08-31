@@ -1356,6 +1356,14 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     ArenaStats.RecordMatch(match)
     ArenaBetting.SettleSpectatorBets(match.id, winningPick(match, winners, teamMode))
     ArenaBetting.Clear(match.id)
+    -- AND THE INVENTORY RECORDS, which nothing called at all. ArenaAmmo.Clear
+    -- has always existed and always refused while anybody's kit is still
+    -- stashed -- exactly like the betting Clear above refuses over escrow --
+    -- and no path in this resource ever reached it. So every match this
+    -- server ran left its issued-weapon and issued-ammunition tables behind
+    -- for good. It sits beside the betting Clear because it is the same step:
+    -- the point where a finished match stops being owed anything.
+    ArenaAmmo.Clear(match.id)
 
     local won, earned = {}, {}
     for _, id in ipairs(winners) do won[id] = true end
@@ -1519,6 +1527,14 @@ function ArenaMatch.Abort(matchId, reasonKey)
     ArenaBetting.RefundAll(match.id, reason)
     ArenaBetting.SettleSpectatorBets(match.id, nil)
     ArenaBetting.Clear(match.id)
+    -- AND THE INVENTORY RECORDS, which nothing called at all. ArenaAmmo.Clear
+    -- has always existed and always refused while anybody's kit is still
+    -- stashed -- exactly like the betting Clear above refuses over escrow --
+    -- and no path in this resource ever reached it. So every match this
+    -- server ran left its issued-weapon and issued-ammunition tables behind
+    -- for good. It sits beside the betting Clear because it is the same step:
+    -- the point where a finished match stops being owed anything.
+    ArenaAmmo.Clear(match.id)
 
     -- Same reason as in End: the abort path is the one that runs when
     -- everybody has already gone, so it is the one that has to collect the

@@ -198,7 +198,10 @@ register('close', function()
 end)
 
 register('refresh', function()
-    TriggerServerEvent('crimson_arena:server:requestState')
+    -- `panel = true`: this ask really is the panel, so being counted as
+    -- watching is correct. client/spectate.lua asks for the same snapshot
+    -- with the panel shut and deliberately does not say this.
+    TriggerServerEvent('crimson_arena:server:requestState', { panel = true })
 end)
 
 -- EVERY FIELD THE PANEL SENDS IS NAMED HERE, and that is the whole job of

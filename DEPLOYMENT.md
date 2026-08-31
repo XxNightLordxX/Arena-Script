@@ -20,11 +20,17 @@ if you have switched ammo types on, which adds a section of its own.
 
 ## Install
 
-1. Drop the folder into your resources directory as `crimson_arena`. **The
-   folder name matters** — the NUI page is served from `nui://crimson_arena/`
-   and the exports are registered under it. Renaming it breaks both.
-2. `ensure crimson_arena` in your `server.cfg`, after `qbx_core`, `ox_lib`,
-   `ox_target` and `oxmysql`.
+1. Drop the folder into your resources directory. The name is yours —
+   `crimson_arena`, `Arena-Script`, or the `-main` suffix a downloaded zip
+   leaves on it. The panel asks the game which resource is serving it rather
+   than assuming, and the exports are registered under whatever you chose.
+2. `ensure <that folder name>` in your `server.cfg`, anywhere after
+   `qbx_core`. Those are the only two hard dependencies — `qbx_core` and
+   `ox_lib` — and they are the whole `dependencies` block. `ox_target`,
+   `ox_inventory` and `oxmysql` are checked at run time by the features that
+   need them, so a server missing one still starts: the marker replaces the
+   NPC, nobody is issued ammo items, and the leaderboard covers the server
+   run. Each says so once in the console.
 3. Optionally import `sql/install.sql`. **`Config.Database.enabled` ships
    `false`**, so on a default install there is no table and no query at all —
    the leaderboard keeps its numbers in memory for the server run. If you turn

@@ -211,17 +211,42 @@ end)
 
 --- One fresh, fully isolated load of client/main.lua, with its start-up
 --- thread run to completion.
+---
+--- `opts.targetState` is what GetResourceState('ox_target') answers -- the
+--- one thing the lobby's shape depends on that is not in config.
+--- @param opts table? -- { targetState = string }
 --- @return table fixture
-local function newLobbyFixture()
+local function newLobbyFixture(opts)
+    opts = opts or {}
     local serverEvents = {}
     local built = {}
+    local depth = 0
 
     local env = Sandbox.newEnv({
-        -- The start-up thread reaches every line below without waiting on
-        -- anything: the model is already loaded, so its bounded wait never
-        -- runs a pass.
-        CreateThread = function(fn) fn() end,
+        -- ONLY THE OUTERMOST THREAD IS RUN. The start-up thread reaches every
+        -- line below without waiting on anything, so running it inline is
+        -- free -- but the marker it can now start is a `while true` render
+        -- loop, and running THAT inline never returns. Recording the nested
+        -- thread instead is the difference between asserting the marker went
+        -- up and hanging the suite on it.
+        CreateThread = function(fn)
+            depth = depth + 1
+            if depth == 1 then
+                fn()
+            else
+                built.markerThread = true
+            end
+            depth = depth - 1
+        end,
         Wait = function() end,
+        -- Started unless a test says otherwise: that is the shape every
+        -- assertion written before the fallback existed was written against.
+        GetResourceState = function(resource)
+            if resource == 'ox_target' then return opts.targetState or 'started' end
+            return 'started'
+        end,
+        -- No GetEntityCoords/PlayerPedId stub: the marker's render loop is
+        -- recorded rather than run, so nothing inside it is ever reached.
         TriggerServerEvent = function(name, payload)
             serverEvents[#serverEvents + 1] = { name = name, payload = payload }
         end,
@@ -290,6 +315,51 @@ t.test('the cached snapshot starts empty and is filled by the server push', func
 
     f.env.ArenaState.Set({ player = { matchId = 'm1' } })
     t.equals(f.env.ArenaState.MatchId(), 'm1')
+end)
+
+-- ------------------------------------------------------------------------
+-- THE LOBBY WHEN ox_target IS NOT THERE
+--
+-- ox_target is not in fxmanifest.lua's dependencies block, deliberately: it
+-- ships with Qbox but naming it would make it mandatory on every install,
+-- including one that only ever wanted the marker. That decision is only safe
+-- if its absence costs the NPC and nothing else -- and the failure mode it
+-- replaced was not a missing NPC, it was `exports.ox_target` RAISING inside
+-- the start-up thread and taking the marker, the blip and the fallback
+-- command down with it. A lobby with no way into it at all, and no line in
+-- the console naming the cause.
+--
+-- So these two tests are about what SURVIVES, not about the NPC.
+-- ------------------------------------------------------------------------
+
+t.test('with ox_target running the NPC goes up and no marker is drawn over it', function()
+    local f = newLobbyFixture({ targetState = 'started' })
+
+    t.isTrue(f.built.ped, 'no NPC was spawned')
+    t.isTrue(f.built.target, 'the NPC was spawned with no way to interact with it')
+    t.isNil(f.built.markerThread,
+        "a marker was drawn as well as the NPC, but Config.Lobby.interaction ships as 'ped'")
+end)
+
+t.test('with ox_target stopped the marker takes the NPC\'s place and the rest of the lobby survives', function()
+    local f = newLobbyFixture({ targetState = 'missing' })
+
+    -- No silent NPC. An NPC standing there with nothing able to target it
+    -- looks like a working lobby and is not one.
+    t.isNil(f.built.ped, 'an NPC was spawned that nothing can interact with')
+    t.isNil(f.built.target)
+
+    -- The part that matters. Config ships the marker on the same coordinates
+    -- as the NPC, so players walk to the same place and press a key instead.
+    t.isTrue(f.built.markerThread, 'no marker went up, so there is now no way into the arena at all')
+
+    -- These three are the collateral the old raise took with it. Each is
+    -- reached AFTER the ox_target call in the start-up thread, which is
+    -- precisely why they are asserted here.
+    t.isTrue(f.built.blip, 'the map blip is gone, so players cannot even find the lobby')
+    t.equals(f.built.command, f.env.Config.UI.command,
+        'the fallback command was never registered')
+    t.equals(#f.serverEvents, 0)
 end)
 
 print('panel_spec')

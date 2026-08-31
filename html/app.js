@@ -52,7 +52,21 @@
 (function () {
     'use strict';
 
-    var RESOURCE = 'crimson_arena';
+    /* THE FOLDER NAME, ASKED FOR RATHER THAN ASSUMED. Every NUI callback
+       below posts to https://<resource>/<name>, and the host has to be the
+       name of the folder this resource is actually installed under -- not
+       the name it was written under. Those differ the moment anyone renames
+       the folder, and downloading the repository as a zip renames it for
+       you. GetParentResourceName() is the page asking the game which
+       resource is serving it, so the panel works under any folder name.
+
+       The fallback is for opening this page outside the game (a browser, a
+       screenshot); there the fetches go nowhere either way, and a defined
+       string keeps the rest of the file running instead of throwing on the
+       first click. */
+    var RESOURCE = (typeof GetParentResourceName === 'function')
+        ? GetParentResourceName()
+        : 'crimson_arena';
 
     /* Config.UI.theme key -> the CSS custom property style.css reads. The
        two spellings differ on purpose: config is camelCase Lua, CSS is

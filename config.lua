@@ -1155,10 +1155,12 @@ Config.Permissions = {
 -- itself on first start; sql/install.sql is there only for servers whose
 -- database user is not allowed to create tables at runtime.
 --
--- oxmysql stays a hard dependency in fxmanifest.lua either way -- FiveM
--- checks that list before this file is ever read, so no setting here can
--- route around it. Every Qbox server already runs oxmysql (qbx_core needs
--- it), so this costs you nothing in practice.
+-- OFF MEANS OFF, INCLUDING THE DEPENDENCY. oxmysql is not named in
+-- fxmanifest.lua and the MySQL library is not included there either, so with
+-- this switched off the resource starts on a server that has no database
+-- resource at all. Switch it on without oxmysql running and the console says
+-- so once, the leaderboard falls back to this server run, and nothing else
+-- changes.
 -- ======================================================================
 Config.Database = {
     enabled = false,

@@ -13,16 +13,38 @@ lua54 'yes'
 -- resource uses.
 ox_lib 'locale'
 
+-- ----------------------------------------------------------------------
+-- DEPENDENCIES. Deliberately short.
+--
+-- FXServer refuses to start this resource until everything on this list is
+-- running, and it checks the list before config.lua is ever read -- so
+-- anything named here is required on EVERY install, whatever the operator
+-- switched off. That is why only the two things this resource genuinely
+-- cannot run without are named:
+--
+--   qbx_core -- players, jobs, money. There is no arena without it.
+--   ox_lib   -- notifications, callbacks and the locale loader below.
+--
+-- Everything else is checked at run time instead, so a missing one degrades
+-- one feature with a line in the console rather than refusing to boot:
+--
+--   ox_target    -- the lobby NPC. Without it the ground marker is put up in
+--                   its place at the same spot (client/main.lua).
+--   ox_inventory -- ammunition items, and the stash a player's own kit is
+--                   held in. Only reached when Config.Loadouts.ammoItems or
+--                   the strip-on-entry rule is switched on (server/ammo.lua).
+--   oxmysql      -- the all-time leaderboard. Only reached when
+--                   Config.Database.enabled is true, which it is not by
+--                   default; off, the leaderboard covers the current server
+--                   run and no database is involved at all (server/stats.lua).
+--
+-- All three ship with Qbox and will almost always be present. Naming them
+-- here anyway would only mean that a server which had legitimately removed
+-- one -- or was still starting it -- could not run the arena either.
+-- ----------------------------------------------------------------------
 dependencies {
     'qbx_core',
     'ox_lib',
-    'ox_target',
-    -- HARD dependency even with Config.Database.enabled = false. FXServer
-    -- checks this list before config.lua is ever read, so no setting can
-    -- route around it. Turning the database off means this resource sends
-    -- oxmysql no queries and needs none of its own tables -- it does NOT
-    -- mean you can uninstall oxmysql.
-    'oxmysql',
 }
 
 -- ----------------------------------------------------------------------
@@ -82,7 +104,11 @@ client_scripts {
 -- that reach into all of them.
 -- ----------------------------------------------------------------------
 server_scripts {
-    '@oxmysql/lib/MySQL.lua',
+    -- No '@oxmysql/lib/MySQL.lua' here on purpose. A manifest include is not
+    -- optional -- listing it would make oxmysql mandatory for every install,
+    -- including the default one that has the database switched off and needs
+    -- no database at all. server/stats.lua goes through the oxmysql export
+    -- instead, which is a run-time question with a run-time answer.
     'server/util.lua',
     -- Straight after util.lua, whose ArenaDebug it calls, and before every
     -- file that flags a player as being in the arena.

@@ -76,34 +76,38 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 ## Requirements
 
+Two, and both of them are already on every Qbox server:
+
 | Resource | Why |
 |---|---|
 | [qbx_core](https://github.com/Qbox-project/qbx_core) | player objects, character data, money |
 | [ox_lib](https://github.com/overextended/ox_lib) | notifications, callbacks, the locale loader |
-| [ox_target](https://github.com/overextended/ox_target) | the option on the lobby NPC |
-| [oxmysql](https://github.com/overextended/oxmysql) | the leaderboard table — only when `Config.Database.enabled` is on, and it ships off |
 
-`ox_inventory` is **not** a dependency, and the resource runs without it. It becomes one the moment you switch [ammo types](#ammo-types--handing-out-your-own-ammo-items) on: that is the only inventory this resource knows how to hand an item to.
+Those two are the whole `dependencies` block in `fxmanifest.lua`, and that list is the one thing FXServer checks *before* it reads a single line of `config.lua` — so anything named there is required on every install no matter what you switched off. Three more resources are used when you ask for the features that need them, and each is checked at run time instead:
 
-**oxmysql is a hard dependency even with `Config.Database.enabled = false`.** It is listed in `fxmanifest.lua`'s `dependencies` block, and FXServer checks that list *before it ever reads `config.lua`* — so no setting in this resource can route around it. The resource will not start without oxmysql present and started.
+| Resource | Used for | Without it |
+|---|---|---|
+| [ox_target](https://github.com/overextended/ox_target) | the option on the lobby NPC | the ground marker goes up in the NPC's place, at the same spot, and players press **E** instead |
+| [ox_inventory](https://github.com/overextended/ox_inventory) | [ammo items](#ammo-types--handing-out-your-own-ammo-items), and the stash that holds a player's own kit during a match | ammo items are not handed out, nobody is stripped, and the console says so once |
+| [oxmysql](https://github.com/overextended/oxmysql) | the all-time leaderboard, and only when `Config.Database.enabled` is on — it ships **off** | the leaderboard covers the current server run |
 
-Turning the database off means this resource sends oxmysql no queries and needs none of its own tables. It does not mean you can uninstall oxmysql.
+None of those three is named in the manifest and none is imported by it, so with the shipped settings this resource starts on a server that has no database resource, no target script and no inventory script at all. Turn a feature on and the resource asks for what it needs at that moment; if the answer is no, it says so in the console once and carries on.
 
 ## Installing
 
-1. Drop the folder into your resources directory. **It must be named exactly `crimson_arena`.** The panel's NUI calls are addressed to `https://crimson_arena/...`, so a renamed folder gives you a panel that opens and answers no button.
-2. Add it to `server.cfg`, after its dependencies:
+Drag, drop, one line in `server.cfg`, start.
+
+1. Drop the folder into your resources directory. **Any folder name works** — `crimson_arena`, `Arena-Script`, `[custom]/whatever`, or the `-main` suffix you get from downloading the repository as a zip. The panel asks the game what it was installed as rather than assuming.
+2. Add one line to `server.cfg`, below wherever you already start qbx_core:
 
    ```cfg
-   ensure oxmysql
-   ensure ox_lib
-   ensure ox_target
-   ensure qbx_core
    ensure crimson_arena
    ```
 
+   Use whatever you named the folder. Nothing else needs adding, and there is no order to get right beyond being after qbx_core.
+
 3. **You do not have to import any SQL.** `Config.Database.enabled` ships `false`, and nothing is created or queried while it is. Turn it on and `crimson_arena_stats` is created on first start; `sql/install.sql` holds the identical statement for the case where your database user cannot `CREATE TABLE` at runtime, which is a reasonable way to run a production server.
-4. Edit `config.lua`. At minimum move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere on your map, and check the two shipped arenas suit you — they are open ground at **Sandy Shores Airfield** and on the sand at **Vespucci beach**, with the coordinates offered as a starting point rather than a finished map.
+4. **Optional, and the arena works before you do any of it.** Edit `config.lua`: move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere that suits your map, and check the two shipped arenas suit you — they are open ground at **Sandy Shores Airfield** and on the sand at **Vespucci beach**, with the coordinates offered as a starting point rather than a finished map.
 5. Start the server and read the console. Config problems are printed by name at start — they are warnings, not failures, and the resource keeps running:
 
    ```
@@ -824,7 +828,7 @@ Anything you build on those is subject to the same rule the rest of the resource
 
 ### The panel does not open
 
-- **The folder must be named `crimson_arena`.** The panel addresses its calls to `https://crimson_arena/<callback>`. Rename the folder and the panel opens, renders, and then ignores every button — with nothing in either console.
+- The folder name is not the problem. The panel addresses its calls to `https://<this resource>/<callback>` and gets that name from the game, so it holds under any folder name — including the `-main` suffix a downloaded zip gives you.
 - Check start order in `server.cfg`. ox_lib must be started before this resource; a missing `lib` is a client-side error at load, not at open.
 - The panel fetches the state snapshot *before* it takes focus. If the server is not answering, you get `The arena is not answering. Try again.` — look for a Lua error in the server console at start, which will have stopped the callback being registered.
 - `Config.UI.command = nil` registers no command. Use the ped or the marker.

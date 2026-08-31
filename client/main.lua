@@ -98,12 +98,37 @@ local function loadModel(model)
     return hash
 end
 
+--- ox_target's export table, or nil when it is not running.
+---
+--- ASKED FOR RATHER THAN ASSUMED. `exports.ox_target` on a server where
+--- ox_target is missing or stopped does not return nil -- it raises, and a
+--- raise inside the startup thread below takes the marker, the blip and the
+--- fallback command down with the ped, leaving the arena unreachable with
+--- nothing in the console pointing at the cause.
+--- @return table? targeting
+local function targeting()
+    if GetResourceState('ox_target') ~= 'started' then return nil end
+    return exports.ox_target
+end
+
+--- @return boolean spawned -- false means the caller should fall back
 local function spawnLobbyPed()
     local ped = Config.Lobby.ped
+
+    -- Checked BEFORE the model loads: an NPC nobody can interact with is
+    -- worse than no NPC, because it looks like the resource is working.
+    local target = targeting()
+    if not target then
+        warn('ox_target is not started, so the lobby NPC would have nobody able to talk to it. ' ..
+             'Falling back to the ground marker at the same spot -- start ox_target, or set ' ..
+             "Config.Lobby.interaction = 'marker' to make that the intent.")
+        return false
+    end
+
     local hash = loadModel(ped.model)
     if not hash then
         warn(("Lobby ped model '%s' would not load -- no NPC spawned."):format(tostring(ped.model)))
-        return
+        return false
     end
 
     local coords = ped.coords
@@ -120,7 +145,7 @@ local function spawnLobbyPed()
     if ped.blockEvents then SetBlockingOfNonTemporaryEvents(lobbyPed, true) end
     if ped.scenario then TaskStartScenarioInPlace(lobbyPed, ped.scenario, 0, true) end
 
-    exports.ox_target:addLocalEntity(lobbyPed, {
+    target:addLocalEntity(lobbyPed, {
         {
             name = TARGET_NAME,
             label = ped.targetLabel,
@@ -129,6 +154,8 @@ local function spawnLobbyPed()
             onSelect = openPanel,
         },
     })
+
+    return true
 end
 
 --- An orphaned mission ped survives a resource restart, so every restart
@@ -137,7 +164,11 @@ local function removeLobbyPed()
     if not lobbyPed then return end
 
     if DoesEntityExist(lobbyPed) then
-        exports.ox_target:removeLocalEntity(lobbyPed, TARGET_NAME)
+        -- Same guard as the registration: ox_target can be stopped between
+        -- the ped going up and this resource coming down, and an orphaned
+        -- NPC left standing is a worse outcome than a skipped de-register.
+        local target = targeting()
+        if target then target:removeLocalEntity(lobbyPed, TARGET_NAME) end
         SetEntityAsMissionEntity(lobbyPed, true, true)
         DeleteEntity(lobbyPed)
     end
@@ -228,9 +259,16 @@ end)
 CreateThread(function()
     local mode = resolveInteraction()
 
-    if mode == 'ped' or mode == 'both' then spawnLobbyPed() end
-    if mode == 'marker' or mode == 'both' then startMarkerThread() end
-    createBlip(mode)
+    -- The marker is started when it was asked for, and ALSO when the NPC was
+    -- asked for and could not be put up. Both fixtures sit on the same spot
+    -- in config, so the fallback leaves players walking to the same place and
+    -- opening the same panel -- it just costs them a keypress instead of a
+    -- target prompt. Better a lobby that reads slightly wrong than one that
+    -- is not there.
+    local pedUp = (mode == 'ped' or mode == 'both') and spawnLobbyPed() or false
+
+    if mode == 'marker' or mode == 'both' or not pedUp then startMarkerThread() end
+    createBlip(pedUp and mode or 'marker')
 
     if Config.UI.command then
         RegisterCommand(Config.UI.command, openPanel, false)

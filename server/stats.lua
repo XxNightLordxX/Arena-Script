@@ -26,6 +26,57 @@ ArenaStats = {}
 --- database cannot overwrite each other's numbers.
 local pending = {}
 
+--- Runs one query through oxmysql, or reports that it could not.
+---
+--- WHY THIS IS NOT `MySQL.query`. That name comes from `@oxmysql/lib/MySQL.lua`
+--- in the manifest, and a manifest include is not optional: FXServer resolves
+--- it before this file is ever read, so listing it would make oxmysql
+--- mandatory for every install -- including the drag-and-drop default, where
+--- Config.Database.enabled is false and this resource has no table, no query
+--- and no reason to need a database at all. Going through the export instead
+--- moves the question to run time, where the answer can be "not installed,
+--- and that is fine".
+---
+--- Every caller is already behind a Config.Database.enabled check, so this
+--- only ever reports a database that was switched ON and then not installed.
+--- @param sql string
+--- @param params table
+--- @param cb fun(result: any)
+--- @return boolean dispatched
+local warnedNoDatabase = false
+
+local function dbQuery(sql, params, cb)
+    if GetResourceState('oxmysql') ~= 'started' then
+        -- Said once. A flush sends one query per player, so an unguarded
+        -- line here would print the same sentence eight times a minute and
+        -- bury everything else in the console.
+        if not warnedNoDatabase then
+            warnedNoDatabase = true
+            ArenaLog('Config.Database.enabled is true but oxmysql is not started. ' ..
+                     'No stats are being written or read -- the leaderboard is this ' ..
+                     'server run only. Install oxmysql, or set Config.Database.enabled = false.')
+        end
+        if cb then cb(nil) end
+        return false
+    end
+
+    -- pcall because a database that is installed but unreachable throws out
+    -- of the export rather than into the callback, and a throw here would
+    -- take down the flush timer for the rest of the run.
+    local ok, err = pcall(function()
+        exports.oxmysql:query(sql, params, cb)
+    end)
+
+    if not ok then
+        ArenaLog('a stats query could not be sent (%s). The numbers for this run are still kept in memory.',
+            tostring(err))
+        if cb then cb(nil) end
+        return false
+    end
+
+    return true
+end
+
 --- Totals since the resource started. Kept in BOTH modes -- it is the
 --- leaderboard when there is no database, and the answer when a query
 --- cannot be answered.
@@ -216,7 +267,7 @@ function ArenaStats.GetLeaderboard(cb)
         LIMIT %d
     ]]):format(size)
 
-    MySQL.query(query, {}, function(result)
+    dbQuery(query, {}, function(result)
         if type(result) ~= 'table' then
             -- The query could not be answered. This run's own numbers beat
             -- an empty panel and a client waiting on a callback that the
@@ -261,7 +312,7 @@ function ArenaStats.Flush()
         -- The empty callback is not decoration: without one oxmysql awaits
         -- the result, and a flush called from the resource-stop handler has
         -- to dispatch and return rather than block the stop.
-        MySQL.query(UPSERT_SQL, {
+        dbQuery(UPSERT_SQL, {
             citizenid:sub(1, 64),
             row.name,
             row.wins,
@@ -283,7 +334,7 @@ end
 function ArenaStats.EnsureSchema()
     if Config.Database.enabled ~= true then return false end
 
-    MySQL.query(SCHEMA_SQL, {}, function()
+    dbQuery(SCHEMA_SQL, {}, function()
         ArenaDebug('crimson_arena_stats is ready')
     end)
     return true

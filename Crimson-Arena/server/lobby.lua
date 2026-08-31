@@ -457,6 +457,11 @@ local function snapshotConfig()
             -- whatever the mode: on a pool server every spectator was told
             -- they would be paid exactly twice their stake, by a rule that
             -- was not running.
+            -- The accounts a player may pay from, in the operator's own order.
+            -- Sent so the panel can offer the choice at all: the names are
+            -- the server's, and a panel guessing 'cash'/'bank' would offer
+            -- one this framework does not have.
+            accounts = ArenaBetting.Accounts(),
             betPayout = (function()
                 local block = Config.Betting.betPayout
                 if type(block) ~= 'table' then return { fighters = 'pool', spectators = 'pool' } end
@@ -548,6 +553,11 @@ local function snapshotPlayer(src)
         serverId = src,
         name = ArenaPlayerName(src),
         money = money,
+        -- WHAT THEY HOLD IN EACH ACCOUNT, not just in the one the operator
+        -- listed first. The panel cannot offer a choice between cash and bank
+        -- without being able to say what is in them, and `money` above is a
+        -- single figure from a single account.
+        wallet = ArenaBetting.Wallet(src),
         matchId = match and match.id or false,
         team = (player and Arena.IsKey(player.team)) and player.team or false,
         ready = player ~= nil and player.ready == true,
@@ -767,7 +777,7 @@ end
 --- @param entryFee any
 --- @return string|nil matchId
 --- @return string|nil reasonKey
-function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar)
+function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account)
     local host = tonumber(src)
     if not host then return nil, 'error.invalid_request' end
     if not ArenaCanCreate(host) then return nil, 'error.no_permission' end
@@ -841,7 +851,7 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar)
     -- The host joins through the same door as everybody else so their stake
     -- is taken once, by the one piece of code that takes stakes. A refused
     -- stake leaves nothing behind -- including the match.
-    local ok, reason = ArenaLobby.Join(host, id, nil)
+    local ok, reason = ArenaLobby.Join(host, id, nil, account)
     if not ok then
         matches[id] = nil
         return nil, reason
@@ -856,7 +866,7 @@ end
 --- @param teamKey any
 --- @return boolean ok
 --- @return string|nil reasonKey
-function ArenaLobby.Join(src, matchId, teamKey)
+function ArenaLobby.Join(src, matchId, teamKey, account)
     local target = tonumber(src)
     if not target then return false, 'error.invalid_request' end
 
@@ -894,7 +904,10 @@ function ArenaLobby.Join(src, matchId, teamKey)
     -- index to unwind -- there is nothing to leave behind.
     local stake = 0
     if ArenaBetting.IsEnabled() and match.entryFee > 0 then
-        local taken, reason = ArenaBetting.TakeStake(target, match.id, match.entryFee)
+        -- The account the player chose to pay the entry fee from, carried
+        -- straight through. Betting owns which names are real and what an
+        -- unknown one means; this only has to not drop it.
+        local taken, reason = ArenaBetting.TakeStake(target, match.id, match.entryFee, account)
         if not taken then return false, reason or 'error.stake_failed' end
         -- Escrow is the authority on what was actually taken, not the fee we
         -- asked it for.

@@ -124,6 +124,28 @@ local function debitAccounts()
     return out
 end
 
+--- The accounts a player may be asked to choose between, in the operator's
+--- own order. Exported because the panel has to draw the choice and the
+--- server is the only thing that knows which names are real.
+--- @return string[]
+function ArenaBetting.Accounts()
+    return debitAccounts()
+end
+
+--- What one player holds in each of them, for the panel's own display. Read
+--- through the same balanceOf every debit uses, so the figure on screen and
+--- the figure the debit checks cannot disagree.
+--- @param src any
+--- @return table<string, integer>
+function ArenaBetting.Wallet(src)
+    local player = ArenaGetPlayer(serverId(src))
+    local out = {}
+    for _, account in ipairs(debitAccounts()) do
+        out[account] = balanceOf(player, account) or 0
+    end
+    return out
+end
+
 --- Did `amount` actually move, in the direction expected?
 ---
 --- WHY THIS DOES NOT JUST READ THE RETURN VALUE. It used to, and required it
@@ -149,12 +171,34 @@ local function moved(before, after, amount, outward)
     return delta >= amount
 end
 
+--- The accounts to try for one debit, honouring a player's own choice.
+---
+--- A CHOSEN ACCOUNT IS THE ONLY ONE TRIED. Falling back to the other would
+--- take money out of a pocket the player deliberately did not pick -- they
+--- chose `bank` because they wanted the cash left alone, and quietly spending
+--- it instead is the same class of mistake as clamping a number somebody
+--- typed. Refused with a reason they can act on is the honest answer.
+---
+--- An unknown or absent name is "no preference", which is every server that
+--- has not switched the choice on and every panel that has not been touched.
+--- @param preferred any
+--- @return string[]
+local function accountsFor(preferred)
+    local allowed = debitAccounts()
+    if Arena.IsKey(preferred) then
+        for _, name in ipairs(allowed) do
+            if name == preferred then return { name } end
+        end
+    end
+    return allowed
+end
+
 --- Money OUT. False means nothing moved, so the caller must record nothing --
 --- otherwise escrow claims a stake the player still has in their pocket.
---- @return boolean
+--- @param preferred string|nil -- the account the player picked, if they did
 --- @return boolean took
 --- @return string|nil account -- which one it came out of, for the refund
-local function debit(src, amount, reason)
+local function debit(src, amount, reason, preferred)
     local player = ArenaGetPlayer(src)
     if not player then return false, nil end
 
@@ -166,7 +210,7 @@ local function debit(src, amount, reason)
     -- movements that can each fail independently. One account or none is the
     -- honest trade -- and it keeps a refund a single, reversible movement to
     -- the place the money came from.
-    for _, account in ipairs(debitAccounts()) do
+    for _, account in ipairs(accountsFor(preferred)) do
         local before = balanceOf(player, account)
 
         -- Skipped rather than attempted when it plainly cannot cover it, so
@@ -373,7 +417,13 @@ end
 local function returnSideBet(bet, matchId)
     if bet.settled then return false end
 
-    if not credit(bet.src, bet.amount, transaction('sidebet_refund', matchId), bet.citizenid) then
+    -- `bet.account` -- the account the stake actually LEFT. Dropped here, the
+    -- refund fell to whichever account the operator lists first, so a bet
+    -- paid from the bank came back as cash. That is not a rounding error: it
+    -- is a laundering route through the arena, and credit() says so in as
+    -- many words directly above the branch that was never being reached.
+    if not credit(bet.src, bet.amount, transaction('sidebet_refund', matchId),
+        bet.citizenid, bet.account) then
         ArenaLog('SIDE-BET REFUND FAILED: %d owed to %s (citizenid %s) on match %s -- the bet stays held.',
             bet.amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
         incidentWebhook('Side-bet not returned',
@@ -435,9 +485,10 @@ end
 --- @param src integer
 --- @param matchId string
 --- @param amount any -- as requested; re-resolved through Arena.ResolveEntryFee
+--- @param account any -- which account the player chose to pay from, if any
 --- @return boolean ok
 --- @return string|nil reasonKey
-function ArenaBetting.TakeStake(src, matchId, amount)
+function ArenaBetting.TakeStake(src, matchId, amount, account)
     if not ArenaBetting.IsEnabled() then return true, nil end
 
     local id = serverId(src)
@@ -493,7 +544,7 @@ function ArenaBetting.TakeStake(src, matchId, amount)
         return false, 'error.pot_limit_reached'
     end
 
-    local took, account = debit(id, fee, transaction('stake', matchId))
+    local took, paidFrom = debit(id, fee, transaction('stake', matchId), account)
     if not took then
         return false, 'error.not_enough_money'
     end
@@ -503,9 +554,13 @@ function ArenaBetting.TakeStake(src, matchId, amount)
         amount = fee,
         citizenid = citizenIdOf(id),
         name = ArenaPlayerName(id),
-        -- Which account paid, so a refund goes back where it came from
-        -- rather than to whichever one this server happens to list first.
-        account = account,
+        -- Which account ACTUALLY paid, so a refund goes back where the money
+        -- came from rather than to whichever one this server happens to list
+        -- first -- and never to whichever one was merely asked for. With a
+        -- preference set the two are the same; without one they are not, and
+        -- a refund to the requested account would be inventing money in a
+        -- place the player never spent it from.
+        account = paidFrom,
         takenAt = os.time(),
         settled = false,
     }
@@ -537,7 +592,12 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
         return false
     end
 
-    if not credit(id, stake.amount, transaction('refund', matchId), stake.citizenid) then
+    -- `stake.account`, for the reason returnSideBet gives above. The escrow
+    -- record has carried this field since accounts became a list, with a
+    -- comment saying a refund goes back where the money came from -- and
+    -- nothing read it. A fee paid from the bank was returned as cash.
+    if not credit(id, stake.amount, transaction('refund', matchId),
+        stake.citizenid, stake.account) then
         -- Left unsettled deliberately: this is money still held and still
         -- owed, so a later RefundAll tries again and Clear goes on refusing
         -- to drop the match until it lands. Writing it off here would be the
@@ -1005,7 +1065,7 @@ end
 --- @param amount any -- as requested; re-resolved through Arena.ResolveSpectatorBet
 --- @return boolean ok
 --- @return string|nil reasonKey
-function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount)
+function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     if not ArenaBetting.IsEnabled() then return false, 'error.betting_disabled' end
 
     local id = serverId(src)
@@ -1047,7 +1107,7 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount)
         return false, 'error.bet_already_placed'
     end
 
-    local took, account = debit(id, stake, transaction('sidebet', matchId))
+    local took, paidFrom = debit(id, stake, transaction('sidebet', matchId), account)
     if not took then
         return false, 'error.not_enough_money'
     end
@@ -1062,8 +1122,9 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount)
         pick = wanted,
         amount = stake,
         -- Recorded so a refund goes back to the account it came out of
-        -- rather than to whichever one this server happens to list first.
-        account = account,
+        -- rather than to whichever one this server happens to list first --
+        -- and the account it came OUT of, never the one that was asked for.
+        account = paidFrom,
         kind = kind,
         mode = payoutMode(kind),
         placedAt = os.time(),

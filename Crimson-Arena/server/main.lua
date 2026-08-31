@@ -255,7 +255,8 @@ onClient('crimson_arena:server:createMatch', RATE.create, function(src, data)
     -- A missing mode or fee is a panel that was never touched; the lobby
     -- falls back to the operator's defaults for both.
     local matchId, reason = ArenaLobby.Create(src, arenaKey, keyArg(payload.modeKey),
-        intArg(payload.entryFee), intArg(payload.lives), boolArg(payload.radar))
+        intArg(payload.entryFee), intArg(payload.lives), boolArg(payload.radar),
+        keyArg(payload.account))
     if not matchId then return refuse(src, reason) end
 
     ArenaNotifyKey(src, 'notify.match_created', 'success')
@@ -268,7 +269,7 @@ onClient('crimson_arena:server:joinMatch', RATE.join, function(src, data)
     local matchId = keyArg(payload.matchId)
     if not matchId then return refuse(src, 'error.match_not_found') end
 
-    local ok, reason = ArenaLobby.Join(src, matchId, keyArg(payload.teamKey))
+    local ok, reason = ArenaLobby.Join(src, matchId, keyArg(payload.teamKey), keyArg(payload.account))
     if not ok then return refuse(src, reason) end
 
     ArenaNotifyKey(src, 'notify.match_joined', 'success')
@@ -402,7 +403,8 @@ onClient('crimson_arena:server:placeSpectatorBet', RATE.bet, function(src, data)
     -- The amount is handed over as it arrived: Arena.ResolveSpectatorBet
     -- owns the min/max band, and clamping it here would turn a bet outside
     -- the band into a smaller bet the player never agreed to.
-    local ok, reason = ArenaBetting.PlaceSpectatorBet(src, matchId, pick, intArg(payload.amount))
+    local ok, reason = ArenaBetting.PlaceSpectatorBet(src, matchId, pick, intArg(payload.amount),
+        keyArg(payload.account))
     if not ok then return refuse(src, reason) end
 
     ArenaNotifyKey(src, 'notify.bet_placed', 'success')

@@ -216,6 +216,7 @@ register('createMatch', function(data)
         entryFee = data.entryFee,
         lives = data.lives,
         radar = data.radar,
+        account = data.account,
     })
 end)
 
@@ -245,6 +246,11 @@ register('joinMatch', function(data)
     TriggerServerEvent('crimson_arena:server:joinMatch', {
         matchId = data.matchId,
         teamKey = data.teamKey,
+        -- Which account pays the entry fee. Dropped here it would arrive nil,
+        -- which betting reads as "no preference" -- so the fee would come out
+        -- of whichever account the operator listed first, whatever the player
+        -- picked, and they would have no way to tell.
+        account = data.account,
     })
 end)
 
@@ -301,6 +307,7 @@ register('spectatorBet', function(data)
         matchId = data.matchId,
         pick = data.pick,
         amount = data.amount,
+        account = data.account,
     })
 end)
 

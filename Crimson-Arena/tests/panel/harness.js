@@ -32,7 +32,6 @@ function makeNode(id) {
         title: '',
         hidden: false,
         children: [],
-        firstChild: null,
         listeners: {},
         classList: {
             _set: new Set(),
@@ -42,8 +41,27 @@ function makeNode(id) {
             contains(n) { return this._set.has(n); },
         },
         style: {},
+        get firstChild() { return this.children.length ? this.children[0] : null; },
         addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
-        removeChild() {},
+        /*
+         * REAL, because app.js's clear() is
+         *
+         *     while (node.firstChild) node.removeChild(node.firstChild)
+         *
+         * and both halves of that were inert here -- firstChild was a fixed
+         * null, so the loop never ran, and removeChild did nothing when it
+         * did. So no container was ever cleared in a test, and every render
+         * appended a second copy of everything on top of the first.
+         *
+         * Tests that reach for one node by name never noticed: find() returns
+         * the first match and the first match was correct. A test that COUNTS
+         * children was reading the number of renders.
+         */
+        removeChild(child) {
+            const at = this.children.indexOf(child);
+            if (at >= 0) this.children.splice(at, 1);
+            return child;
+        },
         appendChild(child) { this.children.push(child); return child; },
         setAttribute(name, value) { this[name] = value; },
         getAttribute(name) { return this[name] === undefined ? null : this[name]; },

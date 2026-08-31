@@ -76,6 +76,10 @@
                     <span class="field-label">Entry Fee</span>
                     <input id="create-fee" type="number" min="0" step="1">
                     <div id="create-fee-presets"></div>
+                    <!-- Which account the entry fee comes out of. Same
+                         control as the one on the Bets tab and the same
+                         choice; this one is read when you create or join. -->
+                    <div id="create-account"></div>
                     <!-- What the fee actually buys, written from the payout
                          rule in the snapshot rather than assumed. -->
                     <p id="create-fee-hint" class="hint"></p>
@@ -213,6 +217,15 @@
                     <span class="field-label">Your Stake</span>
                     <input id="bet-amount" type="number" min="0" step="1">
                 </label>
+
+                <!-- WHICH POCKET PAYS. Only drawn where the operator allows
+                     more than one account: a server that takes cash and
+                     nothing else has no choice to offer, and a picker with
+                     one option on it is a control that answers nothing. -->
+                <div id="bet-account-row" class="field">
+                    <span class="field-label">Pay From</span>
+                    <div id="bet-account"></div>
+                </div>
                 <p id="bet-hint" class="hint"></p>
                 <button id="bet-submit" class="btn btn-primary" type="button">Place Bet</button>
             </div>

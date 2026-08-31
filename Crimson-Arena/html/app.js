@@ -117,6 +117,10 @@
            until then rather than 'off' pretending to be a choice. Seeded
            from the match itself once a lobby is open, beside createLives. */
         createRadar: null,
+        /* Which account the player has chosen to pay from -- the entry fee
+           and their bets both. null until they pick, which the server reads
+           as "no preference" and answers with the operator's own order. */
+        payAccount: null,
         open: false,
         config: null,
         player: null,
@@ -505,6 +509,76 @@
        operator's account is named. */
     function accountName() {
         return keyOr(betting().account, 'cash');
+    }
+
+    /* THE ACCOUNTS A PLAYER MAY PAY FROM, in the operator's own order.
+       The names are the framework's -- 'cash', 'bank', whatever this server
+       calls them -- so they come from the snapshot and are never guessed. */
+    function payAccounts() {
+        return arrayOf(betting().accounts).filter(function (name) {
+            return typeof name === 'string' && name.length > 0;
+        });
+    }
+
+    /* Whether there is a choice to make at all. One account is not a choice,
+       and a picker with a single option on it is a control that answers
+       nothing. */
+    function accountChoiceOffered() {
+        return payAccounts().length > 1;
+    }
+
+    /* The account the player is paying from: their own pick where they have
+       made one and it is still on offer, the first otherwise -- which is what
+       the server would do with no preference, so the panel and the server
+       agree about what is about to happen. */
+    function chosenAccount() {
+        var list = payAccounts();
+        if (list.indexOf(state.payAccount) >= 0) return state.payAccount;
+        return list[0] || accountName();
+    }
+
+    /* What this player holds in one account. Falls back to the single `money`
+       figure for the account the operator settles in, so a server that sends
+       no wallet still shows a number rather than zero. */
+    function balanceIn(account) {
+        var wallet = player().wallet;
+        if (wallet && typeof wallet === 'object' && wallet[account] !== undefined) {
+            return int(wallet[account], 0);
+        }
+        return account === accountName() ? int(player().money, 0) : 0;
+    }
+
+    /* Draws the pay-from picker into one container. Shared by the Bets tab
+       and the create form on purpose: they are the same decision, and two
+       copies of it would be two things to keep in step. */
+    function renderAccountPicker(hostId) {
+        var host = byId(hostId);
+        if (!has(host)) return;
+        clear(host);
+
+        if (!accountChoiceOffered()) return;
+
+        var chosen = chosenAccount();
+        payAccounts().forEach(function (account) {
+            var held = balanceIn(account);
+            var chip = makeEl('button', 'chip', titleCase(account) + ' — ' + money(held));
+            chip.type = 'button';
+            if (account === chosen) chip.classList.add('active');
+            /* NOT DISABLED WHEN IT CANNOT COVER THE STAKE. The amount changes
+               while this is on screen, and a chip that greys itself out as
+               you type reads as broken. The reason line below the button says
+               what is wrong, which is where every other refusal is said. */
+            chip.addEventListener('click', function () {
+                state.payAccount = account;
+                render();
+            });
+            host.appendChild(chip);
+        });
+    }
+
+    function titleCase(text) {
+        var word = String(text || '');
+        return word.charAt(0).toUpperCase() + word.slice(1);
     }
 
     function payoutPhrase() {
@@ -1131,8 +1205,16 @@
             return 'This match is full (' + plural(max, 'player') + ').';
         }
 
-        if (bettingOn() && int(match.entryFee, 0) > int(player().money, 0)) {
-            return 'You cannot cover the ' + money(match.entryFee) + ' entry fee.';
+        /* THE ACCOUNT THAT WILL ACTUALLY PAY. `player().money` is a single
+           figure from the operator's settlement account, so a player with the
+           fee in the bank and nothing in their pocket was told they could not
+           afford a match they could -- and one with it in cash, paying from a
+           near-empty bank, was let through to a refusal. */
+        if (bettingOn() && int(match.entryFee, 0) > balanceIn(chosenAccount())) {
+            return accountChoiceOffered()
+                ? 'You cannot cover the ' + money(match.entryFee) + ' entry fee from '
+                    + titleCase(chosenAccount()) + '.'
+                : 'You cannot cover the ' + money(match.entryFee) + ' entry fee.';
         }
         return null;
     }
@@ -1192,6 +1274,10 @@
 
         var reason = joinBlockedReason(match);
         var join = makeEl('button', 'btn btn-primary', 'Join');
+        /* Named after the match it joins, the same way the weapon cards are
+           named after their weapon: a control the panel builds is otherwise
+           unaddressable, by a test and by anything else that has to find it. */
+        join.id = 'match-join-' + String(match.id);
         join.type = 'button';
         if (reason) {
             join.disabled = true;
@@ -1202,7 +1288,7 @@
                 : 'Take a place in this match.';
             join.addEventListener('click', function (event) {
                 event.stopPropagation();
-                post('joinMatch', { matchId: match.id });
+                post('joinMatch', { matchId: match.id, account: chosenAccount() });
             });
         }
         actions.appendChild(join);
@@ -1304,6 +1390,8 @@
                 });
             }
         }
+
+        renderAccountPicker('create-account');
 
         var feeHint = byId('create-fee-hint');
         if (has(feeHint)) {
@@ -2711,7 +2799,12 @@
             host.appendChild(box);
         }
 
-        stat('Your ' + accountName(), money(player().money));
+        /* The account they are actually paying from, and what is in it. The
+           strip used to name the operator's settlement account and show its
+           balance whatever the player had picked, so somebody paying from the
+           bank was reading their cash. */
+        var from = chosenAccount();
+        stat('Your ' + titleCase(from), money(balanceIn(from)));
         stat('Pot', match ? money(match.pot) : money(0));
         stat('Entry fee', match ? money(match.entryFee) : money(0));
         /* `winner_takes_all` is how config spells it, not how anybody reads
@@ -2825,7 +2918,17 @@
         var max = int(rules.max, 0);
         if (amount < min) return 'The smallest bet is ' + money(min) + '.';
         if (max > 0 && amount > max) return 'The biggest bet is ' + money(max) + '.';
-        if (amount > int(player().money, 0)) return 'You do not have ' + money(amount) + '.';
+        /* THE ACCOUNT THEY PICKED, not their richest one. The server tries
+           only the chosen account -- spending the other would be taking money
+           out of a pocket they deliberately left alone -- so the panel has to
+           refuse against the same balance the server will check, or it offers
+           a bet that comes back rejected. */
+        var from = chosenAccount();
+        if (amount > balanceIn(from)) {
+            return accountChoiceOffered()
+                ? 'You do not have ' + money(amount) + ' in ' + titleCase(from) + '.'
+                : 'You do not have ' + money(amount) + '.';
+        }
         return null;
     }
 
@@ -2843,6 +2946,9 @@
             if (int(rules.max, 0) > 0) input.max = String(int(rules.max, 0));
             if (document.activeElement !== input) input.value = String(int(state.betAmount, 0));
         }
+
+        renderAccountPicker('bet-account');
+        show(byId('bet-account-row'), usable && accountChoiceOffered());
 
         var reason = betBlockedReason(match);
 
@@ -2881,7 +2987,8 @@
                 post('spectatorBet', {
                     matchId: match.id,
                     pick: state.betPick,
-                    amount: int(state.betAmount, 0)
+                    amount: int(state.betAmount, 0),
+                    account: chosenAccount()
                 });
             };
         }
@@ -3355,7 +3462,11 @@
             modeKey: state.createMode,
             entryFee: int(state.createFee, 0),
             lives: int(state.createLives, 1),
-            radar: radarIsOn()
+            radar: radarIsOn(),
+            /* The host joins their own match through the same door as
+               everybody else, so their entry fee comes out of the account
+               they picked here. */
+            account: chosenAccount()
         });
     });
 

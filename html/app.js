@@ -23,6 +23,14 @@
     and refuses it with its own reason. When this file and the server
     disagree, the server is right and the next snapshot corrects the panel.
 
+    A DISABLED CONTROL ALWAYS SAYS WHY, ON SCREEN. A `title` is an answer
+    nobody hovers to find, so every refusal this file can predict -- join,
+    create, start, place bet -- is also written into a visible line beside
+    the control. And it only says what the SNAPSHOT proves: a rule that
+    lives in config but never crosses the wire is left unsaid rather than
+    assumed, because a panel that promises a rule this server does not run
+    has lied at the one moment the player was relying on it.
+
     THE PANEL MUST NOT DIE. A thrown exception in a NUI page is invisible
     -- no console anyone reads, no error to the player, just a frozen menu
     with the mouse captured. So render sections are individually guarded
@@ -33,6 +41,12 @@
     string table. Player-visible text produced by Lua is already localised
     before it reaches this page (notifications, refusal reasons); the fixed
     chrome below matches the wording already hard-coded in index.html.
+
+    THE KEYS ON THE WIRE ARE NOT ENGLISH. `winner_takes_all`, `last_standing`
+    and `countdown` are how config spells things, not how a player reads
+    them, so they go through the small maps under PLAIN ENGLISH FOR THE KEYS
+    ON THE WIRE. A key nothing maps falls back to itself: a mode an operator
+    added after this file was written should look unpolished, not invisible.
 */
 
 (function () {
@@ -101,9 +115,15 @@
         selectedMatchId: null,
 
         loadoutCategory: 'all',
-        /* [{ key, ammo }] -- the unsaved draft. Seeded from the server's
-           loadout until the player touches it; after that it is theirs
-           until they save, so a broadcast cannot undo a selection. */
+        /* [{ key, ammo, ammoType }] -- the unsaved draft. Seeded from the
+           server's loadout until the player touches it; after that it is
+           theirs until they save, so a broadcast cannot undo a selection.
+
+           `ammoType` is a KEY out of that weapon's own `ammoTypes` list, or
+           null for a weapon that offers none. It is null rather than absent
+           on purpose: the difference between "this weapon has no types" and
+           "nobody has chosen one yet" is the difference between sending the
+           field and leaving it off the wire. */
         draftWeapons: [],
         draftArmor: null,
         loadoutDirty: false,
@@ -176,6 +196,74 @@
     function keyOr(value, fallback) {
         return (typeof value === 'string' && value !== '') ? value : fallback;
     }
+
+    /* '1 player' and '2 players', because '1 player(s)' is a form, not a
+       sentence, and this panel is read by somebody who has never seen it. */
+    function plural(count, one, many) {
+        var n = int(count, 0);
+        return String(n) + ' ' + (n === 1 ? one : (many || (one + 's')));
+    }
+
+    function capitalise(text) {
+        var value = String(text === undefined || text === null ? '' : text);
+        return value === '' ? '' : value.charAt(0).toUpperCase() + value.slice(1);
+    }
+
+    /* ------------------------------------------------------------------
+       PLAIN ENGLISH FOR THE KEYS ON THE WIRE
+
+       `winner_takes_all`, `last_standing` and `countdown` are how config and
+       the server spell these; they are not how a player reads them. An
+       unknown key falls back to ITSELF rather than to a blank -- a mode an
+       operator added after this file was written should look unpolished, not
+       invisible.
+       ------------------------------------------------------------------ */
+
+    function labelFor(map, key, fallback) {
+        if (typeof key === 'string' && Object.prototype.hasOwnProperty.call(map, key)) {
+            return map[key];
+        }
+        if (typeof key === 'string' && key !== '') return key;
+        return fallback === undefined ? '' : fallback;
+    }
+
+    /* Short enough for the badge on a match card. */
+    var STATE_BADGE = {
+        lobby: 'Open',
+        countdown: 'Starting',
+        live: 'Fighting',
+        ended: 'Finished'
+    };
+
+    /* The same four states with room to say what they mean. */
+    var STATE_TEXT = {
+        lobby: 'Waiting for players',
+        countdown: 'Starting now',
+        live: 'Round in progress',
+        ended: 'Finished'
+    };
+
+    /* Written as a clause so it can be dropped into a sentence about the
+       pot: 'It all goes into the pot: the winner takes it.' */
+    var PAYOUT_TEXT = {
+        winner_takes_all: 'the winner takes the lot',
+        top_three: 'the top three split it',
+        per_kill: 'it is split by kills scored'
+    };
+
+    /* The same rule again, short enough for the big figure it sits under in
+       the bets summary. */
+    var PAYOUT_SHORT = {
+        winner_takes_all: 'Winner takes all',
+        top_three: 'Top three split',
+        per_kill: 'Split by kills'
+    };
+
+    var WIN_CONDITION_TEXT = {
+        last_standing: 'last one standing',
+        most_kills: 'most kills when the clock runs out',
+        score_limit: 'first to the kill limit'
+    };
 
     function money(amount) {
         var symbol = '$';
@@ -307,12 +395,122 @@
         return null;
     }
 
+    /* ------------------------------------------------------------------
+       THE THREE ALLOWANCES
+
+       The server keeps them apart and Arena.ResolveLoadout spends them
+       apart, so the panel reads them apart. Folding melee into the weapon
+       count is the bug this screen was rebuilt to fix: a player fills their
+       guns, reaches for a knife, and is told they are full by a panel the
+       server would have disagreed with.
+       ------------------------------------------------------------------ */
+
+    /* Shootable weapons only. */
     function weaponSlots() {
         return Math.max(0, int((cfg().loadouts || {}).weaponSlots, 1));
     }
 
+    /* Melee, counted on its own. ABSENT IS ONE, NOT ZERO -- the same
+       reading Arena.ResolveLoadout takes: a field the operator never wrote
+       means they have not thought about it, and silently removing every
+       blade from an arena whose config still lists them is the wrong guess.
+       An explicit 0 is a decision and is honoured. */
+    function meleeSlots() {
+        var raw = (cfg().loadouts || {}).meleeSlots;
+        if (raw === undefined || raw === null) return 1;
+        return Math.max(0, int(raw, 1));
+    }
+
+    /* How many DIFFERENT rounds one loadout may carry. 0 -- and a snapshot
+       that does not carry the field at all -- means no cap, and every
+       control this file draws for it stays off. */
+    function ammoTypeSlots() {
+        return Math.max(0, int((cfg().loadouts || {}).ammoTypeSlots, 0));
+    }
+
     function canChooseLoadout() {
         return (cfg().loadouts || {}).allowChoose !== false;
+    }
+
+    /* What the money in this panel is called -- 'cash', 'bank', whatever the
+       operator's account is named. */
+    function accountName() {
+        return keyOr(betting().account, 'cash');
+    }
+
+    function payoutPhrase() {
+        return labelFor(PAYOUT_TEXT, betting().payout, 'it is paid out at the end');
+    }
+
+    // ------------------------------------------------------------------
+    // AMMO TYPES
+    //
+    // The snapshot carries, per weapon, `ammoTypes` -- [{ key, label }] --
+    // and `defaultAmmoType`. THE EMPTY LIST IS MEANINGFUL: it is melee, or a
+    // weapon an operator switched types off for, and it means the panel
+    // shows no type control at all. A disabled dropdown reading 'none' is
+    // worse than no dropdown, which is the same rule the ammo AMOUNT chips
+    // already follow.
+    //
+    // An empty Lua table crosses as `{}` rather than `[]`, so every read
+    // goes through arrayOf() and no caller may assume an array.
+    // ------------------------------------------------------------------
+
+    function ammoTypesOf(weapon) {
+        return arrayOf(weapon && weapon.ammoTypes).filter(function (entry) {
+            return entry && keyOr(entry.key, null) !== null;
+        });
+    }
+
+    /* The key this weapon opens on: the server's own default when it is
+       really on offer, else the first type it lists. */
+    function defaultAmmoType(weapon) {
+        var types = ammoTypesOf(weapon);
+        if (types.length === 0) return null;
+
+        var wanted = keyOr(weapon && weapon.defaultAmmoType, null);
+        for (var i = 0; i < types.length; i++) {
+            if (types[i].key === wanted) return wanted;
+        }
+        return types[0].key;
+    }
+
+    /* The label to show for a chosen key, or null when this weapon does not
+       offer it -- which is also how callers test that a key is legal. */
+    function ammoTypeLabel(weapon, key) {
+        if (keyOr(key, null) === null) return null;
+        var types = ammoTypesOf(weapon);
+        for (var i = 0; i < types.length; i++) {
+            if (types[i].key === key) return types[i].label || types[i].key;
+        }
+        return null;
+    }
+
+    /* A key off the wire or out of a stored loadout, kept only if this
+       weapon still offers it. Same posture as the server's own
+       Arena.ResolveAmmoType: an unknown key falls back to the default
+       rather than being guessed at. */
+    function resolveAmmoType(weapon, requested) {
+        if (ammoTypeLabel(weapon, keyOr(requested, null)) !== null) return requested;
+        return defaultAmmoType(weapon);
+    }
+
+    /* WHICH ALLOWANCE THIS WEAPON IS COUNTED AGAINST, and the one fact on
+       this screen the panel must not work out for itself. The snapshot
+       carries `melee` per weapon, resolved server-side by
+       Arena.IsMeleeWeapon, precisely so the two cannot disagree about what a
+       bat is.
+
+       The fallback below is that same function written out again, for a
+       snapshot from a server old enough not to send the flag: either test
+       is enough, `category = 'melee'` being the honest declaration and a
+       one-round ceiling being a bat whatever it was filed under. */
+    function isMelee(weapon) {
+        if (!weapon) return false;
+        if (typeof weapon.melee === 'boolean') return weapon.melee;
+        if (weapon.category === 'melee') return true;
+        var ammo = weapon.ammo || {};
+        return int(ammo.max, 0) <= 1;
     }
 
     // ==================================================================
@@ -329,12 +527,34 @@
 
         var loadout = player().loadout || {};
         var picks = [];
+        /* Counted per pool, not in total: a stored loadout of two guns and
+           a blade must seed as two guns and a blade, and a shared count
+           would drop the blade on the floor. */
+        var usedGuns = 0;
+        var usedBlades = 0;
+
         arrayOf(loadout.weapons).forEach(function (entry) {
             if (!entry || entry.alwaysGive === true) return;
-            if (picks.length >= weaponSlots()) return;
             var weapon = weaponByKey(entry.key);
             if (!weapon) return;
-            picks.push({ key: weapon.key, ammo: int(entry.ammo, int(weapon.ammo && weapon.ammo.default, 0)) });
+
+            var melee = isMelee(weapon);
+            if (melee) {
+                if (usedBlades >= meleeSlots()) return;
+                usedBlades += 1;
+            } else {
+                if (usedGuns >= weaponSlots()) return;
+                usedGuns += 1;
+            }
+
+            picks.push({
+                key: weapon.key,
+                ammo: int(entry.ammo, int(weapon.ammo && weapon.ammo.default, 0)),
+                /* The server sends back the type it resolved, so the picker
+                   opens on the round the player is actually holding rather
+                   than on the catalogue default. */
+                ammoType: resolveAmmoType(weapon, entry.ammoType)
+            });
         });
 
         var armor = (cfg().loadouts || {}).armor || {};
@@ -359,11 +579,20 @@
         var index = draftIndexOf(key);
         if (index >= 0) {
             state.draftWeapons.splice(index, 1);
-        } else if (state.draftWeapons.length >= weaponSlots()) {
-            toast('All ' + weaponSlots() + ' weapon slot(s) are full. Drop one first.', 'warning');
-            return;
         } else {
-            state.draftWeapons.push({ key: key, ammo: int(weapon.ammo && weapon.ammo.default, 0) });
+            /* AGAINST ITS OWN POOL, never against a total. An eleventh gun
+               is refused; a blade at that same moment is not, and the server
+               would have said the same. */
+            var melee = isMelee(weapon);
+            if (draftCount(melee) >= poolLimit(melee)) {
+                toast(poolFullMessage(melee), 'warning');
+                return;
+            }
+            state.draftWeapons.push({
+                key: key,
+                ammo: int(weapon.ammo && weapon.ammo.default, 0),
+                ammoType: defaultAmmoType(weapon)
+            });
         }
 
         state.loadoutDirty = true;
@@ -381,6 +610,29 @@
             if (index < 0) return;
         }
         state.draftWeapons[index].ammo = int(ammo, 0);
+        state.loadoutDirty = true;
+        render();
+    }
+
+    /* The type is per weapon and not global: two guns in one loadout may
+       carry different rounds, so this writes into that weapon's own draft
+       entry and nothing else. Picking a type counts as picking the weapon,
+       the same way picking an amount does. */
+    function setWeaponAmmoType(key, typeKey) {
+        if (!canChooseLoadout()) return;
+        var weapon = weaponByKey(key);
+        /* An unknown type is a stale render clicked after a config change,
+           not a choice. Dropped rather than stored: the server would refuse
+           it anyway, and refuse it silently. */
+        if (!weapon || ammoTypeLabel(weapon, typeKey) === null) return;
+
+        var index = draftIndexOf(key);
+        if (index < 0) {
+            toggleWeapon(key);
+            index = draftIndexOf(key);
+            if (index < 0) return;
+        }
+        state.draftWeapons[index].ammoType = typeKey;
         state.loadoutDirty = true;
         render();
     }
@@ -679,7 +931,14 @@
             /* With betting off there is no wallet to speak of in this
                panel, and showing one implies a fee that will never exist. */
             show(wallet, bettingOn());
-            wallet.textContent = bettingOn() ? money(player().money) : '';
+            clear(wallet);
+            if (bettingOn()) {
+                /* Labelled: a lone figure in the corner of a panel with a
+                   pot in it reads as the pot just as easily as it reads as
+                   the player's own money. */
+                wallet.appendChild(makeEl('span', 'wallet-label', 'Your ' + accountName()));
+                wallet.appendChild(makeEl('span', 'wallet-value', money(player().money)));
+            }
         }
     }
 
@@ -701,15 +960,18 @@
        silently inert -- a disabled control with no reason reads as broken. */
     function joinBlockedReason(match) {
         var mine = playerMatchId();
-        if (mine === match.id) return 'You are already in this match';
-        if (mine) return 'Leave your current match first';
-        if (match.state !== 'lobby') return 'Already under way';
+        if (mine === match.id) return 'You are already in this match.';
+        if (mine) return 'You are already in another match. Leave that one first.';
+        if (match.state === 'ended') return 'This match has finished.';
+        if (match.state !== 'lobby') return 'This match has already started. Watch it, or start your own.';
 
         var max = int((cfg().match || {}).maxPlayers, 0);
-        if (max > 0 && int(match.playerCount, 0) >= max) return 'Match is full';
+        if (max > 0 && int(match.playerCount, 0) >= max) {
+            return 'This match is full (' + plural(max, 'player') + ').';
+        }
 
         if (bettingOn() && int(match.entryFee, 0) > int(player().money, 0)) {
-            return 'Entry fee is ' + money(match.entryFee);
+            return 'You cannot cover the ' + money(match.entryFee) + ' entry fee.';
         }
         return null;
     }
@@ -725,7 +987,12 @@
         clear(host);
 
         if (state.matches.length === 0) {
-            host.appendChild(makeEl('div', 'muted', 'No matches running. Create one.'));
+            /* Deliberate, not broken: it says what is true and what to do
+               about it. */
+            var none = makeEl('div', 'muted');
+            none.appendChild(makeEl('div', null, 'Nobody has started a match yet.'));
+            none.appendChild(makeEl('div', 'hint', 'Create one and it appears here for everyone else to join.'));
+            host.appendChild(none);
             return;
         }
 
@@ -744,11 +1011,11 @@
         var bits = [
             String(match.modeLabel || match.modeKey || ''),
             String(match.arenaLabel || match.arenaKey || ''),
-            int(match.playerCount, 0) + ' player(s)',
+            plural(match.playerCount, 'player') + ' in',
             'Host: ' + String(match.hostName || '')
         ];
         if (bettingOn()) {
-            bits.push('Fee ' + money(match.entryFee));
+            bits.push('Entry ' + money(match.entryFee));
             bits.push('Pot ' + money(match.pot));
         }
         card.appendChild(makeEl('div', 'match-card-meta', bits.join('  ·  ')));
@@ -756,7 +1023,8 @@
         var actions = makeEl('div', 'match-card-actions');
 
         var stateName = typeof match.state === 'string' ? match.state : 'lobby';
-        var badge = makeEl('span', 'state-badge', stateName);
+        var badge = makeEl('span', 'state-badge', labelFor(STATE_BADGE, stateName, 'Open'));
+        badge.title = labelFor(STATE_TEXT, stateName, '');
         if (stateName === 'live' || stateName === 'countdown') badge.classList.add('live');
         if (stateName === 'lobby') badge.classList.add('lobby');
         actions.appendChild(badge);
@@ -768,6 +1036,9 @@
             join.disabled = true;
             join.title = reason;
         } else {
+            join.title = bettingOn() && int(match.entryFee, 0) > 0
+                ? 'Pay ' + money(match.entryFee) + ' and take a place in this match.'
+                : 'Take a place in this match.';
             join.addEventListener('click', function (event) {
                 event.stopPropagation();
                 post('joinMatch', { matchId: match.id });
@@ -782,6 +1053,9 @@
             var watching = spectatingMatchId() === match.id;
             var spectate = makeEl('button', 'btn', watching ? 'Stop Watching' : 'Watch');
             spectate.type = 'button';
+            spectate.title = watching
+                ? 'Put the camera back on you.'
+                : 'Watch this match from a spectator camera. You are not in the fight.';
             spectate.addEventListener('click', function (event) {
                 event.stopPropagation();
                 if (watching) post('stopSpectate');
@@ -792,7 +1066,16 @@
 
         card.appendChild(actions);
 
-        if (reason) card.appendChild(makeEl('div', 'match-card-meta', reason));
+        /* The tooltip on a disabled button is the answer nobody hovers to
+           find, so the reason is written on the card as well. */
+        if (reason) card.appendChild(makeEl('div', 'match-card-reason', 'Cannot join: ' + reason));
+
+        /* Clicking a card also points the Bets tab at it, which is not a
+           thing a highlight on its own says out loud. */
+        if (match.id === state.selectedMatchId && bettingOn()
+            && (betting().spectatorBets || {}).enabled === true) {
+            card.appendChild(makeEl('div', 'match-card-meta', 'Picked — the Bets tab is showing this match.'));
+        }
 
         card.addEventListener('click', function () {
             state.selectedMatchId = match.id;
@@ -837,13 +1120,34 @@
             }
         }
 
+        var feeHint = byId('create-fee-hint');
+        if (has(feeHint)) {
+            /* What the money buys, in the words of this server's own payout
+               rule rather than an assumed one. */
+            feeHint.textContent = feeUsed
+                ? 'Every player pays this once to join. It all goes into the pot, and at the end of the round '
+                    + payoutPhrase() + '.'
+                : '';
+        }
+
         var submit = byId('create-submit');
+        var hint = byId('create-hint');
+        var blocked = playerMatchId() ? 'You are already in a match. Leave it before starting another.' : null;
+        if (!blocked && !state.createArena) blocked = 'This server has no arena switched on.';
+        if (!blocked && !state.createMode) blocked = 'This server has no mode switched on.';
+
         if (has(submit)) {
-            var blocked = playerMatchId() ? 'Leave your current match first' : null;
-            if (!blocked && !state.createArena) blocked = 'No arena is enabled';
-            if (!blocked && !state.createMode) blocked = 'No mode is enabled';
             submit.disabled = blocked !== null;
             submit.title = blocked || '';
+        }
+        if (has(hint)) {
+            var onlyHost = (cfg().match || {}).onlyHostCanStart !== false;
+            hint.textContent = blocked !== null
+                ? blocked
+                : 'You become the host and are put straight into the lobby. '
+                    + (onlyHost
+                        ? 'Only you can start the round.'
+                        : 'Anyone in the lobby can start the round.');
         }
     }
 
@@ -874,7 +1178,13 @@
         if (!match) {
             show(detail, false);
             show(empty, true);
-            if (has(empty)) empty.textContent = 'You are not in a match';
+            if (has(empty)) {
+                clear(empty);
+                empty.appendChild(makeEl('div', 'lobby-empty-title', 'Not in a match'));
+                empty.appendChild(makeEl('div', 'lobby-empty-sub',
+                    'Join one from the Matches tab, or start your own. This screen is where you '
+                    + 'pick a side, tell everyone you are ready, and see the round start.'));
+            }
             return;
         }
 
@@ -897,21 +1207,34 @@
 
         var matchCfg = cfg().match || {};
         var max = int(matchCfg.maxPlayers, 0);
+        var lives = int(matchCfg.lives, 1);
+        var roundTime = int(matchCfg.roundTimeSeconds, 0);
 
+        /* The rules of the round, spelled out here because this is the last
+           screen before it starts and none of it is guessable from the
+           weapons list. */
         var bits = [
             String(match.modeLabel || match.modeKey || ''),
             String(match.arenaLabel || match.arenaKey || ''),
-            'State: ' + String(match.state || ''),
-            int(match.playerCount, 0) + (max > 0 ? ' / ' + max : '') + ' player(s)',
-            'Minimum ' + int(matchCfg.minPlayers, 1),
-            'Host: ' + String(match.hostName || '')
+            labelFor(STATE_TEXT, match.state, ''),
+            max > 0
+                ? int(match.playerCount, 0) + ' of ' + max + ' players in'
+                : plural(match.playerCount, 'player') + ' in',
+            'Starts at ' + plural(int(matchCfg.minPlayers, 1), 'player'),
+            'Host: ' + String(match.hostName || ''),
+            lives === 1
+                ? 'One life — first death is elimination'
+                : plural(lives, 'life', 'lives') + ' each',
+            roundTime > 0 ? 'Round lasts ' + clock(roundTime) : 'No round clock',
+            'Win by ' + labelFor(WIN_CONDITION_TEXT, matchCfg.winCondition, 'the mode rules')
         ];
         if (bettingOn()) {
-            bits.push('Fee ' + money(match.entryFee));
+            bits.push('Entry ' + money(match.entryFee));
             bits.push('Pot ' + money(match.pot));
         }
         bits.forEach(function (text) {
-            host.appendChild(makeEl('span', null, text));
+            /* A blank fact still costs a gap in the strip. */
+            if (typeof text === 'string' && text !== '') host.appendChild(makeEl('span', null, text));
         });
     }
 
@@ -952,9 +1275,11 @@
             if (team.key === mine) tile.classList.add('active');
 
             tile.appendChild(makeEl('div', 'team-tile-name', team.label || team.key));
-            tile.appendChild(makeEl('div', 'team-tile-count', count + ' player(s)'));
+            tile.appendChild(makeEl('div', 'team-tile-count',
+                plural(count, 'player') + (team.key === mine ? ' · you' : '')));
 
             if (teams.allowChoose !== false && playerMatchId() === match.id) {
+                tile.title = 'Fight on this side.';
                 tile.addEventListener('click', function () {
                     post('setTeam', { teamKey: team.key });
                 });
@@ -966,7 +1291,9 @@
         });
 
         if (teams.allowChoose === false) {
-            host.appendChild(makeEl('div', 'muted', 'Sides are assigned by the server.'));
+            host.appendChild(makeEl('div', 'hint', 'Sides are assigned by the server. You cannot pick one.'));
+        } else if (playerMatchId() === match.id) {
+            host.appendChild(makeEl('div', 'hint', 'Click a side to move to it. The one you are on is lit.'));
         }
 
         /* Uneven teams are legal by default -- 7v1 is a match, not an
@@ -974,11 +1301,11 @@
            flagged. Only an operator who switched the allowance off wants
            to see a warning here. */
         if (teams.allowUnequal === false && list.length > 0 && highest - lowest > 0) {
-            host.appendChild(makeEl('div', 'muted',
-                'Sides are uneven (' + lowest + ' vs ' + highest + '). This server requires balanced teams to start.'));
+            host.appendChild(makeEl('div', 'hint',
+                'Sides are uneven (' + lowest + ' vs ' + highest + '). This server will not start a match until they are level.'));
         }
         if (occupied < 2) {
-            host.appendChild(makeEl('div', 'muted', 'Both sides need at least one player.'));
+            host.appendChild(makeEl('div', 'hint', 'Both sides need at least one player before the round can start.'));
         }
     }
 
@@ -989,7 +1316,8 @@
 
         var players = arrayOf(match.players);
         if (players.length === 0) {
-            host.appendChild(makeEl('div', 'muted', 'Nobody has joined yet.'));
+            host.appendChild(makeEl('div', 'hint', 'Nobody has joined yet. The round needs '
+                + plural(int((cfg().match || {}).minPlayers, 1), 'player') + ' to start.'));
             return;
         }
 
@@ -1012,15 +1340,44 @@
         });
     }
 
+    /* The sentence under the three buttons. READY UP AND START MATCH NOW ARE
+       DIFFERENT THINGS and pressing the wrong one during a countdown is a
+       real mistake a player makes once, so the difference is written out
+       rather than left to the labels. */
+    function lobbyHintText(match, inMatch, isHost, blocked) {
+        if (!inMatch) {
+            return 'You are watching this match, not fighting in it. Join one from the Matches tab to fight.';
+        }
+        if (match.state === 'countdown') {
+            return isHost
+                ? 'The round is starting. Stop The Countdown holds it and everyone stays in the lobby; Leave Match takes you out of the match altogether.'
+                : 'The round is starting. Only the host can stop the countdown. You can still leave, which takes you out of the match.';
+        }
+        if (match.state === 'live' || match.state === 'ended') {
+            return 'The round is under way. Leaving now gives up your place in it.';
+        }
+        var lead = player().ready === true
+            ? 'You are marked ready. '
+            : 'Ready Up only tells the others you are set — it does not start the round. ';
+        return blocked === null
+            ? lead + 'Start Match Now begins the round for everybody in this lobby.'
+            : lead + 'Start Match Now is unavailable: ' + blocked;
+    }
+
     function renderLobbyActions(match) {
         var inMatch = playerMatchId() === match.id;
         var isHost = inMatch && player().isHost === true;
         var counting = match.state === 'countdown';
 
         var ready = byId('btn-ready');
+        var isReady = player().ready === true;
         if (has(ready)) {
-            var isReady = player().ready === true;
-            ready.textContent = isReady ? 'Not Ready' : 'Ready';
+            /* The label says what pressing it makes you, which is the only
+               reading that survives being read in a hurry. */
+            ready.textContent = isReady ? 'Not Ready' : 'Ready Up';
+            ready.title = isReady
+                ? 'Take your ready back. Nothing starts without you.'
+                : 'Tell the others you are set. This does not start the round.';
             ready.classList.toggle('btn-primary', !isReady);
             ready.disabled = !inMatch || match.state !== 'lobby';
             ready.onclick = function () {
@@ -1029,101 +1386,401 @@
             };
         }
 
+        /* Cancel lives on the start button during the countdown because
+           that is the only window where "stop the start" is a thing a host
+           can still ask for -- the server refuses it once the round is
+           live. */
+        var onlyHost = (cfg().match || {}).onlyHostCanStart !== false;
+        var mayStart = inMatch && (isHost || !onlyHost);
+        var minPlayers = int((cfg().match || {}).minPlayers, 1);
+        var blocked = null;
+        if (!inMatch) blocked = 'you are watching this match, not in it.';
+        else if (!mayStart) blocked = 'only the host can start it.';
+        else if (int(match.playerCount, 0) < minPlayers) {
+            blocked = 'the round needs ' + plural(minPlayers, 'player')
+                + ' and has ' + plural(match.playerCount, 'player') + '.';
+        }
+
         var start = byId('btn-start');
         if (has(start)) {
-            /* Cancel lives on this button during the countdown because
-               that is the only window where "stop the start" is a thing a
-               host can still ask for -- the server refuses it once the
-               round is live. */
-            var onlyHost = (cfg().match || {}).onlyHostCanStart !== false;
-            var mayStart = inMatch && (isHost || !onlyHost);
-            var blocked = null;
-            if (!inMatch) blocked = 'You are watching this match';
-            else if (!mayStart) blocked = 'Only the host can start this match';
-            else if (int(match.playerCount, 0) < int((cfg().match || {}).minPlayers, 1)) {
-                blocked = 'Needs ' + int((cfg().match || {}).minPlayers, 1) + ' player(s)';
-            }
-
-            start.textContent = counting ? 'Cancel Start' : 'Start Match';
+            start.textContent = counting ? 'Stop The Countdown' : 'Start Match Now';
             if (counting) {
                 start.disabled = !isHost;
-                start.title = isHost ? '' : 'Only the host can cancel';
+                start.title = isHost
+                    ? 'Hold the start. Everybody stays in the lobby and nobody loses their place.'
+                    : 'Only the host can stop the countdown.';
                 start.onclick = function () { post('cancelMatch'); };
             } else {
                 start.disabled = blocked !== null;
-                start.title = blocked || '';
+                start.title = blocked === null
+                    ? 'Send everyone into the arena. There is a countdown first.'
+                    : capitalise(blocked);
                 start.onclick = function () { post('startMatch'); };
             }
         }
 
         var leave = byId('btn-leave');
         if (has(leave)) {
-            leave.textContent = inMatch ? 'Leave' : 'Stop Watching';
+            leave.textContent = inMatch ? 'Leave Match' : 'Stop Watching';
+            leave.title = inMatch
+                ? 'Take yourself out of this match.'
+                : 'Stop watching and put the camera back on you.';
             leave.disabled = false;
             leave.onclick = function () {
                 if (inMatch) post('leaveMatch');
                 else post('stopSpectate');
             };
         }
+
+        var hint = byId('lobby-hint');
+        if (has(hint)) hint.textContent = lobbyHintText(match, inMatch, isHost, blocked);
     }
 
     // ------------------------------------------------------------------
     // LOADOUT
+    //
+    // TWO POOLS, COUNTED APART, because that is how the server counts them.
+    // `weaponSlots` is shootable weapons and `meleeSlots` is blades, and
+    // Arena.ResolveLoadout spends the two separately -- a player whose guns
+    // are full may still take a knife, and the panel has to be able to say
+    // so. One filtered grid under one counter cannot: it says "you are
+    // carrying 2 weapons" at the exact moment the server would have handed
+    // over a third thing.
+    //
+    // So this is two lists with a heading and a counter each, both on screen
+    // at once, each scrolling inside its own box. An operator with thirty
+    // guns and twenty blades gets two readable lists rather than one long
+    // one, and nothing ever pushes the page.
+    //
+    // WHAT THE COUNTERS ARE FOR: 'my guns are full' and 'I am full' are
+    // different sentences, and the second one was never true. Both counters
+    // are on the picker AND in the summary, which is the last thing read
+    // before a round locks the choice in.
     // ------------------------------------------------------------------
 
-    function categoriesInUse() {
-        var loadouts = cfg().loadouts || {};
-        var declared = arrayOf(loadouts.categories).slice().sort(function (a, b) {
-            return int(a.order, 999) - int(b.order, 999);
+    /* The catalogue split the way the server counts it, in config order --
+       an operator who arranged their weapons deliberately keeps that order. */
+    function weaponCatalogue(melee) {
+        return arrayOf((cfg().loadouts || {}).weapons).filter(function (weapon) {
+            return weapon && keyOr(weapon.key, null) !== null && isMelee(weapon) === melee;
         });
-
-        var known = {};
-        declared.forEach(function (entry) { known[entry.key] = true; });
-
-        var cats = [{ key: 'all', label: 'All' }];
-        declared.forEach(function (entry) {
-            cats.push({ key: entry.key, label: entry.label || entry.key });
-        });
-
-        /* A weapon whose category an operator never declared still has to
-           be reachable, so it collects under 'Other' -- but only when one
-           actually exists. */
-        var hasOther = arrayOf(loadouts.weapons).some(function (weapon) {
-            return weapon && !known[weapon.category];
-        });
-        if (hasOther) cats.push({ key: '__other', label: 'Other' });
-
-        return cats;
     }
+
+    /* How many of one pool the draft holds. Counted rather than tracked: a
+       key left over from a weapon an operator has since removed resolves to
+       nothing and must not be charged to a pool it can no longer fill. */
+    function draftCount(melee) {
+        var used = 0;
+        state.draftWeapons.forEach(function (pick) {
+            var weapon = weaponByKey(pick.key);
+            if (weapon && isMelee(weapon) === melee) used += 1;
+        });
+        return used;
+    }
+
+    function poolLimit(melee) {
+        return melee ? meleeSlots() : weaponSlots();
+    }
+
+    /* 'gun' and 'blade', not 'weapon' and 'melee weapon'. Two counters that
+       both say 'weapon' undo the whole point of there being two of them. */
+    function poolNoun(melee) {
+        return melee ? 'blade' : 'gun';
+    }
+
+    /* '2 of 2 guns'. Count first, because that is the half that moves. */
+    function poolCounterText(melee) {
+        return String(draftCount(melee)) + ' of ' + plural(poolLimit(melee), poolNoun(melee));
+    }
+
+    /* WHICH POOL IS FULL, SAID BY NAME. The old sentence -- 'you are already
+       carrying 2 weapons' -- named a total that does not exist on this
+       server, and a player who believed it dropped a rifle to make room for
+       a knife that never needed the room. */
+    function poolFullMessage(melee) {
+        if (poolLimit(melee) <= 0) {
+            return melee
+                ? 'This arena has melee switched off. There is no blade slot to fill.'
+                : 'This arena hands out no firearms. There is no gun slot to fill.';
+        }
+
+        var text = (melee ? 'Your melee is full' : 'Your guns are full')
+            + ' — ' + poolCounterText(melee) + '. Drop '
+            + (melee ? 'a blade' : 'a gun') + ' before picking another.';
+
+        /* Only mentioned when the other pool exists to be reassured about. */
+        if (poolLimit(!melee) > 0) {
+            text += ' Your ' + (melee ? 'guns' : 'blades')
+                + ' are counted separately and are not touched by this.';
+        }
+        return text;
+    }
+
+    // ------------------------------------------------------------------
+    // DISTINCT AMMO TYPES -- `ammoTypeSlots`
+    //
+    // The cap is on how many DIFFERENT rounds one loadout carries, not on
+    // the weapons. The server does not refuse a weapon over it -- losing a
+    // gun because of an ammunition preference would be a surprising way to
+    // be told about a limit -- it quietly swaps that weapon onto its own
+    // default round instead.
+    //
+    // QUIETLY IS THE PROBLEM. A player who picked armour-piercing, saved,
+    // and is handed standard when the round starts has been told nothing.
+    // So the panel works out the same answer the server will, in the same
+    // order (the draft is sent in order and Arena.ResolveLoadout walks it in
+    // order), and names the round that will ACTUALLY be loaded.
+    //
+    // The default a weapon falls back to counts towards the cap too, exactly
+    // as it does on the server -- which is why the count is taken after the
+    // fallback and not before.
+    // ------------------------------------------------------------------
+
+    /* Bare maps: an ammo type key is operator-authored text, and a key like
+       '__proto__' landing on an object literal is a silent wrong answer. */
+    function bareMap() {
+        return Object.create(null);
+    }
+
+    /* @param override {key, ammoType}|null -- a hypothetical pick, so a chip
+       can be asked "what would happen if I were pressed" without the draft
+       being changed to find out. */
+    function ammoTypePlan(override) {
+        var cap = ammoTypeSlots();
+        var taken = bareMap();
+        var byKey = bareMap();
+        var distinct = 0;
+
+        state.draftWeapons.forEach(function (pick) {
+            var weapon = weaponByKey(pick.key);
+            if (!weapon) return;
+
+            var requested = (override && override.key === pick.key) ? override.ammoType : pick.ammoType;
+            var chosen = keyOr(resolveAmmoType(weapon, requested), null);
+            var loaded = chosen;
+
+            /* A round this loadout has not already spent a slot on, with no
+               slots left to spend. */
+            if (chosen !== null && cap > 0 && taken[chosen] !== true && distinct >= cap) {
+                loaded = keyOr(defaultAmmoType(weapon), null);
+            }
+
+            if (loaded !== null && taken[loaded] !== true) {
+                taken[loaded] = true;
+                distinct += 1;
+            }
+
+            byKey[pick.key] = {
+                chosen: chosen,
+                loaded: loaded,
+                swapped: chosen !== null && loaded !== chosen
+            };
+        });
+
+        return { cap: cap, taken: taken, distinct: distinct, byKey: byKey };
+    }
+
+    /* Whether pressing this type chip on a weapon ALREADY in the draft would
+       get the player that round, or the default instead. Re-run rather than
+       read off the current plan: changing a weapon's round can free the slot
+       its old round was holding, so the standing plan would say 'no' where
+       the truthful answer is 'yes'. */
+    function wouldSwap(weaponKey, typeKey) {
+        var entry = ammoTypePlan({ key: weaponKey, ammoType: typeKey }).byKey[weaponKey];
+        return entry !== undefined && entry.swapped === true;
+    }
+
+    // ------------------------------------------------------------------
 
     function renderLoadout() {
-        renderLoadoutCategories();
-        renderWeaponGrid();
-        renderLoadoutSlots();
-        renderArmorPicker();
+        /* Worked out once and handed down: the cards and the summary have to
+           name the same round, and computing it twice invites them to
+           disagree. A plan that cannot be built is an empty one -- no cap,
+           no claims -- rather than a dead tab. */
+        var plan = { cap: 0, taken: bareMap(), distinct: 0, byKey: bareMap() };
+        guarded(function () { plan = ammoTypePlan(null); });
 
-        var save = byId('loadout-save');
-        if (has(save)) {
-            show(save, canChooseLoadout());
-            save.disabled = !state.loadoutDirty;
-            save.title = state.loadoutDirty ? '' : 'Nothing changed since your last save';
-        }
+        guarded(renderLoadoutNote);
+        guarded(function () { renderWeaponSections(plan); });
+        guarded(function () { renderLoadoutSlots(plan); });
+        guarded(renderArmorPicker);
+        guarded(renderLoadoutSaveRow);
     }
 
-    function renderLoadoutCategories() {
-        var host = byId('loadout-cats');
+    /* The one sentence that is true of both lists, said once above them. */
+    function renderLoadoutNote() {
+        var host = byId('loadout-note');
         if (!has(host)) return;
         clear(host);
 
         if (!canChooseLoadout()) {
-            host.appendChild(makeEl('div', 'muted', 'This server issues a fixed loadout.'));
+            host.appendChild(makeEl('div', 'hint',
+                'This server issues a fixed loadout. The panel on the right is what you will be '
+                + 'handed when a round starts; nothing here can be changed.'));
             return;
         }
 
-        categoriesInUse().forEach(function (cat) {
+        var guns = weaponSlots();
+        var blades = meleeSlots();
+        var text = 'Click a weapon to carry it, and click it again to drop it. ';
+        if (guns > 0 && blades > 0) {
+            /* THE RULE THIS SCREEN EXISTS TO MAKE OBVIOUS. */
+            text += 'Guns and melee are counted separately — ' + plural(guns, 'gun') + ' and '
+                + plural(blades, 'blade') + ' — so filling one does not cost you the other.';
+        } else if (blades > 0) {
+            text += 'This arena is melee only: ' + plural(blades, 'blade') + '.';
+        } else if (guns > 0) {
+            text += 'This arena issues no melee: ' + plural(guns, 'gun') + '.';
+        }
+        host.appendChild(makeEl('div', 'hint', text));
+
+        var cap = ammoTypeSlots();
+        if (cap > 0) {
+            host.appendChild(makeEl('div', 'hint',
+                'You may carry ' + plural(cap, 'kind') + ' of round across the whole loadout. '
+                + 'Past that a weapon is loaded with its own default instead of the round you picked, '
+                + 'and this screen says which ones.'));
+        }
+    }
+
+    function renderWeaponSections(plan) {
+        var firearms = weaponCatalogue(false);
+        var blades = weaponCatalogue(true);
+
+        /* meleeSlots = 0 is an operator switching melee off, and the panel
+           should look like that was the intention: the section goes
+           altogether rather than standing there empty or greyed out. The
+           same reading applies to firearms -- an arena with no gun slots has
+           no firearms list to show. */
+        var gunsOn = weaponSlots() > 0 && firearms.length > 0;
+        var meleeOn = meleeSlots() > 0 && blades.length > 0;
+
+        show(byId('loadout-firearms'), gunsOn);
+        show(byId('loadout-melee'), meleeOn);
+
+        var empty = byId('loadout-empty');
+        show(empty, !gunsOn && !meleeOn);
+        if (has(empty)) {
+            clear(empty);
+            if (!gunsOn && !meleeOn) {
+                empty.appendChild(makeEl('div', 'muted', 'No weapons are enabled on this server.'));
+                empty.appendChild(makeEl('div', 'hint',
+                    'You will fight with whatever the arena hands out when the round starts.'));
+            }
+        }
+
+        if (gunsOn) {
+            var cats = firearmCategories(firearms);
+            var active = activeCategory(cats);
+            renderCategoryChips(cats, active);
+            renderSectionCount('firearms-count', false);
+            renderWeaponGrid('weapon-grid', firearms.filter(function (weapon) {
+                return inCategory(weapon, active);
+            }), plan);
+        }
+
+        if (meleeOn) {
+            renderSectionCount('melee-count', true);
+            /* NO TABS HERE. Melee is one section already; a filter over one
+               short list is a control that costs a click and answers
+               nothing. */
+            renderWeaponGrid('melee-grid', blades, plan);
+        }
+    }
+
+    /* '2 of 2 guns' beside the heading, lit when that pool is full so 'no
+       room left in here' reads without anyone doing the sum. */
+    function renderSectionCount(id, melee) {
+        var host = byId(id);
+        if (!has(host)) return;
+
+        var limit = poolLimit(melee);
+        host.textContent = poolCounterText(melee);
+        host.classList.toggle('full', limit > 0 && draftCount(melee) >= limit);
+        host.title = melee
+            ? 'Melee has its own allowance. Filling your guns does not use a blade slot.'
+            : 'Firearms have their own allowance. Filling them leaves your melee slots free.';
+    }
+
+    // ------------------------------------------------------------------
+    // CATEGORY TABS -- FIREARMS ONLY
+    //
+    // They still earn their place: an operator with thirty guns wants
+    // Sidearms and Precision apart, and the list is long enough that
+    // scrolling alone is not an answer. They are built from the FIREARMS
+    // only, so the old 'Melee' tab -- which now filters a list melee is not
+    // in -- cannot appear, and they are dropped entirely when there is only
+    // one group to choose between.
+    // ------------------------------------------------------------------
+
+    function firearmCategories(firearms) {
+        var declared = arrayOf((cfg().loadouts || {}).categories).slice().sort(function (a, b) {
+            return int(a.order, 999) - int(b.order, 999);
+        });
+
+        var known = bareMap();
+        declared.forEach(function (entry) {
+            if (entry && keyOr(entry.key, null) !== null) known[entry.key] = true;
+        });
+
+        var present = bareMap();
+        var hasOther = false;
+        firearms.forEach(function (weapon) {
+            if (known[weapon.category] === true) present[weapon.category] = true;
+            else hasOther = true;
+        });
+
+        var cats = [];
+        declared.forEach(function (entry) {
+            if (entry && present[entry.key] === true) {
+                cats.push({ key: entry.key, label: entry.label || entry.key });
+            }
+        });
+        /* A weapon whose category an operator never declared still has to be
+           reachable, so it collects under 'Other' -- but only when one
+           actually exists. */
+        if (hasOther) cats.push({ key: '__other', label: 'Other' });
+        return cats;
+    }
+
+    /* The filter the firearms list is really under. A category that has gone
+       -- an operator edit, or the old shared grid's 'Melee' tab still sitting
+       in state -- reads as 'All' rather than as an empty list with no way
+       back to a full one. */
+    function activeCategory(cats) {
+        for (var i = 0; i < cats.length; i++) {
+            if (cats[i].key === state.loadoutCategory) return state.loadoutCategory;
+        }
+        return 'all';
+    }
+
+    function inCategory(weapon, active) {
+        if (active === 'all') return true;
+        if (active === '__other') {
+            return !arrayOf((cfg().loadouts || {}).categories).some(function (entry) {
+                return entry && entry.key === weapon.category;
+            });
+        }
+        return weapon.category === active;
+    }
+
+    function renderCategoryChips(cats, active) {
+        var host = byId('loadout-cats');
+        if (!has(host)) return;
+        clear(host);
+
+        /* One group is not a filter, and neither is a picker nobody may
+           touch. */
+        if (!canChooseLoadout() || cats.length < 2) {
+            show(host, false);
+            return;
+        }
+        show(host, true);
+
+        [{ key: 'all', label: 'All' }].concat(cats).forEach(function (cat) {
             var chip = makeEl('button', 'chip', cat.label);
             chip.type = 'button';
-            if (cat.key === state.loadoutCategory) chip.classList.add('active');
+            if (cat.key === active) chip.classList.add('active');
             chip.addEventListener('click', function () {
                 state.loadoutCategory = cat.key;
                 render();
@@ -1132,36 +1789,38 @@
         });
     }
 
-    function weaponInCategory(weapon) {
-        if (state.loadoutCategory === 'all') return true;
-        if (state.loadoutCategory === '__other') {
-            var declared = arrayOf((cfg().loadouts || {}).categories);
-            return !declared.some(function (entry) { return entry.key === weapon.category; });
-        }
-        return weapon.category === state.loadoutCategory;
-    }
+    // ------------------------------------------------------------------
 
-    function renderWeaponGrid() {
-        var host = byId('weapon-grid');
+    function renderWeaponGrid(id, weapons, plan) {
+        var host = byId(id);
         if (!has(host)) return;
         clear(host);
 
-        var weapons = arrayOf((cfg().loadouts || {}).weapons);
         if (weapons.length === 0) {
-            host.appendChild(makeEl('div', 'muted', 'No weapons are enabled on this server.'));
+            /* Only reachable from a filter that outlived the weapons under
+               it. Says so, rather than leaving a blank box. */
+            host.appendChild(makeEl('div', 'muted', 'Nothing in this group.'));
             return;
         }
 
         weapons.forEach(function (weapon) {
-            if (!weapon || !weapon.key || !weaponInCategory(weapon)) return;
-            host.appendChild(weaponCard(weapon));
+            host.appendChild(weaponCard(weapon, plan));
         });
     }
 
-    function weaponCard(weapon) {
+    function weaponCard(weapon, plan) {
         var index = draftIndexOf(weapon.key);
+        var picked = index >= 0;
+        var melee = isMelee(weapon);
+        /* The weapon's own pool, not a total. This is the whole change. */
+        var poolFull = !picked && draftCount(melee) >= poolLimit(melee);
+
         var card = makeEl('div', 'weapon-card');
-        if (index >= 0) card.classList.add('active');
+        if (picked) card.classList.add('active');
+        /* Dimmed rather than hidden or disabled: the weapon is still on
+           offer, it is the allowance that is spent, and clicking it says
+           which allowance in words. */
+        if (poolFull && canChooseLoadout()) card.classList.add('blocked');
 
         card.appendChild(makeEl('div', 'weapon-name', weapon.label || weapon.key));
         card.appendChild(makeEl('div', 'weapon-category', weapon.category || 'other'));
@@ -1171,12 +1830,15 @@
 
         if (options.length > 0) {
             var row = makeEl('div', 'weapon-ammo');
-            var chosen = index >= 0 ? state.draftWeapons[index].ammo : int(ammo.default, 0);
+            /* Named, because a bare row of numbers on a weapon card is a
+               riddle to anyone who has not used this panel before. */
+            row.appendChild(makeEl('span', 'weapon-field-label', 'Rounds'));
+            var chosen = picked ? state.draftWeapons[index].ammo : int(ammo.default, 0);
             options.forEach(function (value) {
                 var amount = int(value, 0);
                 var chip = makeEl('button', 'chip', String(amount));
                 chip.type = 'button';
-                if (index >= 0 && amount === chosen) chip.classList.add('active');
+                if (picked && amount === chosen) chip.classList.add('active');
                 chip.disabled = !canChooseLoadout();
                 chip.addEventListener('click', function (event) {
                     event.stopPropagation();
@@ -1185,11 +1847,79 @@
                 row.appendChild(chip);
             });
             card.appendChild(row);
+        } else if (melee) {
+            card.appendChild(makeEl('div', 'weapon-fixed', 'Melee — nothing to load'));
         } else {
-            /* No options means no choice to make (melee), not no ammo --
-               the server hands out the default. Rendering an empty chip
-               row would read as a broken picker. */
-            card.appendChild(makeEl('div', 'weapon-category', int(ammo.default, 0) + ' rounds, fixed'));
+            /* No options means no choice to make, not no ammo -- the server
+               hands out the default. Rendering an empty chip row would read
+               as a broken picker. */
+            card.appendChild(makeEl('div', 'weapon-fixed',
+                'Always ' + plural(int(ammo.default, 0), 'round')));
+        }
+
+        /* THE AMMO TYPE. An empty list means this weapon offers no choice of
+           round -- melee, or a weapon the operator switched types off for --
+           and it gets no control at all, not a dead one reading 'none'. */
+        var types = ammoTypesOf(weapon);
+        if (types.length > 0) {
+            var typeRow = makeEl('div', 'weapon-ammo');
+            typeRow.appendChild(makeEl('span', 'weapon-field-label', 'Ammo type'));
+
+            var entry = picked ? plan.byKey[weapon.key] : undefined;
+            /* Lit only once the weapon is actually in the loadout, exactly
+               like the amount chips above: highlighting a type on a weapon
+               nobody has picked would claim a choice that was never made. */
+            var chosenType = entry !== undefined ? entry.chosen : null;
+            var defaultLabel = ammoTypeLabel(weapon, defaultAmmoType(weapon));
+            /* With no weapon in the draft to re-plan around, the honest test
+               for an unpicked weapon is the standing one: adding a weapon
+               never frees a type slot, so a round the loadout is not already
+               carrying would be swapped. */
+            var capSpent = plan.cap > 0 && plan.distinct >= plan.cap;
+
+            types.forEach(function (type) {
+                var chip = makeEl('button', 'chip', type.label || type.key);
+                chip.type = 'button';
+                if (picked && type.key === chosenType) chip.classList.add('active');
+
+                var swaps = picked
+                    ? wouldSwap(weapon.key, type.key)
+                    : (capSpent && plan.taken[type.key] !== true);
+                /* MARKED, NOT DISABLED. The server takes the weapon either
+                   way, so a chip that cannot be pressed says less than one
+                   that says what pressing it would get you. */
+                if (swaps) {
+                    chip.classList.add('spent');
+                    chip.title = 'This loadout is already carrying its '
+                        + plural(plan.cap, 'round type') + '. Picking this one loads '
+                        + (defaultLabel === null ? 'the default' : defaultLabel) + ' instead.';
+                }
+
+                chip.disabled = !canChooseLoadout();
+                chip.addEventListener('click', function (event) {
+                    event.stopPropagation();
+                    setWeaponAmmoType(weapon.key, type.key);
+                });
+                typeRow.appendChild(chip);
+            });
+            card.appendChild(typeRow);
+
+            /* The swap, said on the card it happened to, so nobody meets it
+               for the first time at the start of a round. */
+            if (entry !== undefined && entry.swapped === true) {
+                var loadedLabel = ammoTypeLabel(weapon, entry.loaded);
+                var wantedLabel = ammoTypeLabel(weapon, entry.chosen);
+                card.appendChild(makeEl('div', 'weapon-note',
+                    'Loaded with ' + (loadedLabel === null ? 'the default' : loadedLabel)
+                    + ', not ' + (wantedLabel === null ? 'your pick' : wantedLabel)
+                    + ' — this loadout is already carrying its ' + plural(plan.cap, 'round type') + '.'));
+            }
+        }
+
+        if (poolFull && canChooseLoadout()) {
+            card.appendChild(makeEl('div', 'weapon-note',
+                (melee ? 'Melee is full' : 'Guns are full') + ' — ' + poolCounterText(melee)
+                + '. Drop one to take this.'));
         }
 
         if (canChooseLoadout()) {
@@ -1203,37 +1933,149 @@
         return card;
     }
 
-    function renderLoadoutSlots() {
+    // ------------------------------------------------------------------
+    // THE SUMMARY
+    //
+    // The last thing a player reads before a round locks the choice in, so
+    // it carries all of it: both counters, and per weapon the weapon, the
+    // amount and the round -- the round the SERVER will load, which is not
+    // always the one that was clicked.
+    // ------------------------------------------------------------------
+
+    function renderLoadoutSlots(plan) {
         var host = byId('loadout-slots');
         if (!has(host)) return;
         clear(host);
 
-        var slots = weaponSlots();
-        host.appendChild(makeEl('div', 'weapon-category', 'Loadout · ' + state.draftWeapons.length + ' / ' + slots));
+        host.appendChild(makeEl('div', 'panel-heading', 'Into The Round'));
 
-        for (var i = 0; i < slots; i++) {
-            var pick = state.draftWeapons[i];
-            var slot = makeEl('div', 'slot');
+        slotGroup(host, false, plan);
+        slotGroup(host, true, plan);
 
-            if (pick) {
-                slot.classList.add('filled');
-                var weapon = weaponByKey(pick.key);
-                slot.appendChild(makeEl('span', null, (weapon && (weapon.label || weapon.key)) || pick.key));
-                slot.appendChild(makeEl('span', 'muted', String(int(pick.ammo, 0))));
+        /* Only when there is a cap to report against. */
+        if (plan.cap > 0) {
+            var line = makeEl('div', 'slot-types');
+            line.appendChild(makeEl('span', 'slot-group-title', 'Round types'));
+            var count = makeEl('span', 'loadout-count',
+                String(plan.distinct) + ' of ' + plural(plan.cap, 'kind'));
+            if (plan.distinct >= plan.cap) count.classList.add('full');
+            line.appendChild(count);
+            host.appendChild(line);
+        }
 
-                if (canChooseLoadout()) {
-                    var drop = makeEl('button', 'chip', '✕');
-                    drop.type = 'button';
-                    drop.addEventListener('click', (function (key) {
-                        return function () { toggleWeapon(key); };
-                    }(pick.key)));
-                    slot.appendChild(drop);
-                }
-            } else {
-                slot.appendChild(makeEl('span', 'muted', 'Empty slot'));
-            }
+        /* WHAT HAPPENS TO THE GUNS THEY WALKED IN WITH -- the question every
+           player asks before their first round, and the one thing on this
+           screen the panel must not guess at. `restoreLoadoutOnExit` is an
+           operator switch, and promising a player their own weapons back on
+           a server that does not do that would be a lie told at the worst
+           possible moment. So it is read off the snapshot, and SAYS NOTHING
+           AT ALL when the snapshot does not carry it: silence is the honest
+           third answer. */
+        var restore = (cfg().match || {}).restoreLoadoutOnExit;
+        if (restore === true) {
+            host.appendChild(makeEl('div', 'hint',
+                'Your own weapons and armour are held while you fight and handed back when you leave.'));
+        } else if (restore === false) {
+            host.appendChild(makeEl('div', 'hint',
+                'This server does NOT give your own weapons back when you leave the arena.'));
+        }
+    }
 
-            host.appendChild(slot);
+    /* One pool's worth of the summary: its name, its counter, and one row
+       per slot it has. A pool the operator switched off gets no group at
+       all -- the same silence the picker keeps about it. */
+    function slotGroup(host, melee, plan) {
+        var limit = poolLimit(melee);
+        if (limit <= 0) return;
+
+        var head = makeEl('div', 'slot-group-head');
+        head.appendChild(makeEl('span', 'slot-group-title', melee ? 'Melee' : 'Firearms'));
+        var count = makeEl('span', 'loadout-count', poolCounterText(melee));
+        if (draftCount(melee) >= limit) count.classList.add('full');
+        head.appendChild(count);
+        host.appendChild(head);
+
+        var picks = state.draftWeapons.filter(function (pick) {
+            var weapon = weaponByKey(pick.key);
+            return weapon !== null && isMelee(weapon) === melee;
+        });
+
+        for (var i = 0; i < limit; i++) {
+            host.appendChild(slotRow(picks[i], melee, plan));
+        }
+    }
+
+    function slotRow(pick, melee, plan) {
+        var slot = makeEl('div', 'slot');
+
+        if (!pick) {
+            slot.appendChild(makeEl('span', 'muted', canChooseLoadout()
+                ? ('Empty — click ' + (melee ? 'a blade' : 'a gun') + ' to fill it')
+                : 'Empty'));
+            return slot;
+        }
+
+        slot.classList.add('filled');
+        var weapon = weaponByKey(pick.key);
+
+        var main = makeEl('div', 'slot-main');
+        main.appendChild(makeEl('div', 'slot-name',
+            (weapon && (weapon.label || weapon.key)) || pick.key));
+
+        /* WEAPON, AMOUNT AND TYPE. A number on its own does not say what is
+           in the magazine, and the round type is the one of the three that
+           cannot be guessed from the weapon's name. */
+        var detail = [];
+        if (melee) detail.push('Melee');
+        else detail.push(plural(int(pick.ammo, 0), 'round'));
+
+        var entry = plan.byKey[pick.key];
+        var loadedKey = entry !== undefined ? entry.loaded : keyOr(pick.ammoType, null);
+        var typeName = ammoTypeLabel(weapon, loadedKey);
+        if (typeName !== null) detail.push(typeName);
+
+        main.appendChild(makeEl('div', 'slot-meta', detail.join('  ·  ')));
+
+        if (entry !== undefined && entry.swapped === true) {
+            var wanted = ammoTypeLabel(weapon, entry.chosen);
+            main.appendChild(makeEl('div', 'slot-swap',
+                'Not ' + (wanted === null ? 'your pick' : wanted)
+                + ' — this loadout is already carrying its ' + plural(plan.cap, 'round type') + '.'));
+        }
+
+        slot.appendChild(main);
+
+        if (canChooseLoadout()) {
+            var drop = makeEl('button', 'chip', '✕');
+            drop.type = 'button';
+            drop.title = 'Drop this weapon.';
+            drop.addEventListener('click', (function (key) {
+                return function () { toggleWeapon(key); };
+            }(pick.key)));
+            slot.appendChild(drop);
+        }
+
+        return slot;
+    }
+
+    function renderLoadoutSaveRow() {
+        /* The whole row goes, not just the button: a lone status line under
+           a picker nobody may touch explains nothing. */
+        show(byId('loadout-save-row'), canChooseLoadout());
+
+        var save = byId('loadout-save');
+        if (has(save)) {
+            save.disabled = !state.loadoutDirty;
+            save.title = state.loadoutDirty
+                ? 'Keep these weapons for your next round.'
+                : 'Nothing has changed since your last save.';
+        }
+
+        var status = byId('loadout-save-status');
+        if (has(status)) {
+            status.textContent = state.loadoutDirty
+                ? 'Unsaved — press Save Loadout or you will fight with what you had before.'
+                : 'Saved. This is what you are handed when a round starts.';
         }
     }
 
@@ -1247,13 +2089,17 @@
 
         var options = arrayOf(armor.options);
         if (armor.allowChoose === false || !canChooseLoadout() || options.length === 0) {
-            host.appendChild(makeEl('span', 'muted', String(int(armor.default, 0))));
+            var fixed = int(armor.default, 0);
+            host.appendChild(makeEl('span', 'muted', fixed === 0 ? 'None' : String(fixed)));
+            host.appendChild(makeEl('div', 'hint', 'Set by the server. You start every life with this much.'));
             return;
         }
 
         options.forEach(function (value) {
             var amount = int(value, 0);
-            var chip = makeEl('button', 'chip', String(amount));
+            /* '0' is a choice a player makes on purpose; 'None' is what
+               they think they are choosing. */
+            var chip = makeEl('button', 'chip', amount === 0 ? 'None' : String(amount));
             chip.type = 'button';
             if (amount === int(state.draftArmor, -1)) chip.classList.add('active');
             chip.addEventListener('click', function () {
@@ -1263,13 +2109,23 @@
             });
             host.appendChild(chip);
         });
+
+        host.appendChild(makeEl('div', 'hint', 'Body armour you start every life with.'));
     }
 
     function saveLoadout() {
         if (!canChooseLoadout()) return;
         post('setLoadout', {
             weapons: state.draftWeapons.map(function (pick) {
-                return { key: pick.key, ammo: int(pick.ammo, 0) };
+                var entry = { key: pick.key, ammo: int(pick.ammo, 0) };
+                /* ONLY WHEN THERE IS ONE TO SEND. A weapon with no types has
+                   no key to name, and the server reads a missing field as
+                   "whatever this weapon loads normally" -- which is the
+                   right answer for melee and the wrong one to invent a
+                   value for. */
+                var type = keyOr(pick.ammoType, null);
+                if (type !== null) entry.ammoType = type;
+                return entry;
             }),
             armor: int(state.draftArmor, 0)
         });
@@ -1306,18 +2162,46 @@
         var disabled = byId('bet-disabled');
 
         show(disabled, !enabled);
-        if (has(disabled) && !enabled) disabled.textContent = 'Betting is switched off on this server';
+        if (has(disabled) && !enabled) {
+            /* Switched off is a decision an operator made, and it should
+               read as one. A bare 'disabled' reads as a fault. */
+            clear(disabled);
+            disabled.appendChild(makeEl('div', null, 'No money in this arena'));
+            disabled.appendChild(makeEl('div', 'bet-disabled-sub',
+                'This server runs its matches for nothing: no entry fee, no pot and no side-bets. '
+                + 'Wins and kills still count towards the leaderboard.'));
+        }
 
-        ['bet-summary', 'bet-pick', 'bet-amount', 'bet-submit', 'bet-list'].forEach(function (id) {
+        ['bet-summary', 'bet-form', 'bet-list'].forEach(function (id) {
             show(byId(id), enabled);
         });
         if (!enabled) return;
 
         var match = focusedMatch();
         renderBetSummary(match);
+        renderBetNote();
         renderBetPick(match);
         renderBetControls(match);
         renderBetList(match);
+    }
+
+    /* Where the money on this screen comes from and where it goes. Two
+       pools, and a player who thinks they are the same one will think a
+       side-bet is changing what the winner takes home. */
+    function renderBetNote() {
+        var host = byId('bet-note');
+        if (!has(host)) return;
+
+        var spectator = betting().spectatorBets || {};
+        /* True whichever payout rule this server runs: the stake stays in
+           the pot, and what the pot then does is the clause above. */
+        var text = 'Every fighter pays the entry fee into the pot, and at the end of the round '
+            + payoutPhrase() + '. Being eliminated ends your round and your fee stays in the pot.';
+        if (spectator.enabled === true) {
+            text += ' A side-bet below is separate: you are not fighting, the house pays it, and it '
+                + 'never changes what the winners take.';
+        }
+        host.textContent = text;
     }
 
     function renderBetSummary(match) {
@@ -1332,10 +2216,13 @@
             host.appendChild(box);
         }
 
-        stat('Your ' + String(betting().account || 'cash'), money(player().money));
+        stat('Your ' + accountName(), money(player().money));
         stat('Pot', match ? money(match.pot) : money(0));
         stat('Entry fee', match ? money(match.entryFee) : money(0));
-        stat('Payout', String(betting().payout || ''));
+        /* `winner_takes_all` is how config spells it, not how anybody reads
+           it. The whole rule is a sentence in the note below this strip;
+           this is the two words that fit under the heading. */
+        stat('Pot goes to', labelFor(PAYOUT_SHORT, betting().payout, 'The winner'));
 
         var spectator = betting().spectatorBets || {};
         if (spectator.enabled === true) {
@@ -1343,7 +2230,8 @@
         }
 
         if (!match) {
-            host.appendChild(makeEl('div', 'muted', 'Pick a match on the Matches tab to bet on it.'));
+            host.appendChild(makeEl('div', 'hint',
+                'No match picked. Choose one on the Matches tab and its pot shows here.'));
         }
     }
 
@@ -1354,16 +2242,24 @@
 
         var spectator = betting().spectatorBets || {};
         if (spectator.enabled !== true) {
-            host.appendChild(makeEl('div', 'muted', 'Spectator side-bets are switched off. The pot below is the entry fees.'));
+            host.appendChild(makeEl('div', 'hint',
+                'Side-bets are switched off on this server. You can still fight for the pot: '
+                + 'join a match on the Matches tab.'));
             return;
         }
         if (!match) return;
 
         var options = betPickOptions(match);
         if (options.length === 0) {
-            host.appendChild(makeEl('div', 'muted', 'Nothing to back in this match yet.'));
+            host.appendChild(makeEl('div', 'hint',
+                'Nobody has joined this match yet, so there is nobody to back.'));
             return;
         }
+
+        /* The chips are names and team labels with nothing above them
+           otherwise -- and a name on a chip does not say what clicking it
+           means. */
+        host.appendChild(makeEl('span', 'field-label', 'Backing'));
 
         options.forEach(function (option) {
             var chip = makeEl('button', 'chip', option.label);
@@ -1383,18 +2279,18 @@
        explains. */
     function betBlockedReason(match) {
         var spectator = betting().spectatorBets || {};
-        if (spectator.enabled !== true) return 'Side-bets are switched off';
-        if (!match) return 'No match selected';
-        if (playerMatchId() === match.id) return 'You are fighting in this match';
-        if (match.state === 'ended') return 'This match has finished';
-        if (!state.betPick) return 'Pick who you are backing';
+        if (spectator.enabled !== true) return 'Side-bets are switched off on this server.';
+        if (!match) return 'Pick a match on the Matches tab first.';
+        if (playerMatchId() === match.id) return 'You are fighting in this match. You cannot bet on yourself.';
+        if (match.state === 'ended') return 'This match has finished.';
+        if (!state.betPick) return 'Choose who you are backing.';
 
         var amount = int(state.betAmount, 0);
         var min = int(spectator.min, 0);
         var max = int(spectator.max, 0);
-        if (amount < min) return 'Minimum bet is ' + money(min);
-        if (max > 0 && amount > max) return 'Maximum bet is ' + money(max);
-        if (amount > int(player().money, 0)) return 'You cannot cover that';
+        if (amount < min) return 'The smallest bet is ' + money(min) + '.';
+        if (max > 0 && amount > max) return 'The biggest bet is ' + money(max) + '.';
+        if (amount > int(player().money, 0)) return 'You do not have ' + money(amount) + '.';
         return null;
     }
 
@@ -1403,17 +2299,33 @@
         var usable = spectator.enabled === true;
 
         var input = byId('bet-amount');
-        show(input, usable);
+        show(byId('bet-amount-row'), usable);
         if (has(input) && usable) {
             input.min = String(int(spectator.min, 0));
             if (int(spectator.max, 0) > 0) input.max = String(int(spectator.max, 0));
             if (document.activeElement !== input) input.value = String(int(state.betAmount, 0));
         }
 
+        var reason = betBlockedReason(match);
+
+        /* The reason is written under the control rather than hidden in a
+           tooltip: a bet that cannot be placed and does not say why is the
+           panel looking broken. */
+        var hint = byId('bet-hint');
+        show(hint, usable);
+        if (has(hint) && usable) {
+            if (reason !== null) {
+                hint.textContent = reason;
+            } else {
+                var odds = Number(spectator.oddsMultiplier) || 2;
+                hint.textContent = 'If they win you are paid ' + money(int(state.betAmount, 0) * odds)
+                    + '. If they lose, the stake is gone.';
+            }
+        }
+
         var submit = byId('bet-submit');
         show(submit, usable);
         if (has(submit) && usable) {
-            var reason = betBlockedReason(match);
             submit.disabled = reason !== null;
             submit.title = reason || '';
             submit.onclick = function () {
@@ -1436,24 +2348,33 @@
         clear(host);
 
         if (!match) {
-            host.appendChild(makeEl('div', 'muted', 'No match selected.'));
+            host.appendChild(makeEl('div', 'hint',
+                'No match picked. Choose one on the Matches tab to see who has paid into its pot.'));
             return;
         }
 
         var header = makeEl('div', 'bet-row');
-        header.appendChild(makeEl('span', 'bet-stat-label', 'In the pot'));
+        header.appendChild(makeEl('span', 'bet-stat-label', 'Paid into the pot'));
         header.appendChild(makeEl('span', 'bet-stat-label', money(match.pot)));
         host.appendChild(header);
 
         var fee = int(match.entryFee, 0);
+        var anyOut = false;
         arrayOf(match.players).forEach(function (entry) {
             if (!entry) return;
             var row = makeEl('div', 'bet-row');
-            if (entry.alive === false) row.classList.add('lost');
+            if (entry.alive === false) {
+                row.classList.add('lost');
+                anyOut = true;
+            }
             row.appendChild(makeEl('span', null, entry.name || ('#' + int(entry.id, 0))));
             row.appendChild(makeEl('span', null, money(fee)));
             host.appendChild(row);
         });
+
+        /* The dimmed rows mean something. Said once, and only when there is
+           a dimmed row to explain. */
+        if (anyOut) host.appendChild(makeEl('div', 'hint', 'Dimmed names are out of the round.'));
     }
 
     // ------------------------------------------------------------------
@@ -1467,7 +2388,8 @@
 
         if (state.leaderboard.length === 0) {
             var empty = document.createElement('tr');
-            var cell = makeEl('td', 'muted', 'No results recorded yet.');
+            var cell = makeEl('td', 'muted',
+                'No match has been finished yet. Win one and you are the first name on this board.');
             cell.colSpan = 6;
             empty.appendChild(cell);
             body.appendChild(empty);
@@ -1711,7 +2633,7 @@
         var bits = [];
         if (results.placement) bits.push('Placed #' + int(results.placement, 0));
         if (results.kills !== undefined || results.deaths !== undefined) {
-            bits.push(int(results.kills, 0) + ' kill(s), ' + int(results.deaths, 0) + ' death(s)');
+            bits.push(plural(results.kills, 'kill') + ', ' + plural(results.deaths, 'death'));
         }
         /* Read off the number rather than off the betting switch: earnings
            only exist when there was a pot, and the switch lives in a

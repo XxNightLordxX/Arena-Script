@@ -9,23 +9,29 @@
     with the same discipline as server/betting.lua's escrow, for the same
     reason -- it is handing a player something with real value, on loan.
 
-    THE RULE: a player leaves the arena with exactly the ammunition they
-    walked in with. Not "what we gave them, minus what we took back" -- the
-    actual count they held before the match, restored.
+    THE RULE: nobody brings their own kit into the arena, and nothing leaves
+    with them. A player's whole inventory goes into a private stash at the
+    door; they are given only what the loadout screen issued; on the way out
+    everything they are carrying is destroyed and their own inventory is handed
+    back untouched.
 
-    THAT IS DELIBERATELY STRONGER THAN A LEDGER, and the difference is looting.
-    A ledger knows what this resource ISSUED, so it can take that back. It
-    knows nothing about a player who killed somebody and emptied their pockets,
-    and on a server where ammunition is an inventory item that is the obvious
-    way to carry a match's worth of rounds out of the arena. So the baseline is
-    the player's own inventory, snapshotted on the way in and restored on the
-    way out: anything gained inside -- issued, looted, or found -- goes, and
-    anything they owned beforehand survives untouched.
+    THAT IS STRONGER THAN RECONCILING COUNTS, and the difference is everything
+    a match can produce. Reconciling knows what a player started with and can
+    put them back to it. This makes the question not arise: there is nothing in
+    their pockets at the end that was not issued, because there was nothing in
+    them at the start. Looting a body, picking something off the floor and
+    hoarding all come out in the wash.
 
-    Their own rounds are given back even if they FIRED them. Arena ammunition
-    is issued first and spent first, and reconciling to the snapshot is what
-    makes the arena cost nothing; a player who walks out lighter than they
-    walked in would rightly call that a bug.
+    WHERE THE STUFF ACTUALLY GOES, because this is the part worth being sure
+    about: an ox_inventory STASH, one per character, which ox_inventory
+    persists itself. NOT a Lua table in this resource's memory -- a server that
+    crashed mid-round would take that with it, and losing somebody's inventory
+    is not a bug you get to apologise for.
+
+    AND IF PUTTING IT AWAY FAILS, THE PLAYER IS NOT STRIPPED. They walk in
+    carrying their own gear, which is a worse match and a fixable one. Every
+    path here is written so that the failure mode is "the arena did not work
+    properly" and never "your inventory is gone".
 
     WHY A FILE OF ITS OWN, rather than a few lines in match.lua: this is the
     only place in the resource that touches a player's inventory, which makes
@@ -41,20 +47,18 @@
 
 ArenaAmmo = {}
 
---- What each player held BEFORE the arena touched anything, for every item
---- any ammo type can hand out. This is the thing restored on the way out.
---- @type table<number, table<string, integer>>
-local baseline = {}
+--- Who is currently stashed, and where. Present means this resource is
+--- holding that player's real inventory and owes it back.
+--- @type table<number, { stash: string, matchId: string, citizenid: string }>
+local stashed = {}
 
---- Which match each snapshot belongs to, so a whole match can be torn down.
---- @type table<number, string>
-local snapshotMatch = {}
-
---- What was actually issued, kept only so the console can say what a match
---- handed out. Nothing reconciles against it -- see the header.
+--- What was issued, kept only so the console can say what a match handed out.
 --- @type table<string, table<number, integer>>
 local issued = {}
 
+--- Whether ammunition ITEMS are being handed out. Note this is separate from
+--- the door: Config.Loadouts.inventory.stripOnEntry decides whether a player's
+--- own kit is taken, and that happens whether or not any ammo item is issued.
 --- @return boolean
 function ArenaAmmo.IsEnabled()
     local ammoItems = Config.Loadouts.ammoItems
@@ -69,9 +73,9 @@ end
 
 --- ox_inventory, or nil when it is not running.
 ---
---- Looked up per call rather than cached at load: an operator restarting
---- their inventory resource must not leave this file holding a dead handle
---- for the rest of the session.
+--- Looked up per call rather than cached at load: an operator restarting their
+--- inventory resource must not leave this file holding a dead handle for the
+--- rest of the session.
 --- @return table|nil
 local function inventory()
     if GetResourceState('ox_inventory') ~= 'started' then return nil end
@@ -79,8 +83,8 @@ local function inventory()
 end
 
 --- How many items a player needs for `rounds` of ammunition, rounded UP.
---- Rounding down would hand somebody 59 rounds when they asked for 60 and
---- one item is worth 30.
+--- Rounding down would hand somebody 59 rounds when they asked for 60 and one
+--- item is worth 30.
 --- @param rounds integer
 --- @return integer
 local function itemsFor(rounds)
@@ -89,79 +93,169 @@ local function itemsFor(rounds)
 end
 
 -- ======================================================================
--- THE SNAPSHOT
+-- THE DOOR
 -- ======================================================================
 
---- Reads how many of `item` a player is holding. Returns nil when the count
---- cannot be read at all, which is different from zero and is treated as
---- "do not touch this item" everywhere below -- guessing zero would have the
---- restore hand somebody a pile of ammunition they never owned.
---- @param ox table
---- @param src number
---- @param item string
---- @return integer|nil
-local function countOf(ox, src, item)
-    local ok, count = pcall(function() return ox:Search(src, 'count', item) end)
-    if not ok then return nil end
-
-    local number = Arena.ToInt(count)
-    if not number or number < 0 then return nil end
-    return number
+--- @return table
+local function doorConfig()
+    return (Config.Loadouts.inventory or {})
 end
 
---- Records what a player is carrying before the arena gives them anything.
----
---- Taken across EVERY item any ammo type can hand out, not just the ones this
---- loadout uses: the whole point is to catch rounds picked up during the
---- match, and those can be of a type the player never chose.
---- @param src number
---- @param matchId string
-local function snapshot(src, matchId)
-    local ox = inventory()
-    if not ox then return end
+--- The stash that holds one character's real inventory. Keyed by citizen id
+--- rather than server id, so a reconnect finds the same stash and a recycled
+--- server id can never open somebody else's.
+--- @param citizenid string
+--- @return string
+local function stashFor(citizenid)
+    local prefix = doorConfig().stashPrefix
+    if not Arena.IsKey(prefix) then prefix = 'crimson_arena_' end
+    return prefix .. citizenid
+end
 
-    local held = {}
-    for item in pairs(Arena.AllAmmoItems()) do
-        local count = countOf(ox, src, item)
-        -- An unreadable count is left out entirely. Restore skips whatever is
-        -- absent here, which is the safe direction: no change beats a wrong one.
-        if count then held[item] = count end
+--- Moves everything a player is carrying into their stash.
+---
+--- RETURNS FALSE IF ANYTHING AT ALL GOES WRONG, and the caller must then leave
+--- the player's inventory alone. Every branch here is written around that: it
+--- reads first, writes the stash second, and only clears the player once every
+--- item is provably somewhere else.
+--- @param src number
+--- @param citizenid string
+--- @return boolean stowed
+local function stow(src, citizenid)
+    local ox = inventory()
+    if not ox then return false end
+
+    local stash = stashFor(citizenid)
+
+    -- Registered every time rather than once: ox_inventory forgets stashes on
+    -- its own restart, and a stash it does not know about accepts nothing.
+    local registered = pcall(function()
+        return ox:RegisterStash(stash, 'Arena Belongings', 100, 1000000, citizenid)
+    end)
+    if not registered then
+        ArenaLog('door: could not register the stash for %s -- they keep their own kit.', tostring(src))
+        return false
     end
 
-    baseline[src] = held
-    snapshotMatch[src] = matchId
+    local ok, items = pcall(function() return ox:GetInventoryItems(src) end)
+    if not ok or type(items) ~= 'table' then
+        ArenaLog('door: could not read %s\'s inventory -- they keep their own kit.', tostring(src))
+        return false
+    end
+
+    -- Nothing to put away is a success, not a failure: an empty-handed player
+    -- is still stripped-and-restored correctly, they simply have nothing.
+    for _, item in ipairs(items) do
+        local moved = pcall(function()
+            return ox:AddItem(stash, item.name, item.count, item.metadata)
+        end)
+        if not moved then
+            -- Stop at the first failure and put back whatever already moved,
+            -- rather than leaving an inventory split across two places.
+            ArenaLog('door: could not stash %s x%s for %s -- putting it all back and letting them keep their kit.',
+                tostring(item.name), tostring(item.count), tostring(src))
+            for _, done in ipairs(items) do
+                pcall(function() return ox:RemoveItem(stash, done.name, done.count, done.metadata) end)
+            end
+            return false
+        end
+    end
+
+    -- LAST. Everything is provably in the stash before anything is taken.
+    local cleared = pcall(function() return ox:ClearInventory(src) end)
+    if not cleared then
+        ArenaLog('door: stashed %s\'s kit but could not clear their inventory -- putting it back.', tostring(src))
+        for _, item in ipairs(items) do
+            pcall(function() return ox:RemoveItem(stash, item.name, item.count, item.metadata) end)
+        end
+        return false
+    end
+
+    return true
+end
+
+--- Destroys whatever a player is carrying and hands their own inventory back.
+--- @param src number
+--- @param record table -- the entry from `stashed`
+--- @return boolean restored
+local function restore(src, record)
+    local ox = inventory()
+    if not ox then
+        ArenaLog('door: ox_inventory is gone, so %s keeps the arena kit and their own is still stashed at %s.',
+            tostring(src), record.stash)
+        return false
+    end
+
+    -- Everything the arena produced goes, whatever it is and however they came
+    -- by it. This is the line that makes looting and floor-scavenging moot.
+    pcall(function() return ox:ClearInventory(src) end)
+
+    local ok, items = pcall(function() return ox:GetInventoryItems(record.stash) end)
+    if not ok or type(items) ~= 'table' then
+        ArenaLog('door: could not read %s\'s stash (%s). THEIR KIT IS STILL IN IT -- it is a real ox_inventory stash and can be opened.',
+            tostring(src), record.stash)
+        return false
+    end
+
+    local failures = 0
+    for _, item in ipairs(items) do
+        local given = pcall(function()
+            return ox:AddItem(src, item.name, item.count, item.metadata)
+        end)
+        if given then
+            pcall(function() return ox:RemoveItem(record.stash, item.name, item.count, item.metadata) end)
+        else
+            failures = failures + 1
+        end
+    end
+
+    if failures > 0 then
+        -- Deliberately NOT cleared. Anything that would not go back is still
+        -- sitting in a stash the player can be pointed at.
+        ArenaLog('door: %d item(s) of %s\'s could not be returned and are still in stash %s.',
+            failures, tostring(src), record.stash)
+        return false
+    end
+
+    return true
 end
 
 -- ======================================================================
 -- ISSUING
 -- ======================================================================
 
---- Snapshots the player, then gives them the ammunition their loadout calls
---- for.
+--- Puts the player's own kit away, then gives them what the loadout says.
 ---
---- Returns the weapon keys whose ammo could NOT be handed over -- a full
---- inventory, an item name that does not exist. The caller decides what that
---- means: Config.Loadouts.ammoItems.allowWeaponWithoutAmmoItem says whether a
---- player fights with an empty gun or is refused the round.
+--- Returns the weapon keys whose ammo item could not be handed over.
 --- @param src number
 --- @param matchId string
 --- @param loadout table -- Arena.ResolveLoadout output
---- @return string[] failed -- weapon keys whose ammo item did not land
+--- @return string[] failed
 function ArenaAmmo.Issue(src, matchId, loadout)
     local failed = {}
-    if not ArenaAmmo.IsEnabled() then return failed end
     if type(src) ~= 'number' or src <= 0 or not Arena.IsKey(matchId) then return failed end
     if type(loadout) ~= 'table' then return failed end
 
     local ox = inventory()
+
+    -- THE DOOR, before anything is issued.
+    if ox and doorConfig().stripOnEntry ~= false and not stashed[src] then
+        local player = ArenaGetPlayer(src)
+        local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
+
+        if not Arena.IsKey(citizenid) then
+            ArenaLog('door: no citizen id for %s -- they keep their own kit.', tostring(src))
+        elseif stow(src, citizenid) then
+            stashed[src] = { stash = stashFor(citizenid), matchId = matchId, citizenid = citizenid }
+            ArenaDebug('door: stashed %s\'s kit for match %s', tostring(src), tostring(matchId))
+        end
+    end
+
+    if not ArenaAmmo.IsEnabled() then return failed end
     if not ox then
         ArenaLog('ammo items are switched on but ox_inventory is not started -- nobody is being given any.')
         return failed
     end
-
-    -- BEFORE a single item is handed over. A snapshot taken afterwards would
-    -- bake the arena's own ammunition into what the player "arrived with".
-    snapshot(src, matchId)
 
     issued[matchId] = issued[matchId] or {}
     local given = issued[matchId][src] or 0
@@ -177,7 +271,6 @@ function ArenaAmmo.Issue(src, matchId, loadout)
             local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
             if ok and granted ~= false then
                 given = given + count
-                ArenaDebug('ammo: gave %s x%d to %s on match %s', item, count, tostring(src), tostring(matchId))
             else
                 failed[#failed + 1] = entry.key or entry.weapon
                 ArenaLog('ammo: could not give %s x%d to %s -- check that item exists on this server.',
@@ -191,88 +284,39 @@ function ArenaAmmo.Issue(src, matchId, loadout)
 end
 
 -- ======================================================================
--- RESTORING
+-- THE WAY OUT
 -- ======================================================================
 
---- Puts a player's ammunition back exactly as it was before the arena.
+--- Destroys the arena kit and hands the player's own inventory back.
 ---
---- Walks every item in their snapshot and moves it to the recorded number:
---- what they gained inside -- issued, looted off a body, picked up -- is
---- taken, and what they spent of their own is handed back. A player who never
---- entered, or whose snapshot could not be read, is left alone entirely.
----
---- Safe to call twice: the snapshot is dropped on the first call, so a second
---- finds nothing to reconcile and touches nothing.
+--- Safe to call for somebody who was never stashed, and safe to call twice --
+--- the record is dropped on the first call.
 --- @param src number
---- @param reasonKey string? -- audit reason, recorded in any console line
---- @return integer moved -- items added or removed to get back to the baseline
+--- @param reasonKey string?
+--- @return integer restored -- 1 when a stash was handed back, 0 otherwise
 function ArenaAmmo.Reclaim(src, reasonKey)
     if type(src) ~= 'number' or src <= 0 then return 0 end
 
-    local held = baseline[src]
-    baseline[src] = nil
-    snapshotMatch[src] = nil
-    if not held then return 0 end
+    local record = stashed[src]
+    if not record then return 0 end
+    stashed[src] = nil
 
-    if (Config.Loadouts.ammoItems or {}).reclaimOnExit == false then return 0 end
-
-    local ox = inventory()
-    if not ox then
-        ArenaLog('ammo: ox_inventory is gone, so %s keeps whatever the arena gave them (%s).',
-            tostring(src), tostring(reasonKey))
-        return 0
-    end
-
-    local moved = 0
-    for item, want in pairs(held) do
-        local now = countOf(ox, src, item)
-
-        if now and now > want then
-            local surplus = now - want
-            -- Everything above the line: what we issued, plus anything taken
-            -- off a body. Neither is theirs to keep.
-            local ok, removed = pcall(function() return ox:RemoveItem(src, item, surplus) end)
-            if ok and removed ~= false then
-                moved = moved + surplus
-            else
-                ArenaLog('ammo: %s left the arena with %d more %s than they arrived with, and it could not be taken back (%s).',
-                    tostring(src), surplus, item, tostring(reasonKey))
-            end
-        elseif now and now < want then
-            -- They spent their own. The arena is not allowed to cost them
-            -- anything, so it goes back.
-            local shortfall = want - now
-            local ok, added = pcall(function() return ox:AddItem(src, item, shortfall) end)
-            if ok and added ~= false then
-                moved = moved + shortfall
-            else
-                ArenaLog('ammo: %s is owed %d %s they had before the match and it could not be returned (%s).',
-                    tostring(src), shortfall, item, tostring(reasonKey))
-            end
-        end
-    end
-
-    if moved > 0 then
-        ArenaDebug('ammo: reconciled %d item(s) for %s (%s)', moved, tostring(src), tostring(reasonKey))
-    end
-    return moved
+    local ok = restore(src, record)
+    ArenaDebug('door: %s left (%s), kit %s', tostring(src), tostring(reasonKey),
+        ok and 'returned' or 'STILL STASHED')
+    return ok and 1 or 0
 end
 
---- Every player a match still holds a snapshot for. Used on the paths that end
---- a whole match at once rather than one player at a time.
 --- @param matchId string
 --- @param reasonKey string?
 --- @return integer players
 function ArenaAmmo.ReclaimAll(matchId, reasonKey)
     if not Arena.IsKey(matchId) then return 0 end
 
-    -- Collected first: Reclaim mutates these tables as it goes, and walking one
-    -- while removing from it is how an entry gets skipped.
     local sources = {}
-    for src, id in pairs(snapshotMatch) do
-        if id == matchId then sources[#sources + 1] = src end
+    for src, record in pairs(stashed) do
+        if record.matchId == matchId then sources[#sources + 1] = src end
     end
-
     for _, src in ipairs(sources) do
         ArenaAmmo.Reclaim(src, reasonKey)
     end
@@ -281,18 +325,17 @@ function ArenaAmmo.ReclaimAll(matchId, reasonKey)
     return #sources
 end
 
---- Drops a match's record. REFUSES while any player of that match still has an
---- unreconciled snapshot, the same way ArenaBetting.Clear refuses while escrow
---- is held: a record dropped early is ammunition nobody will ever square up.
+--- Drops a match's record. REFUSES while this resource still owes anybody
+--- their inventory, the same way ArenaBetting.Clear refuses over escrow.
 --- @param matchId string
 --- @return boolean cleared
 function ArenaAmmo.Clear(matchId)
     if not Arena.IsKey(matchId) then return false end
 
-    for src, id in pairs(snapshotMatch) do
-        if id == matchId then
-            ArenaLog('ammo: refusing to drop match %s -- %s has not been squared up yet. Reclaim before clearing.',
-                tostring(matchId), tostring(src))
+    for src, record in pairs(stashed) do
+        if record.matchId == matchId then
+            ArenaLog('door: refusing to drop match %s -- %s\'s kit is still stashed at %s.',
+                tostring(matchId), tostring(src), record.stash)
             return false
         end
     end
@@ -301,20 +344,65 @@ function ArenaAmmo.Clear(matchId)
     return true
 end
 
---- Whether this player still has an arena snapshot waiting to be reconciled.
+--- Whether this resource is currently holding this player's inventory.
 --- @param src number
 --- @return boolean
 function ArenaAmmo.IsHolding(src)
-    return baseline[src] ~= nil
+    return stashed[src] ~= nil
 end
 
---- How many items a match has handed out, for the console.
+--- The stash a player's kit is in, for an admin who needs to point them at it.
+--- @param src number
+--- @return string|nil
+function ArenaAmmo.StashOf(src)
+    local record = stashed[src]
+    return record and record.stash or nil
+end
+
 --- @param matchId string
+--- @param src number
 --- @return integer
 function ArenaAmmo.IssuedTo(matchId, src)
     local match = issued[matchId]
     return match and match[src] or 0
 end
+
+-- ======================================================================
+-- NO DROPPING
+--
+-- A dropped item becomes its own inventory in the world, and finding every one
+-- of them again afterwards is guesswork. Not dropping in the first place is
+-- not. ox_inventory's swapItems hook is the supported way to refuse a move, so
+-- that is what this uses -- guarded, because a version without hooks must
+-- degrade to "drops are allowed" rather than to "the resource fails to start".
+-- ======================================================================
+CreateThread(function()
+    if doorConfig().blockDropsInArena == false then return end
+
+    local ox = inventory()
+    if not ox then return end
+
+    local ok = pcall(function()
+        return ox:registerHook('swapItems', function(payload)
+            -- Only a player who is actually mid-match, and only a move OUT of
+            -- their own inventory to something that is not theirs. Moving
+            -- things around inside their own pockets stays their business.
+            local src = payload and payload.source
+            if not src or not stashed[src] then return true end
+
+            local target = payload.toInventory
+            if target and target ~= src and tostring(target) ~= tostring(src) then
+                ArenaNotifyKey(src, 'error.no_dropping_in_arena', 'error')
+                return false
+            end
+            return true
+        end, { print = false })
+    end)
+
+    if not ok then
+        ArenaLog('door: ox_inventory would not take a swapItems hook, so dropping cannot be blocked. Anything dropped in an arena stays on the floor.')
+    end
+end)
 
 -- A restart mid-match would otherwise leave every player in every arena
 -- holding whatever the round gave them. This is the last chance to square
@@ -322,10 +410,11 @@ end
 AddEventHandler('onResourceStop', function(resource)
     if resource ~= GetCurrentResourceName() then return end
 
-    -- Driven off the snapshots rather than the issued log: a player who was
-    -- snapshotted but given nothing still has an inventory to put back.
+    -- The kit is in a real ox_inventory stash and survives regardless, but
+    -- handing it straight back is far better than leaving somebody to work out
+    -- where it went.
     local sources = {}
-    for src in pairs(baseline) do sources[#sources + 1] = src end
+    for src in pairs(stashed) do sources[#sources + 1] = src end
     for _, src in ipairs(sources) do
         ArenaAmmo.Reclaim(src, 'resource stopping')
     end

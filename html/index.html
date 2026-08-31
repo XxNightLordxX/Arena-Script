@@ -15,6 +15,12 @@
     Both roots start hidden; app.js toggles the `hidden` class and nothing
     else. Every list here is empty on purpose: the panel renders from the
     server's state snapshot, so there is no placeholder markup to go stale.
+
+    THE STATIC COPY IS THE EXCEPTION, and it is here rather than in app.js
+    because it is fixed English chrome: a sentence that is true whatever the
+    snapshot says. Anything whose wording depends on config -- what an entry
+    fee buys, why a button is disabled -- is left as an empty element for
+    app.js to fill, so the panel never states a rule this server does not run.
 -->
 <html lang="en">
 <head>
@@ -46,6 +52,13 @@
             <div id="match-list"></div>
 
             <div id="create-panel">
+                <!-- Named for the button at the bottom of the box, not for
+                     the lobby's Start Match Now: creating a match and
+                     starting a round are different things and must not
+                     borrow each other's verb. -->
+                <h2 class="panel-heading">Create A Match</h2>
+                <p class="hint">Set one up for other players to join.</p>
+
                 <label class="field">
                     <span class="field-label">Arena</span>
                     <select id="create-arena"></select>
@@ -63,9 +76,15 @@
                     <span class="field-label">Entry Fee</span>
                     <input id="create-fee" type="number" min="0" step="1">
                     <div id="create-fee-presets"></div>
+                    <!-- What the fee actually buys, written from the payout
+                         rule in the snapshot rather than assumed. -->
+                    <p id="create-fee-hint" class="hint"></p>
                 </div>
 
                 <button id="create-submit" class="btn btn-primary" type="button">Create Match</button>
+                <!-- Says what pressing it does, or why it cannot be pressed.
+                     A greyed-out button with no reason reads as broken. -->
+                <p id="create-hint" class="hint"></p>
             </div>
         </section>
 
@@ -77,10 +96,14 @@
                 <div id="lobby-meta"></div>
                 <div id="team-picker"></div>
                 <div id="roster"></div>
+                <!-- Sits ABOVE the buttons on purpose: it is the sentence that
+                     tells Ready Up from Start Match Now, and pressing the wrong
+                     one during a countdown is the mistake it exists to stop. -->
+                <p id="lobby-hint" class="hint"></p>
                 <div id="lobby-actions">
-                    <button id="btn-ready" class="btn" type="button">Ready</button>
-                    <button id="btn-start" class="btn btn-primary" type="button">Start Match</button>
-                    <button id="btn-leave" class="btn btn-danger" type="button">Leave</button>
+                    <button id="btn-ready" class="btn" type="button">Ready Up</button>
+                    <button id="btn-start" class="btn btn-primary" type="button">Start Match Now</button>
+                    <button id="btn-leave" class="btn btn-danger" type="button">Leave Match</button>
                 </div>
             </div>
         </section>
@@ -90,7 +113,12 @@
             <div id="weapon-grid"></div>
             <div id="loadout-slots"></div>
             <div id="armor-picker"></div>
-            <button id="loadout-save" class="btn btn-primary" type="button">Save Loadout</button>
+            <!-- The button and the one line that says whether pressing it is
+                 still needed. -->
+            <div id="loadout-save-row">
+                <button id="loadout-save" class="btn btn-primary" type="button">Save Loadout</button>
+                <span id="loadout-save-status" class="hint"></span>
+            </div>
         </section>
 
         <section id="tab-bets" class="arena-panel">
@@ -99,13 +127,27 @@
             <div id="bet-disabled"></div>
 
             <div id="bet-summary"></div>
-            <div id="bet-pick"></div>
-            <input id="bet-amount" type="number" min="0" step="1">
-            <button id="bet-submit" class="btn btn-primary" type="button">Place Bet</button>
+
+            <!-- Every side-bet control in one column, so the layout does not
+                 have to be re-counted each time one of them is hidden. -->
+            <div id="bet-form">
+                <p id="bet-note" class="hint"></p>
+                <div id="bet-pick"></div>
+                <label id="bet-amount-row" class="field">
+                    <span class="field-label">Your Stake</span>
+                    <input id="bet-amount" type="number" min="0" step="1">
+                </label>
+                <p id="bet-hint" class="hint"></p>
+                <button id="bet-submit" class="btn btn-primary" type="button">Place Bet</button>
+            </div>
+
             <div id="bet-list"></div>
         </section>
 
         <section id="tab-board" class="arena-panel">
+            <p id="board-note" class="hint">All-time totals for every match this server has
+                finished. Earnings are what a player has taken out of arena pots.</p>
+
             <table id="leaderboard">
                 <thead>
                     <tr>

@@ -15,7 +15,8 @@ prove the *rules* are right. They cannot prove the *natives* behave, because
 there are no natives outside the game.
 
 So: the smoke test below is not a formality. It is the part of the verification
-that this build has not had, and it takes about twenty minutes.
+that this build has not had, and it takes about twenty minutes — half an hour
+if you have switched ammo types on, which adds a section of its own.
 
 ## Install
 
@@ -24,10 +25,12 @@ that this build has not had, and it takes about twenty minutes.
    and the exports are registered under it. Renaming it breaks both.
 2. `ensure crimson_arena` in your `server.cfg`, after `qbx_core`, `ox_lib`,
    `ox_target` and `oxmysql`.
-3. Optionally import `sql/install.sql`. You do not have to — the resource
-   creates its one table itself on first start. Import it if your database user
-   cannot `CREATE TABLE` at runtime, which is a reasonable way to run a
-   production server.
+3. Optionally import `sql/install.sql`. **`Config.Database.enabled` ships
+   `false`**, so on a default install there is no table and no query at all —
+   the leaderboard keeps its numbers in memory for the server run. If you turn
+   the database on, the resource creates its one table itself on first start;
+   import the SQL only if your database user cannot `CREATE TABLE` at runtime,
+   which is a reasonable way to run a production server.
 4. Start the server and read the console. The resource prints its own config
    validation and, a few seconds later, the dispatch detection report.
 
@@ -45,6 +48,20 @@ Open `config.lua`. The three things that are certainly wrong for your server:
   block for adding more.
 - `Config.Betting` — decide whether money is in play at all before players can
   stake it. `Config.Betting.enabled = false` if you are unsure.
+
+Two things ship **off** and stay off unless you decide otherwise. Neither is a
+placeholder you have to fix; both are switches you have to mean:
+
+- `Config.Database.enabled` — off, so the leaderboard lives in memory for the
+  length of the server run and resets on restart. Nothing else reads the
+  database. Turn it on for an all-time board.
+- `Config.Loadouts.ammoItems.enabled` — off, because the item names in
+  `Config.Loadouts.defaultAmmoTypes` are placeholders (`ammo-rifle`,
+  `ammo-rifle-ap`, …) and handing out an item name that does not exist is a
+  silent nothing that players report as the arena being broken. If you run an
+  ammo script whose types are inventory items, put **your** names in that list
+  and then flip the switch — and test it with section 6 below, because it is
+  the only part of this resource that touches a player's inventory.
 
 ## The smoke test
 
@@ -97,7 +114,77 @@ what to watch for, because most failures here are silent.
       crimson_arena`). Every stake must come back. Every player must be back in
       the world, visible, with their own gear.
 
-### 6. The nasty ones
+### 6. Ammo types, if you switched them on
+
+Skip this whole section if `Config.Loadouts.ammoItems.enabled` is `false` —
+nothing below can happen. If it is `true`, do not skip any of it: this is the
+only code in the resource that puts an item into a player's inventory, which
+makes it the only code that can duplicate one. An arena that hands out
+ammunition and does not take it back is an ammo printer.
+
+Run it with `Config.Debug = true` so the grant and the reclaim both print, and
+keep the inventory UI open next to you.
+
+**The right item arrives**
+
+- [ ] Pick one type deliberately — say Armour Piercing on the Assault Rifle —
+      and note which item name your config maps it to.
+- [ ] Start the match. **That exact item is in your inventory**, in the amount
+      your ammo count and `roundsPerItem` call for. 60 rounds at
+      `roundsPerItem = 1` is 60 items; at 30 it is 2, and 61 rounds is 3,
+      because the division rounds up.
+- [ ] The console shows `ammo: gave <item> x<n> to <src> on match <id>`.
+- [ ] **No `could not give` line.** One of those names an item that does not
+      exist on your server, or an inventory that was full — it is the only
+      place a wrong item name ever shows up, since nothing validates the names
+      at startup.
+- [ ] Pick a **different** type and start again. A different item arrives. If
+      both types give you the same item, two entries in your list are pointing
+      at the same name.
+- [ ] Take a **melee weapon** and start. No ammo item is issued and no type was
+      ever offered — melee is excluded automatically.
+- [ ] Take an **MK II weapon** and start. Those four ship with their own
+      `ammoTypes` list carrying components and no `item` names, and a
+      per-weapon list replaces the shared one — so if you edited only
+      `defaultAmmoTypes`, MK II weapons hand out a magazine and no item. Either
+      that is what you meant, or those four lists need your item names too.
+
+**It is gone after the match**
+
+- [ ] Finish the round normally. **The issued item is no longer in your
+      inventory.** Check the item, not just the count.
+- [ ] Console: `ammo: reclaimed <n> of <m> item(s)`. A shortfall here is
+      ammunition you fired — it cannot come back and that is expected. What
+      must not appear is a `could not be taken back` line for rounds you never
+      spent.
+- [ ] Bring some of **your own** ammunition of the same item into the next
+      match, fire nothing, and leave. You still have your own. The arena takes
+      back what it issued and no more.
+- [ ] Start a match, leave **mid-round** through the panel. Same result.
+
+**A disconnect does not keep it**
+
+- [ ] Start a match and have the second player **pull their network cable /
+      quit to desktop mid-round** rather than leaving cleanly.
+- [ ] They reconnect. **The issued item is not in their inventory.** This is
+      the test that matters most — a disconnect is how an ammo printer would
+      actually be run, and it is the path with no player left to tidy up
+      after.
+- [ ] Start another and **restart the resource mid-round** (`restart
+      crimson_arena`). Every issued item comes back off every player, before
+      anything else in the shutdown runs.
+- [ ] Nothing in the console says `refusing to drop match ... still holds`.
+      That line means a match record was closed with ammunition outstanding.
+
+**One interaction only a live server can settle.** Some inventory setups tie a
+weapon's in-game round count to the ammo item that backs it. This resource
+grants weapons with the game's own natives and strips them on entry
+(`Config.Match.stripWeaponsOnEntry`), which is a separate mechanism from the
+item ledger. If your ammo script reconciles the two, run the "you still have
+your own" step above twice before trusting the numbers — that is where a
+double-count would show.
+
+### 7. The nasty ones
 - [ ] Have a player leave during the **frozen countdown**, after the teleport
       but before weapons go live. They should return to the lobby cleanly, with
       their own gear, and be visible to dispatch again.
@@ -123,4 +210,9 @@ pot goes missing, the console already knows why.
       placeholders.
 - [ ] `Config.Permissions.adminGroups` matches your actual admin ACE groups —
       an empty list means nobody can force-stop a stuck match.
-- [ ] A backup of your database, if you imported the SQL.
+- [ ] A backup of your database, if you turned `Config.Database.enabled` on
+      and imported the SQL.
+- [ ] If ammo types are on: every `item` name in your list is a real item, you
+      have seen section 6 pass, and `reclaimOnExit` is still `true`. Turning
+      that one off makes the arena a source of free ammunition — which is a
+      decision, not a default.

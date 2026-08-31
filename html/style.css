@@ -167,15 +167,31 @@ body {
     padding-top: 0.3rem;
 }
 
+/* Labelled, because an unlabelled number in the corner of a betting panel
+   reads as easily as the pot as it does as the player's own money. */
 #arena-money {
     margin-left: auto;
-    padding: 0.35rem 0.9rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    padding: 0.3rem 0.9rem;
     background: var(--surface-raised);
     border: 1px solid var(--border);
     border-left: 2px solid var(--success);
+    line-height: 1.25;
+    white-space: nowrap;
+}
+
+.wallet-label {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+
+.wallet-value {
     font-variant-numeric: tabular-nums;
     font-weight: 600;
-    white-space: nowrap;
 }
 
 #arena-close {
@@ -391,6 +407,41 @@ option {
     color: var(--text-muted);
 }
 
+/* An explanatory line: why a button is disabled, what a fee buys, what a
+   screen is for. Quiet enough to ignore once you know, close enough to the
+   control it explains to be read the first time. Used on flex and grid
+   parents alike, so it claims a whole line of its own rather than trying to
+   sit beside the control. */
+.hint {
+    flex: 1 1 100%;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+
+/* `flex-basis: 100%` above means a full LINE, which is what it is for in the
+   row-direction boxes hints usually sit in. In a COLUMN the same declaration
+   means a full HEIGHT, so the two column boxes that hold hints say width
+   instead. */
+#bet-form .hint,
+#loadout-slots .hint {
+    flex: none;
+    width: 100%;
+}
+
+/* Names a box that is not a whole screen -- the create form, the loadout
+   summary. Same display face as the tabs, one step down. */
+.panel-heading {
+    margin: 0 0 0.5rem;
+    font-family: var(--font-display);
+    font-size: 1.2rem;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text);
+}
+
 /* ======================================================================
    MATCHES
    ====================================================================== */
@@ -445,6 +496,16 @@ option {
     font-size: 0.85rem;
 }
 
+/* Why Join is greyed out on this card. Kept apart from the meta line so it
+   reads as an answer rather than as one more statistic. */
+.match-card-reason {
+    grid-column: 1;
+    padding-left: 0.55rem;
+    border-left: 2px solid var(--accent-dim);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
 .match-card-actions {
     grid-column: 2;
     grid-row: 1 / span 2;
@@ -481,18 +542,36 @@ option {
     border-top: 2px solid var(--accent);
 }
 
+/* The blurb under the heading, before the first field. */
+#create-panel > .hint {
+    margin-bottom: 0.9rem;
+}
+
+#create-fee-presets,
+#create-fee-hint {
+    /* Drop under the input rather than squeezing it, and line up with it
+       rather than with the label. */
+    flex-basis: 100%;
+    margin-left: 7rem;
+}
+
 #create-fee-presets {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
-    /* Drops under the input rather than squeezing it. */
-    flex-basis: 100%;
-    margin-left: 7rem;
+}
+
+#create-fee-hint {
+    margin-top: 0.4rem;
 }
 
 #create-submit {
     width: 100%;
     margin-top: 0.4rem;
+}
+
+#create-hint {
+    margin-top: 0.5rem;
 }
 
 /* ======================================================================
@@ -505,18 +584,32 @@ option {
     min-height: 0;
 }
 
+/* Two voices: the headline says what is true, the line under it says what to
+   do about it. An empty screen that only states the fact reads as a fault. */
 #lobby-empty {
     margin: auto;
+    max-width: 32rem;
+    text-align: center;
     color: var(--text-muted);
+}
+
+.lobby-empty-title {
     font-family: var(--font-display);
     font-size: 1.4rem;
     letter-spacing: 0.16em;
     text-transform: uppercase;
 }
 
+.lobby-empty-sub {
+    margin-top: 0.6rem;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+/* Rows: title, meta, teams, roster (takes the slack), hint, actions. */
 #lobby-detail {
     display: grid;
-    grid-template-rows: auto auto auto 1fr auto;
+    grid-template-rows: auto auto auto 1fr auto auto;
     gap: 0.8rem;
     min-height: 0;
     height: 100%;
@@ -697,13 +790,32 @@ option {
     text-transform: uppercase;
 }
 
-/* A melee weapon has no ammo options, so app.js renders no chips and this
-   row simply collapses. */
+/* One row of choices on a weapon card: how many rounds, and -- on the
+   weapons that offer them -- which rounds. A weapon with neither (melee)
+   gets no row at all rather than an empty one; see .weapon-fixed. */
 .weapon-ammo {
     display: flex;
     flex-wrap: wrap;
     gap: 0.35rem;
     margin-top: 0.5rem;
+}
+
+/* Names the row above its chips. Full-width so the chips start on the line
+   below it: 'Ammo' and 'Ammo type' are only useful if you can tell which
+   set of chips each one is naming. */
+.weapon-field-label {
+    flex: 1 1 100%;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+/* What a weapon with nothing to choose says instead. */
+.weapon-fixed {
+    margin-top: 0.5rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
 }
 
 #loadout-slots,
@@ -738,6 +850,23 @@ option {
     border-color: var(--accent-dim);
 }
 
+/* Weapon on top, what it is loaded with underneath: this box is the last
+   thing a player reads before a round locks them in, so it spells out the
+   amount and the round type rather than a bare number. */
+.slot-main {
+    min-width: 0;
+}
+
+.slot-name {
+    font-size: 0.95rem;
+}
+
+.slot-meta {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+
 #armor-picker {
     grid-row: 3;
     display: flex;
@@ -746,21 +875,35 @@ option {
     gap: 0.4rem;
 }
 
-#loadout-save {
+#loadout-save-row {
     grid-column: 1;
     grid-row: 3;
-    justify-self: start;
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    min-width: 0;
+}
+
+#loadout-save {
+    flex: none;
+}
+
+/* Beside the button, not under it -- it is about that button. */
+#loadout-save-row .hint {
+    flex: 1 1 auto;
 }
 
 /* ======================================================================
    BETS
    ====================================================================== */
 
+/* Two rows only: the summary strip across the top, then the form and the pot
+   beside each other. Every control that can be hidden lives inside
+   #bet-form, so switching one off never leaves a hole in the grid. */
 #tab-bets {
     display: grid;
     grid-template-columns: minmax(16rem, 22rem) 1fr;
-    grid-template-rows: auto auto auto 1fr;
-    align-content: start;
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 0.8rem 1.2rem;
     min-height: 0;
 }
@@ -768,6 +911,7 @@ option {
 /* Shown on its own when Config.Betting.enabled is false. */
 #bet-disabled {
     grid-column: 1 / -1;
+    align-self: start;
     padding: 2rem;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -779,8 +923,22 @@ option {
     text-transform: uppercase;
 }
 
+/* The second line of that box, in the reading face: a headline alone states
+   a fault, a sentence under it states a decision. */
+.bet-disabled-sub {
+    max-width: 34rem;
+    margin: 0.7rem auto 0;
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    letter-spacing: normal;
+    line-height: 1.5;
+    text-transform: none;
+}
+
 #bet-summary {
     grid-column: 1 / -1;
+    grid-row: 1;
+    align-self: start;
     display: flex;
     flex-wrap: wrap;
     gap: 1.2rem;
@@ -809,26 +967,35 @@ option {
     color: var(--accent-bright);
 }
 
-#bet-pick {
+#bet-form {
     grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.7rem;
+    min-height: 0;
+    align-self: start;
+}
+
+#bet-pick {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 0.5rem;
+    width: 100%;
 }
 
-#bet-amount {
-    grid-column: 1;
-    flex: none;
+#bet-amount-row {
+    /* .field's own bottom margin would double the column gap. */
+    margin-bottom: 0;
+    width: 100%;
 }
 
-#bet-submit {
-    grid-column: 1;
-    justify-self: start;
-}
 
 #bet-list {
     grid-column: 2;
-    grid-row: 2 / span 3;
+    grid-row: 2;
     min-height: 0;
     padding-right: 0.4rem;
     overflow-y: auto;
@@ -862,6 +1029,10 @@ option {
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
+}
+
+#board-note {
+    margin-bottom: 0.8rem;
 }
 
 #leaderboard {
@@ -1090,7 +1261,8 @@ option {
         max-height: 40vh;
     }
 
-    #create-fee-presets {
+    #create-fee-presets,
+    #create-fee-hint {
         margin-left: 0;
     }
 }

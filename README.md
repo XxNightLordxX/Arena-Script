@@ -27,7 +27,10 @@ Everything below is in the shipped code. Where something is off by default, or i
 **Weapons and ammo**
 
 - The weapon list is `Config.Loadouts.weapons`. Delete an entry or set `enabled = false` and it is gone from the arena — the server refuses it even when a modified client asks for it by name.
-- Each weapon carries its own ammo block: `options` is what the picker offers, `max` is the ceiling the server clamps to. A weapon with no `options` (melee) offers no ammo choice and is handed out at `default` — with `max` left as the only limit on the wire for it, so the shipped melee entries set the two to the same number.
+- **24 entries ship and 20 of them are enabled**, in five categories. **Ten are melee and eight of those are on** — knife, baseball bat, machete, brass knuckles, hatchet, crowbar, golf club and switchblade — with the nightstick and the battle axe shipped off. The grenade launcher ships off as well.
+- **Four MK II weapons ship** — Pistol, SMG and Assault Rifle enabled, Heavy Sniper off because explosive rounds are a different game. Those four are the ones Rockstar actually made special magazines for, so each carries its own `ammoTypes` list.
+- Each weapon carries its own ammo block: `options` is what the picker offers, `max` is the ceiling the server clamps to. A weapon with no `options` (melee) offers no ammo choice and is handed out at `default` — with `max` left as the only limit on the wire for it, so every shipped melee entry sets the two to the same number.
+- **Ammo types ship switched off** (`Config.Loadouts.ammoItems.enabled = false`), because the item names in `config.lua` are placeholders. Switched on, the round a player picks arrives as an item from your own ammo script and is taken back off them on the way out. See [Ammo types](#ammo-types--handing-out-your-own-ammo-items).
 - `weaponSlots` caps how many weapons one player may take. `alwaysGive` is added on top and cannot be spent away.
 - Body armour is picked the same way. `Config.Loadouts.allowChoose = false` hides both pickers and hands everyone `Config.Loadouts.fixed`.
 
@@ -59,8 +62,8 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 **Leaderboard**
 
-- All-time, in MySQL through oxmysql, in a table the resource creates itself.
-- `Config.Database.enabled = false` keeps the same numbers in memory for the length of the server run. Matches, betting and payouts are unaffected.
+- **The database ships off** (`Config.Database.enabled = false`), so out of the box the board keeps its numbers in memory for the length of the server run and resets on restart. Matches, betting and payouts are unaffected either way — nothing else in this resource reads the database.
+- Turn it on for an all-time board, in MySQL through oxmysql, in a table the resource creates itself on first start (or that you import from `sql/install.sql` if your database user cannot `CREATE TABLE` at runtime).
 
 **Operations**
 
@@ -78,7 +81,9 @@ Everything below is in the shipped code. Where something is off by default, or i
 | [qbx_core](https://github.com/Qbox-project/qbx_core) | player objects, character data, money |
 | [ox_lib](https://github.com/overextended/ox_lib) | notifications, callbacks, the locale loader |
 | [ox_target](https://github.com/overextended/ox_target) | the option on the lobby NPC |
-| [oxmysql](https://github.com/overextended/oxmysql) | the leaderboard table |
+| [oxmysql](https://github.com/overextended/oxmysql) | the leaderboard table — only when `Config.Database.enabled` is on, and it ships off |
+
+`ox_inventory` is **not** a dependency, and the resource runs without it. It becomes one the moment you switch [ammo types](#ammo-types--handing-out-your-own-ammo-items) on: that is the only inventory this resource knows how to hand an item to.
 
 **oxmysql is a hard dependency even with `Config.Database.enabled = false`.** It is listed in `fxmanifest.lua`'s `dependencies` block, and FXServer checks that list *before it ever reads `config.lua`* — so no setting in this resource can route around it. The resource will not start without oxmysql present and started.
 
@@ -97,12 +102,12 @@ Turning the database off means this resource sends oxmysql no queries and needs 
    ensure crimson_arena
    ```
 
-3. There is no `.sql` file to import. `crimson_arena_stats` is created on first start, and only when `Config.Database.enabled = true`.
-4. Edit `config.lua`. At minimum move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere on your map, and check the two shipped arenas suit you.
+3. **You do not have to import any SQL.** `Config.Database.enabled` ships `false`, and nothing is created or queried while it is. Turn it on and `crimson_arena_stats` is created on first start; `sql/install.sql` holds the identical statement for the case where your database user cannot `CREATE TABLE` at runtime, which is a reasonable way to run a production server.
+4. Edit `config.lua`. At minimum move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere on your map, and check the two shipped arenas suit you — they are open ground at **Sandy Shores Airfield** and on the sand at **Vespucci beach**, with the coordinates offered as a starting point rather than a finished map.
 5. Start the server and read the console. Config problems are printed by name at start — they are warnings, not failures, and the resource keeps running:
 
    ```
-   [crimson_arena] CONFIG: Config.Arenas["yard"] has no spawns -- players would have nowhere to land.
+   [crimson_arena] CONFIG: Config.Arenas["docks"] has no spawns -- players would have nowhere to land.
    [crimson_arena] Crimson Arena ready
    ```
 
@@ -143,9 +148,182 @@ A weapon with no choice to make sets `options = nil`. The panel offers no chips 
 ammo = { default = 1, options = nil, max = 1 },
 ```
 
-With no list to check a request against, `max` is the only limit that weapon has left on the wire: a modified client asking for a number between `default` and `max` is given it, because that is what `max` means everywhere else in the file. **Set `max` equal to `default` for a weapon whose count is meant to be fixed** — both melee entries ship that way, which is why nothing on the shipped catalogue has any headroom to ask into. Leave the two apart only when free-form ammo up to the ceiling is what you meant.
+With no list to check a request against, `max` is the only limit that weapon has left on the wire: a modified client asking for a number between `default` and `max` is given it, because that is what `max` means everywhere else in the file. **Set `max` equal to `default` for a weapon whose count is meant to be fixed** — all ten melee entries ship that way, which is why nothing on the shipped catalogue has any headroom to ask into. Leave the two apart only when free-form ammo up to the ceiling is what you meant.
 
 Removing a weapon is `enabled = false`. That genuinely removes it — it does not merely hide a button.
+
+### Ammo types — handing out your own ammo items
+
+If you run an ammo script where a round is an inventory item — `ammo-rifle`, `ammo-9`, a box of armour-piercing — this is how the arena hands one out and, more importantly, how it takes it back.
+
+There are two halves and they are independent. A type may carry an **item**, which is yours; it may carry a **component**, which is GTA's; it may carry both, or neither. The item half is what this section is mostly about. The component half is [further down](#mk-ii-magazines-are-components-not-items).
+
+#### It ships off, and that is deliberate
+
+```lua
+ammoItems = {
+    enabled = false,
+    ...
+}
+```
+
+The item names in `Config.Loadouts.defaultAmmoTypes` — `ammo-rifle`, `ammo-rifle-fmj`, `ammo-rifle-ap` and the rest — are **placeholders**. They are the shape a name tends to take, not names that exist on your server.
+
+Handing out an item name that does not exist is a **silent nothing**. The player picks armour-piercing, the match starts, and there is no ammunition in their inventory and no error anywhere they can see. What they report is not "the ammo item is misconfigured" — it is "the arena is broken". That is why this is the one loadout feature that ships off: an operator who has not read this section gets a working arena, not a mystery.
+
+Turning it on is two steps and nothing else:
+
+1. **Put your own item names in.** Edit the `item` field on every entry in `Config.Loadouts.defaultAmmoTypes`, and delete or `enabled = false` the ones you have no item for.
+2. **Flip the switch.** `Config.Loadouts.ammoItems.enabled = true`.
+
+One prerequisite: **`ox_inventory` must be running.** It is the only inventory this file knows how to talk to, and it is looked up fresh on every call rather than cached, so restarting your inventory resource does not leave the arena holding a dead handle. If ammo items are on and `ox_inventory` is not started, nobody is given anything and the console says so once per attempt:
+
+```
+[crimson_arena] ammo items are switched on but ox_inventory is not started -- nobody is being given any.
+```
+
+**Nothing checks your item names at startup.** The config validator checks weapon keys, ammo ceilings, spawns, teams and betting numbers; it does not and cannot know what items exist in your inventory. A wrong name surfaces on the first match that asks for it, in the server console, naming the item:
+
+```
+[crimson_arena] ammo: could not give ammo-rifle-ap x60 to 12 -- check that item exists on this server.
+```
+
+That is the line to grep for after you first switch this on. Read it as "this name is wrong, or that player's inventory is full".
+
+#### Set the list once, override where you need to
+
+`Config.Loadouts.defaultAmmoTypes` is the list, and it is **offered for every weapon that takes ammunition**. Set it once and you are done:
+
+```lua
+defaultAmmoTypes = {
+    { key = 'standard',   label = 'Standard',        item = 'ammo-rifle' },
+    { key = 'fmj',        label = 'FMJ',             item = 'ammo-rifle-fmj' },
+    { key = 'ap',         label = 'Armour Piercing', item = 'ammo-rifle-ap' },
+    { key = 'incendiary', label = 'Incendiary',      item = 'ammo-rifle-incendiary' },
+    { key = 'hollow',     label = 'Hollow Point',    item = 'ammo-rifle-hollowpoint', enabled = false },
+    { key = 'tracer',     label = 'Tracer',          item = 'ammo-rifle-tracer',      enabled = false },
+}
+```
+
+`key` is what the panel and the wire use and must be unique in a list. `label` is what the player reads. `item` is the one you must edit. `enabled = false` hides an entry without deleting it.
+
+Three levers, in order of how often you will want them:
+
+| You want | Do this |
+|---|---|
+| The same types everywhere | Edit `defaultAmmoTypes`. Nothing else. |
+| Different item names on one weapon — a pistol round and a rifle round are separate items | Give that weapon its own `ammoTypes = { ... }` list. It replaces the shared one for that weapon, it does not add to it. |
+| No types at all on one weapon | `ammoTypes = false` on that weapon. An explicit `false` beats the shared default. |
+
+**Melee is excluded automatically.** A weapon whose ammo `max` is 1 or less never inherits the shared list, because a weapon that carries one "round" is not carrying ammunition, it is carrying a bat. You do not have to write `ammoTypes = false` on the eight melee entries, and you should not: the rule is in the code, so a melee weapon you add later is excluded too.
+
+**Which type a player gets when they express no preference** is `defaultAmmoType` — set per weapon, falling back to `Config.Loadouts.defaultAmmoType` for the whole list, falling back to the first enabled entry. That matters more than it sounds: it is what is issued for anything that never went through a player's choice at all.
+
+An unknown or disabled type key arriving on the wire is **refused back to the default, not guessed at** — the same posture as an off-list ammo count. So shortening a list genuinely removes that round from the arena rather than merely hiding it.
+
+#### `roundsPerItem`, when one item is a box
+
+```lua
+roundsPerItem = 1,
+```
+
+With ox_inventory's usual per-round ammo items this is 1: a player who picks 60 rounds is handed 60 items. If one item on your server is a **box of 30**, put 30 here and they are handed 2.
+
+The division **rounds up**, on purpose. 61 rounds at 30 per box is three boxes, not two — rounding down would hand somebody 30 rounds when they asked for 60 and leave them wondering what happened. The reclaim takes back the same number of items that were issued, so the rounding is symmetric and nobody is short-changed or quietly enriched by it.
+
+A value of 0 or below is treated as 1 rather than dividing by zero.
+
+#### If the item will not go in
+
+```lua
+allowWeaponWithoutAmmoItem = true,
+```
+
+An `AddItem` can fail for reasons that have nothing to do with your config — most often a full inventory. This decides what happens then:
+
+- **`true` (the default, and the friendlier one)** — the player fights, with the weapon and without the item. The failure is named in the console for you.
+- **`false`** — the player is refused the round rather than sent in with an empty gun.
+
+Either way the arena records **nothing** for an item that did not land. That is the important half: an item recorded as issued but never given would have the reclaim reach into that player's own pocket later and take one they brought with them.
+
+#### The reclaim
+
+**This is the part that matters, and it is the reason this feature is written as its own file rather than three lines in the match code.**
+
+An arena that gives out two hundred armour-piercing rounds and does not take them back is an **ammo printer**: join, collect, walk out, repeat, sell. It is the same problem the entry-fee escrow solves for money, and it is solved the same way — everything issued is recorded against the player and the match that issued it, and removed again on **every** way out of the arena there is:
+
+- the round ending normally, for fighters and for eliminated players watching from the spectator camera
+- the player walking out mid-round
+- the player **disconnecting** — including a drop between being handed the ammunition and the match recording them
+- an admin `/arenaadmin stop` or `wipe`
+- the round being abandoned because everybody left
+- **the resource stopping or the server restarting**, which is handled first in the shutdown, before anything else tears down
+
+(A host *cancelling* is not on that list because it cannot be: cancel is refused the moment anybody has been placed in the arena, which is the same moment ammunition is issued. There is never a cancel with rounds outstanding.)
+
+```lua
+reclaimOnExit = true,
+```
+
+The switch exists, it defaults to on, and turning it off makes the arena a source of free ammunition. It is there only for servers that genuinely want that. If you are not sure, you do not.
+
+Three things worth knowing before you watch it run:
+
+**A round the player already fired cannot come back, and that is expected.** They were given it to shoot. The reclaim asks the inventory for what it issued and gets what is still there; the shortfall is spent ammunition, not a fault. Do not read a partial reclaim as a bug.
+
+**Anything that will not come out is named in the console rather than written off.** A silent teardown that took nothing back looks exactly like a clean one, so it is never allowed to look clean:
+
+```
+[crimson_arena] ammo: ammo-rifle-ap x60 issued to 12 on match m4f2a1 could not be taken back (left the arena). They fired it, dropped it, or are already gone.
+```
+
+The reason in brackets is the exit path — `left the arena`, `disconnected`, `resource stopping` — so a line tells you both what is outstanding and how the player left holding it.
+
+**Reclaiming twice takes nothing twice.** Each record is marked as it is returned, and the exit paths overlap by design — a disconnect mid-round routes through the ordinary exit *and* is caught again by the disconnect handler. The second pass is a no-op. That is deliberate: two guards that both fire are safe, one guard that misses is an ammo printer.
+
+The ledger removes **exactly what it issued**, by item and count, and nothing else. A player who walks in carrying a hundred rounds of the same item and fires none of them walks out with their hundred. Test that deliberately anyway — some inventory setups tie a weapon's in-game round count to the item backing it, and this resource grants and strips weapons with the game's own natives, which is a separate mechanism from the ledger. Whether the two reconcile on your build is a question only your server can answer.
+
+Turn `Config.Debug` on to watch it work:
+
+```
+[crimson_arena] [debug] ammo: gave ammo-rifle-ap x60 to 12 on match m4f2a1
+[crimson_arena] [debug] ammo: reclaimed 41 of 60 item(s) from 12
+```
+
+Nineteen rounds down the range is a fought match, not a leak.
+
+#### What is *not* issued an item
+
+Worth knowing before you go looking for a bug that is not there. Items are handed over **once**, at the moment a player is placed in the arena, for the weapons in the loadout they chose. Specifically:
+
+- **`alwaysGive` weapons get no ammo items.** The house knife is the operator's own entry, not a picked weapon, and it never carries a type.
+- **Gun Game rungs get no ammo items.** The ladder replaces a player's loadout with the rung's own weapon at the rung's own ammo count, and that path does not go through the type resolution.
+- **Respawns do not issue more.** A player who dies and comes back is re-handed their weapon and its rounds in-game; no second item is put in their inventory. One loadout's worth per player per match is the whole of what the arena lends.
+
+#### MK II magazines are components, not items
+
+GTA's own special rounds — FMJ, hollow point, armour-piercing, incendiary, tracer, explosive — exist **only on MK II weapons**, and only as weapon **components**, not as anything an inventory can hold. That is why a type may carry a `component` as well as an `item`:
+
+```lua
+{ key = 'fmj', label = 'FMJ',
+  item = 'ammo-rifle-fmj',
+  component = 'COMPONENT_ASSAULTRIFLE_MK2_CLIP_FMJ' },
+```
+
+The two are independent and you can have either, both, or neither:
+
+| Carries | What happens |
+|---|---|
+| `component` only | The magazine is attached to the weapon on entry. **This needs no inventory and works with `ammoItems.enabled = false`** — it is how the three enabled MK II weapons ship. |
+| `item` only | Your ammo script's item is handed over and reclaimed. Works on any weapon that takes ammunition. |
+| both | Both. The magazine is attached *and* the item is issued. |
+| neither | The type still resolves and is still named in the loadout, and nothing is handed over. |
+
+The component is appended to a **copy** of that weapon's `components` list, never to the config table itself — one player's chosen clip cannot leak into the next player's loadout.
+
+Component names are only meaningful on MK II weapons. Adding a `component` to a plain Assault Rifle does nothing useful, because there is no magazine for it to attach.
+
+**The one trap in the shipped config, and it will catch you.** All four MK II entries carry their **own** `ammoTypes` list — component names filled in, **no `item` field on any of them**. That is exactly right for a server with no ammo script. But a per-weapon list *replaces* the shared one, so if you switch ammo items on and edit only `Config.Loadouts.defaultAmmoTypes`, every weapon in the catalogue starts issuing items **except** the four MK II ones, which quietly keep handing out a magazine and nothing else. Add your `item` names to those four lists as well, or delete their `ammoTypes` lists so they inherit the shared one — at the cost of the MK II magazines, since the shared list carries no components.
 
 ### Turning betting off
 
@@ -507,23 +685,13 @@ This section is kept whether or not it has anything in it: it is the right
 place to record the next one, and an operator who has read this file once will
 come back looking for it before concluding a setting is broken.
 
----|---|---|
-| `Config.Betting.entryFee.hostSetsForEveryone` | Off, each player would stake what they liked and the payout would be weighted by stake | Nothing. Joining always charges the host's fee — the join request carries no fee of its own — and no payout mode weights a share by what a player staked. The value reaches the panel in the state snapshot and nothing there reads it either. Setting it either way changes nothing you or a player can observe. |
-
-It is left in `config.lua` rather than deleted, because a key that vanishes
-from a config file an operator has already edited reads as a key that broke.
-
-This section is kept whether or not it has anything in it: it is the right
-place to record the next one, and an operator who has read this file once
-will come back looking for it before they conclude a setting is broken.
-
 ---
 
 ## How a round plays out
 
 1. **The lobby.** A player walks up to the NPC and picks the ox_target option, or stands in the marker and presses E. The panel fetches the current snapshot from the server before it takes focus, so it never opens on an empty frame.
 
-2. **Create or join.** The Matches screen lists every open match with its arena, mode, head count, pot and state. Creating one asks for an arena, a mode and — when entry fees are on and `hostSetsForEveryone = true` — one fee everybody in that match pays.
+2. **Create or join.** The Matches screen lists every open match with its arena, mode, head count, pot and state. Creating one asks for an arena, a mode and — when entry fees are on — the one fee everybody who joins that match pays.
 
 3. **The stake is taken at the door.** Joining takes the entry fee *before* the player is added to the match. A stake that cannot be taken aborts the join and leaves nothing behind: no seat, no place in the join order, nothing to unwind.
 
@@ -533,7 +701,7 @@ will come back looking for it before they conclude a setting is broken.
 
 6. **Lobby countdown.** `lobbyCountdownSeconds` of a countdown players can still back out of. If someone leaves and the lobby drops below what it needs, the countdown stops and the lobby goes back to waiting — nobody loses their seat.
 
-7. **In.** Everyone is teleported to a spawn point, scattered, frozen, and handed their loadout. Loadouts are **re-resolved at this moment** against the live catalogue, not replayed from what was stored — a weapon an operator switched off since is dropped here rather than granted.
+7. **In.** Everyone is teleported to a spawn point, scattered, frozen, and handed their loadout. Loadouts are **re-resolved at this moment** against the live catalogue, not replayed from what was stored — a weapon an operator switched off since is dropped here rather than granted. This is also the one moment [ammo items](#ammo-types--handing-out-your-own-ammo-items) are handed over, if you have them on.
 
 8. **Live.** After `startCountdownSeconds` the freeze lifts and weapons go live. The pause menu and the multiplayer overlay are blocked for the duration. A once-a-second sweep pushes the scoreboard, runs the round clock and checks the win condition.
 
@@ -543,7 +711,7 @@ will come back looking for it before they conclude a setting is broken.
 
 11. **The end.** Last player or team standing, the score limit, or the clock running out. Two players who die in the same tick are both counted before anything is decided, so a double knockout is a draw rather than a race between two corpses.
 
-12. **Payout.** The pot is settled, the leaderboard is written, side-bets are judged, escrow is cleared, and everyone is teleported to `Config.Lobby.returnCoords` with their own weapons, armour and health back and a results board showing the scoreboard, their placement and what they earned.
+12. **Payout.** The pot is settled, the leaderboard is written, side-bets are judged, escrow is cleared, and everyone is teleported to `Config.Lobby.returnCoords` with their own weapons, armour and health back and a results board showing the scoreboard, their placement and what they earned. Any ammo items the arena lent them are taken back on the way out, before anything else about that player is torn down.
 
 ---
 
@@ -688,6 +856,7 @@ Anything you build on those is subject to the same rule the rest of the resource
 - **Off-list ammo falls back to `default`, it is not rounded.** If players report getting less ammo than they picked, check that the value is in that weapon's `options` list and not above its `max`.
 - `weaponSlots` caps how many weapons are honoured. Entries past the cap are silently dropped — the request still succeeds.
 - `Config.Loadouts.allowChoose = false` ignores the picker entirely and hands out `Config.Loadouts.fixed`.
+- If it is the **ammo item** rather than the weapon that is missing, that is a different failure — see [Ammo items are not arriving](#ammo-items-are-not-arriving).
 - `Config.Match.stripWeaponsOnEntry = true` (the default) wipes carried weapons on entry. If players are arriving unarmed, check that their chosen loadout resolved to something — a request that resolves to nothing still succeeds and carries only `alwaysGive`.
 - Loadouts are re-resolved at match start against the live catalogue. Turn `Config.Debug` on to see what was dropped:
 
@@ -695,12 +864,29 @@ Anything you build on those is subject to the same rule the rest of the resource
   [crimson_arena] [debug] dropped 1 loadout entr(ies) for 12 on match m4f2a1: grenadelauncher
   ```
 
+### Ammo items are not arriving
+
+- **Check the switch first.** `Config.Loadouts.ammoItems.enabled` ships `false`, and with it off nothing is asked of any inventory at all. The weapon and its in-game rounds still arrive; the item does not.
+- **`ox_inventory` must be started.** If it is not, the console says so in as many words — `ammo items are switched on but ox_inventory is not started` — and nobody is given any.
+- **The item name is the usual answer.** The names in the shipped config are placeholders. A name that does not exist on your server produces one console line per attempt, naming the item: `ammo: could not give ammo-rifle-ap x60 to 12 -- check that item exists on this server.` Nothing checks those names at startup, so this line is the only place a typo shows up.
+- The same line appears for a **full inventory**, which is not a typo. `allowWeaponWithoutAmmoItem` decides whether that player still fights.
+- **Melee, `alwaysGive` weapons and Gun Game rungs never carry an item.** That is by design, not a fault — see [what is not issued an item](#what-is-not-issued-an-item).
+- A weapon with `ammoTypes = false`, or one whose ammo `max` is 1 or less, offers no types and so has no item to issue.
+- Turn `Config.Debug` on and the grant and the reclaim both print: `ammo: gave ammo-rifle-ap x60 to 12 on match m4f2a1`, then `ammo: reclaimed 41 of 60 item(s) from 12`.
+
+### Ammunition is not coming back
+
+- **A shortfall is usually spent ammunition.** Rounds the player fired cannot be removed, because they are gone. `reclaimed 41 of 60` after a fought match is the expected shape.
+- Anything that genuinely will not come out is named: `ammo: <item> x<n> issued to <src> on match <id> could not be taken back (<reason>)`. The reason in brackets is which exit path was running.
+- **Check `reclaimOnExit`.** Set to `false` it is doing exactly what it says: leaving the ammunition with the player. That switch turns the arena into a source of free ammunition and exists only for servers that want that.
+- `refusing to drop match <id> -- <src> still holds <item> x<n>` means a match record was asked to close with ammunition outstanding and refused. The refusal is the safe outcome — the record stays reachable so a later reclaim can still find it — but it is worth reading as a sign that an exit path did not run.
+
 ### The leaderboard is empty
 
 - **Rows are queued, not written immediately.** A match that ended seconds ago appears after the next flush — `Config.Database.flushIntervalMs`, 60 seconds by default — and a flush also runs on resource stop. This is the usual answer.
 - The panel caches the board for 30 seconds on top of that. Reopening the panel does not force a fresh read.
-- With `Config.Database.enabled = false` the board covers **this server run only** and resets on restart. That is the documented behaviour, not a fault.
-- The table is created at start by the resource. If it is missing, oxmysql was not connected at that moment — check the oxmysql console lines and restart `crimson_arena` after the database is up.
+- **The database ships off.** With `Config.Database.enabled = false` — the shipped value — the board covers **this server run only** and resets on restart. That is the documented behaviour, not a fault, and it is the first thing to check on a fresh install.
+- With it on, the table is created at start by the resource. If it is missing, oxmysql was not connected at that moment — check the oxmysql console lines and restart `crimson_arena` after the database is up, or import `sql/install.sql` by hand.
 - A query that cannot be answered falls back to this run's in-memory numbers rather than showing an empty panel, so a board with today's matches and nothing older is a database problem, not an empty table.
 - Turn `Config.Debug` on to see flushes: `flushed 4 stat row(s)`.
 

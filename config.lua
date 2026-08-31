@@ -772,6 +772,49 @@ Config.Loadouts = {
     },
 
     -- ==================================================================
+    -- THE DOOR -- what a player may bring in, and what leaves with them.
+    --
+    -- NOBODY BRINGS THEIR OWN KIT INTO THE ARENA. On the way in a player's
+    -- whole inventory is put into a private stash and they are given only
+    -- what the arena issued. On the way out everything they are carrying is
+    -- destroyed -- issued, looted off a body, picked up off the floor -- and
+    -- their own inventory is handed straight back.
+    --
+    -- That makes a round even: two players in an arena have exactly what the
+    -- loadout screen gave them and nothing else, and no amount of dying,
+    -- looting or hoarding changes what anybody walks out with.
+    --
+    -- WHERE YOUR STUFF ACTUALLY GOES, because this is the part worth being
+    -- sure about: an ox_inventory STASH, one per character, which ox_inventory
+    -- persists itself. Not a Lua table in this resource's memory -- a server
+    -- that crashed mid-round would take that with it, and losing a player's
+    -- inventory is not a bug you get to apologise for.
+    --
+    -- AND IF ANYTHING GOES WRONG PUTTING IT AWAY, the arena does NOT strip
+    -- them. They walk in carrying their own gear, which is a worse match and
+    -- a fixable one. It never risks the alternative.
+    -- ==================================================================
+    inventory = {
+        -- Take the player's own inventory at the door and give it back after.
+        -- Off means players fight with whatever they walked up carrying, on
+        -- top of what the arena issued.
+        stripOnEntry = true,
+
+        -- Stash names are this plus the character's citizen id, so one player
+        -- can never open another's. Change it only if it collides with
+        -- something you already use.
+        stashPrefix = 'crimson_arena_',
+
+        -- Refuse to let players drop anything while they are in a match.
+        --
+        -- Cheaper and far more reliable than hunting down bags off the floor
+        -- afterwards: a dropped item becomes its own inventory in the world,
+        -- and finding every one of them again is guesswork. Not dropping in
+        -- the first place is not.
+        blockDropsInArena = true,
+    },
+
+    -- ==================================================================
     -- AMMO TYPES -- your ammo script's ITEMS.
     --
     -- SHIPS OFF. Turn it on once you have put your own item names in the list

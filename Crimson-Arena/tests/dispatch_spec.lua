@@ -30,9 +30,11 @@ local function newFixture(dispatchConfig)
     local handlers = {}      -- AddEventHandler registrations
     local logs = {}
     local commands = {}      -- every ExecuteCommand line, in order
+    local cancelled = 0      -- how many times CancelEvent() was called
 
     local env = Sandbox.newEnv({
         ExecuteCommand = function(line) commands[#commands + 1] = line end,
+        CancelEvent = function() cancelled = cancelled + 1 end,
         Player = function(src)
             return {
                 state = {
@@ -60,6 +62,24 @@ local function newFixture(dispatchConfig)
     Sandbox.loadInto('../config.lua', env)
     Sandbox.loadInto('../shared/arena.lua', env)
     if dispatchConfig ~= nil then env.Config.Dispatch = dispatchConfig end
+
+    -- AFTER the env exists, not inside its constructor. A closure written in
+    -- the table above would capture a GLOBAL `env` -- nil -- rather than the
+    -- local being declared by that very statement, and every lookup through
+    -- it would quietly return nothing.
+    --
+    -- The location pin asks the lobby which arena a live match is in.
+    -- Answered with the first enabled arena, which is where arenaPoints()
+    -- takes its coordinates from, so the two agree by construction rather
+    -- than through a hard-coded key.
+    env.ArenaLobby = {
+        Get = function(matchId)
+            local first = env.Arena.GetEnabledArenas()[1]
+            if not first then return nil end
+            return { id = matchId, arenaKey = first.key }
+        end,
+    }
+
     Sandbox.loadInto('../server/dispatch.lua', env)
 
     return {
@@ -74,6 +94,11 @@ local function newFixture(dispatchConfig)
         fire = function(name, ...)
             for _, fn in ipairs(handlers[name] or {}) do fn(...) end
         end,
+        --- How many times CancelEvent() has been called so far.
+        --- A function, not a number: a number captured here would be the
+        --- value at construction -- zero, forever -- and every assertion
+        --- against it would pass without the code under test running.
+        cancelled = function() return cancelled end,
         eventNames = function()
             local out = {}
             for _, e in ipairs(events) do out[#out + 1] = e.name end
@@ -322,6 +347,96 @@ local function newCompat(mutate)
     Sandbox.loadInto('../shared/compat/dispatch.lua', env)
     return env
 end
+
+-- ========================================================================
+-- CANCELLING AN ALERT THAT SAYS ONLY *WHERE*
+--
+-- Some alert events carry no player. A resource raises them on the server
+-- with a payload describing where something happened and nothing about who,
+-- so `source` is meaningless and no argument holds a server id -- the
+-- player pin has nothing to work with and the alert goes out.
+--
+-- The location is the one thing such a payload does have, and an arena is a
+-- place. Requiring a LIVE match is the whole safety of it: these arenas sit
+-- on real map locations that ordinary play uses the rest of the time, and
+-- suppressing every alert that ever happens at an airfield would silence
+-- real crimes -- a worse failure than the one this fixes.
+-- ========================================================================
+
+--- A dispatch config whose one cancel entry is pinned on location.
+local function locationConfig()
+    return {
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = {
+            enabled = true,
+            disableExports = {},
+            cancelEvents = { { event = 'alerts:raise', coordsArg = 1 } },
+        },
+        vanillaPolice = { enabled = false },
+        revive = { enabled = false, commands = {}, serverEvents = {}, clientEvents = {}, exports = {} },
+    }
+end
+
+--- The centre of the first shipped arena, and a point well outside it.
+local function arenaPoints(env)
+    local arena = env.Arena.GetEnabledArenas()[1]
+    local b = env.Config.Arenas[arena.key].boundary
+    return b.center, { x = b.center.x + (b.radius * 4), y = b.center.y, z = b.center.z }
+end
+
+t.test('an alert about a spot inside a live arena is cancelled', function()
+    local f = newFixture(locationConfig())
+    local inside = arenaPoints(f.env)
+
+    -- Somebody is in a match at that arena.
+    f.D.Set(1, 'm1')
+    f.fire('alerts:raise', { coords = inside, title = '10-13' })
+
+    t.isTrue(f.cancelled() > 0, 'an alert from inside a live arena went out')
+end)
+
+t.test('the same alert is left alone with no match running', function()
+    -- The safety line. Outside a match these coordinates are an ordinary
+    -- airfield, and an alert about one is somebody else's business.
+    local f = newFixture(locationConfig())
+    local inside = arenaPoints(f.env)
+
+    f.fire('alerts:raise', { coords = inside, title = '10-13' })
+
+    t.equals(f.cancelled(), 0, 'a real alert was suppressed with no match running')
+end)
+
+t.test('an alert from outside the boundary is left alone even mid-match', function()
+    local f = newFixture(locationConfig())
+    local _, outside = arenaPoints(f.env)
+
+    f.D.Set(1, 'm1')
+    f.fire('alerts:raise', { coords = outside, title = '10-13' })
+
+    t.equals(f.cancelled(), 0, 'an alert from outside the arena was suppressed')
+end)
+
+t.test('a payload that is the point itself, not wrapped in coords, still pins', function()
+    local f = newFixture(locationConfig())
+    local inside = arenaPoints(f.env)
+
+    f.D.Set(1, 'm1')
+    f.fire('alerts:raise', inside)
+
+    t.isTrue(f.cancelled() > 0, 'only the wrapped shape is recognised')
+end)
+
+t.test('a payload with no usable location is left alone rather than guessed at', function()
+    local f = newFixture(locationConfig())
+    f.D.Set(1, 'm1')
+
+    f.fire('alerts:raise', { title = 'no location at all' })
+    f.fire('alerts:raise', { coords = { x = 'north', y = 'west' } })
+    f.fire('alerts:raise', 'not a table')
+
+    t.equals(f.cancelled(), 0, 'something without a location was cancelled anyway')
+end)
 
 -- ========================================================================
 -- TELLING THE AMBULANCE SCRIPT THEY ARE ALIVE

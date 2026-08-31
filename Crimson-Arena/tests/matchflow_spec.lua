@@ -136,6 +136,8 @@ local function newFixture(mutate)
     -- test so a payout can be described without a second betting stub.
     local money = { pot = 0, stake = 0, payouts = {} }
 
+    local revived = {}       -- every ArenaDispatch.Revive(src), in order
+
     local env = Sandbox.newEnv({
         CreateThread = runner.CreateThread,
         Wait = runner.Wait,
@@ -162,10 +164,11 @@ local function newFixture(mutate)
         ArenaDispatch = {
             Set = function() end,
             Clear = function() end,
-            -- Recorded like the rest: the exit path now tells whatever handles
-            -- death that the player is alive again, and a stub missing it is a
-            -- nil call rather than a silent no-op.
-            Revive = function() end,
+            -- Recorded, not swallowed: the arena telling whatever handles
+            -- death that a player is alive again is the whole reason a
+            -- player does not walk out of a match still dead, so WHO gets
+            -- told and HOW MANY TIMES is the thing worth asserting.
+            Revive = function(src) revived[#revived + 1] = src end,
             EnterBucket = function() end,
             ExitBucket = function() end,
             GetBucket = function() end,
@@ -202,6 +205,7 @@ local function newFixture(mutate)
         money = money,
         recorded = recorded,
         settled = settled,
+        revived = revived,
     }
 
     --- One pass of every live thread. The FIRST call only primes the sweep,
@@ -684,6 +688,70 @@ t.test('every winner handed to the payout is somebody still on the roster', func
     for _, id in ipairs(context.winners) do
         t.isTrue(paid[id] == true, ('winner %s is not on the roster being paid'):format(tostring(id)))
     end
+end)
+
+-- ========================================================================
+-- NOBODY WALKS OUT OF A MATCH STILL DEAD
+--
+-- The arena stands its own players up, and for the character model that is
+-- the whole job. It is not the whole job for the server: a medical or
+-- ambulance script keeps its own record of who is dead, and nothing about
+-- resurrecting a body reaches it.
+--
+-- There are two calls, on purpose. The per-player one runs as each player is
+-- sent home -- BEFORE the body is stood up, before the teleport, before they
+-- leave the arena instance -- so a script told "alive" then is being told it
+-- about somebody who is still a corpse somewhere else, and anything it does
+-- can be undone by the teardown behind it. The sweep runs once afterwards,
+-- over the whole roster, when everybody is home.
+-- ========================================================================
+
+t.test('every player is revived on the way out of a finished match', function()
+    local f = newFixture(instantRound)
+    local match = newMatch(f, 2)
+    goLive(f, match)
+
+    f.M.End(match.id, 'match.ended', { 1 })
+
+    local seen = {}
+    for _, src in ipairs(f.revived) do seen[src] = true end
+    t.isTrue(seen[1], 'the winner was never revived')
+    t.isTrue(seen[2], 'the loser was never revived -- they walk out still dead')
+end)
+
+t.test('and swept again once everybody is home', function()
+    -- The belt to the exit path's braces, and the thing the operator asked
+    -- for after watching players stay dead anyway. It runs on a delay, so
+    -- stepping the threads is what makes it happen.
+    local f = newFixture(instantRound)
+    local match = newMatch(f, 2)
+    goLive(f, match)
+
+    f.M.End(match.id, 'match.ended', { 1 })
+    local duringExit = #f.revived
+
+    f.step()
+    f.step()
+
+    t.isTrue(#f.revived > duringExit,
+        'the post-match sweep never ran -- a player the exit path missed stays dead')
+end)
+
+t.test('the sweep can be switched off without breaking the exit path', function()
+    local f = newFixture(instantRound)
+    f.Config.Dispatch.revive.sweepAfterMatchMs = 0
+
+    local match = newMatch(f, 2)
+    goLive(f, match)
+
+    f.M.End(match.id, 'match.ended', { 1 })
+    local duringExit = #f.revived
+
+    f.step()
+    f.step()
+
+    t.equals(#f.revived, duringExit, 'the sweep ran with its delay set to 0')
+    t.isTrue(duringExit >= 2, 'and the per-player revives stopped happening too')
 end)
 
 os.exit(t.summary())

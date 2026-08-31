@@ -613,18 +613,86 @@ local function readCancelEntry(key, entry)
     if Arena.IsKey(entry) then return { event = entry } end
 
     if type(entry) == 'table' and Arena.IsKey(entry.event) then
+        local coordsIndex = Arena.ToInt(entry.coordsArg)
+        if coordsIndex and coordsIndex < 1 then coordsIndex = nil end
+
         -- Lua counts arguments from 1. A zero or negative index is not a
         -- smaller mistake than a missing one, so it is dropped rather than
         -- clamped -- an entry with no usable index cancels nothing, which is
         -- the safe direction.
         local index = Arena.ToInt(entry.playerArg)
         if index and index < 1 then index = nil end
-        return { event = entry.event, playerArg = index }
+        return { event = entry.event, playerArg = index, coordsArg = coordsIndex }
     end
 
     if entry == true and Arena.IsKey(key) then return { event = key } end
 
     return nil
+end
+
+--- Is a point inside an arena that has a match being fought in it RIGHT NOW?
+---
+--- WHY THIS EXISTS. Some alert events carry no player at all -- a resource
+--- raises them on the server with a payload describing WHERE something
+--- happened and nothing about who. `source` is meaningless for those and
+--- there is no argument holding a server id, so the player-based pin has
+--- nothing to work with and the alert goes out.
+---
+--- The location is the one thing such a payload does have, and an arena is a
+--- place. If the alert is about a spot inside an arena with a live match in
+--- it, it is an arena alert.
+---
+--- REQUIRING A LIVE MATCH IS THE WHOLE SAFETY OF IT. The arenas sit on real
+--- map locations that ordinary play uses the rest of the time -- an airfield
+--- and a public beach. Suppressing every alert that ever happens there would
+--- silence real crimes, which is a worse failure than the one this is fixing.
+--- With no match running, nothing here suppresses anything.
+--- @param point any -- a vector3, or any table carrying x/y/z
+--- @return boolean
+local function insideLiveArena(point)
+    if type(point) ~= 'table' and type(point) ~= 'vector3' then return false end
+
+    local px, py = tonumber(point.x), tonumber(point.y)
+    if not px or not py then return false end
+
+    -- Which arenas currently have somebody in them. Read from the same
+    -- `active` table the player pin uses, so the two layers can never
+    -- disagree about whether a match is running.
+    for _, matchId in pairs(active) do
+        local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(matchId) or nil
+        local arena = match and Arena.GetArenaByKey(match.arenaKey) or nil
+        local boundary = arena and arena.boundary or nil
+
+        if boundary and boundary.enabled ~= false and boundary.center then
+            local cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
+            local radius = tonumber(boundary.radius)
+
+            if cx and cy and radius and radius > 0 then
+                local dx, dy = px - cx, py - cy
+                -- Compared squared, so no square root and no chance of a
+                -- rounding difference between this and the client's own
+                -- boundary check.
+                if (dx * dx + dy * dy) <= (radius * radius) then return true end
+            end
+        end
+    end
+
+    return false
+end
+
+--- Should this firing be cancelled on the strength of WHERE it happened?
+--- @param entry table
+--- @param ... any
+--- @return boolean
+local function pinnedByLocation(entry, ...)
+    if not entry.coordsArg then return false end
+
+    local payload = (select(entry.coordsArg, ...))
+    if type(payload) ~= 'table' then return false end
+
+    -- Either the argument IS the point, or it is a table with the point
+    -- under `coords` -- which is the shape a dispatch payload usually takes.
+    return insideLiveArena(payload.coords or payload)
 end
 
 --- The server id one firing of an alert event can be pinned on, or nil for
@@ -675,8 +743,8 @@ local function warnUnpinnable(entry)
     if warnedCancel[entry.event] then return end
     warnedCancel[entry.event] = true
 
-    ArenaLog('cancelEvents: "%s" fired with no player behind it, so it was left alone. If that event carries a server id, say which argument it is -- { event = \'%s\', playerArg = 1 } -- or drop it from the list.',
-        entry.event, entry.event)
+    ArenaLog('cancelEvents: "%s" fired with no player behind it, so it was left alone. Say which argument carries the server id -- { event = \'%s\', playerArg = 1 } -- or, if the payload only says WHERE, which argument carries that -- { event = \'%s\', coordsArg = 1 } -- or drop it from the list.',
+        entry.event, entry.event, entry.event)
 end
 
 --- Listens on one alert event.
@@ -689,6 +757,15 @@ end
 --- @param entry table
 local function registerCancelHandler(entry)
     AddEventHandler(entry.event, function(...)
+        -- LOCATION FIRST, because it is the answer for the firings the player
+        -- pin cannot see at all: an alert raised on the server with a payload
+        -- describing where something happened and nothing about who.
+        if pinnedByLocation(entry, ...) then
+            CancelEvent()
+            ArenaDebug('cancelEvents: cancelled "%s" -- it is about a spot inside a live arena.', entry.event)
+            return
+        end
+
         local src = responsibleFor(entry, ...)
         if not src then
             warnUnpinnable(entry)

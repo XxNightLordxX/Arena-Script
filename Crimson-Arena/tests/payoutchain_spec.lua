@@ -284,5 +284,68 @@ t.test('a refund reaches the player on a quiet framework too', function()
     t.equals(server.ledgerTotal(), 0)
 end)
 
+-- ========================================================================
+-- THE CONSOLE SAYS WHY A POT DID NOT PAY
+--
+-- A refunded pot and a broken one look identical to the players: money comes
+-- back, nobody wins anything. Until now the difference was reported only to
+-- a webhook, which ships off -- so an operator watching a match refund had
+-- no way to tell "this match did not qualify" from "the arena is broken",
+-- and reported the second when it was the first.
+-- ========================================================================
+
+t.test('a pot refunded for too few players says so, with the numbers behind it', function()
+    local server = newServer({ [1] = 5000 }, function(config)
+        config.Betting.minPlayersToPayOut = 2
+    end)
+    server.betting.TakeStake(1, 'm1', 1000)
+
+    server.betting.Settle('m1', {
+        players = { { id = 1, stake = 1000, kills = 0 } },
+        winners = { 1 },
+        teams = false,
+        contestants = 1,
+    })
+
+    local console = server.log()
+    t.contains(console, 'refunded its pot')
+    t.contains(console, 'refund_too_few', 'the reason is not named')
+    t.contains(console, 'minPlayersToPayOut', 'the setting that decided it is not named')
+    t.equals(server.cash(1), 5000, 'the stake did not come back')
+end)
+
+t.test('a pot refunded for having no winner names that reason instead', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+
+    server.betting.Settle('m1', {
+        players = { { id = 1, stake = 1000 }, { id = 2, stake = 1000 } },
+        winners = {},
+        teams = false,
+        contestants = 2,
+    })
+
+    t.contains(server.log(), 'refund_no_winner')
+end)
+
+t.test('a pot that DID pay says so too, so a quiet console means nothing ran', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+
+    server.betting.Settle('m1', {
+        players = { { id = 1, stake = 1000, kills = 1 }, { id = 2, stake = 1000, kills = 0 } },
+        winners = { 1 },
+        teams = false,
+        contestants = 2,
+    })
+
+    local console = server.log()
+    t.contains(console, 'paid out')
+    t.notContains(console, 'refunded its pot')
+    t.equals(server.cash(1), 6000)
+end)
+
 print('payoutchain_spec')
 os.exit(t.summary())

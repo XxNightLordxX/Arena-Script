@@ -1289,6 +1289,42 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         end
     end
 
+    -- THE REVIVE SWEEP, and it is deliberately not the same call as the one
+    -- inside sendExitArena above.
+    --
+    -- That one runs BEFORE the client is told to leave: before the ped is
+    -- stood up, before the teleport home, before the arena instance is left.
+    -- A medical script revived at that moment is being told somebody is
+    -- alive while they are still a corpse in another routing bucket, and
+    -- whatever it does next can be undone by the teardown that follows.
+    --
+    -- So the whole roster is swept again once all of that has finished. It is
+    -- idempotent -- reviving somebody who is already alive costs nothing --
+    -- and it is the belt to the earlier call's braces: whatever went wrong on
+    -- the way out, nobody is left standing in the lobby dead.
+    local roster = {}
+    for _, player in ipairs(players) do
+        if type(player.src) == 'number' then roster[#roster + 1] = player.src end
+    end
+
+    local sweepMs = Arena.ToInt(((Config.Dispatch or {}).revive or {}).sweepAfterMatchMs)
+    if sweepMs and sweepMs > 0 and #roster > 0 then
+        -- CreateThread + Wait rather than SetTimeout: it is the delay idiom
+        -- everywhere else in this file, it is what the test harness can step,
+        -- and it is one fewer native for the allow-list to carry.
+        CreateThread(function()
+            Wait(sweepMs)
+
+            for _, src in ipairs(roster) do
+                -- Not filtered on "was in a match": they have left one by
+                -- now, which is the entire point. Anyone who has since
+                -- disconnected is a no-op inside Revive.
+                ArenaDispatch.Revive(src)
+            end
+            ArenaDebug('revive: swept %d player(s) %dms after the match ended.', #roster, sweepMs)
+        end)
+    end
+
     if Config.Webhook.logResults == true then
         local lines = {}
         for _, row in ipairs(board) do

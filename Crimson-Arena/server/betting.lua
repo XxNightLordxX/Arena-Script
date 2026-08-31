@@ -675,6 +675,18 @@ function ArenaBetting.Settle(matchId, context)
         end
     end
     if refundingEveryone then
+        -- SAID OUT LOUD, not only to a webhook that ships off. A refunded
+        -- pot and a pot that failed to pay look identical to the players --
+        -- money comes back, nobody wins anything -- and an operator watching
+        -- that happen has no way to tell "the match did not qualify" from
+        -- "the arena is broken". This line is the difference, and it names
+        -- the three numbers the decision was actually made on.
+        ArenaLog('betting: match %s refunded its pot of %s instead of paying out -- %s. Fought by %d, %d winner(s), Config.Betting.minPlayersToPayOut = %d.',
+            tostring(matchId), money(pot), tostring(payouts[1].reason),
+            math.max(#(context.players or {}), Arena.ToInt(context.contestants) or 0),
+            #(context.winners or {}),
+            Arena.ToInt(Config.Betting.minPlayersToPayOut) or 0)
+
         ArenaBetting.RefundAll(matchId, payouts[1].reason)
         payoutWebhook('Pot refunded', 'The match did not qualify to pay out.', {
             { name = 'Match', value = tostring(matchId) },
@@ -708,6 +720,14 @@ function ArenaBetting.Settle(matchId, context)
             stake.settledAs = 'payout'
         end
     end
+
+    -- The other half of the pair above. A pot that DID pay is worth one
+    -- line too: it is how an operator confirms the money went where they
+    -- expected without reading a webhook, and it is what turns "betting is
+    -- broken" into a question with an answer already in the console.
+    ArenaLog('betting: match %s paid out %s of a %s pot to %d player(s) (%s), house kept %s.',
+        tostring(matchId), money(distributed), money(pot), #payouts,
+        tostring(Config.Betting.payout or 'winner_takes_all'), money(houseCut))
 
     local lines, undelivered = {}, 0
     for _, payout in ipairs(payouts) do

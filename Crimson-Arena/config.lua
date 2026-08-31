@@ -1383,6 +1383,10 @@ Config.Dispatch = {
         -- entry naming a resource that is not running, or an export that does
         -- not exist, is skipped with one console warning -- it will not error
         -- and it will not stop a match starting.
+        -- ON, because the two events below are named from sc-dispatch's own
+        -- integration guide rather than guessed.
+        enabled = true,
+
         disableExports = {},
 
         -- ---- FORM 4: this resource cancels the alert event ----------------
@@ -1433,7 +1437,25 @@ Config.Dispatch = {
         -- Not tied to the two suppress switches at the top of this block: an
         -- event name does not say whether it is a police alert or a medical
         -- one. Empty this list to switch it off.
-        cancelEvents = {},
+        cancelEvents = {
+            -- ---- sc-dispatch, from its published integration guide --------
+            -- Both entry points that raise an EVENT are listed. sc-dispatch
+            -- also offers a direct server export, and a script that calls
+            -- that raises no event at all -- nothing here or anywhere else
+            -- can see those. See the note under this list.
+
+            -- The client -> server path. A script that spots gunfire or a
+            -- death on the player's own client sends it this way, so FXServer
+            -- stamps `source` with that player and the arena can pin it
+            -- exactly. This is the one that should silence arena alerts.
+            'sc-dispatch:server:AddNotification',
+
+            -- The server-side event path. There is no player behind it and
+            -- the payload carries no server id, only a location -- so it is
+            -- pinned on WHERE instead, and cancelled only when that spot is
+            -- inside an arena with a live match in it.
+            { event = 'sc-dispatch:AddNotification', coordsArg = 1 },
+        },
     },
 
     -- There are exports too, for a script that would rather ask than listen:
@@ -1496,6 +1518,20 @@ Config.Dispatch = {
         -- `%s` is where the player's server id goes. A line with no `%s` gets
         -- the id appended, so 'revive' and 'revive %s' both work.
         commands = { 'revive %s' },
+
+        -- ONE MORE SWEEP AFTER THE MATCH, in milliseconds. 0 turns it off.
+        --
+        -- The per-player revive runs as each player is sent home -- before
+        -- their body is stood up, before the teleport, before they leave the
+        -- arena instance. A medical script told "alive" at that moment is
+        -- being told it about somebody who is still a corpse somewhere else,
+        -- and anything it does can be undone by the teardown behind it.
+        --
+        -- So the whole roster is revived once more, this long after the match
+        -- has finished and everybody is home. Reviving somebody already alive
+        -- costs nothing, which is what makes a blanket sweep the safe answer
+        -- rather than a clever one.
+        sweepAfterMatchMs = 2000,
 
         -- Server events. Each is triggered with the player's server id.
         --     serverEvents = { 'my_ambulance:server:revivePlayer' },

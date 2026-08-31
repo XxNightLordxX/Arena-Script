@@ -204,12 +204,44 @@ t.test('with no choice made, the operator order still applies', function()
     t.equals(server.bank(1), 5000)
 end)
 
-t.test('and an account name this server does not have is no preference', function()
+t.test('a name that is not one of their accounts at all is no preference', function()
     -- A stale panel or a crafted payload, not a reason to refuse a player who
-    -- can plainly pay.
+    -- can plainly pay. Nothing was really chosen, so the operator order
+    -- applies exactly as it does when nothing was sent.
     local server = newServer({ [1] = { cash = 5000, bank = 5000 } })
     t.isNotNil(openLobby(server, 1000, 'crypto'), 'a junk account name refused a payable fee')
     t.equals(server.cash(1), 4000)
+end)
+
+t.test('DEFECT: but a REAL account this server will not debit is refused, not swapped', function()
+    -- THE HOLE THIS CLOSES, and it is the exact failure the module's own
+    -- comment says must never happen.
+    --
+    -- A player picks cash. The operator later takes cash out of
+    -- Config.Betting.accounts. The old code could not tell that from a
+    -- typo, so it fell back to "the operator's list" and quietly took the
+    -- money out of the bank -- the pocket they chose cash specifically to
+    -- avoid. Nothing said so at either end.
+    --
+    -- Refused instead. Nothing moves, from either account.
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } },
+        function(config) config.Betting.accounts = { 'bank' } end)
+
+    t.isNil(openLobby(server, 1000, 'cash'),
+        'a fee was taken despite the chosen account not being one this server debits')
+    t.equals(server.cash(1), 5000, 'the cash moved')
+    t.equals(server.bank(1), 5000, 'the money came out of the pocket they did not choose')
+end)
+
+t.test('and the same choice is honoured normally once the operator allows it', function()
+    -- The other half: this is a refusal about the ACCOUNT LIST, not about
+    -- the player or the name.
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } },
+        function(config) config.Betting.accounts = { 'bank', 'cash' } end)
+
+    t.isNotNil(openLobby(server, 1000, 'cash'))
+    t.equals(server.cash(1), 4000)
+    t.equals(server.bank(1), 5000)
 end)
 
 t.test('a joiner picks their own account, independently of the host', function()

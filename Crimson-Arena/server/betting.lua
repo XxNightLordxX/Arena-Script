@@ -179,18 +179,42 @@ end
 --- it instead is the same class of mistake as clamping a number somebody
 --- typed. Refused with a reason they can act on is the honest answer.
 ---
---- An unknown or absent name is "no preference", which is every server that
---- has not switched the choice on and every panel that has not been touched.
+--- THREE ANSWERS, NOT TWO, and collapsing the last two was a hole in exactly
+--- the promise above.
+---
+---   NO NAME GIVEN -- "no preference". Every server that has not switched
+---   the choice on, and every panel that has not been touched. Falls back to
+---   the operator's list, and must, or an old panel cannot pay at all.
+---
+---   A NAME THAT IS NOT ONE OF THIS PLAYER'S ACCOUNTS -- junk. A stale
+---   panel, a typo in a payload, a crafted request. Nothing was really
+---   chosen, so this is "no preference" too: refusing a player who can
+---   plainly pay, because something sent a word nobody recognises, helps
+---   nobody.
+---
+---   A REAL ACCOUNT OF THEIRS THAT THIS SERVER DOES NOT DEBIT -- a choice
+---   that cannot be honoured. This is a player who picked cash on a server
+---   that has since stopped taking it, and falling back spends the pocket
+---   they deliberately left alone. That is the one outcome this whole
+---   function exists to prevent, so nothing moves and they are told.
+---
+--- The player's own wallet is what separates the last two, because it is the
+--- only thing that knows which account names are real for them.
+--- @param player table|nil
 --- @param preferred any
---- @return string[]
-local function accountsFor(preferred)
+--- @return string[]|nil -- nil where a real choice cannot be honoured
+local function accountsFor(player, preferred)
     local allowed = debitAccounts()
-    if Arena.IsKey(preferred) then
-        for _, name in ipairs(allowed) do
-            if name == preferred then return { name } end
-        end
+    if not Arena.IsKey(preferred) then return allowed end
+
+    for _, name in ipairs(allowed) do
+        if name == preferred then return { name } end
     end
-    return allowed
+
+    local wallet = player and player.PlayerData and player.PlayerData.money
+    if type(wallet) ~= 'table' or wallet[preferred] == nil then return allowed end
+
+    return nil
 end
 
 --- Money OUT. False means nothing moved, so the caller must record nothing --
@@ -210,7 +234,18 @@ local function debit(src, amount, reason, preferred)
     -- movements that can each fail independently. One account or none is the
     -- honest trade -- and it keeps a refund a single, reversible movement to
     -- the place the money came from.
-    for _, account in ipairs(accountsFor(preferred)) do
+    local accounts = accountsFor(player, preferred)
+    if not accounts then
+        -- Named rather than silent: from the player's side this is a
+        -- payment that did nothing, and the only person who can fix it is
+        -- the operator whose account list no longer has what the panel
+        -- offered.
+        ArenaLog('betting: refused a payment from \'%s\' -- that account exists for this player but is not one Config.Betting.accounts lets this server debit. Nothing was taken from the other one.',
+            tostring(preferred))
+        return false, nil
+    end
+
+    for _, account in ipairs(accounts) do
         local before = balanceOf(player, account)
 
         -- Skipped rather than attempted when it plainly cannot cover it, so

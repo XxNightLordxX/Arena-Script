@@ -889,6 +889,14 @@ Three rules hold the invariant up:
 - A settled stake is **marked, not deleted**. A second payout of the same stake is refused and printed rather than silently doubled.
 - A match id is never dropped while it still holds escrow. `Clear` refuses, loudly, and the money stays reachable by a later refund. A leaked table entry is a bug somebody can find later; a swallowed pot is one nobody can.
 
+**The account a player picks is the only one tried.** Cash or bank, for the entry fee and for bets. Falling back to the other would spend a pocket they deliberately left alone, which is the same class of mistake as clamping a number somebody typed.
+
+That distinction has three cases, not two, and collapsing the last two was a real hole:
+
+- **Nothing sent** — no preference. Falls back to the operator's order, and must, or a panel that predates the choice cannot pay at all.
+- **A name that is not one of that player's accounts** — junk from a stale panel or a crafted payload. Nothing was really chosen, so it is treated as no preference too. Refusing a player who can plainly pay, because something sent a word nobody recognises, helps nobody.
+- **A real account of theirs that this server does not debit** — a choice that *cannot be honoured*, and the one this used to get wrong. A player picks cash; the operator later removes cash from `Config.Betting.accounts`; the old code could not tell that from a typo and quietly took the money out of the bank instead. Now nothing moves, from either account, and a console line says why.
+
 **Two separate pools.** The entry-fee pot is what the fighters are playing for, and `maxPot` caps it. Spectator side-bets are the house's action, paid at `oddsMultiplier`, and live in their own table — a bystander cannot change what the winner takes home.
 
 ### What happens when…

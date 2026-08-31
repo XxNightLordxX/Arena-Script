@@ -407,6 +407,25 @@ t.test('and the failure is named rather than swallowed', function()
         'the NPC vanished and the console says nothing about why: ' .. f.log())
 end)
 
+t.test('and the WHERE line still prints, which is what an operator is told to look for', function()
+    -- The line an operator is pointed at to tell four identical-looking
+    -- failures apart. It is printed at the END of the start-up thread, so it
+    -- is exactly the thing a raise earlier in that thread used to eat -- and
+    -- a diagnostic that disappears in the case it was written for is worse
+    -- than none, because its absence gets read as "the resource is dead".
+    local raised = newLobbyFixture({ pedRaises = true })
+    t.isTrue(raised.log():find('lobby: ', 1, true) ~= nil,
+        'the one line an operator is told to look for is missing exactly when they need it: '
+        .. raised.log())
+    t.isTrue(raised.log():find('ground marker', 1, true) ~= nil,
+        'and it does not say the marker went up in the NPC\'s place')
+
+    -- And on the ordinary path it names the NPC instead.
+    local fine = newLobbyFixture()
+    t.isTrue(fine.log():find('lobby: NPC at', 1, true) ~= nil,
+        'a healthy start says nothing about where it put itself: ' .. fine.log())
+end)
+
 t.test('starting the resource asks the server for nothing', function()
     -- The server reads a state request as "this player has a panel open" and
     -- never unreads it while they are connected. Asked here, on every

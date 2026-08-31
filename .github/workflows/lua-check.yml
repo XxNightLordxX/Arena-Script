@@ -73,6 +73,13 @@ jobs:
       - name: luacheck
         run: luacheck .
 
+      # tests/panel/*.test.js load html/app.js into a DOM shim and assert what
+      # it puts on the wire. Node ships on the runner, so run.sh finds it and
+      # runs them; without it they are skipped with a notice rather than
+      # silently passing.
+      - name: Node version
+        run: node --version
+
       # tests/run.sh runs every tests/*_spec.lua under plain lua5.4 and exits
       # non-zero if any fails. It also exits 2 when it finds no spec files at
       # all, and that is a failure on purpose -- a green tick from a suite that

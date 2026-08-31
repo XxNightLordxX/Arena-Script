@@ -226,19 +226,38 @@ local function grantReviveAce()
         end
     end
 
-    local applied = 0
     for _, line in ipairs(wide) do
-        local ok, err = pcall(ExecuteCommand, line)
-        if ok then
-            applied = applied + 1
-        else
-            ArenaLog('revive: "%s" failed (%s).', line, tostring(err))
-        end
+        pcall(ExecuteCommand, line)
     end
 
-    if applied > 0 then
-        ArenaLog('revive: granted this resource full command rights and admin group membership (%d grant(s)), because Config.Dispatch.revive.grantSelfAdmin is on. Any flaw in this resource can now run any command. Turn it off once the revive works another way.',
-            applied)
+    -- CHECKED, NOT ASSUMED, and the earlier version of this was a lie worth
+    -- describing. It counted a pcall that did not throw as a grant that
+    -- worked -- but ExecuteCommand does not throw when a command is refused,
+    -- it returns normally and the refusal appears on the console as
+    -- "Access denied for command add_ace". So the resource announced it had
+    -- been given full admin at the exact moment the server was refusing to
+    -- give it anything, which is the worst thing a diagnostic can do: it
+    -- sends whoever reads it looking somewhere else.
+    --
+    -- IsPrincipalAceAllowed asks the permission system itself, which is the
+    -- only answer worth having.
+    local ok, held = pcall(IsPrincipalAceAllowed, ('resource.%s'):format(resource), 'command')
+    if ok and held == true then
+        ArenaLog('revive: this resource now holds full command rights and admin group membership, because Config.Dispatch.revive.grantSelfAdmin is on. Any flaw in it can run any command -- turn it off once the revive works another way.')
+        return
+    end
+
+    -- A resource may not grant itself permissions, which is correct and is
+    -- the whole reason that door is shut. Said once, with the exact lines to
+    -- paste, rather than left as four "Access denied" lines an operator has
+    -- to work backwards from.
+    ArenaLog('revive: this resource is NOT allowed to grant itself permissions -- the add_ace lines above were refused by the server, which is correct behaviour. Nothing was granted.')
+    ArenaLog('revive: it does not matter. The arena revives its own players directly and needs no permission for that. These lines are only needed if you want it to run YOUR revive command as well, in server.cfg:')
+    ArenaLog('    add_ace resource.%s command allow', resource)
+    for _, group in ipairs(revive.adminGroups or { 'group.admin' }) do
+        if Arena.IsKey(group) then
+            ArenaLog('    add_principal resource.%s %s', resource, group)
+        end
     end
 end
 
@@ -270,7 +289,27 @@ function ArenaDispatch.Revive(src)
     if type(src) ~= 'number' or src <= 0 then return end
 
     local revive = (Config.Dispatch or {}).revive
-    if type(revive) ~= 'table' or revive.enabled ~= true then return end
+    if type(revive) ~= 'table' then revive = {} end
+
+    -- THE ARENA'S OWN REVIVE, FIRST AND UNCONDITIONALLY.
+    --
+    -- Every route to somebody else's revive turned out to be shut. The
+    -- command answered "Access denied", because a resource may not run an
+    -- admin command. Granting the permission answered "Access denied" too,
+    -- because a resource may not grant itself permissions either -- which is
+    -- correct, and is exactly why that door is closed.
+    --
+    -- So the arena stops knocking on it. Standing up a player this resource
+    -- knocked down is not a privileged act, and it needs no permission from
+    -- anybody: client/dispatch.lua does it directly. This runs whether or not
+    -- anything below is configured, which is what makes a fresh install work
+    -- with no integration at all.
+    --
+    -- Everything after this point is for reaching a MEDICAL SCRIPT's own
+    -- records, which the arena cannot see and will not guess at.
+    TriggerClientEvent('crimson_arena:client:revive', src)
+
+    if revive.enabled ~= true then return end
 
     -- COMMANDS, and this is the form most servers actually have. An
     -- ambulance script's revive is very often just `/revive <id>`, run by an

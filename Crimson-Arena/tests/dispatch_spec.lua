@@ -740,6 +740,36 @@ t.test('it says so rather than staying quiet when revive is switched off', funct
         'a disabled revive did nothing and explained nothing')
 end)
 
+t.test('the arena revives the player itself, before anything is configured', function()
+    -- THE CHANGE THAT MATTERS. Every route to somebody else's revive turned
+    -- out to be shut: the command was refused because a resource may not run
+    -- an admin command, and granting the permission was refused because a
+    -- resource may not grant itself permissions -- which is correct, and is
+    -- why that door exists.
+    --
+    -- So the arena stands its own players up directly and needs nobody's
+    -- permission for it. This has to work on a config with NOTHING filled
+    -- in, which is what this asserts.
+    local f = newFixture({
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = { disableExports = {}, cancelEvents = {} },
+        vanillaPolice = { enabled = false },
+        revive = { enabled = false, commands = {}, clientCommands = {}, serverEvents = {}, exports = {} },
+    })
+
+    f.D.Revive(5)
+
+    local revived = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:revive' then revived = message end
+    end
+
+    t.isNotNil(revived, 'a player the arena knocked down was left on the floor by default')
+    t.equals(revived.target, 5, 'the wrong player was revived')
+    t.equals(#f.commands, 0, 'a command ran on a config that names none')
+end)
+
 t.test('a client-side revive is sent to that player, and to nobody else', function()
     -- The failure this covers is silent by construction. A command
     -- registered CLIENT-side does not exist as far as the server console is
@@ -754,10 +784,19 @@ t.test('a client-side revive is sent to that player, and to nobody else', functi
     f.D.Revive(9)
 
     t.equals(#f.commands, 0, 'a client command was run on the server console instead')
-    t.equals(#f.toClients, 1, 'the client was never asked to run anything')
-    t.equals(f.toClients[1].name, 'crimson_arena:client:runCommand')
-    t.equals(f.toClients[1].target, 9, 'the wrong player was asked')
-    t.equals(f.toClients[1].args[1], 'revive')
+
+    -- FILTERED BY NAME NOW, because the arena's own revive is sent to the
+    -- same client on the same path. Counting messages rather than naming
+    -- them would make this test fail the moment a second, correct one
+    -- appeared -- which is exactly what happened.
+    local ran = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:runCommand' then ran = message end
+    end
+
+    t.isNotNil(ran, 'the client was never asked to run anything')
+    t.equals(ran.target, 9, 'the wrong player was asked')
+    t.equals(ran.args[1], 'revive')
 end)
 
 t.test('a client template WITH a placeholder still gets the id', function()
@@ -768,7 +807,12 @@ t.test('a client template WITH a placeholder still gets the id', function()
     local f = newFixture(config)
     f.D.Revive(4)
 
-    t.equals(f.toClients[1].args[1], 'heal 4')
+    local ran = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:runCommand' then ran = message end
+    end
+    t.isNotNil(ran, 'the client was never asked to run anything')
+    t.equals(ran.args[1], 'heal 4')
 end)
 
 t.test('both forms can run together, and each goes to its own realm', function()
@@ -779,7 +823,12 @@ t.test('both forms can run together, and each goes to its own realm', function()
     f.D.Revive(6)
 
     t.equals(f.commands[1], 'revive 6', 'the server console line is gone')
-    t.equals(#f.toClients, 1, 'the client line is gone')
+
+    local sawRunCommand = false
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:runCommand' then sawRunCommand = true end
+    end
+    t.isTrue(sawRunCommand, 'the client line is gone')
 end)
 
 t.test('a server command that ran is reported, so a silent failure is visible', function()

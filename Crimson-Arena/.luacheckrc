@@ -186,7 +186,7 @@ files['client/'] = {
 
         -- Entities: the lobby ped, and the player's own.
         'ApplyDamageToPed',
-        'ClearPedBloodDamage',
+        'ClearPedBloodDamage', 'ResetPedVisibleDamage', 'ClearPedLastWeaponDamage', 'ClearPedTasksImmediately', 'SetPedCanRagdoll', 'AnimpostfxStopAll', 'SetPlayerHealthRechargeMultiplier',
         'CreatePed',
         'DeleteEntity',
         'DoesEntityExist',
@@ -388,7 +388,7 @@ files['server/'] = {
         'SetRoutingBucketPopulationEnabled',
 
         -- The Discord webhook.
-        'ExecuteCommand', 'PerformHttpRequest',
+        'ExecuteCommand', 'IsPrincipalAceAllowed', 'PerformHttpRequest',
         'json',
     },
 }

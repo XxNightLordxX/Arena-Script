@@ -329,3 +329,72 @@ RegisterNetEvent('crimson_arena:client:runCommand', function(line)
 
     ExecuteCommand(line)
 end)
+
+--- The arena's OWN revive: everything a revive command would do, done here.
+---
+--- WHY THIS EXISTS. Every route to somebody else's revive was refused. The
+--- command answered "Access denied" because a resource may not run an admin
+--- command; granting the permission answered "Access denied" too, because a
+--- resource may not grant itself permissions either -- which is correct, and
+--- is the whole reason that door is shut.
+---
+--- So the arena stops knocking on it. A revive is not a privileged act when
+--- the thing being revived is a player this resource put in an arena and is
+--- now taking out again: it is standing up a body we knocked down.
+---
+--- WHAT IT DOES NOT DO, and cannot: it does not reach inside a medical
+--- script's own bookkeeping. If yours records deaths in metadata of its own,
+--- it still holds that record, and Config.Dispatch.revive's events and
+--- exports are how to reach it -- with a name from that script's
+--- documentation rather than a guess. What this guarantees is the half the
+--- arena owns: the player is alive, whole, unfrozen, visible and able to
+--- move, wherever they are standing.
+--- @param health integer|nil -- defaults to the ped's maximum
+function ArenaDispatch.Revive(health)
+    local ped = PlayerPedId()
+    if ped == 0 then return end
+
+    -- Resurrected in place. A revive that also teleports is a revive that
+    -- fights whoever is placing the player -- and in this resource something
+    -- always is: the respawn puts them at a spawn point, the exit puts them
+    -- in the lobby.
+    local x, y, z = table.unpack(GetEntityCoords(ped))
+    local heading = GetEntityHeading(ped)
+
+    if IsEntityDead(ped) then
+        NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
+        ped = PlayerPedId()
+    end
+
+    -- Everything below runs whether or not the body was dead, because the
+    -- state this fixes is not only death: a player can be alive and still be
+    -- stuck in the animation, damage and ragdoll a death left behind.
+    local maximum = GetEntityMaxHealth(ped)
+    SetEntityHealth(ped, math.min(tonumber(health) or maximum, maximum))
+
+    ClearPedBloodDamage(ped)
+    ResetPedVisibleDamage(ped)
+    ClearPedLastWeaponDamage(ped)
+
+    -- The tasks a death leaves running -- the fall, the writhe, the ragdoll
+    -- -- outlive the resurrect and leave a player alive on the floor unable
+    -- to stand, which reads exactly like not having been revived at all.
+    ClearPedTasksImmediately(ped)
+    SetPedCanRagdoll(ped, true)
+
+    SetEntityInvincible(ped, false)
+    SetEntityVisible(ped, true, false)
+    SetEntityCollision(ped, true, true)
+    FreezeEntityPosition(ped, false)
+
+    -- The screen effects a death leaves on: without this a revived player
+    -- can be alive and walking around a greyed-out, blurred world.
+    AnimpostfxStopAll()
+    SetPlayerHealthRechargeMultiplier(PlayerId(), 0.0)
+end
+
+--- Sent by the server whenever the arena stands somebody back up: on a
+--- mid-match respawn, on elimination, and on the way out.
+RegisterNetEvent('crimson_arena:client:revive', function(health)
+    ArenaDispatch.Revive(tonumber(health))
+end)

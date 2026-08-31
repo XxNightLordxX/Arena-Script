@@ -41,6 +41,36 @@ for spec in *_spec.lua; do
     echo ""
 done
 
+# ----------------------------------------------------------------------
+# THE PANEL, RUN RATHER THAN READ.
+#
+# Every Lua spec that covers html/app.js asserts on its TEXT, which catches a
+# wire that was never connected and cannot catch one connected to the wrong
+# thing. tests/panel/ loads the real file into a DOM shim and asserts what it
+# PUTS ON THE WIRE, which is the thing the server acts on.
+#
+# Node is not a hard dependency of this resource -- it runs in FiveM, which
+# has its own JS runtime -- so a machine without it is told what it skipped
+# rather than failed. CI has node and does run these.
+# ----------------------------------------------------------------------
+NODE_BIN="${NODE_BIN:-node}"
+
+if command -v "$NODE_BIN" >/dev/null 2>&1; then
+    for suite in panel/*.test.js; do
+        [ -e "$suite" ] || continue
+        total_files=$((total_files + 1))
+        echo "==> $suite"
+        if ! "$NODE_BIN" "$suite"; then
+            overall_status=1
+            failed_files+=("$suite")
+        fi
+        echo ""
+    done
+else
+    echo "tests/run.sh: '$NODE_BIN' not found -- SKIPPED tests/panel/*.test.js," >&2
+    echo "              which are the only tests that run html/app.js for real." >&2
+fi
+
 echo "============================================================"
 # No specs at all is a FAILURE, not a pass: a green tick from a suite that
 # never ran is worse than a red one.

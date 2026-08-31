@@ -422,4 +422,192 @@ t.test('and the match ending clears the sweep with everything else', function()
     t.equals(f.outlineCount(), 0)
 end)
 
+-- ======================================================================
+-- SOMEBODY ELSE'S MATCH
+--
+-- The strongest form of "nobody outside sees it". Not a bystander in the
+-- street -- another fighter, in another round, at the same coordinates, in
+-- their own routing bucket. If any of this leaked, it would leak there
+-- first: same event names, same natives, same loop, and a scoreboard
+-- arriving on both clients at once.
+-- ======================================================================
+
+t.test('a fighter in ANOTHER match draws nothing of this one', function()
+    local mine = newFixture()
+    mine.enterLive()
+    mine.hud()
+    mine.step()
+
+    local theirs = newFixture()
+    theirs.enterLive({ matchId = 'match-2' })
+    -- The other round's scoreboard arrives on their client too, because
+    -- matchHud is delivered per match and this fixture can hand them one.
+    -- What matters is whose it is.
+    theirs.hud()
+    theirs.step()
+
+    -- Both are drawing their OWN roster; the point is that neither draws the
+    -- other's ids in addition to it.
+    t.isTrue(mine.blipCount() > 0, 'the first match drew nothing, so this proves nothing')
+    t.equals(theirs.blipCount(), mine.blipCount(),
+        'the second match drew a different number of blips to the first')
+end)
+
+t.test('and a scoreboard for a match this client is not in is not drawn', function()
+    -- THE ACTUAL LEAK TO WORRY ABOUT. A client that draws whatever roster it
+    -- is handed would put the other arena's fighters on the map the moment
+    -- one message went to the wrong bucket. Nobody would report it -- they
+    -- would just start winning.
+    local f = newFixture()
+    f.enterLive()
+
+    -- Deliver a roster of ids this client shares no match with.
+    f.hud(scoreboard({
+        [7] = { team = 'crimson', alive = true },
+        [8] = { team = 'ash', alive = true },
+    }))
+    f.step()
+
+    local drawn = f.blipped()
+    t.isNil(drawn[7], 'a fighter from another roster was blipped')
+    t.isNil(drawn[8], 'a fighter from another roster was blipped')
+end)
+
+-- ======================================================================
+-- NOTHING ACCUMULATES, AND NOTHING IS LEFT BEHIND
+--
+-- Every one of these outlives the round if it is missed. A blip nobody
+-- removes stays on the map until the player reconnects; an outline nobody
+-- removes follows a ped around the city.
+-- ======================================================================
+
+t.test('a hundred sweeps do not leave a hundred blips', function()
+    -- The loop redraws every pass. A redraw that adds without removing looks
+    -- perfectly correct for the first few seconds of a round.
+    local f = newFixture()
+    f.enterLive({ radar = true })
+    f.hud()
+
+    for _ = 1, 5 do f.step() end
+    local settled = f.blipCount()
+    t.isTrue(settled > 0, 'nothing was drawn at all')
+
+    for _ = 1, 100 do f.step() end
+    t.equals(f.blipCount(), settled,
+        ('the blip count grew from %d to %d over a hundred passes'):format(settled, f.blipCount()))
+end)
+
+t.test('and a hundred passes do not leave a hundred outlines', function()
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+
+    for _ = 1, 5 do f.step() end
+    local settled = f.outlineCount()
+    t.isTrue(settled > 0, 'nobody was hazed at all')
+
+    for _ = 1, 100 do f.step() end
+    t.equals(f.outlineCount(), settled,
+        ('the outline count grew from %d to %d'):format(settled, f.outlineCount()))
+end)
+
+t.test('a teammate who leaves the roster loses their blip and their haze', function()
+    -- Somebody disconnecting mid-round is the ordinary case, and their dot
+    -- staying on the map is the kind of thing that reads as a live player.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    f.step()
+    t.isTrue(f.blipped()[MATE] == true, 'the teammate was never blipped')
+
+    -- The next scoreboard simply does not have them. Built by hand rather
+    -- than by override: the override helper edits an existing row, so there
+    -- is no value it takes that means "this player is gone".
+    f.hud({
+        { id = SELF, name = 'You',   alive = true, team = 'crimson' },
+        { id = FOE,  name = 'Foe',   alive = true, team = 'ash' },
+        { id = FOE2, name = 'Foe 2', alive = true, team = 'ash' },
+    })
+    f.step()
+
+    t.isNil(f.blipped()[MATE], 'a teammate who left the round kept their blip')
+    t.equals(f.outlineCount(), 0, 'a teammate who left the round kept their haze')
+end)
+
+t.test('stopping the resource takes every blip and outline with it', function()
+    -- The one exit that does not go through the server, and the one an
+    -- operator performs most often.
+    local f = newFixture()
+    f.enterLive({ radar = true })
+    f.hud()
+    for _ = 1, 5 do f.step() end
+    t.isTrue(f.blipCount() > 0)
+
+    f.fire('onResourceStop', 'crimson_arena')
+
+    t.equals(f.blipCount(), 0, ('%d blips survived the resource stopping'):format(f.blipCount()))
+    t.equals(f.outlineCount(), 0, ('%d outlines survived the resource stopping'):format(f.outlineCount()))
+end)
+
+t.test('and the round ending leaves neither behind, sweep lit or not', function()
+    -- Both states, because the sweep is the one that has extra to clean up
+    -- and "it worked when nothing was lit" is not the interesting case.
+    for _, radar in ipairs({ false, true }) do
+        local f = newFixture()
+        f.enterLive({ radar = radar })
+        f.hud()
+        for _ = 1, 5 do f.step() end
+
+        f.fire('crimson_arena:client:exitArena', {})
+
+        t.equals(f.blipCount(), 0,
+            ('radar=%s: %d blips left after the round'):format(tostring(radar), f.blipCount()))
+        t.equals(f.outlineCount(), 0,
+            ('radar=%s: %d outlines left after the round'):format(tostring(radar), f.outlineCount()))
+    end
+end)
+
+-- ======================================================================
+-- THE HAZE IS NEVER A WALLHACK
+--
+-- The outline draws THROUGH walls. On a teammate that is the point; on an
+-- enemy it is an aimbot with a palette, and it would be invisible as a bug
+-- to everyone except the person benefiting.
+-- ======================================================================
+
+t.test('no number of radar sweeps ever hazes an enemy', function()
+    -- Once is a test. A hundred passes is the question actually worth
+    -- asking, because the sweep toggles and the haze does not.
+    local f = newFixture()
+    f.enterLive({ radar = true })
+    f.hud()
+
+    local hazedFoe = false
+    for _ = 1, 200 do
+        f.step()
+        for ped in pairs(f.outlines) do
+            local id = ped - 1000
+            if id == FOE or id == FOE2 then hazedFoe = true end
+        end
+    end
+
+    t.isFalse(hazedFoe, 'an enemy was outlined during a radar sweep -- that draws through walls')
+end)
+
+t.test('and nobody at all is hazed in a free-for-all, however long it runs', function()
+    -- No teams means no teammates means nothing to haze. The rule is not
+    -- "haze fewer people", it is "there is nobody this applies to".
+    local f = newFixture()
+    f.enterLive({ modeKey = 'ffa', teamKey = nil, radar = true })
+    f.hud(scoreboard({
+        [MATE] = { team = nil, alive = true },
+        [FOE] = { team = nil, alive = true },
+    }))
+
+    for _ = 1, 200 do
+        f.step()
+        t.equals(f.outlineCount(), 0, 'somebody was hazed in a free-for-all')
+    end
+end)
+
 os.exit(t.summary())

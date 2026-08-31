@@ -67,7 +67,30 @@ function loadPanel(root) {
         document: {
             getElementById: (id) => nodes[id] || (nodes[id] = makeNode(id)),
             querySelectorAll: () => [],
-            createElement: (tag) => makeNode('el:' + tag),
+            /*
+             * Elements the panel BUILDS, registered under whatever id it
+             * gives them -- which is what a real document does, and what
+             * makes a control the panel created addressable by a test.
+             *
+             * Without this only the ids the panel LOOKED UP existed, so a
+             * card or an input it created was unreachable: node() would
+             * conjure a fresh detached one and every assertion against it
+             * passed for the wrong reason.
+             */
+            createElement: (tag) => {
+                const node = makeNode('el:' + tag);
+                let assigned = '';
+                Object.defineProperty(node, 'id', {
+                    get() { return assigned; },
+                    set(value) {
+                        assigned = String(value);
+                        if (assigned) nodes[assigned] = node;
+                    },
+                    enumerable: true,
+                    configurable: true,
+                });
+                return node;
+            },
             addEventListener() {},
             activeElement: null,
             body: makeNode('body'),
@@ -114,10 +137,28 @@ function loadPanel(root) {
         },
         /** @returns {object} the node, created on demand like the real DOM lookup */
         node(id) { return nodes[id] || (nodes[id] = makeNode(id)); },
+        /**
+         * Whether the PANEL built a node with this id, as opposed to a test
+         * having conjured one by asking for it.
+         *
+         * node() creates on demand, which is right for driving controls and
+         * useless for asking whether a control exists -- every id "exists"
+         * the moment you look. This asks the real question.
+         */
+        built(id) { return Object.prototype.hasOwnProperty.call(nodes, id); },
         /** Fires one DOM event on a node, the way a player would. */
         fire(id, type, event) {
             const node = this.node(id);
-            (node.listeners[type] || []).forEach((fn) => fn(event || { target: node }));
+            // A real event carries these and the panel calls them: controls
+            // that sit inside a clickable card stop propagation so clicking
+            // them does not also toggle the card. An event object without
+            // them throws instead of testing anything.
+            const detail = Object.assign({
+                target: node,
+                stopPropagation() {},
+                preventDefault() {},
+            }, event || {});
+            (node.listeners[type] || []).forEach((fn) => fn(detail));
         },
         /**
          * All text rendered inside a node, children included.

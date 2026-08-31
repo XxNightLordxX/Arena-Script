@@ -221,7 +221,11 @@ t.test('picking the weapon the operator already hands out does not hand it out t
     -- which form the shipped config happens to use today. Reading the field
     -- directly made it fail the moment that choice changed, which is a test
     -- failing for a reason it does not care about.
+    -- alwaysGive ships EMPTY -- a player carries what they picked. This test
+    -- is about the guard between the picked loop and the alwaysGive loop, so
+    -- it puts a house weapon there itself rather than depending on one.
     local Config = stock.Config
+    Config.Loadouts.alwaysGive = { { key = 'knife' } }
     local house = Config.Loadouts.alwaysGive[1]
     local houseWeapon = house.weapon or Arena.GetWeaponByKey(house.key).weapon
     t.equals(houseWeapon, 'WEAPON_KNIFE')
@@ -253,6 +257,7 @@ t.test('an alwaysGive entry does not overwrite the ammo the player chose for the
 end)
 
 t.test('alwaysGive still lands for a player who picked something else', function()
+    stock.Config.Loadouts.alwaysGive = { { key = 'knife' } }
     -- The guard must not have been bought by making the house entry easy to
     -- lose: you still cannot spend your slots out of it.
     local loadout = Arena.ResolveLoadout({ weapons = { { key = 'rifle' }, { key = 'shotgun' } } })
@@ -294,6 +299,11 @@ t.test('a re-resolved loadout still loses a weapon the operator has since switch
         for _, weapon in ipairs(config.Loadouts.weapons) do
             if weapon.key == 'sniper' then weapon.enabled = false end
         end
+        -- The house weapon this test's stored loadout carries. alwaysGive
+        -- ships empty, and without an entry here the re-appending loop has
+        -- nothing to re-append, so the knife below would vanish for a reason
+        -- that has nothing to do with the disabled sniper.
+        config.Loadouts.alwaysGive = { { key = 'knife' } }
     end)
 
     local stored = {

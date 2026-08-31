@@ -879,6 +879,32 @@ option {
     overscroll-behavior: contain;
 }
 
+/* THE TYPED AMOUNT, sitting in the same row as the preset chips.
+
+   Deliberately narrow: it holds at most a four-digit magazine, and a wide
+   box beside a row of chips reads as the main control rather than the
+   alternative to them. */
+.weapon-ammo-custom {
+    width: 4.5rem;
+    padding: 0.25rem 0.4rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.weapon-ammo-custom:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.weapon-ammo-custom:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .weapon-card {
     padding: 0.7rem 0.8rem;
     background: var(--surface);

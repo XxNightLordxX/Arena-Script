@@ -520,6 +520,18 @@
     // goes through arrayOf() and no caller may assume an array.
     // ------------------------------------------------------------------
 
+    /* Whether this weapon lets a player type their own amount.
+
+       Mirrors Arena.AllowsCustomAmmo on the server, per weapon first and then
+       the global switch, so the box is never offered for a value the server
+       would refuse. */
+    function allowsCustomAmmo(weapon) {
+        if (weapon && weapon.allowCustomAmmo !== undefined && weapon.allowCustomAmmo !== null) {
+            return weapon.allowCustomAmmo === true;
+        }
+        return (cfg().loadouts || {}).allowCustomAmmo === true;
+    }
+
     function ammoTypesOf(weapon) {
         return arrayOf(weapon && weapon.ammoTypes).filter(function (entry) {
             return entry && keyOr(entry.key, null) !== null;
@@ -2002,6 +2014,10 @@
         var poolFull = !picked && draftCount(melee) >= poolLimit(melee);
 
         var card = makeEl('div', 'weapon-card');
+        /* Addressable, so a test can click the control a player clicks
+           rather than reaching past the panel into its internals -- and so
+           the box below can name what it belongs to. */
+        card.id = 'weapon-card-' + weapon.key;
         if (picked) card.classList.add('active');
         /* Dimmed rather than hidden or disabled: the weapon is still on
            offer, it is the allowance that is spent, and clicking it says
@@ -2032,6 +2048,56 @@
                 });
                 row.appendChild(chip);
             });
+
+            /* THE TYPED AMOUNT, when the operator allows one.
+
+               The presets stay -- they are what most people will click --
+               and this sits beside them for anyone who wants a number that
+               is not on the list.
+
+               `max` is the ceiling and the server enforces it on every
+               request whatever this box says, so the input is capped here
+               only to tell the player where the limit is, never to be the
+               thing that holds it. */
+            /* UNDER THE WEAPON YOU CHOSE, and only then.
+               A box on a weapon nobody has taken is asking how much
+               ammunition they want for a gun they are not carrying. */
+            if (allowsCustomAmmo(weapon) && picked) {
+                var box = makeEl('input', 'weapon-ammo-custom');
+                box.id = 'weapon-ammo-custom-' + weapon.key;
+                box.type = 'number';
+                box.min = '0';
+                box.max = String(int(ammo.max, 0));
+                box.step = '1';
+                box.value = String(chosen);
+                box.disabled = !canChooseLoadout();
+                box.title = 'Type any amount up to ' + int(ammo.max, 0);
+
+                /* Clicking into the box must not toggle the weapon card
+                   underneath it, which is what every other click here does. */
+                box.addEventListener('click', function (event) { event.stopPropagation(); });
+                box.addEventListener('input', function (event) {
+                    event.stopPropagation();
+                    var wanted = clampInt(event.target.value, 0, int(ammo.max, 0));
+                    setWeaponAmmo(weapon.key, wanted);
+                });
+
+                /* ENTER LOCKS IT IN.
+                   Typing already updates the draft, so Enter is not what
+                   makes the number count -- it is what SAVES, so a player
+                   can set an amount and commit without hunting for the save
+                   button at the bottom of the panel. */
+                box.addEventListener('keydown', function (event) {
+                    if (event.key !== 'Enter' && event.keyCode !== 13) return;
+                    event.stopPropagation();
+                    event.preventDefault();
+                    setWeaponAmmo(weapon.key, clampInt(event.target.value, 0, int(ammo.max, 0)));
+                    saveLoadout();
+                });
+
+                row.appendChild(box);
+            }
+
             card.appendChild(row);
         } else if (melee) {
             card.appendChild(makeEl('div', 'weapon-fixed', 'Melee — nothing to load'));
@@ -2047,7 +2113,18 @@
            round -- melee, or a weapon the operator switched types off for --
            and it gets no control at all, not a dead one reading 'none'. */
         var types = ammoTypesOf(weapon);
-        if (types.length > 0) {
+        /* ONE ROUND IS NOT A CHOICE, so it gets no control.
+           
+           Every weapon in a config generated from the server's own
+           ox_inventory data carries exactly one ammo type -- the round that
+           weapon's `ammoname` names -- so the picker was a row of one button,
+           permanently selected, asking a question with a single answer. The
+           correlation is already done; showing it as a choice only invites
+           the player to look for one that is not there.
+
+           A weapon an operator has genuinely given two or more rounds still
+           gets the full picker. */
+        if (types.length > 1) {
             var typeRow = makeEl('div', 'weapon-ammo');
             typeRow.appendChild(makeEl('span', 'weapon-field-label', 'Ammo type'));
 

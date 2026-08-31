@@ -231,15 +231,40 @@ function Arena.GetAmmoOptions(weapon)
     return out
 end
 
+--- Whether a player may type their own ammunition amount rather than being
+--- held to the preset list.
+---
+--- Read from ONE place by both ends. The panel decides whether to show the
+--- box by asking this, and the server decides whether to honour what comes
+--- back by asking this -- so a panel offering a box the server refuses, or a
+--- server accepting a value no box could produce, is not expressible.
+---
+--- Per weapon first, then the global switch. A server can allow typed
+--- amounts everywhere and still pin one weapon to its presets.
+--- @param weapon table? -- a Config.Loadouts.weapons entry
+--- @return boolean
+function Arena.AllowsCustomAmmo(weapon)
+    if type(weapon) == 'table' and weapon.allowCustomAmmo ~= nil then
+        return weapon.allowCustomAmmo == true
+    end
+    return Config.Loadouts.allowCustomAmmo == true
+end
+
 --- Turns whatever a client asked for into an ammo count the server is
 --- willing to hand out.
 ---
 --- THE RULE, in order:
 ---   1. A weapon with a fixed `options` list only ever gets a value FROM
----      that list. An off-list request is not clamped to the nearest legal
----      value -- it falls back to the default, because "closest" would let
----      a modified client walk a value up past a preset by asking for one
----      just above it.
+---      that list -- UNLESS `Config.Loadouts.allowCustomAmmo` is on, which
+---      turns the list from the only legal values into suggested presets and
+---      an off-list request is clamped into [0, max] instead.
+---
+---      With it OFF an off-list request falls back to the default rather
+---      than being rounded, because "closest" would let a modified client
+---      walk a value up past a preset by asking for one just above it.
+---      Clamping to `max` is not that: `max` is the ceiling either way, so
+---      allowing a custom amount widens what a player may ASK for and moves
+---      the ceiling not at all.
 ---   2. A weapon with no `options` list is a free-form ammo weapon: the
 ---      request is clamped into [0, max].
 ---   3. Anything non-numeric, and any weapon at all when
@@ -265,6 +290,13 @@ function Arena.ResolveAmmo(weapon, requested)
             if option == wanted then
                 return Arena.ClampInt(option, 0, maximum) or default
             end
+        end
+
+        -- Off the list. Whether that is a request or a refusal is the one
+        -- thing allowCustomAmmo decides, and `max` is the ceiling in both
+        -- cases -- so this widens what may be ASKED for and nothing else.
+        if Arena.AllowsCustomAmmo(weapon) then
+            return Arena.ClampInt(wanted, 0, maximum) or default
         end
         return default              -- rule 1: off-list is refused, not rounded
     end

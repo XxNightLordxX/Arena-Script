@@ -298,10 +298,17 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted)
     end
 
     if not placed then
-        -- Nothing answered. Better a metre in the air, dropping onto ground
-        -- that has by now streamed in, than left at a Z the probe could not
-        -- confirm -- the fall is survivable and being under the map is not.
-        SetEntityCoordsNoOffset(ped, x, y, z + 1.0, false, false, false)
+        -- NOTHING ANSWERED, so this is the one case where height is worth
+        -- more than concealment.
+        --
+        -- The probe failing means the ground here is not known -- which is
+        -- exactly the situation that drops a player through the map. A short
+        -- fall onto terrain that has since streamed in is survivable and
+        -- being under the map is not, so this deliberately uses more
+        -- head-room than the ordinary hold above: it is not where players
+        -- are put, it is where players are put when the alternative is
+        -- falling out of the world.
+        SetEntityCoordsNoOffset(ped, x, y, z + math.max(lift, 10.0), false, false, false)
     end
 
     -- Restored explicitly rather than assumed: entry wants the ped held still

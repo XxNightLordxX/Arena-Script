@@ -509,14 +509,22 @@ Config.Loadouts = {
 
     -- Handed to everyone on top of what they picked. Use it for a knife,
     -- a parachute, or nothing at all.
-    alwaysGive = {
-        -- BY KEY, not by weapon name. A bare weapon name resolves -- the rule
-        -- is documented and there is a spec for it -- but it arrives carrying
-        -- nothing from the list above, so the player sees a weapon labelled
-        -- 'WEAPON_KNIFE' with no category and no ammo pairing. Naming the key
-        -- hands over the real entry: 'Knife', melee, pinned at one.
-        { key = 'knife' },
-    },
+    -- EMPTY, so a player carries what they picked and nothing else.
+    --
+    -- The knife used to be here, handed to everybody on top of their loadout.
+    -- That made the melee allowance a lie: a player who deliberately took no
+    -- blade still had one, and a player who picked a different blade carried
+    -- two. It is still in the weapon list, so anyone who wants a knife can
+    -- take one -- it just is not decided for them.
+    --
+    -- Put something back by key, which inherits the real entry from the list
+    -- below -- label, category, and the ammunition that weapon takes:
+    --
+    --     alwaysGive = { { key = 'knife' } },
+    --
+    -- A bare `weapon = 'WEAPON_X'` also works, for handing out something
+    -- deliberately not in the list at all, like a parachute.
+    alwaysGive = {},
 
     -- Used only when `allowChoose = false`. Keys from the weapon list below,
     -- and keys only: with choosing switched off there is no request to
@@ -1758,6 +1766,25 @@ Config.Loadouts = {
         allowWeaponWithoutAmmoItem = true,
     },
 
+    -- LETTING A PLAYER TYPE THEIR OWN AMOUNT.
+    --
+    -- On, the ammo row gets a box next to the presets and a player may ask
+    -- for any number up to that weapon's `max`. The preset buttons stay --
+    -- they are what most people will click -- and become suggestions rather
+    -- than the only legal values.
+    --
+    -- WHAT THIS DOES NOT CHANGE: the ceiling. `max` is still enforced by the
+    -- server on every request, so this widens what a player may ASK for and
+    -- moves the limit not at all. With it OFF an off-list request falls back
+    -- to that weapon's default rather than being rounded up to the nearest
+    -- preset, which is what stops a modified client walking a value past a
+    -- preset by asking for one just above it.
+    --
+    -- Per weapon too: give any weapon in the list its own
+    -- `allowCustomAmmo = false` to pin that one to its presets while the
+    -- rest stay free.
+    allowCustomAmmo = true,
+
     -- Which type a player gets when they express no preference.
     defaultAmmoType = 'standard',
 
@@ -2008,7 +2035,17 @@ Config.Match = {
     -- down from well overhead -- a maths query nobody is ever at, and the
     -- part that actually fixes a spawn Z written below the surface. That
     -- height is not configurable because it is not a gameplay decision.
-    spawnHeightOffset = 1.0,
+    -- RAISED FROM 1.0, because a metre was not clearing it.
+    --
+    -- Three metres is still not a skydive -- nobody watching learns where
+    -- anybody spawned from it, which is the reason this is not simply set to
+    -- fifty -- but it is enough head-room that a ped placed a moment before
+    -- the ground finishes streaming falls onto terrain instead of through it.
+    --
+    -- This is the height a player is HELD at. It is not the height the ground
+    -- is searched from: that is fixed, much higher, and explained where the
+    -- probe happens in client/match.lua.
+    spawnHeightOffset = 3.0,
 
     -- Eliminated players watch the rest of the match instead of being sent
     -- straight back to the lobby.
@@ -2421,10 +2458,33 @@ Config.Dispatch = {
             -- is off, so on this box it is usually quiet -- listed because it
             -- costs nothing and turning that key back on must not silently
             -- reopen the hole.
+            --
+            -- NO TEMPLATE BELOW, AND THERE CANNOT BE ONE. This is not a
+            -- dispatch call: sc-ambulance/server/main.lua:258-268 broadcasts
+            -- straight to on-duty ambulance players and never touches
+            -- AddNotification, so there is no id and nothing to withdraw.
+            -- Do not give it one -- it would be a name for a record that
+            -- does not exist.
             'hospital:server:ambulanceAlert',
 
             -- sc-dispatch's second EMS entry point.
             'mydispatch:requestEMS',
+
+            -- ---- THE TWO THAT WERE MISSING, and they are the commonest ---
+            --
+            -- sc-dispatch does not only react to a player ASKING for help.
+            -- Its own client polls the QB metadata every 500ms
+            -- (client/main.lua:2801-2846) and raises these two by itself the
+            -- moment `inlaststand` or `isdead` goes up -- no keypress, no
+            -- request. So a fighter who never touches G still files a call.
+            --
+            -- Leaving them out did more than miss a cancel: retraction is
+            -- only reachable from inside a cancelEvents handler, so these
+            -- two were not cancelled, not withdrawn, and not even LOGGED --
+            -- they simply stood on the dispatch board for the full
+            -- AutoClearTime with nothing anywhere reporting them.
+            'sc-dispatch:server:PlayerDown',
+            'sc-dispatch:server:PlayerDead',
         },
 
         -- ---- FORM 5: this resource WITHDRAWS the alert -------------------
@@ -2495,6 +2555,21 @@ Config.Dispatch = {
             idTemplates = {
                 ['sc-dispatch:server:ShotsFired'] = 'shots_%d_%d',
                 ['hospital:server:EMSDownAlert'] = 'emsdown_%d_%d',
+
+                -- ---- THE THREE THAT HAD NO SHAPE ------------------------
+                -- Read out of sc-dispatch/server/main.lua, where each id is
+                -- built as '<kind>_' .. src .. '_' .. os.time():
+                --   :2618 playerdown_   :2645 playerdead_   :2576 emshelp_
+                --
+                -- Without a shape here retractFor returns early and the call
+                -- is never withdrawn, so these stood on the board for the
+                -- full AutoClearTime. mydispatch:requestEMS was already in
+                -- the cancel list above and still had no template, which is
+                -- the quietest version of this: listed, matched, and then
+                -- silently unable to do the one thing listing it was for.
+                ['sc-dispatch:server:PlayerDown'] = 'playerdown_%d_%d',
+                ['sc-dispatch:server:PlayerDead'] = 'playerdead_%d_%d',
+                ['mydispatch:requestEMS'] = 'emshelp_%d_%d',
             },
         },
     },

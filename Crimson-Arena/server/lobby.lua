@@ -353,6 +353,11 @@ local function snapshotConfig()
             -- rather than inferred from the category in JavaScript, so the
             -- panel and the server can never disagree about what a bat is.
             melee = Arena.IsMeleeWeapon(weapon),
+            -- Resolved here for the same reason `melee` is: the panel shows
+            -- the typing box by asking this, and the server honours what
+            -- comes back by asking the same function -- so a box the server
+            -- would refuse cannot be drawn.
+            allowCustomAmmo = Arena.AllowsCustomAmmo(weapon),
             ammo = {
                 default = Arena.ToInt(ammo.default) or 0,
                 options = Arena.GetAmmoOptions(weapon),
@@ -388,6 +393,9 @@ local function snapshotConfig()
 
         loadouts = {
             allowChoose = Config.Loadouts.allowChoose ~= false,
+            -- The global switch, for a weapon the panel is drawing before it
+            -- has a per-weapon answer.
+            allowCustomAmmo = Config.Loadouts.allowCustomAmmo == true,
             -- Sent for the same reason ammoTypeSlots below is: the SERVER
             -- enforces it, refusing a non-host's request outright, so a
             -- panel that does not know would offer every player a picker

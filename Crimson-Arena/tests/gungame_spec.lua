@@ -498,7 +498,10 @@ t.test('the ladder replaces the weapon a player picked in the panel', function()
 end)
 
 t.test('walking in leaves everything that is not a weapon choice alone', function()
-    local f = newFixture(gunGameConfig())
+    local f = newFixture(function(config)
+        (gunGameConfig())(config)
+        config.Loadouts.alwaysGive = { { key = 'knife' } }
+    end)
     local match = newMatch(f, 'gungame', {
         { weapons = { { key = 'sniper' } }, armor = 50 },
         { weapons = { { key = 'rifle' } }, armor = 100 },
@@ -523,6 +526,10 @@ t.test('the ladder outranks Config.Loadouts.fixed when choosing is switched off'
     local f = newFixture(function(config)
         gunGameConfig()(config)
         config.Loadouts.allowChoose = false
+        -- Set here rather than inherited: alwaysGive ships empty, and this
+        -- test is about the ladder outranking `fixed`, not about what the
+        -- house hands out.
+        config.Loadouts.alwaysGive = { { key = 'knife' } }
     end)
     local match = newMatch(f, 'gungame', { {}, {} })
     goLive(f, match)

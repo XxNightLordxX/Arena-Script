@@ -78,15 +78,43 @@ end)
 
 -- ======================================================================
 -- ResolveAmmo
+--
+-- TWO MODES, AND EVERY TEST BELOW SAYS WHICH IT IS IN.
+--
+-- With `allowCustomAmmo` OFF the option list is the only legal set of values
+-- and an off-list request falls back to the weapon's default -- never to the
+-- nearest option, which is the move that would let a modified client walk a
+-- value up past a preset by asking for one just above it.
+--
+-- With it ON the list becomes presets and an off-list request is clamped
+-- into [0, max]. That is not the same relaxation: `max` is the ceiling in
+-- both modes, so it widens what may be ASKED for and moves the limit not at
+-- all.
+--
+-- The block below pins the refusing mode explicitly rather than leaning on
+-- the shipped default, because the shipped default changed and these tests
+-- are about the rule, not about today's config.
 -- ======================================================================
 
+--- The refusing mode, whatever the shipped config currently says.
+local function strict()
+    Config.Loadouts.allowCustomAmmo = false
+end
+
+--- The typing-allowed mode.
+local function custom()
+    Config.Loadouts.allowCustomAmmo = true
+end
+
 t.test('ResolveAmmo grants an on-list request exactly as asked', function()
+    strict()
     t.equals(Arena.ResolveAmmo(pistol, 30), 30)
     t.equals(Arena.ResolveAmmo(pistol, 60), 60)
     t.equals(Arena.ResolveAmmo(pistol, 120), 120)
 end)
 
 t.test('ResolveAmmo falls back to the default for an off-list request, never to the nearest option', function()
+    strict()
     -- 119 sits one under a legal 120. Rounding to "closest" is exactly the
     -- move that would let a client walk a value up past a preset.
     t.equals(Arena.ResolveAmmo(pistol, 119), 60)
@@ -96,6 +124,7 @@ t.test('ResolveAmmo falls back to the default for an off-list request, never to 
 end)
 
 t.test('ResolveAmmo refuses a value above max rather than clamping to it', function()
+    strict()
     -- 250 IS this weapon's max, and the request still does not get it: the
     -- clamp is only ever reachable through the option list.
     t.equals(Arena.ResolveAmmo(pistol, 9999), 60)
@@ -104,12 +133,14 @@ t.test('ResolveAmmo refuses a value above max rather than clamping to it', funct
 end)
 
 t.test('ResolveAmmo gives the default for a negative request', function()
+    strict()
     t.equals(Arena.ResolveAmmo(pistol, -1), 60)
     t.equals(Arena.ResolveAmmo(pistol, -9999), 60)
     t.equals(Arena.ResolveAmmo(knife, -1), 1)
 end)
 
 t.test('ResolveAmmo gives the default for a string, and still checks the list when the string is a number', function()
+    strict()
     t.equals(Arena.ResolveAmmo(pistol, 'plenty'), 60)
     t.equals(Arena.ResolveAmmo(pistol, ''), 60)
     -- A numeric string is coerced, which is harmless precisely because the
@@ -119,17 +150,20 @@ t.test('ResolveAmmo gives the default for a string, and still checks the list wh
 end)
 
 t.test('ResolveAmmo gives the default for a table', function()
+    strict()
     t.equals(Arena.ResolveAmmo(pistol, {}), 60)
     t.equals(Arena.ResolveAmmo(pistol, { 120 }), 60)
     t.equals(Arena.ResolveAmmo(pistol, { ammo = 120 }), 60)
 end)
 
 t.test('ResolveAmmo gives the default for nil, and for no argument at all', function()
+    strict()
     t.equals(Arena.ResolveAmmo(pistol, nil), 60)
     t.equals(Arena.ResolveAmmo(pistol), 60)
 end)
 
 t.test('ResolveAmmo floors a float before the option list is consulted', function()
+    strict()
     t.equals(Arena.ResolveAmmo(sniper, 40.9), 40)
     t.equals(Arena.ResolveAmmo(sniper, 40.0), 40)
     -- 39.9 floors to 39, which is not on the list, so it lands on the
@@ -138,7 +172,47 @@ t.test('ResolveAmmo floors a float before the option list is consulted', functio
     t.equals(Arena.ResolveAmmo(sniper, 20.5), 20)
 end)
 
+t.test('a typed amount is honoured when the operator allows one', function()
+    custom()
+    -- The whole point of the feature: a number that is on no preset list.
+    t.equals(Arena.ResolveAmmo(pistol, 119), 119)
+    t.equals(Arena.ResolveAmmo(pistol, 7), 7)
+    t.equals(Arena.ResolveAmmo(sniper, 39), 39)
+end)
+
+t.test('and it is still held to the weapon max, which is the whole safety of it', function()
+    custom()
+    t.equals(Arena.ResolveAmmo(pistol, 9999), pistol.ammo.max)
+    t.equals(Arena.ResolveAmmo(pistol, 251), pistol.ammo.max)
+    t.equals(Arena.ResolveAmmo(sniper, 9999), sniper.ammo.max)
+end)
+
+t.test('a typed amount below zero is still a refusal, not a clamp to zero', function()
+    -- Negative is not a small request, it is nonsense, and nonsense gets the
+    -- default in both modes.
+    custom()
+    t.equals(Arena.ResolveAmmo(pistol, -1), pistol.ammo.default)
+end)
+
+t.test('one weapon can be pinned to its presets while the rest stay free', function()
+    custom()
+    local pinned = {}
+    for key, value in pairs(pistol) do pinned[key] = value end
+    pinned.allowCustomAmmo = false
+
+    t.equals(Arena.ResolveAmmo(pinned, 119), pistol.ammo.default,
+        'a weapon carrying allowCustomAmmo = false still accepted a typed amount')
+    t.equals(Arena.ResolveAmmo(pistol, 119), 119,
+        'pinning one weapon pinned the others with it')
+end)
+
+t.test('melee is unaffected either way -- there is nothing to type', function()
+    custom()
+    t.equals(Arena.ResolveAmmo(knife, 99), 1, 'a knife accepted a typed magazine')
+end)
+
 t.test('ResolveAmmo clamps instead of refusing when the weapon has no options list', function()
+    strict()
     -- The melee entries are the only `options = nil` weapons that ship, and
     -- their ceiling is 1, so anything at all comes back as 1.
     t.equals(Arena.ResolveAmmo(knife, 500), 1)
@@ -175,9 +249,27 @@ end)
 
 -- ======================================================================
 -- ResolveLoadout
+--
+-- alwaysGive SHIPS EMPTY, so these set up their own where they need one.
+--
+-- They used to lean on a house knife that was in the shipped config, and
+-- counted it in every assertion -- so removing it failed six tests that were
+-- not about it. A test that says what it needs survives a config decision it
+-- has no opinion on.
 -- ======================================================================
 
+--- Hands everybody the house knife, for the tests that are about that.
+local function houseKnife()
+    Config.Loadouts.alwaysGive = { { key = 'knife' } }
+end
+
+--- Nothing on top of what the player picked -- the shipped arrangement.
+local function noHouseWeapon()
+    Config.Loadouts.alwaysGive = {}
+end
+
 t.test('ResolveLoadout drops an unknown weapon key and honours the rest', function()
+    houseKnife()
     local loadout, rejected = Arena.ResolveLoadout({
         weapons = { { key = 'railgun', ammo = 300 }, { key = 'rifle', ammo = 300 } },
     })
@@ -192,6 +284,7 @@ t.test('ResolveLoadout drops an unknown weapon key and honours the rest', functi
 end)
 
 t.test('ResolveLoadout refuses a disabled weapon by key exactly as it refuses an unknown one', function()
+    houseKnife()
     -- `enabled = false` has to be indistinguishable from "no such weapon",
     -- or it is only a UI hint and a modified client walks straight past it.
     t.isNil(Arena.GetWeaponByKey('grenadelauncher'))
@@ -210,6 +303,7 @@ t.test('ResolveLoadout refuses a disabled weapon by key exactly as it refuses an
 end)
 
 t.test('ResolveLoadout burns one slot for the same weapon asked for twice, not two', function()
+    houseKnife()
     local loadout, rejected = Arena.ResolveLoadout({
         weapons = {
             { key = 'rifle', ammo = 60 },
@@ -230,6 +324,7 @@ t.test('ResolveLoadout burns one slot for the same weapon asked for twice, not t
 end)
 
 t.test('ResolveLoadout stops at weaponSlots, and names what did not fit', function()
+    houseKnife()
     t.equals(Config.Loadouts.weaponSlots, 2)
 
     local loadout, rejected = Arena.ResolveLoadout({
@@ -313,7 +408,12 @@ t.test('a melee weapon is offered no ammo types, whatever the shared list says',
 end)
 
 t.test('ResolveLoadout honours a smaller weaponSlots, and zero slots', function()
-    local oneSlot = tweaked(function(config) config.Loadouts.weaponSlots = 1 end)
+    -- Set INSIDE the callback: tweaked() builds a fresh env from the shipped
+    -- config, so mutating the outer one does not reach it.
+    local oneSlot = tweaked(function(config)
+        config.Loadouts.weaponSlots = 1
+        config.Loadouts.alwaysGive = { { key = 'knife' } }
+    end)
     local single = oneSlot.ResolveLoadout({ weapons = { { key = 'pistol' }, { key = 'rifle' } } })
     t.equals(#single.weapons, 2)
     t.equals(single.weapons[1].weapon, 'WEAPON_PISTOL')
@@ -321,19 +421,45 @@ t.test('ResolveLoadout honours a smaller weaponSlots, and zero slots', function(
 
     -- Zero slots is a legal, if joyless, arena: nobody picks anything and
     -- everybody still walks in with what the operator hands out.
-    local noSlots = tweaked(function(config) config.Loadouts.weaponSlots = 0 end)
+    local noSlots = tweaked(function(config)
+        config.Loadouts.weaponSlots = 0
+        config.Loadouts.alwaysGive = { { key = 'knife' } }
+    end)
     local empty = noSlots.ResolveLoadout({ weapons = { { key = 'pistol' } } })
     t.equals(#empty.weapons, 1)
     t.equals(empty.weapons[1].weapon, 'WEAPON_KNIFE')
 
     -- A negative slot count is floored to zero rather than read as "all".
-    local negative = tweaked(function(config) config.Loadouts.weaponSlots = -5 end)
+    local negative = tweaked(function(config)
+        config.Loadouts.weaponSlots = -5
+        config.Loadouts.alwaysGive = { { key = 'knife' } }
+    end)
     local none = negative.ResolveLoadout({ weapons = { { key = 'pistol' } } })
     t.equals(#none.weapons, 1)
     t.equals(none.weapons[1].weapon, 'WEAPON_KNIFE')
 end)
 
+t.test('with alwaysGive empty a player carries exactly what they picked', function()
+    -- THE SHIPPED ARRANGEMENT. The house knife made the melee allowance a
+    -- lie: somebody who deliberately took no blade still had one, and
+    -- somebody who picked a different blade carried two.
+    noHouseWeapon()
+
+    local loadout = Arena.ResolveLoadout({ weapons = { { key = 'pistol' } } })
+
+    t.equals(#loadout.weapons, 1, 'something was handed out that the player did not ask for')
+    t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
+    t.isNil(loadout.weapons[1].alwaysGive)
+end)
+
+t.test('and the shipped config really is empty, so that is not just this test', function()
+    local shipped = Sandbox.newArenaEnv()
+    t.equals(#(shipped.Config.Loadouts.alwaysGive or {}), 0,
+        'the shipped config hands out a weapon nobody picked')
+end)
+
 t.test('ResolveLoadout appends alwaysGive past the slot limit', function()
+    houseKnife()
     local loadout = Arena.ResolveLoadout({ weapons = { { key = 'rifle' }, { key = 'shotgun' } } })
 
     -- Both slots are spent on the player's own picks and the operator's
@@ -423,7 +549,10 @@ t.test('turning the armour picker back on makes the options real again', functio
 end)
 
 t.test('ResolveLoadout swaps the request for the operator fixed list when allowChoose is off', function()
-    local arena = tweaked(function(config) config.Loadouts.allowChoose = false end)
+    local arena = tweaked(function(config)
+        config.Loadouts.allowChoose = false
+        config.Loadouts.alwaysGive = { { key = 'knife' } }
+    end)
     local loadout, rejected = arena.ResolveLoadout({
         weapons = { { key = 'sniper', ammo = 40 } },
         armor = 50,

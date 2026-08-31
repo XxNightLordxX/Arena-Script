@@ -132,7 +132,16 @@ local function loadoutArg(data)
 
             local key = keyArg(entry.key)
             if key then
-                weapons[#weapons + 1] = { key = key, ammo = intArg(entry.ammo) }
+                -- ammoType is a KEY, not a value: it names an entry in that
+                -- weapon's type list, and Arena.ResolveAmmoType refuses
+                -- anything not on it. A field dropped here would leave the
+                -- whole ammo-type feature inert on the wire while both ends
+                -- looked correct.
+                weapons[#weapons + 1] = {
+                    key = key,
+                    ammo = intArg(entry.ammo),
+                    ammoType = keyArg(entry.ammoType),
+                }
             end
         end
     end
@@ -203,7 +212,19 @@ end
 
 --- The panel asks for the snapshot the moment it opens, so answering is
 --- also how we learn a panel IS open and should be pushed to.
+--- RATE-LIMITED like every other client entry point, and it is the one that
+--- most needs it: BuildState walks every match, every player in each and the
+--- leaderboard, so it is the most expensive thing a client can ask for, and
+--- being a callback rather than an event was the only reason it escaped the
+--- limiter its `requestState` twin has always had.
+---
+--- A throttled call answers nil rather than a stale snapshot. client/ui.lua
+--- refuses to open on a falsy state and tells the player so, which is the
+--- right outcome for a second panel-open inside half a second -- that is a
+--- stuck button or a script, not somebody reading the menu.
 lib.callback.register('crimson_arena:server:getState', function(src)
+    if not ArenaRateLimit(src, 'crimson_arena:server:getState', RATE.state) then return nil end
+
     ArenaLobby.MarkPanelOpen(src)
     return ArenaLobby.BuildState(src)
 end)
@@ -382,6 +403,12 @@ AddEventHandler('playerDropped', function()
     -- being placed in the arena and the match registering it, and any future
     -- path that forgets. Clearing a flag that was never set costs nothing.
     ArenaDispatch.Clear(src)
+
+    -- Same catch as the flag above, for the same reason: detach() reclaims on
+    -- the normal exit, and this covers a drop between being issued ammunition
+    -- and the match recording it. Reclaiming from somebody who holds nothing
+    -- costs nothing.
+    ArenaAmmo.Reclaim(src, 'disconnected')
 
     -- Last, and always: the rate-limit history is keyed by source and
     -- nothing else drops it, so skipping this leaks a table per player who

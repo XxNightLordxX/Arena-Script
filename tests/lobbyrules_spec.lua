@@ -121,6 +121,17 @@ local function newArena(wallets, mutate, jobs)
         -- The arena flag, and the routing bucket a round is fought in. Both
         -- ride the same two choke points in server/match.lua, so a stub
         -- missing either half fails as a nil call naming it.
+        ArenaAmmo = {
+            -- No-op double. server/ammo.lua is exercised directly by
+            -- tests/ammo_spec.lua; here it only has to exist, because
+            -- server/match.lua calls it at both arena choke points.
+            IsEnabled = function() return false end,
+            Issue = function() return {} end,
+            Reclaim = function() return 0 end,
+            ReclaimAll = function() return 0 end,
+            Clear = function() return true end,
+            OnLoan = function() return 0 end,
+        },
         ArenaDispatch = {
             Set = function() end,
             Clear = function() end,

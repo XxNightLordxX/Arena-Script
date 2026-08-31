@@ -87,6 +87,17 @@ local function newServer(mutate)
             RecordMatch = function() end,
             Flush = function() end,
         },
+        ArenaAmmo = {
+            -- No-op double. server/ammo.lua is exercised directly by
+            -- tests/ammo_spec.lua; here it only has to exist, because
+            -- server/match.lua calls it at both arena choke points.
+            IsEnabled = function() return false end,
+            Issue = function() return {} end,
+            Reclaim = function() return 0 end,
+            ReclaimAll = function() return 0 end,
+            Clear = function() return true end,
+            OnLoan = function() return 0 end,
+        },
         ArenaDispatch = {
             Set = function(src, matchId) flags[src] = matchId end,
             Clear = function(src)

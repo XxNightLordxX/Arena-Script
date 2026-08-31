@@ -599,6 +599,11 @@ local instanced = {}
 --- @param src number
 --- @param payload table
 local function sendExitArena(src, payload)
+    -- FIRST, before anything else about this player is torn down. Ammunition
+    -- is the one thing they are holding that has value outside the arena, and
+    -- the exit is the last moment it can be taken back.
+    ArenaAmmo.Reclaim(src, 'left the arena')
+
     ArenaDispatch.Clear(src)
     -- Before the client is told, so the teleport back to the lobby happens
     -- in the world the player is going to be standing in rather than in the
@@ -683,6 +688,15 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
     -- a rifle is not in a fight, and suppressing their alerts while they
     -- stand in the middle of town would be a hole, not a feature.
     ArenaDispatch.Set(player.src, match.id)
+
+    -- Issued against this match so it can be reclaimed against it. A weapon
+    -- whose ammo item could not be handed over is named for the operator;
+    -- whether that player still fights is Config.Loadouts.ammoItems'
+    -- allowWeaponWithoutAmmoItem to decide, not this line's.
+    local missingAmmo = ArenaAmmo.Issue(player.src, match.id, player.loadout)
+    if #missingAmmo > 0 then
+        ArenaDebug('ammo: %s starts without items for %s', tostring(player.src), table.concat(missingAmmo, ', '))
+    end
 
     -- Instanced BEFORE the client is told to teleport in, so the player
     -- materialises inside the match's own network instance rather than

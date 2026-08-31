@@ -306,6 +306,7 @@ files['server/'] = {
         'ArenaPlayerName',
         'ArenaRateLimit',
         'ArenaWebhook',
+        'ArenaAmmo',
         'ArenaDispatch',
         'ArenaStats',
         'ArenaBetting',
@@ -314,6 +315,10 @@ files['server/'] = {
     },
 
     read_globals = {
+        -- server/ammo.lua checks ox_inventory is actually running
+        -- before it tries to hand anybody anything.
+        'GetResourceState',
+
         -- Shared realm. The server is the authority ON these rules, not over
         -- them: it reads the same functions the client does and never edits.
         'Arena',

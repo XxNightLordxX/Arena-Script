@@ -87,6 +87,9 @@ server_scripts {
     -- Straight after util.lua, whose ArenaDebug it calls, and before every
     -- file that flags a player as being in the arena.
     'server/dispatch.lua',
+    -- Hands out ammunition items and takes every one of them back. After
+    -- util (whose logging it uses) and before match.lua, which drives it.
+    'server/ammo.lua',
     'server/stats.lua',
     'server/betting.lua',
     'server/lobby.lua',

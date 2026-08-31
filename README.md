@@ -493,10 +493,21 @@ Turn it on only if NPC police still respond to gunfire on your server. It stops 
 
 ### Config keys nothing reads yet
 
-One.
+None. Every key in `config.lua` is read by something.
 
-| Key | What it looks like it does | What actually happens |
-|---|---|---|
+Two were removed rather than left sitting here doing nothing:
+`Config.Betting.entryFee.hostSetsForEveryone`, because joining always charges
+the host's fee and no payout mode weights a share by what a player staked; and
+`Config.Dispatch.disableHealthRecharge`, because the multiplier it set cannot
+be read back, so the arena could only "restore" it to a guess. Per-player
+stakes and a stake-weighted payout are a real feature if you want them, but a
+switch that silently does nothing is worse than no switch at all.
+
+This section is kept whether or not it has anything in it: it is the right
+place to record the next one, and an operator who has read this file once will
+come back looking for it before concluding a setting is broken.
+
+---|---|---|
 | `Config.Betting.entryFee.hostSetsForEveryone` | Off, each player would stake what they liked and the payout would be weighted by stake | Nothing. Joining always charges the host's fee — the join request carries no fee of its own — and no payout mode weights a share by what a player staked. The value reaches the panel in the state snapshot and nothing there reads it either. Setting it either way changes nothing you or a player can observe. |
 
 It is left in `config.lua` rather than deleted, because a key that vanishes

@@ -148,6 +148,17 @@ local function newFixture(mutate)
 
         ArenaLobby = lobby,
         ArenaStats = { RecordMatch = function(match) recorded[#recorded + 1] = match end },
+        ArenaAmmo = {
+            -- No-op double. server/ammo.lua is exercised directly by
+            -- tests/ammo_spec.lua; here it only has to exist, because
+            -- server/match.lua calls it at both arena choke points.
+            IsEnabled = function() return false end,
+            Issue = function() return {} end,
+            Reclaim = function() return 0 end,
+            ReclaimAll = function() return 0 end,
+            Clear = function() return true end,
+            OnLoan = function() return 0 end,
+        },
         ArenaDispatch = {
             Set = function() end,
             Clear = function() end,

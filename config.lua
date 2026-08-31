@@ -588,6 +588,244 @@ Config.Loadouts = {
             components = {},
             tint = 0,
         },
+
+        -- ==============================================================
+        -- MELEE. No ammo choice is offered for any of these -- there is
+        -- nothing to choose -- so the panel shows the weapon and nothing
+        -- else. Add as many as you like; the pattern is the same as any
+        -- other weapon, just with `ammo.options = nil`.
+        -- ==============================================================
+        {
+            key = 'machete',
+            weapon = 'WEAPON_MACHETE',
+            label = 'Machete',
+            category = 'melee',
+            enabled = true,
+            ammo = { default = 1, options = nil, max = 1 },
+            components = {},
+            tint = 0,
+        },
+        {
+            key = 'knuckles',
+            weapon = 'WEAPON_KNUCKLE',
+            label = 'Brass Knuckles',
+            category = 'melee',
+            enabled = true,
+            ammo = { default = 1, options = nil, max = 1 },
+            components = {},
+            tint = 0,
+        },
+        {
+            key = 'hatchet',
+            weapon = 'WEAPON_HATCHET',
+            label = 'Hatchet',
+            category = 'melee',
+            enabled = true,
+            ammo = { default = 1, options = nil, max = 1 },
+            components = {},
+            tint = 0,
+        },
+        {
+            key = 'crowbar',
+            weapon = 'WEAPON_CROWBAR',
+            label = 'Crowbar',
+            category = 'melee',
+            enabled = true,
+            ammo = { default = 1, options = nil, max = 1 },
+            components = {},
+            tint = 0,
+        },
+        {
+            key = 'golfclub',
+            weapon = 'WEAPON_GOLFCLUB',
+            label = 'Golf Club',
+            category = 'melee',
+            enabled = true,
+            ammo = { default = 1, options = nil, max = 1 },
+            components = {},
+            tint = 0,
+        },
+        {
+            key = 'switchblade',
+            weapon = 'WEAPON_SWITCHBLADE',
+            label = 'Switchblade',
+            category = 'melee',
+            enabled = true,
+            ammo = { default = 1, options = nil, max = 1 },
+            components = {},
+            tint = 0,
+        },
+        {
+            key = 'nightstick',
+            weapon = 'WEAPON_NIGHTSTICK',
+            label = 'Nightstick',
+            category = 'melee',
+            enabled = false,
+            ammo = { default = 1, options = nil, max = 1 },
+            components = {},
+            tint = 0,
+        },
+        {
+            key = 'battleaxe',
+            weapon = 'WEAPON_BATTLEAXE',
+            label = 'Battle Axe',
+            category = 'melee',
+            enabled = false,
+            ammo = { default = 1, options = nil, max = 1 },
+            components = {},
+            tint = 0,
+        },
+
+        -- ==============================================================
+        -- MK II WEAPONS -- the ones that can carry an AMMO TYPE.
+        --
+        -- See the AMMO TYPES note above this table. These four are the
+        -- weapons GTA actually ships special magazines for; adding an
+        -- `ammoTypes` list to a non-MK II weapon does nothing useful,
+        -- because there is no component for it to attach.
+        -- ==============================================================
+        {
+            key = 'pistolmk2',
+            weapon = 'WEAPON_PISTOL_MK2',
+            label = 'Pistol MK II',
+            category = 'sidearm',
+            enabled = true,
+            ammo = { default = 60, options = { 30, 60, 120 }, max = 250 },
+            components = {},
+            tint = 0,
+            defaultAmmoType = 'standard',
+            ammoTypes = {
+                { key = 'standard',   label = 'Standard',     component = nil },
+                { key = 'fmj',        label = 'FMJ',          component = 'COMPONENT_PISTOL_MK2_CLIP_FMJ' },
+                { key = 'hollow',     label = 'Hollow Point', component = 'COMPONENT_PISTOL_MK2_CLIP_HOLLOWPOINT' },
+                { key = 'incendiary', label = 'Incendiary',   component = 'COMPONENT_PISTOL_MK2_CLIP_INCENDIARY' },
+                { key = 'tracer',     label = 'Tracer',       component = 'COMPONENT_PISTOL_MK2_CLIP_TRACER' },
+            },
+        },
+        {
+            key = 'smgmk2',
+            weapon = 'WEAPON_SMG_MK2',
+            label = 'SMG MK II',
+            category = 'automatic',
+            enabled = true,
+            ammo = { default = 150, options = { 60, 150, 300 }, max = 500 },
+            components = {},
+            tint = 0,
+            defaultAmmoType = 'standard',
+            ammoTypes = {
+                { key = 'standard',   label = 'Standard',     component = nil },
+                { key = 'fmj',        label = 'FMJ',          component = 'COMPONENT_SMG_MK2_CLIP_FMJ' },
+                { key = 'hollow',     label = 'Hollow Point', component = 'COMPONENT_SMG_MK2_CLIP_HOLLOWPOINT' },
+                { key = 'incendiary', label = 'Incendiary',   component = 'COMPONENT_SMG_MK2_CLIP_INCENDIARY' },
+                { key = 'tracer',     label = 'Tracer',       component = 'COMPONENT_SMG_MK2_CLIP_TRACER' },
+            },
+        },
+        {
+            key = 'riflemk2',
+            weapon = 'WEAPON_ASSAULTRIFLE_MK2',
+            label = 'Assault Rifle MK II',
+            category = 'automatic',
+            enabled = true,
+            ammo = { default = 150, options = { 60, 150, 300 }, max = 500 },
+            components = {},
+            tint = 0,
+            defaultAmmoType = 'standard',
+            ammoTypes = {
+                { key = 'standard',   label = 'Standard',        component = nil },
+                { key = 'fmj',        label = 'FMJ',             component = 'COMPONENT_ASSAULTRIFLE_MK2_CLIP_FMJ' },
+                { key = 'ap',         label = 'Armour Piercing', component = 'COMPONENT_ASSAULTRIFLE_MK2_CLIP_ARMORPIERCING' },
+                { key = 'incendiary', label = 'Incendiary',      component = 'COMPONENT_ASSAULTRIFLE_MK2_CLIP_INCENDIARY' },
+                { key = 'tracer',     label = 'Tracer',          component = 'COMPONENT_ASSAULTRIFLE_MK2_CLIP_TRACER' },
+            },
+        },
+        {
+            key = 'snipermk2',
+            weapon = 'WEAPON_HEAVYSNIPER_MK2',
+            label = 'Heavy Sniper MK II',
+            category = 'precision',
+            enabled = false,      -- explosive rounds are a big change; opt in
+            ammo = { default = 20, options = { 10, 20, 40 }, max = 60 },
+            components = {},
+            tint = 0,
+            defaultAmmoType = 'standard',
+            ammoTypes = {
+                { key = 'standard',   label = 'Standard',        component = nil },
+                { key = 'fmj',        label = 'FMJ',             component = 'COMPONENT_HEAVYSNIPER_MK2_CLIP_FMJ' },
+                { key = 'ap',         label = 'Armour Piercing', component = 'COMPONENT_HEAVYSNIPER_MK2_CLIP_ARMORPIERCING' },
+                { key = 'incendiary', label = 'Incendiary',      component = 'COMPONENT_HEAVYSNIPER_MK2_CLIP_INCENDIARY' },
+                -- Ships off inside a weapon that ships off. Explosive sniper
+                -- rounds in a small arena are a different game.
+                { key = 'explosive',  label = 'Explosive',       component = 'COMPONENT_HEAVYSNIPER_MK2_CLIP_EXPLOSIVE', enabled = false },
+            },
+        },
+    },
+
+    -- ==================================================================
+    -- AMMO TYPES -- your ammo script's ITEMS.
+    --
+    -- SHIPS OFF. Turn it on once you have put your own item names in the list
+    -- below, because handing out an item name that does not exist on your
+    -- server is a silent nothing, and a player who chose armour-piercing and
+    -- got no ammo will report it as the arena being broken.
+    --
+    -- HOW IT WORKS: the player picks a type in the panel alongside the amount.
+    -- On entry the server gives them that many of the matching item. On the
+    -- way out it TAKES BACK exactly what it issued.
+    --
+    -- THE RECLAIM IS THE WHOLE POINT, and it is not optional in spirit even
+    -- though it is a switch. Without it the arena is an ammo printer: join,
+    -- take 250 armour-piercing rounds, walk out, repeat. Everything issued is
+    -- recorded per player per match and removed on every exit path, including
+    -- a disconnect and a resource restart. Anything that cannot be taken back
+    -- -- because the player already spent it, dropped it, or left -- is named
+    -- in the server console rather than written off quietly.
+    -- ==================================================================
+    ammoItems = {
+        enabled = false,
+
+        -- Take back what was issued when the player leaves the arena.
+        -- Turning this off makes the arena a source of free ammunition. It
+        -- exists only for servers that genuinely want that.
+        reclaimOnExit = true,
+
+        -- How many rounds one item is worth. With ox_inventory's usual
+        -- per-round ammo items this is 1 and a player picking 60 rounds is
+        -- given 60 items. If one item on your server is a box of 30, put 30
+        -- here and they get 2.
+        roundsPerItem = 1,
+
+        -- Give the weapon even when its ammo item could not be handed over.
+        -- On means a player with a full inventory fights with an empty gun
+        -- rather than being refused the round; off means the match refuses to
+        -- start them. On is friendlier and is the default.
+        allowWeaponWithoutAmmoItem = true,
+    },
+
+    -- Which type a player gets when they express no preference.
+    defaultAmmoType = 'standard',
+
+    -- THE TYPES, offered for every weapon that takes ammunition. Melee never
+    -- gets them -- a bat has nothing to load.
+    --
+    -- Override for one weapon by giving that weapon its own `ammoTypes` list
+    -- (do this when your item names differ per weapon, e.g. a pistol round and
+    -- a rifle round are separate items). Switch them off for one weapon with
+    -- `ammoTypes = false`.
+    --
+    --   key       -- what the panel and the wire use. Must be unique in a list.
+    --   label     -- what the player reads.
+    --   item      -- YOUR item name. This is the one you must edit.
+    --   component -- optional, and only meaningful on MK II weapons: GTA's own
+    --                special magazines are weapon components rather than items,
+    --                so a type can carry both and get both effects.
+    --   enabled   -- false hides it without deleting it.
+    defaultAmmoTypes = {
+        { key = 'standard',   label = 'Standard',        item = 'ammo-rifle' },
+        { key = 'fmj',        label = 'FMJ',             item = 'ammo-rifle-fmj' },
+        { key = 'ap',         label = 'Armour Piercing', item = 'ammo-rifle-ap' },
+        { key = 'incendiary', label = 'Incendiary',      item = 'ammo-rifle-incendiary' },
+        { key = 'hollow',     label = 'Hollow Point',    item = 'ammo-rifle-hollowpoint', enabled = false },
+        { key = 'tracer',     label = 'Tracer',          item = 'ammo-rifle-tracer',      enabled = false },
     },
 
     -- Body armour, picked the same way ammo is.
@@ -637,15 +875,6 @@ Config.Betting = {
         -- Quick-pick buttons in the panel. Any value between min and max is
         -- still accepted if the player types it.
         presets = { 500, 1000, 5000, 25000 },
-        -- The host sets one fee for the whole match and everyone in it pays
-        -- that. NOTHING READS THIS SWITCH YET: joining always charges the
-        -- host's fee -- the join payload carries no fee of its own -- and no
-        -- payout mode weights a share by what a player staked, so turning it
-        -- off changes nothing an operator or a player can observe. It is
-        -- recorded under "Config keys nothing reads yet" in the README rather
-        -- than quietly dropped, because a key that vanishes from config.lua
-        -- reads as a key that broke.
-        hostSetsForEveryone = true,
     },
 
     -- Taken off the top of the pot before it is paid out. 0 = no cut.

@@ -102,9 +102,26 @@ end
 --- re-equipped mid-match.
 --- @param ped integer
 local function stripIssuedWeapons(ped)
-    for _, hash in ipairs(givenWeapons) do
-        RemoveWeaponFromPed(ped, hash)
+    -- THE STRONG PATH, taken whenever we hold a capture to put back. Wiping
+    -- everything and restoring what they walked in with is the only version
+    -- of this that is airtight: removing only what we tracked leaves behind
+    -- anything picked up inside the arena, and a player who leaves carrying a
+    -- weapon the arena produced is exactly what this must never allow.
+    --
+    -- Guarded on `carried`, and that guard is the whole safety of it: with no
+    -- capture to restore from, a full wipe would take the player's own
+    -- weapons and give nothing back. In that case -- a capture that failed,
+    -- or an exit path that somehow runs before entry completed -- fall back
+    -- to removing only what we know we issued, which can never cost them
+    -- anything of their own.
+    if carried then
+        RemoveAllPedWeapons(ped, true)
+    else
+        for _, hash in ipairs(givenWeapons) do
+            RemoveWeaponFromPed(ped, hash)
+        end
     end
+
     givenWeapons = {}
 end
 

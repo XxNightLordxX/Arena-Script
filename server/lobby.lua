@@ -294,6 +294,27 @@ end
 --- built once and handed out by reference from then on.
 local configBlock
 
+--- The panel's view of one weapon's ammo types: key and label only.
+--- @param weapon table
+--- @return table[]
+local function ammoTypesFor(weapon)
+    local out = {}
+    for _, entry in ipairs(Arena.GetAmmoTypes(weapon)) do
+        out[#out + 1] = { key = entry.key, label = entry.label }
+    end
+    return out
+end
+
+--- Which of them is preselected. Resolved through the real function rather
+--- than read from config, so the panel opens on the type the server would
+--- actually hand out if the player changed nothing.
+--- @param weapon table
+--- @return string|nil
+local function defaultAmmoTypeFor(weapon)
+    local resolved = Arena.ResolveAmmoType(weapon, nil)
+    return resolved and resolved.key or nil
+end
+
 --- @return table
 local function snapshotConfig()
     if configBlock then return configBlock end
@@ -310,6 +331,17 @@ local function snapshotConfig()
                 options = Arena.GetAmmoOptions(weapon),
                 max = Arena.ToInt(ammo.max) or 0,
             },
+            -- The ammo TYPES this weapon offers, already resolved through the
+            -- same function the server will check the answer against, so the
+            -- picker cannot show a round the server would refuse. Empty for
+            -- melee and for any weapon an operator switched types off for --
+            -- the panel shows no type control at all in that case.
+            --
+            -- Item names are deliberately NOT sent: which inventory item
+            -- backs a round is the operator's business and nothing a client
+            -- needs, and it is the sort of detail worth not broadcasting.
+            ammoTypes = ammoTypesFor(weapon),
+            defaultAmmoType = defaultAmmoTypeFor(weapon),
         }
     end
 
@@ -346,7 +378,6 @@ local function snapshotConfig()
                 max = math.max(0, Arena.ToInt(fee.max) or 0),
                 default = math.max(0, Arena.ToInt(fee.default) or 0),
                 presets = fee.presets or {},
-                hostSetsForEveryone = fee.hostSetsForEveryone ~= false,
             },
             spectatorBets = {
                 enabled = spectator.enabled == true,

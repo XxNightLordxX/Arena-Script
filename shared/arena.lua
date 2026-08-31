@@ -272,6 +272,106 @@ function Arena.ResolveAmmo(weapon, requested)
     return Arena.ClampInt(wanted, 0, maximum) or default
 end
 
+-- ======================================================================
+-- AMMO TYPES
+--
+-- BUILT FOR A CUSTOM AMMO SCRIPT, not just for MK II magazines.
+--
+-- GTA's own special rounds -- incendiary, hollow-point, armour-piercing, FMJ,
+-- tracer -- exist only on MK II weapons, and only as weapon COMPONENTS. If
+-- that is all you run, give an ammo type a `component` and this resource
+-- attaches it; the client already applies components, so nothing else has to
+-- change.
+--
+-- Most servers running ammo types do it differently: an inventory item, a
+-- metadata field, a value their own script reads. So an ammo type may ALSO
+-- carry an `item`, and every grant fires a configurable server event with the
+-- weapon, the chosen type and the amount. Your script listens once and does
+-- whatever it does. That hook is what makes this work on ANY weapon rather
+-- than the four Rockstar shipped magazines for.
+--
+-- THE LIST APPLIES TO EVERY WEAPON THAT TAKES AMMO. Set it once in
+-- `Config.Loadouts.defaultAmmoTypes` and it is offered for all of them;
+-- override it on a single weapon by giving that weapon its own `ammoTypes`;
+-- switch it off for one weapon with `ammoTypes = false`. Melee is excluded
+-- automatically -- a knife has nothing to load.
+-- ======================================================================
+
+--- The ammo types on offer for one weapon: its own list, or the shared
+--- default, or none.
+--- @param weapon table -- a Config.Loadouts.weapons entry
+--- @return table[] types -- { { key, label, component, item } }
+function Arena.GetAmmoTypes(weapon)
+    if type(weapon) ~= 'table' then return {} end
+
+    -- An explicit `false` is an operator saying "not this one", and has to
+    -- beat the shared default.
+    if weapon.ammoTypes == false then return {} end
+
+    local list = weapon.ammoTypes
+    if type(list) ~= 'table' then
+        -- Melee never inherits the shared list. A weapon whose ceiling is one
+        -- round is not carrying ammunition, it is carrying a bat.
+        local ammo = weapon.ammo
+        local maximum = type(ammo) == 'table' and (Arena.ToInt(ammo.max) or 0) or 0
+        if maximum <= 1 then return {} end
+
+        list = Config.Loadouts.defaultAmmoTypes
+    end
+    if type(list) ~= 'table' then return {} end
+
+    local out = {}
+    for _, entry in ipairs(list) do
+        if type(entry) == 'table' and entry.enabled ~= false and Arena.IsKey(entry.key) then
+            out[#out + 1] = {
+                key = entry.key,
+                label = entry.label or entry.key,
+                -- Both optional, and independent. `component` is a GTA MK II
+                -- magazine; `item` is whatever your own script calls this
+                -- round. A type may carry neither and still be meaningful --
+                -- the grant event names it either way.
+                component = Arena.IsKey(entry.component) and entry.component or nil,
+                item = Arena.IsKey(entry.item) and entry.item or nil,
+            }
+        end
+    end
+    return out
+end
+
+--- Turns whatever ammo type a client asked for into one this server is
+--- willing to load.
+---
+--- Same posture as ResolveAmmo: an unknown or disabled key is REFUSED back to
+--- the default rather than guessed at, so shortening a list genuinely removes
+--- that round from the arena. A weapon with no types resolves to nil, and nil
+--- is a valid answer meaning "whatever this weapon loads normally".
+--- @param weapon table
+--- @param requested any -- straight off the wire; may be anything
+--- @return table|nil type -- { key, label, component, item }
+function Arena.ResolveAmmoType(weapon, requested)
+    local types = Arena.GetAmmoTypes(weapon)
+    if #types == 0 then return nil end
+
+    local wantedDefault = weapon.defaultAmmoType or Config.Loadouts.defaultAmmoType
+    local fallback = types[1]
+    if Arena.IsKey(wantedDefault) then
+        for _, entry in ipairs(types) do
+            if entry.key == wantedDefault then
+                fallback = entry
+                break
+            end
+        end
+    end
+
+    if Config.Loadouts.allowChoose == false then return fallback end
+    if not Arena.IsKey(requested) then return fallback end
+
+    for _, entry in ipairs(types) do
+        if entry.key == requested then return entry end
+    end
+    return fallback
+end
+
 --- Same shape of decision for body armour.
 --- @param requested any
 --- @return integer armor
@@ -363,12 +463,31 @@ function Arena.ResolveLoadout(request)
                 -- `alwaysGive` guard below has only the GTA name to test with.
                 seen[weapon.key] = true
                 seen[weapon.weapon] = true
+                local ammoType = Arena.ResolveAmmoType(weapon, type(entry) == 'table' and entry.ammoType or nil)
+
+                -- Copied, never appended to in place: `weapon.components` is
+                -- the operator's own table on the live config, and pushing a
+                -- player's chosen clip into it would leak that choice into
+                -- every later loadout for everybody.
+                local components = {}
+                for _, component in ipairs(type(weapon.components) == 'table' and weapon.components or {}) do
+                    components[#components + 1] = component
+                end
+                if ammoType and ammoType.component then
+                    components[#components + 1] = ammoType.component
+                end
+
                 resolved[#resolved + 1] = {
                     key = weapon.key,
                     weapon = weapon.weapon,
                     label = weapon.label or weapon.key,
                     ammo = Arena.ResolveAmmo(weapon, type(entry) == 'table' and entry.ammo or nil),
-                    components = type(weapon.components) == 'table' and weapon.components or {},
+                    -- Carried for the panel's summary and the match log; the
+                    -- component itself is already in `components`.
+                    ammoType = ammoType and ammoType.key or nil,
+                    ammoTypeLabel = ammoType and ammoType.label or nil,
+                    ammoTypeItem = ammoType and ammoType.item or nil,
+                    components = components,
                     tint = Arena.ToInt(weapon.tint) or 0,
                 }
             end

@@ -129,6 +129,11 @@ local function newServer(wallets, mutate)
         return match.id
     end
 
+    --- One tick of every captured thread, which is one pass of the sweep.
+    function server.step(times)
+        for _ = 1, (times or 1) do threads.step() end
+    end
+
     --- Runs the round to its end, with `loser` dying to the other fighter.
     function server.settle(matchId, loser)
         server.fire('setReady', 1, { ready = true })
@@ -191,6 +196,34 @@ t.test('an uncontested pool is returned, not paid out as a win', function()
         'the console says the pool was uncontested')
     t.notContains(server.log(), 'settled side-bets',
         'nothing was settled out of a pool with one side in it')
+end)
+
+t.test('and dying first and walking out does not forfeit it either', function()
+    -- The reported case, as it was actually played: they backed themselves,
+    -- died, left the arena rather than watching the rest, and the round was
+    -- decided without them. Leaving a match is not a way to lose a bet.
+    local server = newServer({
+        [1] = { cash = 100000, bank = 100000 },
+        [2] = { cash = 100000, bank = 100000 },
+        [3] = { cash = 100000, bank = 100000 },
+    })
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
+    server.fire('joinMatch', 3, { matchId = matchId, account = 'cash' })
+
+    t.isTrue(server.betting.PlaceSpectatorBet(1, matchId, 1, 5000, 'cash'), 'the self-bet was refused')
+    for src = 1, 3 do server.fire('setReady', src, { ready = true }) end
+    server.match.Start(matchId)
+    server.step()
+
+    server.match.OnDeath(1, 2)
+    server.match.RemovePlayer(1, 'left')
+    server.step()
+    server.match.OnDeath(3, 2)
+    server.step(8)
+
+    t.equals(server.cash(1), 100000, 'the bet was swallowed when they left')
 end)
 
 -- ======================================================================

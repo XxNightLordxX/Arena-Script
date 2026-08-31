@@ -1897,6 +1897,7 @@
         guarded(function () { plan = ammoTypePlan(null); });
 
         guarded(renderLoadoutNote);
+
         guarded(function () { renderWeaponSections(plan); });
         guarded(function () { renderLoadoutSlots(plan); });
         guarded(renderArmorPicker);
@@ -1915,8 +1916,8 @@
                match of your own. */
             host.appendChild(makeEl('div', 'hint', hostPicksLoadout()
                 ? 'The host picks one loadout and everyone in the match fights with it, so every '
-                  + 'player carries the same weapons. What you see here is what you will be handed '
-                  + 'when the round starts. Host a match yourself to choose it.'
+                  + 'player carries the same weapons. Into The Round below is exactly what you will '
+                  + 'be handed when the round starts. Host a match yourself to choose it.'
                 : 'This server issues a fixed loadout. The panel on the right is what you will be '
                   + 'handed when a round starts; nothing here can be changed.'));
             return;
@@ -1952,8 +1953,38 @@
     }
 
     function renderWeaponSections(plan) {
-        var firearms = weaponCatalogue(false);
-        var blades = weaponCatalogue(true);
+        /* THE PICKER GOES ENTIRELY for anybody who may not use it.
+
+           It used to be drawn and disabled, on the reasoning that seeing the
+           lists is worth something even when they cannot be touched. It is
+           not: on a host-picks server somebody who joined a match was handed
+           ninety-odd greyed-out weapon cards to scroll past, and the one
+           thing they actually wanted -- what they will be carrying -- was
+           underneath all of it. renderLoadoutNote says why the lists are
+           gone and renderLoadoutSlots says what was chosen.
+
+           DECIDED HERE, and only here. The first version of this put the
+           check in renderLoadout and skipped the call, which worked and was
+           a trap: this function shows `loadout-lists` too, so with the call
+           restored the guard upstream would be silently overruled -- two
+           places answering one question, later one wins. */
+        /* THE EMPTY CATALOGUE IS THE MECHANISM, and it is the whole of it.
+           Everything below reads from these two lists: the sections are
+           shown only when their list has something in it, the grids are only
+           built inside those same guards, and nothing else here touches the
+           DOM. So a player who may not choose produces exactly the same
+           render as an arena with no weapons enabled -- minus the "no
+           weapons enabled" notice, which would be a fault report and this
+           is not a fault.
+
+           There was an `if (!choosing) return` under this as well. It never
+           did anything -- by the time it was reached both lists were already
+           empty -- and a guard that cannot be observed is a guard nobody can
+           maintain. */
+        var choosing = canChooseLoadout();
+
+        var firearms = choosing ? weaponCatalogue(false) : [];
+        var blades = choosing ? weaponCatalogue(true) : [];
 
         /* meleeSlots = 0 is an operator switching melee off, and the panel
            should look like that was the intention: the section goes
@@ -1970,10 +2001,14 @@
         show(byId('loadout-lists'), gunsOn || meleeOn);
 
         var empty = byId('loadout-empty');
-        show(empty, !gunsOn && !meleeOn);
+        /* Not for somebody who was never offered a picker: "No weapons are
+           enabled on this server" is a fault report, and being handed a
+           loadout by the host is not a fault. */
+        var sayEmpty = choosing && !gunsOn && !meleeOn;
+        show(empty, sayEmpty);
         if (has(empty)) {
             clear(empty);
-            if (!gunsOn && !meleeOn) {
+            if (sayEmpty) {
                 empty.appendChild(makeEl('div', 'muted', 'No weapons are enabled on this server.'));
                 empty.appendChild(makeEl('div', 'hint',
                     'You will fight with whatever the arena hands out when the round starts.'));
@@ -2487,9 +2522,16 @@
 
         var options = arrayOf(armor.options);
         if (armor.allowChoose === false || !canChooseLoadout() || options.length === 0) {
-            var fixed = int(armor.default, 0);
+            /* WHAT THEY WILL ACTUALLY BE HANDED, which on a host-picks server
+               is the host's choice and not the operator's default -- reading
+               the default told a player they were starting with 100 while the
+               host had set them to none. */
+            var stored = (player().loadout || {}).armor;
+            var fixed = int(stored === undefined || stored === null ? armor.default : stored, 0);
             host.appendChild(makeEl('span', 'muted', fixed === 0 ? 'None' : String(fixed)));
-            host.appendChild(makeEl('div', 'hint', 'Set by the server. You start every life with this much.'));
+            host.appendChild(makeEl('div', 'hint', hostPicksLoadout() && player().isHost !== true
+                ? 'Set by the host of this match. You start every life with this much.'
+                : 'Set by the server. You start every life with this much.'));
             return;
         }
 

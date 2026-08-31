@@ -135,17 +135,6 @@ function ArenaUI.UpdateHud(data)
     ArenaUI.Send('hud', payload)
 end
 
-function ArenaUI.ShowHud()
-    if not Config.UI.showMatchHud then return end
-    ArenaUI.Send('hud', { visible = true })
-end
-
---- Not gated on `showMatchHud`: an operator turning the HUD off mid-session
---- must still be able to hide one that is already on screen.
-function ArenaUI.HideHud()
-    ArenaUI.Send('hud', { visible = false })
-end
-
 --- The big centred number before a round goes live.
 --- @param seconds integer
 --- @param label string?

@@ -125,6 +125,25 @@ local function newClient(opts)
     }
     for name, fn in pairs(world.natives) do overrides[name] = fn end
 
+    -- A HOOK INTO THE MIDDLE OF THE BUILD. Loading a model is where the
+    -- entry handler yields, so it is the only seam a round ending mid-build
+    -- can be simulated from.
+    --
+    -- `interruptAfter` counts model loads rather than firing on the first,
+    -- because the first is the measurement load -- before a single piece
+    -- exists, which is not the window that leaks.
+    local realRequest = overrides.RequestModel
+    local loads = 0
+    overrides.RequestModel = function(...)
+        loads = loads + 1
+        if c.duringBuild and loads >= (c.interruptAfter or 1) then
+            local interrupt = c.duringBuild
+            c.duringBuild = nil
+            interrupt()
+        end
+        return realRequest(...)
+    end
+
     local env = Sandbox.newArenaEnv(overrides)
     if opts.cover then
         for _, key in ipairs(opts.cover) do
@@ -459,6 +478,60 @@ t.test('and entering a second match does not stack a second floor on the first',
 
     t.equals(#c.world.live(), first,
         'the second round built on top of the first rather than replacing it')
+end)
+
+t.test('DEFECT: a round that ends mid-build leaves nothing standing at a thousand metres', function()
+    -- THE WINDOW THE BUILD ORDER OPENED. Building the floor before placing
+    -- the fighter is what makes the sky arena work at all -- but the build
+    -- YIELDS, on every model it loads, and a round can end inside that.
+    --
+    -- leaveArena runs in the window and takes the props down. Its
+    -- removeArenaProps finds the ones built SO FAR; the rest are created a
+    -- moment later, into an arena nobody is in. And leaveArena will not run
+    -- again -- it returns immediately for a match that has already gone --
+    -- so those pieces stand at a thousand metres for the rest of the
+    -- session, in an instance no one can reach to look at them.
+    --
+    -- Invisible from every angle: the player is home, their gear is back,
+    -- and nothing is on screen. Only the object count knows.
+    -- STREAMING IS TAKEN OUT OF THE PICTURE FOR THIS ONE, deliberately. The
+    -- world model refuses a CreateObject beyond its stream range, and the
+    -- exit teleports the player home -- so with the ordinary range every
+    -- piece after the interrupt would fail to build and the arena would look
+    -- clean whether the guard is there or not. That is the model hiding the
+    -- defect, not the code avoiding it: the real engine is more permissive
+    -- than this model, which is exactly where the pieces would be created.
+    local c = newClient({ streamRange = 100000.0 })
+
+    -- Part-way through, not on the first load: the first is the measurement
+    -- pass and no piece exists yet, so an exit there leaks nothing.
+    c.interruptAfter = 3
+    c.duringBuild = function()
+        c.fire('crimson_arena:client:exitArena', {})
+    end
+
+    c.enter('skydome')
+
+    t.equals(#c.world.live(), 0,
+        ('%d pieces were left standing after a round that ended mid-build')
+            :format(#c.world.live()))
+end)
+
+t.test('and the fighter is not placed into an arena the round has left', function()
+    -- The other half of the same window, and the reason the guard is asked
+    -- again rather than only cleaned up after: a player already sent home,
+    -- with their own gear back, must not be teleported to an arena spawn.
+    local c = newClient({ streamRange = 100000.0 })
+    c.interruptAfter = 3
+    c.duringBuild = function()
+        c.fire('crimson_arena:client:exitArena', {})
+    end
+
+    c.enter('skydome')
+
+    local home = c.env.Config.Lobby.returnCoords
+    t.isTrue(math.abs(c.pos().z - home.z) < 1.0,
+        ('the player ended at z=%0.1f rather than back at the lobby'):format(c.pos().z))
 end)
 
 -- ======================================================================

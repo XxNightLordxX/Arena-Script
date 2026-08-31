@@ -525,13 +525,6 @@ function ArenaCompat.Detect()
     return running
 end
 
---- @param resource any
---- @return boolean
-function ArenaCompat.IsRunning(resource)
-    local adapter = Arena.IsKey(resource) and byResource[resource]
-    return adapter ~= nil and GetResourceState(resource) == 'started'
-end
-
 -- ======================================================================
 -- MUTING
 -- ======================================================================

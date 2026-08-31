@@ -1699,17 +1699,6 @@ function ArenaMatch.RungForKills(kills, rungs)
     return rungForKills(kills, rungs)
 end
 
---- Every match currently being fought. IsLive is true for every record this
---- returns -- a lobby still filling up is not one of them.
---- @return table[] matches
-function ArenaMatch.GetLive()
-    local out = {}
-    for _, match in ipairs(ArenaLobby.All()) do
-        if match.state == 'live' then out[#out + 1] = match end
-    end
-    return out
-end
-
 -- ======================================================================
 -- THE SWEEP
 --

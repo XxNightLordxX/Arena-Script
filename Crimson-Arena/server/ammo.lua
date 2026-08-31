@@ -757,14 +757,6 @@ function ArenaAmmo.StashOf(src)
     return record and record.stash or nil
 end
 
---- @param matchId string
---- @param src number
---- @return integer
-function ArenaAmmo.IssuedTo(matchId, src)
-    local match = issued[matchId]
-    return match and match[src] or 0
-end
-
 -- ======================================================================
 -- NO DROPPING
 --

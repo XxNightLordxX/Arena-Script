@@ -971,11 +971,6 @@ function ArenaMatch.SetRadar(on)
     if not radarForMatch then removeAllPlayerBlips() end
 end
 
---- @return boolean
-function ArenaMatch.RadarOn()
-    return radarOn()
-end
-
 --- Started with the other match-only loops, on the same token, and left to
 --- die with them. Removal is leaveArena's job, not this loop's -- see the
 --- section note above.
@@ -1383,6 +1378,25 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
         SetEntityHeading(ped, home.w or 0.0)
         FreezeEntityPosition(ped, false)
         TriggerServerEvent('crimson_arena:server:leaveMatch')
+        return
+    end
+
+    -- ASKED AGAIN, BECAUSE THE BUILD YIELDS. Loading a model waits, and the
+    -- hold above waits, so a round can end while this handler is parked
+    -- inside buildArenaProps -- and leaveArena, running in that window, does
+    -- its removeArenaProps BEFORE this build has finished putting pieces
+    -- back. The exit is then over and the pieces it was meant to take down
+    -- do not exist yet; they are created a moment later, into an arena
+    -- nobody is in, and stand at a thousand metres for the rest of the
+    -- session because leaveArena will not run again for a match that has
+    -- already gone.
+    --
+    -- The same yield the placement below guards against, one step earlier:
+    -- moving the build ahead of the placement is what made this window wide
+    -- enough to matter.
+    if matchToken ~= token or not currentMatch then
+        removeArenaProps()
+        arenaSurfaceZ = nil
         return
     end
 

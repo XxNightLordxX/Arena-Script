@@ -50,7 +50,7 @@ local function newClient(opts)
     local world = World.new(opts)
     local runner = Sandbox.newThreadRunner()
     local handlers = {}
-    local c = { world = world, serverEvents = {}, notifications = {} }
+    local c = { world = world, serverEvents = {}, notifications = {}, notified = {} }
 
     local overrides = {
         CreateThread = runner.CreateThread,
@@ -115,6 +115,7 @@ local function newClient(opts)
         ClearOverrideWeather = function() end,
         NetworkClearClockTimeOverride = function() end,
 
+        lib = { notify = function(payload) c.notified[#c.notified + 1] = payload end },
         ArenaUI = { UpdateHud = function() end },
         ArenaDispatch = {
             Enter = function() end,
@@ -124,6 +125,14 @@ local function newClient(opts)
         },
     }
     for name, fn in pairs(world.natives) do overrides[name] = fn end
+
+    -- A CLOCK, NOT A COUNTER. The world's own GetGameTimer just increments,
+    -- which is enough to stop a load loop spinning forever but useless to
+    -- anything that measures a DURATION -- and the boundary's warning grace
+    -- is a duration. Wired to the thread runner instead, so Wait(500)
+    -- advances the clock by 500ms exactly as it does in the game, and five
+    -- seconds of grace really is ten ticks of a 500ms loop.
+    overrides.GetGameTimer = function() return runner.elapsed end
 
     -- A HOOK INTO THE MIDDLE OF THE BUILD. Loading a model is where the
     -- entry handler yields, so it is the only seam a round ending mid-build
@@ -156,6 +165,19 @@ local function newClient(opts)
     c.env = env
     c.Arena = env.Arena
     c.step = runner.step
+    c.runner = runner
+
+    --- Promotes the round to live, which is what starts the boundary and
+    --- blip loops -- they deliberately do nothing during the countdown.
+    function c.goLive()
+        c.fire('crimson_arena:client:matchLive')
+    end
+
+    --- Runs the loops `times` times. The thread runner resumes each captured
+    --- thread once per step, and the boundary loop is one Wait per pass.
+    function c.tick(times)
+        for _ = 1, (times or 1) do runner.step() end
+    end
 
     --- Fires a handler the way FiveM does -- inside a coroutine, resumed
     --- until it finishes -- so the yields inside the entry path park rather
@@ -214,6 +236,37 @@ local function newClient(opts)
 end
 
 local SKY = { x = 1500.0, y = 3000.0, z = 1201.0 }
+
+--- Is there a piece of the FLOOR under this point?
+---
+--- BY LAYER, NOT BY MODEL NAME, and that distinction is forced: the shipped
+--- arena's floor chain and its cover chain both end at the same shipping
+--- container, so a name tells you nothing about which one a piece is. The
+--- floor is the lowest layer -- everything else stands on it.
+--- @param client table
+--- @param x number
+--- @param y number
+--- @return boolean
+local function onFloor(client, x, y)
+    local lowest
+    for _, object in ipairs(client.world.live()) do
+        lowest = math.min(lowest or object.z, object.z)
+    end
+    if not lowest then return false end
+
+    for _, object in ipairs(client.world.live()) do
+        if math.abs(object.z - lowest) < 0.001 then
+            local size = client.world.models[object.model]
+            if size
+                and math.abs(x - object.x) <= size.x * 0.5 + 1e-6
+                and math.abs(y - object.y) <= size.y * 0.5 + 1e-6 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 
 -- ======================================================================
 -- THE FLOOR IS REALLY THERE
@@ -454,6 +507,177 @@ t.test('and the piece count stays under the ceiling config sets', function()
 end)
 
 -- ======================================================================
+-- THE EDGE IS LETHAL, AND THAT IS THE BOUNDARY DOING IT
+--
+-- There is no falling code in this resource. Stepping off a platform a
+-- kilometre up is fatal because the boundary is a SPHERE and you leave it
+-- from underneath within a second. That is one loop, written the way FiveM
+-- code is written -- `#(GetEntityCoords(ped) - center) > radius` -- and
+-- until the world model grew real vector arithmetic it could not be run at
+-- all. It is the mechanism the whole arena rests on.
+-- ======================================================================
+
+t.test('standing on the floor is inside the boundary, and nothing bleeds', function()
+    local c = newClient()
+    c.enter('skydome')
+    c.goLive()
+    c.tick(20)
+
+    t.equals(#c.world.damage, 0,
+        ('a fighter standing on the floor took %d tick(s) of boundary damage'):format(#c.world.damage))
+    t.equals(#c.notified, 0, 'a fighter standing on the floor was warned about the boundary')
+end)
+
+t.test('DEFECT: and every point of the floor is inside it, not just the middle', function()
+    -- The relationship that makes the arena playable rather than a bleed
+    -- trap: a fighter who walks to the spawn ring must not start dying for
+    -- it. Checked by MOVING the player, so the real loop answers.
+    local c = newClient()
+    c.enter('skydome')
+    c.goLive()
+
+    local area = c.Arena.GetSpawnArea('skydome')
+    local bleeding = nil
+    for step = 0, 15 do
+        local angle = (step / 16) * math.pi * 2
+        c.world.pedPos = {
+            x = area.x + area.radius * math.cos(angle),
+            y = area.y + area.radius * math.sin(angle),
+            z = area.z,
+        }
+        c.world.damage = {}
+        c.notified = {}
+        c.tick(20)
+        if #c.world.damage > 0 and not bleeding then
+            bleeding = ('%0.1f, %0.1f'):format(c.world.pedPos.x - area.x, c.world.pedPos.y - area.y)
+        end
+    end
+    t.isNil(bleeding, bleeding and ('the edge of the spawn ring is out of bounds at %s'):format(bleeding) or '')
+end)
+
+t.test('DEFECT: falling off the edge leaves the boundary and kills', function()
+    -- THE WHOLE POINT OF PUTTING IT IN A SPHERE. Not "you fall for a long
+    -- time" -- you leave the sphere from underneath and bleed, with no
+    -- falling code anywhere in this resource.
+    local c = newClient()
+    c.enter('skydome')
+    c.goLive()
+
+    local boundary = c.env.Config.Arenas.skydome.boundary
+    -- Just past the bottom of the sphere: what falling off the edge looks
+    -- like about a second later.
+    c.world.pedPos = { x = boundary.center.x, y = boundary.center.y, z = boundary.center.z - boundary.radius - 5.0 }
+
+    c.tick(2)
+    t.isTrue(#c.notified > 0, 'nothing warned the player they had left the arena')
+    t.equals(#c.world.damage, 0, 'the warning grace was not honoured -- damage landed immediately')
+
+    -- Past the grace period.
+    c.tick(30)
+    t.isTrue(#c.world.damage > 0, 'a player a hundred metres under the arena is not being bled')
+end)
+
+t.test('and walking back inside stops it, so the grace is not one-way', function()
+    local c = newClient()
+    c.enter('skydome')
+    c.goLive()
+
+    local area = c.Arena.GetSpawnArea('skydome')
+    local boundary = c.env.Config.Arenas.skydome.boundary
+    c.world.pedPos = { x = boundary.center.x, y = boundary.center.y, z = boundary.center.z - boundary.radius - 5.0 }
+    c.tick(3)
+
+    c.world.pedPos = { x = area.x, y = area.y, z = area.z }
+    c.world.damage = {}
+    c.tick(40)
+    t.equals(#c.world.damage, 0, 'a player who came back inside is still being bled')
+end)
+
+t.test('and the boundary does not run before the round is live', function()
+    -- The countdown is spent standing in the arena frozen. Bleeding somebody
+    -- who cannot move yet is the failure this ordering exists to stop.
+    local c = newClient()
+    c.enter('skydome')
+
+    local boundary = c.env.Config.Arenas.skydome.boundary
+    c.world.pedPos = { x = boundary.center.x, y = boundary.center.y, z = boundary.center.z - boundary.radius - 50.0 }
+    c.tick(40)
+
+    t.equals(#c.world.damage, 0, 'the boundary bled a fighter during the frozen countdown')
+end)
+
+-- ======================================================================
+-- DYING IN THE SKY, OVER AND OVER
+-- ======================================================================
+
+t.test('DEFECT: ten respawns in a row all land on the floor', function()
+    -- One respawn proves the path works once. A match has lives, and the
+    -- failure that matters is the one that only shows on the fourth death --
+    -- a cursor that walks, a floor reference that goes stale, a surface that
+    -- drifts.
+    local c = newClient()
+    c.enter('skydome')
+    c.goLive()
+
+    local surfaceZ = c.Arena.GetPlatform('skydome').z
+    local area = c.Arena.GetSpawnArea('skydome')
+    for life = 1, 10 do
+        local angle = (life / 10) * math.pi * 2
+        local point = {
+            x = area.x + 20.0 * math.cos(angle),
+            y = area.y + 20.0 * math.sin(angle),
+            z = area.z, w = 0.0,
+        }
+        c.fire('crimson_arena:client:respawn', {
+            spawn = point, scatterRadius = 0.0, loadout = { weapons = {} },
+        })
+
+        t.isTrue(onFloor(c, c.pos().x, c.pos().y),
+            ('respawn %d put the player over open air'):format(life))
+        -- ON THE SURFACE CONFIG NAMES, which is the invariant every other
+        -- number in the arena is written against.
+        t.isTrue(math.abs(c.pos().z - surfaceZ) < 0.5,
+            ('respawn %d left the player at %0.2f, and the arena surface is %0.2f')
+                :format(life, c.pos().z, surfaceZ))
+    end
+end)
+
+t.test('and no respawn is ever placed below the arena floor, whatever it is sent', function()
+    -- THE TYPO AN OPERATOR MAKES ONCE AND CANNOT DIAGNOSE. A spawn Z below
+    -- the platform is not a near miss in the sky -- it is a fighter placed
+    -- underneath the arena, falling, killed by the boundary a second later
+    -- with nothing to say why.
+    local c = newClient()
+    c.enter('skydome')
+    local floor = c.Arena.SpawnFloor('skydome')
+    t.isNotNil(floor)
+
+    for _, sent in ipairs({ floor - 200.0, floor - 5.0, 0.0, -50.0 }) do
+        c.fire('crimson_arena:client:respawn', {
+            spawn = { x = SKY.x, y = SKY.y, z = sent, w = 0.0 },
+            scatterRadius = 0.0, loadout = { weapons = {} },
+        })
+        t.isTrue(c.pos().z >= floor - 0.001,
+            ('a respawn sent to z=%0.1f left the player at %0.1f, below the floor at %0.1f')
+                :format(sent, c.pos().z, floor))
+    end
+end)
+
+t.test('DEFECT: and an operator who forgets exactSpawnZ is still not dropped to the terrain', function()
+    -- BELT AND BRACES, and worth having. `exactSpawnZ` is what stops the
+    -- downward ground search; the floor Z is what rejects an answer from
+    -- below the arena. They are two separate guards and this checks the
+    -- second one alone, because the first is one word in config and the
+    -- consequence of losing it is every fighter teleported a kilometre down.
+    local c = newClient()
+    c.env.Config.Arenas.skydome.exactSpawnZ = nil
+    c.enter('skydome')
+
+    t.isTrue(c.pos().z > 1000.0,
+        ('without exactSpawnZ the player ended at z=%0.1f -- the ground probe won'):format(c.pos().z))
+end)
+
+-- ======================================================================
 -- TIDYING UP
 -- ======================================================================
 
@@ -532,6 +756,161 @@ t.test('and the fighter is not placed into an arena the round has left', functio
     local home = c.env.Config.Lobby.returnCoords
     t.isTrue(math.abs(c.pos().z - home.z) < 1.0,
         ('the player ended at z=%0.1f rather than back at the lobby'):format(c.pos().z))
+end)
+
+-- ======================================================================
+-- THE ARENA AT EVERY SIZE IT CAN BE
+--
+-- The floor is built from a factor the server works out from the roster.
+-- Testing one factor tests one arena; these walk the whole range, because a
+-- floor that is right at six players and wrong at twenty is a floor that
+-- fails on the night it matters.
+-- ======================================================================
+
+t.test('at every roster size the floor is built, and the player is on it', function()
+    for _, players in ipairs({ 2, 6, 10, 16, 20, 28, 40, 100 }) do
+        local c = newClient()
+        local factor = c.Arena.SizeFactor('skydome', players)
+        c.enter('skydome', nil, factor)
+
+        t.isTrue(#c.world.live() > 0, ('%d players built nothing'):format(players))
+        t.isTrue(onFloor(c, c.pos().x, c.pos().y),
+            ('%d players: the fighter is over open air'):format(players))
+        t.isTrue(math.abs(c.pos().z - c.Arena.GetPlatform('skydome', factor).z) < 0.5,
+            ('%d players: the fighter is not on the arena surface'):format(players))
+    end
+end)
+
+t.test('DEFECT: and the whole spawn ring has floor under it at every size', function()
+    -- The failure that only shows at scale: a floor that grows more slowly
+    -- than the ring of spawns it has to hold. Every point the planner can
+    -- return, at every factor, checked against what the client really built.
+    for _, players in ipairs({ 6, 20, 40 }) do
+        local c = newClient()
+        local factor = c.Arena.SizeFactor('skydome', players)
+        c.enter('skydome', nil, factor)
+
+        local area = c.Arena.GetSpawnArea('skydome', factor)
+        local holes = 0
+        for ring = 0, math.floor(area.radius) do
+            for step = 0, 23 do
+                local angle = (step / 24) * math.pi * 2
+                if not onFloor(c, area.x + ring * math.cos(angle), area.y + ring * math.sin(angle)) then
+                    holes = holes + 1
+                end
+            end
+        end
+        t.equals(holes, 0, ('%d players: %d points in the spawn area have no floor under them')
+            :format(players, holes))
+    end
+end)
+
+t.test('and the boundary still contains the fighters at the largest size', function()
+    -- Every radius scales by the same factor, so this should hold by
+    -- construction -- which is exactly the kind of claim worth checking
+    -- rather than asserting, because "by construction" is how the surface
+    -- height was wrong for a week.
+    local c = newClient()
+    local factor = c.Arena.SizeFactor('skydome', 100)
+    c.enter('skydome', nil, factor)
+    c.goLive()
+
+    local area = c.Arena.GetSpawnArea('skydome', factor)
+    local bleeding = nil
+    for step = 0, 15 do
+        local angle = (step / 16) * math.pi * 2
+        c.world.pedPos = {
+            x = area.x + area.radius * math.cos(angle),
+            y = area.y + area.radius * math.sin(angle),
+            z = area.z,
+        }
+        c.world.damage = {}
+        c.tick(20)
+        if #c.world.damage > 0 and not bleeding then bleeding = step end
+    end
+    t.isNil(bleeding, 'the grown arena puts its own spawn ring out of bounds')
+end)
+
+t.test('DEFECT: the container fallback holds up at the largest size too', function()
+    -- The worst case this arena has: no DLC blocks, the biggest roster, and
+    -- a floor tiled out of shipping containers -- hundreds of pieces, and a
+    -- piece ceiling that has to grow with the disc or the rim comes off.
+    local models = {}
+    for name, size in pairs(World.DEFAULT_MODELS) do models[name] = size end
+    for _, name in ipairs({ 'stt_prop_stunt_bblock_huge_01', 'bkr_prop_biker_bblock_huge_01',
+                            'imp_prop_impexp_bblock_huge_01', 'ar_prop_ar_bblock_huge_01' }) do
+        models[name] = nil
+    end
+
+    local c = newClient({ models = models })
+    local factor = c.Arena.SizeFactor('skydome', 40)
+    c.enter('skydome', nil, factor)
+
+    local platform = c.Arena.GetPlatform('skydome', factor)
+    local floor = #c.world.liveOf('prop_container_01a')
+    t.isTrue(floor > 0, 'the chain never reached the container at scale')
+    t.isTrue(floor <= platform.maxTiles,
+        ('%d floor pieces against a ceiling of %d'):format(floor, platform.maxTiles))
+
+    local area = c.Arena.GetSpawnArea('skydome', factor)
+    local holes = 0
+    for ring = 0, math.floor(area.radius) do
+        for step = 0, 23 do
+            local angle = (step / 24) * math.pi * 2
+            if not onFloor(c, area.x + ring * math.cos(angle), area.y + ring * math.sin(angle)) then
+                holes = holes + 1
+            end
+        end
+    end
+    t.equals(holes, 0, ('the grown container floor has %d holes in it'):format(holes))
+end)
+
+-- ======================================================================
+-- NOTHING IS LEFT BEHIND, ON ANY EXIT
+-- ======================================================================
+
+t.test('DEFECT: stopping the resource mid-round takes the arena down with it', function()
+    -- A restart is the most common thing an operator does, and it is the one
+    -- exit path that does not go through the server. Props left by it stand
+    -- at a thousand metres until the client reconnects.
+    local c = newClient()
+    c.enter('skydome')
+    t.isTrue(#c.world.live() > 0)
+
+    c.fire('onResourceStop', 'crimson_arena')
+
+    t.equals(#c.world.live(), 0,
+        ('%d pieces survived the resource stopping'):format(#c.world.live()))
+end)
+
+t.test('and stopping a DIFFERENT resource leaves the arena alone', function()
+    -- The handler is fired for every resource that stops. Reacting to
+    -- somebody else's restart would tear the floor out from under a live
+    -- round.
+    local c = newClient()
+    c.enter('skydome')
+    local before = #c.world.live()
+
+    c.fire('onResourceStop', 'some_other_resource')
+
+    t.equals(#c.world.live(), before,
+        "another resource stopping took down this arena's floor")
+end)
+
+t.test('and a round that ends during the countdown cleans up too', function()
+    -- Before matchLive, which is a different code path to a round that ends
+    -- after it: no boundary thread, no blip thread, and the player still
+    -- frozen where entry left them.
+    local c = newClient()
+    c.enter('skydome')
+    t.isTrue(#c.world.live() > 0)
+
+    c.fire('crimson_arena:client:exitArena', {})
+
+    t.equals(#c.world.live(), 0, 'a round cancelled during the countdown left its floor standing')
+    local home = c.env.Config.Lobby.returnCoords
+    t.isTrue(math.abs(c.pos().z - home.z) < 1.0, 'the player was not taken home')
+    t.isTrue(not c.world.frozen, 'the player was left frozen')
 end)
 
 -- ======================================================================

@@ -89,6 +89,8 @@ function World.new(opts)
         --- Which models were requested at all.
         requested = {},
         ped = 100,
+        --- Every ApplyDamageToPed amount, in order.
+        damage = {},
         pedPos = opts.start or { x = -282.0, y = -2030.0, z = 30.1 },
         pedHeading = 0.0,
         frozen = false,
@@ -163,8 +165,49 @@ function World.new(opts)
     -- THE NATIVES
     -- ==================================================================
 
+    -- A VECTOR THAT BEHAVES LIKE THE ENGINE'S.
+    --
+    -- The sandbox's default vector3 is a plain table, which is enough for
+    -- config and for arithmetic done by hand. It is NOT enough for the
+    -- boundary thread, which is written the way FiveM code is written:
+    --
+    --     #(GetEntityCoords(ped) - center) > radius
+    --
+    -- Subtraction and length are the whole mechanism that makes stepping off
+    -- the edge of a sky platform lethal, so a fixture without them cannot
+    -- run the one loop that enforces it -- and that loop was untested.
+    local vectorMeta = {}
+    vectorMeta.__index = vectorMeta
+    vectorMeta.__sub = function(a, b)
+        return setmetatable({ x = a.x - b.x, y = a.y - b.y, z = (a.z or 0.0) - (b.z or 0.0) }, vectorMeta)
+    end
+    vectorMeta.__add = function(a, b)
+        return setmetatable({ x = a.x + b.x, y = a.y + b.y, z = (a.z or 0.0) + (b.z or 0.0) }, vectorMeta)
+    end
+    vectorMeta.__len = function(v)
+        return math.sqrt(v.x * v.x + v.y * v.y + (v.z or 0.0) * (v.z or 0.0))
+    end
+
+    --- @param x number
+    --- @param y number
+    --- @param z number
+    local function vec3(x, y, z)
+        return setmetatable({ x = x, y = y, z = z or 0.0 }, vectorMeta)
+    end
+    w.vec3 = vec3
+
     w.natives = {
         joaat = function(name) return name end,
+        -- Overrides the sandbox's plain-table vector3 for the files loaded
+        -- into this world. See vectorMeta above.
+        vector3 = vec3,
+        vec3 = vec3,
+
+        --- Damage taken from the boundary, in order, so a spec can tell
+        --- "warned but not yet bleeding" from "bleeding".
+        ApplyDamageToPed = function(_ped, amount)
+            w.damage[#w.damage + 1] = amount
+        end,
 
         IsModelInCdimage = function(name) return w.models[name] ~= nil end,
         IsModelValid = function(name) return w.models[name] ~= nil end,
@@ -246,13 +289,15 @@ function World.new(opts)
             end
         end,
 
+        -- RETURNS A REAL VECTOR, not a plain table: the boundary thread
+        -- subtracts it and takes its length.
         GetEntityCoords = function(handle)
             local object = w.objects[handle]
-            if object then return { x = object.x, y = object.y, z = object.z } end
-            if handle == w.ped then return { x = w.pedPos.x, y = w.pedPos.y, z = w.pedPos.z } end
+            if object then return vec3(object.x, object.y, object.z) end
+            if handle == w.ped then return vec3(w.pedPos.x, w.pedPos.y, w.pedPos.z) end
             -- Any other ped: spread out by handle so "furthest from the
             -- nearest opponent" has a real answer rather than a tie.
-            return { x = 1000.0 + (tonumber(handle) or 0) * 25.0, y = 2000.0, z = 30.0 }
+            return vec3(1000.0 + (tonumber(handle) or 0) * 25.0, 2000.0, 30.0)
         end,
 
         GetEntityHeading = function() return w.pedHeading end,

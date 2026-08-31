@@ -645,7 +645,36 @@ Cancelling a shots-fired call about somebody on the other side of the map is a f
 
 **It only ever listens.** These are registered with `AddEventHandler` and never `RegisterNetEvent`. `RegisterNetEvent` is what makes an event triggerable by a client, and calling it on somebody else's server-only event name would let *any* player fire that event — turning a feature meant to silence false alerts into a way to forge real ones.
 
-The list ships empty. The startup report counts what you put in it and labels it `(best effort)` there too.
+The list ships pointed at the four events `sc-dispatch` and `sc-ambulance` really raise — `sc-dispatch:server:ShotsFired`, `hospital:server:EMSDownAlert`, `hospital:server:ambulanceAlert` and `mydispatch:requestEMS`. It previously named `sc-dispatch:server:AddNotification` and `sc-dispatch:AddNotification`, neither of which exists in either resource: `AddNotification` is an **export**, and nothing can register a handler on an export call. Those two entries never fired once, so this whole layer was listening to silence while every round paged police and EMS. The startup report counts what you put in the list and labels it `(best effort)` there too.
+
+#### Layer 6 — withdrawing the alert after it is created
+
+**This is the layer that actually removes an `sc-dispatch` call**, and it exists because layer 5 provably cannot. Per Cfx's own documentation `CancelEvent()` does not stop another resource's handler from running, and `sc-dispatch` never calls `WasEventCanceled()` — so every event named in layer 5 still creates its call.
+
+Most dispatch scripts expose a *clear this call* export and file each call under an id built from facts the arena can see. Name the export and the id shape, and an arena alert is withdrawn the moment it is created:
+
+```lua
+retract = {
+    resource = 'sc-dispatch',
+    export = 'ClearNotification',
+    delayMs = 250,
+    clockSlack = 1,
+    idTemplates = {
+        ['sc-dispatch:server:ShotsFired'] = 'shots_%d_%d',
+        ['hospital:server:EMSDownAlert'] = 'emsdown_%d_%d',
+    },
+},
+```
+
+The first `%d` is the player's server id, the second the unix timestamp — the order both `sc-dispatch` and `sc-ambulance` build them in.
+
+**Why it is delayed.** Both handlers hang off the same event and nothing decides which runs first. Clearing a call the other handler has not inserted yet clears nothing, so `delayMs` pushes the withdrawal past that handler's own database work. Raise it if calls still linger; every millisecond is time the alert is live on an officer's screen.
+
+**Why it cannot reach somebody else's call.** Every id it builds carries the arena player's own server id in the middle. `clockSlack` widens the *timestamp* — closing the gap when the two handlers straddle a one-second boundary — never the player.
+
+**The honest limit.** The alert is created before it is withdrawn. An officer on duty in that moment still hears the notification sound and may see the entry blink in and out. What this stops is the call *persisting* — units driving to an arena, a blip sitting on the map for the length of `AutoClearTime`, a round's worth of 10-71s stacking up in the MDT. Stopping the sound as well takes the one line below, inside the sending script.
+
+Unlike layer 5, this **is** counted as wired up in the startup report, because it does not depend on the other resource agreeing to anything. Set `resource` to nil to switch it off.
 
 #### The one limit nothing here gets past
 

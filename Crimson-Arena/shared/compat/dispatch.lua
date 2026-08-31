@@ -22,7 +22,11 @@
       2. THE DEAD STATE (Config.Dispatch.clearDeadStateImmediately,
          client/dispatch.lua). An arena death is put back on its feet in the
          same instant, so an EMS script that polls "is this player dead"
-         never catches one.
+         never catches one -- and, since client/match.lua also catches the
+         death from gameEventTriggered rather than only from its own watch
+         loop, an EMS script that hooks CEventNetworkEntityDamage and asks
+         IsEntityDead in that same frame gets told no as well. That is the
+         one layer that stops a medical alert at the source.
       3. THIS FILE. Detection and the report. It changes nothing by itself;
          it tells an operator the truth about layers 4 and 5, for the
          resources they really run.
@@ -31,9 +35,14 @@
          exports.
       5. EVENT CANCELLING (Config.Dispatch.custom.cancelEvents). Best effort
          and nothing more: CancelEvent() does nothing unless the resource
-         that raised the event checks WasEventCanceled(), and many do not.
-         This file only COUNTS those entries for the report -- it cancels
-         nothing itself.
+         that raised the event checks WasEventCanceled(), and many do not --
+         sc-dispatch among them. This file only COUNTS those entries for the
+         report -- it cancels nothing itself.
+      6. WITHDRAWING THE CALL (Config.Dispatch.custom.retract). What layer 5
+         cannot be: the arena calls the dispatch script's OWN "clear this
+         call" export for the id that script files an arena alert under, so
+         the call is removed whether it cooperates or not. Counted as wired
+         up in the report, unlike layer 5, for exactly that reason.
 
     THE LIMIT NOTHING HERE GETS PAST, said once and plainly: no FiveM
     resource can reach into another one and cancel its events. If a dispatch
@@ -217,6 +226,32 @@ local function hasLiveResync()
 
     for _, name in ipairs(list) do
         if Arena.IsKey(name) and GetResourceState(name) == 'started' then return true end
+    end
+    return false
+end
+
+--- Whether Config.Dispatch.custom.retract names a clear-call export on a
+--- resource this box is REALLY running, and gives at least one event an id
+--- shape to rebuild.
+---
+--- COUNTED AS WIRED UP, UNLIKE cancelEvents, and the difference is not a
+--- matter of degree. cancelEvents raises a flag the sending resource is free
+--- to ignore, and most do -- config.lua's own instruction is to assume those
+--- alerts are still going out. Withdrawal calls that resource's own "clear
+--- this call" export and the call is gone whether it cooperates or not. A
+--- report that lumped the two together would tell an operator whose alerts
+--- really are being removed to go and paste a line into a script.
+--- @return boolean
+local function hasLiveRetract()
+    local block = customConfig().retract
+    if type(block) ~= 'table' then return false end
+    if not Arena.IsKey(block.resource) or not Arena.IsKey(block.export) then return false end
+    if GetResourceState(block.resource) ~= 'started' then return false end
+
+    local templates = block.idTemplates
+    if type(templates) ~= 'table' then return false end
+    for _, template in pairs(templates) do
+        if Arena.IsKey(template) then return true end
     end
     return false
 end
@@ -514,7 +549,7 @@ local function somethingWired(running, unhandled)
     -- Nothing was recognised, so no row proved anything either way. What is
     -- left is what the operator named themselves, for a resource that is
     -- actually up.
-    return hasLiveDisableExport() or hasLiveResync()
+    return hasLiveDisableExport() or hasLiveResync() or hasLiveRetract()
 end
 
 --- One line about Config.Dispatch.isolation, and only when that block
@@ -587,6 +622,14 @@ local function hookLine(running)
 
     local cancelCount = cancelEventCount()
     if cancelCount > 0 then parts[#parts + 1] = ('%d cancelEvent(s) (best effort)'):format(cancelCount) end
+
+    -- Named separately from the cancelEvents count beside it, and never
+    -- folded into it: one of them removes the call and the other asks
+    -- nicely. An operator reading this line has to be able to tell which
+    -- they have.
+    if hasLiveRetract() then
+        parts[#parts + 1] = ('retract via exports.%s:%s'):format(customConfig().retract.resource, customConfig().retract.export)
+    end
 
     local resyncCount = countList(customConfig().resyncResources)
     if resyncCount > 0 then parts[#parts + 1] = ('%d resyncResource(s)'):format(resyncCount) end

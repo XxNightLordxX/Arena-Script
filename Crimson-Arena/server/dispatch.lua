@@ -1039,6 +1039,103 @@ local function jobsNamedIn(...)
     return nil
 end
 
+-- ======================================================================
+-- WITHDRAWING AN ALERT THAT WAS ALREADY CREATED
+-- (Config.Dispatch.custom.retract)
+--
+-- WHY THIS EXISTS AND CANCELEVENT DOES NOT REPLACE IT. CancelEvent() raises
+-- a flag. Cfx's own documentation is explicit that it does not stop another
+-- resource's handler from running, and a dispatch script that never calls
+-- WasEventCanceled() -- which is most of them, sc-dispatch included -- will
+-- create its call regardless. The layer above is therefore diagnostics on
+-- this kind of script, not suppression. This is the layer that removes the
+-- call.
+--
+-- HOW IT CAN KNOW THE ID. Dispatch scripts file a call under an id built
+-- from facts that are not secret: sc-dispatch uses
+-- '<kind>_<serverId>_<os.time()>', both of which this resource is holding at
+-- the moment the same event reaches it. So the id is rebuilt rather than
+-- read, and the operator states the shape in config rather than this file
+-- assuming one.
+--
+-- WHY IT IS DELAYED. Both handlers hang off one event and nothing decides
+-- which runs first. Clearing a call the other handler has not inserted yet
+-- clears nothing, so the withdrawal is pushed past that handler's own work
+-- with SetTimeout.
+--
+-- WHY IT CANNOT REACH SOMEBODY ELSE'S CALL. Every id it builds carries the
+-- arena player's own server id in the middle. The clock slack widens the
+-- timestamp, never the player.
+-- ======================================================================
+
+--- @return table
+local function retractConfig()
+    local block = customConfig().retract
+    return type(block) == 'table' and block or {}
+end
+
+--- Withdraws the call this event is about to create, for a player who is in
+--- a match right now.
+---
+--- Every failure here is a console line and never a throw: this runs inside
+--- somebody else's event handler, and an error raised in it would surface as
+--- that resource misbehaving.
+--- @param entry table -- a normalised cancelEvents entry
+--- @param src number -- the arena player the alert is about
+local function retractFor(entry, src)
+    local config = retractConfig()
+    if not Arena.IsKey(config.resource) or not Arena.IsKey(config.export) then return end
+
+    local templates = config.idTemplates
+    local template = type(templates) == 'table' and templates[entry.event] or nil
+    if not Arena.IsKey(template) then
+        -- Not a warning. An event listed for cancelling with no id shape is
+        -- an ordinary, deliberate state: Form 4 covers it and Form 5 does
+        -- not claim to.
+        return
+    end
+
+    if GetResourceState(config.resource) ~= 'started' then
+        if not sawFiring['retract:' .. config.resource] then
+            sawFiring['retract:' .. config.resource] = true
+            ArenaLog('retract: Config.Dispatch.custom.retract names "%s", which is not started. Arena alerts will be raised and left standing.',
+                config.resource)
+        end
+        return
+    end
+
+    local delay = Arena.ToInt(config.delayMs) or 250
+    if delay < 0 then delay = 0 end
+
+    local slack = Arena.ToInt(config.clockSlack) or 0
+    if slack < 0 then slack = 0 end
+    if slack > 5 then slack = 5 end
+
+    local at = os.time()
+
+    SetTimeout(delay, function()
+        for offset = -slack, slack do
+            local id = template:format(src, at + offset)
+            local ok, err = pcall(function()
+                exports[config.resource][config.export](nil, id)
+            end)
+            if not ok then
+                -- Once per resource, not once per alert: a round produces
+                -- these every few seconds and a per-call warning would bury
+                -- the console it is trying to inform.
+                if not sawFiring['retract:err:' .. config.resource] then
+                    sawFiring['retract:err:' .. config.resource] = true
+                    ArenaLog('retract: %s:%s failed (%s). Check that export name against that resource\'s own documentation.',
+                        config.resource, config.export, tostring(err))
+                end
+                return
+            end
+        end
+
+        ArenaDebug('retract: withdrew the call "%s" would have left standing for %s.', entry.event, tostring(src))
+    end)
+end
+
 --- Listens on one alert event.
 ---
 --- Registered at LOAD time, which is as early as this resource can be: a
@@ -1130,6 +1227,11 @@ local function registerCancelHandler(entry)
         CancelEvent()
         ArenaDebug('dispatch: raised the cancel flag on "%s" for %s, who is in match %s. It only stops the alert if that resource checks WasEventCanceled().',
             entry.event, tostring(src), tostring(active[src]))
+
+        -- And then the layer that does not depend on the other resource
+        -- agreeing to anything. The flag above is free and occasionally
+        -- lands; this is what removes the call on a script that ignores it.
+        retractFor(entry, src)
     end)
 end
 

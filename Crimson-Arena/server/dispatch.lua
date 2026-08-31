@@ -285,7 +285,9 @@ end)
 --- it detects as wired up and then silently does nothing -- the same reason
 --- the catalogue further down this file is detection-only.
 --- @param src number
-function ArenaDispatch.Revive(src)
+--- @param src number
+--- @param keepHold boolean|nil -- true on elimination: the round is still running
+function ArenaDispatch.Revive(src, keepHold)
     if type(src) ~= 'number' or src <= 0 then return end
 
     local revive = (Config.Dispatch or {}).revive
@@ -307,7 +309,7 @@ function ArenaDispatch.Revive(src)
     --
     -- Everything after this point is for reaching a MEDICAL SCRIPT's own
     -- records, which the arena cannot see and will not guess at.
-    TriggerClientEvent('crimson_arena:client:revive', src)
+    TriggerClientEvent('crimson_arena:client:revive', src, nil, keepHold == true)
 
     -- AND THE MEDICAL SCRIPT'S OWN RECORD, for every one this box is really
     -- running, without the operator naming a thing.

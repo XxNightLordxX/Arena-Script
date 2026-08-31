@@ -350,7 +350,9 @@ end)
 --- arena owns: the player is alive, whole, unfrozen, visible and able to
 --- move, wherever they are standing.
 --- @param health integer|nil -- defaults to the ped's maximum
-function ArenaDispatch.Revive(health)
+--- @param health number|nil
+--- @param keepHold boolean|nil -- true to leave ClearDeadState's hold in place
+function ArenaDispatch.Revive(health, keepHold)
     local ped = PlayerPedId()
     if ped == 0 then return end
 
@@ -414,10 +416,25 @@ function ArenaDispatch.Revive(health)
         ClearPedTasksImmediately(ped)
     end
 
-    SetEntityInvincible(ped, false)
-    SetEntityVisible(ped, true, false)
-    SetEntityCollision(ped, true, true)
-    FreezeEntityPosition(ped, false)
+    -- DROPPING THE HOLD IS NOT ALWAYS WANTED, and doing it unconditionally
+    -- was a real bug rather than an untidy one.
+    --
+    -- These four calls are byte-for-byte what ReleaseDeadState does, so this
+    -- revive was quietly ending ClearDeadState's hold -- including on
+    -- ELIMINATION, where the server revives a player purely to get them off
+    -- the medical script's casualty list while the round carries on without
+    -- them. Released there, the parked body was left MORTAL and killable,
+    -- because client/spectate.lua restores visible, collision and frozen and
+    -- contains no SetEntityInvincible at all; and with spectate off the
+    -- eliminated player simply stood back up, armed and solid, in a live
+    -- round -- which is the exact outcome ReleaseDeadState's own comment
+    -- says is prevented.
+    if keepHold ~= true then
+        SetEntityInvincible(ped, false)
+        SetEntityVisible(ped, true, false)
+        SetEntityCollision(ped, true, true)
+        FreezeEntityPosition(ped, false)
+    end
 
     -- The screen effects a death leaves on: without this a revived player
     -- can be alive and walking around a greyed-out, blurred world. Guarded
@@ -469,8 +486,8 @@ end
 local reviveToken = 0
 
 --- @param health number|nil
-function ArenaDispatch.RevivePersistently(health)
-    ArenaDispatch.Revive(health)
+function ArenaDispatch.RevivePersistently(health, keepHold)
+    ArenaDispatch.Revive(health, keepHold)
 
     local revive = (Config.Dispatch or {}).revive or {}
     local windowMs = math.max(0, Arena.ToInt(revive.assertWindowMs) or 2000)
@@ -491,7 +508,7 @@ function ArenaDispatch.RevivePersistently(health)
                 -- Put down again by something that is not this resource.
                 -- Nothing here asks who: the arena knows this player should
                 -- be on their feet, and that is the whole of the decision.
-                ArenaDispatch.Revive(health)
+                ArenaDispatch.Revive(health, keepHold)
             end
         end
     end)
@@ -499,6 +516,6 @@ end
 
 --- Sent by the server whenever the arena stands somebody back up: on a
 --- mid-match respawn, on elimination, and on the way out.
-RegisterNetEvent('crimson_arena:client:revive', function(health)
-    ArenaDispatch.RevivePersistently(tonumber(health))
+RegisterNetEvent('crimson_arena:client:revive', function(health, keepHold)
+    ArenaDispatch.RevivePersistently(tonumber(health), keepHold == true)
 end)

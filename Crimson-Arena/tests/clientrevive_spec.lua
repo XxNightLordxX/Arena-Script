@@ -376,5 +376,85 @@ t.test('the net event the server sends goes through the persistent path', functi
         'the net event calls the one-shot revive, so nothing the server sends is protected by the window')
 end)
 
+-- ------------------------------------------------------------------
+-- KEEPING THE HOLD -- elimination, where reviving must not free anybody
+-- ------------------------------------------------------------------
+
+t.test('an eliminated player is revived WITHOUT being let out of the hold', function()
+    -- THE BUG AN AUDIT FOUND AND THESE SPECS DID NOT.
+    --
+    -- The tests above assert the four hold-dropping calls ALWAYS run, and
+    -- that was the whole mistake: server/match.lua revives an eliminated
+    -- player -- on purpose, to get them off the medical script's casualty
+    -- list -- while the round carries on without them. Those four calls are
+    -- byte-for-byte what ReleaseDeadState does, so that revive was ending
+    -- ClearDeadState's hold every time.
+    --
+    -- What that cost: client/spectate.lua re-hides and re-freezes the parked
+    -- body but contains no SetEntityInvincible anywhere, so a spectating
+    -- player was left MORTAL and killable; and with spectate off, or when
+    -- AddSpectator refuses, the eliminated player simply stood back up --
+    -- visible, solid, armed -- in a live round.
+    local c = newClient({ dead = true, health = 0 })
+
+    c.D.Revive(nil, true)
+
+    t.isFalse(c.called('SetEntityInvincible'),
+        'the eliminated player was made mortal again -- spectate never restores invincibility, so they are killable while watching')
+    t.isFalse(c.called('SetEntityVisible'),
+        'the eliminated player was made visible again in a live round')
+    t.isFalse(c.called('FreezeEntityPosition'),
+        'the eliminated player was unfrozen in a live round')
+    t.isFalse(c.called('SetEntityCollision'),
+        'the eliminated player was made solid again in a live round')
+end)
+
+t.test('but they are still stood up for the medical script, which is the point', function()
+    -- Keeping the hold must not turn the elimination revive into a no-op:
+    -- the whole reason it runs is to stop a medical script treating an
+    -- eliminated player as a casualty.
+    local c = newClient({ dead = true, health = 0 })
+
+    c.D.Revive(nil, true)
+
+    t.isTrue(c.called('NetworkResurrectLocalPlayer'),
+        'keeping the hold also skipped the resurrect, so the medical script still has a corpse')
+    t.equals(c.health(), 200, 'the eliminated player was left on zero health')
+    t.isTrue(c.called('ClearPedTasksImmediately'), 'the death animation was left running')
+end)
+
+t.test('and an ordinary revive still frees the player, as it always did', function()
+    local c = newClient({ dead = true, health = 0 })
+
+    c.D.Revive()
+
+    t.isTrue(c.called('SetEntityInvincible'), 'a normal revive stopped releasing the player')
+    t.isTrue(c.called('SetEntityVisible'))
+    t.isTrue(c.called('FreezeEntityPosition'))
+    t.isTrue(c.called('SetEntityCollision'))
+end)
+
+t.test('the flag survives the wire, since the server is what knows it is an elimination', function()
+    -- The server decides; the client obeys. A flag that is computed correctly
+    -- on the server and dropped in transit is this build's oldest defect, so
+    -- it is asserted through the real net handler rather than by calling
+    -- Revive directly.
+    local c = newClient({ dead = true, health = 0 })
+
+    c.fireNet('crimson_arena:client:revive', nil, true)
+
+    t.isFalse(c.called('SetEntityInvincible'),
+        'keepHold did not survive the net event, so every eliminated player is released anyway')
+end)
+
+t.test('and its absence means release, so nothing else has to be changed', function()
+    local c = newClient({ dead = true, health = 0 })
+
+    c.fireNet('crimson_arena:client:revive')
+
+    t.isTrue(c.called('SetEntityInvincible'),
+        'a revive sent with no flag stopped releasing the player')
+end)
+
 print('clientrevive_spec')
 os.exit(t.summary())

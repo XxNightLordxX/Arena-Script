@@ -143,6 +143,7 @@ local function newFixture(mutate)
     local money = { pot = 0, stake = 0, payouts = {} }
 
     local revived = {}       -- every ArenaDispatch.Revive(src), in order
+    local revivedHold = {}   -- the same calls, carrying their keepHold flag
 
     local env = Sandbox.newEnv({
         CreateThread = runner.CreateThread,
@@ -174,7 +175,15 @@ local function newFixture(mutate)
             -- death that a player is alive again is the whole reason a
             -- player does not walk out of a match still dead, so WHO gets
             -- told and HOW MANY TIMES is the thing worth asserting.
-            Revive = function(src) revived[#revived + 1] = src end,
+            -- The keepHold flag is captured alongside the id, because
+            -- WHETHER a revive frees the player is as load-bearing as who
+            -- gets one: elimination revives on purpose and must NOT free
+            -- them, and a fixture that threw the flag away is how that
+            -- shipped.
+            Revive = function(src, keepHold)
+                revived[#revived + 1] = src
+                revivedHold[#revivedHold + 1] = { src = src, keepHold = keepHold == true }
+            end,
             EnterBucket = function() end,
             ExitBucket = function() end,
             GetBucket = function() end,
@@ -212,6 +221,14 @@ local function newFixture(mutate)
         recorded = recorded,
         settled = settled,
         revived = revived,
+        revivedHold = revivedHold,
+        --- The keepHold flag of the last revive aimed at `src`, or nil.
+        lastHold = function(src)
+            for index = #revivedHold, 1, -1 do
+                if revivedHold[index].src == src then return revivedHold[index].keepHold end
+            end
+            return nil
+        end,
     }
 
     --- One pass of every live thread. The FIRST call only primes the sweep,
@@ -465,6 +482,38 @@ t.test('an eliminated fighter is told to open the camera once the registry has t
     t.isNotNil(payload, 'the eliminated player was never told')
     t.isTrue(payload.spectate, 'the camera was refused to a player the registry accepted')
     t.isTrue(match.spectators[2] == true, 'the registry never recorded them as watching')
+end)
+
+t.test('and eliminating them does NOT let them out of the hold', function()
+    -- Found by an audit, not by these tests, which is why it is here.
+    --
+    -- The server revives an eliminated player on purpose -- to get them off
+    -- the medical script's casualty list -- while the round carries on
+    -- without them. That revive used to free them as well, because the calls
+    -- it makes are byte-for-byte ReleaseDeadState's: spectate re-hides and
+    -- re-freezes the parked body but never restores invincibility, so they
+    -- were left MORTAL and killable, and with spectate off they simply stood
+    -- back up, armed, in a live round.
+    local f = newFixture(instantRound)
+    local match = newMatch(f, 2)
+    goLive(f, match)
+
+    t.isTrue(f.M.OnDeath(2, 1))
+
+    t.equals(f.lastHold(2), true,
+        'the eliminated player was revived without keepHold, so the hold is dropped and they are mortal in a live round')
+end)
+
+t.test('while a revive on the way OUT does free them, or they leave frozen', function()
+    -- The other side of the same flag, and the reason it cannot simply
+    -- default to keeping the hold: a player going home must be released.
+    local f = newFixture(instantRound)
+    goLive(f, newMatch(f, 2))
+
+    t.isTrue(f.M.RemovePlayer(2, 'match.left'))
+
+    t.equals(f.lastHold(2), false,
+        'a player sent home was revived with the hold kept, so they leave invisible and frozen')
 end)
 
 t.test('a registry that refuses the spectator refuses the camera with it', function()

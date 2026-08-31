@@ -356,6 +356,36 @@ function Arena.GetAmmoTypes(weapon)
     return out
 end
 
+--- Every item name any ammo type in the catalogue can hand out, deduplicated.
+---
+--- This is the set the server reconciles a player's inventory against on the
+--- way out of an arena. It has to include types on weapons an operator has
+--- since disabled, and items only reachable through a per-weapon override --
+--- a round somebody is carrying does not stop mattering because the weapon
+--- that fired it was switched off mid-session.
+--- @return table<string, boolean> items
+function Arena.AllAmmoItems()
+    local items = {}
+
+    local function collect(list)
+        if type(list) ~= 'table' then return end
+        for _, entry in ipairs(list) do
+            if type(entry) == 'table' and Arena.IsKey(entry.item) then
+                items[entry.item] = true
+            end
+        end
+    end
+
+    collect(Config.Loadouts.defaultAmmoTypes)
+    -- Deliberately the RAW list rather than GetEnabledWeapons: a disabled
+    -- weapon's ammo item is still an item a player could be holding.
+    for _, weapon in ipairs(Config.Loadouts.weapons or {}) do
+        collect(weapon.ammoTypes)
+    end
+
+    return items
+end
+
 --- Turns whatever ammo type a client asked for into one this server is
 --- willing to load.
 ---
@@ -457,7 +487,14 @@ function Arena.ResolveLoadout(request)
     if meleeSlots == nil then meleeSlots = 1 end
     if meleeSlots < 0 then meleeSlots = 0 end
 
+    -- 0 means no cap. A player may otherwise take a different round for every
+    -- weapon they carry, which on a server with fifteen types is a lot of
+    -- inventory churn per match.
+    local typeCap = Arena.ToInt(Config.Loadouts.ammoTypeSlots) or 0
+    if typeCap < 0 then typeCap = 0 end
+
     local usedFirearm, usedMelee = 0, 0
+    local typesTaken, distinctTypes = {}, 0
 
     -- With choosing switched off the request is ignored entirely and the
     -- operator's `fixed` list is what everybody gets.
@@ -511,6 +548,18 @@ function Arena.ResolveLoadout(request)
                 seen[weapon.key] = true
                 seen[weapon.weapon] = true
                 local ammoType = Arena.ResolveAmmoType(weapon, type(entry) == 'table' and entry.ammoType or nil)
+
+                -- Over the distinct-type cap: fall back to whatever this
+                -- weapon's default is rather than refusing the weapon. Losing
+                -- a gun because of an ammunition preference would be a
+                -- surprising way to be told about a limit.
+                if ammoType and typeCap > 0 and not typesTaken[ammoType.key] and distinctTypes >= typeCap then
+                    ammoType = Arena.ResolveAmmoType(weapon, nil)
+                end
+                if ammoType and not typesTaken[ammoType.key] then
+                    typesTaken[ammoType.key] = true
+                    distinctTypes = distinctTypes + 1
+                end
 
                 -- Copied, never appended to in place: `weapon.components` is
                 -- the operator's own table on the live config, and pushing a

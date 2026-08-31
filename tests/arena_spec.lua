@@ -388,15 +388,38 @@ t.test('ResolveLoadout drops a table where a key should be, like any other bad k
     t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
 end)
 
-t.test('ResolveLoadout returns armour resolved, never as asked', function()
-    t.equals(Arena.ResolveLoadout({ armor = 50 }).armor, 50)
+t.test('everybody starts a round on a full plate, whatever they ask for', function()
+    -- Config.Loadouts.armor.allowChoose ships FALSE: a round starts even, and
+    -- nobody can hand themselves a disadvantage by accident or hand an
+    -- opponent one on purpose. Every request resolves to the default.
+    t.isFalse(Config.Loadouts.armor.allowChoose)
+    t.equals(Config.Loadouts.armor.default, Config.Loadouts.armor.max)
+
+    for _, asked in ipairs({ 0, 50, 75, 500, -50 }) do
+        t.equals(Arena.ResolveLoadout({ armor = asked }).armor, 100,
+            ('asking for %s should still be a full plate'):format(tostring(asked)))
+    end
+    t.equals(Arena.ResolveLoadout({ armor = 'max' }).armor, 100)
+    t.equals(Arena.ResolveLoadout({}).armor, 100, 'and asking for nothing is the same')
+end)
+
+t.test('and full health, whoever walked up to the arena half dead', function()
+    t.equals(Arena.ResolveLoadout({}).health, Config.Loadouts.health)
+    t.equals(Config.Loadouts.health, 200, 'a stock GTA full bar')
+end)
+
+t.test('turning the armour picker back on makes the options real again', function()
+    -- The switch has to actually do something, or it is the sort of dead key
+    -- this suite exists to catch.
+    local choosable = tweaked(function(config) config.Loadouts.armor.allowChoose = true end)
+
+    t.equals(choosable.ResolveLoadout({ armor = 50 }).armor, 50)
+    t.equals(choosable.ResolveLoadout({ armor = 0 }).armor, 0)
     -- 75 is not one of the offered options, so it takes the default -- the
     -- same refusal ammo gets, for the same reason.
-    t.equals(Arena.ResolveLoadout({ armor = 75 }).armor, 100)
-    t.equals(Arena.ResolveLoadout({ armor = 500 }).armor, 100)
-    t.equals(Arena.ResolveLoadout({ armor = -50 }).armor, 100)
-    t.equals(Arena.ResolveLoadout({ armor = 'max' }).armor, 100)
-    t.equals(Arena.ResolveLoadout({ armor = 0 }).armor, 0)
+    t.equals(choosable.ResolveLoadout({ armor = 75 }).armor, 100)
+    t.equals(choosable.ResolveLoadout({ armor = 500 }).armor, 100)
+    t.equals(choosable.ResolveLoadout({ armor = 'max' }).armor, 100)
 end)
 
 t.test('ResolveLoadout swaps the request for the operator fixed list when allowChoose is off', function()

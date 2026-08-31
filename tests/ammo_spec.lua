@@ -1,43 +1,57 @@
 --[[
     crimson_arena/tests/ammo_spec.lua
 
-    The real server/ammo.lua, and the one thing it must never do.
+    The real server/ammo.lua, against a stateful inventory.
 
-    On a server where ammo types are inventory items, this file is the only
-    code in the resource that puts an item into a player's pocket. That makes
-    it the only code that can duplicate one. An arena that gives out two
-    hundred armour-piercing rounds and does not take them back is an ammo
-    printer: join, collect, walk out, repeat.
+    THE PROMISE UNDER TEST: a player leaves the arena with exactly the
+    ammunition they walked in with. Not "what we gave them, minus what we took
+    back" -- the actual count they held before the match, restored.
 
-    So these tests are about the ledger, not the giving. Most of them assert on
-    the RECORDED CALLS rather than on a balance, for the same reason
-    tests/server_spec.lua counts ledger movements: an item handed out twice and
-    an item never taken back can leave an inventory looking identical, and only
-    the sequence of calls tells them apart.
+    That distinction is the whole file. A ledger of what was ISSUED can take
+    back what was issued, and knows nothing about a player who killed somebody
+    and emptied their pockets. On a server where ammunition is an inventory
+    item, looting is the obvious way to carry a match's worth of rounds out of
+    the arena, so the baseline has to be the player's own inventory rather than
+    a record of this resource's generosity.
+
+    The inventory double below holds REAL COUNTS rather than recording calls,
+    because the thing worth asserting is where a player's pockets end up.
 ]]
 
 local t = dofile('testkit.lua')
 local Sandbox = dofile('fixtures/sandbox.lua')
 
---- A server with the real util and ammo files loaded, and an ox_inventory
---- double that records every call and can be told to refuse.
+--- @param pockets table<number, table<string, integer>>? -- starting inventories
 --- @param mutate fun(config: table)?
 --- @return table fixture
-local function newServer(mutate)
-    local calls, console = {}, {}
-    local refuseAdd, refuseRemove, throwOnAdd = false, false, false
+local function newServer(pockets, mutate)
+    local held = {}
+    for src, items in pairs(pockets or {}) do
+        held[src] = {}
+        for item, count in pairs(items) do held[src][item] = count end
+    end
+
+    local console, handlers = {}, {}
+    local refuseAdd, refuseRemove, blindTo = false, false, {}
     local resourceState = 'started'
-    local handlers = {}
 
     local ox = {
+        Search = function(_self, src, mode, item)
+            if blindTo[item] then error('ox_inventory cannot read ' .. item) end
+            if mode ~= 'count' then return 0 end
+            return (held[src] or {})[item] or 0
+        end,
         AddItem = function(_self, src, item, count)
-            calls[#calls + 1] = { op = 'add', src = src, item = item, count = count }
-            if throwOnAdd then error('ox_inventory blew up') end
-            return not refuseAdd
+            if refuseAdd then return false end
+            held[src] = held[src] or {}
+            held[src][item] = (held[src][item] or 0) + count
+            return true
         end,
         RemoveItem = function(_self, src, item, count)
-            calls[#calls + 1] = { op = 'remove', src = src, item = item, count = count }
-            return not refuseRemove
+            if refuseRemove then return false end
+            held[src] = held[src] or {}
+            held[src][item] = math.max(0, (held[src][item] or 0) - count)
+            return true
         end,
     }
 
@@ -52,6 +66,7 @@ local function newServer(mutate)
         print = function(line) console[#console + 1] = line end,
         lib = Sandbox.newOxLib(),
     })
+    env.Config.Loadouts.ammoItems.enabled = true
     if mutate then mutate(env.Config) end
 
     Sandbox.loadInto('../server/util.lua', env)
@@ -60,50 +75,41 @@ local function newServer(mutate)
     return {
         env = env,
         ammo = env.ArenaAmmo,
-        calls = calls,
+        holds = function(src, item) return (held[src] or {})[item] or 0 end,
+        setHeld = function(src, item, count)
+            held[src] = held[src] or {}
+            held[src][item] = count
+        end,
         log = function() return table.concat(console, '\n') end,
         stopResource = function() handlers['onResourceStop']('crimson_arena') end,
         refuseAdd = function(on) refuseAdd = on end,
         refuseRemove = function(on) refuseRemove = on end,
-        throwOnAdd = function(on) throwOnAdd = on end,
+        blind = function(item) blindTo[item] = true end,
         setInventoryMissing = function() resourceState = 'missing' end,
-        --- Calls of one kind, optionally for one item.
-        countOf = function(op, item)
-            local n = 0
-            for _, c in ipairs(calls) do
-                if c.op == op and (not item or c.item == item) then n = n + 1 end
-            end
-            return n
-        end,
-        totalOf = function(op, item)
-            local n = 0
-            for _, c in ipairs(calls) do
-                if c.op == op and (not item or c.item == item) then n = n + c.count end
-            end
-            return n
-        end,
     }
 end
 
---- A loadout as Arena.ResolveLoadout produces one, carrying ammo items.
---- @param entries table[] -- { { item, ammo } }
---- @return table
-local function loadout(entries)
-    local weapons = {}
-    for index, entry in ipairs(entries) do
-        weapons[index] = {
-            key = 'w' .. index,
-            weapon = 'WEAPON_TEST' .. index,
-            ammo = entry.ammo,
-            ammoTypeItem = entry.item,
-            components = {},
-        }
-    end
-    return { weapons = weapons, armor = 0, health = 200 }
+--- The first item name the shipped config can actually hand out, so these
+--- tests follow the real catalogue rather than inventing item names it would
+--- never reconcile against.
+--- @param env table
+--- @return string
+local function shippedItem(env, index)
+    local names = {}
+    for item in pairs(env.Arena.AllAmmoItems()) do names[#names + 1] = item end
+    table.sort(names)
+    return names[index or 1]
 end
 
-local function enabled(config)
-    config.Loadouts.ammoItems.enabled = true
+--- @param item string
+--- @param ammo integer
+--- @return table
+local function loadoutOf(item, ammo)
+    return {
+        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = ammo, ammoTypeItem = item, components = {} } },
+        armor = 100,
+        health = 200,
+    }
 end
 
 -- ========================================================================
@@ -111,223 +117,238 @@ end
 -- ========================================================================
 
 t.test('the shipped config has ammo items switched off', function()
-    t.isFalse(newServer().env.Config.Loadouts.ammoItems.enabled,
-        'shipping this on with placeholder item names would hand out nothing and look broken')
+    local env = Sandbox.newArenaEnv({})
+    t.isFalse(env.Config.Loadouts.ammoItems.enabled,
+        'shipping this on with placeholder item names hands out nothing and reads as broken')
 end)
 
-t.test('with the feature off nothing is given and nothing is asked of the inventory', function()
+t.test('with the feature off nobody is snapshotted and nothing moves', function()
+    local s = newServer({ [1] = { ['ammo-rifle'] = 40 } }, function(c)
+        c.Loadouts.ammoItems.enabled = false
+    end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.equals(s.holds(1, 'ammo-rifle'), 40)
+    t.isFalse(s.ammo.IsHolding(1))
+end)
+
+-- ========================================================================
+-- The promise
+-- ========================================================================
+
+t.test('a player leaves with exactly what they arrived with', function()
     local s = newServer()
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-    t.equals(#s.calls, 0)
-    t.isFalse(s.ammo.IsEnabled())
+    local item = shippedItem(s.env)
+    s.setHeld(1, item, 40)
+
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 250))
+    t.equals(s.holds(1, item), 290, 'they were given the round they picked')
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.holds(1, item), 40, 'and are back to their own forty')
+end)
+
+t.test('ammunition LOOTED off a body in the arena does not leave with them', function()
+    -- The case a ledger of what-we-issued cannot see, and the reason this file
+    -- reconciles against the player's own inventory instead.
+    local s = newServer()
+    local item = shippedItem(s.env)
+    s.setHeld(1, item, 40)
+
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 100))
+    -- They kill somebody and take everything the body was carrying.
+    s.setHeld(1, item, s.holds(1, item) + 500)
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.holds(1, item), 40, 'the arena is not a way to carry rounds out of it')
+end)
+
+t.test('their OWN rounds come back even if the match spent them', function()
+    -- Arena ammunition is issued first and spent first. A player who walks out
+    -- lighter than they walked in would rightly call that a bug.
+    local s = newServer()
+    local item = shippedItem(s.env)
+    s.setHeld(1, item, 40)
+
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 100))
+    s.setHeld(1, item, 10)   -- fired 130: all 100 issued, and 30 of their own
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.holds(1, item), 40, 'the arena costs them nothing')
+end)
+
+t.test('a player who arrived with none leaves with none', function()
+    local s = newServer()
+    local item = shippedItem(s.env)
+
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 250))
+    t.equals(s.holds(1, item), 250)
+
+    s.ammo.Reclaim(1)
+    t.equals(s.holds(1, item), 0)
+end)
+
+t.test('items the arena never issued are still reconciled', function()
+    -- Looting is not limited to the round you happen to be carrying.
+    local s = newServer()
+    local mine, theirs = shippedItem(s.env, 1), shippedItem(s.env, 2)
+    t.isNotNil(theirs, 'the shipped catalogue should offer more than one item')
+
+    s.setHeld(1, mine, 20)
+    s.ammo.Issue(1, 'm1', loadoutOf(mine, 100))
+    s.setHeld(1, theirs, 300)      -- taken off a body
+
+    s.ammo.Reclaim(1)
+    t.equals(s.holds(1, mine), 20)
+    t.equals(s.holds(1, theirs), 0, 'a round they never chose still goes back')
 end)
 
 -- ========================================================================
--- Issuing
+-- Not making things worse
 -- ========================================================================
 
-t.test('a weapon with an ammo item has it handed over, once, in the right amount', function()
-    local s = newServer(enabled)
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle-ap', ammo = 60 } }))
+t.test('a second reclaim touches nothing', function()
+    local s = newServer()
+    local item = shippedItem(s.env)
+    s.setHeld(1, item, 40)
 
-    t.equals(s.countOf('add'), 1)
-    t.equals(s.calls[1].item, 'ammo-rifle-ap')
-    t.equals(s.calls[1].count, 60)
-    t.equals(s.calls[1].src, 1)
-end)
-
-t.test('a weapon with no ammo item is skipped rather than given a nil item', function()
-    local s = newServer(enabled)
-    s.ammo.Issue(1, 'm1', loadout({ { item = nil, ammo = 60 }, { item = 'ammo-9', ammo = 30 } }))
-
-    t.equals(s.countOf('add'), 1, 'only the one that named an item')
-    t.equals(s.calls[1].item, 'ammo-9')
-end)
-
-t.test('roundsPerItem rounds UP, so nobody is short-changed', function()
-    -- 60 rounds at 30 per box is two boxes. Rounding down would hand somebody
-    -- 30 rounds when they asked for 60.
-    local s = newServer(function(c)
-        enabled(c)
-        c.Loadouts.ammoItems.roundsPerItem = 30
-    end)
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-box', ammo = 60 } }))
-    t.equals(s.calls[1].count, 2)
-
-    local odd = newServer(function(c)
-        enabled(c)
-        c.Loadouts.ammoItems.roundsPerItem = 30
-    end)
-    odd.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-box', ammo = 61 } }))
-    t.equals(odd.calls[1].count, 3, '61 rounds needs a third box')
-end)
-
-t.test('an inventory that REFUSES the item does not have it recorded as issued', function()
-    -- The bug this exists for: a refused AddItem that got recorded anyway
-    -- would have Reclaim later remove an item the player was never given.
-    local s = newServer(enabled)
-    s.refuseAdd(true)
-
-    local failed = s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-    t.equals(#failed, 1, 'the caller is told which weapon has no ammunition')
-    t.equals(s.ammo.OnLoan(1), 0, 'nothing is on loan, because nothing was given')
-
-    s.refuseAdd(false)
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 100))
     s.ammo.Reclaim(1)
-    t.equals(s.countOf('remove'), 0, 'nothing was taken back, because nothing was handed out')
-end)
+    t.equals(s.holds(1, item), 40)
 
-t.test('an inventory that THROWS is caught and not recorded either', function()
-    local s = newServer(enabled)
-    s.throwOnAdd(true)
-
-    local ok, failed = pcall(s.ammo.Issue, 1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-    t.isTrue(ok, 'a broken inventory script must not take a match start down with it')
-    t.equals(#failed, 1)
-    t.equals(s.ammo.OnLoan(1), 0)
-end)
-
-t.test('ox_inventory not running is reported, not silently ignored', function()
-    local s = newServer(enabled)
-    s.setInventoryMissing()
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-
-    t.equals(#s.calls, 0)
-    t.isTrue(s.log():find('ox_inventory', 1, true) ~= nil, 'the console says why nobody got any')
-end)
-
--- ========================================================================
--- Reclaiming -- the whole point
--- ========================================================================
-
-t.test('everything issued comes back on the way out', function()
-    local s = newServer(enabled)
-    s.ammo.Issue(1, 'm1', loadout({
-        { item = 'ammo-rifle-ap', ammo = 60 },
-        { item = 'ammo-9', ammo = 30 },
-    }))
-
-    t.equals(s.ammo.OnLoan(1), 90)
-    s.ammo.Reclaim(1, 'left')
-
-    t.equals(s.totalOf('remove', 'ammo-rifle-ap'), 60)
-    t.equals(s.totalOf('remove', 'ammo-9'), 30)
-    t.equals(s.ammo.OnLoan(1), 0)
-end)
-
-t.test('a second reclaim takes nothing -- counted in CALLS, not in what is held', function()
-    -- A double reclaim and a correct one both end with nothing on loan. Only
-    -- the call count tells them apart, and a double would take the player's
-    -- own ammunition.
-    local s = newServer(enabled)
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-
-    s.ammo.Reclaim(1)
-    t.equals(s.countOf('remove'), 1)
-
+    -- Whatever they pick up afterwards, out in the world, is theirs.
+    s.setHeld(1, item, 999)
     s.ammo.Reclaim(1)
     s.ammo.Reclaim(1)
-    t.equals(s.countOf('remove'), 1, 'reclaiming twice must not reach into their own pocket')
+    t.equals(s.holds(1, item), 999, 'reclaiming twice must not reach into their pocket again')
 end)
 
-t.test('reclaiming from somebody who holds nothing is a silent no-op', function()
-    local s = newServer(enabled)
-    t.equals(s.ammo.Reclaim(999), 0)
-    t.equals(#s.calls, 0)
+t.test('a player who never entered is left alone', function()
+    local s = newServer()
+    local item = shippedItem(s.env)
+    s.setHeld(2, item, 500)
+
+    t.equals(s.ammo.Reclaim(2), 0)
+    t.equals(s.holds(2, item), 500)
 end)
 
-t.test('an item that cannot be removed is named rather than written off', function()
-    -- They fired it, dropped it, or already left. Not an error -- but the
-    -- console has to say so, or a teardown that took nothing back reads as a
-    -- clean one.
-    local s = newServer(enabled)
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
+t.test('an item whose count cannot be read is never touched', function()
+    -- Guessing zero here would hand somebody a pile of ammunition on the way
+    -- out. No change beats a wrong one.
+    local s = newServer()
+    local item = shippedItem(s.env)
+    s.blind(item)
+    s.setHeld(1, item, 77)
+
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 100))
+    s.ammo.Reclaim(1)
+    t.equals(s.holds(1, item), 177, 'left exactly as found, because it could not be reasoned about')
+end)
+
+t.test('an inventory that refuses to give the item back says so', function()
+    local s = newServer()
+    local item = shippedItem(s.env)
+    s.setHeld(1, item, 40)
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 100))
+
     s.refuseRemove(true)
-    s.ammo.Reclaim(1, 'left the arena')
-
-    t.isTrue(s.log():find('ammo-rifle', 1, true) ~= nil, 'the item is named in the console')
-    t.isTrue(s.log():find('left the arena', 1, true) ~= nil, 'so is why it was being taken back')
+    s.ammo.Reclaim(1, 'match ended')
+    t.isTrue(s.log():find('could not be taken back', 1, true) ~= nil,
+        'a surplus that will not come out is named, not written off')
 end)
 
-t.test('reclaimOnExit = false leaves the ammunition with the player', function()
-    -- The switch exists for servers that genuinely want the arena to be a
-    -- source of ammunition. It must actually do that, and only that.
-    local s = newServer(function(c)
-        enabled(c)
-        c.Loadouts.ammoItems.reclaimOnExit = false
-    end)
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-    s.ammo.Reclaim(1)
+t.test('ox_inventory not running is reported rather than silently skipped', function()
+    local s = newServer()
+    s.setInventoryMissing()
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.isTrue(s.log():find('ox_inventory', 1, true) ~= nil)
+end)
 
-    t.equals(s.countOf('remove'), 0)
-    t.equals(s.ammo.OnLoan(1), 60, 'still recorded as out, because it is')
+t.test('reclaimOnExit = false leaves everything with the player', function()
+    local s = newServer(nil, function(c) c.Loadouts.ammoItems.reclaimOnExit = false end)
+    local item = shippedItem(s.env)
+    s.setHeld(1, item, 40)
+
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 100))
+    s.ammo.Reclaim(1)
+    t.equals(s.holds(1, item), 140, 'the switch exists for servers that want the arena to be a source')
+end)
+
+t.test('roundsPerItem rounds UP so nobody is short-changed', function()
+    local s = newServer(nil, function(c) c.Loadouts.ammoItems.roundsPerItem = 30 end)
+    local item = shippedItem(s.env)
+
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 61))
+    t.equals(s.holds(1, item), 3, '61 rounds at 30 a box needs a third box')
 end)
 
 -- ========================================================================
 -- Whole-match teardown
 -- ========================================================================
 
-t.test('ReclaimAll empties a match and reaches every player in it', function()
-    local s = newServer(enabled)
-    for _, src in ipairs({ 1, 2, 3 }) do
-        s.ammo.Issue(src, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-    end
+t.test('ReclaimAll squares up everybody in one match and nobody in another', function()
+    local s = newServer()
+    local item = shippedItem(s.env)
 
-    t.equals(s.ammo.ReclaimAll('m1', 'match ended'), 3)
-    t.equals(s.totalOf('remove'), 180)
-    for _, src in ipairs({ 1, 2, 3 }) do
-        t.equals(s.ammo.OnLoan(src), 0, 'player ' .. src)
+    for _, src in ipairs({ 1, 2 }) do
+        s.setHeld(src, item, 10)
+        s.ammo.Issue(src, 'm1', loadoutOf(item, 100))
     end
+    s.setHeld(3, item, 10)
+    s.ammo.Issue(3, 'm2', loadoutOf(item, 100))
+
+    t.equals(s.ammo.ReclaimAll('m1', 'match ended'), 2)
+    t.equals(s.holds(1, item), 10)
+    t.equals(s.holds(2, item), 10)
+    t.equals(s.holds(3, item), 110, 'the other match is still running')
 end)
 
-t.test('Clear REFUSES while anything is still on loan', function()
-    -- The same refusal ArenaBetting.Clear makes about escrow, for the same
-    -- reason: a record dropped with items outstanding is ammunition nothing
-    -- will ever ask for back.
-    local s = newServer(enabled)
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
+t.test('Clear REFUSES while anybody is still unsquared', function()
+    local s = newServer()
+    local item = shippedItem(s.env)
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 100))
 
     t.isFalse(s.ammo.Clear('m1'))
-    t.equals(s.ammo.OnLoan(1), 60, 'a refused Clear drops nothing')
+    t.isTrue(s.ammo.IsHolding(1))
     t.isTrue(s.log():find('refusing to drop match', 1, true) ~= nil)
 
     s.ammo.Reclaim(1)
-    t.isTrue(s.ammo.Clear('m1'), 'and allows it once everything is back')
+    t.isTrue(s.ammo.Clear('m1'))
 end)
 
-t.test('stopping the resource takes back every round in every match', function()
-    -- A restart with ammunition on loan hands every player in every arena a
-    -- permanent supply.
-    local s = newServer(enabled)
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-    s.ammo.Issue(2, 'm2', loadout({ { item = 'ammo-9', ammo = 30 } }))
+t.test('stopping the resource squares up every arena', function()
+    local s = newServer()
+    local item = shippedItem(s.env)
+    s.setHeld(1, item, 25)
+    s.setHeld(2, item, 0)
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 100))
+    s.ammo.Issue(2, 'm2', loadoutOf(item, 100))
 
     s.stopResource()
 
-    t.equals(s.totalOf('remove'), 90)
-    t.equals(s.ammo.OnLoan(1), 0)
-    t.equals(s.ammo.OnLoan(2), 0)
+    t.equals(s.holds(1, item), 25)
+    t.equals(s.holds(2, item), 0)
+    t.isFalse(s.ammo.IsHolding(1))
 end)
 
-t.test('one player in two matches has both lots taken back', function()
-    -- Should not happen, and the ledger does not assume it cannot.
-    local s = newServer(enabled)
-    s.ammo.Issue(1, 'm1', loadout({ { item = 'ammo-rifle', ammo = 60 } }))
-    s.ammo.Issue(1, 'm2', loadout({ { item = 'ammo-9', ammo = 30 } }))
+t.test('a snapshot is taken BEFORE anything is handed over', function()
+    -- Taken afterwards it would bake the arena's own ammunition into what the
+    -- player "arrived with", and they would keep every round of it.
+    local s = newServer()
+    local item = shippedItem(s.env)
 
-    t.equals(s.ammo.OnLoan(1), 90)
+    s.ammo.Issue(1, 'm1', loadoutOf(item, 250))
     s.ammo.Reclaim(1)
-    t.equals(s.ammo.OnLoan(1), 0)
-    t.equals(s.totalOf('remove'), 90)
+    t.equals(s.holds(1, item), 0, 'they arrived with nothing, so they leave with nothing')
 end)
 
-t.test('rubbish arguments are refused rather than recorded', function()
-    local s = newServer(enabled)
-    s.ammo.Issue(nil, 'm1', loadout({ { item = 'a', ammo = 1 } }))
-    s.ammo.Issue(0, 'm1', loadout({ { item = 'a', ammo = 1 } }))
-    s.ammo.Issue(1, '', loadout({ { item = 'a', ammo = 1 } }))
+t.test('rubbish arguments are refused', function()
+    local s = newServer()
+    s.ammo.Issue(nil, 'm1', loadoutOf('x', 1))
+    s.ammo.Issue(0, 'm1', loadoutOf('x', 1))
+    s.ammo.Issue(1, '', loadoutOf('x', 1))
     s.ammo.Issue(1, 'm1', 'not a loadout')
-    t.equals(#s.calls, 0)
+    t.isFalse(s.ammo.IsHolding(1))
 end)
 
 print('ammo_spec')

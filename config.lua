@@ -815,6 +815,14 @@ Config.Loadouts = {
     -- Which type a player gets when they express no preference.
     defaultAmmoType = 'standard',
 
+    -- How many DIFFERENT ammo types one player may carry across their whole
+    -- loadout. 0 is no limit, which means a different round for every weapon.
+    --
+    -- A player over the limit is not refused the weapon -- losing a gun
+    -- because of an ammunition preference is a surprising way to be told
+    -- about a limit -- they simply get that weapon's default round instead.
+    ammoTypeSlots = 0,
+
     -- THE TYPES, offered for every weapon that takes ammunition. Melee never
     -- gets them -- a bat has nothing to load.
     --
@@ -840,14 +848,24 @@ Config.Loadouts = {
     },
 
     -- Body armour, picked the same way ammo is.
+    -- BODY ARMOUR. Everyone starts every round on a full plate, and cannot
+    -- choose otherwise -- `allowChoose = false` hides the picker entirely, so
+    -- nobody can hand themselves a disadvantage by accident or hand an
+    -- opponent one on purpose.
+    --
+    -- Turn `allowChoose` back on and the options below become a picker again,
+    -- for a server that wants armour to be part of the loadout decision.
     armor = {
-        allowChoose = true,
+        allowChoose = false,
         options = { 0, 50, 100 },
         default = 100,
         max = 100,
     },
 
-    -- Health every player starts a round on. 200 is a stock GTA full bar.
+    -- Health every player starts a round on. 200 is a stock GTA full bar, and
+    -- everyone gets one -- whatever state they walked up to the arena in, a
+    -- round starts even. Their real health is captured on the way in and
+    -- handed back on the way out.
     health = 200,
 }
 

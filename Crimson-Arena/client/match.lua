@@ -989,7 +989,23 @@ RegisterNetEvent('crimson_arena:client:matchHud', function(data)
 
     if not Config.UI.showMatchHud then return end
 
-    ArenaUI.UpdateHud({ visible = currentMatch ~= nil, hud = data })
+    -- SPECTATORS COUNT AS WATCHING, and leaving them out hid the whole HUD.
+    --
+    -- client/ui.lua registers this event too and simply passes the payload
+    -- through; this file loads AFTER it, so this call is the one that lands.
+    -- Reading `visible` off currentMatch alone therefore overrode ui.lua's
+    -- and told the panel to hide the overlay for anybody not in the fight --
+    -- which is exactly who a spectator is. No clock, no alive count, no
+    -- scoreboard, for the one person with nothing to do but read them.
+    --
+    -- Guarded on the type: client/spectate.lua loads after this file, so
+    -- ArenaSpectate does not exist while this line is being READ. It does by
+    -- the time the event fires.
+    local watching = type(ArenaSpectate) == 'table'
+        and type(ArenaSpectate.IsActive) == 'function'
+        and ArenaSpectate.IsActive() == true
+
+    ArenaUI.UpdateHud({ visible = currentMatch ~= nil or watching, hud = data })
 end)
 
 -- A restart while a round is running must not cost anyone their gear, and

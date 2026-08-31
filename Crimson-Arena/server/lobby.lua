@@ -1274,6 +1274,24 @@ function ArenaLobby.AddSpectator(src, matchId)
     match.spectators[target] = true
     spectatorIndex[target] = match.id
 
+    -- INTO THE MATCH'S INSTANCE, which is what makes there be anything to
+    -- watch.
+    --
+    -- Matches are fought in their own routing bucket -- that is the layer
+    -- that keeps arena gunfire off the rest of the server -- and a spectator
+    -- who is not put in it flies to the arena and finds an empty field. The
+    -- camera worked, the server had them registered, the panel said
+    -- "Watching": there was simply nobody there to see. That is what "the
+    -- watch button does not work" looked like.
+    --
+    -- Idempotent for the case this is called from most: an eliminated player
+    -- watching their own round is already in this bucket, and EnterBucket
+    -- returns early rather than re-recording the arena as the bucket to
+    -- restore them to.
+    if type(ArenaDispatch) == 'table' and type(ArenaDispatch.EnterBucket) == 'function' then
+        ArenaDispatch.EnterBucket(target, match.id)
+    end
+
     ArenaLobby.Broadcast()
     return true, nil
 end
@@ -1290,6 +1308,20 @@ function ArenaLobby.RemoveSpectator(src)
     spectatorIndex[target] = nil
     local match = matches[matchId]
     if match then match.spectators[target] = nil end
+
+    -- AND BACK OUT, but only for somebody who was ONLY watching.
+    --
+    -- An eliminated player who stops watching is still in the round -- their
+    -- row is what the results board ranks off -- and pulling them out of the
+    -- instance here would drop them into the live world mid-match, on top of
+    -- whoever happens to be standing there. Their exit runs on the match's
+    -- own path, which is where it belongs.
+    if not playerIndex[target]
+        and type(ArenaDispatch) == 'table'
+        and type(ArenaDispatch.ExitBucket) == 'function'
+    then
+        ArenaDispatch.ExitBucket(target)
+    end
 
     ArenaLobby.Broadcast()
     return true

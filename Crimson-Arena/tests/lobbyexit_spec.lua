@@ -454,6 +454,55 @@ t.test('a second death while waiting to respawn is not counted twice', function(
     t.equals(match.players[2].lives, 2, 'a death was counted more than once')
 end)
 
+-- ======================================================================
+-- WATCHING A MATCH YOU WERE NEVER IN
+--
+-- The camera and the registration were never the problem. Matches are fought
+-- in their own ROUTING BUCKET -- the layer that keeps arena gunfire off the
+-- rest of the server -- and a spectator who is not put in it flies to the
+-- arena and finds an empty field. The server had them registered, the panel
+-- said "Watching", and there was nobody there to see.
+--
+-- That is what "the watch button does not work" looked like, and no test
+-- here caught it because every spectator test asked whether they were
+-- REGISTERED, which they always were.
+-- ======================================================================
+
+t.test('an outsider who watches is put in the match instance, or there is nothing to see', function()
+    local server, matchId = liveRound()
+
+    -- Player 9 is nobody: never joined, never fought.
+    local ok = server.lobby.AddSpectator(9, matchId)
+    t.isTrue(ok, 'an outsider was refused a camera on a live match')
+
+    t.equals(server.bucket(9), matchId,
+        'the spectator is registered but left in the default world -- they arrive at the arena and see an empty field')
+end)
+
+t.test('and is taken back out when they stop watching', function()
+    local server, matchId = liveRound()
+
+    server.lobby.AddSpectator(9, matchId)
+    server.lobby.RemoveSpectator(9)
+
+    t.isNil(server.bucket(9),
+        'a spectator who stopped watching was left inside the match instance, in a world nobody else is in')
+end)
+
+t.test('but an ELIMINATED player is not dragged out of their own round', function()
+    -- They are still in the match -- their row is what the results board
+    -- ranks off -- so pulling them out of the instance here would drop them
+    -- into the live world mid-match. Their exit runs on the match's own path.
+    local server, matchId = liveRound()
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+
+    t.isTrue(server.lobby.AddSpectator(2, matchId), 'the eliminated fighter was refused their own camera')
+    server.lobby.RemoveSpectator(2)
+
+    t.equals(server.bucket(2), matchId,
+        'an eliminated player who stopped watching was ejected from the match instance mid-round')
+end)
+
 t.test('a fighter who is still alive may not spectate the match they are fighting in', function()
     local server, matchId = liveRound()
 

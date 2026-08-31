@@ -587,5 +587,113 @@ t.test('somebody who places no bet is paid nothing, and loses nothing', function
     t.equals(server.movements(1), moves,
         'settling the pool moved money for somebody who was not in it')
 end)
+-- ======================================================================
+-- ENTRY FEES AS BETS -- the shipped arrangement
+--
+-- includeEntryPot means there is no separate pot at all: each fighter's
+-- entry fee becomes a pool bet on their own side and is settled with
+-- everything else. One pot, one set of winners, and paying to enter puts
+-- you IN the pool rather than funding other people's bets for nothing.
+--
+-- Settled in the order server/match.lua really uses -- Settle first, then
+-- SettleSpectatorBets -- because Settle is what converts the fees and the
+-- second call is what pays them. Either alone is half a settlement.
+-- ======================================================================
+
+t.test('the entry fee becomes a bet, and the winner takes the losers fees', function()
+    local server, record = teamMatch({})
+    record.players[1] = { src = 1, team = 'crimson' }
+    record.players[2] = { src = 2, team = 'ash' }
+
+    -- teamMatch already took 1000 from each fighter -- that IS the entry
+    -- fee this arrangement turns into a bet.
+    t.equals(server.cash(1), 4000)
+    t.equals(server.cash(2), 4000)
+
+    local context = {
+        teams = true,
+        winners = { 1 },
+        contestants = 2,
+        players = {
+            { id = 1, team = 'crimson', stake = 1000, kills = 1 },
+            { id = 2, team = 'ash', stake = 1000, kills = 0 },
+        },
+    }
+
+    t.equals(#server.betting.Settle('m1', context), 0,
+        'Settle paid a pot of its own -- the fees were meant to become bets')
+    t.equals(server.betting.GetPot('m1'), 0,
+        'the pot still holds the fees, so something can pay them twice')
+
+    server.betting.SettleSpectatorBets('m1', 'crimson')
+
+    t.equals(server.cash(1), 6000, 'the winner did not take both fees')
+    t.equals(server.cash(2), 4000, 'the loser was given their fee back')
+end)
+
+t.test('a fighter who also bets is in the pool once for each, not once in total', function()
+    local server, record = teamMatch({})
+    record.players[1] = { src = 1, team = 'crimson' }
+    record.players[2] = { src = 2, team = 'ash' }
+
+    t.isTrue(server.betting.PlaceSpectatorBet(1, 'm1', 'crimson', 500))
+
+    server.betting.Settle('m1', {
+        teams = true, winners = { 1 }, contestants = 2,
+        players = {
+            { id = 1, team = 'crimson', stake = 1000, kills = 1 },
+            { id = 2, team = 'ash', stake = 1000, kills = 0 },
+        },
+    })
+    server.betting.SettleSpectatorBets('m1', 'crimson')
+
+    -- Pool is 1000 + 1000 + 500 = 2500, and player 1 holds both winning
+    -- stakes, so the whole thing comes back to them.
+    t.equals(server.cash(1), 5000 - 1000 - 500 + 2500)
+    t.equals(server.cash(2), 4000)
+end)
+
+t.test('and the winner ALWAYS profits, because the pool holds the losers fees', function()
+    -- The guarantee this arrangement exists for. With bets alone a winner
+    -- can break even -- if everybody backed the same side there is nothing
+    -- to win. With the fees in, every loser has put money up.
+    local server, record = teamMatch({})
+    record.players[1] = { src = 1, team = 'crimson' }
+    record.players[2] = { src = 2, team = 'ash' }
+
+    local before = server.cash(1)
+    server.betting.Settle('m1', {
+        teams = true, winners = { 1 }, contestants = 2,
+        players = {
+            { id = 1, team = 'crimson', stake = 1000, kills = 1 },
+            { id = 2, team = 'ash', stake = 1000, kills = 0 },
+        },
+    })
+    server.betting.SettleSpectatorBets('m1', 'crimson')
+
+    t.isTrue(server.cash(1) > before,
+        'the winner came out of a two-fee pool with no more than they went in with')
+end)
+
+t.test('money is conserved: the pool pays out exactly what went into it', function()
+    local server, record = teamMatch({ [3] = 5000 })
+    record.players[1] = { src = 1, team = 'crimson' }
+    record.players[2] = { src = 2, team = 'ash' }
+
+    server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 750)
+
+    server.betting.Settle('m1', {
+        teams = true, winners = { 1 }, contestants = 2,
+        players = {
+            { id = 1, team = 'crimson', stake = 1000, kills = 1 },
+            { id = 2, team = 'ash', stake = 1000, kills = 0 },
+        },
+    })
+    server.betting.SettleSpectatorBets('m1', 'crimson')
+
+    local total = server.cash(1) + server.cash(2) + server.cash(3)
+    t.equals(total, 5000 + 5000 + 5000,
+        'the settlement created or destroyed money -- it is only ever allowed to move it')
+end)
 
 os.exit(t.summary())

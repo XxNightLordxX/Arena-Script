@@ -132,6 +132,18 @@ local function fakeLobby(records)
     return { Get = function(matchId) return records[matchId] end }
 end
 
+--- Pins the SEPARATE-POT arrangement these pot tests were written against.
+---
+--- With the shipped default an entry fee is not a pot at all: it becomes a
+--- pool bet on that player's own side and is settled by SettleSpectatorBets,
+--- so ArenaBetting.Settle pays nothing and returns nothing. A test that
+--- calls Settle alone would be measuring half a settlement.
+--- @param config table
+local function separatePot(config)
+    config.Betting.betPayout = config.Betting.betPayout or {}
+    config.Betting.betPayout.includeEntryPot = false
+end
+
 --- Two fighters staked into one team match, with the lobby record wired up
 --- so spectator bets have something to bet on.
 --- @param spectators table<integer, integer>? -- [serverId] = starting cash
@@ -180,7 +192,14 @@ end
 --- @param stakes integer[]? -- per fighter, in order; 1000 each by default
 --- @return table server
 local function ffaMatch(mutate, stakes)
-    local server = newServer({ [1] = 5000, [2] = 5000, [3] = 5000, [4] = 5000 }, mutate)
+    -- The pot arrangement, pinned once here rather than at every caller:
+    -- every test built on this one settles the POT through Settle, and with
+    -- the shipped default that money is a pool bet instead and Settle pays
+    -- nothing.
+    local server = newServer({ [1] = 5000, [2] = 5000, [3] = 5000, [4] = 5000 }, function(config)
+        separatePot(config)
+        if mutate then mutate(config) end
+    end)
     for id = 1, 4 do
         server.betting.TakeStake(id, 'm1', (stakes or {})[id] or 1000)
     end
@@ -222,7 +241,10 @@ end
 --- rather than inherited.
 --- @param config table
 local function oddsPayout(config)
-    config.Betting.betPayout = { fighters = 'odds', spectators = 'odds', sharedPool = true }
+    config.Betting.betPayout = {
+        fighters = 'odds', spectators = 'odds', sharedPool = true,
+        includeEntryPot = false,
+    }
 end
 
 t.test('the shipped betting config is the one the numbers below assume', function()
@@ -230,7 +252,7 @@ t.test('the shipped betting config is the one the numbers below assume', functio
     -- five settings. Change one in config.lua and the arithmetic here is
     -- wrong rather than the code -- so the mismatch is named here, once,
     -- instead of showing up as eight unrelated failures.
-    local betting = newServer({}).config.Betting
+    local betting = newServer({}, separatePot).config.Betting
     t.isTrue(betting.enabled)
     t.equals(betting.account, 'cash')
     t.equals(betting.houseCutPercent, 0)
@@ -246,7 +268,7 @@ end)
 -- ======================================================================
 
 t.test('TakeStake removes exactly the fee, once, and holds it against the match', function()
-    local server = newServer({ [1] = 5000 })
+    local server = newServer({ [1] = 5000 }, separatePot)
 
     local ok, reason = server.betting.TakeStake(1, 'm1', 1000)
     t.isTrue(ok)
@@ -266,7 +288,7 @@ t.test('TakeStake removes exactly the fee, once, and holds it against the match'
 end)
 
 t.test('a stake the player cannot cover is refused and nothing is recorded', function()
-    local server = newServer({ [1] = 500 })
+    local server = newServer({ [1] = 500 }, separatePot)
 
     local ok, reason = server.betting.TakeStake(1, 'm1', 1000)
     t.isFalse(ok)
@@ -284,7 +306,7 @@ t.test('a stake the player cannot cover is refused and nothing is recorded', fun
 end)
 
 t.test('a fee outside the configured band never reaches the account', function()
-    local server = newServer({ [1] = 500000 })
+    local server = newServer({ [1] = 500000 }, separatePot)
 
     local ok, reason = server.betting.TakeStake(1, 'm1', 60000)
     t.isFalse(ok)
@@ -294,7 +316,7 @@ t.test('a fee outside the configured band never reaches the account', function()
 end)
 
 t.test('one seat cannot be staked twice', function()
-    local server = newServer({ [1] = 5000 })
+    local server = newServer({ [1] = 5000 }, separatePot)
 
     t.isTrue(server.betting.TakeStake(1, 'm1', 1000))
     local ok, reason = server.betting.TakeStake(1, 'm1', 1000)
@@ -308,7 +330,8 @@ end)
 
 t.test('with betting switched off nothing is taken and the join still succeeds', function()
     -- A free match must not become unjoinable because there is no pot.
-    local server = newServer({ [1] = 5000 }, function(config) config.Betting.enabled = false end)
+    local server = newServer({ [1] = 5000 }, function(config)
+            separatePot(config)config.Betting.enabled = false end)
 
     local ok, reason = server.betting.TakeStake(1, 'm1', 1000)
     t.isTrue(ok)
@@ -318,7 +341,7 @@ t.test('with betting switched off nothing is taken and the join still succeeds',
 end)
 
 t.test('the player is told about their own money, through the arena toast and nowhere else', function()
-    local server = newServer({ [1] = 5000 })
+    local server = newServer({ [1] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm1', 1000)
     server.betting.RefundOne('m1', 1, 'notify.match_cancelled')
 
@@ -340,7 +363,7 @@ end)
 t.test('RefundAll returns every stake, each to the player who paid it', function()
     -- Deliberately unequal: an even split of the pot balances the books
     -- while quietly moving money between players, and equal stakes hide it.
-    local server = newServer({ [1] = 5000, [2] = 5000, [3] = 9000 })
+    local server = newServer({ [1] = 5000, [2] = 5000, [3] = 9000 }, separatePot)
     server.betting.TakeStake(1, 'm1', 500)
     server.betting.TakeStake(2, 'm1', 1000)
     server.betting.TakeStake(3, 'm1', 5000)
@@ -359,7 +382,7 @@ t.test('RefundAll returns every stake, each to the player who paid it', function
 end)
 
 t.test('a second RefundAll pays nothing -- counted in movements, not balances', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm1', 500)
     server.betting.TakeStake(2, 'm1', 1000)
     server.betting.RefundAll('m1', 'notify.match_cancelled')
@@ -382,7 +405,7 @@ t.test('a second RefundAll pays nothing -- counted in movements, not balances', 
 end)
 
 t.test('RefundOne refuses a stake it has already returned, and says so out loud', function()
-    local server = newServer({ [1] = 5000 })
+    local server = newServer({ [1] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm1', 1000)
 
     t.isTrue(server.betting.RefundOne('m1', 1, 'notify.match_cancelled'))
@@ -402,7 +425,7 @@ end)
 -- ======================================================================
 
 t.test('Settle pays the whole pot out and creates nothing', function()
-    local server = newServer({ [1] = 5000, [2] = 5000, [3] = 5000, [4] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000, [3] = 5000, [4] = 5000 }, separatePot)
     for id = 1, 4 do server.betting.TakeStake(id, 'm1', 1000) end
     t.equals(server.betting.GetPot('m1'), 4000)
 
@@ -437,7 +460,8 @@ end)
 
 t.test('Settle pays the net pot when the house takes a cut, and not a dollar more', function()
     local server = newServer({ [1] = 5000, [2] = 5000, [3] = 5000 },
-        function(config) config.Betting.houseCutPercent = 10 end)
+        function(config)
+            separatePot(config)config.Betting.houseCutPercent = 10 end)
     for id = 1, 3 do server.betting.TakeStake(id, 'm1', 1000) end
 
     local payouts = server.betting.Settle('m1', {
@@ -489,7 +513,10 @@ t.test('top_three in a team match pays the winning side, not a podium', function
     -- would pay the LOSING team's runner-up out of the winners' pot, so the
     -- mode falls back rather than doing it -- and the fallback is what an
     -- operator who set top_three on a team server actually gets.
-    local server = teamMatch(nil, function(config) config.Betting.payout = 'top_three' end)
+    local server = teamMatch(nil, function(config)
+        separatePot(config)
+        config.Betting.payout = 'top_three'
+    end)
     t.equals(server.betting.GetPot('m1'), 2000)
 
     local payouts = server.betting.Settle('m1', teamContext())
@@ -571,7 +598,7 @@ t.test('every payout mode spends the net pot exactly and leaves escrow empty', f
 end)
 
 t.test('a second Settle pays nothing', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm1', 1000)
     server.betting.TakeStake(2, 'm1', 1000)
 
@@ -596,7 +623,7 @@ end)
 -- ======================================================================
 
 t.test('Clear refuses while the pot is still held, and drops nothing', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm1', 1000)
     server.betting.TakeStake(2, 'm1', 1000)
 
@@ -620,7 +647,8 @@ end)
 
 t.test('maxPot caps the pot, and the stake that would breach it is refused whole', function()
     local server = newServer({ [1] = 5000, [2] = 5000, [3] = 5000 },
-        function(config) config.Betting.maxPot = 1500 end)
+        function(config)
+            separatePot(config)config.Betting.maxPot = 1500 end)
 
     t.isTrue(server.betting.TakeStake(1, 'm1', 1000))
 

@@ -1965,6 +1965,20 @@ Config.Betting = {
         -- is server-funded and never enters, or it would be paying itself
         -- out of other people's stakes as well.
         sharedPool = true,
+
+        -- THE ENTRY FEES JOIN THE POOL TOO.
+        --
+        -- On, a fighter's entry fee IS their bet: it is added to the pool as
+        -- a stake on their own side, so paying to enter puts you in rather
+        -- than funding other people's bets for nothing. The pot is no longer
+        -- paid out separately -- there is one pot and one set of winners.
+        --
+        -- What that guarantees: a fighter who wins always profits, because
+        -- the pool holds every loser's fee as well as their own. Off, the
+        -- entry pot is paid to the match winners by Config.Betting.payout
+        -- below and the bets settle on their own, which is two prizes for
+        -- two different things.
+        includeEntryPot = true,
     },
 
     fighterBets = {

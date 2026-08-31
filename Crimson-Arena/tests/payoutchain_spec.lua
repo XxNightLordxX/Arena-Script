@@ -97,15 +97,32 @@ end
 -- The chain
 -- ========================================================================
 
+--- Pins the SEPARATE-POT arrangement, which this file was written against.
+---
+--- With Config.Betting.betPayout.includeEntryPot on -- the shipped default --
+--- entry fees are not a pot at all: each one becomes a pool bet on that
+--- player's own side and is settled by SettleSpectatorBets, so
+--- ArenaBetting.Settle pays nothing and returns nothing. These tests call
+--- Settle alone, so under that arrangement they would be measuring half a
+--- settlement and finding money missing.
+---
+--- The chain they exist to guard -- context -> ComputePayouts -> payouts --
+--- is the pot one, so it is stated here rather than inherited.
+--- @param config table
+local function separatePot(config)
+    config.Betting.betPayout = config.Betting.betPayout or {}
+    config.Betting.betPayout.includeEntryPot = false
+end
+
 t.test('the numbers below are the shipped ones', function()
-    local config = newServer({}).config
+    local config = newServer({}, separatePot).config
     t.equals(config.Betting.minPlayersToPayOut, 2)
     t.equals(config.Betting.houseCutPercent, 0)
     t.equals(config.Betting.payout, 'winner_takes_all')
 end)
 
 t.test('a 1v1 quitter does not turn the winner\'s pot back into a refund', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     local payouts = server.betting.Settle('m1', quitterContext(server))
 
     t.equals(#payouts, 1, 'the winner should be paid, and only the winner')
@@ -116,7 +133,7 @@ t.test('a 1v1 quitter does not turn the winner\'s pot back into a refund', funct
 end)
 
 t.test('the quitter does not get their forfeited stake back', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.Settle('m1', quitterContext(server))
 
     -- 5000 - 1000 staked, and nothing returned.
@@ -126,7 +143,7 @@ t.test('the quitter does not get their forfeited stake back', function()
 end)
 
 t.test('money is conserved across the settlement', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.Settle('m1', quitterContext(server))
     t.equals(server.ledgerTotal(), 0, 'the pot moved money between players, it did not create any')
 end)
@@ -135,7 +152,7 @@ t.test('Settle forwards contestants rather than rebuilding the context without i
     -- The direct statement of the defect. With the field dropped, the
     -- surviving roster of one falls under minPlayersToPayOut and every payout
     -- comes back as a refund.
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     local payouts = server.betting.Settle('m1', quitterContext(server))
 
     for _, payout in ipairs(payouts) do
@@ -153,7 +170,7 @@ t.test('a genuinely tiny match still refunds', function()
     -- One person, who fought alone. contestants agrees with the roster, so
     -- the minimum still bites -- the fix must not become a way to pay out a
     -- match nobody contested.
-    local server = newServer({ [1] = 5000 })
+    local server = newServer({ [1] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm2', 1000)
 
     local payouts = server.betting.Settle('m2', {
@@ -171,7 +188,7 @@ end)
 t.test('a context with no contestants at all still works off the roster', function()
     -- Every caller sets it today, but a caller that forgets must degrade to
     -- the old behaviour rather than erroring or paying out wrongly.
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm3', 1000)
     server.betting.TakeStake(2, 'm3', 1000)
 
@@ -192,7 +209,7 @@ end)
 t.test('an eliminated player who stayed is still owed a refund when the round does not qualify', function()
     -- Eliminated is not the same as gone. They fought to the end, so they stay
     -- on the roster and a refunding round owes them their stake back.
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm4', 1000)
     server.betting.TakeStake(2, 'm4', 1000)
 
@@ -231,7 +248,7 @@ end)
 -- ========================================================================
 
 t.test('a stake is recorded when the framework reports success by saying nothing', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 }, nil, { quiet = true })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot, { quiet = true })
 
     t.isTrue(server.betting.TakeStake(1, 'm1', 1000), 'the stake was refused after the money moved')
     t.equals(server.cash(1), 4000, 'the player was charged')
@@ -240,7 +257,7 @@ t.test('a stake is recorded when the framework reports success by saying nothing
 end)
 
 t.test('and the pot pays out, which is the symptom that was actually reported', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 }, nil, { quiet = true })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot, { quiet = true })
     server.betting.TakeStake(1, 'm1', 1000)
     server.betting.TakeStake(2, 'm1', 1000)
 
@@ -264,7 +281,7 @@ t.test('an explicit refusal is still a refusal on a quiet framework', function()
     -- The one answer that means the same thing in every build. A fixture that
     -- blurred this too would be modelling nothing real -- and the fix must
     -- not turn "you cannot afford it" into a free stake.
-    local server = newServer({ [1] = 100 }, nil, { quiet = true })
+    local server = newServer({ [1] = 100 }, separatePot, { quiet = true })
 
     t.isFalse(server.betting.TakeStake(1, 'm1', 1000), 'a player staked money they do not have')
     t.equals(server.cash(1), 100, 'and were charged for it')
@@ -272,7 +289,7 @@ t.test('an explicit refusal is still a refusal on a quiet framework', function()
 end)
 
 t.test('a refund reaches the player on a quiet framework too', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 }, nil, { quiet = true })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot, { quiet = true })
     server.betting.TakeStake(1, 'm1', 1000)
     server.betting.TakeStake(2, 'm1', 1000)
 
@@ -296,6 +313,7 @@ end)
 
 t.test('a pot refunded for too few players says so, with the numbers behind it', function()
     local server = newServer({ [1] = 5000 }, function(config)
+        separatePot(config)
         config.Betting.minPlayersToPayOut = 2
     end)
     server.betting.TakeStake(1, 'm1', 1000)
@@ -315,7 +333,7 @@ t.test('a pot refunded for too few players says so, with the numbers behind it',
 end)
 
 t.test('a pot refunded for having no winner names that reason instead', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm1', 1000)
     server.betting.TakeStake(2, 'm1', 1000)
 
@@ -330,7 +348,7 @@ t.test('a pot refunded for having no winner names that reason instead', function
 end)
 
 t.test('a pot that DID pay says so too, so a quiet console means nothing ran', function()
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
     server.betting.TakeStake(1, 'm1', 1000)
     server.betting.TakeStake(2, 'm1', 1000)
 
@@ -353,7 +371,7 @@ t.test('an empty pot says so rather than returning in silence', function()
     -- match that paid nobody produced no console output at all -- while
     -- side-bets, a separate pool, paid normally. That combination reads as
     -- "the pot is broken" and is not.
-    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
 
     server.betting.Settle('m1', {
         players = { { id = 1, stake = 0 }, { id = 2, stake = 0 } },

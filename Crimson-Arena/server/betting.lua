@@ -493,7 +493,8 @@ function ArenaBetting.TakeStake(src, matchId, amount)
         return false, 'error.pot_limit_reached'
     end
 
-    if not debit(id, fee, transaction('stake', matchId)) then
+    local took, account = debit(id, fee, transaction('stake', matchId))
+    if not took then
         return false, 'error.not_enough_money'
     end
 
@@ -502,6 +503,9 @@ function ArenaBetting.TakeStake(src, matchId, amount)
         amount = fee,
         citizenid = citizenIdOf(id),
         name = ArenaPlayerName(id),
+        -- Which account paid, so a refund goes back where it came from
+        -- rather than to whichever one this server happens to list first.
+        account = account,
         takenAt = os.time(),
         settled = false,
     }
@@ -670,6 +674,68 @@ function ArenaBetting.ForfeitAll(matchId, reasonKey)
     return forfeited, total
 end
 
+--- Whether entry fees are settled as bets rather than as a pot of their own.
+--- @return boolean
+local function entryPotJoinsPool()
+    local block = Config.Betting.betPayout
+    return type(block) == 'table' and block.includeEntryPot == true
+end
+
+--- Turns every unsettled entry stake into a pool bet on that player's own
+--- side, and marks the stake settled so nothing can pay it twice.
+---
+--- RECORDED HERE, NOT WHEN THE FEE WAS TAKEN, and the difference matters: a
+--- player's side is not final until the round is. A bet written at join time
+--- would carry the team they picked then, and a player who switched sides --
+--- or a mode the host changed under them -- would be judged against a side
+--- they did not fight for.
+---
+--- The pick is their team in a team mode and their own id otherwise, which is
+--- exactly what ownSideOnly means everywhere else in this file, so an entry
+--- stake can never be voided as a bet against its own holder.
+--- @param matchId string
+--- @param context table
+--- @return integer added
+local function addEntryStakesAsBets(matchId, context)
+    local sides = {}
+    for _, row in ipairs((type(context) == 'table' and context.players) or {}) do
+        local id = Arena.ToInt(row.id)
+        if id then
+            sides[id] = Arena.IsKey(row.team) and row.team or tostring(id)
+        end
+    end
+
+    local added = 0
+    for src, stake in pairs(stakesOf(matchId)) do
+        local amount = Arena.ToInt(stake.amount) or 0
+        if not stake.settled and amount > 0 then
+            sideBets[matchId] = sideBets[matchId] or {}
+            sideBets[matchId][#sideBets[matchId] + 1] = {
+                src = src,
+                citizenid = stake.citizenid,
+                name = stake.name,
+                pick = sides[src] or tostring(src),
+                amount = amount,
+                account = stake.account,
+                kind = 'fighter',
+                mode = 'pool',
+                -- Marked so the console and any later reader can tell a fee
+                -- that became a bet from a bet somebody chose to place.
+                fromEntryFee = true,
+                placedAt = stake.takenAt,
+                settled = false,
+            }
+
+            -- The pool owns it from here. GetPot reads this, so the pot is
+            -- now empty and cannot be paid out a second time by any path.
+            stake.settled = true
+            added = added + 1
+        end
+    end
+
+    return added
+end
+
 --- Pays the pot out. The match decides who won; this decides nothing but
 --- where the money goes and whether it has gone already.
 ---
@@ -681,6 +747,26 @@ end
 --- @return table[] payouts -- { { id, amount, reason } } as computed
 function ArenaBetting.Settle(matchId, context)
     if not Arena.IsKey(matchId) then return {} end
+
+    -- THE ENTRY FEES AS BETS, when the operator has said so.
+    --
+    -- Each fighter's stake becomes a bet on their own side at the moment the
+    -- round is decided, and the whole thing is settled by the pool below --
+    -- one pot, one set of winners. Paying to enter puts you IN the pool
+    -- rather than funding other people's bets for nothing, and a fighter who
+    -- wins always profits, because the pool holds every loser's fee as well
+    -- as their own.
+    --
+    -- Recorded here rather than when the fee is taken: a player's side is not
+    -- final until the round is, and a bet on a team somebody later left would
+    -- be judged against a side they did not fight for.
+    if entryPotJoinsPool() then
+        local added = addEntryStakesAsBets(matchId, context)
+        if added > 0 then
+            trace('entry fees joined the bet pool on match %s (%d stake(s))', tostring(matchId), added)
+        end
+        return {}
+    end
 
     local pot = ArenaBetting.GetPot(matchId)
     if pot <= 0 then

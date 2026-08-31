@@ -128,6 +128,13 @@ local function newFixture(mutate)
             -- server/match.lua calls it at both arena choke points.
             IsEnabled = function() return false end,
             Issue = function() return {} end,
+            -- The ladder swaps the weapon as an ITEM on an ox_inventory server:
+
+            -- a ped handed a gun it has no item for is disarmed again within
+
+            -- moments, so the promotion cannot be left to the client.
+
+            SwapWeapon = function() return false end,
             Reclaim = function() return 0 end,
             ReclaimAll = function() return 0 end,
             Clear = function() return true end,
@@ -297,11 +304,27 @@ end
 -- WHAT SHIPS
 -- ======================================================================
 
-t.test('gun game still ships disabled, and a disabled mode plays no ladder', function()
+t.test('gun game now ships ENABLED, with a ladder behind it', function()
+    -- THE CONTRACT CHANGED, on the operator's instruction. This used to
+    -- assert the mode shipped off, and the reasoning was sound at the time:
+    -- an unfinished feature should not be live by default. It is finished
+    -- now -- the promotion event had no client handler at all until this
+    -- round, so climbing a rung changed the server's idea of what a player
+    -- held and never their hands -- and the operator has asked for it on.
+    --
+    -- A mode that is enabled with an empty ladder would be worse than one
+    -- that is off, so the ladder is asserted here rather than only in the
+    -- test below.
     local f = newFixture()
-    -- The whole point of the mode being off by default: an operator turns it
-    -- on deliberately, and until they do nothing about it is live.
-    t.isFalse(f.Config.Modes.gungame.enabled)
+    t.isTrue(f.Config.Modes.gungame.enabled)
+    t.isTrue(#f.M.GetLadder('gungame') > 0,
+        'gun game is enabled with no ladder -- every kill would promote nobody')
+end)
+
+t.test('and a mode switched OFF still plays no ladder', function()
+    -- The half of the old test that is still about behaviour rather than
+    -- about a default: disabling the mode has to actually disable it.
+    local f = newFixture(function(config) config.Modes.gungame.enabled = false end)
     t.equals(#f.M.GetLadder('gungame'), 0)
 end)
 

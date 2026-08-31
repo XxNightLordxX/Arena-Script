@@ -102,6 +102,7 @@ local function newFixture(dispatchConfig, world)
         TriggerEvent = function(name, ...)
             calls[#calls + 1] = { kind = 'event', name = name, args = { ... } }
         end,
+        RegisterNetEvent = function() end,
         AddEventHandler = function(name, fn)
             handlers[name] = handlers[name] or {}
             handlers[name][#handlers[name] + 1] = fn
@@ -682,6 +683,7 @@ local function newArena(world)
 
         Player = function() return { state = { set = function() end } } end,
         TriggerEvent = function() end,
+        RegisterNetEvent = function() end,
         AddEventHandler = function(name, fn)
             handlers[name] = handlers[name] or {}
             handlers[name][#handlers[name] + 1] = fn

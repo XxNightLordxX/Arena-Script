@@ -32,10 +32,15 @@ local function newFixture(dispatchConfig)
     local commands = {}      -- every ExecuteCommand line, in order
     local cancelled = 0      -- how many times CancelEvent() was called
     local toClients = {}     -- every TriggerClientEvent, in order
+    local netRegistered = {} -- every RegisterNetEvent name, in order
 
     local env = Sandbox.newEnv({
         ExecuteCommand = function(line) commands[#commands + 1] = line end,
         CancelEvent = function() cancelled = cancelled + 1 end,
+        -- The cancel layer registers each alert event for the network before
+        -- listening: without that, FXServer never delivers a client-triggered
+        -- event to this resource at all. Recorded so a spec can assert it.
+        RegisterNetEvent = function(name) netRegistered[#netRegistered + 1] = name end,
         TriggerClientEvent = function(name, target, ...)
             toClients[#toClients + 1] = { name = name, target = target, args = { ... } }
         end,
@@ -104,6 +109,7 @@ local function newFixture(dispatchConfig)
         --- against it would pass without the code under test running.
         cancelled = function() return cancelled end,
         toClients = toClients,
+        netRegistered = netRegistered,
         eventNames = function()
             local out = {}
             for _, e in ipairs(events) do out[#out + 1] = e.name end
@@ -389,6 +395,57 @@ local function arenaPoints(env)
     local b = env.Config.Arenas[arena.key].boundary
     return b.center, { x = b.center.x + (b.radius * 4), y = b.center.y, z = b.center.z }
 end
+
+-- ========================================================================
+-- THE CANCEL LAYER HAS TO BE REGISTERED FOR THE NETWORK
+--
+-- THE DEFECT THIS EXISTS FOR. FXServer routes a network-sourced event only
+-- to resources that have called RegisterNetEvent for that name. A resource
+-- with AddEventHandler alone is never delivered it: no error, no warning,
+-- the handler simply never runs.
+--
+-- Every alert a script raises with TriggerServerEvent from the player's own
+-- client -- which is how gunfire and deaths are reported, because that is
+-- where they are detected -- therefore passed this resource without touching
+-- it. The whole layer was inert for the events it was written for, and the
+-- startup report counted them as configured the entire time.
+-- ========================================================================
+
+t.test('every cancelEvents entry is registered for the network, not just listened for', function()
+    local f = newFixture(locationConfig())
+
+    t.equals(#f.netRegistered, 1,
+        'the alert event was never registered for the network, so a client-triggered alert never arrives')
+    t.equals(f.netRegistered[1], 'alerts:raise')
+end)
+
+t.test('the shipped sc-dispatch entries are both registered', function()
+    -- The config that actually ships, rather than a fixture's. Both entries
+    -- exist because a dispatch script can raise its alert from either realm.
+    local f = newFixture()
+
+    local names = table.concat(f.netRegistered, ',')
+    t.contains(names, 'sc-dispatch:server:AddNotification',
+        'the client -> server path is not registered -- it is the one that carries arena gunfire')
+    t.contains(names, 'sc-dispatch:AddNotification')
+end)
+
+t.test('a location-declared entry is pinned by location or not at all', function()
+    -- The over-cancel this closes: with the point outside every arena, the
+    -- handler used to fall through to the ambient `source`, which FiveM
+    -- leaves set to whoever triggered the outermost net event. An alert
+    -- about somewhere else, raised anywhere inside an arena player's call
+    -- chain, was cancelled on the strength of who was on top of the stack.
+    local f = newFixture(locationConfig())
+    local _, outside = arenaPoints(f.env)
+
+    f.D.Set(1, 'm1')
+    f.env.source = 1                       -- an arena player is on the stack
+    f.fire('alerts:raise', { coords = outside })
+
+    t.equals(f.cancelled(), 0,
+        'an alert about somewhere else was cancelled because an arena player triggered the chain')
+end)
 
 t.test('an alert about a spot inside a live arena is cancelled', function()
     local f = newFixture(locationConfig())

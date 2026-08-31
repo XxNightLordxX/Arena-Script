@@ -528,6 +528,16 @@ local function promote(match, killer)
     killer.loadout = ladderLoadout(rungs[rung], killer.loadout)
 
     local weapon = killer.loadout.weapons[1]
+
+    -- THE ITEM IS THE WEAPON on an ox_inventory server, so the promotion has
+    -- to happen here rather than in the message below: a ped handed a gun it
+    -- has no item for is disarmed again within moments. Safe to call when
+    -- ox_inventory is absent -- it answers false and the client event below
+    -- does the work instead.
+    ArenaAmmo.SwapWeapon(killer.src, match.id,
+        (previous and previous.weapon ~= weapon.weapon) and previous.weapon or nil,
+        weapon.weapon, weapon.ammo)
+
     TriggerClientEvent('crimson_arena:client:gunGameRung', killer.src, {
         matchId = match.id,
         rung = rung,
@@ -1104,6 +1114,14 @@ function ArenaMatch.OnDeath(src, killerSrc)
         -- refused camera: the hold stays, which is inert and recoverable.
         local spectate = Config.Match.spectateOnElimination == true
             and ArenaLobby.AddSpectator(id, match.id) == true
+
+        -- ELIMINATION IS A DEATH THE PLAYER DOES NOT COME BACK FROM, so it
+        -- is the one that most needs saying out loud. A respawn revives them
+        -- and so does the exit, but an eliminated player sits between those
+        -- two for the rest of the round -- watching, flagged dead by the
+        -- medical script, with whatever that script does to a corpse still
+        -- being done to them.
+        ArenaDispatch.Revive(id)
 
         TriggerClientEvent('crimson_arena:client:eliminated', id, { matchId = match.id, spectate = spectate })
         ArenaNotifyKey(id, 'notify.eliminated', 'error')

@@ -287,7 +287,7 @@ Config.Modes = {
     ['gungame'] = {
         label = 'Gun Game',
         description = 'Every kill moves you up the weapon ladder. First to the end wins.',
-        enabled = false,        -- off by default; needs `gunGameLadder` below
+        enabled = true,         -- the ladder below is what it plays
         teams = false,
         icon = 'fas fa-arrow-up-9-1',
         -- Weapon keys from Config.Loadouts.weapons, in order. When this mode
@@ -1383,10 +1383,13 @@ Config.Dispatch = {
         -- entry naming a resource that is not running, or an export that does
         -- not exist, is skipped with one console warning -- it will not error
         -- and it will not stop a match starting.
-        -- ON, because the two events below are named from sc-dispatch's own
-        -- integration guide rather than guessed.
-        enabled = true,
-
+        -- NO `enabled` SWITCH HERE, deliberately. There used to be one and
+        -- nothing read it -- every path in this block is driven by whether
+        -- its own list has anything in it, which is the honest signal: an
+        -- empty list does nothing whether a switch says on or off. A key
+        -- that looks like a master switch and controls nothing is worse
+        -- than no key, because it is the first thing an operator toggles
+        -- when something does not work.
         disableExports = {},
 
         -- ---- FORM 4: this resource cancels the alert event ----------------

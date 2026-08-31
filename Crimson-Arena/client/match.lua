@@ -667,6 +667,49 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     deathReported = false
 end)
 
+--- A gun game promotion: the rung below is taken away and the next one
+--- handed over.
+---
+--- REGISTERED AT LAST. The server has sent this event since gun game
+--- shipped and no client file listened for it, so climbing a rung changed
+--- the server's idea of what a player was carrying and never their hands.
+--- The notification said they had been promoted; the weapon never arrived.
+---
+--- On an ox_inventory server the swap has already happened as items, before
+--- this message was sent, and touching the ped here would only fight it --
+--- so this side does the announcing and leaves the weapons alone.
+RegisterNetEvent('crimson_arena:client:gunGameRung', function(data)
+    if not currentMatch or type(data) ~= 'table' then return end
+    if data.matchId ~= currentMatch.matchId then return end
+    if not Arena.IsKey(data.weapon) then return end
+
+    if GetResourceState('ox_inventory') == 'started' then return end
+
+    local ped = PlayerPedId()
+
+    if Arena.IsKey(data.remove) then
+        local old = joaat(data.remove)
+        RemoveWeaponFromPed(ped, old)
+        for index = #givenWeapons, 1, -1 do
+            if givenWeapons[index] == old then table.remove(givenWeapons, index) end
+        end
+    end
+
+    local hash = joaat(data.weapon)
+    local ammo = Arena.ToInt(data.ammo) or 0
+    GiveWeaponToPed(ped, hash, ammo, false, true)
+    SetPedAmmo(ped, hash, ammo)
+
+    for _, component in ipairs(data.components or {}) do
+        GiveWeaponComponentToPed(ped, hash, joaat(component))
+    end
+    if (data.tint or 0) > 0 then
+        SetPedWeaponTintIndex(ped, hash, data.tint)
+    end
+
+    givenWeapons[#givenWeapons + 1] = hash
+end)
+
 RegisterNetEvent('crimson_arena:client:eliminated', function(data)
     if type(data) ~= 'table' then return end
 

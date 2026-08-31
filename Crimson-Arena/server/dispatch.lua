@@ -722,7 +722,15 @@ local function pinnedByLocation(entry, ...)
     if not entry.coordsArg then return false end
 
     local payload = (select(entry.coordsArg, ...))
-    if type(payload) ~= 'table' then return false end
+
+    -- vector3 as well as table, to match what insideLiveArena accepts. These
+    -- two disagreed: a payload that WAS the point rather than a table
+    -- carrying one was rejected here, forty lines before the function that
+    -- would have taken it.
+    local kind = type(payload)
+    if kind ~= 'table' and kind ~= 'vector3' then return false end
+
+    if kind == 'vector3' then return insideLiveArena(payload) end
 
     -- Either the argument IS the point, or it is a table with the point
     -- under `coords` -- which is the shape a dispatch payload usually takes.
@@ -751,6 +759,15 @@ local function responsibleFor(entry, ...)
         return nil
     end
 
+    -- A LOCATION-DECLARED ENTRY IS PINNED BY LOCATION OR NOT AT ALL. Falling
+    -- through to `source` here was a real over-cancel: the caller has already
+    -- decided the point was OUTSIDE every live arena, and FiveM leaves
+    -- `source` set to whoever triggered the outermost net event -- so an
+    -- alert about somewhere else entirely, raised anywhere inside an arena
+    -- player's own call chain, was being cancelled on the strength of who
+    -- happened to be at the top of the stack.
+    if entry.coordsArg then return nil end
+
     -- A NET EVENT a client triggered. FXServer sets `source` to the server id
     -- of the client that sent it, and that is the one thing in this whole
     -- file a client cannot lie about -- it is stamped by the server, not
@@ -777,6 +794,15 @@ local function warnUnpinnable(entry)
     if warnedCancel[entry.event] then return end
     warnedCancel[entry.event] = true
 
+    if entry.coordsArg then
+        -- Telling an operator to add the coordsArg they already added is
+        -- worse than saying nothing: it sends them to fix a line that is
+        -- correct.
+        ArenaLog('cancelEvents: "%s" fired but its location was not inside any arena with a live match, so it was left alone. That is the normal answer for an alert about somewhere else -- if it should have matched, check argument %d really carries the coordinates.',
+            entry.event, entry.coordsArg)
+        return
+    end
+
     ArenaLog('cancelEvents: "%s" fired with no player behind it, so it was left alone. Say which argument carries the server id -- { event = \'%s\', playerArg = 1 } -- or, if the payload only says WHERE, which argument carries that -- { event = \'%s\', coordsArg = 1 } -- or drop it from the list.',
         entry.event, entry.event, entry.event)
 end
@@ -790,6 +816,32 @@ end
 --- starts, which is why config.lua does not promise this works.
 --- @param entry table
 local function registerCancelHandler(entry)
+    -- REGISTERED FOR THE NETWORK, and without this line the whole layer is
+    -- dead for the events that matter most.
+    --
+    -- FXServer routes a network-sourced event only to resources that have
+    -- called RegisterNetEvent for that name. A resource with AddEventHandler
+    -- alone is never delivered it -- no error, no warning, the handler is
+    -- simply never run. Every alert a script raises with TriggerServerEvent
+    -- from a player's own client -- which is how gunfire and deaths are
+    -- reported, because that is where they are detected -- was therefore
+    -- passing this resource without ever touching it.
+    --
+    -- THE OLD REASON FOR NOT DOING THIS WAS WRONG, and worth stating because
+    -- it read convincingly for a long time. It said RegisterNetEvent would
+    -- "open somebody else's server-only event to clients". It does not:
+    -- safe-for-net is per RESOURCE, so this marks the name callable into
+    -- CRIMSON_ARENA's handlers and changes nothing about the resource that
+    -- owns the event -- that one still needs its own RegisterNetEvent to be
+    -- reachable, exactly as before.
+    --
+    -- What it does allow is a client invoking THIS handler with made-up
+    -- arguments. That costs nothing: the handler's only power is
+    -- CancelEvent(), which applies to the invocation it is running in --
+    -- a forged one that no alert script is listening to. Cancelling a
+    -- pretend alert achieves nothing at all.
+    RegisterNetEvent(entry.event)
+
     AddEventHandler(entry.event, function(...)
         -- LOCATION FIRST, because it is the answer for the firings the player
         -- pin cannot see at all: an alert raised on the server with a payload

@@ -1051,6 +1051,157 @@ t.test('and it still scatters when the server asks for one', function()
 end)
 
 -- ======================================================================
+-- THE CLIENT HALF OF "DOES EDITING THE CONFIG WORK"
+--
+-- configeffect_spec asks that question of everything observable from the
+-- server -- the snapshot the panel is drawn from, and the payload a client
+-- is sent. It cannot ask it of the settings whose only effect is geometry a
+-- client BUILDS, because that needs a modelled game. Those live here.
+--
+-- Same shape: change one value, run the same scenario, require the result to
+-- move. Not what it should become -- that would be a second copy of the
+-- implementation agreeing with itself. Just that something noticed.
+-- ======================================================================
+
+--- Enters the sky arena on a config with one thing changed, and reports what
+--- the world looks like afterwards.
+--- @param mutate fun(config: table)?
+--- @return table observation
+local function afterEntering(mutate)
+    local c = newClient()
+    if mutate then mutate(c.env.Config) end
+    c.enter('skydome')
+
+    local lowest, models, places = nil, {}, {}
+    for _, object in ipairs(c.world.live()) do
+        lowest = math.min(lowest or object.z, object.z)
+        models[object.model] = (models[object.model] or 0) + 1
+        -- POSITIONS TOO, not just a count. Moving a piece changes neither
+        -- the number of objects nor the set of models, so an observation
+        -- built from those alone reports "dead setting" for every edit that
+        -- only moves something -- which is most of what an operator does to
+        -- a cover layout.
+        places[#places + 1] = ('%0.2f/%0.2f/%0.2f'):format(object.x, object.y, object.z)
+    end
+    table.sort(places)
+
+    return {
+        pieces = #c.world.live(),
+        models = models,
+        places = table.concat(places, ' '),
+        floorZ = lowest,
+        standingAt = ('%0.3f'):format(c.pos().z),
+        client = c,
+    }
+end
+
+--- @param observation table
+--- @return string
+local function shape(observation)
+    local names = {}
+    for model, count in pairs(observation.models) do
+        names[#names + 1] = ('%s=%d'):format(model, count)
+    end
+    table.sort(names)
+    return ('pieces=%d floor=%s standing=%s models=[%s] at=[%s]')
+        :format(observation.pieces, tostring(observation.floorZ), observation.standingAt,
+                table.concat(names, ','), observation.places)
+end
+
+t.test('the arena settings a CLIENT builds from all reach it', function()
+    local baseline = shape(afterEntering())
+
+    local cases = {
+        {
+            'Config.Arenas.skydome.platform.z',
+            function(config) config.Arenas.skydome.platform.z = 900.0 end,
+        },
+        {
+            'Config.Arenas.skydome.platform.radius',
+            function(config) config.Arenas.skydome.platform.radius = 20.0 end,
+        },
+        {
+            'Config.Arenas.skydome.platform.models',
+            function(config)
+                config.Arenas.skydome.platform.models = { 'prop_container_01a' }
+            end,
+        },
+        {
+            'Config.Arenas.skydome.platform.maxTiles',
+            function(config)
+                config.Arenas.skydome.platform.models = { 'prop_container_01a' }
+                config.Arenas.skydome.platform.maxTiles = 12
+            end,
+        },
+        {
+            'Config.Arenas.skydome.cover.enabled',
+            function(config) config.Arenas.skydome.cover.enabled = false end,
+        },
+        {
+            'deleting a cover piece',
+            function(config) table.remove(config.Arenas.skydome.cover.pieces) end,
+        },
+        {
+            'moving a cover piece',
+            function(config) config.Arenas.skydome.cover.pieces[1].x = 40.0 end,
+        },
+    }
+
+    for _, case in ipairs(cases) do
+        t.isTrue(shape(afterEntering(case[2])) ~= baseline,
+            ('%s changes nothing the client builds -- it is a dead setting'):format(case[1]))
+    end
+end)
+
+t.test('and the FLOOR really lands where platform.z says, at any value', function()
+    -- Not just "it moved". This is the one client-side setting with an exact
+    -- promise attached, and the promise is about the FLOOR: whatever prop
+    -- turns up, its top ends at this height.
+    --
+    -- It is deliberately NOT a promise about where the fighter stands. The
+    -- spawn Z decides that, floored at the surface -- so a spawn point above
+    -- the floor is honoured rather than dragged down to it, which is what an
+    -- operator asking for a raised platform spawn would expect. The floor is
+    -- the minimum, not the answer.
+    for _, height in ipairs({ 300.0, 900.0, 1201.0, 1800.0 }) do
+        local c = newClient()
+        c.env.Config.Arenas.skydome.platform.z = height
+        c.enter('skydome')
+
+        local platform = c.Arena.GetPlatform('skydome')
+        local lowest
+        for _, object in ipairs(c.world.live()) do
+            lowest = math.min(lowest or object.z, object.z)
+        end
+        t.isNotNil(lowest, ('platform.z = %0.1f built no floor at all'):format(height))
+
+        -- The top of the lowest layer is the walkable surface.
+        local surface
+        for _, object in ipairs(c.world.live()) do
+            if math.abs(object.z - lowest) < 0.001 then
+                surface = object.z + c.world.models[object.model].top
+                break
+            end
+        end
+        t.isTrue(math.abs(surface - platform.z) < 0.001,
+            ('platform.z = %0.1f put the walkable surface at %0.2f'):format(height, surface or 0))
+    end
+end)
+
+t.test('and returnCoords is where a player really ends up', function()
+    -- The lobby half. Read off the world rather than the payload, because
+    -- this is the one the player experiences.
+    local c = newClient()
+    c.env.Config.Lobby.returnCoords = { x = 111.0, y = 222.0, z = 333.0, w = 90.0 }
+    c.enter('skydome')
+    c.fire('crimson_arena:client:exitArena', {})
+
+    t.isTrue(math.abs(c.pos().x - 111.0) < 0.01 and math.abs(c.pos().z - 333.0) < 0.01,
+        ('the player was sent to %0.1f, %0.1f, %0.1f instead of the configured lobby')
+            :format(c.pos().x, c.pos().y, c.pos().z))
+end)
+
+-- ======================================================================
 -- THE ARENA ON THE GROUND
 -- ======================================================================
 

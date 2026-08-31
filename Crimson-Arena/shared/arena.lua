@@ -2041,6 +2041,15 @@ function Arena.LoadoutChooser()
     return chooser == 'player' and 'player' or 'host'
 end
 
+--- The spawn area of an arena at its configured size, for the validator.
+--- Separate from Arena.GetSpawnArea only so the intent is obvious: a check
+--- about what an operator TYPED must not be reading a scaled copy of it.
+--- @param arenaKey any
+--- @return table|nil
+local function arenaSpawnAreaOf(arenaKey)
+    return Arena.GetSpawnArea(arenaKey, 1.0)
+end
+
 function Arena.ValidateConfig()
     local problems = {}
     local function complain(message)
@@ -2086,6 +2095,54 @@ function Arena.ValidateConfig()
         local arena = Arena.GetArenaByKey(entry.key)
         if type(arena.spawns) ~= 'table' or #arena.spawns == 0 then
             complain(('Config.Arenas["%s"] has no spawns -- players would have nowhere to land.'):format(entry.key))
+        end
+    end
+
+    -- AN ARENA THAT CARRIES ITS OWN FLOOR WRITES ITS HEIGHT DOWN SEVERAL
+    -- TIMES, and every one of them has to agree.
+    --
+    -- The sky arena states its height in the platform, the spawn area, the
+    -- spawn list, each team list and the boundary. An operator moving it has
+    -- to change all of them, and missing one is not a near miss: a spawn
+    -- below the floor is a fighter placed underneath the arena, and a spawn
+    -- far above it is a long fall the moment the countdown ends. Neither
+    -- says anything at the time.
+    --
+    -- Named here, at start, rather than discovered in a round. A warning
+    -- rather than a refusal: an operator may genuinely want a raised spawn,
+    -- and this cannot tell that from a typo -- only that the two disagree.
+    for _, entry in ipairs(Arena.GetEnabledArenas()) do
+        local platform = Arena.GetPlatform(entry.key)
+        if platform then
+            local surface = platform.z
+
+            local function checkHeight(where, z)
+                local value = tonumber(z)
+                if not value then return end
+                if value < surface - 0.5 then
+                    complain(('Config.Arenas["%s"].%s is at %.2f, BELOW the platform surface at %.2f -- a fighter placed there is under the arena.')
+                        :format(entry.key, where, value, surface))
+                elseif value > surface + 5.0 then
+                    complain(('Config.Arenas["%s"].%s is at %.2f, %.2f above the platform surface at %.2f -- that is a fall when the countdown ends.')
+                        :format(entry.key, where, value, value - surface, surface))
+                end
+            end
+
+            local area = type(arenaSpawnAreaOf(entry.key)) == 'table' and arenaSpawnAreaOf(entry.key) or nil
+            if area then checkHeight('spawnArea.center.z', area.z) end
+
+            local raw = Arena.GetArenaByKey(entry.key) or {}
+            for index, point in ipairs(raw.spawns or {}) do
+                checkHeight(('spawns[%d].z'):format(index), point and point.z)
+            end
+            for team, list in pairs(raw.teamSpawns or {}) do
+                for index, point in ipairs(list or {}) do
+                    checkHeight(('teamSpawns.%s[%d].z'):format(tostring(team), index), point and point.z)
+                end
+            end
+            if type(raw.boundary) == 'table' and type(raw.boundary.center) ~= 'nil' then
+                checkHeight('boundary.center.z', raw.boundary.center.z)
+            end
         end
     end
 

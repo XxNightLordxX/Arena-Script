@@ -1355,11 +1355,29 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- place on the map has nothing to stream in around the player, so it
     -- keeps the order it always had and pays none of the delay below.
     if Arena.GetPlatform(data.arenaKey) or #Arena.GetCover(data.arenaKey) > 0 then
+        -- HELD AT THE FLOOR, NOT AT THE SPAWN Z THAT WAS SENT.
+        --
+        -- The point of the hold is to put the player where the scenery is
+        -- about to be built, so the engine is holding that part of the map.
+        -- The floor is built at the arena's own surface -- so that is the
+        -- height to be at, and a spawn Z that disagrees with it must not
+        -- decide where the world gets streamed.
+        --
+        -- It can disagree. The sky arena writes its height into config five
+        -- times -- the platform, the spawn area, the spawn list, the team
+        -- lists and the boundary -- and an operator moving the arena has to
+        -- change all of them. Miss one and the player is held a few hundred
+        -- metres from the floor being built, every CreateObject is refused
+        -- for being outside the streamed world, and the arena reports that
+        -- it has no floor. Correct, and impossible to diagnose from the
+        -- symptom. Placement below still uses the sent Z, floored at the
+        -- surface -- this only decides where to stand while building.
+        local holdZ = Arena.SpawnFloor(data.arenaKey) or sz
         FreezeEntityPosition(ped, true)
-        SetEntityCoordsNoOffset(ped, sx, sy, sz + (tonumber(Config.Match.spawnHeightOffset) or 1.0),
+        SetEntityCoordsNoOffset(ped, sx, sy, holdZ + (tonumber(Config.Match.spawnHeightOffset) or 1.0),
             false, false, false)
         SetEntityHeading(ped, sheading)
-        RequestCollisionAtCoord(sx, sy, sz)
+        RequestCollisionAtCoord(sx, sy, holdZ)
         -- Long enough for the streamer to have followed the player to the
         -- new position, short enough that nobody notices. Bounded rather
         -- than a wait on collision: an arena in the sky has none to wait for.

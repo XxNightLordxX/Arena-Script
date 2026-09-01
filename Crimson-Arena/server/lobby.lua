@@ -651,7 +651,16 @@ local function snapshotMatches()
             -- the host's own control from it, and every other player needs
             -- to know whether the round they are joining has a radar in it.
             radar = match.radar == true,
-            pot = ArenaBetting.GetPot(match.id),
+            -- WHAT A WINNER IS ACTUALLY PLAYING FOR. GetPot is the entry
+            -- pot alone; with betPayout.includeEntryPot on -- the shipped
+            -- default -- the side-bets settle in the same pool, so a
+            -- screen showing only the entry half sat still while a player
+            -- watched their own stake go into the part it could not see.
+            pot = ArenaBetting.GetPrizePool(match.id),
+            -- The two halves as well, so the panel can say which is which
+            -- rather than only quoting a total.
+            entryPot = ArenaBetting.GetPot(match.id),
+            betPool = ArenaBetting.GetSideBetPool(match.id),
             playerCount = #roster,
             teamCounts = Arena.CountTeams(roster),
             startsAt = match.startsAt,

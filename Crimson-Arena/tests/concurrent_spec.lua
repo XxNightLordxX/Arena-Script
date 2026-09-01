@@ -170,13 +170,19 @@ local function runMatch(server, arenaKey, ids)
 end
 
 --- Four players, enough for two matches of two.
-local function fourPlayers()
-    return newServer({
+--- @param extra number[]? -- ids of bystanders, in nothing, who are on the
+---        server while the matches run
+local function fourPlayers(extra)
+    local roster = {
         [1] = { cash = 50000, bank = 50000 },
         [2] = { cash = 50000, bank = 50000 },
         [3] = { cash = 50000, bank = 50000 },
         [4] = { cash = 50000, bank = 50000 },
-    }, function(config)
+    }
+    for _, src in ipairs(extra or {}) do
+        roster[src] = { cash = 50000, bank = 50000 }
+    end
+    return newServer(roster, function(config)
         config.Match.minPlayers = 2
         config.Match.lobbyCountdownSeconds = 0
         config.Match.maxConcurrentMatches = 0
@@ -248,6 +254,70 @@ t.test('AND SO DO TWO MATCHES IN AN ARENA ON THE REAL MAP', function()
         ('BOTH TRAILER PARK MATCHES ARE IN INSTANCE %d -- they are standing on each other'):format(a))
     t.equals(server.bucket(2), a, 'teammates in one trailer park match were split apart')
     t.equals(server.bucket(4), b)
+end)
+
+--- How many keep-out circles the server would hand this player.
+--- @param server table
+--- @param src number
+--- @return table[]
+local function fencesFor(server, src)
+    local state = server.lobby.BuildState(src)
+    return (type(state) == 'table' and type(state.keepOut) == 'table') and state.keepOut or {}
+end
+
+t.test('DEFECT: neither group is fenced out of the ground they are fighting on', function()
+    -- REPORTED FROM THE GAME as matches interfering with each other.
+    --
+    -- The keep-out fence is drawn round an ARENA and the exemption used to be
+    -- per MATCH, so the two disagreed the moment a second round started on
+    -- the same ground. For each fighter of the first match the second match
+    -- is live and they are not in it -- so they were handed a circle centred
+    -- on the arena they were standing and fighting in, and the client's
+    -- barrier loop teleports anyone inside a zone to its radius plus the
+    -- push, four times a second. Both groups, at once, each shoved out of
+    -- the other's fence.
+    local server = fourPlayers()
+    runMatch(server, 'trailerpark', { 1, 2 })
+    runMatch(server, 'trailerpark', { 3, 4 })
+
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        local fences = fencesFor(server, src)
+        t.equals(#fences, 0,
+            ('fighter %d was fenced out of their own arena by %d zone(s)'):format(src, #fences))
+    end
+end)
+
+t.test('and the same holds at the arena that is a kilometre up', function()
+    -- Worse there than anywhere. The skydome's boundary is 110m and the push
+    -- is 6, so a fighter inside the fence is teleported to 116m from the
+    -- middle -- which is off the edge of a platform that reaches 90, into a
+    -- kilometre of air.
+    local server = fourPlayers()
+    runMatch(server, 'skydome', { 1, 2 })
+    runMatch(server, 'skydome', { 3, 4 })
+
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        t.equals(#fencesFor(server, src), 0,
+            ('fighter %d was pushed off the skydome by their own arena'):format(src))
+    end
+end)
+
+t.test('but somebody with no business there is still kept out, exactly once', function()
+    -- The other direction, and the reason this cannot be fixed by simply not
+    -- sending zones. Player 5 is in neither match: the fence is the only
+    -- thing keeping them out of a live round on real ground.
+    --
+    -- ONCE, not once per match. Two live matches on one arena used to send
+    -- two identical circles, which the client then tested against twice a
+    -- tick for no different answer.
+    local server = fourPlayers({ 5 })
+    runMatch(server, 'trailerpark', { 1, 2 })
+    runMatch(server, 'trailerpark', { 3, 4 })
+
+    local fences = fencesFor(server, 5)
+    t.equals(#fences, 1,
+        ('an outsider got %d zone(s) for one arena'):format(#fences))
+    t.isTrue(fences[1].radius > 0, 'the zone has no radius, so it fences nothing')
 end)
 
 t.test('every fighter is in exactly one instance, and it is their own match\'s', function()

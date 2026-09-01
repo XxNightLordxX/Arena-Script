@@ -724,12 +724,48 @@ local function snapshotKeepOut(src)
     if type(barrier) ~= 'table' or barrier.enabled ~= true then return {} end
 
     local id = tonumber(src)
-    local zones = {}
+
+    -- WHICH ARENAS THIS PLAYER BELONGS ON, worked out before a single zone
+    -- is drawn -- and worked out per ARENA, which is the fix.
+    --
+    -- THE FENCE IS DRAWN ROUND AN ARENA AND THE EXEMPTION USED TO BE PER
+    -- MATCH, so the two disagreed the moment a second round started on the
+    -- same ground. Two matches live at the trailer park: for each fighter of
+    -- the first, the second match is live and they are not in it, so they
+    -- were handed a keep-out circle centred on the arena they were standing
+    -- and fighting in -- and the client's barrier loop teleports anyone
+    -- inside a zone to its radius plus the push, four times a second. At the
+    -- trailer park that is 106m from the middle of the round. At the skydome
+    -- it is 116m, which is off the edge of the platform and a kilometre of
+    -- air. Both groups, at once, each shoved out of the other's fence.
+    --
+    -- Being IN the match is not the test either: a player queued in a lobby
+    -- at that arena has not been teleported anywhere and must still be kept
+    -- out of a round already being fought there. The test is whether the
+    -- arena has actually taken them, which is what the dispatch flag records
+    -- -- the same predicate playersArePlaced above leans on, and for the
+    -- same reason: `state` cannot answer it.
+    local mine = {}
+    if ArenaDispatch.IsPlayerInArena(id) then
+        for _, match in pairs(matches) do
+            if type(match.players) == 'table' and match.players[id]
+                and Arena.IsKey(match.arenaKey)
+            then
+                mine[match.arenaKey] = true
+            end
+        end
+    end
+
+    local zones, drawn = {}, {}
 
     for _, match in pairs(matches) do
         -- Lobby matches are not fought in yet, so there is nothing to keep
         -- anybody out of and no reason to fence off a field early.
-        if match.state == 'live' and not (type(match.players) == 'table' and match.players[id]) then
+        --
+        -- ONE ARENA, ONE FENCE. Two live matches on one ground used to send
+        -- two identical circles, which the client then tested a player
+        -- against twice a tick for no different answer.
+        if match.state == 'live' and not mine[match.arenaKey] and not drawn[match.arenaKey] then
             local arena = Arena.GetArenaByKey(match.arenaKey)
             local boundary = type(arena) == 'table' and arena.boundary or nil
 
@@ -747,6 +783,7 @@ local function snapshotKeepOut(src)
                         radius = radius,
                         label = arena.label or match.arenaKey,
                     }
+                    drawn[match.arenaKey] = true
                 end
             end
         end

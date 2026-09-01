@@ -596,6 +596,20 @@ local function bucketInUse(bucket)
     return false
 end
 
+--- Which instance the SERVER says this player is in, right now.
+---
+--- ASKED RATHER THAN REMEMBERED, and guarded, because both halves matter. A
+--- player who dropped between the roster being read and this line is an
+--- error thrown inside a loop that is holding everybody else's instancing
+--- together, and the answer for them is the default world either way.
+--- @param src number
+--- @return integer
+local function currentBucket(src)
+    local ok, bucket = pcall(GetPlayerRoutingBucket, src)
+    if not ok then return 0 end
+    return Arena.ToInt(bucket) or 0
+end
+
 --- Applies the bucket's own rules. Called ONCE, when the number is
 --- allocated: these are properties of the instance and not of the players in
 --- it, so re-applying them per join would be two native calls a player for
@@ -664,16 +678,38 @@ function ArenaDispatch.EnterBucket(src, matchId)
 
     local current = held[src]
     if current then
-        -- Already where they belong. Re-capturing here would record OUR
-        -- bucket as the one to restore, which is how a player ends up living
-        -- in an empty instance for the rest of their session.
-        if current.bucket == bucket then return true end
+        if current.bucket == bucket then
+            -- OURS ON PAPER IS NOT THE SAME AS ACTUALLY BEING THERE, and
+            -- reading the record instead of the world is how isolation goes
+            -- quietly missing.
+            --
+            -- A routing bucket is server-wide state that any resource can
+            -- set. An interior, a job, a heist, an admin tool, or simply
+            -- another script's own cleanup can move a player out of the
+            -- match's instance, and nothing tells this file. The record
+            -- still says they are where they belong, so every later pass
+            -- agrees there is nothing to do -- and the player fights the
+            -- rest of the round in the ordinary world, in front of the
+            -- whole server, with the arena's one real defence against
+            -- dispatch scripts simply absent.
+            --
+            -- `previous` is deliberately NOT re-captured. Where they came
+            -- from has not changed just because somebody moved them since,
+            -- and taking the reading now would record whatever instance
+            -- they drifted into as the place to send them home to.
+            if currentBucket(src) ~= bucket then
+                ArenaDebug('dispatch: %s had drifted out of arena bucket %d -- putting them back.',
+                    tostring(src), bucket)
+                SetPlayerRoutingBucket(src, bucket)
+            end
+            return true
+        end
         -- In some other match's instance. Restore first, so `previous` below
         -- is the bucket they originally came from rather than one of ours.
         ArenaDispatch.ExitBucket(src)
     end
 
-    local previous = Arena.ToInt(GetPlayerRoutingBucket(src)) or 0
+    local previous = currentBucket(src)
 
     -- A bucket this resource is running a match in is not somewhere anybody
     -- can legitimately have been beforehand: finding one means an earlier

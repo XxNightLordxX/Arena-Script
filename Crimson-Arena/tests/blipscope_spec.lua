@@ -58,19 +58,32 @@ end
 local function newFixture(mutate)
     local runner = Sandbox.newThreadRunner()
     local handlers = {}
+    local clocks = {}          -- [coroutine] = ms that thread has waited
 
     local f = {
         ped = 1000 + SELF,
         blips = {},        -- [handle] = { ped = , colour = }
         outlines = {},     -- [ped] = true while drawn
         outlineCalls = {}, -- every SetEntityDrawOutline, in order
+        outlineTicks = {}, -- the blip loop's own clock at each colour refresh
         nextBlip = 1,
         streamed = { [MATE] = true, [FOE] = true, [FOE2] = true },
     }
 
     local env = Sandbox.newArenaEnv({
         CreateThread = runner.CreateThread,
-        Wait = runner.Wait,
+        -- A PER-THREAD CLOCK, because the runner's own is global.
+        --
+        -- runner.elapsed sums every Wait from every captured thread, so it
+        -- cannot tell "the blip loop slept for thirty seconds" from "six
+        -- threads each slept five". The cadence tests below are entirely
+        -- about how long ONE loop sleeps between two reconciliations, so
+        -- each coroutine gets its own total.
+        Wait = function(ms)
+            local co = coroutine.running()
+            clocks[co] = (clocks[co] or 0) + (tonumber(ms) or 0)
+            return runner.Wait(ms)
+        end,
         vector3 = function(x, y, z) return { x = x, y = y, z = z } end,
 
         RegisterNetEvent = function(name, fn) handlers[name] = fn end,
@@ -125,7 +138,12 @@ local function newFixture(mutate)
             f.outlineCalls[#f.outlineCalls + 1] = { ped = ped, on = on }
             if on then f.outlines[ped] = true else f.outlines[ped] = nil end
         end,
-        SetEntityDrawOutlineColor = function(r, g, b) f.outlineColor = { r, g, b } end,
+        SetEntityDrawOutlineColor = function(r, g, b)
+            f.outlineColor = { r, g, b }
+            -- WHICH THREAD IS DOING THE DRAWING, learned rather than assumed.
+            f.outlineThread = coroutine.running()
+            f.outlineTicks[#f.outlineTicks + 1] = clocks[f.outlineThread] or 0
+        end,
 
         NetworkResurrectLocalPlayer = function() end,
         FreezeEntityPosition = function() end,
@@ -172,6 +190,12 @@ local function newFixture(mutate)
 
     f.env = env
     f.step = runner.step
+    -- THE CLOCK THE THREAD RUNNER WAS ALREADY KEEPING, and never read. Every
+    -- guarantee in this file until now is about WHAT is drawn; the cadence
+    -- tests below are about HOW OFTEN, and they cannot be written without it.
+    -- The blip loop's OWN clock. It is the only thread that draws outlines,
+    -- so it is the one whose coroutine has ticked when a colour is set.
+    f.blipClock = function() return clocks[f.outlineThread] or 0 end
 
     function f.fire(name, payload)
         local handler = handlers[name]
@@ -376,6 +400,82 @@ t.test('a lit sweep still does not haze the enemy it just lit', function()
 
     t.isTrue(f.blipped()[FOE] == true, 'the sweep was not lit, so this proves nothing')
     t.isNil(f.outlines[1000 + FOE], 'a radar sweep put a permanent outline on an enemy')
+end)
+
+t.test('DEFECT: the blip loop never sleeps a whole sweep between reconciliations', function()
+    -- refreshOutlines runs at the top of the blip loop, so whatever that loop
+    -- WAITS is the rate your own side is reconciled at. The radar branch used
+    -- to wait the entire sweep interval in one go, so switching the radar on
+    -- silently dropped teammate reconciliation from twice a second to once
+    -- every thirty -- an eliminated teammate kept a coloured edge drawn
+    -- through walls for half a minute after the board said they were out, and
+    -- one who respawned onto a new ped had no edge at all until it came round.
+    --
+    -- Measured on the LOOP'S OWN clock. The thread runner's `elapsed` is a
+    -- global sum across every captured thread, so it cannot tell one loop
+    -- sleeping thirty seconds from six sleeping five -- which is exactly the
+    -- distinction this test is about, and why an earlier version of it passed
+    -- against the defect.
+    for _, radar in ipairs({ true, false }) do
+        local f = newFixture()
+        f.enterLive({ radar = radar })
+        f.hud()
+        for _ = 1, 150 do f.step() end
+
+        local ticks = f.outlineTicks
+        t.isTrue(#ticks >= 3,
+            ('the outline was refreshed %d time(s) with the radar %s -- too few to measure a gap')
+                :format(#ticks, tostring(radar)))
+
+        local worst = 0
+        for index = 2, #ticks do
+            local gap = ticks[index] - ticks[index - 1]
+            if gap > worst then worst = gap end
+        end
+
+        -- A SECOND, which is what the radar-off branch already waited. The
+        -- number this keeps out is 30,000.
+        t.isTrue(worst <= 1000,
+            ('with the radar %s the loop went %dms between reconciling your own side')
+                :format(tostring(radar), worst))
+    end
+end)
+
+t.test('and the sweep itself is not made faster by slicing it', function()
+    -- THE BUG IN THE OTHER DIRECTION. Slicing the dark phase must not
+    -- SHORTEN it: a radar that lights the enemies more often than the
+    -- operator asked for gives away positions the sweep interval exists to
+    -- protect, which is the thing this whole file is about.
+    --
+    -- Read off the blip loop's own clock, like the cadence test above, and
+    -- measured between the moments an enemy appears on the map.
+    local f = newFixture()
+    f.enterLive({ radar = true })
+    f.hud()
+
+    local enemyBlip = function()
+        for _, blip in pairs(f.blips) do
+            if blip.ped == 1000 + FOE then return true end
+        end
+        return false
+    end
+
+    local lit = {}
+    for _ = 1, 400 do
+        local before = enemyBlip()
+        f.step()
+        if not before and enemyBlip() then lit[#lit + 1] = f.blipClock() end
+    end
+
+    t.isTrue(#lit >= 2, ('the radar lit up %d time(s) -- too few to measure an interval'):format(#lit))
+
+    local interval = f.env.Config.Match.radar.intervalMs
+    for index = 2, #lit do
+        local gap = lit[index] - lit[index - 1]
+        t.isTrue(gap >= interval * 0.9,
+            ('the radar lit up again after %dms, against a configured %dms')
+                :format(gap, interval))
+    end
 end)
 
 t.test('with the radar off there is no sweep to catch, ever', function()

@@ -1003,6 +1003,20 @@ function ArenaLobby.Join(src, matchId, teamKey, account)
     local team, teamReason = resolveTeam(match, teamKey, nil)
     if teamReason then return false, teamReason end
 
+    -- WATCHING AND BACKING ARE ONE CHOICE, AND THE FEE HAS NOTHING TO DO
+    -- WITH IT.
+    --
+    -- ArenaBetting.TakeStake carries this same refusal, and says why: a bet
+    -- its holder can cancel at a moment of their choosing -- by joining and
+    -- walking straight out again -- is a bet with no risk in it. But Join
+    -- only reaches TakeStake when the match has an entry fee, and the
+    -- shipped default fee is ZERO. So on the commonest configuration there
+    -- is a documented guard that nothing ever runs, and backing a match then
+    -- taking a seat in it was free.
+    if ArenaBetting.IsEnabled() and ArenaBetting.HoldsSideBet(match.id, target) then
+        return false, 'error.bet_not_spectator'
+    end
+
     -- MONEY FIRST. The player does not exist in this match until the stake
     -- is in escrow, so a refused stake has no row, no order entry and no
     -- index to unwind -- there is nothing to leave behind.

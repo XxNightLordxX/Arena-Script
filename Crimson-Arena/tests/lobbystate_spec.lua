@@ -322,6 +322,35 @@ t.test('and a fighter is still told about their own', function()
     t.equals(bet.amount, 1000)
 end)
 
+t.test('DEFECT: somebody backing a FREE match cannot take a seat in it', function()
+    -- The refusal lives in ArenaBetting.TakeStake, and ArenaLobby.Join only
+    -- reaches TakeStake when the match has an entry fee. The shipped default
+    -- fee is ZERO -- so on the commonest configuration there was a
+    -- documented guard that nothing ever ran.
+    --
+    -- TakeStake's own comment says why it matters: a bet its holder can
+    -- cancel at a moment of their choosing, by joining and walking straight
+    -- out again, is a bet with no risk in it. And moneyconservation_spec has
+    -- been walking this route for a while under the name "THE BET-THEN-JOIN
+    -- HOLE", to reach a settlement path that only the hole could produce.
+    local s, matchId = lobbyWithWatcher()
+    t.equals(s.lobby.Get(matchId).entryFee, 0, 'this match is not free, so it tests the wrong thing')
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 1000, 'cash') == true,
+        'the side-bet was refused, so there is nothing to exploit')
+
+    local joined, why = s.lobby.Join(3, matchId, nil, nil)
+    t.isFalse(joined, 'somebody backing the match took a seat in it')
+    t.equals(why, 'error.bet_not_spectator')
+end)
+
+t.test('and somebody with no money on it joins freely', function()
+    -- The other direction, so this is not "free matches refuse everybody".
+    local s, matchId = lobbyWithWatcher()
+    t.isTrue(s.lobby.Join(3, matchId, nil, nil) == true,
+        'a watcher who has bet nothing was refused a seat')
+end)
+
 t.test('the countdown can only be held while one is actually running', function()
     -- Holding a countdown that is not running would report success for
     -- doing nothing, and the button that posts it is on screen whenever

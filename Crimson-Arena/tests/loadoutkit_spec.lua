@@ -413,7 +413,13 @@ end)
 -- HOW MANY ROUNDS ONE ITEM IS WORTH
 -- ========================================================================
 
---- Issues 30 rounds of a real ammo item with `per` rounds to an item.
+--- Issues 30 SPARE rounds of a real ammo item with `per` rounds to an item.
+---
+--- SIXTY PICKED, THIRTY SPARE. The pick is a total now: one magazine goes
+--- into the gun and only what is left over becomes items, so a weapon asked
+--- for exactly one magazine hands over nothing at all and there would be no
+--- item here to count. Sixty against the default magazine of thirty leaves
+--- thirty spare, which is the amount every expectation below is written for.
 --- @return table? item -- the ammunition as it reached the player
 local function ammoIssuedWith(per)
     local f = newKit({ mutate = function(config)
@@ -421,7 +427,7 @@ local function ammoIssuedWith(per)
         config.Loadouts.ammoItems.roundsPerItem = per
     end })
     f.ammo.Issue(1, 'match-1', {
-        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = 30, ammoTypeItem = 'ammo_rifle', components = {} } },
+        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = 60, ammoTypeItem = 'ammo_rifle', components = {} } },
         melee = {},
     })
     return f.itemNamed(1, 'ammo_rifle')
@@ -570,12 +576,16 @@ t.test('a weapon whose rounds could not be issued is taken back', function()
     end })
     f.breakOn('refuseNamed', { ammo_rifle = true })
 
+    -- SIXTY, so there are spare rounds to refuse. A weapon picked at one
+    -- magazine has nothing left over to issue as items, so nothing can be
+    -- refused and this setting is never reached -- correctly, because that
+    -- gun is carrying every round the player asked for.
     f.ammo.Issue(1, 'match-1', {
-        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = 30, ammoTypeItem = 'ammo_rifle', components = {} } },
+        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = 60, ammoTypeItem = 'ammo_rifle', components = {} } },
         melee = {},
     })
 
-    t.equals(f.carrying(1), '', 'the player was armed with a gun that has no rounds')
+    t.equals(f.carrying(1), '', 'the player was armed with a gun it cannot reload')
     t.contains(f.log(), 'does not arm an empty gun')
 end)
 
@@ -639,10 +649,10 @@ t.test('a confiscated weapon is FORGOTTEN as well as taken back', function()
     f.breakOn('refuseNamed', { ammo_rifle = true })
 
     f.ammo.Issue(1, 'match-1', {
-        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = 30, ammoTypeItem = 'ammo_rifle', components = {} } },
+        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = 60, ammoTypeItem = 'ammo_rifle', components = {} } },
         melee = {},
     })
-    t.equals(f.carrying(1), '', 'the empty gun was not confiscated in the first place')
+    t.equals(f.carrying(1), '', 'the unreloadable gun was not confiscated in the first place')
 
     -- The player's own copy of the same weapon, bought before the match.
     f.give(1, 'WEAPON_TEST', 1)

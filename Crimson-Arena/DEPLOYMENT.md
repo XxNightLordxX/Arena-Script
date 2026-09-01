@@ -354,31 +354,45 @@ and came back as cash looks like nothing happened if you only look at cash.
 
 ### 8. Ammo types, if you switched them on
 
-Skip this whole section if `Config.Loadouts.ammoItems.enabled` is `false` —
-nothing below can happen. If it is `true`, do not skip any of it: this is the
-only code in the resource that puts an item into a player's inventory, which
-makes it the only code that can duplicate one. An arena that hands out
-ammunition and does not take it back is an ammo printer.
+`Config.Loadouts.ammoItems.enabled` ships `true`, so do not skip this: it is
+the only code in the resource that puts an item into a player's inventory,
+which makes it the only code that can duplicate one. An arena that hands out
+ammunition and does not take it back is an ammo printer. (If you have switched
+it off, skip the section — nothing below can happen.)
 
 Run it with `Config.Debug = true` so the grant and the reclaim both print, and
 keep the inventory UI open next to you.
 
 **The right item arrives**
 
-- [ ] Pick one type deliberately — say Armour Piercing on the Assault Rifle —
-      and note which item name your config maps it to.
-- [ ] Start the match. **That exact item is in your inventory**, in the amount
-      your ammo count and `roundsPerItem` call for. 60 rounds at
-      `roundsPerItem = 1` is 60 items; at 30 it is 2, and 61 rounds is 3,
-      because the division rounds up.
+- [ ] Pick a weapon and note which item its `ammoTypes` line names — the
+      Pistol maps to `ammo-9`, the Heavy Sniper to `ammo-heavysniper`. You are
+      not asked to choose a round: the panel offers no picker for a weapon
+      with one type, and the round comes from the weapon.
+- [ ] Start the match. **That exact item is in your inventory**, and **the
+      total is what you picked.** 60 rounds on the Pistol is 30 in the
+      magazine and 30 items in the pocket — not 60 and 60, which is what it
+      used to be, on every weapon of every round.
+- [ ] **Count it.** Open the weapon and read the magazine, then count the
+      items. They must add up to the number you chose. This is the one check
+      in this section that a passing console line cannot make for you: both
+      halves logged success while the player carried double.
+- [ ] Pick the **smallest** amount the weapon offers — 30 on the Pistol — and
+      start again. **All of it is in the gun and there are no loose rounds**,
+      which is correct: thirty rounds is thirty rounds.
 - [ ] The console shows `ammo: gave <item> x<n> to <src> on match <id>`.
 - [ ] **No `could not give` line.** One of those names an item that does not
       exist on your server, or an inventory that was full — it is the only
       place a wrong item name ever shows up, since nothing validates the names
       at startup.
-- [ ] Pick a **different** type and start again. A different item arrives. If
-      both types give you the same item, two entries in your list are pointing
-      at the same name.
+- [ ] Pick a **different weapon** and start again. A different item arrives —
+      a shotgun should bring `ammo-shotgun`, not the pistol's `ammo-9`. If two
+      weapons bring the same item, two `ammoTypes` lines are pointing at the
+      same name.
+- [ ] Pick a weapon whose magazine is **not** 30 — the Heavy Sniper loads 10,
+      the launchers load 4. Forty rounds on the Heavy Sniper is 10 loaded and
+      30 spare. If everything loads 30 regardless of the weapon, the split is
+      falling back to `defaultMagazine` instead of reading the weapon.
 - [ ] Take a **melee weapon** and start. No ammo item is issued and no type was
       ever offered — melee is excluded automatically.
 - [ ] Take an **MK II weapon** and start. Those four ship with their own

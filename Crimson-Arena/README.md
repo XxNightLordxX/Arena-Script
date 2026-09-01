@@ -175,23 +175,42 @@ If you run an ammo script where a round is an inventory item — `ammo-rifle`, `
 
 There are two halves and they are independent. A type may carry an **item**, which is yours; it may carry a **component**, which is GTA's; it may carry both, or neither. The item half is what this section is mostly about. The component half is [further down](#mk-ii-magazines-are-components-not-items).
 
-#### It ships off, and that is deliberate
+#### It ships on, with the round each weapon actually takes
 
 ```lua
 ammoItems = {
-    enabled = false,
+    enabled = true,
     ...
 }
 ```
 
-The item names in `Config.Loadouts.defaultAmmoTypes` — `ammo-rifle`, `ammo-rifle-fmj`, `ammo-rifle-ap` and the rest — are **placeholders**. They are the shape a name tends to take, not names that exist on your server.
+Every firearm in `Config.Loadouts.weapons` carries its **own** single-entry `ammoTypes` list naming the item that weapon fires — `ammo-9` on the pistols, `ammo-heavysniper` on the heavy sniper, `ammo-shotgun` on the shotguns — read out of that weapon's `ammoname` in ox_inventory. Pick the weapon and the right round follows it; there is nothing to correlate by hand.
 
-Handing out an item name that does not exist is a **silent nothing**. The player picks armour-piercing, the match starts, and there is no ammunition in their inventory and no error anywhere they can see. What they report is not "the ammo item is misconfigured" — it is "the arena is broken". That is why this is the one loadout feature that ships off: an operator who has not read this section gets a working arena, not a mystery.
+**The player is never asked which round they want**, and the panel does not offer a picker for a weapon with one type. The round comes from the weapon, and asking for a different one is ignored rather than refused — a pistol asking for .50 BMG gets 9mm.
 
-Turning it on is two steps and nothing else:
+If your server names its ammo items differently, the `item` field on each weapon's `ammoTypes` line is the one to edit. Handing out an item name that does not exist is a **silent nothing** in the player's inventory and one console line for you:
 
-1. **Put your own item names in.** Edit the `item` field on every entry in `Config.Loadouts.defaultAmmoTypes`, and delete or `enabled = false` the ones you have no item for.
-2. **Flip the switch.** `Config.Loadouts.ammoItems.enabled = true`.
+```
+[crimson_arena] ammo: could not give ammo-rifle-ap x60 to 12 -- check that item exists on this server.
+```
+
+Nothing validates those names at startup — the config validator cannot know what items your inventory has — so that line is the only place a typo shows up. Grep for it after changing any of them.
+
+#### The amount is a total, split between the gun and the pocket
+
+A player picking 60 rounds gets **60 rounds**: one magazine loaded in the weapon and the remainder as items they can see and reload from.
+
+```
+Pick: Pistol, 60 rounds
+  WEAPON_PISTOL x1   magazine = 30
+  ammo-9        x30
+```
+
+Where the split falls is the weapon's own `magazine` if it names one, otherwise **the smallest amount that weapon's own `ammo.options` offers** — the operator's own idea of a small quantity of that round, already written beside the weapon. Every firearm shipped has one (30 on most, 60 on the rifles, 20 on the shotguns, 10 on the heavy sniper, 4 on the launchers), so nothing needs adding to use it. `Config.Loadouts.ammoItems.defaultMagazine` catches a weapon with no options list at all.
+
+The magazine is never more than the pick: choosing 30 on a 30/60/120 weapon arrives as 30 loaded and nothing spare, because thirty rounds is thirty rounds.
+
+> **This was wrong until recently, and badly.** The magazine was filled with the whole pick *and* the same amount was handed over again as items — 60 chosen, 60 in the gun, 60 in the pocket, **120 carried**, on every weapon of every round. Two loops each doing their own job correctly, neither aware the other had already issued the lot, each with its own passing test. The total was the thing nobody asserted.
 
 One prerequisite: **`ox_inventory` must be running.** It is the only inventory this file knows how to talk to, and it is looked up fresh on every call rather than cached, so restarting your inventory resource does not leave the arena holding a dead handle. If ammo items are on and `ox_inventory` is not started, nobody is given anything and the console says so once per attempt:
 
@@ -209,18 +228,15 @@ That is the line to grep for after you first switch this on. Read it as "this na
 
 #### Set the list once, override where you need to
 
-`Config.Loadouts.defaultAmmoTypes` is the list, and it is **offered for every weapon that takes ammunition**. Set it once and you are done:
+`Config.Loadouts.defaultAmmoTypes` is the fallback list, inherited by any weapon that does not name its own. Every firearm shipped names its own, so editing this alone changes nothing for them:
 
 ```lua
 defaultAmmoTypes = {
-    { key = 'standard',   label = 'Standard',        item = 'ammo-rifle' },
-    { key = 'fmj',        label = 'FMJ',             item = 'ammo-rifle-fmj' },
-    { key = 'ap',         label = 'Armour Piercing', item = 'ammo-rifle-ap' },
-    { key = 'incendiary', label = 'Incendiary',      item = 'ammo-rifle-incendiary' },
-    { key = 'hollow',     label = 'Hollow Point',    item = 'ammo-rifle-hollowpoint', enabled = false },
-    { key = 'tracer',     label = 'Tracer',          item = 'ammo-rifle-tracer',      enabled = false },
+    { key = 'standard', label = '5.56x45', item = 'ammo-rifle' },
 }
 ```
+
+That shared list is the **fallback only**. Every shipped firearm overrides it with its own single entry, so the list above is what a weapon you add later inherits if you give it no `ammoTypes` of its own.
 
 `key` is what the panel and the wire use and must be unique in a list. `label` is what the player reads. `item` is the one you must edit. `enabled = false` hides an entry without deleting it.
 
@@ -244,9 +260,11 @@ An unknown or disabled type key arriving on the wire is **refused back to the de
 roundsPerItem = 1,
 ```
 
-With ox_inventory's usual per-round ammo items this is 1: a player who picks 60 rounds is handed 60 items. If one item on your server is a **box of 30**, put 30 here and they are handed 2.
+With ox_inventory's usual per-round ammo items this is 1: a player who picks 60 rounds on a weapon with a 30-round magazine is handed 30 items and the other 30 are already in the gun. If one item on your server is a **box of 30**, put 30 here and they are handed 1.
 
-The division **rounds up**, on purpose. 61 rounds at 30 per box is three boxes, not two — rounding down would hand somebody 30 rounds when they asked for 60 and leave them wondering what happened. The reclaim takes back the same number of items that were issued, so the rounding is symmetric and nobody is short-changed or quietly enriched by it.
+It applies to the **spare** rounds, not the pick — the magazine is rounds, not items, and is never divided by this.
+
+The division **rounds up**, on purpose. 61 spare rounds at 30 per box is three boxes, not two — rounding down would hand somebody less than they asked for and leave them wondering what happened. The reclaim takes back the same number of items that were issued, so the rounding is symmetric and nobody is short-changed or quietly enriched by it.
 
 A value of 0 or below is treated as 1 rather than dividing by zero.
 
@@ -258,8 +276,10 @@ allowWeaponWithoutAmmoItem = true,
 
 An `AddItem` can fail for reasons that have nothing to do with your config — most often a full inventory. This decides what happens then:
 
-- **`true` (the default, and the friendlier one)** — the player fights, with the weapon and without the item. The failure is named in the console for you.
-- **`false`** — the player is refused the round rather than sent in with an empty gun.
+- **`true` (the default, and the friendlier one)** — the player fights with the magazine and no reloads. The failure is named in the console for you.
+- **`false`** — that **weapon** is taken back off them. They keep their place in the round and everything else they picked; what goes is the one gun they cannot reload. It does not eject the player: unwinding a dispatch flag, a routing bucket and a stash mid-placement is how people get stranded.
+
+A weapon picked at or under one magazine has no spare rounds to issue, so there is no item to refuse and neither branch is reached — which is right, because that gun is already carrying every round the player asked for.
 
 Either way the arena records **nothing** for an item that did not land. That is the important half: an item recorded as issued but never given would have the reclaim reach into that player's own pocket later and take one they brought with them.
 

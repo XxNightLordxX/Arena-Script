@@ -409,13 +409,104 @@ end)
 t.test('the magazine rides in the item metadata rather than being set on the ped', function()
     -- SetPedAmmo is reconciled away exactly like the weapon, so a weapon
     -- whose rounds are not in its metadata arrives empty.
+    --
+    -- ONE MAGAZINE OF THE SIXTY, not all of it: the rest is handed over as
+    -- items, and the test below this one is the one that holds the total.
     local s = newServer({ [1] = OWN })
     s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
 
     local weapon = s.itemNamed(1, 'WEAPON_TEST')
     t.isNotNil(weapon, 'no weapon item to inspect')
-    t.equals(weapon.metadata and weapon.metadata.ammo, 60,
+    t.equals(weapon.metadata and weapon.metadata.ammo, 30,
         'the weapon was issued without its magazine')
+end)
+
+t.test('DEFECT: sixty rounds picked is sixty rounds carried, not a hundred and twenty', function()
+    -- THE ONE ASSERTION NEITHER HALF EVER MADE. The magazine was written by
+    -- issueWeapons and the items by the loop after it, each correct on its
+    -- own and each with its own passing test -- and both were issuing the
+    -- WHOLE pick. Sixty chosen, sixty in the gun, sixty in the pocket, a
+    -- hundred and twenty carried, on every weapon of every round ever
+    -- fought here. The total was the thing nobody asserted.
+    --
+    -- Driven through the REAL catalogue rather than a synthetic entry,
+    -- because that is where it happened: a shipped weapon, a shipped ammo
+    -- item, and the shipped magazine read off the weapon's own options.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 60 } } })
+
+    t.equals(#loadout.weapons, 1, 'the shipped pistol stopped resolving, so this proves nothing')
+    t.equals(loadout.weapons[1].ammoTypeItem, 'ammo-9',
+        'the pistol stopped pulling its own round, which is the other half of this')
+
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local weapon = s.itemNamed(1, 'WEAPON_PISTOL')
+    local rounds = s.itemNamed(1, 'ammo-9')
+    t.isNotNil(weapon, 'the pistol was never issued')
+
+    local loaded = (weapon.metadata and weapon.metadata.ammo) or 0
+    local spare = (rounds and rounds.count) or 0
+
+    t.equals(loaded + spare, 60,
+        ('a player who picked 60 rounds is carrying %d (%d loaded, %d spare)')
+            :format(loaded + spare, loaded, spare))
+
+    -- And the split is the one the operator's own config describes: the
+    -- smallest amount the pistol's own list offers is 30.
+    t.equals(loaded, 30, 'the magazine is not the weapon\'s own smallest option')
+    t.equals(spare, 30, 'the remainder did not reach the inventory as items')
+end)
+
+t.test('and a pick that fits in one magazine hands over no loose rounds at all', function()
+    -- Thirty rounds is thirty rounds. Issuing a magazine AND thirty items
+    -- would be the same doubling one size down.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 30 } } })
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local weapon = s.itemNamed(1, 'WEAPON_PISTOL')
+    t.equals(weapon.metadata and weapon.metadata.ammo, 30, 'the gun did not get the rounds')
+    t.isNil(s.itemNamed(1, 'ammo-9'), 'loose rounds were issued on top of a full magazine')
+end)
+
+t.test('and the split is read off the WEAPON, not one number for every gun', function()
+    -- THE PISTOL CANNOT PROVE THIS. Its smallest option is 30 and the
+    -- blanket default is also 30, so a door that never looked at the weapon
+    -- at all would issue exactly the same thing. The heavy sniper's own
+    -- list starts at 10, which tells the two apart.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'heavysniper', ammo = 40 } } })
+    t.equals(#loadout.weapons, 1, 'the shipped heavy sniper stopped resolving')
+
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local weapon = s.itemNamed(1, 'WEAPON_HEAVYSNIPER')
+    local rounds = s.itemNamed(1, 'ammo-heavysniper')
+    t.isNotNil(weapon, 'the heavy sniper was never issued')
+
+    local loaded = (weapon.metadata and weapon.metadata.ammo) or 0
+    local spare = (rounds and rounds.count) or 0
+
+    t.equals(loaded, 10, 'the sniper was loaded with something other than its own 10')
+    t.equals(spare, 30, 'the remainder is wrong, so the total is wrong')
+    t.equals(loaded + spare, 40, 'a player who picked 40 rounds is carrying a different number')
+end)
+
+t.test('and with ammo items switched off the whole pick stays in the magazine', function()
+    -- config.lua promises exactly this: "rounds then travel in the weapon's
+    -- own metadata instead". Splitting a pick that has nowhere to be split
+    -- INTO would hand somebody thirty rounds when they asked for sixty.
+    local s = newServer({ [1] = {} }, function(config)
+        config.Loadouts.ammoItems.enabled = false
+    end)
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 60 } } })
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local weapon = s.itemNamed(1, 'WEAPON_PISTOL')
+    t.equals(weapon.metadata and weapon.metadata.ammo, 60,
+        'the pick was split even though there are no items to split it into')
+    t.isNil(s.itemNamed(1, 'ammo-9'), 'ammo items were issued while they are switched off')
 end)
 
 t.test('melee is issued with no ammo in its metadata at all', function()
@@ -453,7 +544,7 @@ t.test('and a weapon that WAS accepted says so, with what it was loaded with', f
 
     local console = s.log()
     t.contains(console, 'gave WEAPON_TEST')
-    t.contains(console, 'ammo 60', 'the magazine it was issued with is not recorded')
+    t.contains(console, 'ammo 30', 'the magazine it was issued with is not recorded')
     t.notContains(console, 'issued NOTHING')
 end)
 

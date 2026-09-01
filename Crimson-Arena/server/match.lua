@@ -1068,6 +1068,17 @@ function ArenaMatch.Begin(matchId, requestedBy)
 
     local countdown = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
     match.state = 'countdown'
+
+    -- WHICH COUNTDOWN THIS IS, so a thread can tell whether it is still the
+    -- one that owns the match.
+    --
+    -- `state` alone cannot answer that. Hold the countdown and start again
+    -- and the state goes 'countdown' -> 'lobby' -> 'countdown', which the
+    -- OLD thread cannot distinguish from never having been held -- so it
+    -- wakes into the new countdown, finishes its own shorter run, and starts
+    -- the round early while the panel is still showing seconds on the clock.
+    match.countdownToken = (Arena.ToInt(match.countdownToken) or 0) + 1
+    local token = match.countdownToken
     -- An estimate for the panel's clock. goLive replaces it with the real
     -- one the moment the fighting starts.
     match.startsAt = os.time() + countdown + math.max(0, Arena.ToInt(Config.Match.startCountdownSeconds) or 0)
@@ -1106,6 +1117,21 @@ function ArenaMatch.Begin(matchId, requestedBy)
 
             Wait(1000)
             remaining = remaining - 1
+        end
+
+        -- ASKED AGAIN AFTER THE LAST WAIT, and this is the whole reason the
+        -- token exists.
+        --
+        -- The check at the top of the loop runs before each Wait, never
+        -- after the final one -- so anything that happened during the last
+        -- second was never read. "Stop The Countdown" in that second
+        -- returned success to the host, put the lobby back to waiting, told
+        -- the room it was held, and the round started anyway a moment later.
+        -- ArenaMatch.Start accepts 'lobby' as well as 'countdown', so
+        -- nothing further down caught it either.
+        local current = ArenaLobby.Get(matchId)
+        if not current or current.state ~= 'countdown' or current.countdownToken ~= token then
+            return
         end
 
         ArenaMatch.Start(matchId)

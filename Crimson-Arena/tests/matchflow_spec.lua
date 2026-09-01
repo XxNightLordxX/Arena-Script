@@ -862,6 +862,7 @@ local function newClientFixture()
         ped = 100,
         dead = false,
         groundReady = true,
+        disabled = {},
         serverEvents = {},
         released = {},
         cleared = 0,
@@ -930,7 +931,11 @@ local function newClientFixture()
         RemoveAllPedWeapons = function() end,
         RemoveWeaponFromPed = function() end,
 
-        DisableControlAction = function() end,
+        -- RECORDED WITH ITS CONTROL, because "the player cannot shoot
+        -- while dead" is a claim about WHICH controls are refused and a
+        -- stub that drops the number cannot check it.
+        DisableControlAction = function(_group, control) f.disabled[control] = true end,
+        DisablePlayerFiring = function(_player, on) f.firingBlocked = on end,
         IsPauseMenuActive = function() return false end,
         SetFrontendActive = function() end,
         GetPedSourceOfDeath = function() return 900 end,
@@ -1026,6 +1031,13 @@ local function newClientFixture()
 
         f.dead = true
         f.step()
+    end
+
+    --- Forgets the controls refused so far, so a test can ask what a
+    --- SINGLE frame did rather than what every frame since load did.
+    function f.forgetControls()
+        f.disabled = {}
+        f.firingBlocked = nil
     end
 
     --- The message the server sends back. Threaded, because it yields.
@@ -1372,6 +1384,72 @@ t.test('and an arena that does not scale is sent exactly what config says', func
     local entry = f.lastPayload('crimson_arena:client:enterArena', 1)
     t.equals(entry.sizeFactor, 1.0)
     t.equals(entry.boundary.radius, f.Config.Arenas.airfield.boundary.radius)
+end)
+
+
+-- ========================================================================
+-- NO SHOOTING FROM BEYOND THE GRAVE
+--
+-- THE REPORTED SYMPTOM: "a split second after dying, when you have lives
+-- still, you can shoot for a split second."
+--
+-- ClearDeadState makes the dead player invincible, invisible, frozen and
+-- collisionless, and its own comment says that is there to stop "a player
+-- who could shoot during that gap". NOT ONE OF THOSE FOUR NATIVES STOPS A
+-- TRIGGER BEING PULLED. A frozen ped aims and fires exactly as well as a
+-- standing one and the rounds are real -- so the code documented a
+-- guarantee it did not implement, and the window between dying and being
+-- put back was a window to kill somebody in.
+-- ========================================================================
+
+t.test('a player who has just died cannot fire', function()
+    local f = newClientFixture()
+    f.toFirstDeath()
+
+    f.forgetControls()
+    f.step()
+
+    t.equals(f.firingBlocked, true, 'a dead player can still pull the trigger')
+    t.isTrue(f.disabled[24], 'attack was left enabled on a dead player')
+    t.isTrue(f.disabled[257], 'the alternate attack control was left enabled on a dead player')
+    t.isTrue(f.disabled[263], 'melee was left enabled on a dead player')
+end)
+
+t.test('and a LIVING player in the same round can', function()
+    -- The control, and it is the whole point: this must be a hold on the
+    -- dead, not a match that nobody can shoot in.
+    local f = newClientFixture()
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = { { weapon = 'WEAPON_PISTOL', ammo = 42 } }, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    f.forgetControls()
+    f.step()
+
+    t.isTrue(f.firingBlocked ~= true, 'a living fighter was stopped from shooting')
+    t.isTrue(f.disabled[24] ~= true, 'attack was refused to a living fighter')
+end)
+
+t.test('and the block lifts once they are put back', function()
+    -- It is keyed on the same flag the respawn clears, so the instant the
+    -- player is handed back to the round they can fight in it.
+    local f = newClientFixture()
+    f.toFirstDeath()
+    f.respawn()
+    -- The respawn yields on the ground streaming in; run it out before
+    -- asking what a frame after it looks like.
+    for _ = 1, 6 do f.step() end
+
+    f.forgetControls()
+    f.step()
+
+    t.isTrue(f.firingBlocked ~= true, 'a respawned fighter was left unable to shoot')
+    t.isTrue(f.disabled[24] ~= true, 'attack was still refused after the respawn')
 end)
 
 os.exit(t.summary())

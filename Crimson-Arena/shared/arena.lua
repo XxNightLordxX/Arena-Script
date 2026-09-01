@@ -1190,6 +1190,42 @@ function Arena.SpawnFloor(arenaKey)
     return platform.z
 end
 
+--- Where a spectator's streamer should be pointed to see this arena.
+---
+--- THE VIEWER IS NEVER MOVED. Spectating hides their body where it stands,
+--- and the engine streams what is near the FOCUS -- so watching a match
+--- across the map, or the one a kilometre over the water, shows an empty
+--- field until something points the streamer at it. A routing bucket does
+--- not do that: it decides who a player COULD see, not what is loaded.
+---
+--- The boundary centre first, because every arena that has one is fought
+--- inside it; the spawn area next; the first spawn point last. Nil for an
+--- arena that describes none of those, which is an arena nothing can be
+--- said about rather than one to guess at.
+--- @param arenaKey any
+--- @return table|nil point -- { x, y, z }
+function Arena.SpectateFocus(arenaKey)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    if not arena then return nil end
+
+    local boundary = arena.boundary
+    if type(boundary) == 'table' and type(boundary.center) == 'table' then
+        return { x = boundary.center.x, y = boundary.center.y, z = boundary.center.z }
+    end
+
+    local area = arena.spawnArea
+    if type(area) == 'table' and type(area.center) == 'table' then
+        return { x = area.center.x, y = area.center.y, z = area.center.z }
+    end
+
+    local spawns = arena.spawns
+    if type(spawns) == 'table' and type(spawns[1]) == 'table' then
+        return { x = spawns[1].x, y = spawns[1].y, z = spawns[1].z }
+    end
+
+    return nil
+end
+
 --- Whether an arena's spawn Z is exact, rather than a hint to search from.
 ---
 --- THE ONE THING THAT WOULD SILENTLY BREAK AN ARENA IN THE SKY. The client

@@ -711,6 +711,8 @@ local function newMatchFixture()
         GetGameTimer = function() return 0 end,
 
         DisableControlAction = function() end,
+
+        DisablePlayerFiring = function() end,
         IsPauseMenuActive = function() return false end,
         SetFrontendActive = function() end,
         GetPedSourceOfDeath = function() return 900 end,

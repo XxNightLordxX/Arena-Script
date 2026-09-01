@@ -165,6 +165,7 @@ local function newFixture(mutate)
         GetGroundZFor_3dCoord = function() return false, nil end,
         GetGameTimer = function() return 0 end,
         DisableControlAction = function() end,
+        DisablePlayerFiring = function() end,
         IsPauseMenuActive = function() return false end,
         SetFrontendActive = function() end,
         GetPedSourceOfDeath = function() return 0 end,

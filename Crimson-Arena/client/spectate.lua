@@ -40,6 +40,26 @@ local index = 1
 --- that undone underneath it.
 local frozeLocalPed = false
 
+--- Where the watched match is, and how long the camera has been waiting for
+--- somebody in it to stream in.
+---
+--- THE VIEWER IS NOT MOVED. Spectating hides their body and leaves it
+--- exactly where it was standing -- usually the lobby, and the arena can be
+--- the far side of the map or a kilometre straight up. Nothing about a
+--- routing bucket streams a player in: the engine streams what is near the
+--- FOCUS, and until this existed the only line that set one sat inside
+--- `if ped then`. So the camera needed a fighter to be streamed in order to
+--- ask for a fighter to be streamed, found none on its very first frame,
+--- and stopped with "nobody left to watch" while the round was going on in
+--- front of it.
+local focusPoint = nil
+local waitingSince = nil
+
+--- How long to hold the focus on an empty arena before believing it. Long
+--- enough for the slowest legitimate stream-in, short enough that a match
+--- that really has emptied does not leave somebody staring at nothing.
+local STREAM_GRACE_MS = 12000
+
 local ORBIT_DISTANCE_MIN = 1.5
 local ORBIT_DISTANCE_MAX = 12.0
 
@@ -71,6 +91,27 @@ local function currentTargetPed()
     if ped == 0 or not DoesEntityExist(ped) or IsEntityDead(ped) then return nil end
 
     return ped
+end
+
+--- Whether any fighter on the list is simply NOT LOADED, as opposed to
+--- loaded and out of the round.
+---
+--- The two look identical to currentTargetPed -- both answer nil -- and
+--- they call for opposite handling. Nothing streamed means wait: the arena
+--- is somewhere the viewer's body is not, and the engine has not been asked
+--- for it yet. Streamed and dead means the round really is over for these
+--- people, and holding the camera on them would leave the viewer staring
+--- at corpses for the length of the grace window.
+--- @return boolean
+local function anyUnstreamed()
+    for _, serverId in ipairs(targets) do
+        local player = GetPlayerFromServerId(serverId)
+        if player == -1 or not NetworkIsPlayerActive(player) then return true end
+
+        local ped = GetPlayerPed(player)
+        if ped == 0 or not DoesEntityExist(ped) then return true end
+    end
+    return false
 end
 
 --- Announces who is on screen. Cheap orientation for the viewer, and the
@@ -114,12 +155,40 @@ local function runCameraThread()
                 -- Target died or vanished mid-frame. Cycling here is what
                 -- keeps the camera off a corpse without a separate watchdog.
                 if not cycle(1) then
-                    ArenaUI.Notify(locale('notify.spectate_no_targets'), 'warning')
-                    ArenaSpectate.Stop()
-                    return
+                    -- NOT NECESSARILY EMPTY -- POSSIBLY NOT LOADED YET.
+                    --
+                    -- Every fighter resolves through GetPlayerPed, and a
+                    -- player the engine has not streamed to this client has
+                    -- no ped at all. The viewer's body never moves, so a
+                    -- match across the map -- or the one a kilometre over
+                    -- the water -- has nothing streamed around it until
+                    -- something asks for it. Believing the first empty
+                    -- frame is what made a full arena report "nobody left
+                    -- to watch".
+                    --
+                    -- So point the streamer at the arena and hold it there.
+                    -- A round that really has emptied still ends the watch,
+                    -- one grace window later.
+                    local loading = #targets > 0 and anyUnstreamed()
+                    if focusPoint and loading then
+                        SetFocusPosAndVel(focusPoint.x, focusPoint.y, focusPoint.z, 0.0, 0.0, 0.0)
+                    end
+
+                    waitingSince = waitingSince or GetGameTimer()
+                    if focusPoint and loading and (GetGameTimer() - waitingSince) < STREAM_GRACE_MS then
+                        Wait(250)
+                    else
+                        ArenaUI.Notify(locale('notify.spectate_no_targets'), 'warning')
+                        ArenaSpectate.Stop()
+                        return
+                    end
+                else
+                    waitingSince = nil
+                    announceTarget()
+                    ped = currentTargetPed()
                 end
-                announceTarget()
-                ped = currentTargetPed()
+            else
+                waitingSince = nil
             end
 
             if ped then
@@ -181,10 +250,19 @@ local function refreshTargets(state)
     local rebuilt = {}
 
     for _, match in ipairs(matches) do
-        if match.id == matchId and type(match.players) == 'table' then
-            for _, player in ipairs(match.players) do
-                if player.alive and player.id ~= selfId then
-                    rebuilt[#rebuilt + 1] = player.id
+        if match.id == matchId then
+            -- WHERE TO POINT THE STREAMER. Taken from the snapshot the
+            -- panel already receives rather than from a new field on the
+            -- wire, and resolved through the same shared arena table both
+            -- realms read, so it cannot disagree with where the fight
+            -- actually is.
+            focusPoint = Arena.SpectateFocus and Arena.SpectateFocus(match.arenaKey) or nil
+
+            if type(match.players) == 'table' then
+                for _, player in ipairs(match.players) do
+                    if player.alive and player.id ~= selfId then
+                        rebuilt[#rebuilt + 1] = player.id
+                    end
                 end
             end
         end
@@ -221,6 +299,8 @@ function ArenaSpectate.Start(matchIdentifier)
     targets = {}
     index = 1
     active = true
+    focusPoint = nil
+    waitingSince = nil
 
     SetEntityVisible(ped, false, false)
     SetEntityCollision(ped, false, false)
@@ -290,6 +370,8 @@ function ArenaSpectate.Stop()
     matchId = nil
     targets = {}
     index = 1
+    focusPoint = nil
+    waitingSince = nil
 end
 
 function ArenaSpectate.Next()

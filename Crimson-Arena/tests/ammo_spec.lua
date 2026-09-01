@@ -86,6 +86,10 @@ local function newServer(pockets, mutate, opts)
             -- operator's ox_inventory data does not know, actually does.
             if fail.stashRefuse and type(id) == 'string' then return false end
             if fail.give and type(id) == 'number' then return false end
+            -- NO ANSWER AT ALL, which is not the same as a refusal and was
+            -- being read as success. The stash is where an item is safe, and
+            -- removing it from there on a nil is how it gets destroyed.
+            if fail.giveSilent and type(id) == 'number' then return nil end
             -- ONLY the ammo item, never the weapon. `give` above refuses
             -- everything a player is handed, so a test using it to break the
             -- ammunition also stops the weapon being issued -- and then
@@ -560,6 +564,42 @@ t.test('DEFECT: a finished match\'s records are actually dropped', function()
     t.isTrue(s.ammo.Clear('m1'), 'a match nobody is owed anything on could not be dropped')
 
     t.equals(s.ammo.OnLoan('m1'), 0, 'the match kept its issued-ammunition record for ever')
+end)
+
+t.test('DEFECT: an item ox_inventory answers NOTHING about is not taken out of the stash', function()
+    -- oxDid treats a nil return as success, which is a fine rule for
+    -- registering a stash or clearing an inventory -- nothing is lost by
+    -- believing it. It is the wrong rule for the one call whose next line
+    -- REMOVES the item from the stash, because that is the only
+    -- irreversible thing the door does.
+    --
+    -- ox_inventory's AddItem answers `success, response`. A nil where a true
+    -- belongs is a version or a code path we do not understand, and the safe
+    -- reading of an answer we do not understand is to leave the item where
+    -- it is.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(s.ammo.IsHolding(1), 'nothing was stashed, so this proves nothing')
+
+    s.breakOn('giveSilent')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.isTrue(s.stashed(1):find('phone', 1, true) ~= nil,
+        'AN ITEM OX_INVENTORY SAID NOTHING ABOUT WAS TAKEN OUT OF THE STASH')
+    t.isTrue(s.log():find('no answer', 1, true) ~= nil,
+        'and the operator was never told which item, or where it is')
+end)
+
+t.test('and it can still be handed back once ox_inventory answers properly', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('giveSilent')
+    s.ammo.Reclaim(1, 'm1')
+
+    s.fixOn('giveSilent')
+    t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the retry could not hand the kit back')
+    t.isFalse(s.ammo.IsHolding(1))
 end)
 
 t.test('DEFECT: a restore that FAILS keeps the record of where the kit is', function()

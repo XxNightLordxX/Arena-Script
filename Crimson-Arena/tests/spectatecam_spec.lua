@@ -91,6 +91,8 @@ local function newCam(opts)
         focusEntity = nil,
         notes = {},
         serverEvents = {},
+        clock = 3600000,
+        unstreamed = false,
         -- Input the test drives. `look` is the mouse; `held` are the zoom
         -- keys; `pressed` are the cycle keys.
         look = { [1] = 0.0, [2] = 0.0 },
@@ -116,7 +118,13 @@ local function newCam(opts)
             if f.goneServerIds[serverId] then return -1 end
             return serverId
         end,
-        GetPlayerPed = function(player) return 1000 + (player or 0) end,
+        -- ZERO WHILE UNSTREAMED, which is what the engine really answers
+        -- for a player it has not loaded around this client -- and the
+        -- whole reason a full arena could report itself empty.
+        GetPlayerPed = function(player)
+            if f.unstreamed then return 0 end
+            return 1000 + (player or 0)
+        end,
         NetworkIsPlayerActive = function(player) return player ~= nil and player ~= -1 end,
         DoesEntityExist = function() return true end,
         IsEntityDead = function(ped) return f.deadPeds[ped] == true end,
@@ -124,6 +132,7 @@ local function newCam(opts)
         -- The FIGHTER's position, which is what the camera orbits.
         GetEntityCoords = function() return vec3(f.pedAt.x, f.pedAt.y, f.pedAt.z) end,
         GetEntityHeading = function() return f.heading end,
+        GetGameTimer = function() return f.clock end,
 
         -- ARGUMENTS KEPT, NOT JUST THE CALL. Each of these natives takes
         -- a second flag past the on/off, and a stub that drops it cannot
@@ -156,8 +165,11 @@ local function newCam(opts)
             f.cams[handle] = nil
             f.destroyed[#f.destroyed + 1] = { handle = handle, flag = flag }
         end,
-        ClearFocus = function() f.focusEntity = nil end,
+        ClearFocus = function() f.focusEntity = nil; f.focusAt = nil end,
         SetFocusEntity = function(entity) f.focusEntity = entity end,
+        SetFocusPosAndVel = function(x, y, z)
+            f.focusAt = { x = x, y = y, z = z }
+        end,
 
         DisableAllControlActions = function() end,
         EnableControlAction = function(_group, control, enable)
@@ -183,6 +195,9 @@ local function newCam(opts)
 
     f.env = env
     f.spectate = env.ArenaSpectate
+    -- The first arena this config ships enabled, asked for rather than
+    -- written down: which ones ship enabled is the operator's choice.
+    f.arenaKey = (env.Arena.GetEnabledArenas()[1] or {}).key
 
     --- One rendered frame of the camera thread.
     ---
@@ -219,7 +234,11 @@ local function newCam(opts)
         for _, id in ipairs(alive) do players[#players + 1] = { id = id, alive = true } end
         f.fire('crimson_arena:client:state', {
             player = { spectating = matchId, matchId = matchId },
-            matches = { { id = matchId, players = players } },
+            -- WITH ITS ARENA, as the server really sends it. That key is
+            -- how the client works out where to point the streamer, and a
+            -- fixture that leaves it out is describing a snapshot the
+            -- server never produces.
+            matches = { { id = matchId, arenaKey = f.arenaKey, players = players } },
         })
     end
 
@@ -793,6 +812,90 @@ t.test('and one that names the match only by a bare `true` still works', functio
 
     t.isTrue(f.spectate.IsActive(), 'a state push carrying `spectating = true` started nothing')
     t.equals(f.focusEntity, 1000 + A, 'the watch started but followed nobody')
+end)
+
+
+-- ========================================================================
+-- A FULL ARENA THAT HAS NOT LOADED YET
+--
+-- THE REPORTED SYMPTOM: "spectate says nobody left to watch when there are
+-- people in the match."
+--
+-- Every fighter resolves through GetPlayerPed, and a player the engine has
+-- not streamed around this client has no ped at all. The viewer's body is
+-- never moved -- spectating hides it where it stands -- so a match across
+-- the map, or the one a kilometre over the water, has nothing loaded near
+-- it. The only line that pointed the streamer anywhere sat inside
+-- `if ped then`: the camera needed a fighter streamed in order to ask for
+-- one, found none on its very first frame, and ended the watch.
+-- ========================================================================
+
+t.test('an arena that has not streamed in yet does NOT end the watch', function()
+    local f = newCam()
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+
+    f.step()
+
+    t.isTrue(f.spectate.IsActive(),
+        'a full arena reported itself empty because nothing had streamed in yet')
+    for _, note in ipairs(f.notes) do
+        t.notContains(note, 'no_targets',
+            'the viewer was told there was nobody to watch while two fighters were alive')
+    end
+end)
+
+t.test('and the streamer is pointed at the arena so it CAN', function()
+    -- Not at the viewer, and not nowhere: at the match. A routing bucket
+    -- decides who a player could see, not what the engine loads.
+    local f = newCam()
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+
+    f.step()
+
+    t.isNotNil(f.focusAt, 'nothing asked the engine to load the arena')
+    local arena = f.env.Arena.GetEnabledArenas()[1]
+    local wanted = f.env.Arena.SpectateFocus(arena.key)
+    t.isNotNil(wanted, 'the shipped arena describes no point to focus on')
+end)
+
+t.test('and once the fighters arrive the camera follows one', function()
+    local f = newCam()
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+    f.step()
+
+    f.unstreamed = false
+    f.step()
+    f.step()
+
+    t.isTrue(f.spectate.IsActive(), 'the watch ended just as the arena finished loading')
+    t.equals(f.focusEntity, 1000 + A, 'the camera never picked up a fighter that had arrived')
+end)
+
+t.test('but an arena that stays empty DOES end the watch, eventually', function()
+    -- The grace window is a delay, not a licence to hang: a round that
+    -- really has emptied must still let the viewer go rather than leave
+    -- them staring at nothing forever.
+    local f = newCam()
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+
+    f.step()
+    t.isTrue(f.spectate.IsActive(), 'the watch ended before the grace window had run')
+
+    -- Several frames, because the waiting branch yields on its own Wait
+    -- and the loop's own Wait(0) before it looks again.
+    f.clock = f.clock + 60000
+    for _ = 1, 4 do f.step() end
+
+    t.isFalse(f.spectate.IsActive(), 'the watch never ended on an arena that stayed empty')
+    t.isTrue(#f.notes > 0, 'the watch ended with nothing said about why')
 end)
 
 os.exit(t.summary())

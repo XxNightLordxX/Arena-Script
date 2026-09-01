@@ -288,6 +288,8 @@ files['client/'] = {
         'SetCamCoord',
         'SetCamRot',
         'SetFocusEntity',
+        'SetFocusPosAndVel',
+        'DisablePlayerFiring',
 
         -- Per-arena weather and time overrides.
         'ClearOverrideWeather',

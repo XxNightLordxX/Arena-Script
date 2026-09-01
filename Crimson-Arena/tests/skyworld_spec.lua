@@ -85,6 +85,8 @@ local function newClient(opts)
         RemoveWeaponFromPed = function() end,
 
         DisableControlAction = function() end,
+
+        DisablePlayerFiring = function() end,
         IsPauseMenuActive = function() return false end,
         SetFrontendActive = function() end,
         GetPedSourceOfDeath = function() return 900 end,

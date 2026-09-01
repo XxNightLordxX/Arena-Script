@@ -530,6 +530,29 @@ local function startArenaThread()
                 SetFrontendActive(false)
             end
 
+            -- NO SHOOTING FROM BEYOND THE GRAVE, and it has to be here
+            -- rather than in the hold itself.
+            --
+            -- ClearDeadState makes the dead player invincible, invisible,
+            -- frozen and collisionless, and its own comment says that is to
+            -- stop "a player who could shoot during that gap". Not one of
+            -- those four natives stops a trigger being pulled: a frozen ped
+            -- aims and fires exactly as well as a standing one, and the
+            -- rounds are real. That is the split second between dying and
+            -- being put back that a player can still kill somebody in.
+            --
+            -- Firing is a per-frame refusal in this engine -- there is no
+            -- flag to set once -- so it belongs on the only per-frame loop
+            -- the arena already runs, and it is keyed on the same flag the
+            -- respawn clears.
+            if deathReported then
+                DisablePlayerFiring(PlayerId(), true)
+                DisableControlAction(0, 24, true)       -- attack
+                DisableControlAction(0, 25, true)       -- aim
+                DisableControlAction(0, 257, true)      -- attack, alternate
+                DisableControlAction(0, 263, true)      -- melee attack
+            end
+
             -- The backstop. The hook above catches the ordinary case a frame
             -- earlier; this catches a death no CEventNetworkEntityDamage was
             -- raised for at all -- drowning, a fall, the boundary bleed --

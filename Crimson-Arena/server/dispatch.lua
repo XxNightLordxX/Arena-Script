@@ -132,20 +132,31 @@ function ArenaDispatch.Clear(src)
     local matchId = active[src]
     active[src] = nil
 
-    -- Announced even when nothing was set, so a dispatch script that missed
-    -- the enter -- it restarted, it was not running yet -- still gets told to
-    -- drop this player rather than keeping them ignored forever. A clear for
-    -- somebody who was never flagged is a harmless no-op on its side.
-    announce(customConfig().exitEvent, src, matchId)
-
+    -- THE BAG GOES FIRST, and the order is the contract rather than the
+    -- tidier of two arrangements. Set() writes the flag and THEN announces,
+    -- so a handler on the entry event that reads the bag -- the obvious way
+    -- for a third-party script to find out which match -- sees it. Announce
+    -- the exit before clearing and that same handler reads a player who is
+    -- still flagged, concludes they are still fighting, and leaves whatever
+    -- it was suppressing suppressed: the flag outliving its match, which is
+    -- the one failure this function exists to prevent.
+    --
     -- Guarded because a player who has already dropped has no state bag to
     -- write to, and the disconnect path reaches here after they are gone.
+    -- The announcement below runs either way -- a bag that cannot be
+    -- written is no reason to leave somebody muted.
     local ok = pcall(function()
         Player(src).state:set(stateKey(), nil, true)
     end)
     if not ok then
         ArenaDebug('dispatch: could not clear the arena flag for %s -- they are most likely already gone.', tostring(src))
     end
+
+    -- Announced even when nothing was set, so a dispatch script that missed
+    -- the enter -- it restarted, it was not running yet -- still gets told to
+    -- drop this player rather than keeping them ignored forever. A clear for
+    -- somebody who was never flagged is a harmless no-op on its side.
+    announce(customConfig().exitEvent, src, matchId)
 end
 
 -- ======================================================================

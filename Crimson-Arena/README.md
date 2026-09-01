@@ -57,7 +57,9 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 - One switch — `Config.Betting.enabled` — hides every bet control and makes the server reject any bet that arrives anyway.
 - Entry fees are held in escrow, not tracked against a balance. Payout is `winner_takes_all` (default), `top_three` or `per_kill`, with an optional house cut.
-- Spectator side-bets on a team or a fighter, on by default, paid at a fixed `oddsMultiplier` by the house. They never touch the fighters' pot.
+- Spectator side-bets on a team or a fighter, on by default. **Parimutuel as shipped**: winners split the pool in proportion to what they staked, funded by the losing bets and never by the server. Fixed odds at `oddsMultiplier` is the alternative, per crowd, in `Config.Betting.betPayout`.
+- **One pot as shipped, not two.** `betPayout.sharedPool` puts the fighters' and the spectators' bets in the same pool, and `betPayout.includeEntryPot` puts the entry fees in it as well — a fighter's fee is a stake on their own side. So a bystander's money *does* reach the winner, on purpose: it is what makes a small arena's pool worth betting into. Turn either off to keep the crowds' money apart.
+- **A pool with nobody on the other side is handed back, not won.** A share of a pool that contains only your own stake is exactly your own stake, so the arena returns it and says so rather than announcing a win that pays nothing.
 - A match fought by fewer than `minPlayersToPayOut` refunds the pot instead of paying it out — judged on the head count the round started with, so a player leaving cannot turn a decided match into a refund.
 
 **Leaderboard**
@@ -901,7 +903,9 @@ That distinction has three cases, not two, and collapsing the last two was a rea
 - **A name that is not one of that player's accounts** — junk from a stale panel or a crafted payload. Nothing was really chosen, so it is treated as no preference too. Refusing a player who can plainly pay, because something sent a word nobody recognises, helps nobody.
 - **A real account of theirs that this server does not debit** — a choice that *cannot be honoured*, and the one this used to get wrong. A player picks cash; the operator later removes cash from `Config.Betting.accounts`; the old code could not tell that from a typo and quietly took the money out of the bank instead. Now nothing moves, from either account, and a console line says why.
 
-**Two separate pools.** The entry-fee pot is what the fighters are playing for, and `maxPot` caps it. Spectator side-bets are the house's action, paid at `oddsMultiplier`, and live in their own table — a bystander cannot change what the winner takes home.
+**Two pools, or one, and the shipped answer is one.** The entry-fee pot is what the fighters are playing for, and `maxPot` caps it; side-bets live in their own table. Whether those stay apart is `Config.Betting.betPayout`, and as shipped they do not: `sharedPool = true` pools the fighters' and the spectators' bets together, and `includeEntryPot = true` folds each fighter's entry fee in as a stake on their own side. There is then **one pot and one set of winners**, and a bystander's stake does reach the winner. That is the point of it — an arena with three spectators and no shared pool is an arena nobody bothers betting in — but it is the opposite of what separate pools mean, so set both to `false` if what you wanted was a fighters' pot a bystander cannot touch.
+
+**A pool is the bettors' money, so the house never keeps it.** Fixed odds has a counterparty and a loser's stake stays with the server. A pool has none: a losing stake is paid to whoever backed the winner, and where nobody did — nobody backed the winning side, or nobody bet against a lone self-backer — there is nobody to pay it to and every stake is returned. Two settings that used to fight over this are now settled: `includeEntryPot` with `fighterBets.enabled = false` used to void every entry fee as "a bet held by a fighter" and hand the whole pot back, so nobody ever won it. An entry fee is not a bet anybody chose to place, and is no longer treated as one.
 
 ### What happens when…
 

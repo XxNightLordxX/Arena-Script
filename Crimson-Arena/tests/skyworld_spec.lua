@@ -336,6 +336,49 @@ t.test('and stays quiet when the floor is inside it, which is the shipped case',
         'the shipped skydome was reported as sticking out of its own boundary')
 end)
 
+t.test('DEFECT: the ped is frozen BEFORE the world is waited for, not after', function()
+    -- FROZEN IS WHAT STOPS THE FALL. A placement freezes the ped, waits for
+    -- collision, and then leaves it in whatever state the caller asked for --
+    -- and on entry that final state is frozen too. So the END STATE IS
+    -- IDENTICAL whether the first freeze happened or not, which is why
+    -- turning it into `false` survived every spec in the suite: for the
+    -- frames the world takes to stream in there is nothing under the player,
+    -- gravity applies, and they arrive below the map.
+    --
+    -- Only the ORDER tells the two apart, so the order is what is asserted.
+    local c = newClient()
+    c.enter('skydome')
+
+    t.isTrue(#c.world.freezes > 0, 'the placement never froze the player at all')
+    t.isTrue(c.world.freezes[1] == true,
+        'the first thing done to the player was to UNfreeze them, so they fall while the world streams in')
+end)
+
+t.test('and a respawn is frozen first too', function()
+    -- The respawn path is the one this originally got wrong: entry happened
+    -- to freeze in its caller as well, and this one did not.
+    --
+    -- It is LEFT frozen on purpose, and that is not this test's business:
+    -- the release is ArenaDispatch.ReleaseDeadState's, so that the single
+    -- instant the player becomes a target again is one line rather than the
+    -- start of a five-second wait. What matters here is that the freeze
+    -- comes BEFORE the move, not after it.
+    local c = newClient()
+    c.enter('skydome')
+    local before = #c.world.freezes
+
+    c.fire('crimson_arena:client:respawn', {
+        matchId = 'match-1',
+        spawn = { x = SKY.x, y = SKY.y, z = SKY.z, w = 0.0 },
+        scatterRadius = 0.0,
+    })
+
+    local during = {}
+    for index = before + 1, #c.world.freezes do during[#during + 1] = c.world.freezes[index] end
+    t.isTrue(#during > 0, 'a respawn never touched the freeze at all')
+    t.isTrue(during[1] == true, 'a respawn moved the player before freezing them')
+end)
+
 t.test('the hold is a sane height, so nothing can slide with it', function()
     -- standingOn reads this setting, so a test that only used standingOn
     -- would agree with any value at all. This is the one assertion in the

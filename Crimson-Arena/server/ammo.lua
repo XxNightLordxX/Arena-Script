@@ -251,14 +251,39 @@ local function restore(src, record)
 
     local failures = 0
     for _, item in ipairs(items) do
-        -- The return value, not just the absence of a throw. Read wrong, an
-        -- item ox_inventory REFUSED was removed from the stash on the next
-        -- line -- so the one thing the stash exists to guarantee, that
-        -- nothing is destroyed, was destroyed here.
-        local given = oxDid(('returning %s x%s'):format(tostring(item.name), tostring(item.count)), function()
+        -- PROOF, NOT MERELY THE ABSENCE OF A DENIAL, and this is the one
+        -- call in the file that has to be read that way.
+        --
+        -- The line after this REMOVES the item from the stash, which is the
+        -- only irreversible thing the door does: the stash is where an item
+        -- is safe, and taking it out on a false assumption destroys it. So
+        -- this does not go through oxDid, which treats a nil return as
+        -- success -- a reasonable rule for registering a stash or clearing
+        -- an inventory, where nothing is lost by believing it, and the wrong
+        -- one here. ox_inventory's AddItem answers `success, response`; a
+        -- nil where a true belongs is a version or a code path we do not
+        -- understand, and the safe reading of "I do not understand this
+        -- answer" is to leave the item where it is.
+        --
+        -- The cost of being wrong in this direction is a loud line and an
+        -- item still sitting in a stash the player can be pointed at. The
+        -- cost of being wrong in the other direction is their belongings.
+        local called, answer = pcall(function()
             return ox:AddItem(src, item.name, item.count, item.metadata)
         end)
-        if given then
+
+        if not called then
+            ArenaLog('door: returning %s x%s to %s threw -- %s. It stays in stash %s.',
+                tostring(item.name), tostring(item.count), tostring(src), tostring(answer), record.stash)
+        elseif answer == nil then
+            ArenaLog('door: ox_inventory gave no answer when returning %s x%s to %s. Treating that as a refusal: it stays in stash %s rather than being taken out of it on a guess.',
+                tostring(item.name), tostring(item.count), tostring(src), record.stash)
+        elseif answer == false then
+            ArenaLog('door: returning %s x%s to %s was REFUSED by ox_inventory -- most often a full inventory or a weight limit. It stays in stash %s.',
+                tostring(item.name), tostring(item.count), tostring(src), record.stash)
+        end
+
+        if called and answer ~= nil and answer ~= false then
             pcall(function() return ox:RemoveItem(record.stash, item.name, item.count, item.metadata) end)
         else
             failures = failures + 1

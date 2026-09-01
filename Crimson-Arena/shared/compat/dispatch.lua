@@ -632,10 +632,24 @@ end
 --- @return string|nil status
 local function statusOf(adapter)
     if adapter.mute then
-        if enterEventName() then
-            return 'muted automatically -- this resource carries a mute for it'
+        if not enterEventName() then
+            return 'has a mute, but custom.enterEvent is nil so nothing triggers it'
         end
-        return 'has a mute, but custom.enterEvent is nil so nothing triggers it'
+
+        -- BOTH HALVES, because a mute that is never lifted is worse than one
+        -- that is never applied.
+        --
+        -- The mute is hung off the entry event and the UNMUTE off the exit
+        -- event, so with exitEvent nil it goes on when a player walks into
+        -- the arena and never comes off. That resource stays silenced for
+        -- them for the rest of their session -- out of the arena, across the
+        -- map, until they reconnect. This row said "muted automatically" and
+        -- read as everything being in order.
+        if not exitEventName() then
+            return 'muted on entry and NEVER UNMUTED -- custom.exitEvent is nil, so anyone who walks into the arena keeps this resource silenced for the rest of their session'
+        end
+
+        return 'muted automatically -- this resource carries a mute for it'
     end
 
     local exportName = disableExportFor(adapter.resource)

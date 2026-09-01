@@ -320,6 +320,38 @@ t.test('but somebody with no business there is still kept out, exactly once', fu
     t.isTrue(fences[1].radius > 0, 'the zone has no radius, so it fences nothing')
 end)
 
+t.test('DEFECT: cancelling a lobby does not strand the person watching it', function()
+    -- Watching puts a player in the match's own instance so they can see it.
+    -- ArenaLobby.Destroy forgot the spectator index and left the routing
+    -- bucket set -- so they were left in a room with nobody in it, invisible
+    -- to the server and the server invisible to them, for the rest of their
+    -- session.
+    --
+    -- The per-tick sweep in server/match.lua rescues anyone stranded in a
+    -- COUNTDOWN or LIVE match's bucket. A spectator of a match still in its
+    -- LOBBY was never in that sweep's books, and clicking Watch on a lobby
+    -- from the Matches tab and then having the host cancel it is an entirely
+    -- ordinary thing to do.
+    local server = fourPlayers({ 5 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'the host could not open a lobby')
+    t.equals(match.state, 'lobby', 'the match started on its own, so this is not the lobby case')
+
+    t.isTrue(server.lobby.AddSpectator(5, match.id) == true,
+        'the spectator could not be admitted, so this proves nothing')
+    t.isTrue(server.bucket(5) ~= 0,
+        'watching did not put them in the round\'s instance, so there is nothing to be stranded in')
+
+    server.lobby.Destroy(match.id, 'notify.match_cancelled')
+    server.step(3)
+
+    t.equals(server.bucket(5), 0,
+        ('the spectator was left in instance %d after the lobby they were watching was cancelled')
+            :format(server.bucket(5)))
+end)
+
 t.test('every fighter is in exactly one instance, and it is their own match\'s', function()
     local server = fourPlayers()
     local first = runMatch(server, 'airfield', { 1, 2 })

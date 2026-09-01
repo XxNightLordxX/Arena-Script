@@ -1195,6 +1195,43 @@ function ArenaLobby.Destroy(matchId, reasonKey)
     end
     for src in pairs(match.spectators) do
         spectatorIndex[src] = nil
+
+        -- AND BACK OUT OF THE INSTANCE, which this loop used to skip
+        -- entirely -- it forgot the index and left the routing bucket set.
+        --
+        -- Watching puts a player in the match's own instance so they can see
+        -- it. Destroying the match without taking them back out leaves them
+        -- in a room with nobody in it: invisible to the server and the
+        -- server invisible to them, for the rest of their session. The
+        -- per-tick sweep in server/match.lua rescues anyone stranded in a
+        -- COUNTDOWN or LIVE match's bucket, but a spectator of a match still
+        -- in its lobby was never in that sweep's books -- and clicking Watch
+        -- on a lobby from the Matches tab, then having the host cancel it,
+        -- is an entirely ordinary thing to do.
+        --
+        -- ONLY FOR SOMEBODY WHO WAS ONLY WATCHING, the same guard
+        -- ArenaLobby.RemoveSpectator uses: an eliminated fighter watching
+        -- their own round is handled by the loop above, which owes them
+        -- their inventory as well as their instance.
+        if not match.players[src] then
+            local pulled = type(ArenaDispatch) == 'table'
+                and type(ArenaDispatch.ExitBucket) == 'function'
+                and ArenaDispatch.ExitBucket(src)
+
+            -- TOLD ONLY IF THEY WERE STILL IN ONE. ExitBucket answers
+            -- whether it actually moved anybody, and that is the difference
+            -- between the two ways a match reaches this teardown.
+            --
+            -- ArenaMatch.End has already sent every spectator home, with the
+            -- results board and the coordinates to walk back to; a second
+            -- exit behind it lands on somebody already at the NPC and, being
+            -- the later message, is the one that wins. Destroying a match
+            -- that never started has sent them nothing at all, and they are
+            -- the ones this is for.
+            if pulled then
+                TriggerClientEvent('crimson_arena:client:exitArena', src, {})
+            end
+        end
     end
 
     matches[match.id] = nil

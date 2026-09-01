@@ -345,4 +345,80 @@ t.test('and its boundary is well outside the ring it spawns people in', function
         'the boundary stops being generous once the arena grows')
 end)
 
+-- ======================================================================
+-- COVER COSTS SPAWN ROOM, AND THE BILL IS NOT VISIBLE IN CONFIG
+-- ======================================================================
+
+--- A deterministic stand-in for math.random, so a failure is reproducible.
+local function seeded(seed)
+    local state = seed or 1
+    return function()
+        state = (state * 1103515245 + 12345) % 2147483648
+        return state / 2147483648
+    end
+end
+
+--- @param count integer
+local function roster(count)
+    local out = {}
+    for index = 1, count do out[#out + 1] = { src = index } end
+    return out
+end
+
+t.test('the shipped skydome still places every roster at the separation it promises', function()
+    -- THE GUARANTEE EVERY PIECE OF COVER SPENDS, and the one an operator
+    -- adding containers cannot see themselves.
+    --
+    -- Placement excludes a disc around every piece of cover and that
+    -- exclusion is NEVER relaxed, unlike the separation between fighters --
+    -- so cover does not make placement harder, it makes it impossible past
+    -- a point, and the failure lands on the SMALL rosters. That is the
+    -- counter-intuitive half: a big roster grows the arena, and growth moves
+    -- the cover outwards while the piece count stays the same, so twenty
+    -- fighters have proportionally more room than four. A ring of containers
+    -- that held twenty comfortably left four and six standing on top of each
+    -- other, which is exactly the layout this file was extended to reject.
+    local env = Sandbox.newArenaEnv()
+    local Arena = env.Arena
+    local area = env.Config.Arenas['skydome'].spawnArea
+    local want = area.minSeparation
+
+    t.isTrue(want > 0, 'the skydome stopped asking for a separation at all')
+
+    for _, count in ipairs({ 2, 4, 6, 8, 12, 16, 20, 24, 32 }) do
+        local factor = Arena.SizeFactor('skydome', count)
+        local worst, worstSeed = math.huge, 0
+        for seed = 1, 60 do
+            local plan = Arena.PlanSpawns('skydome', roster(count), seeded(seed), factor)
+            t.isNotNil(plan, ('%d fighters got no plan at all'):format(count))
+            for a = 1, count do
+                for b = a + 1, count do
+                    local pa, pb = plan[a], plan[b]
+                    if pa and pb then
+                        local apart = math.sqrt((pa.x - pb.x) ^ 2 + (pa.y - pb.y) ^ 2)
+                        if apart < worst then worst, worstSeed = apart, seed end
+                    end
+                end
+            end
+        end
+        t.isTrue(worst >= want - 0.001,
+            ('%d fighters came out %.2fm apart against a stated %.1f (seed %d) -- the cover leaves too little room')
+                :format(count, worst, want, worstSeed))
+    end
+end)
+
+t.test('and the arena carries the cover it is advertised to', function()
+    -- A guard on the OTHER direction. The test above passes trivially if
+    -- somebody deletes the cover to make it pass, which is the tempting fix
+    -- when a layout stops placing.
+    local env = Sandbox.newArenaEnv()
+    local containers = 0
+    for _, piece in ipairs(env.Config.Arenas['skydome'].cover.pieces) do
+        local lead = (piece.models and piece.models[1]) or piece.model
+        if tostring(lead):find('container', 1, true) then containers = containers + 1 end
+    end
+    t.isTrue(containers >= 24,
+        ('the skydome ships %d containers; it was built and measured with 24'):format(containers))
+end)
+
 os.exit(t.summary())

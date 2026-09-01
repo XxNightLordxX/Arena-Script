@@ -93,6 +93,35 @@ placeholder you have to fix; both are switches you have to mean:
   below, because it is the only part of this resource that touches a player's
   inventory.
 
+## Adding or moving cover
+
+The `cover` block of an arena is a plain list and it is meant to be edited. Two
+things about it are not visible from the list itself, and both of them bite.
+
+**Cover costs spawn room, and the bill lands on the SMALL rosters.** Spawn
+placement excludes a disc around every piece of cover, and unlike the separation
+between fighters that exclusion is never relaxed — a crowded arena is a worse
+round, but a spawn inside a wall is a player who cannot move. So cover does not
+make placement harder as you add it, it makes it impossible past a point. The
+counter-intuitive half is which rosters break first: a large roster grows the
+arena, and growth moves the cover outwards while the piece count stays the same,
+so twenty fighters have proportionally more room than four. A ring of containers
+that holds twenty comfortably can leave four standing on top of each other.
+
+**Two pieces in one place is what makes an arena look broken.** A shipping
+container is twelve metres long, so two rings a few metres apart intersect even
+though their centres look well separated in config. Overlapping surfaces flicker
+against each other because the renderer has no way to decide which is in front,
+and it stays solid underfoot the whole time — so it reads as the arena being
+broken rather than as a prop in the wrong place.
+
+Both are checked, so you do not have to hold them in your head: `tests/run.sh`
+fails if two pieces are within the distance a rotated prop sweeps, if any two
+intersect at the headings you wrote, or if the shipped arena stops placing every
+roster from two to thirty-two at its stated separation. Edit the list, run the
+suite, and read what it says. The numbers in the skydome's `cover` block were
+chosen by measuring against exactly those three, not by eye.
+
 ## The smoke test
 
 Run this on a development server, with at least two accounts. Each step names

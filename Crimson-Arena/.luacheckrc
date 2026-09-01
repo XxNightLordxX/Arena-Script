@@ -428,6 +428,11 @@ files['server/'] = {
         -- client's say-so -- these have no client-realm counterpart on
         -- purpose.
         'GetPlayerRoutingBucket',
+        -- THE CROSSFIRE GUARD. weaponDamageEvent and explosionEvent name the
+        -- entities a shot hit by NETWORK id, and only the server can say
+        -- which player owns one -- so the guard walks the players and asks.
+        'GetPlayers',
+        'NetworkGetNetworkIdFromEntity',
         -- Routing buckets need OneSync; without it every bucket native is
         -- inert and silent. This is how the resource finds out.
         'GetConvar',

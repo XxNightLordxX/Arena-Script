@@ -556,6 +556,29 @@ exports('GetArenaPlayers', function() return ArenaDispatch.GetArenaPlayers() end
 --- @type table<string, integer>
 local matchBuckets = {}
 
+--- network id -> server id, for the crossfire guard. Rebuilt whenever a
+--- lookup cannot be confirmed; see ownerOfNetId.
+--- @type table<integer, number>
+local netIdOwners = {}
+
+--- The network id of a player's ped right now, or nil for a player who has
+--- gone. Guarded because it is asked on the path of every shot fired on the
+--- server, and a player who disconnected mid-burst must not take that path
+--- down with them.
+--- @param src number
+--- @return integer|nil
+local function netIdOf(src)
+    local ok, ped = pcall(GetPlayerPed, src)
+    if not ok or not ped or ped == 0 then return nil end
+
+    local gotId, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
+    if not gotId then return nil end
+
+    netId = tonumber(netId)
+    if not netId or netId == 0 then return nil end
+    return netId
+end
+
 --- Everyone this file has moved, and -- the load-bearing half -- the bucket
 --- they were in BEFORE it moved them.
 --- @type table<number, table>
@@ -1182,6 +1205,171 @@ local function jobsNamedIn(...)
     end
     return nil
 end
+
+-- ======================================================================
+-- CROSSFIRE
+--
+-- Nobody outside a round may shoot into it, and nobody in one may shoot
+-- out. Reported from the game about the trailer park, which is the arena
+-- where it matters: the sky one hangs over open water with nobody within a
+-- kilometre, and the trailer park is a real place people drive past.
+--
+-- WHY THE ROUTING BUCKET IS NOT ALREADY THE ANSWER. It is, for the ordinary
+-- case -- a player outside the match is in a different network instance and
+-- cannot see, hit or be hit by anyone inside. Three cases fall outside that:
+--
+--   A SPECTATOR IS PUT IN THE MATCH'S OWN BUCKET, because watching requires
+--   seeing. Their body is hidden, frozen and collisionless while the camera
+--   runs, but the camera stops itself when it runs out of fighters to
+--   follow, and the stop hands the body back. Until they leave, they are a
+--   player standing in a live round with a gun.
+--
+--   ISOLATION MAY NOT BE IN FORCE. Buckets need OneSync; an operator can
+--   also switch them off. Either way every line of the instancing still
+--   runs and nothing is separated.
+--
+--   AND IT IS THE WRONG PLACE TO REST A SAFETY PROPERTY ANYWAY. "Nobody can
+--   shoot across this line" should not be an emergent consequence of a
+--   network optimisation that four other things also depend on.
+--
+-- SO THIS IS THE AUTHORITATIVE LAYER, and it is server-side because only the
+-- server knows who is in which match.
+--
+-- CANCELEVENT REALLY DOES WORK HERE, unlike on the dispatch alerts below --
+-- and the two are worth keeping straight. Down there the event is raised by
+-- another RESOURCE, and cancelling only raises a flag that a resource which
+-- never calls WasEventCanceled() will ignore. weaponDamageEvent and
+-- explosionEvent are raised by the SERVER itself from a client's network
+-- packet, and the server is what reads the cancellation: cancelled, the
+-- damage is never applied and never replicated. There is nobody else to
+-- cooperate.
+-- ======================================================================
+
+--- @return table
+local function crossfireConfig()
+    return (Config.Match or {}).crossfireGuard or {}
+end
+
+--- Opt-OUT, like the isolation above and for the same reason: an operator
+--- upgrading from a config written before this block gets the protection
+--- without having to know it exists.
+--- @return boolean
+local function crossfireEnabled()
+    return crossfireConfig().enabled ~= false
+end
+
+--- A damage packet naming more entities than this is not a shot, it is a
+--- payload. A shotgun hits a handful; nothing legitimate hits thirty-two.
+local MAX_HITS = 32
+
+--- Which player owns a network id right now, or nil.
+---
+--- CACHED AND THEN VERIFIED, rather than trusted. A ped's network id changes
+--- when the player respawns, so a cache alone goes stale in exactly the
+--- situation this guard runs in -- and a stale answer here does not fail
+--- safe in one direction: resolving a fighter's new id to nobody would let
+--- an outsider shoot them, and resolving it to the wrong player would cancel
+--- damage inside a legitimate round. So the cached answer is confirmed
+--- against the world before it is used, which is two natives rather than a
+--- walk of every player on the server.
+--- @param netId integer
+--- @return number|nil src
+local function ownerOfNetId(netId)
+    local cached = netIdOwners[netId]
+    if cached and netIdOf(cached) == netId then return cached end
+
+    netIdOwners = {}
+    for _, id in ipairs(GetPlayers() or {}) do
+        local src = tonumber(id)
+        if src then
+            local owned = netIdOf(src)
+            if owned then netIdOwners[owned] = src end
+        end
+    end
+
+    return netIdOwners[netId]
+end
+
+--- Whether these two may damage each other.
+---
+--- SYMMETRIC ON PURPOSE, and it answers both halves of the request in one
+--- rule: an outsider cannot hurt a fighter, and a fighter cannot hurt an
+--- outsider. Two people in DIFFERENT matches are as separate as a fighter
+--- and a passer-by, which matters at an arena two rounds share.
+---
+--- Nobody in a round means this is not our business, and the answer is yes.
+---
+--- SELF-DAMAGE FALLS OUT OF THE RULE rather than being special-cased. A
+--- fall or your own grenade compares a player's match against itself, which
+--- is equal whether that is a match id or nil -- so it is allowed, which is
+--- right: it is not crossfire, and refusing it would make a fighter immortal
+--- to the one thing the arena does not control. An explicit early return for
+--- it was written here first and taken back out: mutation testing showed it
+--- could not change the answer, and this file does not keep lines that
+--- assert behaviour nothing exercises.
+--- @param attacker number
+--- @param victim number
+--- @return boolean
+local function mayDamage(attacker, victim)
+    local attackerMatch, victimMatch = active[attacker], active[victim]
+    if attackerMatch == nil and victimMatch == nil then return true end
+    return attackerMatch ~= nil and attackerMatch == victimMatch
+end
+
+AddEventHandler('weaponDamageEvent', function(sender, data)
+    if not crossfireEnabled() then return end
+
+    -- THE CHEAPEST ANSWER FIRST. With nobody in an arena there is nothing to
+    -- separate, which is how a server spends almost all of its time -- and
+    -- this handler is on the path of every shot fired anywhere on it.
+    if next(active) == nil then return end
+
+    local attacker = tonumber(sender)
+    if not attacker then return end
+
+    local hits = type(data) == 'table' and data.hitGlobalIds or nil
+    if type(hits) ~= 'table' then return end
+
+    -- A list this long is a crafted packet rather than a shot. Refused
+    -- rather than scanned: the scan is what it is trying to buy.
+    if #hits > MAX_HITS then
+        ArenaDebug('crossfire: refused a damage packet from %s naming %d entities.', tostring(attacker), #hits)
+        CancelEvent()
+        return
+    end
+
+    for _, entry in ipairs(hits) do
+        local netId = tonumber(entry)
+        local victim = netId and ownerOfNetId(netId) or nil
+        if victim and not mayDamage(attacker, victim) then
+            ArenaDebug('crossfire: %s may not damage %s -- they are not in the same round.',
+                tostring(attacker), tostring(victim))
+            CancelEvent()
+            return
+        end
+    end
+end)
+
+AddEventHandler('explosionEvent', function(sender, data)
+    if not crossfireEnabled() then return end
+    if next(active) == nil then return end
+
+    -- Somebody fighting in the round may explode things in it. This is about
+    -- what arrives from OUTSIDE, which is the half a bucket cannot help with
+    -- once isolation is not in force -- and an explosion is the one weapon
+    -- whose reach does not care whether you can see what you are hitting.
+    local exploder = tonumber(sender)
+    if exploder and active[exploder] then return end
+
+    if type(data) ~= 'table' then return end
+    local x, y, z = tonumber(data.posX), tonumber(data.posY), tonumber(data.posZ)
+    if not x or not y then return end
+
+    if insideLiveArena({ x = x, y = y, z = z or 0.0 }) then
+        ArenaDebug('crossfire: refused an explosion from %s inside a live arena.', tostring(sender))
+        CancelEvent()
+    end
+end)
 
 -- ======================================================================
 -- WITHDRAWING AN ALERT THAT WAS ALREADY CREATED

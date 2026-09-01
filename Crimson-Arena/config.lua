@@ -14,17 +14,17 @@
     ------------------------------------------------------------------------------
        73   Lobby         The NPC players walk up to
       144   Match         Lives, timers, player counts, win condition
-      330   Teams         The sides, and whether they may be uneven
-      432   Modes         Free-for-all, team deathmatch, gun game
-      466   DefaultMode   Which of them a new lobby opens on
-      485   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      680   UI            Panel colours, logo and title
-      743   Permissions   Who may open a match, who may force-stop one
-      822   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1420   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2848   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2858   Webhook       Optional: a Discord line per finished match
-     2896   Dispatch      Optional: keeping police and EMS out of the arena
+      356   Teams         The sides, and whether they may be uneven
+      458   Modes         Free-for-all, team deathmatch, gun game
+      492   DefaultMode   Which of them a new lobby opens on
+      511   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      706   UI            Panel colours, logo and title
+      769   Permissions   Who may open a match, who may force-stop one
+      848   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1446   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     2874   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2884   Webhook       Optional: a Discord line per finished match
+     2922   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -279,6 +279,32 @@ Config.Match = {
     --
     -- The fence is the arena's own `boundary`, deliberately: the same circle
     -- the fighters are bled for leaving. One field, one edge.
+    -- NOBODY SHOOTS ACROSS THE LINE, IN EITHER DIRECTION.
+    --
+    -- A player outside a round cannot hurt anyone in it, and a fighter
+    -- cannot hurt anyone outside. Refused on the SERVER, from the damage
+    -- packet itself, so it holds whatever the client believes.
+    --
+    -- The routing bucket already covers the ordinary case -- somebody
+    -- outside the match is in another instance and cannot see or hit anyone
+    -- in it. This is for the three cases it does not cover: a SPECTATOR,
+    -- who is deliberately put in the match's own instance so they can watch
+    -- and whose body is handed back the moment the camera stops; a server
+    -- where isolation is not in force (buckets need OneSync, and an
+    -- operator can switch them off); and the general principle that "nobody
+    -- can shoot across this line" should not be a side effect of a
+    -- networking setting.
+    --
+    -- Two people in DIFFERENT matches are as separate as a fighter and a
+    -- passer-by, which is what makes one arena safe to run two rounds in.
+    -- A player hurting THEMSELVES is never refused: a fall or your own
+    -- grenade is not crossfire.
+    --
+    -- Off is the old behaviour: the bucket alone.
+    crossfireGuard = {
+        enabled = true,
+    },
+
     keepOutBarrier = {
         enabled = true,
 

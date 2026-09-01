@@ -1022,13 +1022,52 @@ local function startBlipThread()
                 refreshBlips(true)
                 Wait(math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800))
 
-                -- DARK: the enemies go, the teammates come straight back.
+                -- DARK: the enemies go, the teammates come straight back --
+                -- outlines with them, because the lit phase above is a single
+                -- wait and this is the far side of it. Without this the
+                -- longest gap between reconciling your own side is the lit
+                -- phase plus a slice rather than a slice.
                 removeAllPlayerBlips()
                 refreshBlips(false)
+                refreshOutlines()
 
                 local interval = math.max(1000, Arena.ToInt(radarConfig().intervalMs) or 30000)
                 local visible = math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800)
-                Wait(math.max(500, interval - visible))
+                local dark = math.max(500, interval - visible)
+
+                -- THE DARK PHASE IS SLICED, NOT ONE LONG WAIT, and that is
+                -- about the TEAMMATES rather than the radar.
+                --
+                -- refreshOutlines runs at the top of this loop, so whatever
+                -- this branch waits IS the rate at which your own side is
+                -- reconciled. Waiting the whole interval in one go dropped
+                -- that from twice a second to once every thirty on the
+                -- shipped radar settings -- so a teammate who was eliminated
+                -- kept a coloured edge drawn through walls for half a minute
+                -- after the scoreboard said they were out, one who respawned
+                -- onto a new ped had no outline at all until the loop came
+                -- round, and anybody still streaming in when the round went
+                -- live went unhazed for the opening thirty seconds of it.
+                --
+                -- The sweep's own timing is untouched: the dark phase still
+                -- lasts exactly as long, it is just no longer blind for the
+                -- whole of it. Teammate blips are refreshed with the
+                -- outlines, because they are the same reconciliation -- a
+                -- respawn onto a new ped invalidates both.
+                local slept = 0
+                while slept < dark and matchLive and matchToken == token do
+                    local step = math.min(BLIP_REFRESH_MS, dark - slept)
+                    Wait(step)
+                    slept = slept + step
+
+                    -- Not on the last slice: the top of the loop is about to
+                    -- do both, and doing them twice in one frame is work
+                    -- nobody sees.
+                    if slept < dark then
+                        refreshOutlines()
+                        refreshBlips(false)
+                    end
+                end
             else
                 -- Radar off. Teammates still on the map -- that is not what
                 -- the radar is for -- and checked often enough that switching

@@ -20,8 +20,8 @@ prove the *rules* are right, and the model proves the *sequence* is right. Only
 the game proves the natives behave.
 
 So: the smoke test below is not a formality. It is the part of the verification
-that this build has not had, and it takes about twenty minutes — half an hour
-if you have switched ammo types on, which adds a section of its own.
+that this build has not had, and it takes about half an hour — closer to an
+hour if you have switched ammo types on, which adds a section of its own.
 
 **The arena in the sky is the one to check first.** It is the only part of
 this resource that builds its own ground, it has the least real-world evidence
@@ -154,25 +154,44 @@ is a kilometre of air.
 - [ ] Walk the whole disc, including the diagonals and the outer edge. **No
       holes.** A gap here is a fall of a kilometre, and the diagonals are where
       the old tiling left them.
-- [ ] Walk off the edge. You should fall, leave the boundary from underneath
-      within a second, and be killed by the bleed like any other out-of-bounds.
-- [ ] **Expect the floor to reach a little past the arena at the corners.** The
-      floor is tiled, and a tile is kept whenever any part of it is inside the
-      radius — coverage beats tidiness, because trimming to the radius leaves a
-      hole and a hole here is fatal. So on a large floor prop there is some
-      solid ground out past the boundary, and standing on it bleeds you exactly
-      as walking out of any other arena does. That is deliberate, not a bug to
-      report.
+- [ ] **Walk to the very edge of the floor and stand there. Nothing should
+      happen.** This is the one to be deliberate about, because it used to be
+      wrong: the boundary was 60 m around a floor that reached 77, so the outer
+      seventeen metres of solid platform were outside the arena and standing on
+      them bled you. The boundary is 110 m now — with the shipped prop the
+      floor reaches about 53 m, so there is more than fifty metres of slack —
+      and `Arena.ValidateConfig` refuses to start an arena whose boundary is
+      smaller than the floor it is drawn around. **A bleed warning while you
+      are still on solid ground is a bug, and it is one this build is supposed
+      to have made impossible.**
+- [ ] **Expect the floor to reach a little past `platform.radius` at the
+      corners.** The floor is tiled, and a tile is kept whenever any part of it
+      is inside the radius — coverage beats tidiness, because trimming to the
+      radius leaves a hole and a hole here is a fall of a kilometre. So the
+      outer ring sticks out by up to half a tile, and on the diagonals by half
+      a diagonal. That is deliberate. It is inside the boundary either way.
+- [ ] Walk off the edge. You fall. You leave the boundary from underneath, and
+      the bleed finishes you if the water does not. Either is a pass.
 - [ ] Die once. You come back **on the floor**, not on the terrain a kilometre
-      below and not under the platform.
+      below and not under the platform. **Expect a short drop on landing** —
+      you are placed `Config.Match.spawnHeightOffset` above the surface (3 m as
+      shipped) and released. Turn it down to `1.0` once you are satisfied the
+      floor is solid; it exists because a ped placed level with a prop has its
+      origin inside it and falls through, which is exactly what was reported.
 - [ ] End the match. **Fly back to `1500, 3000, 1201`. Nothing is left
       standing.** A prop nobody deletes stays there for the rest of the session,
       in an instance you cannot normally reach to look at it.
 - [ ] With `Config.Debug` on, F8 names the piece count and the surface height:
 
       ```
-      [crimson_arena] arena scenery: 29 piece(s) built, 9 of them floor; the floor prop measures 40.00 x 40.00m and its surface is at 1201.00.
+      [crimson_arena] arena scenery: 137 piece(s) built, 121 of them floor; the floor prop measures 8.00 x 8.00m and its surface is at 1201.00.
       ```
+
+      **The numbers to expect with the shipped prop and two players: 121 floor
+      tiles and 16 pieces of cover.** They grow with the roster — a
+      twenty-player match tiles about 305. The exact figures depend on which
+      model out of the chain your build supplied and how big it measures, which
+      is why the line prints the measurement.
 
       **`0 of them floor` is the failure to care about.** If the piece count is
       zero entirely, the floor was asked for somewhere the engine was not
@@ -182,7 +201,29 @@ is a kilometre of air.
       grows with it, so the floor and the spawn ring should visibly be bigger,
       and nobody should start the round standing on anybody.
 
-### 3. The lobby
+### 3. The trailer park — the other arena that ships enabled
+
+The opposite case, and worth five minutes precisely because nothing is built:
+it is real map ground with real trailers on it, and everything that could go
+wrong here is something the resource did that it should not have.
+
+- [ ] Start a match in **Trailer Park** with two players.
+- [ ] **Nothing new has appeared.** No containers, no barriers, nothing dropped
+      through a caravan. This arena's `cover` block ships switched off for that
+      reason; it is left laid out in `config.lua` in case you ever want it.
+- [ ] **You are standing on the ground**, at the height the ground actually is,
+      not three metres above it. The lift in the sky arena is for a floor that
+      has to be built; on real ground the game is asked where the ground is and
+      you are put on the answer.
+- [ ] Walk out to the far rows of vans, the track in, and the fence line.
+      **No bleed warning inside the park.** The boundary is 100 m and grows to
+      135 at a full roster; sixty metres used to reach the spawn ring and very
+      little else, so chasing somebody round the place you came here to fight
+      in started the bleed.
+- [ ] Keep walking, out towards the highway. **The warning does arrive**, and
+      then the bleed. A boundary that never bites is not a boundary.
+
+### 4. The lobby
 - [ ] The NPC is standing where you put it, not floating or sunk.
 - [ ] Your target script offers the arena option on it.
 - [ ] The panel opens, and your mouse works in it.
@@ -190,7 +231,7 @@ is a kilometre of air.
       stuck cursor here is the single most disruptive failure this resource can
       have; check it before anything else.
 
-### 4. A match, two players
+### 5. A match, two players
 - [ ] Create a match, second player joins, both see each other in the roster.
 - [ ] Pick a weapon and an ammo amount. Pick a team if the mode has them.
 - [ ] Start it. Both players are teleported, frozen, then released together.
@@ -201,7 +242,7 @@ is a kilometre of air.
       weapons and armour are back**. Losing a player's inventory is the
       unforgivable failure; verify it deliberately rather than assuming.
 
-### 5. Dispatch — the reason most of this exists
+### 6. Dispatch — the reason most of this exists
 - [ ] Fire a weapon inside the arena. **Your police script gets no call.**
 - [ ] Die inside the arena. **Your ambulance script gets no call, and no medic
       is paged.**
@@ -212,16 +253,38 @@ is a kilometre of air.
       suppression flag that leaked — a player who stays permanently invisible to
       dispatch is far worse than one who never was.
 
-### 6. Money, if betting is on
-- [ ] Join with a stake. It leaves your account immediately.
-- [ ] Win. The pot arrives, and the arithmetic is what you expected.
+### 7. Money, if betting is on
+
+**Watch both pockets, not the one you bet from.** Every failure this section
+exists to catch is invisible from a single balance: money that left the bank
+and came back as cash looks like nothing happened if you only look at cash.
+
+- [ ] Join with a stake. It leaves your account immediately, and **the one you
+      picked** — pick `bank` at least once and confirm your cash did not move.
+- [ ] Win. The pot arrives, in **the account you paid from**, and the
+      arithmetic is what you expected.
+- [ ] **Back yourself, with nobody else betting, and win.** You should be told
+      the pool was uncontested and handed your stake back — not told you won
+      and paid nothing. Do it from the **bank** too: bank out, bank back.
+      This is the one that was reported as "self betting just takes your
+      money", and it was true twice over.
+- [ ] **Back yourself, with nobody else betting, and lose.** Same answer:
+      handed back. A pool with nobody on the other side has no money in it but
+      your own.
+- [ ] Now do it properly: **one player backs themselves, another backs their
+      opponent.** That is a real bet and it settles — the winner takes both
+      stakes, the loser's is gone.
+- [ ] If you run **`fighterBets.enabled = false`**, run one match with an entry
+      fee and confirm **the winner takes the pot**. These two settings used to
+      cancel each other out: every entry fee was treated as a bet a fighter had
+      placed, so all of them were voided and handed back and nobody ever won.
 - [ ] Start another, then have a player **disconnect mid-round**. Check the
       remaining players are paid and nothing is stranded.
 - [ ] Start another and **restart the resource mid-round** (`restart
       crimson_arena`). Every stake must come back. Every player must be back in
       the world, visible, with their own gear.
 
-### 7. Ammo types, if you switched them on
+### 8. Ammo types, if you switched them on
 
 Skip this whole section if `Config.Loadouts.ammoItems.enabled` is `false` —
 nothing below can happen. If it is `true`, do not skip any of it: this is the
@@ -291,7 +354,7 @@ item ledger. If your ammo script reconciles the two, run the "you still have
 your own" step above twice before trusting the numbers — that is where a
 double-count would show.
 
-### 8. The nasty ones
+### 9. The nasty ones
 - [ ] Have a player leave during the **frozen countdown**, after the teleport
       but before weapons go live. They should return to the lobby cleanly, with
       their own gear, and be visible to dispatch again.

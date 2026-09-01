@@ -46,6 +46,7 @@
         "pick_a_team": "Pick a side first.",
         "player_not_loaded": "Your character is not loaded yet.",
         "pot_limit_reached": "The pot is capped. Nothing more goes in.",
+        "fighter_bets_disabled": "Fighters cannot back themselves on this server.",
         "spectator_bets_disabled": "Side-bets are switched off.",
         "stake_failed": "Your stake did not go through.",
         "state_unavailable": "The arena is not answering. Try again.",

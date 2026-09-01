@@ -926,6 +926,88 @@ end)
 -- ResolveSpectatorBet
 -- ======================================================================
 
+t.test('DEFECT: a fighter\'s stake is held to the FIGHTER band, not the spectator one', function()
+    -- config.lua gives fighterBets its own min and max, the snapshot sends
+    -- both blocks to the panel, and the panel offers a fighter the fighter
+    -- band. The server checked the spectator one.
+    --
+    -- Shipped, that is 50,000 offered and 25,000 accepted: every stake in
+    -- between refused, with "that amount is outside the limits", to a player
+    -- looking at an input that let them type it.
+    local Arena = arenaWith(function(betting)
+        betting.fighterBets.min = 100
+        betting.fighterBets.max = 50000
+        betting.spectatorBets.min = 100
+        betting.spectatorBets.max = 25000
+    end)
+
+    t.equals((Arena.ResolveFighterBet(50000)), 50000,
+        'a fighter cannot stake the maximum their own band allows')
+    t.equals((Arena.ResolveFighterBet(25001)), 25001,
+        'a fighter was held to the spectator ceiling')
+
+    -- And the spectator band still means what it says.
+    local refused, reason = Arena.ResolveSpectatorBet(25001)
+    t.equals(refused, nil, 'a spectator got past their own ceiling')
+    t.equals(reason, 'error.bet_out_of_range')
+end)
+
+t.test('and the two bands are independent in both directions', function()
+    -- The mirror, so this cannot be "fixed" by making fighters use the wider
+    -- of the two.
+    local Arena = arenaWith(function(betting)
+        betting.fighterBets.min = 500
+        betting.fighterBets.max = 1000
+        betting.spectatorBets.min = 100
+        betting.spectatorBets.max = 25000
+    end)
+
+    t.equals((Arena.ResolveFighterBet(1001)), nil, 'a fighter got past a ceiling BELOW the spectator one')
+    t.equals((Arena.ResolveFighterBet(499)), nil, 'a fighter got under a floor ABOVE the spectator one')
+    t.equals((Arena.ResolveSpectatorBet(20000)), 20000, 'the spectator band was narrowed by the fighter one')
+end)
+
+t.test('DEFECT: fighter bets work with spectator bets switched off', function()
+    -- A combination config documents by giving fighterBets its own `enabled`
+    -- flag. Reading the spectator switch refused every fighter bet on it,
+    -- with a message about side-bets being off -- so an operator who wanted
+    -- fighters backing themselves and nobody else betting had a feature that
+    -- silently did nothing.
+    local Arena = arenaWith(function(betting)
+        betting.spectatorBets.enabled = false
+        betting.fighterBets.enabled = true
+    end)
+
+    t.equals((Arena.ResolveFighterBet(1000)), 1000,
+        'a fighter bet was refused because SPECTATOR bets are off')
+
+    local refused, reason = Arena.ResolveSpectatorBet(1000)
+    t.equals(refused, nil, 'spectator bets ran while switched off')
+    t.equals(reason, 'error.spectator_bets_disabled')
+end)
+
+t.test('and the other way round, a fighter bet can be switched off on its own', function()
+    local Arena = arenaWith(function(betting)
+        betting.spectatorBets.enabled = true
+        betting.fighterBets.enabled = false
+    end)
+
+    local refused, reason = Arena.ResolveFighterBet(1000)
+    t.equals(refused, nil, 'a fighter bet ran while switched off')
+    t.equals(reason, 'error.fighter_bets_disabled')
+    t.equals((Arena.ResolveSpectatorBet(1000)), 1000, 'spectator bets were switched off with them')
+end)
+
+t.test('and both refuse everything when betting itself is off', function()
+    local Arena = arenaWith(function(betting) betting.enabled = false end)
+    local a, aReason = Arena.ResolveFighterBet(1000)
+    local b, bReason = Arena.ResolveSpectatorBet(1000)
+    t.equals(a, nil)
+    t.equals(aReason, 'error.betting_disabled')
+    t.equals(b, nil)
+    t.equals(bReason, 'error.betting_disabled')
+end)
+
 t.test('ResolveSpectatorBet accepts an amount inside the configured band', function()
     local amount, reason = arenaWith().ResolveSpectatorBet(500)
     t.equals(amount, 500)

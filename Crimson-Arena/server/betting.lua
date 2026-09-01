@@ -1220,9 +1220,6 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     local id = serverId(src)
     if not id or not Arena.IsKey(matchId) then return false, 'error.bet_invalid' end
 
-    local stake, reason = Arena.ResolveSpectatorBet(amount)
-    if not stake then return false, reason or 'error.bet_invalid' end
-
     local match = lobbyMatch(matchId)
     if not match then return false, 'error.match_not_found' end
 
@@ -1237,6 +1234,33 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     if isFighter and not fighterBetsOn() then
         return false, 'error.bet_not_spectator'
     end
+
+    -- THE AMOUNT IS CHECKED AGAINST THE RIGHT BAND, which means it cannot be
+    -- checked until we know which kind of bet this is.
+    --
+    -- It used to be resolved at the top of this function, before `isFighter`
+    -- existed, and always against Config.Betting.spectatorBets. Every other
+    -- rule below already picks the right block -- ownSideOnly and
+    -- oneBetPerMatch both do -- and the amount was the one that did not. On
+    -- the shipped config that refused every fighter stake over 25,000 while
+    -- the panel, which is sent fighterBets.max, was offering 50,000; and
+    -- with spectatorBets switched off it refused fighter bets entirely,
+    -- with a message about side-bets being off.
+    --
+    -- WRITTEN AS AN IF RATHER THAN `isFighter and X or Y`, deliberately.
+    -- That idiom collapses to Y whenever X is nil -- which here is exactly
+    -- the refused-bet case -- so a fighter over their band would have
+    -- silently fallen through to the spectator check. It is the single
+    -- commonest defect in this codebase and it is not worth being clever
+    -- about.
+    local stake, reason
+    if isFighter then
+        stake, reason = Arena.ResolveFighterBet(amount)
+    else
+        stake, reason = Arena.ResolveSpectatorBet(amount)
+    end
+    if not stake then return false, reason or 'error.bet_invalid' end
+
     if not betsAreOpen(match) then return false, 'error.bets_closed' end
 
     local wanted = canonicalPick(pick)

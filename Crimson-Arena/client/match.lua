@@ -1198,12 +1198,36 @@ end
 --- tiled props there are a lot of them to flicker against.
 local COVER_LIFT = 0.05
 
+--- How far away the arena's own scenery keeps drawing at full detail.
+---
+--- CLIENT-CREATED PROPS DO NOT GET THIS FOR FREE. A prop the map ships with
+--- is placed by the streamer, which knows the distance to draw it from; one
+--- created by a script starts on the engine's own short default, and past it
+--- the piece drops to a low-detail stand-in or stops drawing at all. On a
+--- floor tiled out of them that reads as the arena flickering and changing
+--- shape as you walk across it -- while remaining perfectly solid underfoot,
+--- because collision never depended on the draw distance.
+---
+--- 0xFFFF is the ceiling the native accepts, which is the right answer here:
+--- there is nothing else within a kilometre to spend the budget on.
+local PROP_LOD_DISTANCE = 0xFFFF
+
 --- Handles of everything this client built for the current round.
 local arenaProps = {}
 
 --- The TOP of the floor this client built, measured rather than configured.
 --- nil for an arena that stands on real ground.
 local arenaSurfaceZ = nil
+
+--- Which arena this client last built scenery for, and at what size.
+---
+--- KEPT SEPARATELY FROM currentMatch on purpose. The scenery outlives the
+--- match record on more than one path -- a build that finishes into a round
+--- that has already ended, a second exit for a match already left, a resource
+--- stopping after the last round -- and the pieces still have to come down on
+--- all of them. A teardown that can only find the arena through currentMatch
+--- cannot run on the exact paths that leave props standing.
+local builtArena = nil
 
 --- One prop's real footprint and height, straight from the game.
 ---
@@ -1283,6 +1307,64 @@ local function removeArenaProps()
     arenaProps = {}
 end
 
+--- Deletes an arena's own scenery standing near it, whether or not this
+--- client is the one that remembers building it.
+---
+--- See Arena.PropSweep for why a handle list is not enough on its own, and
+--- for why this is safe only at an arena that carries its own floor.
+--- @param arenaKey any
+--- @param factor number|nil
+--- @return integer removed
+local function sweepStrayArenaProps(arenaKey, factor)
+    local sweep = Arena.PropSweep(arenaKey, factor)
+    if not sweep then return 0 end
+
+    local wanted = {}
+    for name in pairs(sweep.models) do wanted[joaat(name)] = true end
+
+    local removed = 0
+    for _, object in ipairs(GetGamePool('CObject') or {}) do
+        if DoesEntityExist(object) and wanted[GetEntityModel(object)] then
+            local at = GetEntityCoords(object)
+            local dx = (at.x or 0.0) - sweep.x
+            local dy = (at.y or 0.0) - sweep.y
+            local dz = (at.z or 0.0) - sweep.z
+            if (dx * dx + dy * dy) <= sweep.radius * sweep.radius
+                and math.abs(dz) <= sweep.height
+            then
+                SetEntityAsMissionEntity(object, true, true)
+                DeleteObject(object)
+                -- Counted on the world rather than on the call: DeleteObject
+                -- reports nothing, and a piece this refused to delete is
+                -- exactly the one worth knowing about.
+                if not DoesEntityExist(object) then removed = removed + 1 end
+            end
+        end
+    end
+
+    if removed > 0 then
+        print(('[crimson_arena] arena scenery: swept %d stray piece(s) still standing at \'%s\' from an earlier round.')
+            :format(removed, tostring(arenaKey)))
+    end
+    return removed
+end
+
+--- Takes down this client's arena scenery: the pieces it remembers building,
+--- and then anything of that arena's own still standing that it does not.
+---
+--- builtArena IS DELIBERATELY NOT CLEARED. It is not "the arena of the round
+--- in progress" -- it is "the last place this client put scenery", and that
+--- stays true after the round ends. Clearing it here would make the FIRST
+--- teardown the only one able to sweep, and the piece worth sweeping is
+--- precisely the one that appears after it: created by a build that was still
+--- unwinding when the exit ran. The next build overwrites it, so it never
+--- names the wrong arena.
+local function clearArenaScenery()
+    removeArenaProps()
+    if builtArena then sweepStrayArenaProps(builtArena.key, builtArena.factor) end
+    arenaSurfaceZ = nil
+end
+
 --- Builds an arena's floor and cover, and answers whether the FLOOR is
 --- really there.
 ---
@@ -1296,8 +1378,16 @@ end
 --- @param factor number|nil
 --- @param boundary table|nil -- as sent, so the reach check below is real
 local function buildArenaProps(arenaKey, factor, boundary)
-    removeArenaProps()
-    arenaSurfaceZ = nil
+    clearArenaScenery()
+
+    -- SWEPT BEFORE A SINGLE PIECE IS LAID, and this is the half that answers
+    -- a round starting on top of the last one's floor. clearArenaScenery can
+    -- only take down what THIS client still remembers building; a piece
+    -- orphaned by a restart, or by a build that died between creating it and
+    -- recording it, is remembered by nothing at all. Building over one of
+    -- those stacks two copies of every prop in the same place.
+    sweepStrayArenaProps(arenaKey, factor)
+    builtArena = { key = arenaKey, factor = factor }
 
     -- THE SAME FACTOR THE SERVER PLANNED THE SPAWNS WITH. It arrives on the
     -- entry payload rather than being worked out here, because this side
@@ -1379,6 +1469,7 @@ local function buildArenaProps(arenaKey, factor, boundary)
                 FreezeEntityPosition(object, true)
                 SetEntityCollision(object, true, true)
                 SetEntityInvincible(object, true)
+                SetEntityLodDist(object, PROP_LOD_DISTANCE)
                 SetEntityAsMissionEntity(object, true, true)
                 arenaProps[#arenaProps + 1] = object
                 built = built + 1
@@ -1455,6 +1546,17 @@ end
 --- handler that does not finish.
 --- @param returnCoords table|nil
 local function leaveArena(returnCoords)
+    -- THE SCENERY COMES DOWN FIRST, AND UNGUARDED.
+    --
+    -- Everything below is per match, so the guard is right for it. The props
+    -- are not: they are the one thing that can still be standing when
+    -- currentMatch is already nil -- a second exit for a round already left,
+    -- a resource stopping after it ended, a build that finished into a match
+    -- that had gone. Behind the guard, every one of those leaves a floor at a
+    -- thousand metres for the rest of the session, and puts the next round's
+    -- floor inside it.
+    clearArenaScenery()
+
     if not currentMatch then return end
 
     currentMatch = nil
@@ -1468,11 +1570,6 @@ local function leaveArena(returnCoords)
     -- mid-round, and the resource stopping.
     removeAllPlayerBlips()
     removeAllOutlines()
-    -- The arena's own floor and cover, on the same single exit path as the
-    -- blips: a prop nobody deletes is left standing at a thousand metres for
-    -- the rest of the session.
-    removeArenaProps()
-    arenaSurfaceZ = nil
     roster = {}
 
     if ArenaSpectate then ArenaSpectate.Stop() end
@@ -1618,7 +1715,7 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- taken back out instead -- and the server is told, or it keeps a fighter
     -- in a match it can never put anywhere.
     if not buildArenaProps(data.arenaKey, data.sizeFactor, data.boundary) then
-        removeArenaProps()
+        clearArenaScenery()
 
         local home = Config.Lobby.returnCoords
         SetEntityCoordsNoOffset(ped, home.x, home.y, home.z, false, false, false)
@@ -1642,8 +1739,7 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- moving the build ahead of the placement is what made this window wide
     -- enough to matter.
     if matchToken ~= token or not currentMatch then
-        removeArenaProps()
-        arenaSurfaceZ = nil
+        clearArenaScenery()
         return
     end
 

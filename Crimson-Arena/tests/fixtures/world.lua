@@ -256,6 +256,36 @@ function World.new(opts)
         end,
         SetEntityInvincible = function() end,
 
+        -- RECORDED RATHER THAN SWALLOWED. A native stubbed to an empty
+        -- function is one no test can assert, and this world has been burned
+        -- by that before: SetPedArmour sat empty here for a long time while
+        -- the README promised full armour on entry, and nothing noticed.
+        SetEntityLodDist = function(handle, distance)
+            local object = w.objects[handle]
+            if object then object.lodDist = distance end
+        end,
+
+        -- Every object the engine is currently holding. Only 'CObject' is
+        -- modelled: it is the only pool this resource asks for, and a stub
+        -- that answered every pool with the object list would let a spec pass
+        -- against a question the game would answer differently.
+        GetGamePool = function(kind)
+            if kind ~= 'CObject' then return {} end
+            local out = {}
+            for _, handle in ipairs(w.order) do
+                local object = w.objects[handle]
+                if object and not object.deleted then out[#out + 1] = handle end
+            end
+            return out
+        end,
+
+        -- joaat above is the identity, so a model hash IS its name in this
+        -- world and the two sides of a lookup still have to agree.
+        GetEntityModel = function(handle)
+            local object = w.objects[handle]
+            return object and object.model or 0
+        end,
+
         DoesEntityExist = function(handle)
             local object = w.objects[handle]
             if object then return not object.deleted end

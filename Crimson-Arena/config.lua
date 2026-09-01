@@ -3327,6 +3327,32 @@ Config.Dispatch = {
         --
         -- Raise it if a respawned player is still down. 0 reverts to
         -- reviving immediately, which is almost certainly not what you want.
+        -- THE MEDICAL SCRIPT'S DOWN FLAG, cleared where it really lives.
+        --
+        -- The QB-family scripts -- sc-ambulance and qbx_ambulancejob among
+        -- them -- keep "this player is down" as PLAYER METADATA on the
+        -- framework object rather than in a table of their own. That is
+        -- qbx_core's data, so this resource can write it, and writing it is
+        -- the one suppression that does not depend on winning a race at the
+        -- moment of death:
+        --
+        --   sc-dispatch's client polls this metadata every 500ms and raises
+        --   its own PlayerDown / PlayerDead alerts when it goes up. Cleared
+        --   before the next poll, those are never raised at all.
+        --
+        --   sc-ambulance's EMSDownAlert handler admits a call ONLY for a
+        --   player carrying `inlaststand`. Cleared, its own guard refuses it.
+        --
+        -- It is also simply TRUE: the arena has just stood this player back
+        -- up, so a flag saying they are down is the thing that is wrong.
+        --
+        -- Add your own script's key if it uses a different name. Empty this
+        -- list to switch the whole thing off. A name that no script reads is
+        -- harmless -- it writes a field nobody looks at -- but a name that is
+        -- WRONG for a script that does read it is not, which is why these two
+        -- are the only ones shipped and both were read off sc-ambulance.
+        clearMetadata = { 'inlaststand', 'isdead' },
+
         afterRespawnDelayMs = 2000,
 
         -- KEEPING THEM UP, whatever your server.cfg order is.

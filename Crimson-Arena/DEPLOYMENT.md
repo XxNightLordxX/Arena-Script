@@ -247,6 +247,25 @@ wrong here is something the resource did that it should not have.
 - [ ] Fire a weapon inside the arena. **Your police script gets no call.**
 - [ ] Die inside the arena. **Your ambulance script gets no call, and no medic
       is paged.**
+
+      If it IS still paged, read the console rather than guessing -- the first
+      death in any match prints which resource answered before the arena did,
+      and there are only three things it can be:
+
+      1. **Start order.** `ensure Crimson-Arena` must sit ABOVE your medical
+         and dispatch scripts in `server.cfg`. The arena stops the call by
+         answering the death first; answer second and the alert is sent from
+         the player's own client before anything here runs. The console names
+         the resources that beat it and quotes the line to move.
+      2. **The down flag.** Those scripts keep "this player is down" as
+         framework metadata, and the arena now clears it on every revive --
+         `Config.Dispatch.revive.clearMetadata`. If yours uses a different
+         key, add it there. With the flag down, sc-dispatch's poll never
+         raises a call and sc-ambulance's own guard refuses one.
+      3. **A name that does not match.** Everything in
+         `Config.Dispatch.custom` is a list of real event and export names.
+         If your build renamed one, the arena is listening for something that
+         never fires -- and says so, once, naming what it saw instead.
 - [ ] Have a third player stand outside the arena. They cannot see or hear the
       fight (routing-bucket isolation).
 - [ ] Leave the arena and fire a weapon in town. **Your police script DOES get

@@ -264,6 +264,64 @@ end)
 -- STOP THE COUNTDOWN
 -- ========================================================================
 
+-- ========================================================================
+-- WHAT A BETTOR IS TOLD ABOUT THEIR OWN BET
+-- ========================================================================
+
+--- A lobby with two fighters and a third player free to watch it.
+local function lobbyWithWatcher(mutate)
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.spectatorBets.enabled = true
+        if mutate then mutate(config) end
+    end)
+    local matchId = s.lobby.Create(1, anArena(s), nil, nil, nil, nil, nil)
+    t.isNotNil(matchId, 'the host could not create a match')
+    t.isTrue(s.lobby.Join(2, matchId, nil, nil), 'the second player could not join')
+    t.isTrue(s.lobby.AddSpectator(3, matchId) == true,
+        'the watcher could not be admitted, so nothing below proves anything')
+    return s, matchId
+end
+
+t.test('DEFECT: a spectator is told about the side-bet they placed', function()
+    -- The `bet` field was read off ArenaLobby.GetByPlayer, which answers the
+    -- match a player is FIGHTING in. A spectator is not in match.players, so
+    -- for them it answered nil -- and the one person whose bet is the ONLY
+    -- thing they have riding on the round was the one person never told they
+    -- had placed it. No stake, no side; and the entry pot deliberately does
+    -- not move for a side-bet, so nothing else on the screen changed either.
+    local s, matchId = lobbyWithWatcher()
+
+    local placed, why = s.betting.PlaceSpectatorBet(3, matchId, 1, 1000, 'cash')
+    t.isTrue(placed, ('the side-bet was refused: %s'):format(tostring(why)))
+
+    local bet = s.state(3).player.bet
+    t.isTrue(bet ~= false and bet ~= nil,
+        'a spectator who placed a side-bet is told they have none')
+    t.equals(bet.amount, 1000, 'the stake reached the panel wrong')
+end)
+
+t.test('and somebody watching who has NOT bet is still told they have none', function()
+    -- The other direction, so this is not "always report a bet".
+    local s = lobbyWithWatcher()
+    t.equals(s.state(3).player.bet, false, 'somebody who has bet nothing was shown a bet')
+end)
+
+t.test('and a fighter is still told about their own', function()
+    -- The case that already worked, kept so the fix cannot have moved the
+    -- lookup off the fighters onto the watchers.
+    local s, matchId = lobbyWithWatcher(function(config)
+        config.Betting.fighterBets.enabled = true
+    end)
+
+    local placed, why = s.betting.PlaceSpectatorBet(1, matchId, 1, 1000, 'cash')
+    t.isTrue(placed, ('the fighter\'s own bet was refused: %s'):format(tostring(why)))
+
+    local bet = s.state(1).player.bet
+    t.isTrue(bet ~= false and bet ~= nil, 'a fighter who backed themselves is told they have not')
+    t.equals(bet.amount, 1000)
+end)
+
 t.test('the countdown can only be held while one is actually running', function()
     -- Holding a countdown that is not running would report success for
     -- doing nothing, and the button that posts it is on screen whenever

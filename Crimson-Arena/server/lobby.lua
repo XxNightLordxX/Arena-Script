@@ -570,6 +570,12 @@ local function snapshotPlayer(src)
     local match = ArenaLobby.GetByPlayer(src)
     local player = match and match.players[src] or nil
 
+    -- WHICH MATCH A BET OF THEIRS WOULD BE ON, which is not always the one
+    -- they are fighting in. GetByPlayer answers nil for a spectator, so
+    -- reading the bet off `match` alone told the one person whose bet is the
+    -- ONLY thing they have riding on the round that they had not placed one.
+    local betOn = (match and match.id) or spectatorIndex[src] or nil
+
     local money = 0
     local qbx = ArenaGetPlayer(src)
     local data = qbx and qbx.PlayerData
@@ -598,7 +604,7 @@ local function snapshotPlayer(src)
         -- for a side-bet, which left the screen with nothing at all to
         -- redraw. False rather than nil so the field is always on the
         -- wire and the panel can tell "no bet" from "not sent".
-        bet = (match and ArenaBetting.GetSideBet(match.id, src)) or false,
+        bet = (betOn and ArenaBetting.GetSideBet(betOn, src)) or false,
         isHost = match ~= nil and match.hostSource == src,
     }
 end

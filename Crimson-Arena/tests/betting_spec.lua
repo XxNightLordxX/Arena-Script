@@ -279,6 +279,47 @@ t.test('ApplyHouseCut at 100 percent leaves nothing to pay out', function()
     t.equals(cut, 1000)
 end)
 
+--- The complaints ValidateConfig produced for this config, as one string.
+local function complaintsFrom(mutate)
+    local env = sandbox.newArenaEnv()
+    if mutate then mutate(env.Config) end
+    local list = env.Arena.ValidateConfig()
+    return table.concat(type(list) == 'table' and list or {}, '\n')
+end
+
+t.test('DEFECT: a rake that cannot be taken is said out loud, not left to the payouts', function()
+    -- houseCutPercent is applied by ComputePayouts, which only runs when the
+    -- pot settles on its OWN. betPayout.includeEntryPot ships ON and hands
+    -- the fees to the bet pool instead, so Settle returns before the cut is
+    -- ever reached: the operator sets a rake, takes none, and the console
+    -- says nothing. Silence is the defect -- an operator can read a warning
+    -- and decide, and cannot read an absence.
+    t.contains(complaintsFrom(function(config) config.Betting.houseCutPercent = 25 end),
+        'NO CUT IS TAKEN', 'a rake under includeEntryPot passed without a word')
+end)
+
+t.test('and it names both settings, because either one resolves it', function()
+    -- Which of the two an operator wants is their decision: rake the pot, or
+    -- stop asking. A complaint that names one of them has chosen for them.
+    local said = complaintsFrom(function(config) config.Betting.houseCutPercent = 25 end)
+    t.contains(said, 'includeEntryPot', 'the complaint does not name the switch that disables the cut')
+    t.contains(said, 'houseCutPercent', 'the complaint does not name the cut itself')
+end)
+
+t.test('but a rake that IS taken passes without comment', function()
+    -- The other half. A warning that fires on a working config is noise, and
+    -- noise in a startup report is how a real one gets scrolled past.
+    t.notContains(complaintsFrom(function(config)
+        config.Betting.houseCutPercent = 25
+        config.Betting.betPayout.includeEntryPot = false
+    end), 'NO CUT IS TAKEN', 'a rake that the pot really pays was complained about')
+end)
+
+t.test('and so does the shipped config, which asks for no cut at all', function()
+    t.notContains(complaintsFrom(nil), 'NO CUT IS TAKEN',
+        'the shipped config warns about a rake it does not ask for')
+end)
+
 t.test('ApplyHouseCut treats an out-of-range percent as its nearest legal end', function()
     -- ValidateConfig complains about both of these, but complaining is all
     -- it does -- the maths still has to answer, and it answers by clamping

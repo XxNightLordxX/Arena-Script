@@ -18,13 +18,13 @@
       432   Modes         Free-for-all, team deathmatch, gun game
       466   DefaultMode   Which of them a new lobby opens on
       485   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      673   UI            Panel colours, logo and title
-      736   Permissions   Who may open a match, who may force-stop one
-      815   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1366   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2794   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2804   Webhook       Optional: a Discord line per finished match
-     2842   Dispatch      Optional: keeping police and EMS out of the arena
+      680   UI            Panel colours, logo and title
+      743   Permissions   Who may open a match, who may force-stop one
+      822   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1373   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     2801   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2811   Webhook       Optional: a Discord line per finished match
+     2849   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -604,6 +604,13 @@ Config.Betting = {
     },
 
     -- Taken off the top of the pot before it is paid out. 0 = no cut.
+    --
+    -- ONLY WHEN THE POT SETTLES ON ITS OWN. `betPayout.includeEntryPot`
+    -- below ships ON, which hands the entry fees to the bet pool instead --
+    -- and a pool is the bettors' money, so nothing is raked off it. Set a
+    -- cut with that switch on and none is taken; Arena.ValidateConfig says
+    -- so on startup rather than leaving you to work it out from the
+    -- payouts. Turn includeEntryPot off to rake the pot the old way.
     houseCutPercent = 0,
 
     -- HOW THE POT IS SPLIT.

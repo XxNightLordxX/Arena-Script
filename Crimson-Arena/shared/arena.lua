@@ -2224,6 +2224,29 @@ function Arena.ValidateConfig()
         if percent < 0 or percent > 100 then
             complain('Config.Betting.houseCutPercent must be between 0 and 100.')
         end
+
+        -- A RAKE THAT IS NEVER TAKEN, and the operator has no way to tell.
+        --
+        -- houseCutPercent is applied by Arena.ComputePayouts, which only runs
+        -- when the pot settles on its OWN. With betPayout.includeEntryPot on
+        -- -- which is how this ships -- the entry fees are handed to the bet
+        -- pool instead and ArenaBetting.Settle returns before ComputePayouts
+        -- is reached, so the cut is not applied to anything. The round ends,
+        -- the winner is paid the whole pool, and the console says nothing
+        -- about a rake that did not happen.
+        --
+        -- NOT FIXED BY QUIETLY RAKING THE POOL, which is a different thing:
+        -- a pool is the bettors' money and a cut off it takes a share of
+        -- every spectator's stake as well as the fees. Which of those an
+        -- operator wants is their decision, so this says the two settings
+        -- disagree and names both, rather than picking one for them.
+        if percent > 0 then
+            local block = Config.Betting.betPayout
+            if type(block) == 'table' and block.includeEntryPot == true then
+                complain(('Config.Betting.houseCutPercent is %d%% but betPayout.includeEntryPot is on, so NO CUT IS TAKEN: the entry fees become bets in the pool and the pot never settles on its own. Set includeEntryPot = false to rake the pot, or houseCutPercent = 0 to stop asking for a cut that is not collected.')
+                    :format(percent))
+            end
+        end
     end
 
     -- Two shapes are legal here: a plain number, which fixes the count for

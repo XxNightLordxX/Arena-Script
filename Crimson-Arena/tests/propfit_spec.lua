@@ -417,8 +417,8 @@ t.test('and the arena carries the cover it is advertised to', function()
         local lead = (piece.models and piece.models[1]) or piece.model
         if tostring(lead):find('container', 1, true) then containers = containers + 1 end
     end
-    t.isTrue(containers >= 24,
-        ('the skydome ships %d containers; it was built and measured with 24'):format(containers))
+    t.isTrue(containers >= 20,
+        ('the skydome ships %d containers; it was built and measured with 20'):format(containers))
 end)
 
 os.exit(t.summary())

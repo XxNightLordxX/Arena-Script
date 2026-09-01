@@ -121,6 +121,11 @@ end
 --- arena is a worse round; a spawn inside a wall is a player who cannot move.
 local COVER_CLEARANCE = 7.0
 
+--- What a weapon starts loaded with when its own config says nothing and the
+--- operator has set no default. Thirty is a rifle magazine, and small enough
+--- that it is never more than a player asked for on any shipped weapon.
+local DEFAULT_MAGAZINE = 30
+
 --- The clearance this arena keeps around its cover.
 ---
 --- Configurable because it depends on the props: an arena built out of
@@ -563,6 +568,60 @@ function Arena.ResolveAmmoType(weapon, requested)
         if entry.key == requested then return entry end
     end
     return fallback
+end
+
+--- What a weapon starts LOADED with, when the rest of the rounds a player
+--- picked are handed over as inventory items instead.
+---
+--- WHY THIS EXISTS. Picking sixty rounds used to put sixty in the magazine
+--- AND hand over sixty loose rounds on top -- a hundred and twenty for a
+--- player who asked for sixty, on every weapon, every round. The magazine and
+--- the items were written by two different loops and neither knew the other
+--- had already issued the whole amount.
+---
+--- So the pick is a TOTAL now, and this says where the split falls: this many
+--- in the gun, the remainder in their pocket. A player is never handed an
+--- empty gun, and never handed twice what they chose.
+---
+--- WHERE THE NUMBER COMES FROM, in order:
+---   1. `magazine` on the weapon, for an operator who wants to say it outright.
+---   2. THE SMALLEST AMOUNT THAT WEAPON'S OWN LIST OFFERS. Not invented: it is
+---      the operator's own idea of a small quantity of this round, and it is
+---      already sitting in the config next to the weapon. Every one of the 78
+---      firearms this resource ships has one -- 30 for most, 4 for the
+---      launchers -- so nothing needs adding to use this.
+---   3. Config.Loadouts.ammoItems.defaultMagazine, for a weapon with no list
+---      at all.
+---
+--- Never more than the player actually picked: asking for ten rounds gets ten
+--- in the gun and none in the pocket, not a full magazine conjured out of a
+--- default.
+--- @param weapon table|nil -- the catalogue entry for this weapon
+--- @param rounds any -- the total the player picked
+--- @return integer loaded
+function Arena.MagazineFor(weapon, rounds)
+    -- Every branch below clamps to this, so a pick of zero comes back zero
+    -- without needing a guard of its own -- and a guard nothing can break is
+    -- a guard nobody can trust.
+    local total = math.max(0, Arena.ToInt(rounds) or 0)
+
+    local explicit = Arena.ToInt(type(weapon) == 'table' and weapon.magazine or nil)
+    if explicit and explicit > 0 then return math.min(explicit, total) end
+
+    local ammo = type(weapon) == 'table' and weapon.ammo or nil
+    local options = type(ammo) == 'table' and ammo.options or nil
+    local smallest = nil
+    for _, option in ipairs(type(options) == 'table' and options or {}) do
+        local value = Arena.ToInt(option)
+        if value and value > 0 and (smallest == nil or value < smallest) then
+            smallest = value
+        end
+    end
+    if smallest then return math.min(smallest, total) end
+
+    local fallback = Arena.ToInt((Config.Loadouts.ammoItems or {}).defaultMagazine)
+    if not fallback or fallback <= 0 then fallback = DEFAULT_MAGAZINE end
+    return math.min(fallback, total)
 end
 
 --- Same shape of decision for body armour.

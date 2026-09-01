@@ -1159,4 +1159,113 @@ t.test('the shipped wall really is marked to be turned by measurement', function
         ('only %d pieces are turned by measurement, which is not a wall'):format(aligned))
 end)
 
+-- ========================================================================
+-- HOW MUCH IS IN THE GUN
+--
+-- The amount a player picks is a TOTAL: one magazine goes into the weapon
+-- and the remainder is handed over as inventory items. This decides where
+-- that line falls, and it reads the operator's own numbers rather than
+-- inventing one.
+-- ========================================================================
+
+t.test('the magazine is the smallest amount the weapon\'s own list offers', function()
+    -- Not invented and not a constant: it is already sitting in config next
+    -- to the weapon, and it is the operator's own idea of a small quantity
+    -- of this round.
+    local weapon = { ammo = { default = 60, options = { 30, 60, 120 }, max = 250 } }
+
+    t.equals(Arena.MagazineFor(weapon, 60), 30, 'a 30/60/120 weapon did not load 30')
+    t.equals(Arena.MagazineFor(weapon, 120), 30, 'the magazine grew with the pick')
+end)
+
+t.test('and it is never more than the player actually picked', function()
+    -- Ten rounds asked for is ten rounds carried, all of them in the gun --
+    -- not a full magazine conjured out of a default the player never chose.
+    local weapon = { ammo = { options = { 30, 60 } } }
+
+    t.equals(Arena.MagazineFor(weapon, 10), 10, 'a ten-round pick was topped up to a full magazine')
+    t.equals(Arena.MagazineFor(weapon, 0), 0, 'a weapon with no rounds was given a magazine')
+
+    -- RUBBISH FLOORS TO ZERO RATHER THAN GOING NEGATIVE. Nothing in this
+    -- resource passes a negative today -- the pick is clamped long before it
+    -- gets here -- but this is a shared function anything may call, and a
+    -- negative magazine written into a weapon's metadata is a gun
+    -- ox_inventory has no idea what to do with.
+    t.equals(Arena.MagazineFor({ magazine = 8 }, -10), 0,
+        'a negative pick produced a negative magazine')
+    t.equals(Arena.MagazineFor(weapon, 'nonsense'), 0,
+        'a pick that is not a number produced a magazine anyway')
+end)
+
+t.test('an explicit magazine on the weapon beats the list', function()
+    -- The escape hatch for an operator who knows their weapon better than
+    -- its options list suggests.
+    local weapon = { magazine = 8, ammo = { options = { 30, 60, 120 } } }
+    t.equals(Arena.MagazineFor(weapon, 60), 8, 'the weapon\'s own magazine was ignored')
+
+    -- And it is a ceiling like every other route into this: a player who
+    -- picked four rounds carries four, not the eight the operator wrote.
+    t.equals(Arena.MagazineFor(weapon, 4), 4,
+        'an explicit magazine handed out more rounds than the player picked')
+end)
+
+t.test('and the magazine really is read per weapon, not one number for all of them', function()
+    -- THE TEST THE SHIPPED PISTOL CANNOT BE. Its smallest option is 30 and
+    -- the blanket default is also 30, so a build that ignored the weapon
+    -- entirely and used the default for everything would look identical --
+    -- which is exactly what a mutation of this proved. These three differ
+    -- from the default and from each other.
+    local config = Sandbox.shippedConfig()
+
+    local function magazineOf(key, pick)
+        local weapon = nil
+        for _, entry in ipairs(config.Loadouts.weapons or {}) do
+            if entry.key == key then weapon = entry break end
+        end
+        t.isNotNil(weapon, ('the shipped config no longer has a weapon keyed %s'):format(key))
+        return Arena.MagazineFor(weapon, pick)
+    end
+
+    t.equals(magazineOf('heavysniper', 40), 10, 'the heavy sniper is not loading its own 10')
+    t.equals(magazineOf('assaultshotgun', 80), 20, 'the assault shotgun is not loading its own 20')
+    t.equals(magazineOf('advancedrifle', 300), 60, 'the advanced rifle is not loading its own 60')
+end)
+
+t.test('and a weapon with no list at all falls back to the configured default', function()
+    -- Reached by a weapon an operator adds without an options list, and by
+    -- an alwaysGive entry naming no catalogue weapon.
+    t.equals(Arena.MagazineFor({}, 100), 30, 'the default magazine is not being applied')
+    t.equals(Arena.MagazineFor(nil, 100), 30, 'a weapon that is not a table raised instead of falling back')
+end)
+
+t.test('and the shipped config gives every firearm a magazine to fall back on', function()
+    -- The claim config.lua makes in as many words: "Every firearm in the
+    -- list below has one, so nothing needs adding." If that stops being
+    -- true, weapons quietly start using the blanket default instead of
+    -- their own numbers.
+    local config = Sandbox.shippedConfig()
+    local checked, blank = 0, {}
+
+    for _, weapon in ipairs(config.Loadouts.weapons or {}) do
+        local melee = weapon.category == 'melee'
+        local takesAmmo = weapon.ammoTypes ~= false
+        if not melee and takesAmmo then
+            checked = checked + 1
+            local options = type(weapon.ammo) == 'table' and weapon.ammo.options or nil
+            local smallest = nil
+            for _, option in ipairs(type(options) == 'table' and options or {}) do
+                local value = tonumber(option)
+                if value and value > 0 and (smallest == nil or value < smallest) then smallest = value end
+            end
+            if not smallest and not tonumber(weapon.magazine) then
+                blank[#blank + 1] = weapon.key or weapon.weapon or '?'
+            end
+        end
+    end
+
+    t.isTrue(checked > 50, ('only %d firearms were checked -- the list stopped parsing'):format(checked))
+    t.equals(#blank, 0,
+        ('%d firearm(s) have no magazine to read: %s'):format(#blank, table.concat(blank, ', ')))
+end)
+
 os.exit(t.summary())

@@ -376,6 +376,50 @@ local issuedWeapons = {}
 --- @type table<string, table<number, table<string, integer>>>
 local issuedAmmo = {}
 
+--- How the rounds a player picked are split between the magazine in the gun
+--- and the loose items in their pocket.
+---
+--- THE PICK IS A TOTAL, and until now it was issued twice. `issueWeapons`
+--- below put the whole amount in the weapon's metadata, and the ammo-item
+--- loop in ArenaAmmo.Issue then handed over the whole amount AGAIN as items:
+--- sixty rounds picked, sixty in the magazine, sixty in the pocket, a hundred
+--- and twenty carried. Two loops, each correct on its own, neither aware the
+--- other had already issued everything.
+---
+--- Nothing caught it because both halves were tested separately -- one spec
+--- asserting the magazine, another asserting the item count -- and each one
+--- passed. The total was the thing nobody asserted.
+---
+--- WHEN THERE IS NOTHING TO SPLIT INTO the whole amount stays in the
+--- magazine, which is exactly what config.lua says switching ammo items off
+--- does: "rounds then travel in the weapon's own metadata instead".
+--- @param entry table -- one resolved loadout weapon
+--- @return integer loaded -- rounds in the gun
+--- @return integer spare -- rounds handed over as items
+local function splitRounds(entry)
+    local total = math.max(0, Arena.ToInt(entry.ammo) or 0)
+    if total == 0 then return 0, 0 end
+
+    if not ArenaAmmo.IsEnabled() or not Arena.IsKey(entry.ammoTypeItem) then
+        return total, 0
+    end
+
+    -- THE CATALOGUE ENTRY, not the resolved one, because the magazine is
+    -- read off the weapon's own `ammo.options` and a resolved entry has
+    -- already collapsed that to a single number. A loadout entry with no
+    -- catalogue behind it -- the operator's `alwaysGive` list, or a test
+    -- double -- falls through to the configured default.
+    local catalogue = Arena.IsKey(entry.key) and Arena.GetWeaponByKey(entry.key) or nil
+
+    -- NOT RE-CLAMPED HERE. Arena.MagazineFor floors its input at zero and
+    -- returns math.min(whatever it chose, that input) down every branch, so
+    -- a second `if loaded > total` on this side is a guard nothing can ever
+    -- break -- which is a guard nobody can trust, and one more line claiming
+    -- to enforce something it does not.
+    local loaded = Arena.MagazineFor(catalogue, total)
+    return loaded, total - loaded
+end
+
 --- Gives one player the loadout's weapons as ox_inventory items.
 --- @param ox table -- ox_inventory exports
 --- @param src number
@@ -395,8 +439,11 @@ local function issueWeapons(ox, src, matchId, loadout)
             -- ResolveAmmo already returns 0 for it, which ox_inventory reads
             -- as "not an ammo weapon" rather than "an empty one".
             local metadata = {}
-            local rounds = Arena.ToInt(entry.ammo) or 0
-            if rounds > 0 then metadata.ammo = rounds end
+            -- ONE MAGAZINE, NOT THE WHOLE PICK. The rest is handed over as
+            -- items by ArenaAmmo.Issue; see splitRounds above for why putting
+            -- the full amount here as well was giving everybody double.
+            local loaded = select(1, splitRounds(entry))
+            if loaded > 0 then metadata.ammo = loaded end
 
             -- ATTACHMENTS AND TINT RIDE IN THE METADATA TOO, and they were
             -- being dropped here. client/match.lua applies both with natives
@@ -432,7 +479,7 @@ local function issueWeapons(ox, src, matchId, loadout)
                 -- was refused, or it was accepted and something took it back
                 -- afterwards -- and only one of them used to leave a trace.
                 -- Without this line those are the same silence.
-                ArenaLog('weapons: gave %s x1 to %s (ammo %d).', name, tostring(src), rounds)
+                ArenaLog('weapons: gave %s x1 to %s (ammo %d).', name, tostring(src), loaded)
             else
                 failed[#failed + 1] = entry.key or name
                 ArenaLog('weapons: ox_inventory would not give %s to %s. Check that item exists in your ox_inventory weapon data -- the player is in the arena unarmed.',
@@ -652,7 +699,11 @@ function ArenaAmmo.Issue(src, matchId, loadout)
 
     for _, entry in ipairs(loadout.weapons or {}) do
         local item = entry.ammoTypeItem
-        local count = itemsFor(entry.ammo)
+        -- THE REMAINDER, not the whole pick. The magazine already carries the
+        -- rest of it; issuing the full amount here as well is what doubled
+        -- everybody's ammunition.
+        local _, spare = splitRounds(entry)
+        local count = itemsFor(spare)
 
         if Arena.IsKey(item) and count > 0 then
             -- BOTH have to be true. pcall succeeding only means the call did

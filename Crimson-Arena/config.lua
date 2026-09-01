@@ -22,9 +22,9 @@
       769   Permissions   Who may open a match, who may force-stop one
       848   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1548   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2993   Database      Optional: all-time leaderboard. Off, no SQL to import
-     3003   Webhook       Optional: a Discord line per finished match
-     3041   Dispatch      Optional: keeping police and EMS out of the arena
+     3025   Database      Optional: all-time leaderboard. Off, no SQL to import
+     3035   Webhook       Optional: a Discord line per finished match
+     3073   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -2834,8 +2834,25 @@ Config.Loadouts = {
         --
         -- WHAT A PLAYER GETS. They pick a weapon, they pick an amount from
         -- that weapon's own list, and they are handed exactly that many
-        -- rounds of exactly the round that weapon takes -- as real inventory
-        -- items they can see and reload from.
+        -- rounds of exactly the round that weapon takes -- one magazine
+        -- loaded in the gun and the remainder as real inventory items they
+        -- can see and reload from.
+        --
+        -- THE AMOUNT IS A TOTAL, AND IT USED TO BE ISSUED TWICE. The magazine
+        -- was filled with the whole pick and the same amount was handed over
+        -- again as items: sixty rounds chosen, sixty in the gun, sixty in the
+        -- pocket, a hundred and twenty carried. Every weapon, every round.
+        -- Two loops each doing their own job correctly, neither aware the
+        -- other had already issued the lot.
+        --
+        -- WHERE THE SPLIT FALLS is the weapon's own `magazine` if it has one,
+        -- otherwise the SMALLEST amount that weapon's own `ammo.options`
+        -- offers -- which is the operator's own idea of a small quantity of
+        -- this round, already written next to the weapon. Every firearm in
+        -- the list below has one, so nothing needs adding. A pistol offering
+        -- 30/60/120 and picked at 60 arrives with 30 loaded and 30 in the
+        -- pocket; picked at 30 it arrives with 30 loaded and nothing spare,
+        -- because thirty rounds is thirty rounds.
         --
         -- AND NOTHING ELSE. The round is not something they choose: it comes
         -- from the weapon. Asking for a different one does not fail, it is
@@ -2856,15 +2873,30 @@ Config.Loadouts = {
         -- here and they get 2.
         roundsPerItem = 1,
 
+        -- What a weapon starts loaded with when it names no `magazine` of its
+        -- own AND its `ammo.options` list is empty. Every firearm shipped
+        -- below has an options list, so this is only reached by a weapon an
+        -- operator adds without one, or by an `alwaysGive` entry that names
+        -- no catalogue weapon.
+        --
+        -- Never more than the player picked: it is a ceiling on the magazine,
+        -- not an amount handed out.
+        defaultMagazine = 30,
+
         -- Give the weapon even when its ammo item could not be handed over --
         -- a full inventory, or an item name this server does not have.
         --
-        -- ON  (default): they fight with an empty gun rather than being
-        --     refused it. Friendlier, and the failure is in the console for
-        --     the operator either way.
+        -- ON  (default): they fight with the magazine and no reloads rather
+        --     than being refused the weapon. Friendlier, and the failure is
+        --     in the console for the operator either way.
         -- OFF: that WEAPON is taken back off them. They keep their place in
         --     the round and everything else they picked -- what goes is the
-        --     one gun that would have looked loaded and was not.
+        --     one gun they cannot reload.
+        --
+        -- NOTE WHAT THE SPLIT ABOVE DID TO THIS. A weapon picked at or under
+        -- one magazine has no spare rounds to issue, so there is no item to
+        -- refuse and neither branch is reached -- which is right: that gun is
+        -- carrying every round the player asked for.
         --
         -- The old wording here said `off` made the match refuse to start the
         -- player. It never did: nothing read this setting at all, and both

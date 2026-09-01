@@ -217,6 +217,39 @@ t.test('and their fighters stand in DIFFERENT instances of the world', function(
     t.equals(server.bucket(4), b)
 end)
 
+t.test('AND SO DO TWO MATCHES IN AN ARENA ON THE REAL MAP', function()
+    -- Asked for from the game: "make the trailer park act like a separate
+    -- map also". It already does, and this is what makes that an answer
+    -- rather than a claim.
+    --
+    -- Instancing is a property of the MATCH, not of the arena -- the bucket
+    -- is allocated against a match id and nothing in that path asks which
+    -- arena is being fought in. So an arena standing on the real map is
+    -- separated exactly as hard as the one built over open water: the
+    -- fighters cannot see each other, and neither can anybody standing in
+    -- the trailer park in the ordinary world.
+    --
+    -- What is NOT hidden, and cannot be, is the map itself. The trailers,
+    -- the fences and the vehicles are in every instance because they are the
+    -- world; only the people are separated. That is the difference between
+    -- the two arenas, and it is the whole reason the sky one builds its own
+    -- floor.
+    local server = fourPlayers()
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
+    local second = runMatch(server, 'trailerpark', { 3, 4 })
+
+    t.isNotNil(server.lobby.Get(first), 'the first match on real ground did not survive the second')
+    t.isNotNil(server.lobby.Get(second), 'a second match was refused an arena on the real map')
+
+    local a, b = server.bucket(1), server.bucket(3)
+    t.isTrue(a ~= 0, 'a match in the trailer park is fought in the open world')
+    t.isTrue(b ~= 0, 'the second trailer park match is fought in the open world')
+    t.isTrue(a ~= b,
+        ('BOTH TRAILER PARK MATCHES ARE IN INSTANCE %d -- they are standing on each other'):format(a))
+    t.equals(server.bucket(2), a, 'teammates in one trailer park match were split apart')
+    t.equals(server.bucket(4), b)
+end)
+
 t.test('every fighter is in exactly one instance, and it is their own match\'s', function()
     local server = fourPlayers()
     local first = runMatch(server, 'airfield', { 1, 2 })

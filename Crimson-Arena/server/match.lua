@@ -1819,9 +1819,21 @@ local function syncMatchBuckets()
             -- refuse its host the cancel button. sendEnterArena is what raises
             -- a fighter's flag, and it runs when they are actually placed.
             if not fighting[src] then ArenaDispatch.Set(src, matchId) end
-            ArenaDispatch.EnterBucket(src, matchId)
             instanced[src] = matchId
         end
+
+        -- EVERY PASS, NOT ONLY THE FIRST, and that is the whole point of
+        -- moving it out of the branch above.
+        --
+        -- `instanced` records what this file decided; it cannot record what
+        -- another resource did afterwards. A player moved out of the match's
+        -- instance by anything else on the server still matches
+        -- `instanced[src] == matchId`, so the guarded version agreed there
+        -- was nothing to do and they finished the round in the ordinary
+        -- world. EnterBucket is idempotent and now checks where the player
+        -- actually is rather than where we recorded them, so calling it on
+        -- every pass costs one read a player a second and closes that.
+        ArenaDispatch.EnterBucket(src, matchId)
     end
 
     -- Clearing an entry during the walk is defined in Lua, which is what

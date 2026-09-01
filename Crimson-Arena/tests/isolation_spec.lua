@@ -394,6 +394,78 @@ t.test('a player moved straight from one match to another still lands back in th
     t.equals(f.bucketOf(7), 91)
 end)
 
+t.test('THE OTHER ONE THAT MATTERS: a player moved out of the arena by something else is put back', function()
+    -- HOW ISOLATION GOES QUIETLY MISSING. A routing bucket is server-wide
+    -- state and any resource can set it -- an interior, a job, a heist, an
+    -- admin tool, another script's own cleanup. Nothing tells this file when
+    -- one does.
+    --
+    -- The record still said the player was where they belonged, so every
+    -- later pass agreed there was nothing to do, and they fought the rest of
+    -- the round in the ordinary world in front of the whole server -- with
+    -- the arena's one real defence against a dispatch script simply absent
+    -- and nothing anywhere saying so.
+    local f = newFixture(nil, { [7] = 91 })
+
+    f.D.EnterBucket(7, 'm1')
+    t.equals(f.bucketOf(7), 4210)
+    t.equals(f.count('move'), 1)
+
+    -- Somebody else's resource, mid-round.
+    f.env.SetPlayerRoutingBucket(7, 55)
+    t.equals(f.bucketOf(7), 55)
+
+    -- The next sweep pass. EnterBucket is what runs on it, and it is called
+    -- unconditionally rather than only on the first pass -- see the loop in
+    -- server/match.lua.
+    t.isTrue(f.D.EnterBucket(7, 'm1'))
+    t.equals(f.bucketOf(7), 4210, 'the player was left outside the instance their match is in')
+end)
+
+t.test('and they still go home to the world they started in, not to wherever they drifted', function()
+    -- The half that is easy to break while fixing the half above. Re-reading
+    -- the current bucket during the correction records the instance somebody
+    -- else moved them into as the place to send them back to, and the player
+    -- ends the round somewhere they have never been.
+    local f = newFixture(nil, { [7] = 91 })
+
+    f.D.EnterBucket(7, 'm1')
+    f.env.SetPlayerRoutingBucket(7, 55)
+    f.D.EnterBucket(7, 'm1')
+
+    f.D.ExitBucket(7)
+    t.equals(f.bucketOf(7), 91, 'the drift was recorded as the bucket to restore')
+end)
+
+t.test('and the correction is said out loud rather than done silently', function()
+    -- A player being moved out of the arena repeatedly is a conflict with
+    -- another resource, and an operator cannot see it any other way. A fix
+    -- that hides its own symptom is how the cause stays unfound.
+    local f = newFixture(nil, { [7] = 91 })
+
+    f.D.EnterBucket(7, 'm1')
+    f.env.SetPlayerRoutingBucket(7, 55)
+    f.D.EnterBucket(7, 'm1')
+
+    t.isTrue(table.concat(f.debugs, '\n'):find('drifted', 1, true) ~= nil,
+        'a player was put back into the arena instance and nothing was said about it')
+end)
+
+t.test('and a player who has not drifted is left alone rather than moved every pass', function()
+    -- The correction reads the world before it writes to it. Without that
+    -- read it is a SetPlayerRoutingBucket per arena player per second,
+    -- forever, for no change at all.
+    local f = newFixture(nil, { [7] = 91 })
+
+    f.D.EnterBucket(7, 'm1')
+    local afterEntry = f.count('move')
+
+    for _ = 1, 5 do f.D.EnterBucket(7, 'm1') end
+
+    t.equals(f.count('move'), afterEntry,
+        'a player already in the right instance is being re-set on every pass')
+end)
+
 t.test('a player found sitting in an arena bucket is sent back to the default world, and it is said out loud', function()
     -- 8 is standing in the number this resource is about to allocate, which
     -- can only mean an earlier exit never ran. Sending them "back" there

@@ -1924,19 +1924,50 @@ end
 --- @param requested any
 --- @return integer|nil amount
 --- @return string|nil reason
-function Arena.ResolveSpectatorBet(requested)
+--- One side-bet band, checked.
+---
+--- SHARED BY THE TWO KINDS BECAUSE THEY ARE THE SAME CHECK ON DIFFERENT
+--- SETTINGS, and collapsing them into one function that always read the
+--- spectator block was a real defect: config.lua gives fighterBets its own
+--- `enabled`, its own `min` and its own `max`, the panel is sent all three,
+--- and the server enforced the spectator ones. Shipped, that refused every
+--- fighter stake between 25,001 and the 50,000 the panel was offering; and
+--- with spectatorBets switched off -- a combination config documents,
+--- since fighterBets has its own switch -- it refused every fighter bet
+--- outright, with a message about side-bets being off.
+--- @param rules table|nil -- Config.Betting.fighterBets or .spectatorBets
+--- @param requested any
+--- @param disabledReason string
+--- @return integer|nil stake
+--- @return string|nil reasonKey
+local function resolveBetBand(rules, requested, disabledReason)
     if Config.Betting.enabled ~= true then return nil, 'error.betting_disabled' end
 
-    local spectator = Config.Betting.spectatorBets or {}
-    if spectator.enabled ~= true then return nil, 'error.spectator_bets_disabled' end
+    rules = type(rules) == 'table' and rules or {}
+    if rules.enabled ~= true then return nil, disabledReason end
 
-    local minimum = math.max(0, Arena.ToInt(spectator.min) or 0)
-    local maximum = math.max(minimum, Arena.ToInt(spectator.max) or minimum)
+    local minimum = math.max(0, Arena.ToInt(rules.min) or 0)
+    local maximum = math.max(minimum, Arena.ToInt(rules.max) or minimum)
 
     local wanted = Arena.ToInt(requested)
     if not wanted then return nil, 'error.bet_invalid' end
     if wanted < minimum or wanted > maximum then return nil, 'error.bet_out_of_range' end
     return wanted, nil
+end
+
+function Arena.ResolveSpectatorBet(requested)
+    return resolveBetBand(Config.Betting.spectatorBets, requested, 'error.spectator_bets_disabled')
+end
+
+--- A FIGHTER'S OWN STAKE, held to the fighter band rather than the
+--- spectator one. Config.Betting.fighterBets has its own enabled/min/max,
+--- and the panel is told all three -- so this is the function that makes
+--- what the panel offers and what the server accepts the same numbers.
+--- @param requested any
+--- @return integer|nil stake
+--- @return string|nil reasonKey
+function Arena.ResolveFighterBet(requested)
+    return resolveBetBand(Config.Betting.fighterBets, requested, 'error.fighter_bets_disabled')
 end
 
 --- The house cut, and what is left to pay out.

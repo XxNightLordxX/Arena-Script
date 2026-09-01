@@ -2994,15 +2994,26 @@
                 hint.textContent = 'If they win you are paid ' + money(int(state.betAmount, 0) * odds)
                     + '. If they lose, the stake is gone.';
             } else if (betAsFighter(match)) {
+                /* "THE STAKE IS GONE" IS ONLY TRUE OF FIXED ODDS, and saying
+                   it here was the panel promising a loss the settlement does
+                   not take. A pool has no house behind it: a losing stake is
+                   paid to whoever backed the winner, and where nobody did --
+                   nobody bet against you, or nobody backed the side that won
+                   -- there is nobody to pay it to and it comes back. A player
+                   told their money was gone and then handed it back does not
+                   read that as generosity, they read it as the arena being
+                   broken, which is the same complaint from the other end. */
                 hint.textContent = 'Backing yourself with ' + money(int(state.betAmount, 0))
                     + ' on top of your entry fee. If you win you take a share of the whole betting '
-                    + 'pool, in proportion to what you staked — so it is worth more when more '
-                    + 'people backed the other side. If you lose, the stake is gone.';
+                    + 'pool, in proportion to what you staked — so you only profit if somebody '
+                    + 'backed the other side. If you lose, your stake goes to whoever backed the '
+                    + 'winner. Either way, if nobody bet against you it is handed back.';
             } else {
                 hint.textContent = 'Staking ' + money(int(state.betAmount, 0))
                     + '. If they win you take a share of the whole betting pool, in proportion to '
-                    + 'what you staked — so it is worth more when more people backed the other '
-                    + 'side. If they lose, the stake is gone.';
+                    + 'what you staked — so you only profit if somebody backed another side. If '
+                    + 'they lose, your stake goes to whoever backed the winner. Either way, if '
+                    + 'nobody backed a different side it is handed back.';
             }
         }
 

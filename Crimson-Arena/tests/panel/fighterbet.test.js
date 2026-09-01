@@ -280,6 +280,58 @@ test('under the POOL rule the panel promises a share, not a multiplier', () => {
         'the hint still quotes a fixed x2 payout under the pool rule: ' + hint);
 });
 
+test('DEFECT: and it does not promise a loss the settlement does not take', () => {
+    /* "If you lose, the stake is gone" is true of FIXED ODDS, where the
+       server is the counterparty and keeps the bet. A pool has no
+       counterparty: a losing stake is paid to whoever backed the winner, and
+       where nobody did -- nobody bet against you, or nobody backed the side
+       that won -- there is nobody to pay it to and the server hands it back.
+
+       The panel said it was gone anyway. A player told their money was gone
+       and then handed it back reads that as the arena being broken, which is
+       the same complaint that started this from the other end. */
+    const panel = opened({ who: 'spectator', teams: false });
+    panel.type('bet-amount', '500');
+    const chip = panel.node('bet-pick').children.find((c) => c.textContent === 'Rival');
+    (chip.listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+
+    const hint = panel.text('bet-hint');
+    assert.ok(!/stake is gone/.test(hint),
+        'the pool hint still says the stake is gone: ' + hint);
+    assert.ok(/handed back/.test(hint),
+        'the pool hint does not say an unbacked pool comes back: ' + hint);
+});
+
+test('and it says the same to a fighter backing themselves', () => {
+    // The case that was actually reported: one fighter, their own money, and
+    // nobody on the other side of it.
+    const panel = opened({ who: 'fighter', teams: false });
+    panel.type('bet-amount', '500');
+    const own = panel.node('bet-pick').children.find((c) => c.textContent === 'You');
+    (own.listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+
+    const hint = panel.text('bet-hint');
+    assert.ok(!/stake is gone/.test(hint),
+        'the fighter hint still says the stake is gone: ' + hint);
+    assert.ok(/nobody bet against you/.test(hint),
+        'the fighter hint does not say what happens with nobody on the other side: ' + hint);
+});
+
+test('but fixed odds STILL says the stake is gone, because there it is', () => {
+    // The rule this is honest about is real. Losing that distinction would
+    // make the panel wrong in the other direction.
+    const panel = opened({
+        who: 'spectator',
+        betPayout: { fighters: 'pool', spectators: 'odds', sharedPool: true },
+    });
+    panel.type('bet-amount', '500');
+    const chip = panel.node('bet-pick').children.find((c) => c.textContent === 'Rival');
+    (chip.listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+
+    assert.ok(/stake is gone/.test(panel.text('bet-hint')),
+        'a fixed-odds loss is genuinely gone and the panel no longer says so: ' + panel.text('bet-hint'));
+});
+
 test('and the summary strip says the same thing', () => {
     const panel = opened({ who: 'spectator' });
     const summary = panel.text('bet-summary');

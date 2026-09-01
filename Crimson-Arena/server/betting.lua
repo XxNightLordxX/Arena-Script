@@ -1283,13 +1283,25 @@ end
 --- are about to fight against, then join. This is the check that cannot be
 --- ordered around, because it runs where the money moves and reads the
 --- roster as it finally stood. See `voided` for the rule itself.
+--- WHAT IT PAID, PER PLAYER, is the third return and it is not a
+--- convenience. With betPayout.includeEntryPot on -- which is how this ships
+--- -- ArenaBetting.Settle hands the entry stakes to this function and returns
+--- an EMPTY payout list, so every downstream reader of that list saw a match
+--- where nobody was paid anything. The winner's own results board said they
+--- earned nothing while the money landed in their account, and the all-time
+--- leaderboard recorded zero earnings for everybody, for ever, on the default
+--- configuration. This is the number those two have to read instead.
+---
+--- WON BETS ONLY. A refund is a player's own stake handed back -- including
+--- the uncontested-pool refund above -- and has never counted as earnings.
 --- @param matchId string
 --- @param winningPick any -- team key, winning fighter's server id, or nil
 --- @return integer paid -- winning bets settled
 --- @return integer total -- money paid out
+--- @return table<integer, integer> earnings -- { [src] = won }, refunds excluded
 function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
     local bets = sideBets[matchId]
-    if type(bets) ~= 'table' then return 0, 0 end
+    if type(bets) ~= 'table' then return 0, 0, {} end
 
     -- No answer from the registry means no fighter can be identified, so
     -- every bet is judged on the rule it was placed under. The callers that
@@ -1297,6 +1309,7 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
     local fighters = fightersOf(matchId) or {}
     local wanted = canonicalPick(winningPick)
     local paid, total, kept, lines = 0, 0, 0, {}
+    local earnings = {}
 
     -- THE POOLS, built before anything is paid.
     --
@@ -1378,6 +1391,10 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                 bet.settledAs = 'won'
                 paid = paid + 1
                 total = total + amount
+                -- Recorded on the WIN, not on the delivery: a payout that
+                -- could not be handed over is still money this player won,
+                -- and the undelivered branch below is what chases it.
+                earnings[bet.src] = (earnings[bet.src] or 0) + amount
                 -- `bet.account` AGAIN, for the same reason returnSideBet
                 -- carries it. A winning side-bet is the bettor's own stake
                 -- plus a share of the pool, and dropping the account paid it
@@ -1437,7 +1454,7 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
         })
     end
 
-    return paid, total
+    return paid, total, earnings
 end
 
 -- ======================================================================

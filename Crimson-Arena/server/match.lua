@@ -1408,31 +1408,40 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     -- above it:
     --   Settle first -- it is what turns held stakes into payouts, and
     --     nothing below it can run against an undecided pot;
-    --   RecordMatch second -- a player's earnings ARE those payouts, so a
-    --     leaderboard written before them records every winner at zero;
-    --   SettleSpectatorBets third -- it needs a decided result to judge
-    --     bets against, and Clear hands unsettled side-bets BACK, so a Clear
-    --     that ran first would quietly refund every winning side-bet;
+    --   SettleSpectatorBets second -- it needs a decided result to judge bets
+    --     against, and Clear hands unsettled side-bets BACK, so a Clear that
+    --     ran first would quietly refund every winning side-bet;
+    --   RecordMatch third, AND THIS IS WHY IT MOVED. A player's earnings are
+    --     what they were paid, and the rule used to be "so record after
+    --     Settle". That was right about the reason and wrong about the line:
+    --     with betPayout.includeEntryPot on -- the shipped default -- Settle
+    --     folds the entry stakes into the bet pool and returns an EMPTY
+    --     payout list, and the money is paid one line further down by
+    --     SettleSpectatorBets. So the leaderboard recorded every player at
+    --     zero earnings on a default server, for ever, and the winner's own
+    --     results board told them they had earned nothing while the pot
+    --     arrived in their pocket. Recorded after BOTH now, from both.
     --   Clear fourth -- the only step that drops escrow, and it refuses
-    --     while anything is still held, so running it before Settle would
-    --     strand the pot with the match record already gone;
+    --     while anything is still held, so running it before either settle
+    --     would strand the pot with the match record already gone. The ammo
+    --     Clear sits with it: same step, same rule, different ledger;
     --   Destroy last -- it removes the record all four of the others read.
     local payouts = ArenaBetting.Settle(match.id, context)
     match.payouts = payouts
-    ArenaStats.RecordMatch(match)
-    ArenaBetting.SettleSpectatorBets(match.id, winningPick(match, winners, teamMode))
-    ArenaBetting.Clear(match.id)
-    -- AND THE INVENTORY RECORDS, which nothing called at all. ArenaAmmo.Clear
-    -- has always existed and always refused while anybody's kit is still
-    -- stashed -- exactly like the betting Clear above refuses over escrow --
-    -- and no path in this resource ever reached it. So every match this
-    -- server ran left its issued-weapon and issued-ammunition tables behind
-    -- for good. It sits beside the betting Clear because it is the same step:
-    -- the point where a finished match stops being owed anything.
-    ArenaAmmo.Clear(match.id)
+
+    local _, _, sideEarnings = ArenaBetting.SettleSpectatorBets(
+        match.id, winningPick(match, winners, teamMode))
 
     local won, earned = {}, {}
     for _, id in ipairs(winners) do won[id] = true end
+
+    -- WHAT THE SIDE-BET POOL PAID, folded in before the pot's own list --
+    -- because on the shipped config the pot's own list is empty and this is
+    -- the whole of it. Refunds are already excluded on the other side.
+    for src, amount in pairs(sideEarnings or {}) do
+        earned[src] = (earned[src] or 0) + (Arena.ToInt(amount) or 0)
+    end
+
     for _, payout in ipairs(payouts) do
         -- REFUNDS ARE NOT EARNINGS. Settle hands its computed list back even
         -- when every line of it is a refund -- deliberately, as the report of
@@ -1446,6 +1455,28 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             earned[payout.id] = (earned[payout.id] or 0) + (Arena.ToInt(payout.amount) or 0)
         end
     end
+
+    -- THE SAME NUMBER IN BOTH PLACES, by construction rather than by two
+    -- readers agreeing. ArenaStats.RecordMatch prefers `player.earnings` when
+    -- it is set and falls back to reading match.payouts when it is not, so
+    -- writing it here is what stops the all-time leaderboard and the board on
+    -- the player's screen ever being able to disagree about one match.
+    for _, player in ipairs(players) do
+        local row = match.players[player.src]
+        if row then row.earnings = earned[player.src] or 0 end
+    end
+
+    ArenaStats.RecordMatch(match)
+    ArenaBetting.Clear(match.id)
+
+    -- AND THE INVENTORY RECORDS, which nothing called at all. ArenaAmmo.Clear
+    -- has always existed and always refused while anybody's kit is still
+    -- stashed -- exactly like the betting Clear above refuses over escrow --
+    -- and no path in this resource ever reached it. So every match this
+    -- server ran left its issued-weapon and issued-ammunition tables behind
+    -- for good. It sits beside the betting Clear because it is the same step:
+    -- the point where a finished match stops being owed anything.
+    ArenaAmmo.Clear(match.id)
 
     local board = scoreboardOf(players)
     local returnCoords = toPoint(Config.Lobby.returnCoords)

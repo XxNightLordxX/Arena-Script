@@ -94,6 +94,8 @@ function World.new(opts)
         pedPos = opts.start or { x = -282.0, y = -2030.0, z = 30.1 },
         pedHeading = 0.0,
         frozen = false,
+        --- Every FreezeEntityPosition applied to the PLAYER, in order.
+        freezes = {},
         timer = 0,
         nextHandle = 5000,
     }
@@ -267,7 +269,15 @@ function World.new(opts)
             if object then
                 object.frozen = on == true
             else
+                -- THE SEQUENCE, NOT JUST THE STATE. A placement freezes the
+                -- ped, waits for the world, then leaves it in whatever state
+                -- the caller asked for -- and on entry that final state is
+                -- frozen too. So the end state is IDENTICAL whether the first
+                -- freeze happened or not, and the freeze is the only thing
+                -- stopping the player falling through an unstreamed world.
+                -- Only the order tells them apart.
                 w.frozen = on == true
+                w.freezes[#w.freezes + 1] = on == true
             end
         end,
 

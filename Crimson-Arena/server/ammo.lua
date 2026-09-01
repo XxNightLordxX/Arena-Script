@@ -832,7 +832,33 @@ CreateThread(function()
             -- their own inventory to something that is not theirs. Moving
             -- things around inside their own pockets stays their business.
             local src = payload and payload.source
-            if not src or not stashed[src] then return true end
+            if not src then return true end
+
+            -- IN THE ARENA, not merely STASHED, and the two are not the same
+            -- player set.
+            --
+            -- This asked `stashed[src]`, which is only ever populated when
+            -- the door is shut. With
+            -- Config.Loadouts.inventory.stripOnEntry off -- where a player
+            -- keeps their own inventory and is handed the arena's kit on top
+            -- of it -- nobody is stashed at all, so this returned true for
+            -- every fighter and the guard was off for the whole match. On
+            -- exactly the setting where the arena's weapons are loose in a
+            -- player's own pockets and dropping one is easiest.
+            --
+            -- The flag is the real question: it records who has actually
+            -- been teleported into a round, which is what "mid-match" means
+            -- here. The stash is kept as the fallback for the same reason
+            -- every other guard in this file keeps one -- server/dispatch.lua
+            -- loads after this file, so the function is asked for rather
+            -- than assumed.
+            local inArena = stashed[src] ~= nil
+            if not inArena and type(ArenaDispatch) == 'table'
+                and type(ArenaDispatch.IsPlayerInArena) == 'function'
+            then
+                inArena = ArenaDispatch.IsPlayerInArena(src) == true
+            end
+            if not inArena then return true end
 
             local target = payload.toInventory
             if target and target ~= src and tostring(target) ~= tostring(src) then

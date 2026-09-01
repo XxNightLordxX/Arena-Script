@@ -192,17 +192,38 @@ end)
 -- NO TWO PIECES SHARE A VOLUME
 -- ======================================================================
 
+--- The height of the shipped wall prop, and the step a stack is built on.
+---
+--- prop_container_01a is a forty-foot shipping container: 12.19m by 2.44m by
+--- 2.60m. The client rests each piece on the surface its `z` names, so a
+--- second piece at 2.60 stands on the roof of the one at 0.
+local CONTAINER_HEIGHT = 2.60
+
 --- Cover is placed by its own centre and can be rotated, so its footprint is
 --- taken as the circle its longest half-diagonal sweeps -- the shape it
 --- occupies at ANY heading. Two of those touching is two props touching at
 --- some rotation, which is the case worth failing on.
+---
+--- A VOLUME, NOT A FOOTPRINT, and the difference is the whole reason the
+--- arena can have a wall at all. Two pieces sharing a footprint at different
+--- heights are STACKED -- one standing on the roof of the other -- which is
+--- not two props in the same place, it is the only way to build something
+--- taller than a container out of containers. Comparing footprints alone
+--- called every stack a clash; comparing only within a level lets a stack
+--- through while still failing two pieces driven through each other.
+---
+--- What keeps that honest is the separate test below: a stack step has to be
+--- at least a whole piece tall, or "different height" means "sunk halfway
+--- into the one underneath".
 local function coverClashes(pieces, span)
     for i = 1, #pieces do
         for j = i + 1, #pieces do
-            local dx = pieces[i].x - pieces[j].x
-            local dy = pieces[i].y - pieces[j].y
-            local apart = math.sqrt(dx * dx + dy * dy)
-            if apart < span then return { pieces[i], pieces[j], apart } end
+            if math.abs(pieces[i].z - pieces[j].z) < 0.01 then
+                local dx = pieces[i].x - pieces[j].x
+                local dy = pieces[i].y - pieces[j].y
+                local apart = math.sqrt(dx * dx + dy * dy)
+                if apart < span then return { pieces[i], pieces[j], apart } end
+            end
         end
     end
     return nil
@@ -305,15 +326,112 @@ t.test('and the floor under it is the same plane the cover is placed against', f
     -- Cover is offset from the spawn centre and the floor is hung from
     -- platform.z. Those are two different numbers in config, and a build
     -- where they disagree buries the barriers or floats them.
+    --
+    -- AT OR ABOVE, since the wall went in. A piece at the surface is
+    -- standing on the floor; one above it is standing on another piece.
+    -- Below it is the failure this exists for, and no amount of stacking
+    -- makes that all right.
     local env = Sandbox.newArenaEnv()
     local props = env.Arena.ArenaProps('skydome', { x = 8.0, y = 8.0, top = 1.4 })
     local tiles, pieces = floorOf(props), coverOf(props)
 
     local surface = tiles[1].z + 1.4
+    local onTheFloor = 0
     for _, piece in ipairs(pieces) do
-        t.isTrue(math.abs(piece.z - surface) < 0.001,
-            ('a piece sits %.3fm off the walkable surface'):format(piece.z - surface))
+        t.isTrue(piece.z >= surface - 0.001,
+            ('a piece sits %.3fm BELOW the walkable surface'):format(surface - piece.z))
+        if math.abs(piece.z - surface) < 0.001 then onTheFloor = onTheFloor + 1 end
     end
+
+    t.isTrue(onTheFloor > 0, 'nothing at all is standing on the floor')
+end)
+
+t.test('DEFECT: a stacked piece stands on the roof of the one below, not inside it', function()
+    -- What the volume check above trades away, bought back. It stops calling
+    -- two pieces in one footprint a clash, which is right for a stack and
+    -- wrong for two pieces at 0.0 and 0.4 -- one buried in the other, which
+    -- reads exactly like the overlapping props this whole file exists to
+    -- catch, and which the footprint check used to be the only thing
+    -- standing in the way of.
+    --- Every stack step in a build, in metres.
+    local function stepsOf(factor)
+        local env = Sandbox.newArenaEnv()
+        local props = env.Arena.ArenaProps('skydome', { x = 8.0, y = 8.0, top = 1.0 }, factor)
+
+        -- Grouped by where each piece stands, so a stack is a group with
+        -- more than one in it.
+        local columns = {}
+        for _, piece in ipairs(coverOf(props)) do
+            local key = ('%.2f,%.2f'):format(piece.x, piece.y)
+            columns[key] = columns[key] or {}
+            table.insert(columns[key], piece.z)
+        end
+
+        local steps = {}
+        for key, heights in pairs(columns) do
+            table.sort(heights)
+            for index = 2, #heights do
+                steps[#steps + 1] = { key = key, step = heights[index] - heights[index - 1] }
+            end
+        end
+        return steps
+    end
+
+    -- EXACTLY ONE PIECE TALL, both ways. Less and the top one is sunk into
+    -- the one below -- the overlapping props this whole file exists to catch.
+    -- More and it is hanging in the air above it, which is the same complaint
+    -- from the other side.
+    local steps = stepsOf(nil)
+    t.isTrue(#steps > 0, 'the shipped skydome stacks nothing, so this proves nothing')
+    for _, entry in ipairs(steps) do
+        t.isTrue(math.abs(entry.step - CONTAINER_HEIGHT) < 0.05,
+            ('a stack at %s steps up %.2fm, against a %.2fm piece'):format(
+                entry.key, entry.step, CONTAINER_HEIGHT))
+    end
+
+    -- AND IT IS STILL ONE PIECE TALL ON A BIGGER ARENA, which is the whole
+    -- reason `z` is the one offset growth does not touch. A container is
+    -- 2.6m tall on a six-player arena and 2.6m tall on a twenty-player one;
+    -- scale the step with everything else and the top of every stack lifts
+    -- off the one below it by however much the arena grew.
+    local factor = Sandbox.newArenaEnv().Arena.SizeFactor('skydome', 20)
+    t.isTrue(factor > 1.0, 'the skydome stopped growing with the roster')
+
+    local grown = stepsOf(factor)
+    t.equals(#grown, #steps, 'the grown arena stacks a different number of pieces')
+    for _, entry in ipairs(grown) do
+        t.isTrue(math.abs(entry.step - CONTAINER_HEIGHT) < 0.05,
+            ('at %.2fx growth a stack at %s steps up %.2fm, against a %.2fm piece'):format(
+                factor, entry.key, entry.step, CONTAINER_HEIGHT))
+    end
+end)
+
+t.test('and the wall is doubled all the way round, with no way between the pieces', function()
+    -- The wall is the reason the arena can be walked to the edge of. A gap
+    -- in it is a hole somebody falls through, and a single course is a
+    -- 2.6m step somebody vaults.
+    local env = Sandbox.newArenaEnv()
+    local pieces = coverOf(env.Arena.ArenaProps('skydome', { x = 8.0, y = 8.0, top = 1.0 }))
+    local area = env.Config.Arenas['skydome'].spawnArea
+
+    -- The outermost ring of footprints: everything beyond the spawn circle.
+    local columns = {}
+    for _, piece in ipairs(pieces) do
+        local dx, dy = piece.x - area.center.x, piece.y - area.center.y
+        if math.sqrt(dx * dx + dy * dy) > area.radius then
+            local key = ('%.2f,%.2f'):format(piece.x, piece.y)
+            columns[key] = (columns[key] or 0) + 1
+        end
+    end
+
+    local wall = 0
+    for _, count in pairs(columns) do
+        wall = wall + 1
+        t.isTrue(count >= 2, 'a wall segment is a single course, which is a step and not a wall')
+    end
+
+    -- Twenty-two segments is what closes a 44.5m ring out of 12.19m pieces.
+    t.isTrue(wall >= 20, ('the wall is only %d segments round, which leaves gaps'):format(wall))
 end)
 
 -- ======================================================================

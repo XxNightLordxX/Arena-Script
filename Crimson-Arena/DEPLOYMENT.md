@@ -189,6 +189,19 @@ is a kilometre of air.
 - [ ] Walk the whole disc, including the diagonals and the outer edge. **No
       holes.** A gap here is a fall of a kilometre, and the diagonals are where
       the old tiling left them.
+- [ ] **There is a wall all the way round, two containers high, and you cannot
+      get past it or over it.** Walk the whole ring and push into every joint.
+      Twenty-two segments close a 44.5 m circle out of 12.19 m containers, so
+      adjacent pieces come within 0.19 m of touching — a shoulder should not
+      fit through, and 5.2 m of steel is not something a ped vaults.
+- [ ] **Nothing is over your head.** The wall surrounds the arena; it does not
+      roof it. If you are looking at a container ceiling, something is stacked
+      that should not be.
+- [ ] **The containers stand side-on to the middle, not end-on.** A ring of
+      spokes is what a wall looks like when the client could not measure the
+      prop — every piece turned ninety degrees, with a twelve-metre gap
+      between each one. If you see that, the model chain fell back to
+      something this build has no dimensions for, and the console says which.
 - [ ] **Walk to the very edge of the floor and stand there. Nothing should
       happen.** This is the one to be deliberate about, because it used to be
       wrong: the boundary was 60 m around a floor that reached 77, so the outer

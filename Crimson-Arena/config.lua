@@ -21,10 +21,10 @@
       706   UI            Panel colours, logo and title
       769   Permissions   Who may open a match, who may force-stop one
       848   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1446   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2891   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2901   Webhook       Optional: a Discord line per finished match
-     2939   Dispatch      Optional: keeping police and EMS out of the arena
+     1548   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     2993   Database      Optional: all-time leaderboard. Off, no SQL to import
+     3003   Webhook       Optional: a Discord line per finished match
+     3041   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1138,7 +1138,7 @@ Config.Arenas = {
 
     ['skydome'] = {
         label = 'The Skydome',
-        description = 'A platform in the clouds. Step off the edge and there is nothing under you.',
+        description = 'A walled platform in the clouds, with nothing under it and nothing over it.',
         -- ON, and the only arena this server runs.
         --
         -- THE PROP MODELS BELOW ARE THE ONE THING HERE THAT CANNOT BE CHECKED
@@ -1198,7 +1198,16 @@ Config.Arenas = {
             -- How far the floor reaches. Inside the boundary below, so the
             -- edge of the world is the edge of the floor rather than a
             -- stretch of open air you can stand in while bleeding.
-            radius = 45.0,
+            --
+            -- IT HAS TO CARRY THE WALL, and that is why it is 48 and not 45.
+            -- The wall stands at 44.5, a container is 2.44m across, and a
+            -- tile is only kept when part of it falls inside this radius --
+            -- so at 45 the outermost pieces had a corner hanging over a
+            -- notch in the rim. Three metres of margin puts whole tiles
+            -- under every corner of every piece at every size the arena
+            -- grows to, which tests/propfit_spec.lua checks rather than
+            -- takes on trust.
+            radius = 48.0,
 
             -- THE SURFACE PEOPLE STAND ON. Not where the pieces are
             -- created -- the client measures the prop and lowers it by its
@@ -1222,95 +1231,188 @@ Config.Arenas = {
             maxTiles = 400,
         },
 
-        -- SOMETHING TO GET BEHIND. Without it a flat disc is a staring
-        -- contest: everybody sees everybody from the first second and the
-        -- round is decided by who aimed first.
+        -- SOMETHING TO GET BEHIND, AND SOMETHING TO STOP AT.
+        --
+        -- Without cover a flat disc is a staring contest: everybody sees
+        -- everybody from the first second and the round is decided by who
+        -- aimed first. Without a WALL the same disc is a thousand-metre drop
+        -- with nothing at all between a fighter and the edge of it.
         --
         -- Positions are OFFSETS from the spawn-area centre below, so `z = 0`
         -- is standing on the floor and a piece can be nudged a metre without
         -- working out a world coordinate. Add, delete and move these freely
         -- -- it is a list, and nothing else reads it.
         --
+        -- `z` IS THE ONE OFFSET THAT DOES NOT SCALE WITH THE ARENA, because
+        -- it is measured in prop rather than in arena: a container is 2.6m
+        -- tall whatever size the floor is. That is what makes a stack a
+        -- stack -- a second piece at `z = 2.6` stands on the roof of the one
+        -- at `z = 0` at every roster size, rather than drifting into the air
+        -- as the arena grows.
+        --
+        -- `align = 'tangent'` TURNS A PIECE SIDE-ON TO THE MIDDLE, and it
+        -- overrides the heading written beside it. The client measures the
+        -- model and works out which heading actually does that, because which
+        -- way round a prop is built -- long side along its own X or its own Y
+        -- -- is not something config can know. The heading is still written
+        -- down as the fallback for a model this build cannot measure. See
+        -- Arena.TangentHeading in shared/arena.lua.
+        --
         -- The models here are the second thing to check in game, after the
         -- floor. Any solid prop works; these are ordinary base-game ones.
         cover = {
             enabled = true,
             pieces = {
-                -- THE OUTER RING: containers turned side-on to the middle, with
-                -- gaps between them to run through rather than a solid wall.
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 28.0, y = 0.0, z = 0.0, heading = 90.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 19.8, y = 19.8, z = 0.0, heading = 135.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 0.0, y = 28.0, z = 0.0, heading = 180.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -19.8, y = 19.8, z = 0.0, heading = 225.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -28.0, y = 0.0, z = 0.0, heading = 270.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -19.8, y = -19.8, z = 0.0, heading = 315.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -0.0, y = -28.0, z = 0.0, heading = 0.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 19.8, y = -19.8, z = 0.0, heading = 45.0 },
+                -- THE WALL. Twenty-two containers end to end around the rim,
+                -- every one of them doubled: 5.2m of steel, which is not
+                -- climbable and not something anybody walks off by accident.
+                -- NOTHING GOES OVER THE TOP -- the sky stays open, and this is
+                -- a wall rather than a box.
+                --
+                -- WHY TWENTY-TWO, AND WHY 44.5m. A container is 12.19m long, so
+                -- the ring has to be a twenty-two sided polygon whose edge is a
+                -- little longer than one: shorter and the inside corners drive
+                -- through each other, longer and gaps open up. At this radius
+                -- adjacent pieces come within 0.19m of touching on the inside
+                -- face. Nothing gets between them, and no two pieces share a
+                -- millimetre of volume.
+                --
+                -- IT COSTS THE SPAWN PLACEMENT NOTHING, which is what lets it
+                -- be this big. Cover is excluded from placement at 7m and the
+                -- spawn circle reaches 35m, so a wall at 44.5 is 9.5m clear of
+                -- the furthest point anybody can be put -- at every size the
+                -- arena grows to, because both numbers scale together.
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 44.5, y = 0.0, z = 0.0, heading = 270.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 44.5, y = 0.0, z = 2.6, heading = 270.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 42.7, y = 12.5, z = 0.0, heading = 253.7, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 42.7, y = 12.5, z = 2.6, heading = 253.7, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 37.4, y = 24.1, z = 0.0, heading = 237.2, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 37.4, y = 24.1, z = 2.6, heading = 237.2, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 29.1, y = 33.6, z = 0.0, heading = 220.9, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 29.1, y = 33.6, z = 2.6, heading = 220.9, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 18.5, y = 40.5, z = 0.0, heading = 204.6, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 18.5, y = 40.5, z = 2.6, heading = 204.6, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 6.3, y = 44.0, z = 0.0, heading = 188.1, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 6.3, y = 44.0, z = 2.6, heading = 188.1, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -6.3, y = 44.0, z = 0.0, heading = 171.9, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -6.3, y = 44.0, z = 2.6, heading = 171.9, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -18.5, y = 40.5, z = 0.0, heading = 155.4, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -18.5, y = 40.5, z = 2.6, heading = 155.4, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -29.1, y = 33.6, z = 0.0, heading = 139.1, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -29.1, y = 33.6, z = 2.6, heading = 139.1, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -37.4, y = 24.1, z = 0.0, heading = 122.8, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -37.4, y = 24.1, z = 2.6, heading = 122.8, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -42.7, y = 12.5, z = 0.0, heading = 106.3, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -42.7, y = 12.5, z = 2.6, heading = 106.3, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -44.5, y = 0.0, z = 0.0, heading = 90.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -44.5, y = 0.0, z = 2.6, heading = 90.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -42.7, y = -12.5, z = 0.0, heading = 73.7, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -42.7, y = -12.5, z = 2.6, heading = 73.7, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -37.4, y = -24.1, z = 0.0, heading = 57.2, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -37.4, y = -24.1, z = 2.6, heading = 57.2, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -29.1, y = -33.6, z = 0.0, heading = 40.9, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -29.1, y = -33.6, z = 2.6, heading = 40.9, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -18.5, y = -40.5, z = 0.0, heading = 24.6, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -18.5, y = -40.5, z = 2.6, heading = 24.6, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -6.3, y = -44.0, z = 0.0, heading = 8.1, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -6.3, y = -44.0, z = 2.6, heading = 8.1, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 6.3, y = -44.0, z = 0.0, heading = 351.9, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 6.3, y = -44.0, z = 2.6, heading = 351.9, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 18.5, y = -40.5, z = 0.0, heading = 335.4, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 18.5, y = -40.5, z = 2.6, heading = 335.4, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 29.1, y = -33.6, z = 0.0, heading = 319.1, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 29.1, y = -33.6, z = 2.6, heading = 319.1, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 37.4, y = -24.1, z = 0.0, heading = 302.8, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 37.4, y = -24.1, z = 2.6, heading = 302.8, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 42.7, y = -12.5, z = 0.0, heading = 286.3, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 42.7, y = -12.5, z = 2.6, heading = 286.3, align = 'tangent' },
+
+                -- THE OUTER RING: containers side-on to the middle with gaps
+                -- between them to run through, rather than a second wall.
+                --
+                -- ALL EIGHT SIDE-ON NOW. Four of these were end-on to the
+                -- middle and nobody noticed, because eight pieces twenty metres
+                -- apart read as a ring whichever way each one is turned. They
+                -- are marked to be turned by measurement instead of by hand.
+                --
+                -- Four of the eight are doubled, which costs the placement
+                -- nothing -- a stacked piece stands in the same footprint as
+                -- the one under it -- and makes the ring something to be behind
+                -- rather than something to shoot over.
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 28.0, y = 0.0, z = 0.0, heading = 270.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 28.0, y = 0.0, z = 2.6, heading = 270.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 19.8, y = 19.8, z = 0.0, heading = 225.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 0.0, y = 28.0, z = 0.0, heading = 180.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 0.0, y = 28.0, z = 2.6, heading = 180.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -19.8, y = 19.8, z = 0.0, heading = 135.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -28.0, y = 0.0, z = 0.0, heading = 90.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -28.0, y = 0.0, z = 2.6, heading = 90.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -19.8, y = -19.8, z = 0.0, heading = 45.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 0.0, y = -28.0, z = 0.0, heading = 360.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 0.0, y = -28.0, z = 2.6, heading = 360.0, align = 'tangent' },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 19.8, y = -19.8, z = 0.0, heading = 315.0, align = 'tangent' },
+
+                -- THE MID BAND: eight more between the corner pockets and the
+                -- outer ring, sat in the outer ring's GAPS rather than lined up
+                -- behind it. Staggered, a gap in the outer ring does not also
+                -- look through the middle and out the far side; lined up, every
+                -- gap is a firing lane down the whole diameter.
+                --
+                -- SKEWED 20 DEGREES off side-on, so the arena does not read as a
+                -- set of concentric circles, and a fighter behind one of these
+                -- is covered from a different direction than one behind the ring
+                -- outside it.
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 20.8, y = 12.0, z = 0.0, heading = 220.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 6.2, y = 23.2, z = 0.0, heading = 175.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -12.0, y = 20.8, z = 0.0, heading = 130.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -23.2, y = 6.2, z = 0.0, heading = 85.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -20.8, y = -12.0, z = 0.0, heading = 40.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -6.2, y = -23.2, z = 0.0, heading = 355.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 12.0, y = -20.8, z = 0.0, heading = 310.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 23.2, y = -6.2, z = 0.0, heading = 265.0 },
 
                 -- FOUR CORNERS, each a long wall and a short return. A pocket
-                -- you can hold, open from one side only.
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 11.3, y = 11.3, z = 0.0, heading = 135.0 },
-                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 6.7, y = 15.9, z = 0.0, heading = 45.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -11.3, y = 11.3, z = 0.0, heading = 225.0 },
-                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -15.9, y = 6.7, z = 0.0, heading = 135.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -11.3, y = -11.3, z = 0.0, heading = 315.0 },
-                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -6.7, y = -15.9, z = 0.0, heading = 225.0 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 11.3, y = -11.3, z = 0.0, heading = 45.0 },
-                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 15.9, y = -6.7, z = 0.0, heading = 315.0 },
+                -- you can hold, open from one side only. Both pieces are turned
+                -- off square so the four pockets do not all face the same way.
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 11.3, y = 11.3, z = 0.0, heading = 245.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 6.7, y = 15.9, z = 0.0, heading = 285.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -11.3, y = 11.3, z = 0.0, heading = 155.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -15.9, y = 6.7, z = 0.0, heading = 195.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -11.3, y = -11.3, z = 0.0, heading = 65.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -6.7, y = -15.9, z = 0.0, heading = 105.0 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 11.3, y = -11.3, z = 0.0, heading = 335.0 },
+                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 15.9, y = -6.7, z = 0.0, heading = 15.0 },
 
-                -- THE MIDDLE: a pinwheel, so the centre can be crossed but is
-                -- never open ground.
-                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 6.5, y = 0.0, z = 0.0, heading = 45.0 },
-                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 0.0, y = 6.5, z = 0.0, heading = 135.0 },
-                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -6.5, y = 0.0, z = 0.0, heading = 225.0 },
-                { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -0.0, y = -6.5, z = 0.0, heading = 315.0 },
-
-                -- THE MID BAND: eight more containers across the ring that
-                -- was empty between the corner pockets and the outer wall,
-                -- turned into the OUTER RING'S GAPS rather than lined up
-                -- behind it. Staggered, a gap in the outer ring does not
-                -- also look through the middle and out the far side; lined
-                -- up, every gap is a firing lane down the whole diameter.
+                -- THE MIDDLE: four containers in a pinwheel where four short
+                -- barriers used to stand -- spread from 6.5m out to 9m, turned
+                -- 30 degrees off side-on, and two of them doubled. The centre
+                -- can still be crossed, but it is never open ground and never a
+                -- straight run.
                 --
-                -- WHY THIS RADIUS AND THIS ANGLE, AND WHY THERE ARE ONLY
-                -- EIGHT. Cover is excluded from spawn placement at its own
-                -- clearance and that exclusion is never relaxed, so every
-                -- piece added here is room taken away from the placement --
-                -- and the arena was already close to its limit. These
-                -- numbers came out of a search over four gates rather than
-                -- out of judgement about what looks right:
-                --
-                --   No two pieces within the circle a rotated prop sweeps
-                --   (tests/propfit_spec.lua), and none intersecting at the
-                --   headings actually written down. A container is twelve
-                --   metres long, so two rings whose centres read as well
-                --   separated still pass through each other.
-                --
-                --   Eight fighters placed at the full separation with the
-                --   arena's GROWTH SWITCHED OFF -- the hard case, because a
-                --   roster big enough to grow the arena gets the extra room
-                --   for free. tests/skyarena_spec.lua tests exactly this,
-                --   and 0 short in 30,000 rounds is what the arena managed
-                --   before these eight went in; it still does.
-                --
-                --   Every roster from 4 to 32 placed at the full separation
-                --   as the arena really ships, growth on.
+                -- WHAT ADDING TO THIS COSTS, and it is why there are four and
+                -- not eight. Every FOOTPRINT here is excluded from spawn
+                -- placement at 7m and that exclusion is never relaxed, so a
+                -- piece in the middle is room taken away from the placement --
+                -- while a piece STACKED on one already there costs nothing at
+                -- all. That is the whole reason this arena can be walled in and
+                -- doubled up and still place eight fighters ten metres apart:
+                -- 78 pieces stand in 50 footprints, and only 28 of those are
+                -- inside the circle anybody is placed in -- the same 28 the
+                -- arena had before any of this.
                 --
                 -- A DENSER LAYOUT WAS TRIED AND MEASURED AND TAKEN BACK OUT.
-                -- Twelve more, in two bands, passed everything a seeded
-                -- sampler and the grown arena could see -- and then failed
-                -- skyarena_spec, which uses real randomness with growth off
-                -- and found what the sampler had not: six fighters landing
-                -- 6.23m apart against a stated 10. Adding cover here is
-                -- cheap to write and expensive to verify. Run the suite.
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 20.8, y = 12.0, z = 0.0, heading = 120.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 6.2, y = 23.2, z = 0.0, heading = 165.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -12.0, y = 20.8, z = 0.0, heading = 210.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -23.2, y = 6.2, z = 0.0, heading = 255.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -20.8, y = -12.0, z = 0.0, heading = 300.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -6.2, y = -23.2, z = 0.0, heading = 345.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 12.0, y = -20.8, z = 0.0, heading = 30.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 23.2, y = -6.2, z = 0.0, heading = 75.0 },
+                -- Twelve more, in two bands, passed everything a seeded sampler
+                -- and the grown arena could see -- and then failed
+                -- skyarena_spec, which uses real randomness with growth off and
+                -- found what the sampler had not: six fighters landing 6.23m
+                -- apart against a stated 10. Adding footprints here is cheap to
+                -- write and expensive to verify. Run the suite.
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 8.3, y = 3.4, z = 0.0, heading = 277.7 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 8.3, y = 3.4, z = 2.6, heading = 277.7 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -3.4, y = 8.3, z = 0.0, heading = 187.7 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -8.3, y = -3.4, z = 0.0, heading = 97.7 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = -8.3, y = -3.4, z = 2.6, heading = 97.7 },
+                { models = { 'prop_container_01a', 'prop_container_01b' }, x = 3.4, y = -8.3, z = 0.0, heading = 7.7 },
             },
         },
 

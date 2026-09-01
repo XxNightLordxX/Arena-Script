@@ -1487,15 +1487,35 @@ local function buildArenaProps(arenaKey, factor, boundary)
             -- fraction keeps its underside off the floor's top face -- two
             -- coplanar surfaces at exactly the same height is what makes a
             -- platform flicker.
+            local heading = piece.heading or 0.0
+
             if piece.kind ~= 'floor' then
-                local _, _, _, bottom = modelFootprint(hash)
+                local sizeX, sizeY, _, bottom = modelFootprint(hash)
                 placeZ = placeZ - bottom + COVER_LIFT
+
+                -- TURNED BY MEASUREMENT, NOT BY THE NUMBER IN CONFIG.
+                --
+                -- A piece marked `align = 'tangent'` is meant to stand ACROSS
+                -- the radius -- side-on to the middle -- which is what turns
+                -- a ring of containers into a wall rather than a set of
+                -- spokes with twelve-metre gaps between them. Which heading
+                -- does that depends on which way round the MODEL is, and that
+                -- is not knowable from config: some props are built with
+                -- their long side along their own X, others along their Y.
+                --
+                -- The measurement is already in hand for the Z above, so the
+                -- long axis costs nothing to ask for. The heading in config
+                -- stays as the fallback for a model this build could not
+                -- measure.
+                if piece.align == 'tangent' and sizeX > 0.0 and sizeY > 0.0 then
+                    heading = Arena.TangentHeading(piece.offsetX, piece.offsetY, sizeX >= sizeY)
+                end
             end
 
             local object = CreateObject(hash, piece.x, piece.y, placeZ, false, false, false)
             if object and object ~= 0 then
                 if piece.kind == 'floor' then builtFloor = builtFloor + 1 end
-                SetEntityHeading(object, piece.heading or 0.0)
+                SetEntityHeading(object, heading)
                 -- Frozen and collidable: it is scenery to stand on and hide
                 -- behind, not something to shove off the edge.
                 FreezeEntityPosition(object, true)

@@ -136,6 +136,48 @@ function Arena.CoverClearance(arenaKey)
     return COVER_CLEARANCE
 end
 
+--- The heading that lays a piece's LONG side across the radius rather than
+--- along it -- side-on to the middle of the arena, which is what makes a ring
+--- of containers a wall instead of a set of spokes.
+---
+--- WHY THIS IS A FUNCTION AND NOT A NUMBER TYPED INTO CONFIG. A heading turns
+--- the model, and which way round the model is -- long side along its own X
+--- or its own Y -- is a property of the prop, not of the arena. Get it wrong
+--- by ninety degrees and every piece of a twenty-two segment wall turns to
+--- point outwards, leaving a twelve-metre gap between each one. It is the
+--- same class of number as the floor's tile spacing: knowable from inside the
+--- game by measuring, and a guess from anywhere else.
+---
+--- The shipped ring was laid out by hand and had it both ways -- the four
+--- pieces on the axes side-on, the four on the diagonals end-on -- which
+--- nothing caught, because eight pieces twenty metres apart look like a ring
+--- whichever way each one is turned.
+---
+--- HEADINGS HERE ARE GTA'S: degrees clockwise from north, so a piece's local
+--- +X points along (cos h, -sin h) and its local +Y along (sin h, cos h).
+--- @param dx number -- offset from the arena centre
+--- @param dy number
+--- @param longIsX boolean -- the model's long side runs along its own X
+--- @return number heading -- degrees, 0-360
+function Arena.TangentHeading(dx, dy, longIsX)
+    local x, y = tonumber(dx) or 0.0, tonumber(dy) or 0.0
+
+    -- Dead centre has no radius to be across, so nothing is turned.
+    if x == 0.0 and y == 0.0 then return 0.0 end
+
+    local phi = math.atan(y, x)
+    local heading
+    if longIsX == false then
+        heading = math.deg(math.atan(-math.sin(phi), math.cos(phi)))
+    else
+        heading = math.deg(math.atan(-math.cos(phi), -math.sin(phi)))
+    end
+
+    heading = heading % 360.0
+    if heading < 0.0 then heading = heading + 360.0 end
+    return heading
+end
+
 --- @param factor number|nil
 --- @return number
 local function sizeFactor(factor)
@@ -1130,8 +1172,15 @@ function Arena.GetCover(arenaKey, factor)
                 model = models[1],
                 x = (tonumber(piece.x) or 0.0) * grow,
                 y = (tonumber(piece.y) or 0.0) * grow,
+                -- THE ONE OFFSET THAT IS NOT SCALED, and it is what makes a
+                -- stacked piece work: `z` is how far the piece stands above
+                -- the one below it, in metres of prop. A container is 2.6m
+                -- tall on a small arena and 2.6m tall on a large one, so
+                -- growing this would lift the top of every stack into the
+                -- air by however much the arena grew.
                 z = tonumber(piece.z) or 0.0,
                 heading = tonumber(piece.heading) or 0.0,
+                align = piece.align,
             }
         end
     end
@@ -1195,6 +1244,13 @@ function Arena.ArenaProps(arenaKey, measured, factor)
             y = centre.y + piece.y,
             z = centre.z + piece.z,
             heading = piece.heading,
+            -- CARRIED THROUGH RATHER THAN RESOLVED HERE. Turning a piece to
+            -- face across the arena needs to know which way round the model
+            -- is -- long side along its own X or its own Y -- and that is a
+            -- measurement only the client can take. See Arena.TangentHeading.
+            align = piece.align,
+            offsetX = piece.x,
+            offsetY = piece.y,
         }
     end
 

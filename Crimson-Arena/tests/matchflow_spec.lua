@@ -854,7 +854,7 @@ end)
 --- what the calls themselves do to a ped belongs to client/dispatch.lua and
 --- its own spec.
 --- @return table fixture
-local function newClientFixture()
+local function newClientFixture(mutate)
     local runner = Sandbox.newThreadRunner()
     local handlers = {}
 
@@ -862,6 +862,10 @@ local function newClientFixture()
         ped = 100,
         dead = false,
         groundReady = true,
+        --- How many times the ped was wiped wholesale.
+        wiped = 0,
+        --- Every weapon removed one at a time, in order.
+        takenBack = {},
         disabled = {},
         clock = 3600000,
         serverEvents = {},
@@ -937,8 +941,15 @@ local function newClientFixture()
         SetCurrentPedWeapon = function() end,
         GiveWeaponComponentToPed = function() end,
         SetPedWeaponTintIndex = function() end,
-        RemoveAllPedWeapons = function() end,
-        RemoveWeaponFromPed = function() end,
+        -- RECORDED, for the same reason SetPedArmour above is. These two are
+        -- how the arena takes weapons back, and stubbed to nothing no test
+        -- could tell a full wipe of the player's own guns from taking back
+        -- only what the arena issued -- which is exactly the difference
+        -- Config.Match.restoreLoadoutOnExit turns on.
+        RemoveAllPedWeapons = function() f.wiped = (f.wiped or 0) + 1 end,
+        RemoveWeaponFromPed = function(_ped, hash)
+            f.takenBack[#f.takenBack + 1] = hash
+        end,
 
         -- RECORDED WITH ITS CONTROL, because "the player cannot shoot
         -- while dead" is a claim about WHICH controls are refused and a
@@ -1006,6 +1017,8 @@ local function newClientFixture()
             end,
         },
     })
+
+    if mutate then mutate(env.Config) end
 
     Sandbox.loadInto('../client/match.lua', env)
 
@@ -1180,6 +1193,52 @@ t.test('a round that ends mid-placement still lets the player out of the hold', 
     t.equals(#f.released, releasedByExit + 2,
         'the parked respawn re-froze the ped on its way out and left nothing to unfreeze it')
     t.equals(#f.given, 1, 'a player already home was re-armed with the arena loadout')
+end)
+
+t.test('DEFECT: with the restore switched off, the exit does not wipe the player\'s own guns', function()
+    -- Config.Match.restoreLoadoutOnExit says, in config's own words, "give
+    -- players back the weapons and armour they walked in with". Off, the
+    -- restore deliberately gave nothing back -- and the exit still wiped the
+    -- ped wholesale. The player walked out having lost every weapon they
+    -- arrived with, which is not what "do not give them back" means, and
+    -- nobody asks for a match that confiscates their guns.
+    --
+    -- It is survivable on a server running ox_inventory, which owns weapons
+    -- and re-equips the ped afterwards -- probably why the setting exists,
+    -- and why this went unseen. Without one, the ped IS their weapons.
+    local f = newClientFixture(function(config)
+        config.Match.restoreLoadoutOnExit = false
+    end)
+    f.toFirstDeath()
+
+    -- Counted from HERE. Entry wipes the ped too, before issuing the arena
+    -- kit, and that one is not what this is about.
+    local wipedOnEntry = f.wiped
+    local takenOnEntry = #f.takenBack
+
+    f.fire('crimson_arena:client:exitArena', {})
+
+    t.equals(f.wiped, wipedOnEntry,
+        ('the exit wiped the ped %d time(s) with nothing going to be restored')
+            :format(f.wiped - wipedOnEntry))
+    t.isTrue(#f.takenBack > takenOnEntry,
+        'the arena did not take its own issued weapons back either, which it must always do')
+end)
+
+t.test('and with it on, the wipe happens and everything comes back', function()
+    -- The other direction, so the fix above is not "never wipe". The full
+    -- wipe is what stops a weapon picked up INSIDE the arena leaving with
+    -- somebody, and it is safe precisely because the restore follows it.
+    local f = newClientFixture()
+    t.isTrue(f.env.Config.Match.restoreLoadoutOnExit == true,
+        'the shipped default changed, so this test is describing the wrong thing')
+
+    f.toFirstDeath()
+    local wipedOnEntry = f.wiped
+    f.fire('crimson_arena:client:exitArena', {})
+
+    t.isTrue(f.wiped > wipedOnEntry,
+        'the exit left whatever the player picked up in the arena on them')
 end)
 
 t.test('and does not teleport a player who has gone home back to the arena', function()

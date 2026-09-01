@@ -34,8 +34,15 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 --- @return table fixture
 --- @param opts table? -- { inventoryStartsAfter = integer } -- how many Waits
 ---        ox_inventory takes to come up, for the late-start path
+---        { noDispatch = true } -- load with no ArenaDispatch at all, which
+---        is what this file sees before server/dispatch.lua has loaded
+---        { retry = true } -- run the return sweep on a STEPPING thread
+---        runner, so `s.step()` drives one pass. Off by default because this
+---        fixture runs a CreateThread body straight through and the sweep is
+---        a `while true`, which would never come back.
 local function newServer(pockets, mutate, opts)
     opts = opts or {}
+    local runner = Sandbox.newThreadRunner()
     local inv, console, handlers, hooks = {}, {}, {}, {}
     -- How many times anything has yielded, which is the only clock this
     -- fixture has and what the late-start test counts against.
@@ -49,7 +56,24 @@ local function newServer(pockets, mutate, opts)
     --   stashRefuse / clearRefuse / give            : return false
     local fail = {}
 
+    -- Who the server thinks is online. GetPlayers is what the return sweep
+    -- walks, and a player who is not on it is one it never looks at.
+    local connected = {}
+
+    -- Which CHARACTER a server id belongs to. Overridable because the stash
+    -- is named from the citizen id and not the id, which is the whole reason
+    -- somebody can come back on a different one and still be handed their
+    -- things -- and there is no way to test that if the two are welded.
+    local identity = {}
+    local function cidOf(src) return identity[src] or ('CID' .. tostring(src)) end
+
+    -- How many times each stash has been READ. The retry looks once at a
+    -- stash nothing in memory knows about, and "once" is a promise about
+    -- cost that only a count can hold it to.
+    local stashReads = {}
+
     for src, items in pairs(pockets or {}) do
+        connected[src] = true
         inv[src] = {}
         for _, item in ipairs(items) do
             inv[src][#inv[src] + 1] = { name = item.name, count = item.count, metadata = item.metadata }
@@ -73,6 +97,7 @@ local function newServer(pockets, mutate, opts)
         end,
         GetInventoryItems = function(_self, id)
             if fail.read and type(id) == 'number' then error('cannot read') end
+            if type(id) == 'string' then stashReads[id] = (stashReads[id] or 0) + 1 end
             if fail.readStash and type(id) == 'string' then error('cannot read stash') end
             local out = {}
             for _, item in ipairs(bucket(id)) do
@@ -133,11 +158,11 @@ local function newServer(pockets, mutate, opts)
 
     local env = Sandbox.newArenaEnv({
         exports = setmetatable({ ox_inventory = ox }, { __call = function() end }),
-        ArenaDispatch = {
+        ArenaDispatch = not opts.noDispatch and {
             Set = function(src) placed[src] = true end,
             Clear = function(src) placed[src] = nil end,
             IsPlayerInArena = function(src) return placed[src] == true end,
-        },
+        } or nil,
         -- ox_inventory can come up AFTER this resource. Resource start order
         -- is not guaranteed and Crimson-Arena is deliberately asked to start
         -- early, so "not started yet" is an ordinary state and not an error.
@@ -145,22 +170,33 @@ local function newServer(pockets, mutate, opts)
             if name ~= 'ox_inventory' then return 'missing' end
             return waits >= (opts.inventoryStartsAfter or 0) and 'started' or 'missing'
         end,
-        Wait = function() waits = waits + 1 end,
+        Wait = opts.retry and runner.Wait or function() waits = waits + 1 end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         AddEventHandler = function(name, fn) handlers[name] = fn end,
-        CreateThread = function(fn) fn() end,
+        CreateThread = opts.retry and runner.CreateThread or function(fn) fn() end,
+        GetPlayers = function()
+            local out = {}
+            for src in pairs(connected) do out[#out + 1] = tostring(src) end
+            table.sort(out)
+            return out
+        end,
         TriggerClientEvent = function() end,
         print = function(line) console[#console + 1] = line end,
         lib = Sandbox.newOxLib(),
         ArenaGetPlayer = function(src)
-            return { PlayerData = { citizenid = 'CID' .. tostring(src) } }
+            return { PlayerData = { citizenid = cidOf(src) } }
         end,
     })
+    -- OFF UNLESS A TEST ASKS FOR IT. The retry sweep is a `while true do
+    -- Wait(...) end`, and the CreateThread above runs a body to completion,
+    -- so leaving the shipped default on would hang every test in this file.
+    -- Tests that want it set it back through `mutate`, with opts.retry.
+    env.Config.Loadouts.inventory.returnRetrySeconds = 0
     if mutate then mutate(env.Config) end
 
     Sandbox.loadInto('../server/util.lua', env)
     env.ArenaGetPlayer = function(src)
-        return { PlayerData = { citizenid = 'CID' .. tostring(src) } }
+        return { PlayerData = { citizenid = cidOf(src) } }
     end
     Sandbox.loadInto('../server/ammo.lua', env)
 
@@ -197,6 +233,44 @@ local function newServer(pockets, mutate, opts)
             inv[src][#inv[src] + 1] = { name = name, count = count }
         end,
         breakOn = function(what) fail[what] = true end,
+        --- Runs the retry sweep's thread one pass. Two steps is one pass:
+        --- the loop's Wait is its first statement, so the first resume only
+        --- primes the coroutine. Needs opts.retry.
+        step = function() runner.step() end,
+        --- Puts a player on the server, so GetPlayers reports them.
+        connect = function(src) connected[src] = true end,
+        disconnect = function(src) connected[src] = nil end,
+        --- The same CHARACTER coming back on a different server id, which is
+        --- what a reconnect actually is.
+        reconnect = function(oldSrc, newSrc)
+            identity[newSrc] = cidOf(oldSrc)
+            connected[oldSrc] = nil
+            connected[newSrc] = true
+        end,
+        --- What is in one CHARACTER's stash, by citizen id rather than by
+        --- server id -- the only handle that still works across a reconnect.
+        --- Puts something into a character's stash directly, with nothing in
+        --- this resource's memory knowing about it -- which is exactly the
+        --- state a server restart leaves behind.
+        putInStash = function(citizenid, name, count)
+            local id = 'crimson_arena_' .. citizenid
+            stashes[id] = stashes[id] or {}
+            stashes[id][#stashes[id] + 1] = { name = name, count = count }
+        end,
+        stashReadsOf = function(citizenid)
+            return stashReads['crimson_arena_' .. citizenid] or 0
+        end,
+        --- Marks a player as actually being in a round, the way the dispatch
+        --- flag does in production.
+        place = function(src) placed[src] = true end,
+        stashOfCid = function(citizenid)
+            local names = {}
+            for _, item in ipairs(stashes['crimson_arena_' .. citizenid] or {}) do
+                names[#names + 1] = item.name
+            end
+            table.sort(names)
+            return table.concat(names, ',')
+        end,
         --- Puts ox_inventory back together, so a retry after a failed
         --- restore can be driven.
         fixOn = function(what) fail[what] = nil end,
@@ -623,6 +697,8 @@ t.test('DEFECT: a restore that FAILS keeps the record of where the kit is', func
         'the arena forgot it was holding a kit it had just failed to hand back')
     t.isNotNil(s.ammo.StashOf(1),
         'and forgot WHICH stash it is in, which is the one thing the player needs')
+    t.equals(s.ammo.Owed(), 1,
+        'and does not count itself as owing anybody anything, so nothing will come back for it')
 end)
 
 t.test('and the match cannot be dropped while that is outstanding', function()
@@ -651,6 +727,8 @@ t.test('and once ox_inventory is working again the kit still comes back', functi
     t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the retry could not find the kit it had been told about')
     t.isFalse(s.ammo.IsHolding(1), 'the kit came back and the record stayed behind')
     t.isTrue(s.ammo.Clear('m1'), 'the match still could not be dropped afterwards')
+    t.equals(s.ammo.Owed(), 0,
+        'and it still says it owes them, which is a stash it will keep re-opening for ever')
 end)
 
 t.test('and it still refuses while somebody is owed their kit', function()
@@ -661,6 +739,267 @@ t.test('and it still refuses while somebody is owed their kit', function()
 
     t.isFalse(s.ammo.Clear('m1'), 'a match still holding somebody\'s inventory was dropped')
     t.isTrue(s.ammo.IsHolding(1), 'and their kit is now unreachable')
+end)
+
+-- ========================================================================
+-- The retry
+--
+-- The door already refused to destroy anything it could not hand back --
+-- a full inventory, a weight limit, a disconnect and a dead ox_inventory
+-- all leave a player's belongings sitting in a real, openable stash. What
+-- it did NOT do was ever try again: it logged the stash name and waited for
+-- an operator to read the console.
+--
+-- These are about the promise being kept without anybody watching. Every
+-- one of them ends with the player holding their own things again, and
+-- nothing in any of them opens a stash by hand.
+-- ========================================================================
+
+t.test('DEFECT: an item that would not go back is handed over on the next sweep', function()
+    -- The plain case, and the commonest one: their pockets were full at the
+    -- moment the match ended. The door correctly left everything in the
+    -- stash -- and then nothing ever asked ox_inventory a second time.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('give')
+    t.equals(s.ammo.Reclaim(1, 'm1'), 0, 'a refused restore reported success')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'the refused items were not left in the stash')
+    t.equals(s.carrying(1), '', 'they were handed things ox_inventory had refused')
+
+    -- Whatever was wrong stops being wrong. NOBODY IS TOLD.
+    s.fixOn('give')
+    t.equals(s.ammo.SweepReturns(), 1, 'the sweep did not hand anybody anything')
+
+    t.equals(s.carrying(1), 'phone,water', 'their own belongings never came back')
+    t.equals(s.stashOfCid('CID1'), '', 'and are still sitting in the stash')
+    t.equals(s.ammo.Owed(), 0, 'and it still counts them as owed')
+    t.isFalse(s.ammo.IsHolding(1), 'the arena still thinks it is holding their kit')
+    t.isTrue(s.ammo.Clear('m1'), 'and the finished match still cannot be dropped')
+
+    -- AND THEN IT STOPS. A debt that is not written off when it is paid is a
+    -- stash this resource re-opens for the rest of the server's life.
+    local reads = s.stashReadsOf('CID1')
+    s.ammo.SweepReturns()
+    t.equals(s.stashReadsOf('CID1'), reads, 'it kept re-opening a stash it had already emptied')
+end)
+
+t.test('and it goes on trying for as long as it has to', function()
+    -- One retry is not the fix. A player whose inventory is full stays full
+    -- until they do something about it, and the sweep has to still be there
+    -- when they do.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.equals(s.ammo.SweepReturns(), 0, 'it handed something over while ox_inventory was still refusing')
+    t.equals(s.ammo.SweepReturns(), 0, 'and again')
+    t.equals(s.ammo.Owed(), 1, 'and stopped counting them as owed while it was still true')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'their belongings did not survive the failed attempts')
+
+    s.fixOn('give')
+    t.equals(s.ammo.SweepReturns(), 1, 'it had given up by the time it could have worked')
+    t.equals(s.carrying(1), 'phone,water', 'their belongings never came back')
+end)
+
+t.test('DEFECT: somebody who comes back on a new server id is still handed their things', function()
+    -- The disconnect case, which is the one that actually loses people their
+    -- inventory. playerDropped reclaims -- into a source that has already
+    -- gone, so ox_inventory refuses it -- and `stashed` is keyed by SERVER
+    -- ID, an id they will not be given again. Every handle on their stash
+    -- went with the connection.
+    --
+    -- The stash name is built from the CITIZEN ID and nothing else, which is
+    -- the only reason this is recoverable at all.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'disconnected')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'nothing was left in the stash to come back for')
+
+    -- Same character, different server id. Nothing keyed by 1 is any use.
+    s.reconnect(1, 7)
+    s.fixOn('give')
+    t.equals(s.ammo.SweepReturns(), 1, 'they reconnected and nothing looked for their stash')
+
+    t.equals(s.carrying(7), 'phone,water', 'they came back to an empty inventory')
+    t.equals(s.stashOfCid('CID1'), '', 'and their things are still in a stash they cannot open')
+    t.isFalse(s.ammo.IsHolding(1), 'the record under their OLD id was left behind for ever')
+    t.isTrue(s.ammo.Clear('m1'), 'and it pinned the finished match with it')
+end)
+
+t.test('DEFECT: a stash a restart left behind is found with nothing in memory naming it', function()
+    -- `stashed` and the debt list are both in memory and go with a restart.
+    -- The stash does not: ox_inventory persists it, named from the character.
+    -- So after a restart the resource has no idea anyone is owed anything,
+    -- and the only thing that can tell it is looking.
+    local s = newServer({ [1] = {} })
+    s.putInStash('CID1', 'phone', 1)
+    s.putInStash('CID1', 'water', 2)
+
+    t.equals(s.ammo.SweepReturns(), 1, 'a stash left over from before the restart was never looked at')
+    t.equals(s.carrying(1), 'phone,water', 'their belongings did not come back')
+    t.equals(s.stashOfCid('CID1'), '', 'and are still in the stash')
+end)
+
+t.test('and a stash ox_inventory has forgotten is registered before it is read', function()
+    -- The restart case has a second half. ox_inventory forgets every stash
+    -- it was told about when IT restarts, and a stash it does not know is
+    -- not one it will read -- so looking without registering first finds
+    -- nothing, on precisely the servers where there is something to find.
+    local s = newServer({ [1] = {} })
+    s.putInStash('CID1', 'phone', 1)
+    s.breakOn('register')
+
+    t.equals(s.ammo.SweepReturns(), 0, 'it read a stash ox_inventory had refused to register')
+    t.equals(s.stashOfCid('CID1'), 'phone', 'and moved things out of it on that basis')
+
+    s.fixOn('register')
+    t.equals(s.ammo.SweepReturns(), 1, 'and then never tried again once registering worked')
+    t.equals(s.carrying(1), 'phone', 'their belongings never came back')
+end)
+
+t.test('and that look costs one read per character, not one per sweep', function()
+    -- The restart check is a stash read for somebody nothing says is owed
+    -- anything, which on a full server is a read per player. Once each is a
+    -- bounded cost. Every pass is a permanent tax on a resource whose whole
+    -- job is running matches back to back.
+    local s = newServer({ [1] = {} })
+
+    s.ammo.SweepReturns()
+    s.ammo.SweepReturns()
+    s.ammo.SweepReturns()
+
+    t.equals(s.stashReadsOf('CID1'), 1, 'the sweep re-read a stash it had already found empty')
+end)
+
+t.test('DEFECT: nothing is handed to somebody who is in a round', function()
+    -- THE GUARD THAT MATTERS MOST, and it is not a nicety. The exit clears
+    -- a player's whole inventory BEFORE it reads their stash. Put their own
+    -- belongings into their pockets mid-match and the next exit destroys
+    -- them -- the retry would become the thing it exists to prevent.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+
+    -- They are owed their kit AND they have started another round.
+    s.place(1)
+    s.fixOn('give')
+
+    t.equals(s.ammo.SweepReturns(), 0, 'it handed a fighter their own inventory mid-round')
+    t.equals(s.carrying(1), '', 'which the next exit would have destroyed')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'their belongings left the stash mid-match')
+end)
+
+t.test('and not to somebody the door has just shut behind either', function()
+    -- The same hazard one step earlier, and the reason the sweep asks about
+    -- the stash record as well as the dispatch flag. A player whose kit has
+    -- been stashed and whose exit has not run yet is owed nothing: their
+    -- belongings are in the stash on purpose.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.ammo.SweepReturns(), 0, 'the sweep undid the door while the match was still on')
+    t.equals(s.carrying(1), '', 'they walked into the arena carrying their own kit')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'which had been taken back out of the stash')
+end)
+
+
+t.test('DEFECT: a stash the sweep could not empty is remembered, not written off', function()
+    -- The two halves have to work together. The once-only look is what makes
+    -- checking every player affordable; the debt list is what remembers the
+    -- ones that look found something wrong with. Keep the first without the
+    -- second and a stash the sweep DID find, and could not empty, is written
+    -- off for the rest of the session -- worse than never having looked.
+    local s = newServer({ [1] = {} })
+    s.putInStash('CID1', 'phone', 1)
+
+    s.breakOn('give')
+    t.equals(s.ammo.SweepReturns(), 0, 'ox_inventory was refusing and something was handed over anyway')
+    t.equals(s.stashOfCid('CID1'), 'phone', 'and it came out of the stash')
+
+    s.fixOn('give')
+    t.equals(s.ammo.SweepReturns(), 1, 'the one look was spent on a refusal and never repeated')
+    t.equals(s.carrying(1), 'phone', 'their belongings never came back')
+end)
+
+t.test('and an exit that WORKED is not swept over again for ever', function()
+    -- The ordinary case, which is every match: the kit went back at the door
+    -- and this resource owes nobody anything. A debt that is not cleared when
+    -- it is paid turns that into a stash read per player per pass, for ever.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the ordinary exit failed, so this proves nothing')
+
+    s.ammo.SweepReturns()
+    local reads = s.stashReadsOf('CID1')
+    s.ammo.SweepReturns()
+    s.ammo.SweepReturns()
+
+    t.equals(s.stashReadsOf('CID1'), reads,
+        'it goes on opening the stash of somebody who was paid in full at the door')
+end)
+
+t.test('DEFECT: with no dispatch flag to ask, it hands over nothing at all', function()
+    -- server/dispatch.lua loads after this file, so "is this player in a
+    -- round?" is a question that can have no answer. It is answered NO
+    -- RETURN, and that direction is not arbitrary: the exit clears a
+    -- player's whole inventory before it reads their stash, so handing
+    -- somebody their own kit during a round is how the retry would come to
+    -- destroy the very thing it exists to protect. Waiting costs minutes.
+    local s = newServer({ [1] = {} }, nil, { noDispatch = true })
+    s.putInStash('CID1', 'phone', 1)
+
+    t.equals(s.ammo.SweepReturns(), 0,
+        'it handed things over without being able to tell who was mid-round')
+    t.equals(s.stashOfCid('CID1'), 'phone', 'and took them out of the stash to do it')
+    t.equals(s.carrying(1), '', 'and put them somewhere they could be cleared')
+end)
+
+t.test('DEFECT: the sweep runs on its own, with nobody calling it', function()
+    -- Everything above drives the sweep by hand, which proves it works and
+    -- not that it ever happens. This is the difference between "an operator
+    -- can fix it" and "it fixes itself", and it is the entire point.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.returnRetrySeconds = 30
+    end, { retry = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('give')
+
+    -- Two resumes is one pass: the loop waits before it works, so the first
+    -- only reaches that wait.
+    s.step()
+    s.step()
+
+    t.equals(s.carrying(1), 'phone,water',
+        'nothing swept on its own -- their belongings needed somebody to notice')
+end)
+
+t.test('and setting the interval to zero switches it off, as config.lua says', function()
+    -- An operator who turns it off gets exactly what this resource did
+    -- before: their things stay in the stash until somebody opens it.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.returnRetrySeconds = 0
+    end, { retry = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('give')
+
+    s.step()
+    s.step()
+
+    t.equals(s.carrying(1), '', 'the sweep ran on a server that had switched it off')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'and emptied a stash it had been told to leave alone')
 end)
 
 t.test('DEFECT: the drop block waits for an ox_inventory that starts late', function()

@@ -395,6 +395,18 @@ keep the inventory UI open next to you.
       the test that matters most — a disconnect is how an ammo printer would
       actually be run, and it is the path with no player left to tidy up
       after.
+- [ ] **And their OWN inventory is back**, without anybody opening a stash.
+      The other half of the same path, and the more expensive one to get
+      wrong: handing somebody's belongings back needs a player to hand them
+      to, and mid-disconnect there is not one, so it is left in their stash
+      and returned afterwards on its own. Give it a minute — the sweep runs
+      on `Config.Loadouts.inventory.returnRetrySeconds`, thirty seconds by
+      default — and if it still has not, the console says which stash and
+      why.
+- [ ] Do the same with a **full inventory**: fill their pockets, run a match,
+      end it, then drop something. Their own kit arrives on the next sweep.
+      An item ox_inventory refuses is never destroyed, and never left in a
+      stash for an operator to find by hand.
 - [ ] Start another and **restart the resource mid-round** (`restart
       crimson_arena`). Every issued item comes back off every player, before
       anything else in the shutdown runs.

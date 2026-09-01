@@ -52,6 +52,26 @@ ArenaAmmo = {}
 --- @type table<number, { stash: string, matchId: string, citizenid: string }>
 local stashed = {}
 
+--- Characters whose exit could not finish, keyed by CITIZEN ID.
+---
+--- Declared up here because Lua needs it before the code that writes it, but
+--- it belongs to THE RETRY at the bottom of this file -- read that comment
+--- for what it is for. In one line: `stashed` above is keyed by server id,
+--- and a server id does not survive the disconnect that caused half of these
+--- failures. This key does.
+--- @type table<string, string> -- citizenid -> stash name
+local owed = {}
+
+--- Citizen ids whose stash has been looked at at least once this session.
+---
+--- The restart case, and the only thing that covers it: after a restart
+--- `owed` is empty and every stash left behind by the session before is
+--- invisible to this resource. So each character gets ONE look on their way
+--- past, and then never again -- a bounded cost that finds a stash nothing in
+--- memory knows about.
+--- @type table<string, boolean>
+local probed = {}
+
 --- What was issued, kept only so the console can say what a match handed out.
 --- @type table<string, table<number, integer>>
 local issued = {}
@@ -214,6 +234,74 @@ local function stow(src, citizenid)
     return true
 end
 
+--- Hands one stash's contents back, taking each item OUT of the stash only
+--- once it is provably in the player's pockets.
+---
+--- SPLIT OUT OF restore() SO THE RETRY AT THE BOTTOM OF THIS FILE CAN USE IT,
+--- and the halves are not interchangeable. restore() is the exit: it destroys
+--- the arena kit first and hands the stash back second. The retry must do
+--- only the second half -- somebody being caught up on a return they never
+--- got is not carrying an arena kit, and clearing their inventory to find
+--- that out would destroy everything they have picked up since.
+--- @param ox table -- ox_inventory exports
+--- @param src number
+--- @param stash string
+--- @return boolean readable -- false when the stash itself could not be read
+--- @return integer failures -- items that would not go back; still in the stash
+--- @return integer returned -- items that did go back
+local function handBack(ox, src, stash)
+    local ok, items = pcall(function() return ox:GetInventoryItems(stash) end)
+    if not ok or type(items) ~= 'table' then
+        ArenaLog('door: could not read %s\'s stash (%s). THEIR KIT IS STILL IN IT -- it is a real ox_inventory stash and can be opened.',
+            tostring(src), stash)
+        return false, 0, 0
+    end
+
+    local failures, returned = 0, 0
+    for _, item in ipairs(items) do
+        -- PROOF, NOT MERELY THE ABSENCE OF A DENIAL, and this is the one
+        -- call in the file that has to be read that way.
+        --
+        -- The line after this REMOVES the item from the stash, which is the
+        -- only irreversible thing the door does: the stash is where an item
+        -- is safe, and taking it out on a false assumption destroys it. So
+        -- this does not go through oxDid, which treats a nil return as
+        -- success -- a reasonable rule for registering a stash or clearing
+        -- an inventory, where nothing is lost by believing it, and the wrong
+        -- one here. ox_inventory's AddItem answers `success, response`; a
+        -- nil where a true belongs is a version or a code path we do not
+        -- understand, and the safe reading of "I do not understand this
+        -- answer" is to leave the item where it is.
+        --
+        -- The cost of being wrong in this direction is a loud line and an
+        -- item still sitting in a stash the player can be pointed at. The
+        -- cost of being wrong in the other direction is their belongings.
+        local called, answer = pcall(function()
+            return ox:AddItem(src, item.name, item.count, item.metadata)
+        end)
+
+        if not called then
+            ArenaLog('door: returning %s x%s to %s threw -- %s. It stays in stash %s.',
+                tostring(item.name), tostring(item.count), tostring(src), tostring(answer), stash)
+        elseif answer == nil then
+            ArenaLog('door: ox_inventory gave no answer when returning %s x%s to %s. Treating that as a refusal: it stays in stash %s rather than being taken out of it on a guess.',
+                tostring(item.name), tostring(item.count), tostring(src), stash)
+        elseif answer == false then
+            ArenaLog('door: returning %s x%s to %s was REFUSED by ox_inventory -- most often a full inventory or a weight limit. It stays in stash %s.',
+                tostring(item.name), tostring(item.count), tostring(src), stash)
+        end
+
+        if called and answer ~= nil and answer ~= false then
+            pcall(function() return ox:RemoveItem(stash, item.name, item.count, item.metadata) end)
+            returned = returned + 1
+        else
+            failures = failures + 1
+        end
+    end
+
+    return true, failures, returned
+end
+
 --- Destroys whatever a player is carrying and hands their own inventory back.
 --- @param src number
 --- @param record table -- the entry from `stashed`
@@ -242,53 +330,8 @@ local function restore(src, record)
             tostring(src))
     end
 
-    local ok, items = pcall(function() return ox:GetInventoryItems(record.stash) end)
-    if not ok or type(items) ~= 'table' then
-        ArenaLog('door: could not read %s\'s stash (%s). THEIR KIT IS STILL IN IT -- it is a real ox_inventory stash and can be opened.',
-            tostring(src), record.stash)
-        return false
-    end
-
-    local failures = 0
-    for _, item in ipairs(items) do
-        -- PROOF, NOT MERELY THE ABSENCE OF A DENIAL, and this is the one
-        -- call in the file that has to be read that way.
-        --
-        -- The line after this REMOVES the item from the stash, which is the
-        -- only irreversible thing the door does: the stash is where an item
-        -- is safe, and taking it out on a false assumption destroys it. So
-        -- this does not go through oxDid, which treats a nil return as
-        -- success -- a reasonable rule for registering a stash or clearing
-        -- an inventory, where nothing is lost by believing it, and the wrong
-        -- one here. ox_inventory's AddItem answers `success, response`; a
-        -- nil where a true belongs is a version or a code path we do not
-        -- understand, and the safe reading of "I do not understand this
-        -- answer" is to leave the item where it is.
-        --
-        -- The cost of being wrong in this direction is a loud line and an
-        -- item still sitting in a stash the player can be pointed at. The
-        -- cost of being wrong in the other direction is their belongings.
-        local called, answer = pcall(function()
-            return ox:AddItem(src, item.name, item.count, item.metadata)
-        end)
-
-        if not called then
-            ArenaLog('door: returning %s x%s to %s threw -- %s. It stays in stash %s.',
-                tostring(item.name), tostring(item.count), tostring(src), tostring(answer), record.stash)
-        elseif answer == nil then
-            ArenaLog('door: ox_inventory gave no answer when returning %s x%s to %s. Treating that as a refusal: it stays in stash %s rather than being taken out of it on a guess.',
-                tostring(item.name), tostring(item.count), tostring(src), record.stash)
-        elseif answer == false then
-            ArenaLog('door: returning %s x%s to %s was REFUSED by ox_inventory -- most often a full inventory or a weight limit. It stays in stash %s.',
-                tostring(item.name), tostring(item.count), tostring(src), record.stash)
-        end
-
-        if called and answer ~= nil and answer ~= false then
-            pcall(function() return ox:RemoveItem(record.stash, item.name, item.count, item.metadata) end)
-        else
-            failures = failures + 1
-        end
-    end
+    local readable, failures = handBack(ox, src, record.stash)
+    if not readable then return false end
 
     if failures > 0 then
         -- Deliberately NOT cleared. Anything that would not go back is still
@@ -703,6 +746,7 @@ function ArenaAmmo.Reclaim(src, reasonKey)
     -- nobody able to say where it went.
     if ok then
         stashed[src] = nil
+        owed[record.citizenid] = nil
 
         -- Forgotten rather than removed, and only here: restore() clears the
         -- whole inventory before putting their own kit back, so the arena's
@@ -715,6 +759,13 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         -- player -- and forgetting them here is what stops any later exit
         -- from taking them back.
         forgetWeapons(src)
+    elseif Arena.IsKey(record.citizenid) then
+        -- THE HANDLE EVERY RETRY WORKS FROM, and the line that turns "it was
+        -- logged and somebody will read the console" into "the server keeps
+        -- trying". restore() has just said their belongings are still in the
+        -- stash; this remembers that in a form which outlives their server
+        -- id. See THE RETRY at the bottom of this file.
+        owed[record.citizenid] = record.stash
     end
 
     ArenaDebug('door: %s left (%s), kit %s', tostring(src), tostring(reasonKey),
@@ -815,6 +866,227 @@ function ArenaAmmo.StashOf(src)
     local record = stashed[src]
     return record and record.stash or nil
 end
+
+-- ======================================================================
+-- THE RETRY
+--
+-- WHAT THIS IS FOR, AND IT IS NOT AN EDGE CASE. The exit above hands a
+-- player's own inventory back, and every branch of it that can fail leaves
+-- their belongings in the stash rather than destroying them. That is the
+-- half of the promise this resource already kept. The other half was
+-- missing: NOTHING EVER TRIED AGAIN. It logged a line naming the stash and
+-- then waited for an operator to read the console and hand somebody their
+-- things back by hand -- which, on the one piece of code that holds a
+-- player's entire inventory, is not a return policy.
+--
+-- Three ordinary things land there, none of them exotic:
+--
+--   A FULL INVENTORY, OR A WEIGHT LIMIT. ox_inventory refuses the item and
+--   says so, plainly, and the door leaves it in the stash -- correctly. Two
+--   minutes later the player has dropped something and it would go straight
+--   in. Nobody asked it again.
+--
+--   A DISCONNECT. playerDropped reclaims, which means handing items to a
+--   source that has already left; ox_inventory refuses what it cannot put
+--   anywhere. So far so good -- except `stashed` is keyed by SERVER ID, and
+--   the id they come back on is a different one. Nothing in memory pointed
+--   at their stash any more.
+--
+--   A SERVER RESTART. `stashed` is in memory and goes with it. The stash
+--   does NOT: it is a real ox_inventory stash, persisted by ox_inventory,
+--   named from the character's citizen id and nothing else -- so it is still
+--   there afterwards, and still findable, by anything that thinks to look.
+--
+-- So this keeps asking. `owed` is keyed by citizen id, which survives the
+-- reconnect; the sweep walks the players actually on the server, so it costs
+-- nothing on an empty one; and each character gets one look at their stash
+-- on the way past even when nothing in memory says they are owed anything,
+-- which is what finds what a restart forgot.
+--
+-- WHAT IT WILL NOT DO, and this is the guard that matters most: it never
+-- hands anything to a player who is mid-match. The exit clears the whole
+-- inventory BEFORE it reads the stash, so putting somebody's own kit into
+-- their pockets during a round means the next exit destroys it. An
+-- unanswerable "are they in a round?" is therefore answered as YES. Waiting
+-- costs a few more minutes in a stash. Guessing wrong costs everything they
+-- own.
+-- ======================================================================
+
+--- How often the sweep runs, when the config says nothing.
+local RETRY_SECONDS = 30
+
+--- Whether this player is in a live round right now.
+---
+--- ASKED BEFORE EVERY RETURN. ArenaDispatch is part of this resource, but it
+--- loads after this file, so it is asked for rather than assumed -- and when
+--- it cannot be asked the answer is YES, because "do nothing" is the only
+--- safe way to be wrong here.
+--- @param src number
+--- @return boolean
+local function midMatch(src)
+    if type(ArenaDispatch) == 'table' and type(ArenaDispatch.IsPlayerInArena) == 'function' then
+        return ArenaDispatch.IsPlayerInArena(src) == true
+    end
+    return true
+end
+
+--- Whether this player's stash is worth opening on this pass.
+---
+--- NOT WHETHER IT IS SAFE TO HAND ANYTHING OVER -- that is asked once, in
+--- ReturnLeftovers below, which is the only thing that hands anything over
+--- and is public besides. Repeating it here would be a guard nothing could
+--- ever break a test by removing, which is a guard nobody can trust.
+--- @param src number
+--- @param citizenid string
+--- @return boolean
+local function worthTrying(src, citizenid)
+    -- A KNOWN DEBT. The exit ran, could not finish, and said so.
+    if owed[citizenid] then return true end
+
+    if probed[citizenid] then return false end
+
+    -- THE ONE LOOK, and it is refused while a stash record is open for them.
+    --
+    -- An open record with nothing owed means the door has shut behind them
+    -- and the exit has not run yet -- so their kit is in the stash on
+    -- purpose, and handing it back now is handing it to somebody the next
+    -- exit is about to clear. midMatch above catches that in every ordinary
+    -- case; this catches the gap between the dispatch flag being cleared and
+    -- the exit reclaiming.
+    return stashed[src] == nil
+end
+
+--- Hands back anything of this player's still sitting in their arena stash.
+---
+--- SAFE TO CALL FOR ANYBODY, at any time. A player who is mid-match, who has
+--- no stash, or whose stash is empty is left completely alone.
+--- @param src number
+--- @return boolean settled -- true when nothing of theirs is left in a stash
+--- @return integer returned -- items handed over on this call
+--- @return boolean answered -- true when the stash was actually read, whether
+---         or not everything in it would go back
+function ArenaAmmo.ReturnLeftovers(src)
+    if type(src) ~= 'number' or src <= 0 then return false, 0, false end
+    if midMatch(src) then return false, 0, false end
+
+    local player = ArenaGetPlayer(src)
+    local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
+    if not Arena.IsKey(citizenid) then return false, 0, false end
+
+    local ox = inventory()
+    if not ox then return false, 0, false end
+
+    local stash = stashFor(citizenid)
+
+    -- REGISTERED FIRST, and this is what makes the restart case work at all:
+    -- ox_inventory forgets every stash it was told about when it restarts,
+    -- and a stash it does not know about is not one it will read.
+    if not oxDid('registering stash ' .. stash, function()
+        return ox:RegisterStash(stash, 'Arena Belongings', 100, 1000000, citizenid)
+    end) then
+        return false, 0, false
+    end
+
+    local readable, failures, returned = handBack(ox, src, stash)
+    if not readable then return false, 0, false end
+
+    if returned > 0 then
+        ArenaLog('door: handed %d item(s) back to %s out of stash %s -- a return that had not gone through.',
+            returned, tostring(src), stash)
+    end
+
+    if failures > 0 then
+        -- STILL THEIRS, STILL IN THE STASH, AND THIS IS WHAT COMES BACK FOR
+        -- IT. The stash has now been read, so the sweep's one-look-per-
+        -- character rule is satisfied and will not bring anybody here again;
+        -- from this point on the debt list is the only thing that does.
+        owed[citizenid] = stash
+        return false, returned, true
+    end
+
+    -- SETTLED, so every record holding this player open is dropped -- the
+    -- by-server-id one included, and that one matters beyond tidiness:
+    -- ArenaAmmo.Clear refuses to drop a match while any record names it, so
+    -- a restore that failed and later succeeded would otherwise pin that
+    -- match's tables for the life of the server. The record may well be
+    -- under a DIFFERENT server id than the one being handed the items --
+    -- that is the reconnect this whole section exists for -- so it is found
+    -- by citizen id, not by src.
+    owed[citizenid] = nil
+    for other, record in pairs(stashed) do
+        if record.citizenid == citizenid then
+            stashed[other] = nil
+            forgetWeapons(other)
+        end
+    end
+
+    return true, returned, true
+end
+
+--- One pass over everybody on the server.
+--- @return integer handed -- players who got something back on this pass
+function ArenaAmmo.SweepReturns()
+    if not inventory() then return 0 end
+
+    local handed = 0
+    for _, id in ipairs(GetPlayers() or {}) do
+        local src = tonumber(id)
+        local player = src and ArenaGetPlayer(src) or nil
+        local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
+
+        if Arena.IsKey(citizenid) and worthTrying(src, citizenid) then
+            local _, returned, answered = ArenaAmmo.ReturnLeftovers(src)
+
+            -- MARKED ON AN ANSWER, NOT ON A GOOD ONE, and the distinction
+            -- is the whole value of the once-only look. `answered` means the
+            -- stash was registered and read: whatever is in there, this
+            -- character's one look has been spent usefully, and anything
+            -- still outstanding was written to the debt list, which is what
+            -- brings the sweep back to them.
+            --
+            -- NOT AN ANSWER: ox_inventory that has not started yet, a stash
+            -- it would not register, a read that threw. Marking those would
+            -- spend the one look on a failure and leave whatever is in that
+            -- stash invisible until the player next reconnects -- which is
+            -- the shape of the bug this whole section exists to kill, rebuilt
+            -- inside the fix.
+            if answered then probed[citizenid] = true end
+            if returned > 0 then handed = handed + 1 end
+        end
+    end
+
+    return handed
+end
+
+--- How many characters this resource still owes belongings to.
+---
+--- The observable form of a promise that had none, and the same reason
+--- ArenaAmmo.OnLoan exists a few functions up: a resource that hands
+--- inventories back has to be able to say, out loud, whether it currently
+--- owes anybody anything. Nothing could see this list from outside, and a
+--- debt nobody can count is a debt nobody notices going unpaid.
+--- @return integer characters
+function ArenaAmmo.Owed()
+    local total = 0
+    for _ in pairs(owed) do total = total + 1 end
+    return total
+end
+
+CreateThread(function()
+    local seconds = Arena.ToInt(doorConfig().returnRetrySeconds)
+    if seconds == nil then seconds = RETRY_SECONDS end
+
+    -- ZERO OR BELOW SWITCHES IT OFF, and config.lua says what that costs: an
+    -- item that would not go back stays in the stash until somebody opens it
+    -- by hand.
+    if seconds <= 0 then return end
+
+    while true do
+        Wait(seconds * 1000)
+        ArenaAmmo.SweepReturns()
+    end
+end)
+
 
 -- ======================================================================
 -- NO DROPPING

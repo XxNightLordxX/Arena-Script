@@ -22,9 +22,9 @@
       769   Permissions   Who may open a match, who may force-stop one
       848   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1446   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2874   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2884   Webhook       Optional: a Discord line per finished match
-     2922   Dispatch      Optional: keeping police and EMS out of the arena
+     2891   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2901   Webhook       Optional: a Discord line per finished match
+     2939   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -2685,6 +2685,23 @@ Config.Loadouts = {
         -- and finding every one of them again is guesswork. Not dropping in
         -- the first place is not.
         blockDropsInArena = true,
+
+        -- How often, in seconds, the server checks for belongings it still
+        -- owes somebody and hands them over.
+        --
+        -- WHAT IT IS FOR. Giving a player their inventory back can fail for
+        -- ordinary reasons -- their pockets are full, they are over the
+        -- weight limit, they disconnected mid-round -- and when it does,
+        -- their things stay safely in the stash rather than being destroyed.
+        -- This is what empties that stash afterwards, on its own, the moment
+        -- the reason goes away. It survives a reconnect and a server restart,
+        -- because the stash is named from the character and not from a server
+        -- id, and it never gives anything to somebody who is in a round.
+        --
+        -- 0 switches it off, and the cost of that is exactly what it was
+        -- before this existed: anything that would not go back sits in the
+        -- stash until an operator opens it by hand.
+        returnRetrySeconds = 30,
     },
 
     -- ==================================================================

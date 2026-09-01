@@ -1102,6 +1102,30 @@ are client-side because only a client can ask the game what models it has.
 - **Check the door.** `Config.Loadouts.inventory.stripOnEntry` is what decides whether a player's own kit is taken and given back. With it off, players keep everything they walked in with *and* everything the arena issued — that is the switch that makes the arena a source of free ammunition, and it exists only for servers that want that.
 - `refusing to drop match <id> -- <src> still holds <item> x<n>` means a match record was asked to close with ammunition outstanding and refused. The refusal is the safe outcome — the record stays reachable so a later reclaim can still find it — but it is worth reading as a sign that an exit path did not run.
 
+### A player's own inventory did not come back
+
+- **It is not gone.** Everything a player walks in with goes into an
+  ox_inventory stash named after their character, and nothing is ever taken
+  out of that stash until it is provably back in their pockets. An item that
+  will not go back is refused, not destroyed.
+- **You do not have to do anything.** Whatever stopped it — a full inventory,
+  a weight limit, a disconnect with no player left to hand things to, an
+  ox_inventory that was restarting — the server checks again every
+  `Config.Loadouts.inventory.returnRetrySeconds` (30 by default) and hands
+  over anything still outstanding the moment it can. It survives the player
+  reconnecting on a different id, and it survives a server restart, because
+  the stash is named from the character and not from a server id.
+- **It will not do it mid-round.** A player who is in a match is skipped
+  until they are out of it, deliberately: the exit clears a player's whole
+  inventory before it hands their own back, so putting their belongings into
+  their pockets during a round is how they would get destroyed.
+- `door: <n> item(s) of <src>'s could not be returned and are still in stash
+  <name>` names the stash and the reason. The follow-up line, `handed <n>
+  item(s) back to <src> out of stash <name>`, is the sweep finishing the job.
+- **Set `returnRetrySeconds = 0` and none of that happens.** Anything that
+  would not go back sits in the stash until somebody opens it by hand — which
+  is what an operator is choosing when they turn it off.
+
 ### A player is still dead
 
 - **`revive: NOT configured` in the console is not this.** Players are stood back up by the arena whatever that line says — see [getting back up after a death](#getting-back-up-after-a-death). That line is about telling a separate medical script, and on many servers there is nothing to tell.

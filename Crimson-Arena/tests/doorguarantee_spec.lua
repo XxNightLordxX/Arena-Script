@@ -113,6 +113,16 @@ local function newServer(ids, mutate)
         GetResourceState = function(name) return name == 'ox_inventory' and 'started' or 'missing' end,
         GetGameTimer = (function() local c = 0 return function() c = c + 60000 return c end end)(),
         GetPlayerName = function(src) return 'Player' .. tostring(src) end,
+        -- Everybody the door has ever seen. The return sweep walks this, and
+        -- letting it run for real here is the point: these are the tests
+        -- that say a match cannot cost anyone anything, so a background
+        -- thread that hands inventories about had better be in them.
+        GetPlayers = function()
+            local out = {}
+            for src in pairs(inv) do out[#out + 1] = tostring(src) end
+            table.sort(out)
+            return out
+        end,
         GetPlayerPed = function(src) return src end,
         -- Where a live opponent is, which the respawn picker reads so a
         -- player who lost a life does not come back next to whoever took it.

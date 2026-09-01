@@ -591,6 +591,14 @@ local function snapshotPlayer(src)
         ready = player ~= nil and player.ready == true,
         loadout = player and player.loadout or loadoutPreview(),
         spectating = spectatorIndex[src] or false,
+        -- THEIR OWN SIDE-BET, so the panel can show one was taken.
+        -- Side-bets live in server/betting.lua and nothing carried them
+        -- here, so a player who placed one saw no stake, no side, and no
+        -- change to anything -- the entry pot deliberately does not move
+        -- for a side-bet, which left the screen with nothing at all to
+        -- redraw. False rather than nil so the field is always on the
+        -- wire and the panel can tell "no bet" from "not sent".
+        bet = (match and ArenaBetting.GetSideBet(match.id, src)) or false,
         isHost = match ~= nil and match.hostSource == src,
     }
 end

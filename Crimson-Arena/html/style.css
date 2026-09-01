@@ -42,7 +42,12 @@
    layout tracks the player's resolution instead of shrinking to a stamp at
    4K or overflowing at 1280x720. */
 html {
-    font-size: clamp(13px, 0.83vw, 24px);
+    /* Raised from clamp(13px, 0.83vw, 24px). The panel reads at arm's
+       length on a monitor, not on a phone held close, and at 1080p the old
+       floor put body text at about 16px inside a box that had room for
+       more. Everything below is in rem, so this is the one number that
+       makes the whole panel bigger. */
+    font-size: clamp(14px, 0.95vw, 26px);
 }
 
 *,
@@ -107,8 +112,12 @@ body {
     transform: translate(-50%, -50%);
     display: grid;
     grid-template-rows: auto auto 1fr;
-    width: min(84rem, 94vw);
-    height: min(50rem, 90vh);
+    /* Raised alongside the type scale above: the box is measured in rem,
+       so a bigger base font grows it too, and these caps are what let it
+       use the room rather than stopping short. The vw/vh halves still
+       decide it on a small screen. */
+    width: min(92rem, 96vw);
+    height: min(56rem, 92vh);
     background: var(--bg);
     border: 1px solid var(--border);
     /* Crimson hairline down the left edge, then a black drop so the panel
@@ -571,6 +580,23 @@ option {
 
 #create-panel {
     align-self: start;
+
+    /* IT SCROLLS RATHER THAN BEING CUT OFF. #arena-body and .arena-panel
+       are both `overflow: hidden`, and this box sat in the grid with no
+       height bound of its own -- so once its content was taller than the
+       row, the bottom of it was simply clipped away. The bottom of it is
+       the Create Match button: switching the radar on adds a field and a
+       hint, and the button a player is looking for goes with them.
+
+       `align-self: start` keeps the box hugging its content, as it should
+       on a tall screen; max-height caps it at the grid row so there is a
+       bound to scroll within. min-height: 0 is what lets a grid item be
+       smaller than its content at all. */
+    min-height: 0;
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+
     padding: 1rem;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -811,6 +837,18 @@ option {
     flex-direction: column;
     gap: 0.8rem;
     min-height: 0;
+
+    /* IT SCROLLS RATHER THAN BEING CUT OFF. The melee section below carries
+       a min-height floor on purpose -- a list showing a row and a half
+       reads as one that has been cut in half rather than one that scrolls
+       -- but a floor inside a bounded grid row is exactly what makes the
+       column refuse to shrink: the two sections together stop fitting, the
+       overflow lands on .arena-panel, and .arena-panel is `overflow:
+       hidden`, so the bottom of the weapon list is simply gone. Scrolling
+       here keeps the floor's intent and gives the overflow somewhere to
+       go. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .loadout-section {

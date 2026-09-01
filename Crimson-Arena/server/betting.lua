@@ -1041,6 +1041,37 @@ end
 --- @param matchId string
 --- @param src integer
 --- @return boolean
+--- One player's own side-bet on a match, or nil.
+---
+--- THE PANEL COULD NOT SEE ITS OWN BET. Side-bets are kept in this file and
+--- nothing carried them into the snapshot, so a player who placed one
+--- watched their money leave and the screen say nothing: no stake, no side,
+--- no way to tell a bet that was taken from one that was refused. The pot on
+--- that screen is the ENTRY pot and deliberately does not move for a
+--- side-bet -- two pools, and conflating them is its own confusion -- which
+--- left nothing at all to change.
+--- @param matchId string
+--- @param src any
+--- @return table|nil -- { amount, pick, kind, account }
+function ArenaBetting.GetSideBet(matchId, src)
+    local id = serverId(src)
+    if not id then return nil end
+
+    for _, bet in ipairs(sideBets[matchId] or {}) do
+        -- The one they CHOSE. An entry fee folded into the pool at settle
+        -- time is not a bet they placed and must not be shown as one.
+        if bet.src == id and bet.fromEntryFee ~= true then
+            return {
+                amount = bet.amount,
+                pick = bet.pick,
+                kind = bet.kind,
+                account = bet.account,
+            }
+        end
+    end
+    return nil
+end
+
 function ArenaBetting.HasSpectatorBet(matchId, src)
     local id = serverId(src)
     if not id then return false end

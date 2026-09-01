@@ -65,6 +65,11 @@ files['shared/compat/dispatch.lua'] = {
     globals = { 'ArenaCompat' },
 
     read_globals = {
+        -- SERVER-ONLY, and read from the report -- which runs on the server,
+        -- after server/dispatch.lua has loaded. It answers whether OneSync
+        -- is actually on, which is what decides whether isolation is real
+        -- rather than merely configured.
+        'ArenaDispatch',
         -- Shared realm, read-only: the catalogue reads the operator's hook
         -- names out of Config and validates every registration with
         -- Arena.IsKey.
@@ -423,6 +428,9 @@ files['server/'] = {
         -- client's say-so -- these have no client-realm counterpart on
         -- purpose.
         'GetPlayerRoutingBucket',
+        -- Routing buckets need OneSync; without it every bucket native is
+        -- inert and silent. This is how the resource finds out.
+        'GetConvar',
         'SetPlayerRoutingBucket',
         'SetRoutingBucketEntityLockdownMode',
         'SetRoutingBucketPopulationEnabled',

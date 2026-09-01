@@ -55,8 +55,12 @@ print('isolation_spec')
 --- @param dispatchConfig table? -- replaces Config.Dispatch entirely when given
 --- @param world table<number, integer>? -- [src] = the bucket they start in
 --- @return table fixture
-local function newFixture(dispatchConfig, world)
+local function newFixture(dispatchConfig, world, oneSyncMode)
     local buckets = {}       -- [src] = the bucket that player is in right now
+    -- ON unless a test says otherwise, so every case above describes a
+    -- server where isolation CAN work and only the ones about OneSync
+    -- have to think about it.
+    local oneSync = oneSyncMode or 'on'
     local calls = {}         -- every stubbed call, in order, across all kinds
     local handlers = {}      -- AddEventHandler registrations
     local logs, debugs = {}, {}
@@ -102,6 +106,14 @@ local function newFixture(dispatchConfig, world)
         TriggerEvent = function(name, ...)
             calls[#calls + 1] = { kind = 'event', name = name, args = { ... } }
         end,
+        -- ONESYNC, WHICH ROUTING BUCKETS NEED. Defaults to on so every test
+        -- above this one still describes a server where isolation can work;
+        -- the tests that care set it themselves.
+        GetConvar = function(name, fallback)
+            if name == 'onesync' then return oneSync end
+            return fallback
+        end,
+
         RegisterNetEvent = function() end,
         -- /arenarevive registers at load. Dropped rather than captured: this
         -- fixture is about routing buckets and never runs a command.
@@ -392,6 +404,60 @@ t.test('a player moved straight from one match to another still lands back in th
 
     f.D.ExitBucket(7)
     t.equals(f.bucketOf(7), 91)
+end)
+
+-- ======================================================================
+-- WHETHER THE SERVER CAN INSTANCE AT ALL
+-- ======================================================================
+
+t.test('with OneSync off there is no bucket, because the natives do nothing', function()
+    -- ROUTING BUCKETS REQUIRE ONESYNC. Without it SetPlayerRoutingBucket and
+    -- the SetRoutingBucket* natives do nothing at all -- no error, no return
+    -- value, no warning. Every line of the allocation still runs and still
+    -- looks right; the players simply are not separated.
+    --
+    -- Answering nil here is what makes the rest of the resource safe: the
+    -- guard in server/match.lua refuses a second match at an arena when
+    -- GetBucket returns nil, and that fallback exists for exactly this. With
+    -- a number returned instead, it told that code the ground was safe to
+    -- share and let a second round start on top of a live one.
+    local f = newFixture(nil, nil, 'off')
+    t.equals(f.D.GetBucket('m1'), nil, 'a bucket was handed out on a server that cannot honour it')
+    t.equals(f.D.EnterBucket(7, 'm1'), false)
+    t.equals(f.count('move'), 0, 'a player was moved into an instance that does not exist')
+end)
+
+t.test('and it says so, once, loudly', function()
+    -- An operator whose isolation is silently absent has no way to find out.
+    local f = newFixture(nil, nil, 'off')
+    f.D.GetBucket('m1')
+    f.D.GetBucket('m2')
+    f.D.EnterBucket(7, 'm1')
+
+    local said = f.log()
+    t.isTrue(said:find('OneSync', 1, true) ~= nil,
+        'isolation was refused and OneSync was never mentioned')
+    -- Once, not once per match: a line printed every round is a line nobody
+    -- reads.
+    local count, from = 0, 1
+    while true do
+        local at = said:find('OneSync', from, true)
+        if not at then break end
+        count = count + 1
+        from = at + 1
+    end
+    t.equals(count, 1, ('OneSync was named %d times; it should be said once'):format(count))
+end)
+
+t.test('every OneSync mode that is not off still instances', function()
+    -- ONLY A DEFINITE off REFUSES. An unrecognised value is far more likely
+    -- to be a build newer than this code than a mode without buckets, and
+    -- guessing wrong there switches off a layer that was working.
+    for _, mode in ipairs({ 'on', 'legacy', 'infinity', 'something_new' }) do
+        local f = newFixture(nil, nil, mode)
+        t.isTrue(f.D.GetBucket('m1') ~= nil,
+            ('OneSync "%s" was treated as no isolation at all'):format(mode))
+    end
 end)
 
 t.test('THE OTHER ONE THAT MATTERS: a player moved out of the arena by something else is put back', function()

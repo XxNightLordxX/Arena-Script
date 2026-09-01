@@ -38,6 +38,9 @@ local function newFixture(dispatchConfig)
     local timeouts = {}      -- every SetTimeout body, in order
     local exportCalls = {}   -- every exports['res']:Name(...) call, in order
     local resourceStates = {}      -- name -> what GetResourceState reports
+    local metadata = {}            -- [src] = { key = value }, as the framework holds it
+    local metaWrites = {}          -- every SetMetaData, in order
+    local playerObjects = {}       -- [src] = a framework player, or absent
 
     local env = Sandbox.newEnv({
         ExecuteCommand = function(line) commands[#commands + 1] = line end,
@@ -106,6 +109,12 @@ local function newFixture(dispatchConfig)
         }),
         ArenaLog = function(fmt, ...) logs[#logs + 1] = (select('#', ...) > 0) and fmt:format(...) or fmt end,
         ArenaDebug = function() end,
+        -- THE FRAMEWORK PLAYER, because the down-state metadata lives on it.
+        -- A medical script keeps "this player is down" as qbx_core metadata
+        -- rather than in a table of its own, and that is the one part of its
+        -- record the arena can reach -- so the fixture has to be able to hold
+        -- one and report what was written to it.
+        ArenaGetPlayer = function(src) return playerObjects[src] end,
     })
 
     Sandbox.loadInto('../config.lua', env)
@@ -131,9 +140,31 @@ local function newFixture(dispatchConfig)
 
     Sandbox.loadInto('../server/dispatch.lua', env)
 
+    --- Gives `src` a framework player carrying `values` as its metadata.
+    --- @param src integer
+    --- @param values table
+    --- @param withGetter boolean? -- false models a build with no GetMetaData
+    local function givePlayer(src, values, withGetter)
+        metadata[src] = values
+        playerObjects[src] = {
+            Functions = {
+                SetMetaData = function(key, value)
+                    metadata[src][key] = value
+                    metaWrites[#metaWrites + 1] = { src = src, key = key, value = value }
+                end,
+                GetMetaData = withGetter ~= false
+                    and function(key) return metadata[src][key] end
+                    or nil,
+            },
+        }
+    end
+
     return {
         env = env,
         D = env.ArenaDispatch,
+        givePlayer = givePlayer,
+        metadata = function(src) return metadata[src] end,
+        metaWrites = metaWrites,
         bag = function(src) return bags[src] end,
         bagWrites = bagWrites,
         events = events,
@@ -1623,6 +1654,105 @@ t.test('start order is judged at LOAD, not whenever the report is read', functio
     env.GetResourceState = function() return 'started' end
     t.equals(#env.ArenaCompat.StartedBeforeUs(), 0,
         'the check re-reads resource state after load, so a resource that started LATER is blamed for starting first')
+end)
+
+-- ----------------------------------------------------------------------
+-- THE DOWN FLAG, CLEARED WHERE IT REALLY LIVES
+-- ----------------------------------------------------------------------
+--
+-- Reported from a live server after everything above was already configured:
+-- "the ambulance job is still getting notifications for people down."
+--
+-- Every suppression this file tests until here fights the alert at the moment
+-- it is raised, and every one of them can lose: CancelEvent needs the sender
+-- to check it, retraction needs an id, and answering the death first needs to
+-- have started first. What none of them touched is the FLAG all of it reads.
+--
+-- The QB-family medical scripts keep "this player is down" as player metadata
+-- on the framework object -- qbx_core's data, not theirs -- so the arena can
+-- write it. Cleared, sc-dispatch's 500ms poll never raises PlayerDown at all,
+-- and sc-ambulance's own EMSDownAlert guard refuses the call. It is also
+-- simply true: the arena has just stood this player up.
+
+t.test('DEFECT: a revive clears the medical script\'s own down flag', function()
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = true, isdead = true })
+
+    f.D.Revive(7)
+
+    local meta = f.metadata(7)
+    t.isFalse(meta.inlaststand, 'the last-stand flag was left up after a revive')
+    t.isFalse(meta.isdead, 'the dead flag was left up after a revive')
+end)
+
+t.test('and writes nothing for a flag that is already down', function()
+    -- A start-up full of writes to fields nobody set is noise, and on a
+    -- server using neither name this has to cost nothing at all.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = false, isdead = false })
+
+    f.D.Revive(7)
+
+    t.equals(#f.metaWrites, 0, 'it wrote to metadata that was already clear')
+end)
+
+t.test('and writes anyway on a framework with no metadata reader', function()
+    -- GetMetaData is not on every build. A missing reader means "write it" --
+    -- the write is the point and it is idempotent -- rather than "do nothing",
+    -- which would silently disable this on exactly the servers that cannot
+    -- report their own state.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = true }, false)
+
+    f.D.Revive(7)
+
+    t.isTrue(#f.metaWrites > 0, 'a framework with no getter had nothing written to it')
+    t.isFalse(f.metadata(7).inlaststand, 'the flag was left up')
+end)
+
+t.test('and the keys come from config, so another script can be named', function()
+    local f = newFixture()
+    f.env.Config.Dispatch.revive.clearMetadata = { 'myscript_down' }
+    f.givePlayer(7, { myscript_down = true, inlaststand = true })
+
+    f.D.Revive(7)
+
+    t.isFalse(f.metadata(7).myscript_down, 'the operator\'s own key was not cleared')
+    t.isTrue(f.metadata(7).inlaststand,
+        'a key the operator did not name was written to anyway')
+end)
+
+t.test('and an empty list switches the whole thing off', function()
+    local f = newFixture()
+    f.env.Config.Dispatch.revive.clearMetadata = {}
+    f.givePlayer(7, { inlaststand = true })
+
+    f.D.Revive(7)
+
+    t.equals(#f.metaWrites, 0, 'metadata was written with the feature switched off')
+end)
+
+t.test('and it runs even where revive.enabled is off', function()
+    -- `revive.enabled` gates the operator-configured commands and events --
+    -- reaching a script by a name somebody typed. This is not that: it is
+    -- correcting a field about a player the arena has just stood up, and it
+    -- is the one suppression that does not depend on winning a race.
+    local f = newFixture()
+    f.env.Config.Dispatch.revive.enabled = false
+    f.givePlayer(7, { inlaststand = true })
+
+    f.D.Revive(7)
+
+    t.isFalse(f.metadata(7).inlaststand,
+        'switching the configured revives off also switched off the flag clear')
+end)
+
+t.test('and a player the framework does not know is left alone', function()
+    -- No player object, no crash. A disconnect between the death and the
+    -- revive is ordinary.
+    local f = newFixture()
+    f.D.Revive(7)
+    t.equals(#f.metaWrites, 0, 'something was written for a player who is not there')
 end)
 
 -- ----------------------------------------------------------------------

@@ -201,6 +201,63 @@ end
 --- it detects as wired up and then silently does nothing -- the same reason
 --- the catalogue further down this file is detection-only.
 --- @param src number
+--- Clears the medical script's own down-state metadata for one player.
+---
+--- The keys come from Config.Dispatch.revive.clearMetadata, so an operator
+--- whose script uses different names says so rather than being guessed at --
+--- and an empty list switches this off entirely. The two shipped names are
+--- the QB-family convention and are the ones this file's own catalogue
+--- already documents sc-ambulance setting.
+---
+--- WRITES NOTHING IT DOES NOT HAVE TO. A key that is already false or absent
+--- is left alone, so on a server using neither name this costs two lookups
+--- and touches nobody's data.
+--- @param src number
+--- @return integer cleared -- how many keys were really changed
+local function clearDownMetadata(src)
+    local revive = (Config.Dispatch or {}).revive
+    local keys = type(revive) == 'table' and revive.clearMetadata or nil
+    if type(keys) ~= 'table' or #keys == 0 then return 0 end
+
+    -- Guarded rather than assumed: this file is loaded on its own by
+    -- tests/dispatch_spec.lua, and a framework that does not expose a player
+    -- object at all is a framework this simply has nothing to say to.
+    if type(ArenaGetPlayer) ~= 'function' then return 0 end
+
+    local player = ArenaGetPlayer(src)
+    local functions = player and player.Functions
+    if type(functions) ~= 'table' then return 0 end
+    if type(functions.SetMetaData) ~= 'function' then return 0 end
+
+    local cleared = 0
+    for _, key in ipairs(keys) do
+        if Arena.IsKey(key) then
+            -- READ FIRST. GetMetaData is not on every build of every
+            -- framework, so a missing reader means "write it anyway" rather
+            -- than "do nothing" -- the write is the point and it is
+            -- idempotent. What the reader buys is silence on the common case.
+            local current = true
+            if type(functions.GetMetaData) == 'function' then
+                local ok, value = pcall(functions.GetMetaData, key)
+                current = ok and value or false
+            end
+
+            if current then
+                local ok, err = pcall(functions.SetMetaData, key, false)
+                if ok then
+                    cleared = cleared + 1
+                    ArenaDebug('revive: cleared \'%s\' metadata for %d.', key, src)
+                else
+                    ArenaLog('revive: could not clear \'%s\' metadata for %d (%s).',
+                        key, src, tostring(err))
+                end
+            end
+        end
+    end
+
+    return cleared
+end
+
 --- @param src number
 --- @param keepHold boolean|nil -- true on elimination: the round is still running
 function ArenaDispatch.Revive(src, keepHold)
@@ -247,6 +304,37 @@ function ArenaDispatch.Revive(src, keepHold)
             ArenaDebug('revive: also told %s for %d.', name, src)
         end
     end
+
+    -- THE MEDICAL SCRIPT'S OWN RECORD OF WHO IS DOWN, cleared where it
+    -- actually lives.
+    --
+    -- This file has always said it cannot reach that record. One part of it
+    -- it can: the QB-family scripts keep the down state as PLAYER METADATA
+    -- on the framework object -- `inlaststand` and `isdead` -- and that is
+    -- qbx_core's data, not theirs, so the arena can write it.
+    --
+    -- It is the lever that does not depend on winning a race. The start-order
+    -- fight upstream is about stopping the flag being SET; this clears it
+    -- again a moment later, and everything downstream reads the flag rather
+    -- than the event:
+    --
+    --   sc-dispatch's client polls this metadata every 500ms and raises
+    --   PlayerDown / PlayerDead by itself when it goes up. Cleared before the
+    --   next poll, those two are never raised at all -- not cancelled, not
+    --   withdrawn, never sent.
+    --
+    --   sc-ambulance's own EMSDownAlert handler admits the call ONLY for a
+    --   player carrying `inlaststand`. Cleared, the alert is refused by that
+    --   script's own guard rather than by anything here.
+    --
+    -- AND IT IS TRUE, which is the part that makes it safe rather than a
+    -- trick. The arena has just stood this player up: they are not dead and
+    -- not in a last stand, and the metadata saying otherwise is the thing
+    -- that is wrong. Nothing is written for a player the arena is not
+    -- currently holding, and nothing is written for a key that is not already
+    -- set -- on a server that does not use these names this is a no-op that
+    -- costs two table lookups.
+    clearDownMetadata(src)
 
     if revive.enabled ~= true then return end
 

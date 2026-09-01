@@ -337,16 +337,26 @@ local function run(plan)
         took[ok == true and 'a bet was accepted' or 'a bet was refused'] = true
     end
 
-    -- THE BET-THEN-JOIN HOLE, walked on purpose: back a side, then take a
-    -- seat on the match you just backed. It is the only route that reaches
-    -- `voided`, and it is only open on a free match -- TakeStake refuses a
-    -- paid seat to somebody already holding a bet on it.
+    -- THE BET-THEN-JOIN HOLE, walked on purpose: back a side, then try to
+    -- take a seat on the match you just backed.
+    --
+    -- IT IS NOW SHUT, and this walks it to prove that rather than to get
+    -- through it. TakeStake has always refused a PAID seat to somebody
+    -- holding a bet on the match -- a bet its holder can cancel at a moment
+    -- of their choosing, by joining and walking straight out again, is a bet
+    -- with no risk in it -- but ArenaLobby.Join only reached TakeStake when
+    -- there was a fee to take, and the shipped default fee is zero. So the
+    -- guard existed and nothing ran it on the commonest configuration.
+    --
+    -- What is asserted here is the refusal AND that the books still balance
+    -- through it: their stake stays in escrow, unsettled, and is judged at
+    -- the end like any other spectator's.
     if plan.betThenJoin then
         for _, entry in ipairs(placed) do
             if entry.ok and entry.src > plan.size then
-                took['a bettor took a seat afterwards'] =
+                took['a bettor was refused a seat'] =
                     server.lobby.Join(entry.src, id, plan.teams and TEAMS[1] or nil,
-                        plan.accounts[entry.src]) == true
+                        plan.accounts[entry.src]) ~= true
                 break
             end
         end
@@ -625,7 +635,7 @@ t.test('and it reached every settlement path this file exists to cover', functio
     for _, path in ipairs({
         'a bet was accepted', 'a bet was refused', 'the match was decided',
         'the match aborted', 'a bettor left mid-round', 'somebody left the lobby',
-        'and sat back down', 'a bettor took a seat afterwards',
+        'and sat back down', 'a bettor was refused a seat',
         'the host changed the mode', 'the lobby emptied out',
         'the host could not pay', 'the lobby would not start',
         'somebody was killed', 'the sweep called it',

@@ -1110,6 +1110,21 @@ function ArenaBetting.GetSideBet(matchId, src)
     return nil
 end
 
+--- Whether this player is holding an UNSETTLED side-bet on this match.
+---
+--- The public form of the question TakeStake already asks itself. It is
+--- public because ArenaLobby.Join needs the same answer and cannot get it
+--- from TakeStake: Join only reaches TakeStake when the match has an entry
+--- fee, and the shipped default fee is zero.
+--- @param matchId string
+--- @param src any
+--- @return boolean
+function ArenaBetting.HoldsSideBet(matchId, src)
+    local id = serverId(src)
+    if not id or not Arena.IsKey(matchId) then return false end
+    return holdsSideBet(matchId, id)
+end
+
 function ArenaBetting.HasSpectatorBet(matchId, src)
     local id = serverId(src)
     if not id then return false end

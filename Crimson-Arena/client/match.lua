@@ -150,6 +150,21 @@ end
 --- Hands out the loadout the server resolved. Nothing is re-derived here:
 --- the ammo on the wire already went through Arena.ResolveAmmo server-side
 --- and is the authoritative number.
+--- What the arena decided this fighter's health and armour should be, and
+--- until when it is worth putting them back.
+---
+--- The arena is not the only thing that writes to them during a round: the
+--- revive handoff invites the operator's medical script to stand the player
+--- up, and standing somebody up is exactly when such a script sets health
+--- and clears armour. This is the arena's own answer, held so it can be the
+--- last one rather than the first.
+local arenaVitals = { health = nil, armour = nil, until_ = 0 }
+
+--- How long to keep re-asserting them after a revive. Long enough to
+--- outlast a medical script's own revive, short enough that armour lost to
+--- being shot is never handed back.
+local VITALS_REASSERT_MS = 1500
+
 --- @param ped integer
 --- @param loadout table
 local function applyLoadout(ped, loadout)
@@ -192,8 +207,23 @@ local function applyLoadout(ped, loadout)
     -- Health and armour are the ped's either way -- no inventory resource
     -- has an opinion about them, and starting every round full is a rule
     -- rather than a loadout choice.
-    SetEntityHealth(ped, loadout.health or Config.Loadouts.health)
-    SetPedArmour(ped, loadout.armor or 0)
+    local wantedHealth = loadout.health or Config.Loadouts.health
+    local wantedArmour = loadout.armor or 0
+
+    SetEntityHealth(ped, wantedHealth)
+    SetPedArmour(ped, wantedArmour)
+
+    -- KEPT, because something else gets the last word a moment later.
+    --
+    -- The revive handoff runs AFTER this on every life: the arena tells the
+    -- operator's medical script to take this player off its casualty list,
+    -- and a medical script's revive sets its OWN health and -- almost
+    -- always -- zeroes armour. It lands after the loadout, so the fighter
+    -- comes back on that script's numbers rather than the arena's: not
+    -- fully healed, and with no armour at all, on every life after the
+    -- first. Re-asserted below rather than raced with.
+    arenaVitals.health = wantedHealth
+    arenaVitals.armour = wantedArmour
 end
 
 -- ======================================================================
@@ -517,6 +547,16 @@ AddEventHandler('gameEventTriggered', function(event, data)
     handleDeath(victim)
 end)
 
+-- THE HANDOFF IS THE SIGNAL. The arena's own revive is harmless -- it sets
+-- full health and does not touch armour -- but it is sent in the same breath
+-- as the events that reach the medical script, and those are what overwrite
+-- both. Rather than guess at which script or how long it takes, the arena
+-- simply insists on its own numbers for a moment afterwards.
+AddEventHandler('crimson_arena:client:revive', function()
+    if not currentMatch then return end
+    arenaVitals.until_ = GetGameTimer() + VITALS_REASSERT_MS
+end)
+
 local function startArenaThread()
     local token = matchToken
 
@@ -551,6 +591,20 @@ local function startArenaThread()
                 DisableControlAction(0, 25, true)       -- aim
                 DisableControlAction(0, 257, true)      -- attack, alternate
                 DisableControlAction(0, 263, true)      -- melee attack
+            end
+
+            -- The arena's numbers, put back over whatever the revive
+            -- handoff left behind. Bounded by a deadline rather than run
+            -- for the whole round: armour a fighter loses to being SHOT is
+            -- theirs to lose, and a loop that restored it continuously
+            -- would make everybody bulletproof.
+            if not deathReported
+                and arenaVitals.until_ > 0
+                and GetGameTimer() < arenaVitals.until_
+            then
+                local ped = PlayerPedId()
+                if arenaVitals.health then SetEntityHealth(ped, arenaVitals.health) end
+                if arenaVitals.armour then SetPedArmour(ped, arenaVitals.armour) end
             end
 
             -- The backstop. The hook above catches the ordinary case a frame

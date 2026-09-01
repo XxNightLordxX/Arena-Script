@@ -863,6 +863,7 @@ local function newClientFixture()
         dead = false,
         groundReady = true,
         disabled = {},
+        clock = 3600000,
         serverEvents = {},
         released = {},
         cleared = 0,
@@ -917,14 +918,22 @@ local function newClientFixture()
         GetGroundZFor_3dCoord = function() return false, nil end,
         -- Frozen, so placeAt's five-second bail-out never trips and
         -- `groundReady` stays the only thing that ends the wait.
-        GetGameTimer = function() return 0 end,
+        -- A REAL CLOCK the tests can move. Frozen at zero, every deadline
+        -- this file's code takes -- the re-assert window below among them
+        -- -- is permanently in the future, so a bounded loop and an
+        -- unbounded one are indistinguishable.
+        GetGameTimer = function() return f.clock end,
 
         GiveWeaponToPed = function(ped, weapon, ammo)
             f.given[#f.given + 1] = { ped = ped, weapon = weapon, ammo = ammo }
         end,
         SetPedAmmo = function() end,
-        SetPedArmour = function() end,
-        SetEntityHealth = function() end,
+        -- RECORDED, not swallowed. SetPedArmour is stubbed to an empty
+        -- function in every other spec in this suite, so no test anywhere
+        -- has ever asserted that a fighter is given the armour their
+        -- loadout says -- on entry or on any life after it.
+        SetPedArmour = function(_ped, value) f.armour = value end,
+        SetEntityHealth = function(_ped, value) f.health = value end,
         SetCurrentPedWeapon = function() end,
         GiveWeaponComponentToPed = function() end,
         SetPedWeaponTintIndex = function() end,
@@ -1450,6 +1459,206 @@ t.test('and the block lifts once they are put back', function()
 
     t.isTrue(f.firingBlocked ~= true, 'a respawned fighter was left unable to shoot')
     t.isTrue(f.disabled[24] ~= true, 'attack was still refused after the respawn')
+end)
+
+
+-- ========================================================================
+-- FULL HEALTH AND FULL ARMOUR, ON EVERY LIFE
+--
+-- README and the PR both promise "every match starts at full health and
+-- full armour". NO SPEC IN THIS SUITE HAS EVER CHECKED IT: SetPedArmour is
+-- stubbed to an empty function in every fixture that has one, so a fighter
+-- being armoured has never been asserted on entry, and a fighter being
+-- RE-armoured has never been asserted at all.
+--
+-- The entry and respawn payloads both carry the numbers -- verified against
+-- the real server/lobby.lua and server/match.lua -- so these ask the other
+-- half of the question: does the client apply what it is sent, every time?
+-- ========================================================================
+
+--- Enters a match carrying `armor` points of armour.
+local function enterWithArmour(f, armour)
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = {
+            weapons = { { weapon = 'WEAPON_PISTOL', ammo = 42 } },
+            health = 200,
+            armor = armour,
+        },
+    })
+    f.fire('crimson_arena:client:matchLive')
+end
+
+t.test('entering the arena gives the fighter the armour their loadout says', function()
+    local f = newClientFixture()
+
+    enterWithArmour(f, 100)
+
+    t.equals(f.armour, 100, 'the fighter walked into the arena with no armour')
+    t.equals(f.health, 200, 'the fighter walked in on less than full health')
+end)
+
+t.test('and an operator who ships NO armour gets none, rather than a default', function()
+    -- The control. Without it, "armour is applied" passes against a client
+    -- that hands out a hundred points whatever the loadout says.
+    local f = newClientFixture()
+
+    enterWithArmour(f, 0)
+
+    t.equals(f.armour, 0, 'armour was handed out on a server that configured none')
+end)
+
+t.test('EVERY LIFE, not just the first -- a respawn re-armours too', function()
+    -- The reported symptom is about the lives AFTER the first. The
+    -- respawn payload carries the same numbers the entry did, and this is
+    -- the assertion that they are put back on the ped.
+    local f = newClientFixture()
+    enterWithArmour(f, 100)
+
+    -- Spend it, the way being shot does.
+    f.armour = 0
+    f.health = 5
+
+    f.dead = true
+    f.step()
+    f.fireThreaded('crimson_arena:client:respawn', {
+        spawn = { x = 11.0, y = 21.0, z = 31.0, w = 0.0 },
+        loadout = {
+            weapons = { { weapon = 'WEAPON_PISTOL', ammo = 42 } },
+            health = 200,
+            armor = 100,
+        },
+    })
+    for _ = 1, 6 do f.step() end
+
+    t.equals(f.armour, 100, 'a fighter came back from a life with no armour')
+    t.equals(f.health, 200, 'a fighter came back from a life on less than full health')
+end)
+
+t.test('and again on the life after that', function()
+    -- Twice, because a first respawn that works and a second that does not
+    -- is a different defect from neither working, and the report says
+    -- "after each life".
+    local f = newClientFixture()
+    enterWithArmour(f, 100)
+
+    for _ = 1, 2 do
+        f.armour = 0
+        f.health = 5
+        f.dead = true
+        f.step()
+        f.fireThreaded('crimson_arena:client:respawn', {
+            spawn = { x = 11.0, y = 21.0, z = 31.0, w = 0.0 },
+            loadout = {
+                weapons = { { weapon = 'WEAPON_PISTOL', ammo = 42 } },
+                health = 200,
+                armor = 100,
+            },
+        })
+        for _ = 1, 6 do f.step() end
+        f.dead = false
+    end
+
+    t.equals(f.armour, 100, 'the second respawn left the fighter with no armour')
+    t.equals(f.health, 200, 'the second respawn left the fighter hurt')
+end)
+
+t.test('a respawn payload carrying NO loadout leaves them as they were', function()
+    -- An older server, or a payload that lost its loadout on the way. The
+    -- client must not zero somebody's armour because it was told nothing
+    -- about it -- that is the difference between "no instruction" and "no
+    -- armour".
+    local f = newClientFixture()
+    enterWithArmour(f, 100)
+    f.armour = 55
+
+    f.dead = true
+    f.step()
+    f.fireThreaded('crimson_arena:client:respawn', {
+        spawn = { x = 11.0, y = 21.0, z = 31.0, w = 0.0 },
+    })
+    for _ = 1, 6 do f.step() end
+
+    t.equals(f.armour, 55, 'a respawn with no loadout stripped the fighter\'s armour to zero')
+end)
+
+
+-- ========================================================================
+-- AND THE ARENA GETS THE LAST WORD OVER THE MEDICAL SCRIPT
+--
+-- THE REPORTED SYMPTOM: health and armour are not restored "all the way"
+-- after each life.
+--
+-- The client applies the loadout correctly -- the tests above prove that.
+-- What happens next is the revive handoff: the arena asks the operator's
+-- medical script to take this player off its casualty list, and standing
+-- somebody up is exactly when such a script writes its OWN health and
+-- clears armour. It lands AFTER the loadout, so the fighter comes back on
+-- that script's numbers rather than the arena's.
+--
+-- The arena cannot see inside that script and will not guess at it, so it
+-- insists on its own numbers for a moment afterwards instead.
+-- ========================================================================
+
+t.test('a medical script that clears armour on revive does not get the last word', function()
+    local f = newClientFixture()
+    enterWithArmour(f, 100)
+
+    f.armour = 0
+    f.health = 5
+    f.dead = true
+    f.step()
+    f.fireThreaded('crimson_arena:client:respawn', {
+        spawn = { x = 11.0, y = 21.0, z = 31.0, w = 0.0 },
+        loadout = { weapons = {}, health = 200, armor = 100 },
+    })
+    for _ = 1, 6 do f.step() end
+    f.dead = false
+    t.equals(f.armour, 100, 'the respawn itself failed, so this test is about the wrong thing')
+
+    -- The handoff, and the medical script behind it doing what medical
+    -- scripts do.
+    f.fire('crimson_arena:client:revive')
+    f.armour = 0
+    f.health = 150
+
+    f.step()
+
+    t.equals(f.armour, 100, 'a medical script stripped the fighter\'s armour and kept it')
+    t.equals(f.health, 200, 'a medical script left the fighter on less than the arena\'s health')
+end)
+
+t.test('but armour lost to being SHOT is not handed back', function()
+    -- The re-assert is bounded for this. A loop that restored armour for
+    -- the whole round would make every fighter bulletproof, which is a
+    -- worse bug than the one it fixes.
+    local f = newClientFixture()
+    enterWithArmour(f, 100)
+
+    f.fire('crimson_arena:client:revive')
+    for _ = 1, 3 do f.step() end
+    f.clock = f.clock + 30000            -- well past the re-assert window
+
+    f.armour = 20                        -- shot, mid-round
+    f.step()
+
+    t.equals(f.armour, 20, 'armour lost in a firefight was handed straight back')
+end)
+
+t.test('and a revive OUTSIDE a match re-asserts nothing', function()
+    -- The post-match sweep revives everybody five seconds after the round,
+    -- by which point they are home. Re-arming their arena armour there
+    -- would hand a player a hundred points of it in the middle of town.
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:revive')
+    f.armour = 0
+    f.step()
+
+    t.equals(f.armour, 0, 'a revive outside the arena handed out arena armour')
 end)
 
 os.exit(t.summary())

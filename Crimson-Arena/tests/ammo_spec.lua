@@ -122,8 +122,18 @@ local function newServer(pockets, mutate, opts)
         end,
     }
 
+    --- Who the dispatch flag says has actually been teleported into a round.
+    --- The drop guard asks this rather than the stash, because with the door
+    --- off nobody is stashed and every fighter would look like a bystander.
+    local placed = {}
+
     local env = Sandbox.newArenaEnv({
         exports = setmetatable({ ox_inventory = ox }, { __call = function() end }),
+        ArenaDispatch = {
+            Set = function(src) placed[src] = true end,
+            Clear = function(src) placed[src] = nil end,
+            IsPlayerInArena = function(src) return placed[src] == true end,
+        },
         -- ox_inventory can come up AFTER this resource. Resource start order
         -- is not guaranteed and Crimson-Arena is deliberately asked to start
         -- early, so "not started yet" is an ordinary state and not an error.
@@ -731,6 +741,33 @@ t.test('a player in a match cannot drop anything', function()
     t.isNotNil(hook, 'the drop guard should be registered')
     t.isFalse(hook({ source = 1, toInventory = 'drop-7' }), 'a drop is refused')
     t.isTrue(hook({ source = 1, toInventory = 1 }), 'moving things around their own pockets is fine')
+end)
+
+t.test('DEFECT: and cannot drop with the door OFF either', function()
+    -- The guard asked `stashed[src]`, which is only ever populated when the
+    -- door is SHUT. With Config.Loadouts.inventory.stripOnEntry off -- where
+    -- a player keeps their own inventory and is handed the arena's kit on
+    -- top of it -- nobody is stashed, so this returned "allowed" for every
+    -- fighter and the block was off for the whole match.
+    --
+    -- Which is the setting where it matters most: the arena's weapons are
+    -- loose in the player's own pockets, so dropping one on the floor for
+    -- somebody to collect is a single drag.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isFalse(s.ammo.IsHolding(1), 'the door was shut after all, so this tests the wrong thing')
+
+    -- What actually says they are mid-match.
+    s.env.ArenaDispatch.Set(1, 'm1')
+
+    local hook = s.hook('swapItems')
+    t.isNotNil(hook, 'the drop guard should be registered')
+    t.isFalse(hook({ source = 1, toInventory = 'drop-7' }),
+        'a fighter dropped the arena kit on the floor with the door off')
+    t.isTrue(hook({ source = 1, toInventory = 1 }),
+        'moving things around their own pockets stopped being their business')
 end)
 
 t.test('a player outside the arena drops whatever they like', function()

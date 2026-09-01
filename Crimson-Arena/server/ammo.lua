@@ -660,15 +660,37 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         return 0
     end
 
-    stashed[src] = nil
-
     local ok = restore(src, record)
 
-    -- Forgotten rather than removed: restore() clears the whole inventory
-    -- before putting their own kit back, so the arena's weapons are already
-    -- gone and removing them again would be removing items that no longer
-    -- exist -- or, worse, their own if a name happened to collide.
-    forgetWeapons(src)
+    -- THE RECORD IS DROPPED ONLY IF THE KIT ACTUALLY CAME BACK.
+    --
+    -- It used to be cleared on the line above the restore, and the two
+    -- failures restore() reports are precisely the ones where the player's
+    -- belongings are STILL IN THE STASH -- ox_inventory gone, or the stash
+    -- unreadable. Its own log says so in as many words, and offers the stash
+    -- name because it is a real openable stash. Forgetting the record threw
+    -- that name away: nothing could retry, ArenaAmmo.Clear stopped refusing
+    -- over them, IsHolding and StashOf said there was nothing held, and the
+    -- line below printed STILL STASHED about a record it had just deleted.
+    --
+    -- Keeping it costs a stale row on a server whose inventory is broken.
+    -- Dropping it costs a player everything they walked in with, and leaves
+    -- nobody able to say where it went.
+    if ok then
+        stashed[src] = nil
+
+        -- Forgotten rather than removed, and only here: restore() clears the
+        -- whole inventory before putting their own kit back, so the arena's
+        -- weapons are already gone and removing them again would be removing
+        -- items that no longer exist -- or, worse, their own if a name
+        -- happened to collide.
+        --
+        -- ON A FAILED RESTORE NONE OF THAT HAPPENED. With ox_inventory gone
+        -- there was no clear at all, so the arena's weapons are still on the
+        -- player -- and forgetting them here is what stops any later exit
+        -- from taking them back.
+        forgetWeapons(src)
+    end
 
     ArenaDebug('door: %s left (%s), kit %s', tostring(src), tostring(reasonKey),
         ok and 'returned' or 'STILL STASHED')

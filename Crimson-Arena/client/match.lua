@@ -114,7 +114,28 @@ local function stripIssuedWeapons(ped)
     -- or an exit path that somehow runs before entry completed -- fall back
     -- to removing only what we know we issued, which can never cost them
     -- anything of their own.
-    if carried then
+    -- AND GUARDED ON THE RESTORE SETTING TOO, because the wipe and the
+    -- restore are one decision and were being made separately.
+    --
+    -- With Config.Match.restoreLoadoutOnExit off, restoreOwnLoadout below
+    -- deliberately gives nothing back -- and this still wiped the ped. The
+    -- player walked out having lost every weapon they arrived with, and the
+    -- setting that caused it says "give players back the weapons and armour
+    -- they walked in with", not "confiscate them". Nobody asks for the
+    -- second thing, and the resource's own headline promise is that a match
+    -- cannot cost anyone anything.
+    --
+    -- It is survivable on a server running ox_inventory, which owns weapons
+    -- and re-equips the ped from the inventory afterwards -- which is
+    -- probably why the setting exists and why this went unnoticed. On a
+    -- server without one, the ped IS the player's weapons and the wipe is
+    -- final.
+    --
+    -- So when nothing is going to be restored, only what the arena issued is
+    -- taken. That still keeps the promise that matters -- an arena weapon
+    -- never leaves with anybody -- and it costs the player nothing of their
+    -- own.
+    if carried and Config.Match.restoreLoadoutOnExit == true then
         RemoveAllPedWeapons(ped, true)
     else
         for _, hash in ipairs(givenWeapons) do

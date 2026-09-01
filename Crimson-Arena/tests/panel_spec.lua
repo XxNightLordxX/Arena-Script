@@ -229,6 +229,34 @@ t.test('the same notification falls through to ox_lib with the panel closed', fu
     t.equals(f.notifications[1].type, 'inform')
 end)
 
+t.test('restarting the resource with the panel open hands the mouse back', function()
+    -- The page dies with the resource; the focus it took does not. Without
+    -- this handler a `restart crimson_arena` with the menu open leaves the
+    -- player with a captured mouse, no page to release it, and no way out
+    -- short of relogging.
+    local f = newUiFixture()
+    f.UI.Open()
+    t.equals(f.lastFocus(), true, 'the panel never took focus to begin with')
+
+    t.isTrue(f.fire('onResourceStop', 'crimson_arena'), 'nothing releases focus on a restart')
+    t.equals(f.lastFocus(), false, 'the player was left holding NUI focus after a restart')
+end)
+
+t.test('but SOME OTHER resource stopping does not touch this player\'s mouse', function()
+    -- onResourceStop fires for EVERY resource on the server, not just this
+    -- one. Reading the argument is the whole handler: without that check,
+    -- any unrelated script restarting mid-menu rips the panel's focus away
+    -- and the player is clicking on a page that no longer answers.
+    local f = newUiFixture()
+    f.UI.Open()
+    local before = #f.focus
+
+    t.isTrue(f.fire('onResourceStop', 'some_other_script'))
+
+    t.equals(#f.focus, before, 'an unrelated resource stopping moved this player\'s focus')
+    t.equals(f.lastFocus(), true, 'the open panel lost its focus to another resource stopping')
+end)
+
 -- ========================================================================
 -- client/main.lua -- the lobby fixtures and the startup thread
 -- ========================================================================

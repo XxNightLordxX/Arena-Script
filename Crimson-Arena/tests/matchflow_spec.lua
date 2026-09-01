@@ -988,6 +988,7 @@ local function newClientFixture()
             f.outlines = f.outlines or {}
             f.outlines[#f.outlines + 1] = { ped = ped, on = on == true }
         end,
+        SetEntityDrawOutlineShader = function() end,
         SetEntityDrawOutlineColor = function(r, g, b)
             f.outlineColor = { r = r, g = g, b = b }
         end,

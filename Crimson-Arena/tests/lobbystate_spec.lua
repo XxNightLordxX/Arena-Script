@@ -441,4 +441,124 @@ t.test('the entry-fee presets reach the panel, and an absent list is empty', fun
     t.equals(#none.state(1).config.betting.entryFee.presets, 0)
 end)
 
+
+-- ========================================================================
+-- THE POT ON SCREEN IS THE POT THAT GETS PAID
+--
+-- REPORTED FROM LIVE TESTING: placing a bet did not change the pool.
+--
+-- betPayout.includeEntryPot ships ON and does what it says: at settle time
+-- every fighter's entry fee becomes a stake on their own side and the whole
+-- thing pays out as ONE pool. The number the panel showed was not that
+-- pool -- it was the entry stakes and nothing else -- so a player's own
+-- side-bet went into the half of the pot the screen could not see, and the
+-- figure sat perfectly still.
+-- ========================================================================
+
+--- A lobby with an entry fee, both players in and paid up.
+local function withFee(fee, mutate)
+    local s = newArena({ [1] = 50000, [2] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.entryFee.enabled = true
+        config.Betting.entryFee.min = 0
+        config.Betting.entryFee.default = fee
+        if mutate then mutate(config) end
+    end)
+    local matchId, err = s.lobby.Create(1, anArena(s), nil, fee, nil, nil, 'cash')
+    t.isNotNil(matchId, 'the match could not be created: ' .. tostring(err))
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'), 'the second player could not join')
+    return s, matchId
+end
+
+t.test('the entry fees show as the pot before anybody bets', function()
+    local s = withFee(500)
+
+    t.equals(s.onlyMatch(1).pot, 1000, 'two 500 entry fees are not a pot of 1000')
+    t.equals(s.onlyMatch(1).entryPot, 1000, 'the entry half is not reported')
+    t.equals(s.onlyMatch(1).betPool, 0, 'a lobby with no bets reports a side-bet pool')
+end)
+
+t.test('and a side-bet RAISES the pot, because it is paid out of the same one', function()
+    -- THE ASSERTION THIS SECTION EXISTS FOR. The old figure did not move.
+    local s, matchId = withFee(500)
+
+    t.isTrue(s.betting.PlaceSpectatorBet(1, matchId, 1, 2000, 'cash'))
+
+    t.equals(s.onlyMatch(1).pot, 3000, 'the pot did not move when a bet was placed into it')
+    t.equals(s.onlyMatch(1).entryPot, 1000, 'the entry half changed when only a bet was placed')
+    t.equals(s.onlyMatch(1).betPool, 2000, 'the side-bet half is not reported')
+end)
+
+t.test('but NOT where the two settle separately', function()
+    -- With includeEntryPot off they are two prizes decided by different
+    -- rules, and adding them would tell a player the entry pot is bigger
+    -- than it is.
+    local s, matchId = withFee(500, function(config)
+        config.Betting.betPayout.includeEntryPot = false
+    end)
+
+    s.betting.PlaceSpectatorBet(1, matchId, 1, 2000, 'cash')
+
+    t.equals(s.onlyMatch(1).pot, 1000, 'a separately-settled side-bet was added to the entry pot')
+    t.equals(s.onlyMatch(1).betPool, 2000, 'the side-bet pool is not reported on its own')
+end)
+
+t.test('and an ODDS bet never joins the pool, because the server funds it', function()
+    -- Counting it would promise the winner money that is not in the pot.
+    local s, matchId = withFee(500, function(config)
+        config.Betting.betPayout.fighters = 'odds'
+    end)
+
+    s.betting.PlaceSpectatorBet(1, matchId, 1, 2000, 'cash')
+
+    t.equals(s.onlyMatch(1).betPool, 0, 'a server-funded bet was counted into the pool')
+    t.equals(s.onlyMatch(1).pot, 1000, 'a server-funded bet was added to the prize pool')
+end)
+
+-- ========================================================================
+-- AND A PLAYER CAN SEE THE BET THEY PLACED
+-- ========================================================================
+
+t.test('a player with no bet down is told so, rather than sent a nil', function()
+    -- False rather than nil so the field is always on the wire: the panel
+    -- has to tell "no bet" from "not sent".
+    local s = withFee(500)
+
+    t.equals(s.state(1).player.bet, false, 'a player with no bet was sent something else')
+end)
+
+t.test('and one who placed a bet gets the stake and the side back', function()
+    local s, matchId = withFee(500)
+
+    s.betting.PlaceSpectatorBet(1, matchId, 1, 2000, 'cash')
+
+    local mine = s.state(1).player.bet
+    t.isTrue(type(mine) == 'table', 'the bet never reached the snapshot')
+    t.equals(mine.amount, 2000, 'the stake is wrong on the way to the panel')
+    t.equals(mine.pick, '1', 'the side backed is wrong on the way to the panel')
+end)
+
+t.test('and nobody ELSE sees it, because it is their own bet only', function()
+    local s, matchId = withFee(500)
+
+    s.betting.PlaceSpectatorBet(1, matchId, 1, 2000, 'cash')
+
+    t.equals(s.state(2).player.bet, false, 'one player was shown another player\'s bet')
+end)
+
+t.test('an entry fee folded into the pool is NOT reported as a bet they placed', function()
+    -- addEntryStakesAsBets writes a row per fighter at settle time. That is
+    -- bookkeeping, not a wager, and showing it as "you have 500 on
+    -- yourself" would be the panel inventing a bet nobody made.
+    local s, matchId = withFee(500)
+    local match = s.lobby.Get(matchId)
+    match.state = 'live'
+    for src, player in pairs(match.players) do player.alive = (src == 1) end
+
+    s.betting.Settle(matchId, { winners = { 1 }, players = match.players })
+
+    t.equals(s.state(1).player.bet, false,
+        'an entry fee folded into the pool was shown to the player as a bet they placed')
+end)
+
 os.exit(t.summary())

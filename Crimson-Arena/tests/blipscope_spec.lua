@@ -138,6 +138,7 @@ local function newFixture(mutate)
             f.outlineCalls[#f.outlineCalls + 1] = { ped = ped, on = on }
             if on then f.outlines[ped] = true else f.outlines[ped] = nil end
         end,
+        SetEntityDrawOutlineShader = function(shader) f.outlineShader = shader end,
         SetEntityDrawOutlineColor = function(r, g, b)
             f.outlineColor = { r, g, b }
             -- WHICH THREAD IS DOING THE DRAWING, learned rather than assumed.
@@ -874,6 +875,32 @@ t.test('FUZZ: and a client in no match draws nothing, whatever it is sent', func
     end
 
     t.isNil(drew, drew or '')
+end)
+
+
+-- ========================================================================
+-- THE OUTLINE HAS TO DRAW THROUGH THE WALL
+--
+-- REPORTED FROM LIVE TESTING, in a team deathmatch: no haze on a teammate
+-- at all.
+--
+-- Every test above proves the right PEDS are outlined -- a teammate is, an
+-- enemy is not, a corpse is not, and nothing is left behind. None of them
+-- could see that the outline was being drawn with the DEFAULT shader,
+-- which is occluded by anything in front of it and faint even in the open.
+-- The note over refreshOutlines says the outline draws through geometry
+-- and that this is the whole point of it; nothing switched that on.
+-- ========================================================================
+
+t.test('the see-through shader is selected, not the default one', function()
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    f.step()
+
+    t.isTrue(f.outlines[1000 + MATE] == true, 'the teammate was not outlined at all')
+    t.equals(f.outlineShader, 1,
+        'the outline is drawn with the default shader, so a teammate behind cover shows nothing')
 end)
 
 os.exit(t.summary())

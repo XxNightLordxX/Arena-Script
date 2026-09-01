@@ -271,7 +271,13 @@ local function expectedAccount(plan, src)
 end
 
 --- Runs one plan against a real server, start to finish.
---- @return table|nil out -- nil when the plan could not be set up at all
+---
+--- EVERY PLAN IS AUDITED, including the ones the rules refuse. A host who
+--- picked an account they have nothing in cannot open the lobby at all, and a
+--- roster the mode will not start is torn down instead -- both are money
+--- questions ("did the refusal cost anybody anything?", "did the teardown
+--- hand every stake back?") and neither is a reason to drop the seed.
+--- @return table out
 local function run(plan)
     local server = newServer(plan.wallets, function(config)
         config.Betting.betPayout.includeEntryPot = plan.includeEntryPot
@@ -290,7 +296,13 @@ local function run(plan)
 
     local id = server.lobby.Create(1, 'airfield', plan.teams and 'tdm' or 'ffa',
         plan.fee, nil, nil, plan.accounts[1])
-    if not id then return nil end
+    if not id then
+        -- The host could not pay the fee out of the pocket they named. Create
+        -- unwinds its own match, so there is nothing to tear down -- but the
+        -- refusal still has to have cost them nothing, which the audit says.
+        took['the host could not pay'] = true
+        return { server = server, id = nil, placed = {}, took = took }
+    end
     if plan.teams then server.lobby.SetTeam(1, TEAMS[1]) end
 
     for src = 2, plan.size do
@@ -366,11 +378,24 @@ local function run(plan)
     end
 
     for src in pairs(server.lobby.Get(id).players) do server.lobby.SetReady(src, true) end
-    if not server.match.Start(id) then return nil end
+
+    -- A ROSTER THE MODE WILL NOT START -- everybody on one side of a team
+    -- match, most often, after somebody walked out of it. The lobby is torn
+    -- down rather than abandoned, because a lobby left open is a pot left
+    -- held, and that is the harness leaking rather than the resource.
+    if not server.match.Start(id) then
+        took['the lobby would not start'] = server.match.Abort(id, 'match.aborted') == true
+        server.step(6)
+        return { server = server, id = id, placed = placed, took = took }
+    end
     server.step(1)
 
     local match = server.lobby.Get(id)
-    if not match or match.state ~= 'live' then return nil end
+    if not match or match.state ~= 'live' then
+        took['the round never went live'] = true
+        server.step(6)
+        return { server = server, id = id, placed = placed, took = took }
+    end
 
     -- A bettor walks out of a LIVE round, before it is decided.
     if plan.liveLeaver then
@@ -506,25 +531,17 @@ end
 local SEEDS = 400
 
 local complaints = { conservation = {}, accounts = {}, movements = {}, books = {} }
-local walked, ran, unusable = {}, 0, 0
+local walked = {}
 
 for seed = 1, SEEDS do
     local plan = makePlan(newRng(seed))
     local out = run(plan)
-    if not out then
-        -- A plan the rules refused to set up at all. Counted rather than
-        -- ignored: a generator that produced nothing but these would leave
-        -- every assertion below vacuously true.
-        unusable = unusable + 1
-    else
-        ran = ran + 1
-        for name, taken in pairs(out.took) do
-            if taken then walked[name] = (walked[name] or 0) + 1 end
-        end
-        for category, problems in pairs(audit(plan, out)) do
-            for _, problem in ipairs(problems) do
-                complaints[category][#complaints[category] + 1] = ('seed %d: %s'):format(seed, problem)
-            end
+    for name, taken in pairs(out.took) do
+        if taken then walked[name] = (walked[name] or 0) + 1 end
+    end
+    for category, problems in pairs(audit(plan, out)) do
+        for _, problem in ipairs(problems) do
+            complaints[category][#complaints[category] + 1] = ('seed %d: %s'):format(seed, problem)
         end
     end
 end
@@ -538,7 +555,7 @@ local function report(category)
     return table.concat(shown, '; ')
 end
 
-t.test(('%d generated matches created and destroyed no money'):format(ran), function()
+t.test(('%d generated matches created and destroyed no money'):format(SEEDS), function()
     t.equals(#complaints.conservation, 0, report('conservation'))
 end)
 
@@ -554,19 +571,16 @@ t.test('every match left its books empty and nothing owed', function()
     t.equals(#complaints.books, 0, report('books'))
 end)
 
-t.test('and the generator produced matches that could actually be run', function()
-    -- A GREEN TICK FROM A SUITE THAT NEVER RAN is the one failure mode a
-    -- property test cannot report on itself.
-    t.isTrue(ran >= SEEDS * 0.9, ('only %d of %d plans ran'):format(ran, SEEDS))
-    t.equals(unusable, SEEDS - ran, 'the unusable count does not add up')
-end)
-
 t.test('and it reached every settlement path this file exists to cover', function()
+    -- A GREEN TICK FROM A SUITE THAT NEVER RAN is the one failure mode a
+    -- property test cannot report on itself, so the paths are counted as they
+    -- are walked and every one of them has to have been.
     for _, path in ipairs({
         'a bet was accepted', 'a bet was refused', 'the match was decided',
         'the match aborted', 'a bettor left mid-round', 'somebody left the lobby',
         'and sat back down', 'a bettor took a seat afterwards',
         'the host changed the mode', 'the lobby emptied out',
+        'the host could not pay', 'the lobby would not start',
     }) do
         t.isTrue((walked[path] or 0) > 0, ('no generated match ever reached "%s"'):format(path))
     end

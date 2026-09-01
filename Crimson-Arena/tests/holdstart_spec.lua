@@ -211,6 +211,74 @@ t.test('the countdown thread really does stand down', function()
         'the round started anyway -- the countdown never noticed it was stopped')
 end)
 
+-- A one-second lobby countdown, so the thread's FINAL Wait is a place a
+-- test can stand: one step parks it there, and everything after that step
+-- happens in the window the loop never re-read.
+local function lastSecond(config) config.Match.lobbyCountdownSeconds = 1 end
+
+t.test('DEFECT: holding it in the LAST second stops it too', function()
+    -- The check that stands the thread down runs at the TOP of the loop --
+    -- before each Wait, never after the final one. So whatever happened
+    -- during the last second was never read: a hold in it returned success
+    -- to the host, put the lobby back to waiting, told the room it was held,
+    -- and the round started anyway a moment later. ArenaMatch.Start accepts
+    -- 'lobby' as well as 'countdown', so nothing further down caught it.
+    local server, matchId = counting(0, lastSecond)
+
+    -- One step: the thread has made its only state check and is parked in
+    -- its final Wait.
+    server.step(1)
+    t.equals(server.lobby.Get(matchId).state, 'countdown',
+        'the countdown finished before the window opened, so this tests nothing')
+    t.isFalse(server.env.ArenaDispatch.IsPlayerInArena(1), 'the room is already in the arena')
+
+    t.isTrue(server.lobby.HoldCountdown(1), 'the host could not stop their own countdown')
+    server.step(4)
+
+    t.equals(server.lobby.Get(matchId).state, 'lobby',
+        'the round started after the host was told it had been stopped')
+    t.isFalse(server.env.ArenaDispatch.IsPlayerInArena(1),
+        'the room was teleported into the arena by a countdown that had been stopped')
+end)
+
+t.test('and starting again opens a NEW countdown the old one cannot claim', function()
+    -- `state` cannot tell a parked thread whether it still owns the match:
+    -- hold and start again and it goes countdown -> lobby -> countdown,
+    -- which the old thread cannot distinguish from never having been held.
+    -- It would wake into the NEW countdown, find its own count spent, and
+    -- start the round -- with the panel still showing seconds and players
+    -- still choosing weapons. So each countdown is numbered, and the thread
+    -- checks its own number before starting anything.
+    --
+    -- WHAT THIS ASSERTS IS THE NUMBERING, not the race. This fixture's Wait
+    -- does not model elapsed time -- a hundred-second countdown finishes in
+    -- the same two steps as a ten-second one -- so the two threads cannot be
+    -- told apart here by stepping. The number changing is the part that is
+    -- observable, and it is the part the guard depends on.
+    local server, matchId = counting(0, lastSecond)
+    local first = server.lobby.Get(matchId).countdownToken
+    t.isNotNil(first, 'a countdown is not numbered at all, so no thread can tell whose it is')
+
+    server.step(1)
+    server.lobby.HoldCountdown(1)
+    server.fire('startMatch', 1)
+
+    local second = server.lobby.Get(matchId).countdownToken
+    t.equals(server.lobby.Get(matchId).state, 'countdown')
+    t.isTrue(second ~= first,
+        ('both countdowns are numbered %s, so the held one still owns the match'):format(tostring(second)))
+end)
+
+t.test('and the countdown that IS the current one still starts the round', function()
+    -- The other direction, so none of this is "fixed" by never starting.
+    local server, matchId = counting(0, lastSecond)
+    server.step(4)
+
+    t.isTrue(server.env.ArenaDispatch.IsPlayerInArena(1),
+        'a countdown nobody touched never put anybody in the arena')
+    t.isFalse(server.lobby.Get(matchId).state == 'lobby')
+end)
+
 t.test('and the round can be started again afterwards', function()
     -- A hold that leaves the match unstartable is a cancel with extra steps.
     local server, matchId = counting(0, slowLobby)

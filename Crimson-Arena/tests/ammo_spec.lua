@@ -115,6 +115,15 @@ local function newServer(pockets, mutate, opts)
             -- being read as success. The stash is where an item is safe, and
             -- removing it from there on a nil is how it gets destroyed.
             if fail.giveSilent and type(id) == 'number' then return nil end
+            -- ONE NAMED ITEM, not everything. A return that fails COMPLETELY
+            -- and one that fails PARTLY are different animals: the partial
+            -- one has already put some of the player's belongings back in
+            -- their pockets and taken them out of the stash, which is the
+            -- state the door has to survive being run over a second time.
+            if type(fail.refuseNamed) == 'table' and type(id) == 'number'
+                and fail.refuseNamed[name] then
+                return false
+            end
             -- ONLY the ammo item, never the weapon. `give` above refuses
             -- everything a player is handed, so a test using it to break the
             -- ammunition also stops the weapon being issued -- and then
@@ -232,7 +241,7 @@ local function newServer(pockets, mutate, opts)
             inv[src] = inv[src] or {}
             inv[src][#inv[src] + 1] = { name = name, count = count }
         end,
-        breakOn = function(what) fail[what] = true end,
+        breakOn = function(what, value) fail[what] = value == nil and true or value end,
         --- Runs the retry sweep's thread one pass. Two steps is one pass:
         --- the loop's Wait is its first statement, so the first resume only
         --- primes the coroutine. Needs opts.retry.
@@ -845,6 +854,128 @@ end)
 -- one of them ends with the player holding their own things again, and
 -- nothing in any of them opens a stash by hand.
 -- ========================================================================
+
+t.test('DEFECT: a second match does not destroy what a partial return handed back', function()
+    -- THE HOLE THE RETRY OPENED. Keeping the record on a failed restore is
+    -- what lets the sweep find the stash again -- and it is also what makes
+    -- the door skip a player who already has one. So:
+    --
+    --   they leave a match, half their kit goes back and half stays in the
+    --   stash; they join another, the door sees a record and does NOT stow
+    --   the half they are carrying; the round ends, and the exit's clear --
+    --   which is there to destroy the ARENA's kit -- destroys their own.
+    --
+    -- The remainder then fits, restore() returns true, and the exit reports
+    -- a clean return. Nothing anywhere records a loss.
+    local s = newServer({ [1] = OWN })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'the door did not stow their kit')
+
+    -- The water will not go back -- a weight limit, a full inventory. The
+    -- phone does.
+    s.breakOn('refuseNamed', { water = true })
+    t.equals(s.ammo.Reclaim(1, 'm1'), 0, 'a partial return reported success')
+    t.equals(s.carrying(1), 'phone', 'the half that COULD go back did not')
+    t.equals(s.stashOfCid('CID1'), 'water', 'the half that could not is not in the stash')
+
+    -- Whatever was wrong clears up, and they join another round.
+    s.fixOn('refuseNamed')
+    s.ammo.Issue(1, 'm2', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Reclaim(1, 'm2')
+
+    t.equals(s.carrying(1), 'phone,water',
+        'a match cost this player their phone, and reported a clean exit')
+end)
+
+t.test('and a second pass over the same record does not destroy it either', function()
+    -- THE DISCONNECT ROUTE INTO THE SAME HOLE, with no second match in it.
+    -- playerDropped reclaims unconditionally, and the sweep reclaims again
+    -- afterwards -- two passes over one record. If the second one clears the
+    -- player out, everything the first handed back goes with it.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'disconnected')
+    t.equals(s.carrying(1), 'phone', 'the half that could go back did not')
+
+    s.fixOn('refuseNamed')
+    s.ammo.Reclaim(1, 'retry')
+
+    t.equals(s.carrying(1), 'phone,water', 'the second pass destroyed what the first handed back')
+    t.equals(s.stashOfCid('CID1'), '', 'and their belongings are still in the stash')
+    t.isFalse(s.ammo.IsHolding(1), 'the record survived a return that finally completed')
+end)
+
+t.test('and the arena kit still comes off on that second pass, by name', function()
+    -- WHAT REFUSING TO CLEAR TWICE COULD HAVE COST. The wholesale clear is
+    -- how the arena's own weapons are destroyed on the way out; a pass that
+    -- skips it has to take them back some other way, or the fix for losing
+    -- a player's phone becomes a way to walk out with the arena's rifle.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.equals(s.itemNamed(1, 'WEAPON_TEST') ~= nil, true, 'the arena weapon was never issued')
+
+    -- The clear is REFUSED, so the arena kit survives the first pass, and
+    -- one of their own items will not go back either.
+    s.breakOn('clearRefuse')
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+
+    t.isNotNil(s.itemNamed(1, 'WEAPON_TEST'),
+        'the fixture cleared anyway, so this proves nothing')
+
+    s.fixOn('clearRefuse')
+    s.fixOn('refuseNamed')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.isNil(s.itemNamed(1, 'WEAPON_TEST'),
+        'the arena weapon walked out of the arena with them')
+    t.equals(s.carrying(1), 'phone,water', 'and their own belongings did not survive it')
+end)
+
+t.test('DEFECT: a stale record does not let somebody carry their own kit into the next round', function()
+    -- THE OTHER HALF OF THE SAME HOLE. Keeping the record after a partial
+    -- return is what lets the sweep find the stash again -- and the door
+    -- used to read "has a record" as "already stripped", so a player with
+    -- half their belongings back walked into their NEXT round still holding
+    -- them. Two things follow, and both are the arena's core promise:
+    -- nobody brings their own kit in, and nothing they loot leaves with them.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+    t.equals(s.carrying(1), 'phone', 'the partial return this is built on did not happen')
+
+    s.fixOn('refuseNamed')
+    s.ammo.Issue(1, 'm2', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), '', 'they walked into the next round carrying their own phone')
+    t.equals(s.stashOfCid('CID1'), 'phone,water',
+        'the phone they were holding never made it back into the stash')
+end)
+
+t.test('and issuing the same match twice does not stash the arena\'s own kit', function()
+    -- The guard the fix above has to keep. The player is stripped by the
+    -- FIRST pass, so by the second they are carrying nothing but what the
+    -- arena issued -- and a door that stows again puts the arena's rifle
+    -- into their stash, to be handed back on the way out as their own
+    -- property. That is the arena paying out weapons.
+    --
+    -- Nothing calls Issue twice for one match today; server/match.lua does
+    -- it once per player from sendEnterArena. This is here so that stays
+    -- true by test rather than by nobody having tried.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'the door did not stow their kit at all')
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.equals(s.stashOfCid('CID1'), 'phone,water',
+        'the arena\'s own kit was stowed into the player\'s stash')
+end)
 
 t.test('DEFECT: an item that would not go back is handed over on the next sweep', function()
     -- The plain case, and the commonest one: their pockets were full at the

@@ -323,11 +323,33 @@ local function restore(src, record)
     -- reported as a clean exit. It is not fatal to the restore below (their
     -- own belongings still have to come back either way), so it is logged
     -- loudly and carried, rather than returned on.
-    if not oxDid('clearing the arena kit from ' .. tostring(src), function()
-        return ox:ClearInventory(src)
-    end) then
-        ArenaLog('door: %s LEFT THE ARENA STILL HOLDING THE KIT IT ISSUED -- their own is being returned on top of it.',
-            tostring(src))
+    -- ONCE PER RECORD, AND THIS IS A DATA-LOSS GUARD, not tidiness.
+    --
+    -- The clear is here to destroy the ARENA's kit on the way out. It is
+    -- indiscriminate, because at that moment everything the player is
+    -- carrying belongs to the arena -- their own is in the stash.
+    --
+    -- THAT STOPS BEING TRUE THE MOMENT A RETURN ONLY PARTLY SUCCEEDS.
+    -- handBack takes each item OUT of the stash as it hands it over, so a
+    -- half-finished return leaves some of their belongings in their pockets
+    -- and the rest in the stash -- and the record is deliberately kept, so
+    -- the sweep can come back for the remainder. Run this clear a second
+    -- time against that record and it destroys everything the first attempt
+    -- gave back, then hands over the small remainder and reports a clean
+    -- exit. The player is simply short, and nothing anywhere says so.
+    --
+    -- So the record remembers that its clear has been spent. A second pass
+    -- takes the arena's weapons back BY NAME instead -- see ArenaAmmo.Reclaim,
+    -- which does that before calling this -- which removes what the arena
+    -- issued without touching anything else.
+    if not record.cleared then
+        if not oxDid('clearing the arena kit from ' .. tostring(src), function()
+            return ox:ClearInventory(src)
+        end) then
+            ArenaLog('door: %s LEFT THE ARENA STILL HOLDING THE KIT IT ISSUED -- their own is being returned on top of it.',
+                tostring(src))
+        end
+        record.cleared = true
     end
 
     local readable, failures = handBack(ox, src, record.stash)
@@ -655,7 +677,23 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     local ox = inventory()
 
     -- THE DOOR, before anything is issued.
-    if ox and doorConfig().stripOnEntry ~= false and not stashed[src] then
+    --
+    -- ASKED PER MATCH, NOT PER PLAYER, and that is the other half of the
+    -- data-loss fix above. This used to skip anybody who already had a
+    -- record -- which is exactly the state a partly-failed return leaves
+    -- behind. So a player whose phone had gone back but whose water had not
+    -- walked into their NEXT round still carrying the phone, because the
+    -- door decided it had already stowed them. The exit then cleared them
+    -- out, and the phone was the arena's to destroy as far as any of this
+    -- could tell.
+    --
+    -- Stowing again is safe and additive: the stash is named from the
+    -- citizen id, so the phone joins the water in the same one, and the
+    -- fresh record's clear is unspent again for the new round.
+    local held = stashed[src]
+    local alreadyStowedForThisMatch = held ~= nil and held.matchId == matchId
+
+    if ox and doorConfig().stripOnEntry ~= false and not alreadyStowedForThisMatch then
         local player = ArenaGetPlayer(src)
         local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
 
@@ -777,6 +815,16 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         local ox = inventory()
         if ox then reclaimWeapons(ox, src) end
         return 0
+    end
+
+    -- A SECOND PASS OVER THE SAME RECORD does not get to clear the player
+    -- out (restore refuses to, above) -- so the arena's own weapons have to
+    -- come off some other way, or they walk out on top of the belongings
+    -- this pass is about to hand back. By name is the only safe way left:
+    -- it removes what this resource issued and nothing else.
+    if record.cleared then
+        local ox = inventory()
+        if ox then reclaimWeapons(ox, src) end
     end
 
     local ok = restore(src, record)

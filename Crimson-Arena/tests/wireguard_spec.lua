@@ -61,7 +61,18 @@ local function newServer(mutate)
     local qbx = Sandbox.newQbxCore(players)
     local threads = Sandbox.newThreadRunner()
     local netEvents, console = {}, {}
-    local clock = 0
+
+    -- NOT ZERO, and that is the whole reason this line has a comment.
+    --
+    -- GetGameTimer is milliseconds of uptime, and it is never zero by the
+    -- time a player fires an event -- but a fixture that starts it there
+    -- makes the limiter's own arithmetic untestable: with now and previous
+    -- both 0, `now - previous` and `now + previous` are the same number,
+    -- so a limiter that ADDS the two timestamps refuses the second call
+    -- exactly as the correct one does and every assertion below passes
+    -- against it. An hour of uptime is what a real server hands this
+    -- function, and it tells the two apart.
+    local clock = 3600000
 
 local env = Sandbox.newArenaEnv({
         exports = qbx.exports,

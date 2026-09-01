@@ -570,12 +570,82 @@ local function isolationConfig()
     return (Config.Dispatch and Config.Dispatch.isolation) or {}
 end
 
+--- Whether this server has OneSync on, and in which mode.
+---
+--- ROUTING BUCKETS REQUIRE ONESYNC, AND THIS RESOURCE NEVER ASKED. With it
+--- off, SetPlayerRoutingBucket and the SetRoutingBucket* natives do nothing
+--- at all -- no error, no return value, no warning. Every line of the
+--- allocation below still runs and still looks right; the players simply are
+--- not separated. Two matches at one arena then stand in each other, which
+--- is precisely what an operator reported.
+---
+--- Worse than the failure is that the startup report SAID isolation was on,
+--- because it read the config setting rather than the world. A guarantee
+--- printed to an operator who does not have it is the defect class this
+--- codebase keeps producing.
+---
+--- Two spellings, because builds differ: modern servers answer the single
+--- `onesync` convar ('off' / 'legacy' / 'on' / 'infinity'), older ones the
+--- pair below.
+--- @return string mode
+local function oneSyncMode()
+    if type(GetConvar) ~= 'function' then return 'unknown' end
+
+    local mode = GetConvar('onesync', '')
+    if mode ~= '' then return mode end
+
+    if GetConvar('onesync_enableInfinity', 'false') == 'true' then return 'infinity' end
+    if GetConvar('onesync_enabled', 'false') == 'true' then return 'legacy' end
+    return 'off'
+end
+
+--- The mode, for the startup report -- which has to describe what the server
+--- IS rather than what config asked for.
+--- @return string
+function ArenaDispatch.OneSync()
+    return oneSyncMode()
+end
+
+--- Said once, not once per match. An operator restarting into a misconfigured
+--- server should see this; they should not have it printed at every round.
+local warnedNoOneSync = false
+
+--- Whether routing buckets actually work here.
+---
+--- ONLY A DEFINITE 'off' REFUSES. Anything unrecognised is treated as
+--- working, because it is far more likely to be a build newer than this file
+--- than a mode that lacks buckets -- and guessing wrong in that direction
+--- would switch off a layer that was doing its job.
+--- @return boolean
+local function bucketsAvailable()
+    local mode = oneSyncMode()
+    if mode ~= 'off' and mode ~= 'false' and mode ~= '0' then return true end
+
+    if not warnedNoOneSync then
+        warnedNoOneSync = true
+        ArenaLog('ISOLATION IS NOT AVAILABLE: this server has OneSync off, and routing buckets need it -- ' ..
+            'the natives that instance a match do nothing without it, silently. Matches will be fought in the ' ..
+            'open world where every client can see them, and two matches cannot share one arena. Set ' ..
+            '`set onesync on` in server.cfg (and restart) to get it back.')
+    end
+    return false
+end
+
 --- Opt-OUT rather than opt-in: an operator upgrading from a config that
 --- predates this block gets the isolation, because it is the setting that
 --- protects them without their dispatch script agreeing to anything.
+---
+--- AND IT ASKS THE SERVER, NOT ONLY THE CONFIG. Reading the setting alone
+--- answered "is isolation wanted"; what every caller needs is "is isolation
+--- HAPPENING". Returning true on a server whose routing natives are inert
+--- told server/match.lua the arena was safe to share, and it let a second
+--- match start on top of a live one. With this false, GetBucket returns nil
+--- and that same code refuses the second match instead -- which is the
+--- fallback it was written for.
 --- @return boolean
 local function isolationEnabled()
-    return isolationConfig().enabled ~= false
+    if isolationConfig().enabled == false then return false end
+    return bucketsAvailable()
 end
 
 --- Whether a bucket number is spoken for -- by a match, or by a player still

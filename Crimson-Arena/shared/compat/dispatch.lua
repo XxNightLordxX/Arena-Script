@@ -701,6 +701,17 @@ local function isolationLine(wired)
     if isolation.enabled ~= true then
         return 'Isolation is off (Config.Dispatch.isolation) -- every client on the server can see arena gunfire and arena bodies. It is the one layer that needs nothing from anybody.'
     end
+
+    -- THE SETTING IS NOT THE ANSWER. Routing buckets need OneSync, and with
+    -- it off the natives that instance a match do nothing whatsoever -- no
+    -- error, no warning. This line used to read the config and announce that
+    -- isolation was on, to operators who did not have it.
+    if type(ArenaDispatch) == 'table' and type(ArenaDispatch.OneSync) == 'function' then
+        local mode = ArenaDispatch.OneSync()
+        if mode == 'off' or mode == 'false' or mode == '0' then
+            return 'Isolation is CONFIGURED ON BUT NOT IN FORCE: this server has OneSync off (`set onesync on` in server.cfg), and routing buckets need it -- the natives do nothing without it. Every client can see arena gunfire and arena bodies, and two matches cannot share one arena.'
+        end
+    end
     if not wired then
         return 'Isolation is on: no OTHER player\'s client can see the fight. An arena player\'s own client still can, and nothing here is confirmed wired -- that is what the line below is for.'
     end

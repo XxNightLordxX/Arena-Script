@@ -1083,11 +1083,24 @@
             state.createMode = editable.modeKey || state.createMode;
             state.createLives = int(editable.lives, int(state.createLives, 1));
             state.createRadar = editable.radar === true;
-        } else if (!editable) {
+        } else if (!editable && state.seededFromMatch !== null) {
+            /* ON THE TRANSITION ONLY, keyed the same way the seeding above
+               is, and for the same reason.
+
+               Unkeyed, this ran on EVERY render -- and a render happens on
+               every server broadcast, which is every join, ready, bet, match
+               start and match end anywhere on the server. So a player
+               sitting in the browser who pressed the radar toggle had their
+               choice quietly reset to the operator default the moment
+               anybody else did anything at all, and Create Match then posted
+               the default they had just changed. Nothing on screen said so;
+               the button simply went back.
+
+               What this branch is FOR is forgetting the settings of a match
+               the host has stopped editing, so the form does not carry one
+               lobby's choices into a different one. That is a transition,
+               and it happens once. */
             state.seededFromMatch = null;
-            /* Back to the operator default for the NEXT match rather than
-               carrying the last one's setting into a form for a different
-               match entirely. */
             state.createRadar = null;
         }
 

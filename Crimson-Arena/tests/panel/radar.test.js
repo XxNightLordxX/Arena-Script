@@ -230,6 +230,56 @@ test('turning OFF a radar the operator defaulted ON is sent, not swallowed', () 
         'switching off a defaulted-on radar posted ' + JSON.stringify(sent[0].body));
 });
 
+test('DEFECT: somebody else joining a lobby does not undo your radar choice', () => {
+    /* The reset that forgets a match you have stopped editing ran on EVERY
+       render, not on the transition -- and a render happens on every server
+       broadcast, which is every join, ready, bet, match start and match end
+       anywhere on the server.
+
+       So a player sitting in the browser who pressed the toggle had their
+       choice quietly put back to the operator default the moment anybody
+       else did anything, and Create Match then posted the default they had
+       just changed. Nothing on screen said so; the button simply went back. */
+    const panel = opened({ defaultOn: false, intervalSeconds: 30 }, 'none');
+    panel.node('btn-radar').onclick();
+
+    const chosen = panel.node('btn-radar').textContent;
+    assert.ok(/on/i.test(chosen), 'pressing the toggle did not turn it on: ' + chosen);
+
+    /* Anybody else, anywhere on the server, doing anything at all. */
+    panel.send('state', snapshot({ defaultOn: false, intervalSeconds: 30 }, 'none'));
+
+    assert.strictEqual(panel.node('btn-radar').textContent, chosen,
+        'a broadcast put the toggle back to ' + panel.node('btn-radar').textContent);
+
+    panel.fire('create-submit', 'click');
+    const sent = panel.posted.filter((p) => p.name === 'createMatch');
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0].body.radar, true,
+        'the match was created with the radar the player had turned off again: '
+            + JSON.stringify(sent[0].body));
+});
+
+test('but leaving a match you were hosting DOES clear the form', () => {
+    /* The other direction, and what that branch is actually for: the form
+       must not carry one lobby's settings into a different match. */
+    const panel = loadPanel(ROOT);
+    const hosting = snapshot({ defaultOn: false, intervalSeconds: 30 }, 'host');
+    hosting.matches[0].radar = true;
+    panel.send('open', hosting);
+    panel.send('state', hosting);
+
+    assert.ok(/on/i.test(panel.node('btn-radar').textContent),
+        'the form did not take the hosted match\'s radar setting');
+
+    /* They leave it. */
+    panel.send('state', snapshot({ defaultOn: false, intervalSeconds: 30 }, 'none'));
+
+    assert.ok(/off/i.test(panel.node('btn-radar').textContent),
+        'the form kept the old match\'s radar after leaving it: '
+            + panel.node('btn-radar').textContent);
+});
+
 test('the hint says how often it sweeps, so the wait is expected', () => {
     const panel = opened({ defaultOn: false, intervalSeconds: 30 });
     assert.ok(/30 seconds/.test(panel.node('create-radar-hint').textContent),

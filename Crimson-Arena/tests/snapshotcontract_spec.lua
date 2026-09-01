@@ -1114,6 +1114,102 @@ t.test('every config field html/app.js reads is present in the snapshot', functi
         .. 'default and says nothing, on every server')
 end)
 
+--- Every boolean leaf anywhere under `root`, as dotted path -> value.
+--- @param root table
+--- @return table<string, boolean>
+local function booleanLeaves(root, prefix, out, seen)
+    out, seen = out or {}, seen or {}
+    if seen[root] then return out end
+    seen[root] = true
+    for key, value in pairs(root) do
+        local path = (prefix or '') .. tostring(key)
+        if type(value) == 'boolean' then
+            out[path] = value
+        elseif type(value) == 'table' then
+            booleanLeaves(value, path .. '.', out, seen)
+        end
+    end
+    return out
+end
+
+--- The blocks of Config the snapshot sends a version of. Named rather than
+--- scraped, because scraping the SOURCE is self-defeating: a field hardcoded
+--- to a constant no longer mentions its own setting, so it drops out of the
+--- list of things to check at exactly the moment it stops working. The first
+--- version of this test did that and let the hardcoding through.
+local SENT_BLOCKS = { 'Match', 'Teams', 'Loadouts', 'Betting' }
+
+t.test('DEFECT: every boolean the panel is sent carries the operator\'s answer, not its opposite', function()
+    -- PRESENCE IS NOT FIDELITY, and the test above only asks for presence. A
+    -- field sent with the wrong value is present, correctly named, and wrong
+    -- -- which is what a flipped comparison produces: the panel draws a
+    -- control the server will not honour, or hides one it would.
+    --
+    -- Mutations turning `Config.Match.restoreLoadoutOnExit == true` into
+    -- `~= true`, and `fighter.ownSideOnly ~= false` into `~= true`, both
+    -- survived the whole suite. Neither changes whether the field arrives.
+    --
+    -- AND A DIFFERENTIAL IS NOT ENOUGH EITHER. Flipping the setting and
+    -- asserting the snapshot changed passes against both of those, because
+    -- an inverted comparison still RESPONDS to the setting -- it just answers
+    -- backwards. The value has to be compared.
+    --
+    -- Checked at BOTH values, because a field hardcoded to the shipped
+    -- default agrees with config until somebody changes it.
+    local shipped = newArena().env.Config
+    local checked, wrong = 0, {}
+
+    for _, block in ipairs(SENT_BLOCKS) do
+        for path, current in pairs(booleanLeaves(shipped[block] or {})) do
+            local expected = block:lower() .. '.' .. path
+
+            -- Only where the snapshot keeps the same shape. A field it
+            -- renames or restructures is covered by the round-trip tests
+            -- further up this file; this one is about fidelity, not layout.
+            if booleanLeaves(newArena().snapshot(1).config)[expected] ~= nil then
+                checked = checked + 1
+                for _, value in ipairs({ true, false }) do
+                    local sent = booleanLeaves(newArena(function(config)
+                        local target = config[block]
+                        local segments = {}
+                        for segment in path:gmatch('[^.]+') do segments[#segments + 1] = segment end
+                        for index = 1, #segments - 1 do target = target[segments[index]] end
+                        target[segments[#segments]] = value
+                    end).snapshot(1).config)
+
+                    if sent[expected] ~= value then
+                        wrong[#wrong + 1] = ('Config.%s.%s set to %s arrives as config.%s = %s')
+                            :format(block, path, tostring(value), expected, tostring(sent[expected]))
+                    end
+                end
+            end
+            local _ = current
+        end
+    end
+    table.sort(wrong)
+
+    t.isTrue(checked >= 8,
+        ('only %d boolean settings were compared -- the walk is broken'):format(checked))
+    t.equals(table.concat(wrong, '; '), '',
+        'the panel is told the opposite of what the operator set')
+end)
+
+t.test('and that includes the nested ones, three levels down', function()
+    -- fighterBets.ownSideOnly decides whether a fighter may back the OTHER
+    -- side. The panel drawing the wrong answer offers a bet the server will
+    -- refuse, or hides one it would take -- and it lives under
+    -- Config.Betting.fighterBets, which a two-level walk never reaches.
+    for _, value in ipairs({ true, false }) do
+        local sent = booleanLeaves(newArena(function(config)
+            config.Betting.fighterBets.ownSideOnly = value
+        end).snapshot(1).config)
+
+        t.equals(sent['betting.fighterBets.ownSideOnly'], value,
+            ('ownSideOnly set to %s arrived as %s')
+                :format(tostring(value), tostring(sent['betting.fighterBets.ownSideOnly'])))
+    end
+end)
+
 t.test('and the two that were actually lost are named, so a failure says which', function()
     local config = newArena().snapshot(1).config
 

@@ -1021,6 +1021,30 @@ t.test('and the shapes that are not coordinates are still refused', function()
     t.isTrue(not rules.IsPoint(function() end))
 end)
 
+t.test('and every arena can say where a spectator should look', function()
+    -- THE SAME BUG ONE FUNCTION FURTHER ON, and it is why the predicate above
+    -- is worth having rather than writing the type list out each time.
+    --
+    -- Arena.SpectateFocus tried three coordinates in turn -- the boundary
+    -- centre, the spawn-area centre, then the first spawn -- and tested each
+    -- for 'table'. Config writes all three as vectors, so all three said no
+    -- for every arena that ships and this returned nil. Nothing then pointed
+    -- the streamer, and a spectator watching the arena a kilometre over open
+    -- water saw empty sky: the exact symptom the function was added to fix.
+    local env = Sandbox.newArenaEnv()
+    Sandbox.enableAllArenas(env)
+
+    local checked = 0
+    for key in pairs(env.Config.Arenas) do
+        local focus = env.Arena.SpectateFocus(key)
+        t.isNotNil(focus, ('arena "%s" cannot say where to point the camera'):format(tostring(key)))
+        t.equals(type(focus.x), 'number', ('arena "%s" gave a focus with no x'):format(tostring(key)))
+        t.equals(type(focus.z), 'number', ('arena "%s" gave a focus with no z'):format(tostring(key)))
+        checked = checked + 1
+    end
+    t.isTrue(checked >= 2, ('only %d arenas were checked'):format(checked))
+end)
+
 t.test('every coordinate the shipped config writes is one', function()
     -- Against the real file, so this cannot drift from what an operator
     -- actually has in front of them.

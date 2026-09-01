@@ -822,6 +822,22 @@ function ArenaLobby.Broadcast()
             player = snapshotPlayer(src),
             matches = matchList,
             leaderboard = rows,
+            -- PER HEAD, like `player`, and it has to be here at all.
+            --
+            -- This payload is assembled by hand rather than through
+            -- BuildState, and it was missing this one field -- so the
+            -- keep-out barrier was DEAD IN PRODUCTION despite shipping
+            -- enabled. client/main.lua reads a state with no keepOut as
+            -- "take the fence down", and Broadcast fires on virtually every
+            -- change there is: a join, a ready, a bet, a match starting, a
+            -- match ending. The fence went up only on a per-player push --
+            -- a panel opening, a loadout change -- and the very next
+            -- broadcast pulled it back down, usually within the second.
+            --
+            -- It cannot be hoisted out of the loop with the other three:
+            -- which arenas a player may stand in depends on which matches
+            -- that player is in.
+            keepOut = snapshotKeepOut(src),
         })
     end
 end

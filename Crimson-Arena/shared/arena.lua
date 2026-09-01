@@ -1307,18 +1307,24 @@ function Arena.SpectateFocus(arenaKey)
     local arena = Arena.GetArenaByKey(arenaKey)
     if not arena then return nil end
 
+    -- Arena.IsPoint on every branch, because config writes all three of
+    -- these as vectors and a vector is not a 'table' in this runtime. Tested
+    -- for one, all three said no for every arena that ships -- so this
+    -- returned nil, nothing pointed the streamer, and a spectator watching
+    -- the arena a kilometre over the water saw empty sky. Which is the exact
+    -- symptom this function was added to fix.
     local boundary = arena.boundary
-    if type(boundary) == 'table' and type(boundary.center) == 'table' then
+    if type(boundary) == 'table' and Arena.IsPoint(boundary.center) then
         return { x = boundary.center.x, y = boundary.center.y, z = boundary.center.z }
     end
 
     local area = arena.spawnArea
-    if type(area) == 'table' and type(area.center) == 'table' then
+    if type(area) == 'table' and Arena.IsPoint(area.center) then
         return { x = area.center.x, y = area.center.y, z = area.center.z }
     end
 
     local spawns = arena.spawns
-    if type(spawns) == 'table' and type(spawns[1]) == 'table' then
+    if type(spawns) == 'table' and Arena.IsPoint(spawns[1]) then
         return { x = spawns[1].x, y = spawns[1].y, z = spawns[1].z }
     end
 

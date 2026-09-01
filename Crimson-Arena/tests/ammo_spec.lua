@@ -183,6 +183,9 @@ local function newServer(pockets, mutate, opts)
             inv[src][#inv[src] + 1] = { name = name, count = count }
         end,
         breakOn = function(what) fail[what] = true end,
+        --- Puts ox_inventory back together, so a retry after a failed
+        --- restore can be driven.
+        fixOn = function(what) fail[what] = nil end,
         config = env.Config,
         --- What is sitting in one player's arena stash, by name. The stash is
         --- the promise: anything that could not be handed back has to still
@@ -547,6 +550,57 @@ t.test('DEFECT: a finished match\'s records are actually dropped', function()
     t.isTrue(s.ammo.Clear('m1'), 'a match nobody is owed anything on could not be dropped')
 
     t.equals(s.ammo.OnLoan('m1'), 0, 'the match kept its issued-ammunition record for ever')
+end)
+
+t.test('DEFECT: a restore that FAILS keeps the record of where the kit is', function()
+    -- restore() returns false in exactly the cases where the player's
+    -- belongings are STILL IN THE STASH -- ox_inventory gone, or the stash
+    -- unreadable -- and its own log offers the stash name, because it is a
+    -- real openable stash.
+    --
+    -- Reclaim cleared the record on the line ABOVE that call, so the name was
+    -- thrown away with it: nothing could retry, Clear stopped refusing over
+    -- them, IsHolding said there was nothing held, and the debug line printed
+    -- STILL STASHED about a record it had just deleted.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(s.ammo.IsHolding(1), 'nothing was stashed, so this proves nothing')
+
+    s.breakOn('readStash')
+    t.equals(s.ammo.Reclaim(1, 'm1'), 0, 'a restore that could not read the stash reported success')
+
+    t.isTrue(s.ammo.IsHolding(1),
+        'the arena forgot it was holding a kit it had just failed to hand back')
+    t.isNotNil(s.ammo.StashOf(1),
+        'and forgot WHICH stash it is in, which is the one thing the player needs')
+end)
+
+t.test('and the match cannot be dropped while that is outstanding', function()
+    -- The guard is the whole point: dropping the match's records while a kit
+    -- is unreturned is how it becomes unreturnable.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.isFalse(s.ammo.Clear('m1'),
+        'the match was dropped while somebody\'s belongings were still in a stash')
+end)
+
+t.test('and once ox_inventory is working again the kit still comes back', function()
+    -- What keeping the record buys. A retry is only possible because the
+    -- stash name survived the failure.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'm1')
+
+    s.fixOn('readStash')
+    t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the retry could not find the kit it had been told about')
+    t.isFalse(s.ammo.IsHolding(1), 'the kit came back and the record stayed behind')
+    t.isTrue(s.ammo.Clear('m1'), 'the match still could not be dropped afterwards')
 end)
 
 t.test('and it still refuses while somebody is owed their kit', function()

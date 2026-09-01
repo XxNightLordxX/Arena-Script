@@ -1174,6 +1174,78 @@ function Arena.ArenaProps(arenaKey, measured, factor)
     return out
 end
 
+--- How far past the floor's own radius a sweep still counts a piece as this
+--- arena's. Deliberately generous: a tile is kept whenever ANY part of it
+--- reaches the platform radius, so the last ring hangs half a tile further
+--- out and the corners half a diagonal further than that. Missing a stray by
+--- a metre leaves standing exactly the prop this exists to find.
+local SWEEP_MARGIN = 80.0
+
+--- How far above and below the surface a sweep looks. Cover stands on the
+--- floor and the floor hangs below it, so the pieces occupy a band around the
+--- walkable height rather than a plane.
+local SWEEP_HEIGHT = 60.0
+
+--- EVERYTHING THIS ARENA COULD HAVE LEFT STANDING: where to look for its
+--- scenery, how far out, and which models count as its own.
+---
+--- FOR THE ONE FAILURE A HANDLE LIST CANNOT COVER. The client deletes what it
+--- built by remembering each handle, and that is right until the memory and
+--- the world disagree -- a build aborted halfway, a resource restarted with a
+--- round live, an error landing between CreateObject and the table the handle
+--- is appended to. Each of those leaves a piece standing that nothing is
+--- tracking, and because the pieces are marked as mission entities the engine
+--- will not collect them either. They stand for the rest of the session in
+--- the exact spot the next round lays its own floor -- two copies of every
+--- prop in one place, which is what an arena that is solid underfoot and
+--- looks broken actually is.
+---
+--- SKY ARENAS ONLY, and that restriction is the whole safety argument. This
+--- identifies scenery by MODEL within a radius, and at an arena on the real
+--- map the same shipping container is very likely part of the map: a sweep
+--- there would delete the scenery somebody chose the location for. An arena
+--- that carries its own floor hangs over open air, where nothing within reach
+--- is ours by accident.
+--- @param arenaKey any
+--- @param factor number|nil -- the size this match grew the arena to
+--- @return table|nil -- { x, y, z, radius, height, models = { [name] = true } }
+function Arena.PropSweep(arenaKey, factor)
+    local platform = Arena.GetPlatform(arenaKey, factor)
+    if not platform then return nil end
+
+    -- The same centre Arena.ArenaProps builds around, worked out the same
+    -- way. Two places deriving one coordinate separately is how a sweep comes
+    -- to look somewhere the floor is not.
+    local centre = Arena.GetSpawnArea(arenaKey, factor)
+    if not centre then
+        local arena = Arena.GetArenaByKey(arenaKey)
+        local boundary = type(arena) == 'table' and type(arena.boundary) == 'table'
+            and arena.boundary.center or nil
+        if type(boundary) ~= 'table' and type(boundary) ~= 'userdata' then return nil end
+        centre = { x = tonumber(boundary.x) or 0.0, y = tonumber(boundary.y) or 0.0,
+                   z = tonumber(boundary.z) or 0.0 }
+    end
+
+    -- EVERY MODEL IN EVERY CHAIN, not just the one this build loaded. The
+    -- piece left behind may have been created by a client that fell further
+    -- down the chain than this one will, and a sweep that only knows its own
+    -- answer walks straight past it.
+    local models = {}
+    for _, name in ipairs(platform.models) do models[name] = true end
+    for _, piece in ipairs(Arena.GetCover(arenaKey, factor)) do
+        for _, name in ipairs(piece.models or {}) do models[name] = true end
+    end
+
+    return {
+        x = tonumber(centre.x) or 0.0,
+        y = tonumber(centre.y) or 0.0,
+        z = platform.z,
+        radius = platform.radius + SWEEP_MARGIN,
+        height = SWEEP_HEIGHT,
+        models = models,
+    }
+end
+
 --- The lowest Z a fighter may legitimately be placed at in this arena, or
 --- nil where the ground answers that question.
 ---

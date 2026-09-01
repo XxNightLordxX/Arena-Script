@@ -219,6 +219,16 @@ files['client/'] = {
         'DeleteObject',
         'IsModelInCdimage',
         'IsModelValid',
+        -- A script-created prop starts on the engine's short default draw
+        -- distance, so a floor tiled out of them flickers and changes shape
+        -- as you walk it while staying solid underfoot.
+        'SetEntityLodDist',
+        -- FINDING SCENERY NOBODY IS TRACKING. The handle list only covers
+        -- pieces this client remembers creating; a build aborted halfway or a
+        -- resource restarted with a round live leaves props behind that no
+        -- list knows about, and the next round builds its floor inside them.
+        'GetGamePool',
+        'GetEntityModel',
         'SetLocalPlayerVisibleLocally',
         'TaskStartScenarioInPlace',
 

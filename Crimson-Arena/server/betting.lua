@@ -1041,6 +1041,44 @@ end
 --- @param matchId string
 --- @param src integer
 --- @return boolean
+--- Everything staked in side-bets that will be settled as a pool.
+---
+--- THE NUMBER ON SCREEN HAS TO BE THE NUMBER THAT GETS PAID. GetPot above
+--- is the ENTRY pot and nothing else, and with betPayout.includeEntryPot on
+--- -- the shipped default -- the entry stakes and the side-bets are settled
+--- as ONE pool by one set of rules. So a panel showing GetPot alone shows a
+--- figure nobody ever wins: a player placing a bet watched the pot sit
+--- still, because their money had gone into the half of it the screen could
+--- not see.
+---
+--- Only pool-mode bets. An 'odds' bet is funded by the server and never
+--- enters the pool, so counting it would promise the winner money that is
+--- not there.
+--- @param matchId string
+--- @return integer
+function ArenaBetting.GetSideBetPool(matchId)
+    local total = 0
+    for _, bet in ipairs(sideBets[matchId] or {}) do
+        if bet.settled ~= true and bet.mode ~= 'odds' then
+            total = total + (Arena.ToInt(bet.amount) or 0)
+        end
+    end
+    return total
+end
+
+--- Everything a winner of this match stands to be paid from, as one figure.
+---
+--- With the entry pot joining the pool that is both halves; without it the
+--- two are separate prizes decided by different rules, and adding them
+--- would tell a player the entry pot is bigger than it is.
+--- @param matchId string
+--- @return integer
+function ArenaBetting.GetPrizePool(matchId)
+    local pot = ArenaBetting.GetPot(matchId)
+    if not entryPotJoinsPool() then return pot end
+    return pot + ArenaBetting.GetSideBetPool(matchId)
+end
+
 --- One player's own side-bet on a match, or nil.
 ---
 --- THE PANEL COULD NOT SEE ITS OWN BET. Side-bets are kept in this file and

@@ -27,12 +27,14 @@ Everything below is in the shipped code. Where something is off by default, or i
 **Weapons and ammo**
 
 - The weapon list is `Config.Loadouts.weapons`. Delete an entry or set `enabled = false` and it is gone from the arena — the server refuses it even when a modified client asks for it by name.
-- **24 entries ship and 20 of them are enabled**, in five categories. **Ten are melee and eight of those are on** — knife, baseball bat, machete, brass knuckles, hatchet, crowbar, golf club and switchblade — with the nightstick and the battle axe shipped off. The grenade launcher ships off as well.
-- **Four MK II weapons ship** — Pistol, SMG and Assault Rifle enabled, Heavy Sniper off because explosive rounds are a different game. Those four are the ones Rockstar actually made special magazines for, so each carries its own `ammoTypes` list.
+- **96 entries ship and 77 of them are enabled**, in six categories: 25 sidearm, 24 automatic, 9 shotgun, 7 precision, 13 heavy and 18 melee. **All eighteen melee weapons are on.** What ships off is the whole `heavy` category — launchers, the minigun, explosives — plus six sidearms.
+- **Twelve MK II weapons ship and every one of them is enabled**, Heavy Sniper MK2 included. Each carries its own `ammoTypes` list naming the item that weapon fires.
 - Each weapon carries its own ammo block: `options` is what the picker offers, `max` is the ceiling the server clamps to. A weapon with no `options` (melee) offers no ammo choice and is handed out at `default` — with `max` left as the only limit on the wire for it, so every shipped melee entry sets the two to the same number.
-- **Ammo types ship switched off** (`Config.Loadouts.ammoItems.enabled = false`), because the item names in `config.lua` are placeholders. Switched on, the round a player picks arrives as an item from your own ammo script and is taken back off them on the way out. See [Ammo types](#ammo-types--handing-out-your-own-ammo-items).
-- `weaponSlots` caps how many weapons one player may take. `alwaysGive` is added on top and cannot be spent away.
-- Body armour is picked the same way. `Config.Loadouts.allowChoose = false` hides both pickers and hands everyone `Config.Loadouts.fixed`.
+- **Ammo items ship switched ON** (`Config.Loadouts.ammoItems.enabled = true`), with a real item name on every weapon — `ammo-9`, `ammo-shotgun`, `ammo-heavysniper` — read out of that weapon's own `ammoname` in ox_inventory. The round follows the weapon; the player is never asked to choose one. See [Ammo types](#ammo-types--handing-out-your-own-ammo-items).
+- **The amount is a total**, split between the magazine and the pocket: 60 rounds on a Pistol is 30 loaded and 30 as items.
+- `weaponSlots` caps how many **shootable** weapons one player may take — 2 as shipped. **Melee has its own allowance**, `meleeSlots`, also 2, so a player carries two firearms *and* two melee weapons. `alwaysGive` is added on top of both and cannot be spent away.
+- **Body armour is not picked at all as shipped.** `Config.Loadouts.armor.allowChoose` is `false`, so the picker is hidden and everyone starts every round on a full 100 whatever their client sends. That switch is independent of `Config.Loadouts.allowChoose`, which ships `true`.
+- **The host picks the loadout, not the player.** `Config.Loadouts.chooser` ships as `'host'`: the host chooses once and everyone in that match fights with it. The server *refuses* a loadout request from anybody else rather than merely greying the panel out. Set it to `'player'` for everyone to pick their own.
 
 **Teams**
 
@@ -157,7 +159,9 @@ Add an entry to `Config.Loadouts.weapons`. `key` is what the panel and the wire 
 
 `options` is what the player may choose from. `max` is the hard ceiling the server clamps to no matter what arrives on the wire.
 
-An **off-list request is refused, not rounded** — asking for 121 rounds gets you `default`, not 120. Rounding to the nearest legal value would let a modified client walk a number up past a preset by asking for one just above it.
+**Whether an off-list amount is allowed depends on `Config.Loadouts.allowCustomAmmo`, which ships `true`.** On, a player may type an exact figure and anything in `[0, max]` is granted — asking for 121 gets 121. Off, `options` is the whole list of legal answers and an off-list request is **refused, not rounded**: asking for 121 gets you `default`, not 120. Rounding to the nearest legal value would let a modified client walk a number up past a preset by asking for one just above it.
+
+`max` is the hard ceiling either way, clamped server-side no matter what arrives on the wire.
 
 A weapon with no choice to make sets `options = nil`. The panel offers no chips for it — it prints the count as fixed instead — and the player is handed `default`:
 
@@ -350,7 +354,7 @@ The two are independent and you can have either, both, or neither:
 
 | Carries | What happens |
 |---|---|
-| `component` only | The magazine is attached to the weapon on entry. **This needs no inventory and works with `ammoItems.enabled = false`** — it is how the three enabled MK II weapons ship. |
+| `component` only | The magazine is attached to the weapon on entry. **This needs no inventory and works with `ammoItems.enabled = false`.** The mechanism is live in code, but **nothing in the shipped config uses it** — `COMPONENT_` does not appear in `config.lua` at all. |
 | `item` only | Your ammo script's item is handed over and reclaimed. Works on any weapon that takes ammunition. |
 | both | Both. The magazine is attached *and* the item is issued. |
 | neither | The type still resolves and is still named in the loadout, and nothing is handed over. |
@@ -359,7 +363,7 @@ The component is appended to a **copy** of that weapon's `components` list, neve
 
 Component names are only meaningful on MK II weapons. Adding a `component` to a plain Assault Rifle does nothing useful, because there is no magazine for it to attach.
 
-**The one trap in the shipped config, and it will catch you.** All four MK II entries carry their **own** `ammoTypes` list — component names filled in, **no `item` field on any of them**. That is exactly right for a server with no ammo script. But a per-weapon list *replaces* the shared one, so if you switch ammo items on and edit only `Config.Loadouts.defaultAmmoTypes`, every weapon in the catalogue starts issuing items **except** the four MK II ones, which quietly keep handing out a magazine and nothing else. Add your `item` names to those four lists as well, or delete their `ammoTypes` lists so they inherit the shared one — at the cost of the MK II magazines, since the shared list carries no components.
+**The shipped config now does the opposite of what this section was written to warn about.** Every weapon in the catalogue — MK II or not — carries its own `ammoTypes` list with a real `item` filled in and **no `component` at all**. So editing `defaultAmmoTypes` changes nothing for any of them, not just for twelve; and no MK II weapon arrives with a special magazine attached unless you add one. That is exactly right for a server with no ammo script. But a per-weapon list *replaces* the shared one, so if you switch ammo items on and edit only `Config.Loadouts.defaultAmmoTypes`, every weapon in the catalogue starts issuing items **except** the four MK II ones, which quietly keep handing out a magazine and nothing else. Add your `item` names to those four lists as well, or delete their `ammoTypes` lists so they inherit the shared one — at the cost of the MK II magazines, since the shared list carries no components.
 
 ### Turning betting off
 
@@ -881,7 +885,7 @@ add_ace resource.Crimson-Arena command.revive allow
 
 3. **The stake is taken at the door.** Joining takes the entry fee *before* the player is added to the match. A stake that cannot be taken aborts the join and leaves nothing behind: no seat, no place in the join order, nothing to unwind.
 
-4. **Pick a side, pick a loadout.** In a team mode the team picker is shown and any split is legal. In the Loadout screen the player picks up to `weaponSlots` weapons, an ammo amount for each and an armour level. What the panel shows and what the server will allow come from the same file, so the preview and the real thing cannot disagree.
+4. **Pick a side, pick a loadout.** In a team mode the team picker is shown and any split is legal. In the Loadout screen up to `weaponSlots` shootable weapons and `meleeSlots` melee weapons are chosen, with an ammo amount for each. **As shipped that choice is the host's**: `Config.Loadouts.chooser` is `'host'`, so everyone fights with the host's kit and the others are shown what they will be carrying rather than a picker they cannot use. Armour is not part of the choice at all — `armor.allowChoose` ships `false` and everyone starts on a full 100. What the panel shows and what the server will allow come from the same file, so the preview and the real thing cannot disagree.
 
 5. **Ready up.** With `autoStartWhenAllReady = true` the match starts on its own once everyone has readied and `minPlayers` is met. Otherwise the host presses start (`onlyHostCanStart`).
 
@@ -1107,7 +1111,8 @@ are client-side because only a client can ask the game what models it has.
 
 ### Ammo items are not arriving
 
-- **Check the switch first.** `Config.Loadouts.ammoItems.enabled` ships `false`, and with it off nothing is asked of any inventory at all. The weapon and its in-game rounds still arrive; the item does not.
+- **Check the switch first.** `Config.Loadouts.ammoItems.enabled` ships `true`, so on a stock install this is *not* the answer — but if somebody has turned it off, nothing is asked of any inventory at all: the weapon arrives with the whole pick in its magazine and no item appears.
+- **Check the amount you picked.** A weapon asked for one magazine or less has no spare rounds to issue, so no ammo item is handed over and none is missing. 30 rounds on a Pistol is 30 in the gun and nothing in the pocket, by design.
 - **`ox_inventory` must be started.** If it is not, the console says so in as many words — `ammo items are switched on but ox_inventory is not started` — and nobody is given any.
 - **The item name is the usual answer.** The names in the shipped config are placeholders. A name that does not exist on your server produces one console line per attempt, naming the item: `ammo: could not give ammo-rifle-ap x60 to 12 -- check that item exists on this server.` Nothing checks those names at startup, so this line is the only place a typo shows up.
 - The same line appears for a **full inventory**, which is not a typo. `allowWeaponWithoutAmmoItem` decides whether that player still fights.

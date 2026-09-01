@@ -78,18 +78,22 @@ Open `config.lua`. The three things that are certainly wrong for your server:
 - `Config.Betting` — decide whether money is in play at all before players can
   stake it. `Config.Betting.enabled = false` if you are unsure.
 
-Two things ship **off** and stay off unless you decide otherwise. Neither is a
-placeholder you have to fix; both are switches you have to mean:
+One thing ships **off** and stays off unless you decide otherwise. It is not a
+placeholder you have to fix; it is a switch you have to mean:
 
 - `Config.Database.enabled` — off, so the leaderboard lives in memory for the
   length of the server run and resets on restart. Nothing else reads the
   database. Turn it on for an all-time board.
-- `Config.Loadouts.ammoItems.enabled` — off, because the item names in
-  `Config.Loadouts.defaultAmmoTypes` are placeholders (`ammo-rifle`,
-  `ammo-rifle-ap`, …) and handing out an item name that does not exist is a
-  silent nothing that players report as the arena being broken. If you run an
-  ammo script whose types are inventory items, put **your** names in that list
-  and then flip the switch — and test it with the **Ammo types** section
+
+And one that used to ship off no longer does:
+
+- `Config.Loadouts.ammoItems.enabled` — **on**, and the item names are real:
+  every weapon in the list names the round it actually fires (`ammo-9`,
+  `ammo-shotgun`, `ammo-heavysniper`), read out of that weapon's own
+  `ammoname` in ox_inventory. If your server names its ammo items differently,
+  edit the `item` field on the weapon's own `ammoTypes` line — handing out a
+  name that does not exist is a silent nothing that players report as the
+  arena being broken. Either way, test it with the **Ammo types** section
   below, because it is the only part of this resource that touches a player's
   inventory.
 
@@ -207,9 +211,13 @@ is a kilometre of air.
       wrong: the boundary was 60 m around a floor that reached 77, so the outer
       seventeen metres of solid platform were outside the arena and standing on
       them bled you. The boundary is 110 m now — with the shipped prop the
-      floor reaches about 53 m, so there is more than fifty metres of slack —
-      and `Arena.ValidateConfig` refuses to start an arena whose boundary is
-      smaller than the floor it is drawn around. **A bleed warning while you
+      floor reaches about 85 m with the 40 m stunt block, so there is real slack —
+      and the client measures the floor it actually built and prints `THE
+      FLOOR REACHES OUTSIDE THE ARENA` if it ever exceeds the boundary.
+      **That is a warning, not a refusal.** `Arena.ValidateConfig` collects
+      problems and `ReportConfigProblems` prints them followed by, in as many
+      words, "the resource is still running -- these are warnings, not
+      failures". Nothing here refuses to start over config. **A bleed warning while you
       are still on solid ground is a bug, and it is one this build is supposed
       to have made impossible.**
 - [ ] **Expect the floor to reach a little past `platform.radius` at the
@@ -218,8 +226,12 @@ is a kilometre of air.
       radius leaves a hole and a hole here is a fall of a kilometre. So the
       outer ring sticks out by up to half a tile, and on the diagonals by half
       a diagonal. That is deliberate. It is inside the boundary either way.
-- [ ] Walk off the edge. You fall. You leave the boundary from underneath, and
-      the bleed finishes you if the water does not. Either is a pass.
+- [ ] Try to walk off the edge. **You should not be able to** -- the rim is
+      fenced by the wall you checked above, and getting past it is the
+      failure. If you do get past it, the boundary is what catches you: you
+      leave the sphere from underneath within a second and the bleed finishes
+      you if the kilometre does not. Either is a pass for the boundary --
+      neither should ever happen with the wall standing.
 - [ ] Die once. You come back **on the floor**, not on the terrain a kilometre
       below and not under the platform. **Expect a short drop on landing** —
       you are placed `Config.Match.spawnHeightOffset` above the surface (3 m as
@@ -235,10 +247,15 @@ is a kilometre of air.
       [crimson_arena] arena scenery: 141 piece(s) built, 121 of them floor; the floor prop measures 8.00 x 8.00m and its surface is at 1201.00.
       ```
 
-      **The cover count is always 20** -- every cover chain ends in a
+      **The cover count is always 78** -- 44 in the perimeter wall (22
+      positions, each doubled), 12 in the outer ring, 8 in the mid band, 8 in
+      the four corner pockets and 6 in the middle. Every cover chain ends in a
       base-game model, so it does not depend on what your build supplied.
-      **The floor count does**: 121 tiles with an 8m prop, 9 with the 40m
-      stunt block the chain leads with. Both grow with the roster. The exact figures depend on which
+      **The floor count does**: 9 tiles with the 40m stunt block the chain
+      leads with, 137 with an 8m prop, 297 with the base-game shipping
+      container at the end of it. 87 pieces total is the healthy number on a
+      build that has the DLC block; a much larger one is not a fault, it means
+      your build fell back down the chain. Both grow with the roster. The exact figures depend on which
       model out of the chain your build supplied and how big it measures, which
       is why the line prints the measurement.
 
@@ -380,7 +397,11 @@ keep the inventory UI open next to you.
 - [ ] Pick the **smallest** amount the weapon offers — 30 on the Pistol — and
       start again. **All of it is in the gun and there are no loose rounds**,
       which is correct: thirty rounds is thirty rounds.
-- [ ] The console shows `ammo: gave <item> x<n> to <src> on match <id>`.
+- [ ] The console shows `weapons: gave <weapon> x1 to <src> (ammo <n>)`, and
+      `<n>` is the MAGAZINE, not the whole pick. **There is no line for a
+      successful ammo-item grant** — the round-counting ledger that printed
+      one is gone, and `ArenaAmmo.Issue` logs only failures now. Silence here
+      is success.
 - [ ] **No `could not give` line.** One of those names an item that does not
       exist on your server, or an inventory that was full — it is the only
       place a wrong item name ever shows up, since nothing validates the names
@@ -395,20 +416,26 @@ keep the inventory UI open next to you.
       falling back to `defaultMagazine` instead of reading the weapon.
 - [ ] Take a **melee weapon** and start. No ammo item is issued and no type was
       ever offered — melee is excluded automatically.
-- [ ] Take an **MK II weapon** and start. Those four ship with their own
-      `ammoTypes` list carrying components and no `item` names, and a
-      per-weapon list replaces the shared one — so if you edited only
-      `defaultAmmoTypes`, MK II weapons hand out a magazine and no item. Either
-      that is what you meant, or those four lists need your item names too.
+- [ ] Take an **MK II weapon** and start. Twelve ship and all twelve are
+      enabled, and — like every other weapon in the list — each names its own
+      `item` and **no component**. Nothing in the shipped config attaches an
+      MK II magazine: `COMPONENT_` does not appear in `config.lua` at all.
+      Since every weapon carries its own list, editing `defaultAmmoTypes`
+      alone changes nothing for any of them.
 
 **It is gone after the match**
 
 - [ ] Finish the round normally. **The issued item is no longer in your
       inventory.** Check the item, not just the count.
-- [ ] Console: `ammo: reclaimed <n> of <m> item(s)`. A shortfall here is
-      ammunition you fired — it cannot come back and that is expected. What
-      must not appear is a `could not be taken back` line for rounds you never
-      spent.
+- [ ] **There is no reclaim line, and no shortfall to interpret.** The old
+      per-round ledger is gone: the exit clears the player's whole inventory
+      — issued, looted, scavenged off the floor, all of it — and hands their
+      own stash back, so there is nothing to reconcile and nothing that can
+      come up short. What must not appear is `door: <n> item(s) of <src>'s
+      could not be returned and are still in stash <name>`. That one is about
+      the player's OWN belongings rather than the arena's rounds, and it means
+      a return did not finish — the sweep retries within
+      `Config.Loadouts.inventory.returnRetrySeconds`.
 - [ ] Bring some of **your own** ammunition of the same item into the next
       match, fire nothing, and leave. You still have your own. The arena takes
       back what it issued and no more.
@@ -437,8 +464,11 @@ keep the inventory UI open next to you.
 - [ ] Start another and **restart the resource mid-round** (`restart
       crimson_arena`). Every issued item comes back off every player, before
       anything else in the shutdown runs.
-- [ ] Nothing in the console says `refusing to drop match ... still holds`.
-      That line means a match record was closed with ammunition outstanding.
+- [ ] Nothing in the console says `door: refusing to drop match <id> — <src>'s
+      kit is still stashed at <stash>`. That line means a match record was
+      asked to close while this resource still owed somebody their own
+      inventory. Refusing is the safe outcome, but read it as a sign that an
+      exit path did not finish.
 
 **One interaction only a live server can settle.** Some inventory setups tie a
 weapon's in-game round count to the ammo item that backs it. This resource

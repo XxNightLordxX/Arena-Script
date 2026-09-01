@@ -1054,4 +1054,74 @@ t.test('and one arriving with no match at all is ignored', function()
     t.equals(#f.given, 0, 'a player who is in no match was armed by a promotion')
 end)
 
+
+-- ========================================================================
+-- NOTHING IS CLIPPED AWAY
+--
+-- REPORTED FROM LIVE TESTING: the Create Match button was partly cut off,
+-- and "pretty much gone" once the radar row was switched on; and the
+-- loadout screen clipped weapons off the bottom.
+--
+-- Both are the same shape of fault. #arena-body and .arena-panel are both
+-- `overflow: hidden` -- deliberately, because a scrollbar on the page would
+-- sit over the game -- so EVERY box inside them that can grow taller than
+-- its row must either scroll or be bounded. One that does neither does not
+-- overflow visibly; it is silently cut off, and what is cut off is the
+-- bottom, which is where the buttons are.
+--
+-- Asserted against the stylesheet because there is no browser here to
+-- measure in. It cannot prove a layout fits; it can prove that every box
+-- which grows has somewhere for the growth to go, which is the property
+-- that was missing.
+-- ========================================================================
+
+--- The declarations inside one CSS rule, or nil when the rule is absent.
+--- @param css string
+--- @param selector string -- exactly as written in the file
+--- @return string|nil
+local function ruleBody(css, selector)
+    local pattern = selector:gsub('%p', '%%%0') .. '%s*{(.-)}'
+    return css:match(pattern)
+end
+
+t.test('every growable box inside the hidden panel can scroll', function()
+    local css = readPanelFile('style.css')
+
+    -- Each of these holds content whose height depends on config or on
+    -- what the player has picked, and each sits inside a container that
+    -- clips. The create panel grows by a whole field when the radar is
+    -- switched on; the loadout column carries a min-height floor on its
+    -- melee section that stops it shrinking to fit.
+    for _, selector in ipairs({ '#create-panel', '#loadout-lists', '#match-list' }) do
+        local body = ruleBody(css, selector)
+        t.isNotNil(body, ('%s has no rule at all'):format(selector))
+        t.contains(body, 'overflow-y: auto',
+            ('%s can grow taller than its row and has nowhere to put the overflow -- '
+                .. 'it will be cut off rather than scroll'):format(selector))
+        t.contains(body, 'min-height: 0',
+            ('%s cannot shrink below its content, so its own overflow never becomes '
+                .. 'scrollable'):format(selector))
+    end
+end)
+
+t.test('and the create panel is bounded, or there is nothing to scroll within', function()
+    -- align-self: start makes a grid item take its content height, which
+    -- is right for a box that should hug its content -- and means
+    -- overflow-y has no bound to act against unless one is given.
+    local body = ruleBody(readPanelFile('style.css'), '#create-panel')
+
+    t.contains(body, 'max-height',
+        'the create panel scrolls against no bound, so it still grows past the panel')
+end)
+
+t.test('the panel body still refuses to scroll as a page', function()
+    -- The control for all of the above: the fix must not be "let the page
+    -- scroll". A scrollbar there sits over the game.
+    local css = readPanelFile('style.css')
+
+    local body = ruleBody(css, '#arena-body')
+    t.isNotNil(body)
+    t.contains(body, 'overflow: hidden', 'the panel body started scrolling as a page')
+end)
+
 os.exit(t.summary())

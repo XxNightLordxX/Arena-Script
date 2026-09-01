@@ -3017,6 +3017,22 @@
             }
         }
 
+        /* THE BET THEY ALREADY HAVE DOWN. Without this the screen looked
+           identical before and after placing one -- the entry pot does not
+           move for a side-bet, by design, so there was nothing else to
+           change and no way to tell a bet that was taken from one that was
+           refused. */
+        var mine = player().bet;
+        if (has(hint) && usable && mine && int(mine.amount, 0) > 0) {
+            var backed = null;
+            betPickOptions(match).forEach(function (option) {
+                if (String(option.pick) === String(mine.pick)) backed = option.label;
+            });
+            hint.textContent = 'You have ' + money(int(mine.amount, 0)) + ' on '
+                + (backed || String(mine.pick)) + '.'
+                + (reason === null ? '' : '  ' + reason);
+        }
+
         var submit = byId('bet-submit');
         show(submit, usable);
         if (has(submit) && usable) {

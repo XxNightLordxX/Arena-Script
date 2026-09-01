@@ -431,6 +431,13 @@ onClient('crimson_arena:server:placeSpectatorBet', RATE.bet, function(src, data)
         keyArg(payload.account))
     if not ok then return refuse(src, reason) end
 
+    -- AND TELL THE PANEL. Nothing else did, so a player watched their money
+    -- leave and the screen say nothing at all: the same wallet, the same
+    -- empty bet row, no way to tell a bet that was taken from one that was
+    -- refused. Every other thing that changes a lobby broadcasts; this was
+    -- the one that did not.
+    ArenaLobby.Broadcast()
+
     ArenaNotifyKey(src, 'notify.bet_placed', 'success')
 end)
 

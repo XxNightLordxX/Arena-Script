@@ -460,6 +460,67 @@ t.test('DEFECT: the cover stands ON the floor, not buried inside it', function()
         ('%d of %d cover pieces are standing over open air'):format(unsupported, cover))
 end)
 
+t.test('DEFECT: the floor prop is MEASURED, and a coordinate\'s type is not \'table\'', function()
+    -- THE ONE THAT MADE THE ARENA LOOK BROKEN IN GAME, reported as "the
+    -- props are broken it looks scuffed out i can still walk on them they
+    -- just look super glitchy".
+    --
+    -- GetModelDimensions answers with two VECTORS, and in this runtime a
+    -- vector is its own type -- `type(v)` is 'vector3', never 'table' and
+    -- never 'userdata'. modelFootprint guarded on exactly those two names,
+    -- so it said no to every answer the game ever gave it and returned
+    -- zeros. Nothing was measured; both numbers it exists to supply fell
+    -- back to a guess; and the floor was tiled on config's 10m placeholder
+    -- out of a FORTY-metre block. Eighty-one pieces where the design lays
+    -- nine, each overlapping its neighbours by thirty metres on both axes,
+    -- every top face at the same height. Solid underfoot and impossible to
+    -- look at.
+    --
+    -- It could not be caught here until the fixture stopped handing
+    -- production plain tables, which is why sandbox.lua now marks its
+    -- stand-in vectors with the type the runtime reports.
+    local c = newClient()
+    c.enter('skydome')
+
+    local floor = 0
+    for _, object in ipairs(c.world.live()) do
+        if object.model == 'stt_prop_stunt_bblock_huge_01' then floor = floor + 1 end
+    end
+    t.isTrue(floor > 0, 'no floor was built at all')
+
+    -- What the arena's own arithmetic says the floor should be, given the
+    -- real measurement. Asked of Arena rather than written down, so the
+    -- expectation follows the config instead of going stale beside it.
+    local platform = c.env.Arena.GetPlatform('skydome')
+    local planned = #c.env.Arena.PlatformTiles(platform, SKY.x, SKY.y,
+        { x = 40.0, y = 40.0, top = 10.0 })
+    t.equals(floor, planned,
+        ('the floor came out as %d pieces where the measured plan is %d'):format(floor, planned))
+
+    -- And nowhere near what the unmeasured fallback produces. Stated as its
+    -- own assertion because the equality above passes trivially if somebody
+    -- makes both sides wrong the same way.
+    local guessed = #c.env.Arena.PlatformTiles(platform, SKY.x, SKY.y, nil)
+    t.isTrue(guessed > floor * 4,
+        ('the tileSize fallback lays %d pieces and the measurement %d -- too close for this test to mean anything')
+            :format(guessed, floor))
+end)
+
+t.test('and it says the footprint it measured out loud, so F8 settles it', function()
+    -- The line is gated on the measurement having happened at all, so its
+    -- ABSENCE was the in-game symptom of the defect above -- and its
+    -- presence is how an operator confirms the fix in ten seconds without
+    -- reading any of this.
+    local c = newClient()
+    c.enter('skydome')
+
+    local console = c.console()
+    t.isTrue(console:find('measures', 1, true) ~= nil,
+        'the arena never reported the footprint it measured')
+    t.isTrue(console:find('40.00 x 40.00m', 1, true) ~= nil,
+        ('the reported footprint is not the prop\'s real size:\n%s'):format(console))
+end)
+
 t.test('DEFECT: every spawn the arena can hand out has a piece under it', function()
     -- Not just the one this test drew. A floor with a hole in it is a hole
     -- somebody eventually spawns over, and the fall is a kilometre.

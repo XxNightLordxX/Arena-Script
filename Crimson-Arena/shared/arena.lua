@@ -72,6 +72,33 @@ function Arena.IsKey(value)
     return type(value) == 'string' and value ~= ''
 end
 
+--- Whether a value is shaped like a coordinate this resource can read.
+---
+--- THE LIST OF TYPES IS THE WHOLE POINT, and leaving vectors off it is a
+--- defect this codebase shipped four times over.
+---
+--- In the CitizenFX Lua runtime a vector is its OWN type: `type(v)` answers
+--- 'vector3', never 'table' and never 'userdata'. config.lua writes every
+--- coordinate as one, and GetEntityCoords and GetModelDimensions both return
+--- them. So a guard that asks only for 'table' says NO to every real
+--- coordinate on a real server -- and YES to every one in this suite, where
+--- the stand-in vector is a table.
+---
+--- It never shows up as an error, which is what makes it expensive: a
+--- rejected coordinate falls back, and every fallback here is silent and
+--- plausible. The sky arena's floor was tiled on the 10m guess instead of
+--- the measured 40m prop for exactly this reason -- eighty-one blocks
+--- overlapping by thirty metres each where the design lays nine -- and the
+--- respawn's "as far from the nearest opponent as the area allows" scored
+--- every candidate against an empty threat list.
+--- @param value any
+--- @return boolean
+function Arena.IsPoint(value)
+    local kind = type(value)
+    return kind == 'table' or kind == 'userdata'
+        or kind == 'vector2' or kind == 'vector3' or kind == 'vector4'
+end
+
 --- Counts entries in a map-shaped table (`#` only works on arrays).
 --- Coerces a size factor into something safe to multiply by. An arena never
 --- shrinks: a factor under one would put spawns outside a floor built for
@@ -1135,7 +1162,7 @@ function Arena.ArenaProps(arenaKey, measured, factor)
     local centre = area
     if not centre then
         local boundary = type(arena.boundary) == 'table' and arena.boundary.center or nil
-        if type(boundary) ~= 'table' and type(boundary) ~= 'userdata' then return out end
+        if not Arena.IsPoint(boundary) then return out end
         centre = { x = tonumber(boundary.x) or 0.0, y = tonumber(boundary.y) or 0.0,
                    z = tonumber(boundary.z) or 0.0 }
     end
@@ -1221,7 +1248,7 @@ function Arena.PropSweep(arenaKey, factor)
         local arena = Arena.GetArenaByKey(arenaKey)
         local boundary = type(arena) == 'table' and type(arena.boundary) == 'table'
             and arena.boundary.center or nil
-        if type(boundary) ~= 'table' and type(boundary) ~= 'userdata' then return nil end
+        if not Arena.IsPoint(boundary) then return nil end
         centre = { x = tonumber(boundary.x) or 0.0, y = tonumber(boundary.y) or 0.0,
                    z = tonumber(boundary.z) or 0.0 }
     end
@@ -1631,7 +1658,7 @@ local COVER_RETRIES = 12
 --- is dropped rather than defaulted to the origin -- an unreadable enemy at
 --- 0,0,0 would drag every respawn towards the far side of the map.
 local function asPoint(value)
-    if type(value) ~= 'table' and type(value) ~= 'userdata' then return nil end
+    if not Arena.IsPoint(value) then return nil end
     local ok, x, y = pcall(function() return value.x, value.y end)
     if not ok or type(x) ~= 'number' or type(y) ~= 'number' then
         if type(value) ~= 'table' then return nil end

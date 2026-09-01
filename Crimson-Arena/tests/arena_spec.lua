@@ -989,4 +989,62 @@ t.test('and the shipped config really draws them, or none of that matters', func
         'enemies are permanently on the map, which is what the radar exists to replace')
 end)
 
+-- ======================================================================
+-- WHAT COUNTS AS A COORDINATE
+-- ======================================================================
+
+t.test('a coordinate is a point whichever of the runtime\'s shapes it arrives in', function()
+    -- THE GUARD THIS REPLACED WAS WRONG EVERYWHERE IT APPEARED, and it
+    -- appeared four times. config.lua writes coordinates as vector3/vector4;
+    -- GetEntityCoords and GetModelDimensions return vector3s. In the
+    -- CitizenFX Lua runtime each of those is its OWN type -- `type(v)` is
+    -- 'vector3' -- so a check for 'table' says no to every real coordinate
+    -- and yes to every one built by hand in a test.
+    local env = Sandbox.newArenaEnv()
+    local rules = env.Arena
+
+    t.isTrue(rules.IsPoint(env.vector3(1.0, 2.0, 3.0)), 'a vector3 is not being read as a coordinate')
+    t.isTrue(rules.IsPoint(env.vector4(1.0, 2.0, 3.0, 4.0)), 'a vector4 is not being read as a coordinate')
+    t.isTrue(rules.IsPoint(env.vector2(1.0, 2.0)), 'a vector2 is not being read as a coordinate')
+    t.isTrue(rules.IsPoint({ x = 1.0, y = 2.0, z = 3.0 }), 'a plain table is not being read as a coordinate')
+    t.isTrue(rules.IsPoint({ 1.0, 2.0, 3.0 }), 'an array of numbers is not being read as a coordinate')
+end)
+
+t.test('and the shapes that are not coordinates are still refused', function()
+    -- The other direction, because a predicate that says yes to everything
+    -- passes the test above and protects nothing.
+    local rules = Sandbox.newArenaEnv().Arena
+    t.isTrue(not rules.IsPoint(nil))
+    t.isTrue(not rules.IsPoint(12.0))
+    t.isTrue(not rules.IsPoint('1500,3000,1201'))
+    t.isTrue(not rules.IsPoint(true))
+    t.isTrue(not rules.IsPoint(function() end))
+end)
+
+t.test('every coordinate the shipped config writes is one', function()
+    -- Against the real file, so this cannot drift from what an operator
+    -- actually has in front of them.
+    local env = Sandbox.newArenaEnv()
+    Sandbox.enableAllArenas(env)
+    local rules = env.Arena
+
+    local checked = 0
+    for key, arena in pairs(env.Config.Arenas) do
+        for _, field in ipairs({ 'spawnArea', 'boundary' }) do
+            local block = arena[field]
+            if type(block) == 'table' and block.center ~= nil then
+                t.isTrue(rules.IsPoint(block.center),
+                    ('%s.%s.center is not readable as a coordinate'):format(tostring(key), field))
+                checked = checked + 1
+            end
+        end
+        for index, spawn in ipairs(arena.spawns or {}) do
+            t.isTrue(rules.IsPoint(spawn),
+                ('%s.spawns[%d] is not readable as a coordinate'):format(tostring(key), index))
+            checked = checked + 1
+        end
+    end
+    t.isTrue(checked >= 8, ('only %d coordinates were checked -- the config stopped having any'):format(checked))
+end)
+
 os.exit(t.summary())

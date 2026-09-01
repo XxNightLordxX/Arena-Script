@@ -44,6 +44,14 @@
     approximations: they are the input, never the expected answer.
 ]]
 
+--- Pulled in for one thing: the marker that makes a coordinate answer
+--- `type()` the way the game's runtime would. The natives modelled below
+--- return VECTORS, not tables, and a fixture that hands production a table
+--- lets a `type(x) == 'table'` guard pass here and fail on a real server.
+--- See the header of sandbox.lua; the registry behind it hangs off _G
+--- precisely so these two files agree despite being separate dofiles.
+local Sandbox = dofile('fixtures/sandbox.lua')
+
 local World = {}
 
 --- The object list of the build being simulated: footprint, and how far the
@@ -194,7 +202,9 @@ function World.new(opts)
     --- @param y number
     --- @param z number
     local function vec3(x, y, z)
-        return setmetatable({ x = x, y = y, z = z or 0.0 }, vectorMeta)
+        -- Marked as well as shaped. The metatable gives it vector ARITHMETIC;
+        -- the mark gives it the vector TYPE, which is the half a guard reads.
+        return Sandbox.asVector(setmetatable({ x = x, y = y, z = z or 0.0 }, vectorMeta), 'vector3')
     end
     w.vec3 = vec3
 
@@ -222,8 +232,15 @@ function World.new(opts)
             if not size then return nil, nil end
             -- Origin in the middle horizontally, and `top` above it -- the
             -- shape the real native reports.
-            return { x = -size.x * 0.5, y = -size.y * 0.5, z = (size.top or 0.0) - (size.height or size.top or 0.0) },
-                   { x = size.x * 0.5, y = size.y * 0.5, z = size.top or 0.0 }
+            --
+            -- AND THE TYPE THE REAL NATIVE REPORTS. These come back as
+            -- vector3s in the game, and client/match.lua guards on what they
+            -- are before reading them -- a guard that was wrong for years and
+            -- could not be wrong here while this returned plain tables.
+            return Sandbox.asVector({ x = -size.x * 0.5, y = -size.y * 0.5,
+                                      z = (size.top or 0.0) - (size.height or size.top or 0.0) }, 'vector3'),
+                   Sandbox.asVector({ x = size.x * 0.5, y = size.y * 0.5,
+                                      z = size.top or 0.0 }, 'vector3')
         end,
 
         CreateObject = function(name, x, y, z)

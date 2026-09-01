@@ -427,6 +427,132 @@ t.test('DEFECT: and the ground probe does not drag them out of the sky', functio
         ('the player ended the entry at z=%0.1f -- that is the map, not the arena'):format(c.pos().z))
 end)
 
+-- ----------------------------------------------------------------------
+-- THE WALL, AND WHICH WAY ROUND ITS PIECES ARE
+--
+-- A ring of containers is a WALL when every piece stands across the radius
+-- and a set of SPOKES with twelve-metre gaps when they stand along it, and
+-- which heading does which depends on how the model was built -- long side
+-- along its own X, or along its own Y. Config cannot know that. The client
+-- measures the prop for its height anyway, so it works the heading out from
+-- the same measurement.
+-- ----------------------------------------------------------------------
+
+--- The wall pieces of a built skydome: everything standing on the floor,
+--- outside the circle fighters are placed in.
+---
+--- BY HEIGHT AND NOT BY MODEL NAME. The shipping container is in both
+--- chains -- it is the floor's last-resort fallback as well as what the wall
+--- is built from -- so filtering the floor out by name throws the whole wall
+--- away with it. The floor hangs BELOW the walkable surface, by its own
+--- height, and cover stands on top of it; that is a difference no model name
+--- can be wrong about.
+local function wallPieces(c)
+    local area = c.Arena.GetSpawnArea('skydome')
+    local surface = c.Arena.GetPlatform('skydome').z
+
+    local out = {}
+    for _, object in ipairs(c.world.live()) do
+        if object.z >= surface - 0.5 then
+            local dx, dy = object.x - area.x, object.y - area.y
+            if math.sqrt(dx * dx + dy * dy) > area.radius then
+                out[#out + 1] = { object = object, dx = dx, dy = dy }
+            end
+        end
+    end
+    return out
+end
+
+--- How much of a piece's LONG side points along the radius rather than
+--- across it. 0 is side-on -- a wall. 1 is end-on -- a spoke.
+local function alongRadius(c, entry)
+    local size = c.world.models[entry.object.model]
+    local heading = math.rad(entry.object.heading or 0.0)
+
+    -- Local +X points along (cos h, -sin h), local +Y along (sin h, cos h).
+    local ax, ay
+    if size.x >= size.y then
+        ax, ay = math.cos(heading), -math.sin(heading)
+    else
+        ax, ay = math.sin(heading), math.cos(heading)
+    end
+
+    local length = math.sqrt(entry.dx * entry.dx + entry.dy * entry.dy)
+    return math.abs((ax * entry.dx + ay * entry.dy) / length)
+end
+
+t.test('DEFECT: every wall piece stands ACROSS the radius, so the ring is a wall', function()
+    local c = newClient()
+    c.enter('skydome')
+
+    local wall = wallPieces(c)
+    t.isTrue(#wall >= 40, ('only %d pieces were built outside the spawn circle'):format(#wall))
+
+    for _, entry in ipairs(wall) do
+        t.isTrue(alongRadius(c, entry) < 0.02,
+            ('a wall piece at %.1f,%.1f is turned %.1f, which points %.2f along the radius')
+                :format(entry.object.x, entry.object.y, entry.object.heading, alongRadius(c, entry)))
+    end
+end)
+
+t.test('and it still does on a build whose container is modelled the other way round', function()
+    -- THE REASON THE HEADING IS MEASURED AND NOT WRITTEN DOWN. Same config,
+    -- same headings on the page, a prop whose long side runs along its own Y
+    -- instead of its X -- and the ring has to come out the same way round.
+    -- Take the measurement out and this is the test that fails: every piece
+    -- turns ninety degrees and the wall becomes twenty-two spokes with a
+    -- twelve-metre gap between each one.
+    local models = {}
+    for name, size in pairs(World.DEFAULT_MODELS) do models[name] = size end
+    models.prop_container_01a = { x = 2.5, y = 12.2, top = 2.6 }
+    models.prop_container_01b = { x = 2.5, y = 12.2, top = 2.6 }
+
+    local c = newClient({ models = models })
+    c.enter('skydome')
+
+    local wall = wallPieces(c)
+    t.isTrue(#wall >= 40, ('only %d pieces were built outside the spawn circle'):format(#wall))
+
+    for _, entry in ipairs(wall) do
+        t.isTrue(alongRadius(c, entry) < 0.02,
+            ('with the container modelled along Y, a piece at %.1f,%.1f points %.2f along the radius')
+                :format(entry.object.x, entry.object.y, alongRadius(c, entry)))
+    end
+end)
+
+t.test('and the wall is two courses high everywhere, with nothing over the top', function()
+    -- Two courses because one is a 2.6m step somebody vaults; nothing above
+    -- them because this is a wall and not a box -- the sky is the point of
+    -- the arena.
+    local c = newClient()
+    c.enter('skydome')
+
+    local columns = {}
+    for _, entry in ipairs(wallPieces(c)) do
+        local key = ('%.1f,%.1f'):format(entry.object.x, entry.object.y)
+        columns[key] = columns[key] or {}
+        table.insert(columns[key], entry.object.z)
+    end
+
+    local segments = 0
+    local surface = c.Arena.GetPlatform('skydome').z
+    local highest = surface
+    for key, heights in pairs(columns) do
+        segments = segments + 1
+        t.isTrue(#heights >= 2, ('wall segment %s is a single course, which is a step'):format(key))
+        for _, z in ipairs(heights) do
+            if z > highest then highest = z end
+        end
+    end
+
+    t.isTrue(segments >= 20, ('the wall is only %d segments round'):format(segments))
+
+    -- Two containers, and no third one over anybody's head.
+    t.isTrue(highest <= surface + 6.0,
+        ('something is standing %.1fm above the floor -- the sky arena has a lid on it')
+            :format(highest - surface))
+end)
+
 t.test('DEFECT: the cover stands ON the floor, not buried inside it', function()
     -- The surface used to be "config Z plus however tall the prop is", while
     -- cover was positioned from the spawn centre in config. With a ten-metre

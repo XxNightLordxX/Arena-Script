@@ -1071,4 +1071,92 @@ t.test('every coordinate the shipped config writes is one', function()
     t.isTrue(checked >= 8, ('only %d coordinates were checked -- the config stopped having any'):format(checked))
 end)
 
+-- ========================================================================
+-- SIDE-ON TO THE MIDDLE
+--
+-- A ring of containers is a wall when each one stands ACROSS the radius and
+-- a set of spokes when each one points along it, and the difference between
+-- those two is a heading. Which heading depends on which way round the model
+-- is built, which is why this is a function and not a number in config.
+-- ========================================================================
+
+t.test('a piece is turned to stand across the radius, not along it', function()
+    -- The four compass points, for a prop whose long side runs along its own
+    -- X. Headings are degrees clockwise from north, so local +X points along
+    -- (cos h, -sin h) -- and the answer is the direction, not the number:
+    -- a container turned 90 and one turned 270 stand in the same line.
+    local function longAxis(heading)
+        local r = math.rad(heading)
+        return math.cos(r), -math.sin(r)
+    end
+
+    for _, case in ipairs({
+        { dx = 10.0, dy = 0.0 },     -- due east of the middle
+        { dx = 0.0, dy = 10.0 },     -- due north
+        { dx = -10.0, dy = 0.0 },
+        { dx = 0.0, dy = -10.0 },
+        { dx = 7.07, dy = 7.07 },    -- and the diagonals, which the shipped
+        { dx = -7.07, dy = 7.07 },   -- ring had pointing the other way
+    }) do
+        local heading = Arena.TangentHeading(case.dx, case.dy, true)
+        local ax, ay = longAxis(heading)
+        -- Across the radius means the long axis and the radius are at right
+        -- angles: their dot product is zero.
+        local length = math.sqrt(case.dx * case.dx + case.dy * case.dy)
+        local dot = (ax * case.dx + ay * case.dy) / length
+        t.isTrue(math.abs(dot) < 0.001,
+            ('a piece at %.1f,%.1f was turned to %.1f, which points %.2f along the radius')
+                :format(case.dx, case.dy, heading, dot))
+    end
+end)
+
+t.test('and the answer is different for a prop built the other way round', function()
+    -- THE REASON THIS TAKES AN ARGUMENT. Some props are modelled with their
+    -- long side along their own X and some along their Y, and a heading that
+    -- lays one of them across the radius lays the other one along it. Get
+    -- this wrong on a twenty-two piece wall and every segment turns to point
+    -- outwards, leaving a twelve-metre gap between each one.
+    local alongX = Arena.TangentHeading(10.0, 0.0, true)
+    local alongY = Arena.TangentHeading(10.0, 0.0, false)
+
+    local difference = math.abs(alongX - alongY) % 180.0
+    t.isTrue(math.abs(difference - 90.0) < 0.001,
+        ('the two conventions came out %.1f apart, so one of them is wrong')
+            :format(difference))
+end)
+
+t.test('every answer is a heading the game will accept', function()
+    -- Degrees, 0 to 360. A negative heading is not an error the engine
+    -- reports; it is a prop facing somewhere nobody intended.
+    for angle = 0, 350, 10 do
+        local r = math.rad(angle)
+        local heading = Arena.TangentHeading(math.cos(r) * 20.0, math.sin(r) * 20.0, true)
+        t.isTrue(heading >= 0.0 and heading < 360.0,
+            ('a piece at %d degrees was given heading %.1f'):format(angle, heading))
+    end
+end)
+
+t.test('and a piece in the dead centre has no radius to stand across', function()
+    -- No direction to be perpendicular to, so it is left alone rather than
+    -- turned to whatever atan of nothing happens to answer.
+    t.equals(Arena.TangentHeading(0.0, 0.0, true), 0.0,
+        'a piece at the middle of the arena was turned to a made-up heading')
+end)
+
+t.test('the shipped wall really is marked to be turned by measurement', function()
+    -- The config half of it. A wall whose pieces are not marked falls back to
+    -- the headings written beside them, which are only right for a prop built
+    -- one particular way round.
+    local sky = Sandbox.shippedConfig().Arenas.skydome
+    if not sky or sky.enabled == false then return end
+
+    local aligned = 0
+    for _, piece in ipairs((sky.cover or {}).pieces or {}) do
+        if piece.align == 'tangent' then aligned = aligned + 1 end
+    end
+
+    t.isTrue(aligned >= 40,
+        ('only %d pieces are turned by measurement, which is not a wall'):format(aligned))
+end)
+
 os.exit(t.summary())

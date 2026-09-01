@@ -249,14 +249,23 @@ local function standOffset(client)
     return tonumber(client.env.Config.Match.spawnHeightOffset) or 1.0
 end
 
---- Is this fighter standing on the arena surface -- clear of it, and not
---- further above it than the hold accounts for?
+--- Is this fighter standing on the arena surface -- held exactly the hold
+--- above it, never inside it and never anywhere else?
+---
+--- EXACTLY, not within a tolerance. The first version of this allowed
+--- anything from the surface up to the hold, which quietly accepted a
+--- placement that had lost the lift as well as one that had it -- and since
+--- the bound was read from the same setting the code reads, raising
+--- spawnHeightOffset raised the assertion with it and the test could not
+--- fail on height at all. The offset is arithmetic, so it is asserted as
+--- arithmetic; `the hold is a sane height` below is what stops the setting
+--- and the assertion sliding together.
 --- @param client table
 --- @param surface number
 --- @return boolean
 local function standingOn(client, surface)
     local z = client.pos().z
-    return z >= surface - 0.01 and z <= surface + standOffset(client) + 0.01
+    return math.abs(z - (surface + standOffset(client))) < 0.01
 end
 
 --- Is there a piece of the FLOOR under this point?
@@ -293,6 +302,21 @@ end
 -- ======================================================================
 -- THE FLOOR IS REALLY THERE
 -- ======================================================================
+
+t.test('the hold is a sane height, so nothing can slide with it', function()
+    -- standingOn reads this setting, so a test that only used standingOn
+    -- would agree with any value at all. This is the one assertion in the
+    -- file written against a number rather than against the config, and it
+    -- is here so the rest can be written against the config safely.
+    --
+    -- Above zero: a ped placed level with a prop has its origin inside it
+    -- and falls through, which is the defect the hold exists for. Under
+    -- five: it is a drop the player takes when the countdown ends, and it
+    -- is also a flare visible across the arena saying where a spawn is.
+    local offset = tonumber(Sandbox.newArenaEnv().Config.Match.spawnHeightOffset) or 1.0
+    t.isTrue(offset > 0.0, ('spawnHeightOffset is %0.2f -- a ped placed level with the floor falls through it'):format(offset))
+    t.isTrue(offset <= 5.0, ('spawnHeightOffset is %0.2f -- that is a fall, and it broadcasts the spawn'):format(offset))
+end)
 
 t.test('DEFECT: entering the skydome builds a floor and stands the player on it', function()
     -- THE WHOLE FEATURE, in one assertion. Nothing below matters if this

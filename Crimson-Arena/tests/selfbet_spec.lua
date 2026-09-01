@@ -354,4 +354,94 @@ t.test('a pool that paid out is not also reported as kept', function()
     t.contains(server.log(), 'paid 10000, 0 kept', 'the house kept nothing out of a pool')
 end)
 
+-- ======================================================================
+-- THE ENTRY POT IS NOT A BET ANYBODY PLACED
+-- ======================================================================
+--
+-- betPayout.includeEntryPot turns every fighter's entry fee into a pool bet
+-- on their own side, so the pot and the side-bets settle by one set of rules.
+-- That is bookkeeping. `fighterBets` is a different question -- whether a
+-- player may ALSO stake money of their own on themselves -- and the two
+-- settings used to cancel each other out: an operator who wanted an entry pot
+-- but no self-betting got neither, because every entry stake was a bet held
+-- by a fighter and every one of them was voided and handed back. The round
+-- ended, a winner was announced, and the money quietly went home.
+
+--- Runs a 5,000-a-head two-fighter round under `mutate` and hands back what
+--- each player's total (cash plus bank) moved by.
+local function feeRound(mutate)
+    local server = newServer({
+        [1] = { cash = 100000, bank = 100000 },
+        [2] = { cash = 100000, bank = 100000 },
+    }, mutate)
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 5000, account = 'cash' })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
+
+    -- Measured against what they walked in with, NOT against what they held
+    -- once the fee was taken: the question is what a round costs a player
+    -- end to end, and the fee is part of the round.
+    local function worth(src) return server.cash(src) + server.bank(src) - 200000 end
+    server.settle(matchId, 2)
+    return worth(1), worth(2), server
+end
+
+--- Every combination of the two settings that decide how a pot is settled.
+--- Named, because the failure they describe is invisible from one of them.
+local FEE_SETTINGS = {
+    { name = 'as shipped', mutate = nil },
+    { name = 'with fighter bets switched off',
+      mutate = function(config) config.Betting.fighterBets.enabled = false end },
+    { name = 'with fighter bets off and the pot kept separate',
+      mutate = function(config)
+          config.Betting.fighterBets.enabled = false
+          config.Betting.betPayout.includeEntryPot = false
+      end },
+    { name = 'with fighters free to back any side',
+      mutate = function(config) config.Betting.fighterBets.ownSideOnly = false end },
+    { name = 'with the two pools kept apart',
+      mutate = function(config) config.Betting.betPayout.sharedPool = false end },
+}
+
+for _, case in ipairs(FEE_SETTINGS) do
+    t.test(('DEFECT: the entry pot is won %s'):format(case.name), function()
+        local winner, loser = feeRound(case.mutate)
+        t.equals(winner, 5000, 'the winner did not take the loser\'s fee')
+        t.equals(loser, -5000, 'the loser did not pay their fee')
+    end)
+end
+
+t.test('and a fighter STILL cannot back themselves when that is switched off', function()
+    -- The fix above exempts entry fees from the fighter-bets switch. It must
+    -- not exempt an actual self-bet, which is the thing that switch is for.
+    local server = newServer({
+        [1] = { cash = 100000, bank = 100000 },
+        [2] = { cash = 100000, bank = 100000 },
+    }, function(config) config.Betting.fighterBets.enabled = false end)
+    local matchId = server.openMatch()
+
+    local ok, reason = server.betting.PlaceSpectatorBet(1, matchId, 1, 5000, 'cash')
+    t.isFalse(ok, 'a fighter was allowed to back themselves with the rule off')
+    t.isNotNil(reason, 'the refusal came with no reason')
+    t.equals(server.cash(1), 100000, 'money moved on a refused bet')
+end)
+
+t.test('and one placed before the rule was switched off is handed back, not kept', function()
+    -- The bet-then-join hole in the other direction: the bet is legal when it
+    -- is placed and the operator changes the rule mid-round. It is not judged,
+    -- and it is not swallowed either.
+    local server = newServer({
+        [1] = { cash = 100000, bank = 100000 },
+        [2] = { cash = 100000, bank = 100000 },
+    })
+    local matchId = server.openMatch()
+    t.isTrue(server.betting.PlaceSpectatorBet(1, matchId, 1, 5000, 'cash'), 'the self-bet was refused')
+
+    server.config.Betting.fighterBets.enabled = false
+    server.settle(matchId, 2)
+
+    t.equals(server.cash(1), 100000, 'the voided bet was kept rather than returned')
+    t.contains(server.log(), 'SIDE-BET VOID', 'the bet was judged instead of voided')
+end)
+
 os.exit(t.summary())

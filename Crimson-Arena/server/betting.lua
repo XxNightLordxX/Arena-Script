@@ -1084,14 +1084,35 @@ end
 --- to fight against, then join. So it is checked AGAIN here, against who
 --- actually fought, which is the only moment both facts are known.
 ---
---- With fighter bets switched off entirely, any bet held by a fighter is
---- void -- the original rule, unchanged.
+--- With fighter bets switched off entirely, any bet a fighter CHOSE to place
+--- is void -- the original rule, unchanged.
 --- @param bet table
 --- @param fighters table<number, table|boolean>
 --- @return boolean
 local function voided(bet, fighters)
     local row = fighters[bet.src]
     if not row then return false end
+
+    -- AN ENTRY FEE IS NOT A BET ANYBODY CHOSE TO PLACE.
+    --
+    -- With betPayout.includeEntryPot on, every fighter's entry fee is turned
+    -- into a pool bet on their own side so the pot and the side-bets are
+    -- settled by one set of rules. That is bookkeeping, not a wager: the
+    -- player paid a fixed price to enter, and `fighterBets` is the switch for
+    -- whether they may ALSO back themselves with money of their own.
+    --
+    -- Without this line the two settings cancelled each other out. An
+    -- operator who wanted an entry pot but no self-betting got neither: every
+    -- entry stake was a bet held by a fighter, so every one was voided and
+    -- handed straight back, and the pot was never won by anybody. Nothing
+    -- said so -- the round ended, the winner was announced, and the money
+    -- quietly went home. `fromEntryFee` exists on the record precisely to
+    -- tell the two apart, and this is the check that reads it.
+    --
+    -- The own-side rule below has nothing to say about one either:
+    -- addEntryStakesAsBets writes the pick from the side they actually
+    -- fought on, so it can never be a bet against its own holder.
+    if bet.fromEntryFee == true then return false end
 
     -- They fought. Whether that is allowed at all:
     if not fighterBetsOn() then return true end

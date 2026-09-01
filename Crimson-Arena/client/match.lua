@@ -1255,7 +1255,18 @@ local builtArena = nil
 --- @return number sizeX, number sizeY, number top, number bottom
 local function modelFootprint(hash)
     local minimum, maximum = GetModelDimensions(hash)
-    if type(minimum) ~= 'table' and type(minimum) ~= 'userdata' then return 0.0, 0.0, 0.0, 0.0 end
+    -- Arena.IsPoint rather than a type check written out here, and that is
+    -- the fix rather than a tidy-up: this native answers with two VECTORS,
+    -- and a vector is its own type in this runtime. Asking whether one is a
+    -- 'table' says no to every answer the game has ever given this function,
+    -- so nothing was ever measured -- and the two numbers it exists to
+    -- supply both fell back to a guess. The floor was tiled on config's 10m
+    -- placeholder out of a forty-metre block: eighty-one pieces overlapping
+    -- by thirty metres on both axes, every top face at the same height,
+    -- solid to stand on and impossible to look at.
+    if not Arena.IsPoint(minimum) or not Arena.IsPoint(maximum) then
+        return 0.0, 0.0, 0.0, 0.0
+    end
 
     return (maximum.x or 0.0) - (minimum.x or 0.0),
            (maximum.y or 0.0) - (minimum.y or 0.0),

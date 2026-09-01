@@ -17,26 +17,73 @@
 
 local Sandbox = {}
 
+--- WHICH STAND-IN VECTORS ARE WHICH KIND, shared across every fixture in
+--- this suite.
+---
+--- It hangs off the real _G on purpose. Specs pull sandbox.lua and world.lua
+--- in with separate `dofile` calls, so each file gets its OWN copy of every
+--- local in here -- and two private registries would mean a vector built by
+--- one fixture is an ordinary table to the other, which is exactly the blind
+--- spot this whole mechanism exists to close.
+---
+--- Weak-keyed, so a vector the test drops is still collectable.
+local VECTOR_KINDS = rawget(_G, '__crimson_arena_vector_kinds')
+if not VECTOR_KINDS then
+    VECTOR_KINDS = setmetatable({}, { __mode = 'k' })
+    rawset(_G, '__crimson_arena_vector_kinds', VECTOR_KINDS)
+end
+
 --- vector3/vector4 are CitizenFX Lua RUNTIME TYPES, not natives -- config.lua
 --- calls them at file-load time, so plain lua5.4 needs a stand-in or every
 --- spec that loads the real config dies on "attempt to call a nil value".
 ---
---- Deliberately minimal: a table carrying x/y/z(/w) and nothing else. They
---- model the fields production code READS, not CitizenFX's vector maths. If
---- production code ever does arithmetic on one (v1 - v2, #v), this stub will
---- not catch the bug -- the fix then is real metamethods here, not a
---- weakened test.
-local function makeVector(fields)
+--- A table carrying x/y/z(/w) and nothing else: they model the fields
+--- production code READS, not CitizenFX's vector maths. If production code
+--- ever does arithmetic on one (v1 - v2, #v), this stub will not catch the
+--- bug -- the fix then is real metamethods here, not a weakened test.
+---
+--- THEY REPORT THEIR OWN TYPE, and that is not decoration. In the CitizenFX
+--- Lua runtime a vector3 is its own type: `type(v)` answers 'vector3', never
+--- 'table' and never 'userdata'. A stand-in that answers 'table' makes every
+--- `type(x) == 'table'` guard in production pass in the suite and fail on a
+--- real server -- silently, because a rejected coordinate is not an error,
+--- it is a fallback. Four such guards shipped, and the sky arena's floor was
+--- built out of eighty-one overlapping blocks because of one of them.
+--- See Sandbox.type.
+local function makeVector(fields, kind)
     return function(...)
         local vector, args = {}, { ... }
         for index, name in ipairs(fields) do vector[name] = args[index] end
+        VECTOR_KINDS[vector] = kind
         return vector
     end
 end
 
-Sandbox.vector2 = makeVector({ 'x', 'y' })
-Sandbox.vector3 = makeVector({ 'x', 'y', 'z' })
-Sandbox.vector4 = makeVector({ 'x', 'y', 'z', 'w' })
+Sandbox.vector2 = makeVector({ 'x', 'y' }, 'vector2')
+Sandbox.vector3 = makeVector({ 'x', 'y', 'z' }, 'vector3')
+Sandbox.vector4 = makeVector({ 'x', 'y', 'z', 'w' }, 'vector4')
+
+--- `type()` as the runtime production actually runs in implements it.
+---
+--- Installed over the real `type` in every sandboxed env, so a production
+--- file asking what a coordinate is gets the answer the game would give it
+--- rather than the answer our stand-in's implementation happens to have.
+--- @param value any
+--- @return string
+function Sandbox.type(value)
+    return VECTOR_KINDS[value] or type(value)
+end
+
+--- Marks a table this suite built by hand as a vector of `kind`, for the
+--- fixtures that hand production a coordinate a NATIVE would have returned
+--- (GetEntityCoords, GetModelDimensions) rather than one config wrote.
+--- @param value table
+--- @param kind string
+--- @return table value
+function Sandbox.asVector(value, kind)
+    VECTOR_KINDS[value] = kind
+    return value
+end
 
 -- ======================================================================
 -- LOCALES
@@ -158,6 +205,9 @@ function Sandbox.newEnv(overrides)
     env.vec2 = Sandbox.vector2
     env.vec3 = Sandbox.vector3
     env.vec4 = Sandbox.vector4
+    -- BEFORE the overrides, so a spec that genuinely needs the plain one can
+    -- still say so -- and after the _G copy, which brought the plain one in.
+    env.type = Sandbox.type
     for key, value in pairs(overrides or {}) do env[key] = value end
     return env
 end

@@ -184,12 +184,13 @@ is a kilometre of air.
 - [ ] With `Config.Debug` on, F8 names the piece count and the surface height:
 
       ```
-      [crimson_arena] arena scenery: 137 piece(s) built, 121 of them floor; the floor prop measures 8.00 x 8.00m and its surface is at 1201.00.
+      [crimson_arena] arena scenery: 141 piece(s) built, 121 of them floor; the floor prop measures 8.00 x 8.00m and its surface is at 1201.00.
       ```
 
-      **The numbers to expect with the shipped prop and two players: 121 floor
-      tiles and 16 pieces of cover.** They grow with the roster — a
-      twenty-player match tiles about 305. The exact figures depend on which
+      **The cover count is always 20** -- every cover chain ends in a
+      base-game model, so it does not depend on what your build supplied.
+      **The floor count does**: 121 tiles with an 8m prop, 9 with the 40m
+      stunt block the chain leads with. Both grow with the roster. The exact figures depend on which
       model out of the chain your build supplied and how big it measures, which
       is why the line prints the measurement.
 

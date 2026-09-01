@@ -1508,6 +1508,14 @@ end
 --- not a search.
 local RESPAWN_CANDIDATES = 16
 
+--- How many times one respawn candidate is redrawn to get it out of a wall.
+---
+--- BOUNDED, because an arena CAN be built with no clear ground left in it and
+--- a respawn that never returns is a fighter who never comes back. After this
+--- many tries the last sample is taken as it is: standing on a barrier is a
+--- bad respawn, and not respawning at all is a broken round.
+local COVER_RETRIES = 12
+
 --- Coerces one position into { x, y, z }, or nil.
 ---
 --- Accepts what the callers actually hold: a vector3 from the engine, a
@@ -1559,13 +1567,58 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor)
         if point then threats[#threats + 1] = point end
     end
 
+    -- THE ARENA'S OWN WALLS, WHICH THIS USED TO WALK STRAIGHT INTO.
+    --
+    -- Arena.PlanSpawns has always seeded its rejection list with every cover
+    -- piece, so nobody is ever placed into a container at the START of a
+    -- round. This function did none of it: it drew candidates from the disc
+    -- and scored them on distance from the nearest live opponent, with no
+    -- term for the scenery at all. Measured on the shipped skydome, whose
+    -- twenty pieces cover about a tenth of the spawn disc, one respawn in ten
+    -- landed inside one -- and a fighter respawned inside a shipping
+    -- container has nowhere to walk to.
+    --
+    -- It reads as the arena being broken in exactly the way the entry spawns
+    -- were reported broken, which is why it went unnoticed: the first spawn
+    -- of the round was fixed and looked right, and every one after it was
+    -- rolling dice.
+    local blocked = {}
+    local clearance = Arena.CoverClearance(arenaKey)
+    for _, piece in ipairs(Arena.GetCover(arenaKey, factor)) do
+        blocked[#blocked + 1] = { x = piece.x, y = piece.y }
+    end
+
+    --- Is this candidate standing in a piece of cover?
+    --- @param point table
+    --- @param centreX number
+    --- @param centreY number
+    --- @return boolean
+    local function insideCover(point, centreX, centreY)
+        for _, piece in ipairs(blocked) do
+            local dx = point.x - (centreX + piece.x)
+            local dy = point.y - (centreY + piece.y)
+            if (dx * dx + dy * dy) < (clearance * clearance) then return true end
+        end
+        return false
+    end
+
     -- THE CANDIDATES. An arena with an area gets fresh random points; one
     -- with only a point list gets the list, which is every choice there is.
     local candidates = {}
     local area = Arena.GetSpawnArea(arenaKey, factor)
     if area then
+        -- SAMPLED UNTIL THEY ARE CLEAR, not filtered afterwards. Filtering a
+        -- fixed draw shrinks the pool the threat scoring then chooses from,
+        -- and on a crowded arena can empty it -- so a rejected sample is
+        -- REPLACED, up to a bounded number of tries, and the count of usable
+        -- candidates stays the same whatever the cover looks like.
         for _ = 1, RESPAWN_CANDIDATES do
-            candidates[#candidates + 1] = sampleDisc(rng, area, area.x, area.y, area.radius)
+            local point
+            for _ = 1, COVER_RETRIES do
+                point = sampleDisc(rng, area, area.x, area.y, area.radius)
+                if not insideCover(point, area.x, area.y) then break end
+            end
+            candidates[#candidates + 1] = point
         end
     else
         local arena = Arena.GetArenaByKey(arenaKey)
@@ -1586,17 +1639,40 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor)
         for step = 1, #list do
             candidates[#candidates + 1] = list[((offset + step - 1) % #list) + 1]
         end
+
+        -- A HAND-WRITTEN LIST IS THE OPERATOR'S CHOICE and is never thinned:
+        -- these are points somebody placed on purpose, and dropping one
+        -- because a barrier is near it can leave nothing to return at all.
+        -- Cover clearance is for points this file INVENTED.
     end
 
     if #candidates == 0 then return nil end
+
+    -- AND CLEAR GROUND BEATS OPEN GROUND, whatever the threat scoring says.
+    --
+    -- The redraw above makes a blocked candidate rare rather than impossible,
+    -- because it is bounded -- an arena with no clear ground left has to
+    -- return SOMETHING. So the choice is made in two tiers: a candidate
+    -- standing in a wall is only ever picked when every other one is too.
+    -- Being far from an enemy is worth nothing from inside a container.
+    local clear = {}
+    if area then
+        for _, candidate in ipairs(candidates) do
+            if not insideCover(candidate, area.x, area.y) then
+                clear[#clear + 1] = candidate
+            end
+        end
+    end
+    local pool = #clear > 0 and clear or candidates
+
     if #threats == 0 then
         -- Nobody to avoid. Still random: on an area the first sample already
         -- is, and on a list the offset above made it one.
-        return candidates[1]
+        return pool[1]
     end
 
     local best, bestScore = nil, -1
-    for _, candidate in ipairs(candidates) do
+    for _, candidate in ipairs(pool) do
         local nearest = math.huge
         for _, threat in ipairs(threats) do
             local gap = distanceSquared(candidate, threat)
@@ -2174,19 +2250,77 @@ function Arena.ValidateConfig()
                 -- reached 77.
                 --
                 -- The floor is TILED, so it reaches further than
-                -- platform.radius: a tile is kept whenever any part of it is
-                -- inside that radius, so the outer ring sticks out by up to
-                -- half a tile and the corners by half a diagonal. The
-                -- configured tileSize is the only size known outside the
-                -- game, so it is what the margin is worked out from.
+                -- platform.radius: a tile is kept whenever its NEAREST corner
+                -- is inside that radius, which puts its FAR corner up to a
+                -- whole tile diagonal beyond.
+                --
+                -- MEASURED BY TILING IT, not by a formula. The first version
+                -- of this used `radius + tileSize * 0.708`, which is half a
+                -- diagonal -- exactly half of what a kept tile can reach --
+                -- so it stayed silent on a 60m sphere around a floor reaching
+                -- 77, which is the arena its own comment cites as the reason
+                -- it exists. Laying the tiles out and taking the furthest
+                -- corner is not an approximation, and it also gets `maxTiles`
+                -- right for free: a ceiling that trims the outer ring makes
+                -- the floor genuinely smaller, and a formula would warn about
+                -- ground that is not there.
                 if raw.boundary.enabled == true then
-                    local tile = tonumber(platform.tileSize) or 0
-                    local reach = platform.radius + (tile * 0.708)
-                    local sphere = tonumber(raw.boundary.radius) or 0
+                    local tile = math.max(0.0, tonumber(platform.tileSize) or 0)
 
+                    -- THE CLOSED FORM FIRST, and it is exact for an untrimmed
+                    -- floor. The furthest a kept tile can sit is with its
+                    -- NEAREST corner exactly on the radius along the
+                    -- diagonal, which puts its FAR corner one whole tile
+                    -- diagonal beyond -- radius + tile * sqrt(2).
+                    local reach = platform.radius + tile * math.sqrt(2)
+
+                    -- AND THE REAL TILING WHEN IT IS CHEAP TO LAY OUT,
+                    -- because the formula is only an upper bound. The last
+                    -- ring rarely sits exactly on the diagonal, and
+                    -- `maxTiles` can trim it away entirely -- both make the
+                    -- floor genuinely smaller than radius + tile * sqrt(2),
+                    -- and warning about ground that is not there sends an
+                    -- operator to widen a boundary that already fits.
+                    --
+                    -- BUT THE TILING IS O(radius / tileSize) SQUARED, and
+                    -- tileSize is an operator setting: a typo of 0.01 asks
+                    -- for eighty billion cells and hangs the SERVER AT BOOT,
+                    -- inside the validator written to catch typos. The
+                    -- resource's own junk-value fuzz found that within a
+                    -- minute of this being written.
+                    --
+                    -- So the cell count is worked out with arithmetic first
+                    -- and the layout only done when it is small. Above the
+                    -- ceiling the bound stands, which over-states the floor
+                    -- and therefore only ever warns too eagerly -- the safe
+                    -- direction, on a config that is already nonsense.
+                    if tile > 0 then
+                        local steps = math.ceil((platform.radius + tile * 0.5) / tile)
+                        local cells = (2 * steps + 1) ^ 2
+                        if cells <= 40000 then
+                            local half = tile * 0.5
+                            local measured = 0.0
+                            for _, piece in ipairs(Arena.PlatformTiles(platform, 0.0, 0.0,
+                                { x = tile, y = tile, top = 0.0 })) do
+                                local far = math.sqrt((math.abs(piece.x) + half) ^ 2
+                                    + (math.abs(piece.y) + half) ^ 2)
+                                if far > measured then measured = far end
+                            end
+                            if measured > 0.0 then reach = measured end
+                        end
+                    end
+
+                    local sphere = tonumber(raw.boundary.radius) or 0
                     if sphere < reach then
-                        complain(('Config.Arenas["%s"] has a %.2fm boundary around a floor that reaches about %.2fm -- the outer ring of the platform is solid ground OUTSIDE the arena, and standing on it bleeds you.')
-                            :format(entry.key, sphere, reach))
+                        -- THE MEASURED PROP CAN BE BIGGER THAN tileSize, and
+                        -- this cannot know: `tileSize` is what the client
+                        -- falls back to when it cannot measure the model, and
+                        -- a build whose floor prop is four times that tiles
+                        -- four times as far out. So the number here is a
+                        -- FLOOR on the real reach, never a ceiling, and the
+                        -- message says so rather than quoting it as fact.
+                        complain(('Config.Arenas["%s"] has a %.2fm boundary around a floor that reaches at least %.2fm at the configured tileSize of %.2fm -- the outer ring of the platform is solid ground OUTSIDE the arena, and standing on it bleeds you. A floor prop that measures larger than tileSize reaches further still.')
+                            :format(entry.key, sphere, reach, tile))
                     end
                 end
             end
@@ -2240,12 +2374,40 @@ function Arena.ValidateConfig()
         -- every spectator's stake as well as the fees. Which of those an
         -- operator wants is their decision, so this says the two settings
         -- disagree and names both, rather than picking one for them.
-        if percent > 0 then
-            local block = Config.Betting.betPayout
-            if type(block) == 'table' and block.includeEntryPot == true then
-                complain(('Config.Betting.houseCutPercent is %d%% but betPayout.includeEntryPot is on, so NO CUT IS TAKEN: the entry fees become bets in the pool and the pot never settles on its own. Set includeEntryPot = false to rake the pot, or houseCutPercent = 0 to stop asking for a cut that is not collected.')
-                    :format(percent))
-            end
+        local block = Config.Betting.betPayout
+        local pooled = type(block) == 'table' and block.includeEntryPot == true
+
+        if percent > 0 and pooled then
+            complain(('Config.Betting.houseCutPercent is %d%% but betPayout.includeEntryPot is on, so NO CUT IS TAKEN: the entry fees become bets in the pool and the pot never settles on its own. Set includeEntryPot = false to rake the pot, or houseCutPercent = 0 to stop asking for a cut that is not collected.')
+                :format(percent))
+        end
+
+        -- THE SIBLING NO-OP, and it is the same shape exactly.
+        --
+        -- minPlayersToPayOut is read in one place -- Arena.ComputePayouts --
+        -- and ComputePayouts only runs when the pot settles on its own. With
+        -- the entry fees folded into the pool, ArenaBetting.Settle returns
+        -- before it, so the head count is never consulted. An operator who
+        -- raises this to stop two friends farming each other watches two
+        -- friends farm each other, with the setting sitting there saying it
+        -- is switched on.
+        --
+        -- NOT ENFORCED INSIDE THE POOL PATH INSTEAD. Refusing to settle a
+        -- pool is a decision about other people's SIDE-BETS, not about the
+        -- fees, and it is the operator's to make -- the same argument the
+        -- rake above is left alone for.
+        -- ONLY WHEN IT WOULD EVER HAVE REFUSED ONE. The shipped value is 2,
+        -- which is also the smallest match this server will start, so it can
+        -- never turn a payout down and losing it costs nothing. Warning about
+        -- that is noise on a working default, and noise in a start-up report
+        -- is how a real complaint gets scrolled past. An operator who raises
+        -- it above the minimum roster is asking for refusals they will not
+        -- get, and that is worth a line.
+        local floorCount = Arena.ToInt(Config.Betting.minPlayersToPayOut) or 0
+        local smallest = math.max(2, Arena.ToInt(Config.Match.minPlayers) or 2)
+        if floorCount > smallest and pooled then
+            complain(('Config.Betting.minPlayersToPayOut is %d but betPayout.includeEntryPot is on, so IT IS NEVER CHECKED: the entry fees become bets in the pool and the pot never settles on its own, which is where the head count is read. A two-player match will pay out in full. Set includeEntryPot = false to enforce the threshold, or minPlayersToPayOut = 0 to stop asking for one that is not applied.')
+                :format(floorCount))
         end
     end
 

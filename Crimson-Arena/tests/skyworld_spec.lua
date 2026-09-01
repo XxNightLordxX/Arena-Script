@@ -50,7 +50,7 @@ local function newClient(opts)
     local world = World.new(opts)
     local runner = Sandbox.newThreadRunner()
     local handlers = {}
-    local c = { world = world, serverEvents = {}, notifications = {}, notified = {} }
+    local c = { world = world, serverEvents = {}, notifications = {}, notified = {}, printed = {} }
 
     local overrides = {
         CreateThread = runner.CreateThread,
@@ -114,6 +114,12 @@ local function newClient(opts)
         NetworkOverrideClockTime = function() end,
         ClearOverrideWeather = function() end,
         NetworkClearClockTimeOverride = function() end,
+
+        -- WHAT THE OPERATOR SEES IN F8. Several of this file's guarantees are
+        -- a console line and nothing else -- a floor that did not build, a
+        -- model that fell back, a floor that reaches outside its own arena --
+        -- and a line nobody can read is the same as no line at all.
+        print = function(line) c.printed[#c.printed + 1] = tostring(line) end,
 
         lib = { notify = function(payload) c.notified[#c.notified + 1] = payload end },
         ArenaUI = { UpdateHud = function() end },
@@ -232,6 +238,9 @@ local function newClient(opts)
 
     function c.pos() return world.pedPos end
 
+    --- Everything this client has printed, as one string.
+    function c.console() return table.concat(c.printed, '\n') end
+
     return c
 end
 
@@ -302,6 +311,30 @@ end
 -- ======================================================================
 -- THE FLOOR IS REALLY THERE
 -- ======================================================================
+
+t.test('DEFECT: a floor that sticks out of the arena says so in F8', function()
+    -- ValidateConfig asks this at start-up and can only answer it for
+    -- platform.tileSize -- the size the client falls back to when it cannot
+    -- measure the model. The real prop is usually bigger, so the client is
+    -- the only place both numbers exist at once. Solid ground outside the
+    -- sphere is the failure that reads worst from a player's seat: you walk
+    -- to the edge of a platform you are still standing on and start bleeding.
+    local c = newClient()
+    c.env.Config.Arenas.skydome.boundary.radius = 20.0
+    c.enter('skydome')
+
+    t.contains(c.console(), 'THE FLOOR REACHES OUTSIDE THE ARENA',
+        'a floor well outside a 20m boundary was built without a word')
+end)
+
+t.test('and stays quiet when the floor is inside it, which is the shipped case', function()
+    -- A warning that fires on a working arena is noise, and noise in a
+    -- start-up report is how a real one gets scrolled past.
+    local c = newClient()
+    c.enter('skydome')
+    t.notContains(c.console(), 'THE FLOOR REACHES OUTSIDE THE ARENA',
+        'the shipped skydome was reported as sticking out of its own boundary')
+end)
 
 t.test('the hold is a sane height, so nothing can slide with it', function()
     -- standingOn reads this setting, so a test that only used standingOn

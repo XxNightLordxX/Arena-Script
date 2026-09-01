@@ -1259,6 +1259,14 @@ function ArenaMatch.OnDeath(src, killerSrc)
     player.alive = false
     player.deaths = (Arena.ToInt(player.deaths) or 0) + 1
 
+    -- THE START-ORDER WARNING, REPEATED WHERE THE SYMPTOM IS. It goes out
+    -- once at boot in the middle of a report about six other things, and the
+    -- thing it predicts -- an EMS call for somebody in the arena -- does not
+    -- happen until here. Said once per resource lifetime, not per death.
+    if type(ArenaCompat) == 'table' and type(ArenaCompat.WarnLateStartOnce) == 'function' then
+        ArenaCompat.WarnLateStartOnce()
+    end
+
     local killer = resolveKiller(match, player, killerSrc)
     if killer then
         killer.kills = (Arena.ToInt(killer.kills) or 0) + 1

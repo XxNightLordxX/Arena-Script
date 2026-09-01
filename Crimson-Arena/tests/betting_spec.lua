@@ -306,6 +306,36 @@ t.test('and it names both settings, because either one resolves it', function()
     t.contains(said, 'houseCutPercent', 'the complaint does not name the cut itself')
 end)
 
+t.test('DEFECT: and so is a head-count threshold that is never checked', function()
+    -- The same defect one setting over. minPlayersToPayOut is read in exactly
+    -- one place -- Arena.ComputePayouts -- and that only runs when the pot
+    -- settles on its own. With the fees folded into the pool, Settle returns
+    -- before it. An operator who raises this to stop two friends farming each
+    -- other watches two friends farm each other.
+    t.contains(complaintsFrom(function(config) config.Betting.minPlayersToPayOut = 5 end),
+        'NEVER CHECKED', 'an unenforceable head count passed without a word')
+end)
+
+t.test('and the shipped threshold is left alone, because it could never refuse one', function()
+    -- The shipped value is 2, which is also the smallest match this server
+    -- will start, so it can never turn a payout down. Warning about it is
+    -- noise on a working default, and this whole area only works if the
+    -- start-up report stays worth reading.
+    t.notContains(complaintsFrom(nil), 'NEVER CHECKED',
+        'the shipped config warns about a threshold that costs nothing')
+    t.notContains(complaintsFrom(function(config)
+        config.Betting.minPlayersToPayOut = 3
+        config.Match.minPlayers = 4
+    end), 'NEVER CHECKED', 'a threshold below the smallest roster was complained about')
+end)
+
+t.test('and one the pot really checks is not complained about', function()
+    t.notContains(complaintsFrom(function(config)
+        config.Betting.minPlayersToPayOut = 5
+        config.Betting.betPayout.includeEntryPot = false
+    end), 'NEVER CHECKED', 'an enforced threshold was reported as dead')
+end)
+
 t.test('but a rake that IS taken passes without comment', function()
     -- The other half. A warning that fires on a working config is noise, and
     -- noise in a startup report is how a real one gets scrolled past.

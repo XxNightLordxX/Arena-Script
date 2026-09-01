@@ -1162,7 +1162,10 @@ end
 --- @param arenaKey any
 --- @param factor number|nil -- how much bigger this arena is for this match
 --- @return boolean floorReady
-local function buildArenaProps(arenaKey, factor)
+--- @param arenaKey any
+--- @param factor number|nil
+--- @param boundary table|nil -- as sent, so the reach check below is real
+local function buildArenaProps(arenaKey, factor, boundary)
     removeArenaProps()
     arenaSurfaceZ = nil
 
@@ -1267,6 +1270,41 @@ local function buildArenaProps(arenaKey, factor)
     if built > 0 and measured then
         print(('[crimson_arena] arena scenery: %d piece(s) built, %d of them floor; the floor prop measures %.2f x %.2fm and its surface is at %.2f.')
             :format(built, builtFloor, measured.x, measured.y, arenaSurfaceZ or 0.0))
+    end
+
+    -- DOES THE FLOOR STICK OUT OF THE ARENA, measured against the prop this
+    -- build actually supplied.
+    --
+    -- Arena.ValidateConfig asks the same question at start-up and can only
+    -- answer it for `platform.tileSize`, which is the size the client falls
+    -- back to when it cannot measure the model. The real prop is often much
+    -- bigger -- the shipped chain leads with a stunt block four times that --
+    -- and a floor tiled out of it reaches proportionally further. This is the
+    -- only place both numbers exist at once: the measurement, and the
+    -- boundary the server sent.
+    --
+    -- Solid ground outside the sphere is the failure that reads worst from a
+    -- player's seat: you walk to the edge of a platform you are still
+    -- standing on and start bleeding, with nothing to tell you why.
+    if builtFloor > 0 and measured and type(boundary) == 'table' and boundary.enabled == true then
+        local radius = tonumber(boundary.radius) or 0.0
+        local centre = boundary.center or {}
+        local cx, cy = tonumber(centre.x) or 0.0, tonumber(centre.y) or 0.0
+        local halfX, halfY = (measured.x or 0.0) * 0.5, (measured.y or 0.0) * 0.5
+
+        local reach = 0.0
+        for _, piece in ipairs(wanted) do
+            if piece.kind == 'floor' then
+                local far = math.sqrt((math.abs(piece.x - cx) + halfX) ^ 2
+                    + (math.abs(piece.y - cy) + halfY) ^ 2)
+                if far > reach then reach = far end
+            end
+        end
+
+        if radius > 0.0 and reach > radius then
+            print(('[crimson_arena] arena scenery: THE FLOOR REACHES OUTSIDE THE ARENA -- it extends %.2fm from the middle and the boundary is %.2fm. The outer ring is solid ground you bleed on. Raise Config.Arenas["%s"].boundary.radius above %.2fm, or lower platform.radius.')
+                :format(reach, radius, tostring(arenaKey), reach))
+        end
     end
 
     if needsFloor and builtFloor == 0 then
@@ -1449,7 +1487,7 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- there. Placing somebody into that is a very long fall, so they are
     -- taken back out instead -- and the server is told, or it keeps a fighter
     -- in a match it can never put anywhere.
-    if not buildArenaProps(data.arenaKey, data.sizeFactor) then
+    if not buildArenaProps(data.arenaKey, data.sizeFactor, data.boundary) then
         removeArenaProps()
 
         local home = Config.Lobby.returnCoords

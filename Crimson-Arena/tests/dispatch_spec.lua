@@ -1573,7 +1573,9 @@ local function compatLoadedAfter(runningNames)
     local started = {}
     for _, name in ipairs(runningNames) do started[name] = true end
 
+    local console = {}
     local env = Sandbox.newArenaEnv({
+        print = function(line) console[#console + 1] = tostring(line) end,
         IsDuplicityVersion = function() return true end,
         GetResourceState = function(name) return started[name] and 'started' or 'missing' end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
@@ -1586,6 +1588,7 @@ local function compatLoadedAfter(runningNames)
         ArenaNotifyKey = function() end,
     })
     Sandbox.loadInto('../shared/compat/dispatch.lua', env)
+    env.consoleText = function() return table.concat(console, '\n') end
     return env
 end
 
@@ -1620,6 +1623,47 @@ t.test('start order is judged at LOAD, not whenever the report is read', functio
     env.GetResourceState = function() return 'started' end
     t.equals(#env.ArenaCompat.StartedBeforeUs(), 0,
         'the check re-reads resource state after load, so a resource that started LATER is blamed for starting first')
+end)
+
+-- ----------------------------------------------------------------------
+-- AND SAID AGAIN WHERE THE SYMPTOM IS
+-- ----------------------------------------------------------------------
+--
+-- The boot report names the losing start order once, among six other
+-- subjects, and the thing it predicts does not happen until somebody dies in
+-- a match -- an EMS call for a fighter, which is the whole reason this file
+-- exists. Between the warning and the symptom is every other line the server
+-- printed while it was starting.
+
+t.test('DEFECT: the first death in an arena repeats the start-order warning', function()
+    local env = compatLoadedAfter({ 'sc-ambulance' })
+
+    t.isTrue(env.ArenaCompat.WarnLateStartOnce(), 'the first death printed nothing')
+    local said = env.consoleText()
+    t.contains(said, 'sc-ambulance', 'the warning does not name the resource that won the race')
+    t.contains(said, 'server.cfg', 'the warning does not say how to fix it')
+    t.contains(said, 'crimsonArena', 'the warning does not offer the state-bag guard as a fallback')
+end)
+
+t.test('and says it ONCE, not on every death for the rest of the session', function()
+    -- A warning printed every time a fighter falls is a warning nobody reads
+    -- twice, and it would bury the console output the rest of this file
+    -- checks its guarantees through.
+    local env = compatLoadedAfter({ 'sc-ambulance' })
+
+    t.isTrue(env.ArenaCompat.WarnLateStartOnce(), 'the first call printed nothing')
+    for _ = 1, 5 do
+        t.isFalse(env.ArenaCompat.WarnLateStartOnce(), 'it printed again on a later death')
+    end
+end)
+
+t.test('and stays silent on a server that started this resource first', function()
+    -- The correct setup, which is most of them. A frightening warning on a
+    -- working server sends an operator to fix something that is not broken.
+    local env = compatLoadedAfter({})
+    t.isFalse(env.ArenaCompat.WarnLateStartOnce(),
+        'a correctly ordered server was told its ambulance job would be paged')
+    t.notContains(env.consoleText(), 'ANSWERED FIRST', 'it printed the warning anyway')
 end)
 
 os.exit(t.summary())

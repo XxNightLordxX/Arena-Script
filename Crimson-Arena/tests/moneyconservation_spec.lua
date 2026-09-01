@@ -46,6 +46,16 @@
     the run actually walked are counted and asserted on at the end. A green
     tick here means the settlement code was exercised, not that it was
     skipped.
+
+    WHAT THIS ROUTE CANNOT SEE, said out loud so nobody retires the other
+    specs on the strength of it. A conservation check is blind to any mistake
+    that moves the right total to the wrong person, and blind by construction
+    to one that moves nothing at all. The uncontested-pool defect
+    tests/selfbet_spec.lua exists for is exactly that shape: a lone backer was
+    told they had won and handed back their own stake, so the economy balanced
+    to the dollar while the player was being lied to. Deleting the fix for it
+    leaves every assertion in this file green. The two files are different
+    instruments and both are needed.
 ]]
 
 local t = dofile('testkit.lua')
@@ -214,6 +224,14 @@ local function makePlan(rng)
         fee = ({ 0, 0, 500, 1000, 5000 })[rng(5)],
         includeEntryPot = rng(2) == 1,
         sharedPool = rng(2) == 1,
+        -- How the POT is split when it is not folded into the bet pool.
+        -- Three different splitters in shared/arena.lua, and every one of
+        -- them hands its rounding remainder somewhere rather than dropping
+        -- it -- which is a promise about conservation, so it is fuzzed.
+        potSplit = ({ 'winner_takes_all', 'top_three', 'per_kill' })[rng(3)],
+        -- Real deaths before the round is called, so `per_kill` has kills to
+        -- divide by and the sweep sometimes ends the match on its own.
+        deaths = rng(4) - 1,
         fighterBets = rng(2) == 1,
         ownSideOnly = rng(2) == 1,
         oneBetPerMatch = rng(2) == 1,
@@ -288,6 +306,7 @@ local function run(plan)
         config.Betting.spectatorBets.oneBetPerMatch = plan.oneBetPerMatch
         config.Betting.refundOnDisconnectBeforeStart = plan.refundBeforeStart
         config.Betting.refundOnDisconnectDuringMatch = plan.refundDuringMatch
+        config.Betting.payout = plan.potSplit
     end)
 
     --- Which optional paths this run really walked, so the coverage check at
@@ -408,7 +427,35 @@ local function run(plan)
         end
     end
 
+    -- PEOPLE ACTUALLY DIE. One life apiece, so each of these eliminates
+    -- somebody and puts a kill on the board -- which is what `per_kill` needs
+    -- to divide by, and what lets the sweep decide the round on its own
+    -- instead of always being told the answer below.
+    for _ = 1, plan.deaths do
+        local live = server.lobby.Get(id)
+        if not live or live.state ~= 'live' then break end
+        local standing = {}
+        for src, row in pairs(live.players) do
+            if row.alive then standing[#standing + 1] = src end
+        end
+        table.sort(standing)
+        if #standing < 2 then break end
+        took['somebody was killed'] =
+            server.match.OnDeath(standing[#standing], standing[1]) == true
+        -- Twice: the sweep is a Wait-first loop, so one resume only reaches
+        -- its Wait. Two is one full pass, which is where it notices that a
+        -- round has run out of people to fight it.
+        server.step(2)
+    end
+
     match = server.lobby.Get(id)
+    -- The sweep ends a round that has run out of people to fight it, and End
+    -- destroys the record on its way out -- so a match that has GONE by here
+    -- is one the resource called itself rather than one this file called.
+    if took['somebody was killed'] and (not match or match.state == 'ended') then
+        took['the sweep called it'] = true
+    end
+
     if match and match.state ~= 'ended' then
         if plan.abort then
             took['the match aborted'] = server.match.Abort(id, 'match.aborted') == true
@@ -581,6 +628,7 @@ t.test('and it reached every settlement path this file exists to cover', functio
         'and sat back down', 'a bettor took a seat afterwards',
         'the host changed the mode', 'the lobby emptied out',
         'the host could not pay', 'the lobby would not start',
+        'somebody was killed', 'the sweep called it',
     }) do
         t.isTrue((walked[path] or 0) > 0, ('no generated match ever reached "%s"'):format(path))
     end
@@ -652,24 +700,29 @@ t.test('the house cut off a settled pot is exactly houseCutPercent', function()
     t.equals(delta, -3000, '25% of a 12,000 pot')
 end)
 
-t.test('DEFECT: houseCutPercent is silently ignored under the shipped includeEntryPot', function()
-    -- config.lua describes houseCutPercent as "taken off the top of the pot
-    -- before it is paid out" and says nothing about it depending on another
-    -- setting. betPayout.includeEntryPot ships ON, and on that path
-    -- ArenaBetting.Settle hands the stakes to the bet pool and returns before
-    -- Arena.ComputePayouts -- the only thing that applies the cut -- is ever
-    -- called. So an operator who sets a rake on a shipped config takes none,
-    -- with nothing in the console and nothing from Arena.ValidateConfig
-    -- saying so.
+t.test('a rake asked for under includeEntryPot is not taken, and is not taken quietly', function()
+    -- THE ONE PLACE THE ECONOMY IS ALLOWED TO SHRINK AND DOES NOT.
     --
-    -- Written as it BEHAVES rather than as it should, so the suite goes red
-    -- the day it is fixed rather than the day it breaks.
+    -- betPayout.includeEntryPot ships ON, and on that path ArenaBetting
+    -- .Settle hands the stakes to the bet pool and returns before
+    -- Arena.ComputePayouts -- the only thing that applies the cut -- is ever
+    -- reached. A pool is the bettors' money, so nothing is raked off it and
+    -- the round is conserved to the dollar.
+    --
+    -- That is a deliberate decision rather than a leak, and the thing that
+    -- makes it defensible is that Arena.ValidateConfig says so out loud at
+    -- startup. Both halves are asserted here: the money that does not move,
+    -- AND the sentence the operator gets instead of a mystery. Losing either
+    -- one turns this back into a setting that does nothing and says nothing.
     local delta, server = pinned(4000, function(config)
         config.Betting.houseCutPercent = 25
         config.Betting.betPayout.includeEntryPot = true
     end, fightAndWin)
-    t.equals(delta, 0, 'the rake was applied after all -- update this test')
-    t.notContains(server.log(), 'house kept', 'the pot never settled on its own')
+    t.equals(delta, 0, 'the pool was raked after all')
+    t.notContains(server.log(), 'house kept', 'the pot never settles on its own down this path')
+
+    local complaint = table.concat(server.env.Arena.ValidateConfig(), '\n')
+    t.contains(complaint, 'NO CUT IS TAKEN', 'the validator went quiet about an uncollected rake')
 end)
 
 -- ======================================================================

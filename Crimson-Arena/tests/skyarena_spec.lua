@@ -278,13 +278,19 @@ t.test('the spawn ring sits inside the floor, and the floor inside the boundary'
     -- the first second of the round. Both are silent: neither reads as an
     -- error at either end, and both are one mistyped radius away.
     --
-    -- The floor's PIECES may overhang the boundary at the corners, because
-    -- coverage beats tidiness: a piece is kept whenever any part of it is
-    -- inside the radius, so a prop wider than the inset reaches further out
-    -- than `platform.radius` says. That is deliberate and it is safe -- the
-    -- worst it produces is solid ground somebody bleeds on, which is what
-    -- walking out of any arena does. The alternative, trimming to the
-    -- radius, is a hole, and a hole here is fatal.
+    -- The floor's PIECES reach past `platform.radius` at the corners,
+    -- because coverage beats tidiness: a piece is kept whenever any part of
+    -- it is inside the radius, so its far corner sits up to a whole tile
+    -- diagonal beyond. Trimming to the radius instead leaves a hole, and a
+    -- hole here is a fall of a kilometre.
+    --
+    -- WHICH IS WHY THE BOUNDARY HAS TO CLEAR THE TILES, NOT THE RADIUS. This
+    -- used to be written off as safe -- "the worst it produces is ground
+    -- somebody bleeds on, which is what walking out of any arena does" --
+    -- and that is exactly the failure that got reported: you walk to the
+    -- edge of a floor you are still standing on and start dying, with
+    -- nothing on screen to tell you why. ValidateConfig now measures the
+    -- tiling and complains, and the tests below pin where it draws the line.
     local config = envWith().Config
     local arena = config.Arenas.sky
     t.isTrue(arena.spawnArea.radius < arena.platform.radius,
@@ -293,6 +299,83 @@ t.test('the spawn ring sits inside the floor, and the floor inside the boundary'
         'a spawn can land out of bounds, bleeding from the first second')
     t.isTrue(arena.platform.radius < arena.boundary.radius,
         'the floor is described as wider than the arena it is the floor of')
+end)
+
+--- The complaints ValidateConfig produces for a sky arena with `radius` as
+--- its boundary, as one string.
+local function boundaryComplaint(radius, mutate)
+    local env = envWith(function(arena)
+        arena.boundary.radius = radius
+        if mutate then mutate(arena) end
+    end)
+    return table.concat(env.Arena.ValidateConfig() or {}, '\n')
+end
+
+t.test('DEFECT: a boundary that does not clear the TILES is complained about', function()
+    -- The fixture is a 45m radius tiled at 8m, so a kept tile's far corner
+    -- reaches 53.37m. The first version of this check used half a tile
+    -- diagonal instead of a whole one, put the line at 50.66m, and went
+    -- quiet above it -- silent on a floor sticking three metres out of its
+    -- own arena.
+    t.contains(boundaryComplaint(52.0), 'bleeds you',
+        'a 52m boundary around a floor reaching 53.37m passed without a word')
+end)
+
+t.test('and one that does clear them is not', function()
+    -- The other half. A start-up warning that fires on a working arena is
+    -- noise, and noise is how a real one gets scrolled past.
+    t.notContains(boundaryComplaint(60.0), 'bleeds you',
+        'a 60m boundary around a floor reaching 53.37m was complained about')
+end)
+
+t.test('and the line it draws is the real reach, not a rounded guess', function()
+    -- Walk the threshold to a centimetre. Anything that measures the tiling
+    -- honestly lands between these two; a formula that halves the margin
+    -- draws it at 50.66 and fails the first of them.
+    t.contains(boundaryComplaint(53.3), 'bleeds you', 'silent just inside the floor')
+    t.notContains(boundaryComplaint(53.4), 'bleeds you', 'complaining just outside it')
+end)
+
+t.test('and a tile ceiling that trims the rim moves the line in, not out', function()
+    -- maxTiles drops the outer ring, so the floor is genuinely smaller and a
+    -- boundary that was too tight becomes big enough. Measuring the tiling
+    -- gets this right for nothing; a formula on platform.radius warns about
+    -- ground that is not there.
+    t.notContains(boundaryComplaint(52.0, function(arena) arena.platform.maxTiles = 9 end),
+        'bleeds you', 'a trimmed floor was reported at its untrimmed size')
+end)
+
+t.test('DEFECT: and a nonsense tileSize does not hang the server working it out', function()
+    -- THE VALIDATOR MUST NOT BE THE THING THAT KILLS THE BOOT. Laying the
+    -- tiles out is O(radius / tileSize) squared and tileSize is an operator
+    -- setting: 0.01 against a 45m radius asks for eighty billion cells. The
+    -- first version of this check did exactly that, inside the function
+    -- written to catch typos, and the resource's own junk-value fuzz hung on
+    -- it. Above a ceiling it falls back to the closed-form bound, which
+    -- over-states the floor and therefore only warns too eagerly.
+    for _, tile in ipairs({ 0.01, 0.001, 1e-6 }) do
+        local started = os.clock()
+        local said = boundaryComplaint(60.0, function(arena) arena.platform.tileSize = tile end)
+        local spent = os.clock() - started
+
+        t.isTrue(spent < 2.0,
+            ('a tileSize of %g took %.1fs to validate -- that is a server that does not start'):format(tile, spent))
+        t.isTrue(type(said) == 'string', 'validation did not come back at all')
+    end
+end)
+
+t.test('and neither does a radius nobody meant to type', function()
+    for _, radius in ipairs({ 1e6, 1e9 }) do
+        local started = os.clock()
+        boundaryComplaint(60.0, function(arena) arena.platform.radius = radius end)
+        t.isTrue(os.clock() - started < 2.0,
+            ('a radius of %g took too long to validate'):format(radius))
+    end
+end)
+
+t.test('and an arena with no boundary at all is not asked the question', function()
+    t.notContains(boundaryComplaint(52.0, function(arena) arena.boundary.enabled = false end),
+        'bleeds you', 'a disabled boundary was measured against the floor')
 end)
 
 -- ======================================================================
@@ -679,6 +762,104 @@ t.test('DEFECT: cover does not eat the arena it is standing in', function()
             ('attempt %d: eight fighters in an arena sized for them came out %0.2fm apart, against a stated %0.1f -- the cover is eating the arena')
                 :format(attempt, closest, area.minSeparation))
     end
+end)
+
+t.test('DEFECT: a RESPAWN never lands inside the arena\'s own cover either', function()
+    -- THE HALF THAT WAS NEVER FIXED. Arena.PlanSpawns has always seeded its
+    -- rejection list with every cover piece, so the first spawn of a round
+    -- is clear -- which is exactly why this went unnoticed. PickRespawn did
+    -- none of it: it drew from the disc and scored on distance from the
+    -- nearest live opponent, with no term for the scenery at all. On the
+    -- shipped skydome, whose twenty pieces cover about a tenth of the spawn
+    -- disc, one respawn in ten landed inside one, and from inside a shipping
+    -- container there is nowhere to walk to.
+    local env = Sandbox.newArenaEnv()
+    local Arena = env.Arena
+    local area = Arena.GetSpawnArea('skydome')
+    local cover = Arena.GetCover('skydome')
+    local clearance = Arena.CoverClearance('skydome')
+    t.isTrue(#cover > 0, 'the skydome stopped shipping cover, so this proves nothing')
+
+    -- Seeded, so a failure is a failure somebody else can reproduce.
+    local seed = 20260901
+    local function rng() seed = (seed * 48271) % 2147483647 return seed / 2147483647 end
+
+    -- SIX THOUSAND, NOT SIX HUNDRED. The two mechanisms that produce this
+    -- zero -- redrawing a blocked sample, and preferring a clear candidate
+    -- when scoring -- are redundant on purpose, and the redraw's own
+    -- contribution is about one respawn in five hundred. Six hundred samples
+    -- could not tell it from noise, so removing it left this test green;
+    -- this many puts the expected count of a regression in double figures.
+    for _, threats in ipairs({ 0, 1, 3 }) do
+        local worst, inside = math.huge, 0
+        for _ = 1, 6000 do
+            local avoid = {}
+            for index = 1, threats do
+                avoid[index] = { x = area.x + (rng() - 0.5) * 60.0, y = area.y + (rng() - 0.5) * 60.0 }
+            end
+
+            local point = Arena.PickRespawn('skydome', nil, avoid, rng)
+            t.isNotNil(point, 'no respawn point was returned at all')
+
+            for _, piece in ipairs(cover) do
+                local dx = point.x - (area.x + piece.x)
+                local dy = point.y - (area.y + piece.y)
+                local gap = math.sqrt(dx * dx + dy * dy)
+                if gap < worst then worst = gap end
+                if gap < clearance then inside = inside + 1 end
+            end
+        end
+
+        t.equals(inside, 0,
+            ('with %d live opponent(s), %d of 6000 respawns landed inside a piece of cover (closest %.2fm against a %.2fm clearance)')
+                :format(threats, inside, worst, clearance))
+    end
+end)
+
+t.test('and it still returns a point in an arena with no clear ground left', function()
+    -- The other side of the rule, and the reason the redraw is bounded. An
+    -- arena can be built with cover over every inch of its spawn disc, and a
+    -- respawn that never returns is a fighter who never comes back. Standing
+    -- on a barrier is a bad respawn; not respawning is a broken round.
+    local env = envWith(function(arena)
+        arena.spawnArea.radius = 6.0
+        local pieces = {}
+        for x = -6, 6, 2 do
+            for y = -6, 6, 2 do
+                pieces[#pieces + 1] = { model = 'test_block', x = x + 0.0, y = y + 0.0, z = 0.0, heading = 0.0 }
+            end
+        end
+        arena.cover.pieces = pieces
+    end)
+
+    local seed = 7
+    local function rng() seed = (seed * 48271) % 2147483647 return seed / 2147483647 end
+    for _ = 1, 50 do
+        t.isNotNil(env.Arena.PickRespawn('sky', nil, {}, rng),
+            'a cover-saturated arena returned no respawn point at all')
+    end
+end)
+
+t.test('and a hand-written spawn list is never thinned by it', function()
+    -- Points an operator placed on purpose are their choice. Dropping one
+    -- because a barrier is near it can leave nothing to return, and this
+    -- rule exists for points the resource INVENTED.
+    local env = envWith(function(arena)
+        arena.spawnArea = nil
+        arena.spawns = {
+            { x = 1500.0, y = 3000.0, z = 1201.0, w = 0.0 },
+            { x = 1510.0, y = 3000.0, z = 1201.0, w = 0.0 },
+        }
+        arena.cover.pieces = {
+            { model = 'test_block', x = 0.0, y = 0.0, z = 0.0, heading = 0.0 },
+            { model = 'test_block', x = 10.0, y = 0.0, z = 0.0, heading = 0.0 },
+        }
+    end)
+
+    local seed = 3
+    local function rng() seed = (seed * 48271) % 2147483647 return seed / 2147483647 end
+    t.isNotNil(env.Arena.PickRespawn('sky', nil, {}, rng),
+        'an operator spawn list was emptied by the cover rule')
 end)
 
 t.test('and an operator can say how much room their own props need', function()

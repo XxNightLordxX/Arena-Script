@@ -486,6 +486,39 @@ function ArenaCompat.StartedBeforeUs()
     return out
 end
 
+--- @type boolean
+local warnedOnDeath = false
+
+--- SAID AGAIN, AT THE MOMENT IT BITES.
+---
+--- The start-order warning goes out once, at boot, in the middle of a report
+--- that also covers hooks, mutes and revives -- and the symptom it predicts
+--- turns up much later, on the first death of the first match, as an EMS
+--- call the operator was told would not happen. Between those two is every
+--- other line the server printed while it was starting.
+---
+--- So it is repeated where the symptom is: once, the first time somebody
+--- dies in an arena, naming the resource that answered before this one and
+--- the line in server.cfg that fixes it. Once and not per death -- a warning
+--- printed every time a fighter falls is a warning nobody reads twice.
+--- @return boolean warned -- true only on the call that printed
+function ArenaCompat.WarnLateStartOnce()
+    if warnedOnDeath or #startedBeforeUs == 0 then return false end
+    warnedOnDeath = true
+
+    say('A FIGHTER DIED AND %s ANSWERED FIRST.', table.concat(startedBeforeUs, ' / '))
+    say('  Those resources started before this one, so their death handler runs before ours.')
+    say('  They see the fighter as dead, enter their own down state, and the EMS call is')
+    say('  already sent from the player\'s own client before anything here can run.')
+    say('  This is why your ambulance job is still being paged for people in the arena.')
+    say('  Fix: in server.cfg, move `ensure %s` ABOVE those lines, then restart the server.',
+        GetCurrentResourceName())
+    say('  If you cannot change the order, paste this at the top of whatever raises the alert:')
+    say('      if Player(src).state.%s then return end        -- server realm', stateKey())
+    say('      if LocalPlayer.state.%s then return end        -- client realm', stateKey())
+    return true
+end
+
 -- HOW TO ADD A MUTE YOU HAVE ACTUALLY CONFIRMED. Copy this under the
 -- catalogue, with the export name read out of that script's own
 -- documentation -- never one that merely sounds right:

@@ -725,6 +725,7 @@ local function newMatchFixture()
         PlayerId = function() return 0 end,
         DoesEntityExist = function() return true end,
         SetEntityDrawOutline = function() end,
+        SetEntityDrawOutlineShader = function() end,
         SetEntityDrawOutlineColor = function() end,
 
         SetWeatherTypeNowPersist = function() end,

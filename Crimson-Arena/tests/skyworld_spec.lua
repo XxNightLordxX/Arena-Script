@@ -110,6 +110,7 @@ local function newClient(opts)
         DoesBlipExist = function() return true end,
         RemoveBlip = function() end,
         SetEntityDrawOutline = function() end,
+        SetEntityDrawOutlineShader = function() end,
         SetEntityDrawOutlineColor = function() end,
 
         SetWeatherTypeNowPersist = function() end,

@@ -290,6 +290,7 @@ files['client/'] = {
         'SetFocusEntity',
         'SetFocusPosAndVel',
         'DisablePlayerFiring',
+        'SetEntityDrawOutlineShader',
 
         -- Per-arena weather and time overrides.
         'ClearOverrideWeather',

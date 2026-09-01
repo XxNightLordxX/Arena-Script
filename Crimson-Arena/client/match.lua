@@ -965,6 +965,20 @@ local function refreshOutlines()
             -- outline shader, and anything else on the server that draws an
             -- outline sets it too.
             SetEntityDrawOutlineColor(r, g, b, 255)
+
+            -- AND THE SHADER THAT ACTUALLY DRAWS IT THROUGH A WALL.
+            --
+            -- The note above this function says the outline draws through
+            -- geometry and that this is the whole point of it -- knowing
+            -- where your side is, not where the corner is. Nothing switched
+            -- that on. SetEntityDrawOutline alone uses the DEFAULT shader,
+            -- which is occluded by everything in front of it and faint even
+            -- in the open, so a teammate behind any cover at all showed
+            -- nothing and a teammate in the open showed almost nothing.
+            --
+            -- Shader 1 is the see-through variant. Global, like the colour,
+            -- and set on the same schedule for the same reason.
+            SetEntityDrawOutlineShader(1)
         end
     end
 

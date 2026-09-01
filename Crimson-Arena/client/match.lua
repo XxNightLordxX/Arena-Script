@@ -240,13 +240,25 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted, exactZ, 
     -- did not.
     --
     -- The fix for THAT is the freeze, not altitude. A frozen ped does not
-    -- fall through anything, so the player is held just above the spawn
-    -- point -- close enough that nobody watching learns where the spawns
-    -- are, which lifting them into the sky would broadcast to the whole
-    -- arena.
+    -- fall through anything, so the player is held above the spawn point
+    -- rather than lifted into the sky -- somebody watching a fighter arrive
+    -- fifty metres up has been told where the spawns are.
     --
-    -- The height belongs to the ground search below, which is a maths query
-    -- nobody can see.
+    -- SO `lift` DOES TWO JOBS, and they want different amounts of it:
+    --
+    --   on real ground it is only where the PROBE is asked from, a maths
+    --   query nobody can see, and the player is put on the answer;
+    --
+    --   on a floor this resource built there is no probe, so it is where the
+    --   player is really left -- above the surface, because a ped placed
+    --   level with a prop has its origin inside the prop and drops through
+    --   it, which is what was reported. They fall the difference when the
+    --   freeze is dropped: on entry that is the end of the countdown, and on
+    --   a respawn it is immediately.
+    --
+    -- Config.Match.spawnHeightOffset is therefore worth turning DOWN once a
+    -- sky arena is known to be solid underfoot: it costs nothing on ground
+    -- arenas and it is a visible drop on a built one.
     local lift = tonumber(Config.Match.spawnHeightOffset) or 1.0
 
     FreezeEntityPosition(ped, true)

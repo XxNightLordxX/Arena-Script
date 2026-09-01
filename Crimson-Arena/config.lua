@@ -14,17 +14,17 @@
     ------------------------------------------------------------------------------
        73   Lobby         The NPC players walk up to
       144   Match         Lives, timers, player counts, win condition
-      321   Teams         The sides, and whether they may be uneven
-      423   Modes         Free-for-all, team deathmatch, gun game
-      457   DefaultMode   Which of them a new lobby opens on
-      476   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      664   UI            Panel colours, logo and title
-      727   Permissions   Who may open a match, who may force-stop one
-      806   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1357   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2785   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2795   Webhook       Optional: a Discord line per finished match
-     2833   Dispatch      Optional: keeping police and EMS out of the arena
+      330   Teams         The sides, and whether they may be uneven
+      432   Modes         Free-for-all, team deathmatch, gun game
+      466   DefaultMode   Which of them a new lobby opens on
+      485   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      673   UI            Panel colours, logo and title
+      736   Permissions   Who may open a match, who may force-stop one
+      815   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1366   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     2794   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2804   Webhook       Optional: a Discord line per finished match
+     2842   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -230,6 +230,15 @@ Config.Match = {
     -- This is the height a player is HELD at. It is not the height the ground
     -- is searched from: that is fixed, much higher, and explained where the
     -- probe happens in client/match.lua.
+    --
+    -- ON A GROUND ARENA NOBODY EVER SEES IT: the probe answers, and the
+    -- player is put on the answer. On an arena that builds its own floor
+    -- there is no probe to answer, so this is where they are really left and
+    -- they fall it when the freeze drops -- at the end of the countdown on
+    -- entry, and at once on a respawn. Worth turning down to a metre once a
+    -- sky arena is confirmed solid underfoot; leave it here until then,
+    -- because the failure it guards against is falling out of the world and
+    -- the cost of it is a short drop.
     spawnHeightOffset = 3.0,
 
     -- THE RADAR, which replaced permanent blips.

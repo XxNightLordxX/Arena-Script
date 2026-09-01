@@ -489,11 +489,19 @@ local function removeWeaponsByKey(ox, src, matchId, keys, loadout)
     for _, key in ipairs(keys) do wanted[key] = true end
 
     local removed = {}
+    -- BY NAME, because that is what the issued record is keyed on. `wanted`
+    -- holds whatever spelling the failure list used -- and Issue builds that
+    -- from `entry.key or entry.weapon`, so on any loadout with keys it holds
+    -- KEYS and nothing in it ever matches a record's `name`. Forgetting off
+    -- `wanted` therefore forgot nothing at all on the shipped config, and
+    -- left every confiscated weapon listed as still issued.
+    local takenBack = {}
     for _, entry in ipairs(loadout.weapons or {}) do
         local name = entry.weapon
         if Arena.IsKey(name) and (wanted[entry.key] or wanted[name]) then
             if oxDid('taking back ' .. name, function() return ox:RemoveItem(src, name, 1) end) then
                 removed[#removed + 1] = name
+                takenBack[name] = true
             end
         end
     end
@@ -502,11 +510,15 @@ local function removeWeaponsByKey(ox, src, matchId, keys, loadout)
     -- longer on the player, and leaving it listed would have the exit try to
     -- remove it again -- which on a name that happens to collide with
     -- something of their own removes theirs.
+    --
+    -- Only the ones actually taken: a removal ox_inventory refused leaves
+    -- the weapon on the player, and forgetting it there would walk it out
+    -- of the arena.
     local held = (issuedWeapons[matchId] or {})[src]
     if type(held) == 'table' then
         for index = #held, 1, -1 do
             local record = held[index]
-            if type(record) == 'table' and wanted[record.name] then table.remove(held, index) end
+            if type(record) == 'table' and takenBack[record.name] then table.remove(held, index) end
         end
     end
 

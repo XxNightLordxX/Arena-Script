@@ -21,10 +21,10 @@
       680   UI            Panel colours, logo and title
       743   Permissions   Who may open a match, who may force-stop one
       822   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1430   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2858   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2868   Webhook       Optional: a Discord line per finished match
-     2906   Dispatch      Optional: keeping police and EMS out of the arena
+     1420   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     2848   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2858   Webhook       Optional: a Discord line per finished match
+     2896   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1239,62 +1239,52 @@ Config.Arenas = {
                 { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -6.5, y = 0.0, z = 0.0, heading = 225.0 },
                 { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = -0.0, y = -6.5, z = 0.0, heading = 315.0 },
 
-                -- THE MID BAND: eight more containers across the empty ring
-                -- between the corner pockets and the outer wall, turned into
-                -- the OUTER RING'S GAPS rather than lined up behind it.
-                -- Staggered, a gap in the outer ring does not also look
-                -- through the middle and out the far side; lined up, every
-                -- gap is a firing lane down the whole diameter.
+                -- THE MID BAND: eight more containers across the ring that
+                -- was empty between the corner pockets and the outer wall,
+                -- turned into the OUTER RING'S GAPS rather than lined up
+                -- behind it. Staggered, a gap in the outer ring does not
+                -- also look through the middle and out the far side; lined
+                -- up, every gap is a firing lane down the whole diameter.
                 --
-                -- WHY 24m AND 22.5 DEGREES, RATHER THAN WHEREVER LOOKS
-                -- RIGHT. Three separate things bite here and none of them is
-                -- visible in config:
+                -- WHY THIS RADIUS AND THIS ANGLE, AND WHY THERE ARE ONLY
+                -- EIGHT. Cover is excluded from spawn placement at its own
+                -- clearance and that exclusion is never relaxed, so every
+                -- piece added here is room taken away from the placement --
+                -- and the arena was already close to its limit. These
+                -- numbers came out of a search over four gates rather than
+                -- out of judgement about what looks right:
                 --
-                --   Cover is excluded from spawn placement at its own
-                --   clearance, and that exclusion is NEVER relaxed -- so
-                --   every piece added here is room taken away from the
-                --   placement, and enough of them make minSeparation
-                --   unsatisfiable at the roster sizes that do not grow the
-                --   arena. A ring at 33m held twenty players fine and left
-                --   four and six standing on top of each other.
+                --   No two pieces within the circle a rotated prop sweeps
+                --   (tests/propfit_spec.lua), and none intersecting at the
+                --   headings actually written down. A container is twelve
+                --   metres long, so two rings whose centres read as well
+                --   separated still pass through each other.
                 --
-                --   A container is twelve metres long, so a ring a few
-                --   metres from another ring intersects it. Two props in one
-                --   space is the thing that makes an arena look broken.
+                --   Eight fighters placed at the full separation with the
+                --   arena's GROWTH SWITCHED OFF -- the hard case, because a
+                --   roster big enough to grow the arena gets the extra room
+                --   for free. tests/skyarena_spec.lua tests exactly this,
+                --   and 0 short in 30,000 rounds is what the arena managed
+                --   before these eight went in; it still does.
                 --
-                --   tests/propfit_spec.lua requires 5.66m between any two
-                --   pieces -- the circle a rotated prop sweeps, so the
-                --   layout is clear at ANY heading rather than only the ones
-                --   written down. A first draft of this band sat 5.25m from
-                --   the barrier returns and failed it.
+                --   Every roster from 4 to 32 placed at the full separation
+                --   as the arena really ships, growth on.
                 --
-                -- This radius and offset clear all three, at every size the
-                -- arena grows to. Verified rather than eyeballed: every
-                -- roster from 2 to 32 still places at the full separation in
-                -- 200 of 200 rounds. Move them and check the suite.
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 22.2, y = 9.2, z = 0.0, heading = 112.5 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 9.2, y = 22.2, z = 0.0, heading = 157.5 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -9.2, y = 22.2, z = 0.0, heading = 202.5 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -22.2, y = 9.2, z = 0.0, heading = 247.5 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -22.2, y = -9.2, z = 0.0, heading = 292.5 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = -9.2, y = -22.2, z = 0.0, heading = 337.5 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 9.2, y = -22.2, z = 0.0, heading = 22.5 },
-                { models = { 'prop_container_01a', 'prop_container_01b', 'prop_conc_blocks01a' }, x = 22.2, y = -9.2, z = 0.0, heading = 67.5 },
-
-                -- THE INNER BAND: four more between the pinwheel and the
-                -- pockets, on the axes the pinwheel arms leave open, so
-                -- crossing the middle is a series of corners rather than one
-                -- long walk in the open.
-                --
-                -- LED WITH THE OTHER LIVERY. The two names are the same prop
-                -- in different paint, so this costs nothing, stops
-                -- twenty-four identical boxes reading as one repeated
-                -- texture, and -- because both are already in the chains
-                -- above -- it is a shape the arena has been measured with.
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 13.2, y = 0.0, z = 0.0, heading = 90.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 0.0, y = 13.2, z = 0.0, heading = 180.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -13.2, y = 0.0, z = 0.0, heading = 270.0 },
-                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -0.0, y = -13.2, z = 0.0, heading = 0.0 },
+                -- A DENSER LAYOUT WAS TRIED AND MEASURED AND TAKEN BACK OUT.
+                -- Twelve more, in two bands, passed everything a seeded
+                -- sampler and the grown arena could see -- and then failed
+                -- skyarena_spec, which uses real randomness with growth off
+                -- and found what the sampler had not: six fighters landing
+                -- 6.23m apart against a stated 10. Adding cover here is
+                -- cheap to write and expensive to verify. Run the suite.
+                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 20.8, y = 12.0, z = 0.0, heading = 120.0 },
+                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 6.2, y = 23.2, z = 0.0, heading = 165.0 },
+                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -12.0, y = 20.8, z = 0.0, heading = 210.0 },
+                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -23.2, y = 6.2, z = 0.0, heading = 255.0 },
+                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -20.8, y = -12.0, z = 0.0, heading = 300.0 },
+                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = -6.2, y = -23.2, z = 0.0, heading = 345.0 },
+                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 12.0, y = -20.8, z = 0.0, heading = 30.0 },
+                { models = { 'prop_container_01b', 'prop_container_01a', 'prop_conc_blocks01a' }, x = 23.2, y = -6.2, z = 0.0, heading = 75.0 },
             },
         },
 

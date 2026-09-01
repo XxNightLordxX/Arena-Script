@@ -115,12 +115,18 @@ against each other because the renderer has no way to decide which is in front,
 and it stays solid underfoot the whole time — so it reads as the arena being
 broken rather than as a prop in the wrong place.
 
-Both are checked, so you do not have to hold them in your head: `tests/run.sh`
+Both are checked, so you do not have to hold them in your head. `tests/run.sh`
 fails if two pieces are within the distance a rotated prop sweeps, if any two
-intersect at the headings you wrote, or if the shipped arena stops placing every
-roster from two to thirty-two at its stated separation. Edit the list, run the
-suite, and read what it says. The numbers in the skydome's `cover` block were
-chosen by measuring against exactly those three, not by eye.
+intersect at the headings you wrote, if the shipped arena stops placing every
+roster from two to thirty-two at its stated separation, or if it stops placing
+eight fighters **with growth switched off** — which is the one that actually
+bites, because a roster big enough to grow the arena gets the extra room for
+free and hides the problem.
+
+Edit the list, run the suite, and read what it says. Do not trust a layout that
+merely looks right: the numbers in the skydome's `cover` block were arrived at
+by measuring against all four of those, and a denser version of them passed
+three before failing the fourth.
 
 ## The smoke test
 

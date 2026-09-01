@@ -108,9 +108,15 @@ local function newKit(opts)
         AddEventHandler = function() end,
         CreateThread = function(fn) fn() end,
         TriggerClientEvent = function() end,
+        GetPlayers = function() return {} end,
         print = function(line) console[#console + 1] = tostring(line) end,
         lib = Sandbox.newOxLib(),
     })
+    -- The return sweep is a `while true do Wait(...) end`, and the
+    -- CreateThread above runs a body straight through. This file is about
+    -- what the loadout hands over, not about the door's retry -- which
+    -- ammo_spec drives on a stepping runner -- so it is switched off here.
+    env.Config.Loadouts.inventory.returnRetrySeconds = 0
     if opts.mutate then opts.mutate(env.Config) end
 
     Sandbox.loadInto('../server/util.lua', env)

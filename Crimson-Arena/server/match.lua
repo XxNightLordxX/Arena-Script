@@ -1477,15 +1477,6 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     ArenaStats.RecordMatch(match)
     ArenaBetting.Clear(match.id)
 
-    -- AND THE INVENTORY RECORDS, which nothing called at all. ArenaAmmo.Clear
-    -- has always existed and always refused while anybody's kit is still
-    -- stashed -- exactly like the betting Clear above refuses over escrow --
-    -- and no path in this resource ever reached it. So every match this
-    -- server ran left its issued-weapon and issued-ammunition tables behind
-    -- for good. It sits beside the betting Clear because it is the same step:
-    -- the point where a finished match stops being owed anything.
-    ArenaAmmo.Clear(match.id)
-
     local board = scoreboardOf(players)
     local returnCoords = toPoint(Config.Lobby.returnCoords)
     local names = {}
@@ -1542,6 +1533,27 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             TriggerClientEvent('crimson_arena:client:results', src, results)
         end
     end
+
+    -- AND THE INVENTORY RECORDS -- AFTER THE EXITS, WHICH IS THE WHOLE POINT
+    -- OF WHERE THIS LINE SITS.
+    --
+    -- ArenaAmmo.Clear drops the match's row from `issuedWeapons` and
+    -- `issuedAmmo`, and those rows ARE the record of what the arena handed
+    -- out. With the door off -- Config.Loadouts.inventory.stripOnEntry =
+    -- false, where a player keeps their own inventory and is simply handed
+    -- the arena's kit on top of it -- the exit's only way to take that kit
+    -- back is to remove it BY NAME, from those rows. Clearing them first
+    -- leaves nothing to remove, and every fighter walks out of a finished
+    -- match still holding the arena's weapon and its ammunition. A free gun
+    -- per round, per player, from a resource whose stated promise is that a
+    -- match cannot cost or pay anyone anything.
+    --
+    -- Clear's own comment calls this "the point where a finished match stops
+    -- being owed anything", which is exactly right and is why it belongs
+    -- here rather than beside the betting Clear: the match is still owed
+    -- every reclaim until the exits above have run. ArenaMatch.Abort has
+    -- always had it in this order; End did not.
+    ArenaAmmo.Clear(match.id)
 
     -- THE REVIVE SWEEP, and it is deliberately not the same call as the one
     -- inside sendExitArena above.

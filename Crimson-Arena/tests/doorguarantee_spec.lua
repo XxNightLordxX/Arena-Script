@@ -287,6 +287,125 @@ end)
 -- Nothing from the match comes with them
 -- ========================================================================
 
+-- ========================================================================
+-- WITH THE DOOR OFF
+--
+-- stripOnEntry = false is the setting where a player keeps their own
+-- inventory and is simply handed the arena's kit on top of it. Nothing is
+-- stashed, so nothing is restored -- which means the ONLY way the arena's
+-- weapons come back is being removed by name on the way out, from the
+-- record of what was issued. Every guarantee above is carried by restore();
+-- none of them reaches this path.
+-- ========================================================================
+
+--- Switches the door off.
+local function doorOff(config)
+    config.Loadouts.inventory.stripOnEntry = false
+end
+
+--- The first shipped weapon that takes ammunition, so the arena has
+--- something real to hand out and something real to take back.
+local function firstArmedWeapon(config)
+    for _, weapon in ipairs(config.Loadouts.weapons or {}) do
+        if weapon.enabled ~= false and type(weapon.ammo) == 'table' then return weapon end
+    end
+    return nil
+end
+
+--- A live round with the door OFF and everybody actually carrying a weapon
+--- the arena issued. liveMatch above readies people straight away, which
+--- leaves them on an empty loadout -- and an empty loadout would make every
+--- assertion below pass for the wrong reason.
+--- @param ids integer[]
+--- @return table server
+--- @return string matchId
+local function armedDoorOffMatch(ids)
+    local server = newServer(ids, doorOff)
+    server.fire('createMatch', ids[1], { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'the host could not open a lobby')
+
+    local weapon = firstArmedWeapon(server.env.Config)
+    t.isNotNil(weapon, 'no shipped weapon takes ammunition, so this proves nothing')
+
+    for index = 2, #ids do server.fire('joinMatch', ids[index], { matchId = match.id }) end
+    for _, src in ipairs(ids) do
+        server.fire('setLoadout', src, { weapons = { { key = weapon.key, ammo = 60 } }, armor = 0 })
+        server.fire('setReady', src, { ready = true })
+    end
+    server.step(6)
+
+    return server, match.id
+end
+
+t.test('with the door off a fighter keeps their own things and gains the arena kit', function()
+    -- The premise, asserted so the tests below cannot pass by the arena
+    -- quietly having issued nothing.
+    local server = armedDoorOffMatch({ 1, 2 })
+
+    local carrying = server.carrying(1)
+    t.isTrue(carrying:find('phonex1', 1, true) ~= nil,
+        'the door was shut after all -- their own things were taken')
+    t.isTrue(carrying ~= INTACT,
+        ('the arena issued nothing, so there is nothing to take back: %s'):format(carrying))
+end)
+
+t.test('DEFECT: and a finished match takes the arena kit back off them', function()
+    -- ArenaAmmo.Clear drops the match's rows from `issuedWeapons` and
+    -- `issuedAmmo`, and those rows ARE the list of names the exit removes.
+    -- End called it BEFORE sending anybody out, so by the time the exit ran
+    -- there was nothing left to remove -- and every fighter walked away
+    -- still holding the arena's weapon and its ammunition. A free gun per
+    -- round, per player, on a resource whose stated promise is that a match
+    -- cannot cost or pay anyone anything.
+    --
+    -- Abort has always had the two in the right order. End did not.
+    local server, matchId = armedDoorOffMatch({ 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(4)
+
+    t.equals(server.carrying(1), INTACT,
+        ('player 1 left a finished match carrying %s'):format(server.carrying(1)))
+    t.equals(server.carrying(2), INTACT,
+        ('player 2 left a finished match carrying %s'):format(server.carrying(2)))
+end)
+
+t.test('and two rounds in a row do not stack two kits on them', function()
+    -- The observable form of the same defect, and the one a player would
+    -- notice: it compounds.
+    local server, first = armedDoorOffMatch({ 1, 2 })
+    server.match.End(first, 'match.ended')
+    server.step(4)
+
+    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    local second = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = second.id })
+    local weapon = firstArmedWeapon(server.env.Config)
+    for _, src in ipairs({ 1, 2 }) do
+        server.fire('setLoadout', src, { weapons = { { key = weapon.key, ammo = 60 } }, armor = 0 })
+        server.fire('setReady', src, { ready = true })
+    end
+    server.step(6)
+    server.match.End(second.id, 'match.ended')
+    server.step(4)
+
+    t.equals(server.carrying(1), INTACT,
+        ('after two rounds player 1 is carrying %s'):format(server.carrying(1)))
+end)
+
+t.test('and the match stops being owed anything once everyone is out', function()
+    -- The bookkeeping half. Clearing the records is right -- it just has to
+    -- happen after the reclaims that read them, not before.
+    local server, matchId = armedDoorOffMatch({ 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(4)
+
+    t.equals(server.ammo.OnLoan(matchId), 0,
+        'the finished match is still on the hook for rounds it handed out')
+    t.isFalse(server.ammo.IsHolding(1), 'the arena still thinks it owes player 1 a kit')
+end)
+
 t.test('nothing looted inside the arena leaves with them', function()
     local server, matchId = liveMatch({ 1, 2 })
 

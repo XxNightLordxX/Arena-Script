@@ -143,7 +143,6 @@ local function newFixture(mutate)
     local money = { pot = 0, stake = 0, payouts = {} }
 
     local revived = {}       -- every ArenaDispatch.Revive(src), in order
-    local revivedHold = {}   -- the same calls, carrying their keepHold flag
 
     local env = Sandbox.newEnv({
         CreateThread = runner.CreateThread,
@@ -175,14 +174,8 @@ local function newFixture(mutate)
             -- death that a player is alive again is the whole reason a
             -- player does not walk out of a match still dead, so WHO gets
             -- told and HOW MANY TIMES is the thing worth asserting.
-            -- The keepHold flag is captured alongside the id, because
-            -- WHETHER a revive frees the player is as load-bearing as who
-            -- gets one: elimination revives on purpose and must NOT free
-            -- them, and a fixture that threw the flag away is how that
-            -- shipped.
-            Revive = function(src, keepHold)
+            Revive = function(src)
                 revived[#revived + 1] = src
-                revivedHold[#revivedHold + 1] = { src = src, keepHold = keepHold == true }
             end,
             ClearDownState = function() return 0 end,
             EnterBucket = function() end,
@@ -231,13 +224,13 @@ local function newFixture(mutate)
         recorded = recorded,
         settled = settled,
         revived = revived,
-        revivedHold = revivedHold,
-        --- The keepHold flag of the last revive aimed at `src`, or nil.
-        lastHold = function(src)
-            for index = #revivedHold, 1, -1 do
-                if revivedHold[index].src == src then return revivedHold[index].keepHold end
+        --- How many revives have been aimed at `src`.
+        lastRevive = function(src)
+            local count = 0
+            for _, id in ipairs(revived) do
+                if id == src then count = count + 1 end
             end
-            return nil
+            return count
         end,
     }
 
@@ -494,36 +487,28 @@ t.test('an eliminated fighter is told to open the camera once the registry has t
     t.isTrue(match.spectators[2] == true, 'the registry never recorded them as watching')
 end)
 
-t.test('and eliminating them does NOT let them out of the hold', function()
-    -- Found by an audit, not by these tests, which is why it is here.
-    --
+t.test('an eliminated player is revived for the medical script and NOT released', function()
     -- The server revives an eliminated player on purpose -- to get them off
     -- the medical script's casualty list -- while the round carries on
-    -- without them. That revive used to free them as well, because the calls
-    -- it makes are byte-for-byte ReleaseDeadState's: spectate re-hides and
-    -- re-freezes the parked body but never restores invincibility, so they
-    -- were left MORTAL and killable, and with spectate off they simply stood
-    -- back up, armed, in a live round.
+    -- without them. What it must not do is free them: spectate re-hides and
+    -- re-freezes the parked body but never restores invincibility, so a
+    -- released player is MORTAL and killable, and with spectate off they
+    -- simply stand back up, armed, in a live round.
+    --
+    -- ASSERTED AS "NOTHING RELEASES", not as a flag. Revive used to take a
+    -- `keepHold` argument that its own body never read, so a test that
+    -- checked the flag was passed proved nothing about the hold. The hold is
+    -- kept by client/match.lua's `eliminated` handler releasing nothing, and
+    -- that is what the client test below pins.
     local f = newFixture(instantRound)
     local match = newMatch(f, 2)
     goLive(f, match)
 
     t.isTrue(f.M.OnDeath(2, 1))
 
-    t.equals(f.lastHold(2), true,
-        'the eliminated player was revived without keepHold, so the hold is dropped and they are mortal in a live round')
-end)
-
-t.test('while a revive on the way OUT does free them, or they leave frozen', function()
-    -- The other side of the same flag, and the reason it cannot simply
-    -- default to keeping the hold: a player going home must be released.
-    local f = newFixture(instantRound)
-    goLive(f, newMatch(f, 2))
-
-    t.isTrue(f.M.RemovePlayer(2, 'match.left'))
-
-    t.equals(f.lastHold(2), false,
-        'a player sent home was revived with the hold kept, so they leave invisible and frozen')
+    t.equals(f.lastRevive(2), 1, 'the eliminated player was never revived for the medical script')
+    t.isNil(f.lastPayload('crimson_arena:client:respawn', 2),
+        'an eliminated player was sent a respawn, which is what releases the hold')
 end)
 
 t.test('a registry that refuses the spectator refuses the camera with it', function()
@@ -1169,6 +1154,29 @@ t.test('the next death after a respawn is reported too -- the watch stays armed'
     f.step()
 
     t.equals(#f.serverEvents, 2, 'the fighter the server put back in the round could never die again')
+end)
+
+t.test('being ELIMINATED releases nothing -- the hold is what keeps them safe', function()
+    -- THE OTHER HALF OF THE ELIMINATION REVIVE, and the half that actually
+    -- enforces it. The server asks a medical script to revive an eliminated
+    -- player so they come off its casualty list, and nothing about that may
+    -- free them: spectate re-hides and re-freezes the parked body but never
+    -- restores invincibility, so a released player is MORTAL in a live
+    -- round, and with spectate off they stand back up armed in one.
+    --
+    -- This used to be asserted server-side, as a `keepHold` argument passed
+    -- to ArenaDispatch.Revive -- which that function never read. The flag is
+    -- gone; the guarantee lives here, where releasing is a thing that can
+    -- actually happen.
+    local f = newClientFixture()
+    f.toFirstDeath()
+    local releasedByDeath = #f.released
+
+    f.fire('crimson_arena:client:eliminated', { matchId = 'match-1', spectate = false })
+    f.step()
+
+    t.equals(#f.released, releasedByDeath,
+        'elimination let the player out of the hold -- they are mortal, or standing up, in a live round')
 end)
 
 t.test('a round that ends mid-placement still lets the player out of the hold', function()

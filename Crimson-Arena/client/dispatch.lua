@@ -75,7 +75,7 @@ exports('GetArenaMatchId', ArenaDispatch.MatchId)
 -- THIRD-PARTY MUTE EXPORTS
 -- ======================================================================
 
---- Calls each Config.Dispatch.disableExports entry with `enabled`.
+--- Calls each Config.Dispatch.custom.disableExports entry with `enabled`.
 ---
 --- Wrapped in pcall per entry, and one warning per failure rather than per
 --- call: an operator who names an export that does not exist should find

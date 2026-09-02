@@ -171,7 +171,7 @@ end
 -- need them: it runs nothing on the server console and has no client channel
 -- for running anything. The medical handoff is events and exports -- things
 -- a script publishes on purpose for other scripts to call, needing no
--- permission from anybody. tests/publicapi_spec.lua fails if any source file
+-- permission from anybody. tests/dispatch_spec.lua fails if any source file
 -- reaches for the permission natives.
 -- ======================================================================
 
@@ -329,8 +329,8 @@ end)
 --- is really running. A guessed event name is worse than none, because it
 --- detects as wired up and then silently does nothing.
 --- @param src number
---- @param keepHold boolean|nil -- true on elimination: the round is still running
-function ArenaDispatch.Revive(src, keepHold)
+--- @return nil
+function ArenaDispatch.Revive(src)
     if type(src) ~= 'number' or src <= 0 then return end
 
     -- THE ARENA DOES NOT STAND PLAYERS UP HERE, and that is deliberate.
@@ -1180,7 +1180,7 @@ end
 --- it, it is an arena alert.
 ---
 --- REQUIRING A LIVE MATCH IS THE WHOLE SAFETY OF IT. An arena can sit on a
---- real map location that ordinary play uses the rest of the time -- the
+--- real map location that ordinary play uses the rest of the time, which the
 --- trailer park does. Suppressing every alert that ever happens there would
 --- silence real crimes, which is a worse failure than the one this is fixing.
 --- With no match running, nothing here suppresses anything.
@@ -1358,8 +1358,8 @@ end
 --
 -- Nobody outside a round may shoot into it, and nobody in one may shoot
 -- out. Reported from the game about the trailer park, which is the arena
--- where it matters: the sky one hangs over open water with nobody within a
--- kilometre, and the trailer park is a real place people drive past.
+-- where it matters: the sky one hangs a kilometre up with nobody near it,
+-- and the trailer park is a real place people drive past.
 --
 -- WHY THE ROUTING BUCKET IS NOT ALREADY THE ANSWER. It is, for the ordinary
 -- case -- a player outside the match is in a different network instance and
@@ -1729,10 +1729,10 @@ local function registerCancelHandler(entry)
     end)
 end
 
--- Registration itself. Deliberately quiet when the list is empty, which is
--- how it ships: shared/compat/dispatch.lua's startup report is the one place
--- an operator is told how many of these are live, and a second line saying
--- the same thing at every boot is how a console stops being read.
+-- Registration itself. Deliberately quiet: shared/compat/dispatch.lua's
+-- startup report is the one place an operator is told how many of these are
+-- live, and a second line saying the same thing at every boot is how a
+-- console stops being read.
 do
     local registered = {}
     for key, entry in pairs(cancelConfig()) do

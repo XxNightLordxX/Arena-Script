@@ -15,9 +15,9 @@
 -- CACHED SERVER STATE
 --
 -- One snapshot, replaced wholesale on every `state` push. Exposed rather
--- than left as an upvalue because client/match.lua and client/spectate.lua
--- both need to know whether this player is in a match, and neither should
--- keep its own idea of that.
+-- than left as an upvalue because the other client files read it -- the
+-- panel bridge, the match layer and the spectate camera all need the same
+-- server truth, and none of them should keep its own copy of it.
 -- ======================================================================
 ArenaState = {}
 

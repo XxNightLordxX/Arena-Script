@@ -785,7 +785,17 @@ local function hookLine(running)
     if exportCount > 0 then parts[#parts + 1] = ('%d disableExport(s)'):format(exportCount) end
 
     local cancelCount = cancelEventCount()
-    if cancelCount > 0 then parts[#parts + 1] = ('%d cancelEvent(s) (best effort)'):format(cancelCount) end
+    -- COUNTED SEPARATELY FROM THE HOOKS, and no longer listed beside them
+    -- as if it were one. Everything else on this line is something that
+    -- reaches another resource; a cancelled event reaches nothing unless the
+    -- script that raised it goes back and asks whether anybody objected, and
+    -- the ones this server runs do not. Listing "6 cancelEvent(s)" next to
+    -- "1 disableExport(s)" read as six more layers of coverage, which is the
+    -- opposite of what they are.
+    if cancelCount > 0 then
+        parts[#parts + 1] = ('%d alert event(s) watched -- DIAGNOSTIC ONLY, they suppress nothing')
+            :format(cancelCount)
+    end
 
     -- Named separately from the cancelEvents count beside it, and never
     -- folded into it: one of them removes the call and the other asks

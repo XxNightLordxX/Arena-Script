@@ -3176,14 +3176,27 @@ Config.Dispatch = {
     --
     -- A routing bucket is a separate network instance. Entities and events
     -- inside one do not replicate to players outside it. Put a match in its
-    -- own bucket and no other player's client can see arena gunfire, arena
-    -- bodies or arena entities AT ALL -- so a dispatch or ambulance script
-    -- running on one of those clients has nothing to detect and nothing to
-    -- report, with no cooperation from it and no line pasted into it.
+    -- own bucket and no OTHER player's client can see arena gunfire, arena
+    -- bodies or arena entities at all.
     --
-    -- It is worth having even on a server with no dispatch script: it stops
-    -- passers-by wandering into a live round, and stops arena gunfire being
-    -- heard across the map.
+    -- WHAT THAT IS WORTH AGAINST A DISPATCH SCRIPT, stated honestly, because
+    -- this block used to claim more. It is worth a great deal against a
+    -- script that watches OTHER people: a bystander's client with a
+    -- dispatch resource on it is shown nothing, so it reports nothing.
+    --
+    -- It is worth NOTHING against the family of scripts this server runs.
+    -- sc-dispatch polls IsPedShooting on the SHOOTER'S OWN machine, and
+    -- sc-ambulance's death handler runs on the VICTIM'S OWN machine -- both
+    -- are inside the bucket, because they are the fighter's own client, and
+    -- a bucket cannot hide a client from itself. The alert then travels
+    -- client to server and server to the on-duty police by ordinary event
+    -- RPC, which routing buckets do not filter in either direction. A
+    -- bucket does not delay that call by a millisecond.
+    --
+    -- It is still worth having, and on a server with no dispatch script at
+    -- all it is the best thing in this block: it stops passers-by wandering
+    -- into a live round, keeps arena gunfire from being heard across the
+    -- map, keeps NPCs out, and is what lets two matches share one arena.
     --
     -- THE HONEST LIMIT, and it is the same one everything else in this block
     -- is here for: a bucket cannot hide an arena player's gunfire from THEIR
@@ -3356,11 +3369,26 @@ Config.Dispatch = {
         -- when something does not work.
         disableExports = {},
 
-        -- ---- FORM 4: this resource cancels the alert event ----------------
-        -- BEST EFFORT. THE WEAKEST THING IN THIS ENTIRE BLOCK. Read the whole
-        -- comment before you count on it, because a suppression you believe
-        -- is working and is not is worse than one you know you still have to
-        -- wire up.
+        -- ---- FORM 4: THE LIST OF ALERTS THIS SERVER RAISES -----------------
+        --
+        -- IT IS NOT A SUPPRESSION LAYER AND THIS BLOCK NO LONGER CALLS IT
+        -- ONE. It was labelled "best effort" for a long time, which was
+        -- generous: on THIS server it suppresses nothing at all, and the
+        -- startup report now says so rather than counting it alongside the
+        -- things that do work.
+        --
+        -- What it still earns its place for is two jobs that are not
+        -- suppression:
+        --
+        --   IT IS THE ONLY WAY IN TO FORM 5. retract -- the one mechanism
+        --   here that touches a real sc-dispatch call -- is reached from
+        --   inside these handlers and nowhere else. An event missing from
+        --   this list is an alert that is not cancelled, not withdrawn, and
+        --   not even logged.
+        --
+        --   IT IS THE ONLY THING THAT REPORTS. Each name prints once, the
+        --   first time it fires, so an operator can tell an alert nobody is
+        --   watching from one that is watched and declines.
         --
         -- Name the events your dispatch or ambulance script raises in order to
         -- send an alert. This resource registers a handler on each one and

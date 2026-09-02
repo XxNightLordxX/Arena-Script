@@ -293,7 +293,8 @@ CreateThread(function()
         if ok then
             pedUp = result == true
         else
-            warn(('the lobby NPC could not be spawned: %s -- falling back to the ground marker.')
+            warn(('the lobby NPC could not be spawned: %s. No NPC is standing there -- fix the '
+                .. 'error above, or set Config.Lobby.interaction to \'marker\' or \'both\'.')
                 :format(tostring(result)))
         end
     end
@@ -303,9 +304,9 @@ CreateThread(function()
 
     -- WHERE THE ARENA ACTUALLY WENT, said out loud on every start.
     --
-    -- config.lua is the operator's whole interface to this resource, and a
-    -- coordinate that appears not to take is the most confusing failure it
-    -- has: the resource works, the panel works, and the arena is somewhere
+    -- config.lua is where an operator puts these coordinates, and a
+    -- coordinate that appears not to take is the most confusing failure this
+    -- resource has: the resource works, the panel works, and the arena is somewhere
     -- they did not put it. From outside, "my edit was ignored", "I am looking
     -- at the old spot" and "the folder the server runs is not the one I
     -- edited" all look identical -- nothing was in the console to tell them

@@ -25,7 +25,8 @@ Everything lives inside the resource folder, so it travels with the copy on your
 | | |
 |---|---|
 | **[`Crimson-Arena/README.md`](Crimson-Arena/README.md)** | Full documentation — every setting, what it does, and why it is the shape it is |
-| **[`Crimson-Arena/config.lua`](Crimson-Arena/config.lua)** | The only file you need to edit. Every option is commented in place |
+| **[`Crimson-Arena/config.lua`](Crimson-Arena/config.lua)** | Everything an operator edits except the weapon list. Every option is commented in place |
+| **[`Crimson-Arena/config.weapons.lua`](Crimson-Arena/config.weapons.lua)** | The weapon catalogue, split out so the file above stays short |
 | **[`Crimson-Arena/DEPLOYMENT.md`](Crimson-Arena/DEPLOYMENT.md)** | The twenty-minute first-run checklist, for the part no automated test can cover |
 | **[`Crimson-Arena/REFERENCE.md`](Crimson-Arena/REFERENCE.md)** | The inventory: every feature, command, export and event, and every function in every file with a line on what it is for |
 

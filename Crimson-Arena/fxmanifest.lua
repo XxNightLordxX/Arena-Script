@@ -28,8 +28,9 @@ ox_lib 'locale'
 -- Everything else is checked at run time instead, so a missing one degrades
 -- one feature with a line in the console rather than refusing to boot:
 --
---   ox_target    -- the lobby NPC. Without it the ground marker is put up in
---                   its place at the same spot (client/main.lua).
+--   ox_target    -- the lobby NPC. Without it no NPC is spawned and the
+--                   console says so; the ground marker goes up only when
+--                   Config.Lobby.interaction asks for it (client/main.lua).
 --   ox_inventory -- ammunition items, and the stash a player's own kit is
 --                   held in. Only reached when Config.Loadouts.ammoItems or
 --                   the strip-on-entry rule is switched on (server/ammo.lua).
@@ -59,7 +60,7 @@ dependencies {
 -- client or server file, since every one of them calls Arena.* at some
 -- point.
 --
--- shared/compat/dispatch.lua comes last of the three because it reads both:
+-- shared/compat/dispatch.lua comes last of the four because it reads both:
 -- Config for the operator's hook names, and Arena.IsKey to validate every
 -- adapter it registers -- and it registers them while the file is still
 -- loading. It is shared rather than server-only because the catalogue and

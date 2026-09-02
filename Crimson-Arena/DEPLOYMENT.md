@@ -39,9 +39,9 @@ below and it is deliberately near the top.
    `qbx_core`. Those are the only two hard dependencies — `qbx_core` and
    `ox_lib` — and they are the whole `dependencies` block. `ox_target`,
    `ox_inventory` and `oxmysql` are checked at run time by the features that
-   need them, so a server missing one still starts: the marker replaces the
-   NPC, nobody is issued ammo items, and the leaderboard covers the server
-   run. Each says so once in the console.
+   need them, so a server missing one still starts: no lobby NPC is spawned,
+   nobody is issued ammo items, and the leaderboard covers the server run.
+   Each says so once in the console.
 3. Optionally import `sql/install.sql`. **`Config.Database.enabled` ships
    `false`**, so on a default install there is no table and no query at all —
    the leaderboard keeps its numbers in memory for the server run. If you turn
@@ -152,11 +152,13 @@ are separate places and the client ones cannot appear in the server log.
       [crimson_arena] lobby: NPC at -282.01, -2030.46, 30.15 (interaction = ped).
       ```
 
-      This one line separates four failures that otherwise look identical: the
-      config edit was ignored, you are standing at the old spot, the folder the
-      server runs is not the folder you edited, or `ox_target` is down so a
-      ground marker went up instead of an NPC. **No line at all means the
-      startup thread died** — read upward for the error.
+      This one line separates three failures that otherwise look identical:
+      the config edit was ignored, you are standing at the old spot, or the
+      folder the server runs is not the folder you edited. A line reading
+      `lobby: NOTHING -- see the warning above` is a fourth and different
+      thing: the NPC could not be spawned, and the reason is printed just
+      above it. **No line at all means the startup thread died** — read
+      upward for the error.
 
 - [ ] **F8 shows no `PROPS MISSING` line.** Every prop the arena spawns names a
       chain of models and the client checks them against your build a couple of
@@ -321,10 +323,10 @@ wrong here is something the resource did that it should not have.
          the player's own client before anything here runs. The console names
          the resources that beat it and quotes the line to move.
       2. **The down flag.** Those scripts keep "this player is down" as
-         framework metadata, and the arena now clears it on every revive --
-         `Config.Dispatch.revive.clearMetadata`. If yours uses a different
-         key, add it there. With the flag down, sc-dispatch's poll never
-         raises a call and sc-ambulance's own guard refuses one.
+         framework metadata, and the arena clears it at the death itself and
+         holds it down — `Config.Dispatch.downState.keys`. If yours uses a
+         different key, add it there. With the flag down, sc-dispatch's poll
+         never raises a call and sc-ambulance's own guard refuses one.
       3. **A name that does not match.** Everything in
          `Config.Dispatch.custom` is a list of real event and export names.
          If your build renamed one, the arena is listening for something that

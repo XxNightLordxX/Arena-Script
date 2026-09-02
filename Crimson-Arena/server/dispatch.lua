@@ -53,12 +53,11 @@
     halves of this file ship on.
 
     WHAT THIS FILE DOES NOT DO: suppress anything on somebody else's behalf.
-    The silencing of the game's own police, and the trick that stops a
-    medical script's polling loop ever seeing a dead player, are both
-    client-side -- see client/dispatch.lua. The reporting half of this file
-    exists so that the alerts THIS resource cannot reach can be declined at
-    their source, by the resource that owns them, on the strength of a fact
-    it can trust.
+    The trick that stops a medical script's polling loop ever seeing a dead
+    player is client-side -- see client/dispatch.lua. The reporting half of
+    this file exists so that the alerts THIS resource cannot reach can be
+    declined at their source, by the resource that owns them, on the strength
+    of a fact it can trust.
 ]]
 
 ArenaDispatch = {}
@@ -325,10 +324,11 @@ end)
 --- them dead: downed on the next check, or refused a respawn, or simply
 --- unable to do anything until someone revives them.
 ---
---- NOTHING IS GUESSED HERE. Every name comes from config; an empty config
---- calls nothing. A guessed export or event name is worse than none, because
---- it detects as wired up and then silently does nothing -- the same reason
---- the catalogue further down this file is detection-only.
+--- NOTHING IS GUESSED HERE, and nothing is configured either. The one event
+--- this sends comes from the catalogue in shared/compat/dispatch.lua, read
+--- out of the medical script's own source, and only for a resource this box
+--- is really running. A guessed event name is worse than none, because it
+--- detects as wired up and then silently does nothing.
 --- @param src number
 --- @param keepHold boolean|nil -- true on elimination: the round is still running
 function ArenaDispatch.Revive(src, keepHold)

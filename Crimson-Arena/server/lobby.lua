@@ -866,10 +866,10 @@ end
 
 --- Pushes the snapshot to everyone who can see it and nobody who cannot.
 ---
---- The three shared thirds are built ONCE per broadcast and handed to every
---- recipient by reference; only the `player` block is rebuilt per head.
---- With forty people in a lobby the alternative is forty identical match
---- lists assembled on every ready toggle.
+--- The shared blocks are built ONCE per broadcast and handed to every
+--- recipient by reference; what is rebuilt per head is only what differs per
+--- head. With forty people in a lobby the alternative is forty identical
+--- match lists assembled on every ready toggle.
 function ArenaLobby.Broadcast()
     refreshLeaderboard()
 

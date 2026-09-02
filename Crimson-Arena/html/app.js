@@ -493,9 +493,10 @@
     }
 
     function canChooseLoadout() {
-        /* In host mode the picker belongs to the host alone. Read-only for
-           everyone else rather than hidden: what it shows is what they will
-           be handed, which is worth seeing even when it cannot be changed. */
+        /* In host mode the picker belongs to the host alone. Everyone else
+           gets the hint below instead of the sections -- Into The Round still
+           shows them exactly what they will be handed, which is the part
+           worth seeing when the choice is not theirs. */
         if (hostPicksLoadout()) return player().isHost === true;
 
         return true;

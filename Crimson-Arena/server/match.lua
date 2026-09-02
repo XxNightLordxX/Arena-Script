@@ -512,8 +512,10 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
 
     -- Issued against this match so it can be reclaimed against it. A weapon
     -- whose ammo item could not be handed over is named for the operator;
-    -- whether that player still fights is Config.Loadouts.ammoItems'
-    -- allowWeaponWithoutAmmoItem to decide, not this line's.
+    -- whether that player keeps the WEAPON is
+    -- Config.Loadouts.ammoItems.allowWeaponWithoutAmmoItem to decide -- with
+    -- it off the gun is taken back too, rather than the player being kept
+    -- out of the round.
     local missingAmmo = ArenaAmmo.Issue(player.src, match.id, player.loadout)
     if #missingAmmo > 0 then
         ArenaDebug('ammo: %s starts without items for %s', tostring(player.src), table.concat(missingAmmo, ', '))
@@ -572,11 +574,14 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
     })
 end
 
---- Where every LIVE OPPONENT of one player currently is.
+--- Where every live player on ONE SIDE of a match currently is -- the
+--- opposition when `sameSideWanted` is false, this player's own team when it
+--- is true. The two wrappers below name the two questions.
 ---
---- Teammates are deliberately left out: coming back near your own side is
---- the point of having one, and counting them as something to avoid would
---- push a returning player out to the empty edge of the arena alone.
+--- The distinction is the point: coming back near your own side is what
+--- having one is for, while coming back near the opposition is what a
+--- respawn must never do -- so the two lists are scored differently and
+--- cannot share one call.
 ---
 --- Read from the engine rather than from anything the arena stores, because
 --- what matters is where they are NOW, not where they started. A position
@@ -1152,13 +1157,15 @@ function ArenaMatch.OnDeath(src, killerSrc)
         -- two for the rest of the round -- watching, flagged dead by the
         -- medical script, with whatever that script does to a corpse still
         -- being done to them.
-        -- THE HOLD STAYS, and nothing on this path releases it. The point
-        -- here is the medical script's list, not the player's freedom: the
-        -- round is still running and they are out of it. Released, they
-        -- would be visible, solid and MORTAL in a live arena -- spectate
-        -- restores the first two and never touches invincibility, and the
-        -- client's `eliminated` handler deliberately leaves the hold on.
-        ArenaDispatch.Revive(id, true)
+        -- THE HOLD STAYS, and nothing anywhere on this path releases it.
+        -- The point here is the medical script's list, not the player's
+        -- freedom: the round is still running and they are out of it.
+        -- Released, they would be visible, solid and MORTAL in a live arena
+        -- -- spectate restores the first two and never touches
+        -- invincibility. What keeps them held is client/match.lua's
+        -- `eliminated` handler, which deliberately releases nothing;
+        -- leaveArena is the only thing that ever does.
+        ArenaDispatch.Revive(id)
 
         TriggerClientEvent('crimson_arena:client:eliminated', id, { matchId = match.id, spectate = spectate })
         ArenaNotifyKey(id, 'notify.eliminated', 'error')

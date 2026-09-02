@@ -19,17 +19,17 @@
     ------------------------------------------------------------------------------
        78   Lobby         The NPC players walk up to
       151   Match         Lives, timers, player counts, win condition
-      359   Teams         The sides, and whether they may be uneven
-      461   Modes         Free-for-all and team deathmatch
-      480   DefaultMode   Which of them a new lobby opens on
-      499   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      692   UI            Panel colours, logo and title
-      755   Permissions   Who may open a match, who may force-stop one
-      836   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1371   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1760   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1770   Webhook       Optional: a Discord line per finished match
-     1807   Dispatch      Optional: keeping police and EMS out of the arena
+      366   Teams         The sides, and whether they may be uneven
+      468   Modes         Free-for-all and team deathmatch
+      487   DefaultMode   Which of them a new lobby opens on
+      506   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      699   UI            Panel colours, logo and title
+      762   Permissions   Who may open a match, who may force-stop one
+      843   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1380   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1770   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1780   Webhook       Optional: a Discord line per finished match
+     1817   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -250,20 +250,27 @@ Config.Match = {
 
     -- THE RADAR, which replaced permanent blips.
     --
-    -- Off for every player until they switch it on themselves in the panel,
-    -- and even then it is not a live feed: it SWEEPS. Every `intervalMs` the
-    -- fighters' positions appear for `visibleMs` and then go dark again, so
-    -- what a player gets is where everybody WAS a moment ago, not where they
-    -- are now. Long enough to plan, stale enough to be wrong about.
+    -- A MATCH SETTING, NOT A PERSONAL ONE. The host decides once, when they
+    -- create the match, and everybody in that round fights under it -- there
+    -- is no per-player toggle.
     --
-    -- The two Config.Teams blip switches above override this: a server that
-    -- wants permanent dots turns those on and the radar never runs.
+    -- And it is not a live feed even when it is on: it SWEEPS. Every
+    -- `intervalMs` the fighters' positions appear for `visibleMs` and then go
+    -- dark again, so what a player gets is where everybody WAS a moment ago,
+    -- not where they are now. Long enough to plan, stale enough to be wrong
+    -- about.
+    --
+    -- Config.Teams.showEnemyBlips below overrides this: a server that wants
+    -- permanent enemy dots turns it on and the radar never runs. showTeamBlips
+    -- has no effect on it either way.
     radar = {
-        -- Whether the toggle appears in the panel at all. Off, nobody has a
-        -- radar and the control is not drawn -- rather than drawn and dead.
+        -- Whether the host is offered the choice at all. Off, the control is
+        -- not drawn -- rather than drawn and dead -- and every match uses
+        -- `defaultOn` below.
         allowChoose = true,
 
-        -- Whether a player who has never touched it starts with it on.
+        -- Where the host's toggle starts before they touch it, and the value
+        -- used outright when `allowChoose` is off.
         defaultOn = false,
 
         -- How long between sweeps, and how long a sweep is visible for.
@@ -385,14 +392,14 @@ Config.Teams = {
     friendlyFire = false,
 
     -- Team blips on the map during a match.
-    -- BOTH OFF. A permanent dot on every fighter turns a round into a map to
-    -- be read rather than a place to be searched -- nobody flanks anybody
-    -- when everybody's position is drawn continuously.
     --
-    -- Config.Match.radar below is the replacement, and it is opt-in per
-    -- player: a sweep that shows where everyone was for a moment and then
-    -- goes dark again. Turn these back on for a server that wants the old
-    -- permanent behaviour; they override the radar entirely.
+    -- A PERMANENT DOT ON EVERY ENEMY turns a round into a map to be read
+    -- rather than a place to be searched -- nobody flanks anybody when
+    -- everybody's position is drawn continuously. Config.Match.radar above is
+    -- the replacement: a sweep the host switches on for the whole match,
+    -- showing where everyone was for a moment before going dark again.
+    -- Switching `showEnemyBlips` on restores the old permanent behaviour and
+    -- stops the radar running at all.
     -- YOUR OWN SIDE, ALWAYS. Knowing where your team is is not intelligence
     -- -- it is the difference between a team mode and four people in the
     -- same field -- so teammates stay on the map for the whole round.
@@ -1348,12 +1355,14 @@ Config.Arenas = {
 }
 
 -- ======================================================================
--- LOADOUTS -- THE WEAPONS AND AMMO PLAYERS CHOOSE FROM.
+-- LOADOUTS -- THE RULES THE WEAPON PICKER IS BUILT UNDER.
 --
--- This is the list the weapon picker is built from. Delete an entry, or
--- set `enabled = false`, and that weapon is gone from the arena for
--- everyone -- the server refuses it even if a modified client asks for it
--- by name.
+-- THE WEAPONS THEMSELVES ARE IN config.weapons.lua, loaded straight after
+-- this file. Delete an entry there, or set `enabled = false` on one, and
+-- that weapon is gone from the arena for everyone -- the server refuses it
+-- even if a modified client asks for it by name. What is in THIS block is
+-- how many a player may take, what ammunition they arrive with, and the
+-- spare kit they carry in.
 --
 -- AMMO: each weapon carries its own `ammo` block. `options` is what the
 -- player may pick from in the panel; `max` is the hard ceiling the server
@@ -1491,14 +1500,14 @@ Config.Loadouts = {
     -- ==================================================================
     -- AMMO TYPES -- your ammo script's ITEMS.
     --
-    -- SHIPS OFF. Turn it on once you have put your own item names in the list
-    -- below, because handing out an item name that does not exist on your
-    -- server is a silent nothing, and a player who chose armour-piercing and
-    -- got no ammo will report it as the arena being broken.
+    -- SHIPS ON, because every weapon in config.weapons.lua already names the
+    -- real ammo item it fires, read out of that weapon's own `ammoname` in
+    -- ox_inventory. The player is never asked to choose a type: they pick an
+    -- amount, and the server gives them that many of the item their weapon
+    -- takes when the round starts.
     --
-    -- HOW IT WORKS: the player picks a type in the panel alongside the amount,
-    -- and the server gives them that many of the matching item when the round
-    -- starts.
+    -- An item name that does not exist on your server is a silent nothing at
+    -- run time, which is why none of these was guessed.
     --
     -- GETTING IT BACK IS NOT THIS BLOCK'S JOB, and there is no switch for it
     -- here. The door above already guarantees it: a player's own inventory is
@@ -1532,7 +1541,7 @@ Config.Loadouts = {
         -- otherwise the SMALLEST amount that weapon's own `ammo.options`
         -- offers -- which is the operator's own idea of a small quantity of
         -- this round, already written next to the weapon. Every firearm in
-        -- the list below has one, so nothing needs adding. A pistol offering
+        -- config.weapons.lua has one, so nothing needs adding. A pistol offering
         -- 30/60/120 and picked at 60 arrives with 30 loaded and 30 in the
         -- pocket; picked at 30 it arrives with 30 loaded and nothing spare,
         -- because thirty rounds is thirty rounds.
@@ -1557,8 +1566,9 @@ Config.Loadouts = {
         roundsPerItem = 1,
 
         -- What a weapon starts loaded with when it names no `magazine` of its
-        -- own AND its `ammo.options` list is empty. Every firearm shipped
-        -- below has an options list, so this is only reached by a weapon an
+        -- own AND its `ammo.options` list is empty. Every firearm in
+        -- config.weapons.lua has an options list, so this is only reached by
+        -- a weapon an
         -- operator adds without one.
         --
         -- Never more than the player picked: it is a ceiling on the magazine,

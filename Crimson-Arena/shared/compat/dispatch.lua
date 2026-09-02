@@ -291,7 +291,7 @@ local byResource = {}
 --- this runs at load time, in both VMs, and an error here would take the
 --- rest of the file -- and the report that would have explained it -- down
 --- with it.
---- @param adapter table -- { resource: string, kind: 'police'|'ambulance'|'both', mute: fun(src: number, active: boolean)? }
+--- @param adapter table -- { resource: string, kind: 'police'|'ambulance'|'both', mute: fun(src: number, active: boolean)?, reviveClientEvent: string? }
 --- @return boolean registered
 function ArenaCompat.RegisterAdapter(adapter)
     if type(adapter) ~= 'table' or not Arena.IsKey(adapter.resource) then
@@ -347,10 +347,11 @@ end
 -- server actually runs that script -- not before. See this file's header for
 -- what an entry may and may not claim.
 --
--- Every one of these is DETECTION-ONLY: a name, and what that resource is.
--- Not one carries a mute call, because not one of their export names can be
+-- NOT ONE CARRIES A MUTE CALL, because not one of their export names can be
 -- verified from inside this repository, and a guessed export name detects as
--- working and then silently does nothing.
+-- working and then silently does nothing. What an EMS entry may carry is a
+-- `reviveClientEvent`, and only where that name was read out of the script's
+-- own source -- see the note on those entries.
 --
 -- A DISPATCH BOARD IS FILED AS 'both'. It carries the person-down call as
 -- well as shots-fired, so an operator whose EMS keeps getting paged can see

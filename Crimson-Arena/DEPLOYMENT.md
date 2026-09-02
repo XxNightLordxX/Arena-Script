@@ -428,7 +428,8 @@ keep the inventory UI open next to you.
 - [ ] Take an **MK II weapon** and start. Twelve ship and all twelve are
       enabled, and — like every other weapon in the list — each names its own
       `item` and **no component**. Nothing in the shipped config attaches an
-      MK II magazine: `COMPONENT_` does not appear in `config.lua` at all.
+      MK II magazine: `COMPONENT_` does not appear in `config.weapons.lua`
+      at all.
       Since every weapon carries its own list, editing `defaultAmmoTypes`
       alone changes nothing for any of them.
 

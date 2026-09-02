@@ -137,9 +137,10 @@ local function restoreOwnLoadout(ped)
     carried = nil
 end
 
---- Applies the loadout the server resolved. Nothing is re-derived here, and
---- nothing about the weapons is touched: what this puts on the player is the
---- health and armour every life starts on.
+--- Applies the loadout the server resolved. Weapons are not touched at all
+--- -- ox_inventory owns those and server/ammo.lua issues them as items --
+--- so what this puts on the player is the health and armour every life
+--- starts on, applied as a floor rather than read from the wire.
 --- What the arena decided this fighter's health and armour should be, and
 --- until when it is worth putting them back.
 ---

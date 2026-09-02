@@ -363,7 +363,7 @@ listed; the source documents them where they are.
 | `Arena.SizeFactor(arenaKey, players)` | HOW MUCH BIGGER THIS ARENA IS FOR THIS MATCH. |
 | `Arena.GetSpawnArea(arenaKey, factor)` | The spawn AREA an arena defines, if it defines one. |
 | `Arena.PlanSpawns(arenaKey, roster, rng, factor)` | Works out where every player in a roster starts. |
-| `Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor)` | Where to put a player who has just lost a life. |
+| `Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor, prefer)` | Where to put a player who has just lost a life -- clear of `avoid`, and near `prefer` where it can be. |
 | `Arena.ResolveLives(requested)` | How many lives a host may give a match, resolved from what they asked for. |
 | `Arena.ResolveRadar(requested)` | Whether a match runs a radar, resolved from what the host asked for. |
 | `Arena.ResolveEntryFee(requested)` | Clamps a requested entry fee into the configured band. |

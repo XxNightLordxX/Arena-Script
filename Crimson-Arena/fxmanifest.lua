@@ -8,7 +8,8 @@ version '1.0.0'
 
 lua54 'yes'
 
--- ox_lib's locale loader. Reads locales/<Config.Locale>.json and exposes
+-- ox_lib's locale loader. Reads the locales/ file named by the `ox:locale`
+-- convar, defaulting to en, and exposes
 -- `locale(key, ...)` in both realms -- the same convention every qbx_*
 -- resource uses.
 ox_lib 'locale'

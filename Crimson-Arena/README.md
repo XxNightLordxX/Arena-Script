@@ -304,6 +304,7 @@ An arena that gives out two hundred armour-piercing rounds and does not take the
 (A host *cancelling* is not on that list because it cannot be: cancel is refused the moment anybody has been placed in the arena, which is the same moment ammunition is issued. There is never a cancel with rounds outstanding.)
 
 ```lua
+stripOnEntry = true,
 ```
 
 The switch exists, it defaults to on, and turning it off makes the arena a source of free ammunition. It is there only for servers that genuinely want that. If you are not sure, you do not.
@@ -478,8 +479,8 @@ thirty-two lands the full stated separation, checked across sixty random
 seeds for each of seven roster sizes — four hundred and twenty rosters — in
 `tests/skyarena_spec.lua`.
 
-Leave the block out and nothing changes — which is what every arena on the
-map does, including the trailer park.
+Leave the block out and nothing changes — which is what the trailer park
+does, since it is a real place with a fixed amount of room in it.
 
 ### maxPlayers = 0 means unlimited
 
@@ -509,6 +510,7 @@ An arena is a place where people shoot each other on purpose. Left alone, every 
 | 3 | A startup report naming what you run and what the arena does about it | **No.** It only tells you the truth. |
 | 4 | Hooks your script can read: events, a state bag, exports | Yes — one line, and this is the one that always works. |
 | 5 | Cancelling the alert event outright | No, but it is **best effort** and often does nothing. |
+| 6 | Withdrawing the call after it has been filed | No — needs your dispatch script's own clear-a-call export, which is named in config. |
 
 **Will it just work?** Mostly, and more than you would expect. Layers 1 and 2 are on out of the box. Between them, no *other* machine on your server is ever sent an arena fight to detect, and a medical script that finds casualties by polling the death state does not find one here. Nothing is pasted into anything, and nothing is asked of anybody.
 

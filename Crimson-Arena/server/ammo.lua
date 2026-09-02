@@ -38,11 +38,11 @@
     it the only place that can duplicate an item. That is worth being able to
     read in one sitting.
 
-    SHIPS OFF. Config.Loadouts.ammoItems.enabled is false until an operator
-    has put their own item names in Config.Loadouts.defaultAmmoTypes, because
-    handing out an item name that does not exist is a silent nothing, and a
-    player who picked armour-piercing and got no ammunition reports it as the
-    arena being broken.
+    SHIPS ON, because every weapon in config.weapons.lua already names the
+    real ammo item it fires, read out of that weapon's own `ammoname` in
+    ox_inventory. An item name that does not exist is a silent nothing at run
+    time, which is why none of them was guessed -- and why an operator who
+    renames their ammo items has to say so here.
 ]]
 
 ArenaAmmo = {}
@@ -369,19 +369,17 @@ end
 -- ======================================================================
 -- THE ARENA'S WEAPONS
 --
--- WHY THE SERVER HANDS THESE OUT AND NOT THE CLIENT. Without an inventory
--- resource a weapon is a property of the ped, and GiveWeaponToPed on the
--- client is the whole story. With ox_inventory it is not: a weapon is an
--- ITEM, and ox_inventory continuously reconciles what the ped holds against
--- what the inventory contains. Give the ped a weapon it has no item for and
--- ox_inventory takes it straight back off them.
+-- WHY THE SERVER HANDS THESE OUT AND NOT THE CLIENT. Under ox_inventory a
+-- weapon is an ITEM, and ox_inventory continuously reconciles what the ped
+-- holds against what the inventory contains -- give the ped a weapon it has
+-- no item for and ox_inventory takes it straight back off them.
 --
--- That is invisible until the door is switched on, and then it is total: the
--- door empties the player's inventory into a stash, so every arena weapon is
--- one ox_inventory has no item for, and every player spawns unarmed.
+-- The door makes that total rather than occasional: it empties the player's
+-- inventory into a stash, so a ped-given arena weapon is one ox_inventory
+-- has no item for, and every player would spawn unarmed.
 --
--- So on an ox_inventory server the weapon is added as an item here, with the
--- magazine in its metadata, and client/match.lua does not touch the ped.
+-- So the weapon is added as an item here, with the magazine in its metadata,
+-- and client/match.lua never touches the ped's weapons at all.
 -- ======================================================================
 
 --- Weapon items handed out, per match, per player. Only consulted when the
@@ -961,12 +959,12 @@ function ArenaAmmo.Clear(matchId)
         end
     end
 
-    -- ALL THREE, not just the count. `issued` is a running total per player,
-    -- `issuedAmmo` is what they were given BY NAME (which is what the exit
-    -- removes) and `issuedWeapons` is the same for guns. Dropping only the
-    -- first left the other two growing for the life of the server -- one
-    -- entry per match, never freed, on a resource whose whole job is running
-    -- matches back to back.
+    -- ALL FOUR, not just the count. `issued` is a running total per player;
+    -- `issuedAmmo` is what they were given BY NAME, `issuedWeapons` the same
+    -- for guns and `issuedSupplies` for plates and bandages. Dropping only
+    -- the first left the other three growing for the life of the server --
+    -- one entry per match, never freed, on a resource whose whole job is
+    -- running matches back to back.
     issued[matchId] = nil
     issuedAmmo[matchId] = nil
     issuedWeapons[matchId] = nil

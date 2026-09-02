@@ -369,11 +369,6 @@ onClient('crimson_arena:server:startMatch', RATE.start, function(src)
     if not ok then return refuse(src, reason) end
 end)
 
---- Nothing to shape-check: the only argument a cancel has is who sent it.
---- Whether they are the host, whether the match is still cancellable, and
---- what closing it does to the stakes are all ArenaLobby.Cancel's to answer
---- -- the last of those reads Config.Betting.refundOnCancel, which is
---- precisely the kind of decision this file does not make.
 --- The host holding a start they have already called.
 ---
 --- SEPARATE FROM cancelMatch, and it has to be: the panel's "Stop The
@@ -384,6 +379,11 @@ onClient('crimson_arena:server:holdCountdown', RATE.start, function(src)
     if not ok then return refuse(src, reason) end
 end)
 
+--- Nothing to shape-check: the only argument a cancel has is who sent it.
+--- Whether they are the host, whether the match is still cancellable, and
+--- what closing it does to the stakes are all ArenaLobby.Cancel's to answer
+--- -- the last of those reads Config.Betting.refundOnCancel, which is
+--- precisely the kind of decision this file does not make.
 onClient('crimson_arena:server:cancelMatch', RATE.start, function(src)
     local ok, reason = ArenaLobby.Cancel(src)
     if not ok then return refuse(src, reason) end

@@ -889,6 +889,29 @@ t.test('and defaults to whoever ran it, since that is the common case', function
     t.equals(firedFor(f)[1].args[1], 4)
 end)
 
+t.test('the client is told to hold the arena\'s vitals over the handoff', function()
+    -- EVERYTHING THE HANDOFF DOES IS A REQUEST TO ANOTHER SCRIPT TO TOUCH
+    -- THIS BODY. A medical revive does not only clear a death record: it
+    -- sets health, and most of them set armour to zero doing it. The arena
+    -- has just put this fighter back on full health and a full plate for
+    -- their next life and then, two seconds later, asks a script to revive
+    -- them -- so without this the plate a player is promised every life is
+    -- taken off them by the arena's own handoff, on every respawn.
+    --
+    -- It used to ride on the arena's own revive event. That went with the
+    -- self-made revive and took the signal with it, so it is its own event.
+    local f = newFixture(reviveConfig('mymedical:revive'))
+    f.D.Revive(7)
+
+    local told = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:holdVitals' then told = message end
+    end
+
+    t.isNotNil(told, 'the handoff ran and the client was never told to hold its vitals')
+    t.equals(told.target, 7, 'the hold was sent to the wrong player')
+end)
+
 t.test('AND IT NO LONGER STANDS THE PLAYER UP ITSELF', function()
     -- THE REMOVAL, ASSERTED. The arena used to resurrect the ped here on top
     -- of the handoff -- a second writer for a body the medical script also

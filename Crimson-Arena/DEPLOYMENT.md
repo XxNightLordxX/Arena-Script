@@ -333,6 +333,14 @@ wrong here is something the resource did that it should not have.
          never fires -- and says so, once, naming what it saw instead.
 - [ ] Have a third player stand outside the arena. They cannot see or hear the
       fight (routing-bucket isolation).
+- [ ] **Run `/arenaisolation` while a round is live.** It prints what the server
+      is really doing rather than what the config asked for: the mode reported
+      for `onesync`, the bucket each live match was allocated, and the bucket
+      the server says each of those players is standing in right now. Every row
+      should end in the number the row before it asked for. A row ending
+      `NOT INSTANCED`, or two players sharing a number across two different
+      match ids, means isolation is not happening -- fix that before opening
+      the arena, because it is what lets two matches share one platform.
 - [ ] Leave the arena and fire a weapon in town. **Your police script DOES get
       a call.** This is the test people skip, and it is the one that catches a
       suppression flag that leaked — a player who stays permanently invisible to

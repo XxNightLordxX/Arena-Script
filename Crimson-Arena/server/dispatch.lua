@@ -593,6 +593,29 @@ local function isolationConfig()
     return (Config.Dispatch and Config.Dispatch.isolation) or {}
 end
 
+--- What an operator typed, read as a yes or a no.
+---
+--- Convar booleans are free text: `set onesync_enabled 1`, `true`, `yes` and
+--- `on` all mean the same thing to the server and arrive here as four
+--- different strings. Case is not normalised by the server either, so it is
+--- normalised here.
+--- @param value any
+--- @return boolean
+local function isTruthy(value)
+    value = tostring(value):lower()
+    return value == 'true' or value == '1' or value == 'yes' or value == 'on'
+end
+
+--- The other half, and deliberately not `not isTruthy(...)`: a mode name this
+--- file has never heard of is neither a yes nor a no, and must not be read as
+--- a refusal.
+--- @param value any
+--- @return boolean
+local function isFalsey(value)
+    value = tostring(value):lower()
+    return value == 'false' or value == '0' or value == 'no' or value == 'off'
+end
+
 --- Whether this server has OneSync on, and in which mode.
 ---
 --- ROUTING BUCKETS REQUIRE ONESYNC, AND THIS RESOURCE NEVER ASKED. With it
@@ -610,15 +633,30 @@ end
 --- Two spellings, because builds differ: modern servers answer the single
 --- `onesync` convar ('off' / 'legacy' / 'on' / 'infinity'), older ones the
 --- pair below.
+---
+--- AND A CONVAR BOOLEAN IS NOT THE STRING 'true'. `set onesync_enabled 1` is
+--- the spelling half the guides on the internet use, and `yes` and `on` both
+--- appear in the wild -- GetConvar hands back whatever the operator typed,
+--- verbatim. Comparing against 'true' alone read every one of those as OFF,
+--- which switched isolation off on servers that had OneSync running, and did
+--- it in the one direction nobody notices: quietly, on a server whose
+--- startup line then said so in a report nobody re-reads.
 --- @return string mode
 local function oneSyncMode()
     if type(GetConvar) ~= 'function' then return 'unknown' end
 
+    -- RETURNED VERBATIM, whatever it says. Some builds answer this one as a
+    -- mode name and some as a boolean, and tidying the booleans up here
+    -- would put a second opinion about what counts as a no in a second
+    -- place -- which is how the older pair below came to disagree with
+    -- bucketsAvailable in the first place. One reader decides that, and it
+    -- is isFalsey. What this function is for is telling an operator what
+    -- their server actually said.
     local mode = GetConvar('onesync', '')
     if mode ~= '' then return mode end
 
-    if GetConvar('onesync_enableInfinity', 'false') == 'true' then return 'infinity' end
-    if GetConvar('onesync_enabled', 'false') == 'true' then return 'legacy' end
+    if isTruthy(GetConvar('onesync_enableInfinity', 'false')) then return 'infinity' end
+    if isTruthy(GetConvar('onesync_enabled', 'false')) then return 'legacy' end
     return 'off'
 end
 
@@ -633,6 +671,21 @@ end
 --- server should see this; they should not have it printed at every round.
 local warnedNoOneSync = false
 
+--- SET WHEN THE SERVER HAS BEEN CAUGHT NOT HONOURING A BUCKET, and never
+--- cleared while the resource runs.
+---
+--- THE DEFECT CLASS THIS EXISTS TO END. Everything above this line asks the
+--- server a QUESTION -- which convar is set, what mode does it name -- and
+--- then trusts the answer for the rest of the run. An operator reported
+--- twice that matches were still sharing a world while every one of those
+--- questions answered yes, and there was no line anywhere in the resource
+--- that could have told them otherwise: the allocation ran, the move ran,
+--- the log said the match was instanced, and the players stood in each
+--- other. A convar is what the server was CONFIGURED with; whether a routing
+--- bucket actually took is a different fact, and the only honest way to
+--- learn it is to set one and read it back.
+local provenInert = false
+
 --- Whether routing buckets actually work here.
 ---
 --- ONLY A DEFINITE 'off' REFUSES. Anything unrecognised is treated as
@@ -641,8 +694,13 @@ local warnedNoOneSync = false
 --- would switch off a layer that was doing its job.
 --- @return boolean
 local function bucketsAvailable()
+    -- WHAT THE SERVER PROVED BEATS WHAT THE SERVER SAID. A convar is a
+    -- statement of intent; a move that did not land is a measurement. See
+    -- moveTo below for how one is taken.
+    if provenInert then return false end
+
     local mode = oneSyncMode()
-    if mode ~= 'off' and mode ~= 'false' and mode ~= '0' then return true end
+    if not isFalsey(mode) then return true end
 
     if not warnedNoOneSync then
         warnedNoOneSync = true
@@ -701,6 +759,77 @@ local function currentBucket(src)
     local ok, bucket = pcall(GetPlayerRoutingBucket, src)
     if not ok then return 0 end
     return Arena.ToInt(bucket) or 0
+end
+
+--- Whether the server still has this player, so a bucket that did not take
+--- can be told apart from a player who left while it was being set.
+---
+--- Answered conservatively: anything other than a positively returned name
+--- is read as "cannot tell", and a move is never held against the server on
+--- a reading this function could not take.
+--- @param src number
+--- @return boolean
+local function stillConnected(src)
+    if type(GetPlayerName) ~= 'function' then return false end
+    local ok, name = pcall(GetPlayerName, src)
+    if not ok then return false end
+    return type(name) == 'string' and name ~= ''
+end
+
+--- Moves one player into a bucket AND PROVES IT LANDED.
+---
+--- SETTING A ROUTING BUCKET IS NOT A REQUEST. It is a synchronous write to a
+--- field the server keeps for that client, so on a server where buckets work
+--- the read below always agrees with the write above -- there is no race to
+--- lose and no tick to wait for. Which is what makes the disagreement worth
+--- acting on: it does not mean "not yet", it means the natives are not doing
+--- anything, and every promise this resource makes about instancing is
+--- already false.
+---
+--- WHAT IT DOES WITH THAT. It says so once, loudly, in the operator's console
+--- rather than in a debug channel they would have to switch on -- and then it
+--- stops claiming isolation for the rest of the run. That second half is the
+--- important one: with `provenInert` set, GetBucket answers nil, and the
+--- guard in server/match.lua refuses to start a second match at an arena
+--- somebody is already fighting in. Two rounds sharing a platform is the
+--- symptom an operator sees; refusing the second one is the fallback this
+--- codebase already had, and it was never reachable because nothing could
+--- tell that it was needed.
+--- @param src number
+--- @param bucket integer
+--- @return boolean landed
+local function moveTo(src, bucket)
+    -- GUARDED, BUT THE RESULT IS NOT THE ANSWER. Whether the call returned
+    -- is a fact about this Lua runtime; whether the player moved is a fact
+    -- about the server, and only the second one is being asked. The read
+    -- below settles it either way, so the pcall is here to keep a native
+    -- that throws from taking the rest of a match start down with it and
+    -- for nothing else.
+    pcall(SetPlayerRoutingBucket, src, bucket)
+
+    if currentBucket(src) == bucket then return true end
+
+    -- A player who has gone cannot be moved and cannot be read back, and
+    -- neither says anything about whether buckets work here. Asked only
+    -- AFTER the reading disagrees, because a move that landed needs no
+    -- alibi.
+    if not stillConnected(src) then return false end
+
+    -- SAID ONCE, and by arithmetic rather than by a flag checked here.
+    -- moveTo is only ever reached through EnterBucket, which reaches it only
+    -- after GetBucket handed back a number -- and GetBucket answers nil for
+    -- every match from the moment the line below runs. So the second player
+    -- into a broken server never gets this far, and a guard against saying
+    -- it twice would be a guard against something that cannot happen.
+    provenInert = true
+    ArenaLog('ISOLATION IS NOT IN FORCE, AND THIS SERVER JUST PROVED IT: %s was put into routing ' ..
+        'bucket %d and the server still reports them in %d. The routing natives are not doing anything ' ..
+        'here, so matches are being fought in the open world where every client can see them. The usual ' ..
+        'cause is OneSync -- `set onesync on` in server.cfg, then restart -- and the server currently ' ..
+        'reports onesync as "%s". Until that is fixed the arena will refuse to start a second match at ' ..
+        'an arena somebody is already fighting in, because it can no longer keep the two apart.',
+        tostring(src), bucket, currentBucket(src), tostring(oneSyncMode()))
+    return false
 end
 
 --- Applies the bucket's own rules. Called ONCE, when the number is
@@ -793,7 +922,7 @@ function ArenaDispatch.EnterBucket(src, matchId)
             if currentBucket(src) ~= bucket then
                 ArenaDebug('dispatch: %s had drifted out of arena bucket %d -- putting them back.',
                     tostring(src), bucket)
-                SetPlayerRoutingBucket(src, bucket)
+                moveTo(src, bucket)
             end
             return true
         end
@@ -815,8 +944,12 @@ function ArenaDispatch.EnterBucket(src, matchId)
     end
 
     held[src] = { bucket = bucket, previous = previous, matchId = matchId }
-    SetPlayerRoutingBucket(src, bucket)
-    return true
+
+    -- RECORDED BEFORE THE MOVE, AND KEPT EVEN IF THE MOVE IS REFUSED. The
+    -- record is what ExitBucket reads to put this player back where they
+    -- came from; dropping it on a failed move would strand anyone the server
+    -- HAD moved before it started refusing.
+    return moveTo(src, bucket)
 end
 
 --- Puts a player back in exactly the bucket EnterBucket found them in, and
@@ -872,6 +1005,79 @@ function ArenaDispatch.ReleaseBucket(matchId)
     ArenaDebug('dispatch: routing bucket %d released by match %s.', bucket, tostring(matchId))
     return true
 end
+
+--- What isolation is ACTUALLY doing right now, for the startup report and
+--- for /arenaisolation.
+---
+--- Three separate facts, kept separate on purpose, because an operator
+--- reading "isolation: off" cannot act on it without knowing which of the
+--- three said no.
+--- @return table
+function ArenaDispatch.IsolationState()
+    return {
+        wanted = isolationConfig().enabled ~= false,
+        oneSync = oneSyncMode(),
+        provenInert = provenInert,
+        inForce = isolationEnabled(),
+        perMatch = isolationConfig().perMatch ~= false,
+    }
+end
+
+-- ======================================================================
+-- /arenaisolation -- THE ANSWER TO "IS IT ROUTING THE BUCKET?"
+--
+-- WHY A COMMAND AND NOT ANOTHER LOG LINE. Isolation failing looks, from the
+-- console, exactly like isolation working: the allocation runs, the moves
+-- run, and every line this file prints is about what it decided rather than
+-- about what the server did with it. An operator standing in an arena
+-- watching another match happen on top of theirs had no way to turn that
+-- into a fact, and neither did anybody they reported it to.
+--
+-- This prints the measurement instead of the intent: the mode the server
+-- reports, whether a move has ever been caught not landing, the bucket each
+-- live match was allocated, and -- the line that settles it -- the bucket the
+-- server says each of those players is standing in RIGHT NOW, read back one
+-- at a time. Two rows with the same number and two different match ids is
+-- the whole diagnosis.
+-- ======================================================================
+RegisterCommand('arenaisolation', function(src, _args)
+    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
+        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
+            ArenaNotifyKey(src, 'error.no_permission', 'error')
+        end
+        return
+    end
+
+    local state = ArenaDispatch.IsolationState()
+    ArenaLog('arenaisolation: config says %s, server reports onesync "%s", a move has %sbeen caught not landing.',
+        state.wanted and 'ON' or 'OFF', tostring(state.oneSync), state.provenInert and '' or 'NOT ')
+    ArenaLog('arenaisolation: isolation is %s right now, %s.',
+        state.inForce and 'IN FORCE' or 'NOT IN FORCE',
+        state.perMatch and 'one bucket per match' or 'one bucket shared by every match')
+
+    local matches = 0
+    for matchId, bucket in pairs(matchBuckets) do
+        matches = matches + 1
+        ArenaLog('arenaisolation:   match %s was allocated bucket %d.', tostring(matchId), bucket)
+    end
+    if matches == 0 then
+        ArenaLog('arenaisolation:   no match holds a bucket at the moment.')
+    end
+
+    -- READ BACK FROM THE SERVER, not from this file's own record. The record
+    -- is the claim under investigation.
+    local players = 0
+    for player, record in pairs(held) do
+        players = players + 1
+        local actually = currentBucket(player)
+        ArenaLog('arenaisolation:   %s (match %s) should be in %d and the server says %d%s',
+            tostring(player), tostring(record.matchId), record.bucket, actually,
+            actually == record.bucket and '.' or '  <-- NOT INSTANCED')
+    end
+    if players == 0 then
+        ArenaLog('arenaisolation:   nobody is being held in an arena bucket.')
+    end
+end, false)
 
 
 -- A dispatch script that restarts mid-round comes back with an empty ignore

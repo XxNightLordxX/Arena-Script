@@ -720,9 +720,20 @@ local function isolationLine(wired)
     -- it off the natives that instance a match do nothing whatsoever -- no
     -- error, no warning. This line used to read the config and announce that
     -- isolation was on, to operators who did not have it.
-    if type(ArenaDispatch) == 'table' and type(ArenaDispatch.OneSync) == 'function' then
-        local mode = ArenaDispatch.OneSync()
-        if mode == 'off' or mode == 'false' or mode == '0' then
+    -- ASKED AS ONE QUESTION RATHER THAN RE-DERIVED FROM THE MODE STRING.
+    -- This line used to compare the convar against a list of spellings of
+    -- "off" kept here, in a second place, where it could drift out of step
+    -- with the list server/dispatch.lua decides on -- and it did: a server
+    -- answering `onesync_enabled 1` was refused there and reported as
+    -- working here. IsolationState answers with what that file concluded,
+    -- including a move it has since caught not landing, which no reading of
+    -- a convar can tell you.
+    if type(ArenaDispatch) == 'table' and type(ArenaDispatch.IsolationState) == 'function' then
+        local state = ArenaDispatch.IsolationState()
+        if state and state.inForce == false then
+            if state.provenInert then
+                return 'Isolation is CONFIGURED ON BUT NOT IN FORCE: a player was put into a routing bucket and the server reported them somewhere else, so the routing natives are doing nothing here. Every client can see arena gunfire and arena bodies. Run /arenaisolation for the readings.'
+            end
             return 'Isolation is CONFIGURED ON BUT NOT IN FORCE: this server has OneSync off (`set onesync on` in server.cfg), and routing buckets need it -- the natives do nothing without it. Every client can see arena gunfire and arena bodies, and two matches cannot share one arena.'
         end
     end

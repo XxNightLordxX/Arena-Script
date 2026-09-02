@@ -3159,6 +3159,56 @@ Config.Dispatch = {
     },
 
     -- ==================================================================
+    -- THE DOWN FLAG, AND WHY IT IS THE ONLY LAYER HERE THAT ACTS AT THE
+    -- MOMENT IT MATTERS
+    --
+    -- The QB-family scripts -- sc-ambulance and qbx_ambulancejob among them
+    -- -- keep "this player is down" as PLAYER METADATA on the framework
+    -- object rather than in a table of their own. That is qbx_core's data,
+    -- so this resource can write it.
+    --
+    -- WHY IT IS WORTH WRITING. sc-dispatch's client polls that metadata
+    -- every 500ms (client/main.lua:2801-2846) and raises its own PlayerDown
+    -- and PlayerDead alerts the moment it goes up -- no keypress, no
+    -- request, nothing anybody has to agree to. Put the flag back down
+    -- before the next poll and there is nothing for it to see. That is not a
+    -- race against another handler; it is a write against a wall clock, and
+    -- it does not care what order anything started in.
+    --
+    -- THE BUG THIS REPLACES, stated plainly because the old comment claimed
+    -- the opposite. These keys used to live under `revive` and were written
+    -- only by the revive -- which, on the path a fighter takes most, runs
+    -- `Config.Match.respawnDelaySeconds` (5s) plus `afterRespawnDelayMs`
+    -- (2000ms) AFTER the death. Seven seconds, against a 500ms poll:
+    -- fourteen windows. Those two alerts were not "never raised". They were
+    -- certain, on every death of every round.
+    --
+    -- WHAT IT STILL CANNOT DO, and this is not a limit that more code fixes:
+    -- sc-ambulance sends its own EMSDownAlert from the VICTIM'S CLIENT,
+    -- back-to-back with the flag it reads, so no server-side write can land
+    -- between the two. This closes PlayerDown and PlayerDead. It does not
+    -- close EMSDownAlert.
+    -- ==================================================================
+    downState = {
+        -- The keys your medical script keeps the down state in. Empty this
+        -- list to switch the whole thing off. A name no script reads is
+        -- harmless -- it writes a field nobody looks at -- but a name that is
+        -- WRONG for a script that does read it is not, which is why these two
+        -- are the only ones shipped and both were read off sc-ambulance.
+        keys = { 'inlaststand', 'isdead' },
+
+        -- How often the flags are put back down for everyone in a match,
+        -- in ms. `0` clears at the moment of death and never re-asserts.
+        --
+        -- CLEARING ONCE IS NOT KEEPING CLEAR. A medical script sets its flag
+        -- from the victim's own client and several of them re-assert it --
+        -- on a respawn, on a poll of their own, on a restart. Half the
+        -- pollster's own interval means the arena always writes again inside
+        -- the window it is being read in.
+        holdIntervalMs = 250,
+    },
+
+    -- ==================================================================
     -- YOUR DISPATCH SCRIPT
     --
     -- Three ways to hand it the same fact so it can decline the alert
@@ -3570,12 +3620,11 @@ Config.Dispatch = {
         -- It is also simply TRUE: the arena has just stood this player back
         -- up, so a flag saying they are down is the thing that is wrong.
         --
-        -- Add your own script's key if it uses a different name. Empty this
-        -- list to switch the whole thing off. A name that no script reads is
-        -- harmless -- it writes a field nobody looks at -- but a name that is
-        -- WRONG for a script that does read it is not, which is why these two
-        -- are the only ones shipped and both were read off sc-ambulance.
-        clearMetadata = { 'inlaststand', 'isdead' },
+        -- MOVED OUT OF THIS BLOCK. It used to be `clearMetadata` here, and
+        -- being here was most of the problem: it was only ever written by
+        -- the revive, and the revive runs seven seconds after a death. It is
+        -- `Config.Dispatch.downState` now, above, where it is cleared at the
+        -- death itself and then held.
 
         afterRespawnDelayMs = 2000,
 

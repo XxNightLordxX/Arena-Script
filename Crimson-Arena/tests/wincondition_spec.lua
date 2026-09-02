@@ -32,6 +32,7 @@ print('wincondition_spec')
 --- A server with six possible fighters, driven through the real events.
 --- @param mutate function? -- last word on Config, before the files load
 local function newServer(mutate)
+    local downCleared = {}
     local players = {}
     for src = 1, 6 do
         players[src] = {
@@ -84,6 +85,14 @@ local env = Sandbox.newArenaEnv({
         ArenaDispatch = {
             Set = function() end, Clear = function() end, Revive = function() end,
             IsPlayerInArena = function() return false end,
+            -- RECORDED, because when this is called is the whole point. The
+            -- flags used to be put back down only by the revive, seven
+            -- seconds after the death, against a dispatch client polling the
+            -- same metadata twice a second.
+            ClearDownState = function(src)
+                downCleared[#downCleared + 1] = src
+                return 0
+            end,
             EnterBucket = function() end, ExitBucket = function() end,
             GetBucket = function() end, ReleaseBucket = function() end,
         },
@@ -134,6 +143,9 @@ local env = Sandbox.newArenaEnv({
     end
 
     --- A death, reported the way the client reports one.
+    --- Every src the match told ArenaDispatch to put back down, in order.
+    server.downCleared = downCleared
+
     function server.kill(victim, killer) server.match.OnDeath(victim, killer) end
 
     --- One pass of the sweep, which is what decides a round.
@@ -193,6 +205,40 @@ t.test('the shipped default is last_standing', function()
     local server = newServer()
     t.equals(server.config.Match.winCondition, 'last_standing',
         'the default changed -- everything below is aimed at the wrong rule')
+end)
+
+t.test('THE DOWN FLAG COMES BACK DOWN AT THE DEATH ITSELF', function()
+    -- SEVEN SECONDS, AND EVERY ONE OF THEM COST A CALL. The medical
+    -- script's "this player is down" metadata was cleared only by the
+    -- revive, and on the path a fighter takes most -- dying with lives left
+    -- -- the revive runs Config.Match.respawnDelaySeconds (5s) plus
+    -- revive.afterRespawnDelayMs (2000ms) after the death. A dispatch client
+    -- polls that same metadata every 500ms and files PlayerDown and
+    -- PlayerDead off it with nobody pressing anything. Fourteen windows.
+    --
+    -- So it is cleared from OnDeath, with nothing waited on in between, and
+    -- this asserts the call has already happened by the time the death has
+    -- been scored -- not after a respawn, not after a settle.
+    local server = newServer()
+    server.play(3)
+    server.kill(2, 1)
+
+    t.equals(#server.downCleared, 1,
+        'the death did not put the medical script\'s down flag back down')
+    t.equals(server.downCleared[1], 2,
+        'the flag was cleared for the wrong player')
+end)
+
+t.test('and for every death, not only the first', function()
+    -- A round is many deaths. One clear on the first and silence after it
+    -- would read as fixed for exactly one kill.
+    local server = newServer()
+    server.play(3)
+    server.kill(2, 1)
+    server.kill(3, 1)
+
+    t.equals(#server.downCleared, 2,
+        'the second death did not clear the flag')
 end)
 
 t.test('the last fighter alive takes the round', function()

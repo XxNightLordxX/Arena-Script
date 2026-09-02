@@ -209,9 +209,12 @@ end
 --- and touches nobody's data.
 --- @param src number
 --- @return integer cleared -- how many keys were really changed
+local function downStateConfig()
+    return (Config.Dispatch or {}).downState or {}
+end
+
 local function clearDownMetadata(src)
-    local revive = (Config.Dispatch or {}).revive
-    local keys = type(revive) == 'table' and revive.clearMetadata or nil
+    local keys = downStateConfig().keys
     if type(keys) ~= 'table' or #keys == 0 then return 0 end
 
     -- Guarded rather than assumed: this file is loaded on its own by
@@ -252,6 +255,82 @@ local function clearDownMetadata(src)
 
     return cleared
 end
+
+--- Puts the medical script's "this player is down" flags back down, now.
+---
+--- THE BUG THIS EXISTS TO CLOSE, and it is the one that actually produces
+--- the calls an operator sees. The flags were only ever cleared from
+--- ArenaDispatch.Revive, and on the path a fighter takes MOST -- dying with
+--- lives left -- that runs `respawnDelaySeconds` (5s) plus
+--- `afterRespawnDelayMs` (2000ms) after the death. Seven seconds. Against a
+--- dispatch client polling that metadata every 500ms, that is fourteen
+--- windows: PlayerDown and PlayerDead were not "never raised", they were
+--- CERTAIN, on every death of every round, while the config beside them
+--- claimed prevention.
+---
+--- Called at the moment of death rather than at the end of the respawn, and
+--- backed by the hold below, the window shrinks from seven seconds to less
+--- than one poll.
+--- @param src number
+--- @return integer cleared
+function ArenaDispatch.ClearDownState(src)
+    -- NO TYPE GUARD OF ITS OWN. clearDownMetadata already answers 0 for a
+    -- source no framework can resolve, and a second guard saying the same
+    -- thing in a second place is one more thing that can drift out of step
+    -- with the first.
+    return clearDownMetadata(src)
+end
+
+--- HOLDING THEM DOWN, because clearing once is not the same as keeping
+--- clear.
+---
+--- A medical script does not set its flag once and stop. It sets it from the
+--- victim's own client at the moment of death, and several of them re-assert
+--- it -- on a respawn, on a poll of their own, on a resource restart. One
+--- clear at one instant answers one of those. So while a player is in a
+--- match the arena re-asserts the answer on its own clock, which is a wall
+--- clock and not a race: it does not matter who wrote last, only that the
+--- arena writes again within the poll window.
+---
+--- WHAT IT IS NOT. It is not a guarantee and must never be described as one.
+--- A dispatch client polling on its own 500ms timer can still catch the flag
+--- inside this interval, and sc-ambulance's own EMSDownAlert is sent from
+--- the victim's client back-to-back with the flag it reads, so no
+--- server-side clear can arrive before its guard. What this removes is the
+--- CERTAIN loss above; what is left is a narrow one.
+---
+--- Guarded on `active` rather than on a list of its own, so it can never
+--- outlive a match: ArenaDispatch.Clear empties that table on every exit
+--- path there is, and a flag held down for a player who has gone home is the
+--- exact failure Clear was written to prevent.
+--- One pass: the flags put back down for everybody currently in a match.
+---
+--- SEPARATED FROM THE THREAD ON PURPOSE, and for the same reason
+--- ArenaAmmo.SweepReturns is: a `while true` loop is not a thing a test can
+--- drive, so the loop is one line and the work is a function, and what gets
+--- tested is the work.
+--- @return integer touched -- players whose flags were actually written
+function ArenaDispatch.HoldDownState()
+    local touched = 0
+    for src in pairs(active) do
+        if clearDownMetadata(src) > 0 then touched = touched + 1 end
+    end
+    return touched
+end
+
+CreateThread(function()
+    -- READ ONCE. `0` switches the hold off and ends the thread rather than
+    -- parking it -- an operator changing this is changing config, and config
+    -- changes here take a restart like every other one in this file.
+    local interval = Arena.ToInt(downStateConfig().holdIntervalMs) or 0
+    if interval <= 0 then return end
+
+    while true do
+        Wait(interval)
+        ArenaDispatch.HoldDownState()
+    end
+end)
+
 
 --- Tells whatever handles death on this server that a player is alive again.
 ---

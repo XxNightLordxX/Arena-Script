@@ -102,6 +102,7 @@ local function newServer(mutate)
             -- nil call rather than a silent no-op.
             Revive = function(src) dispatch.revived = (dispatch.revived or {}); dispatch.revived[#dispatch.revived + 1] = src end,
             IsPlayerInArena = function() return false end,
+            ClearDownState = function() return 0 end,
             EnterBucket = function(src) dispatch.bucketIn[#dispatch.bucketIn + 1] = src end,
             ExitBucket = function(src) dispatch.bucketOut[#dispatch.bucketOut + 1] = src end,
             GetBucket = function() end,

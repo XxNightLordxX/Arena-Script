@@ -137,6 +137,7 @@ local function newArena(mutate, wallets)
             -- nil call rather than a silent no-op.
             Revive = function() end,
             IsPlayerInArena = function() return false end,
+            ClearDownState = function() return 0 end,
             EnterBucket = function() end,
             ExitBucket = function() end,
             GetBucket = function() end,

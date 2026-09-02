@@ -157,6 +157,7 @@ local function newFixture(mutate)
             -- death that the player is alive again, and a stub missing it is a
             -- nil call rather than a silent no-op.
             Revive = function() end,
+            ClearDownState = function() return 0 end,
             EnterBucket = function() end,
             ExitBucket = function() end,
             GetBucket = function() end,

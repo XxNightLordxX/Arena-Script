@@ -377,6 +377,28 @@ local function snapshotConfig()
         }
     end
 
+    -- ONE ROW PER SUPPLY, item name stripped. Everything the picker draws
+    -- and nothing it does not: the key it posts back, the label it shows,
+    -- what a player carries if they touch nothing, the ceiling the server
+    -- will clamp to, and the one-tap amounts.
+    local supplyConfig = (Config.Loadouts or {}).supplies or {}
+    local supplies = {
+        enabled = supplyConfig.enabled == true,
+        allowChoose = supplyConfig.allowChoose ~= false and Config.Loadouts.allowChoose ~= false,
+        totalItems = math.max(0, Arena.ToInt(supplyConfig.totalItems) or 0),
+        items = {},
+    }
+    for _, entry in ipairs(Arena.GetEnabledSupplies()) do
+        local maximum = Arena.SupplyMax(entry)
+        supplies.items[#supplies.items + 1] = {
+            key = entry.key,
+            label = entry.label or entry.key,
+            max = maximum,
+            default = Arena.ClampInt(entry.default, 0, maximum) or 0,
+            options = type(entry.options) == 'table' and entry.options or {},
+        }
+    end
+
     local fee = Config.Betting.entryFee or {}
     local spectator = Config.Betting.spectatorBets or {}
     local fighter = Config.Betting.fighterBets or {}
@@ -419,7 +441,16 @@ local function snapshotConfig()
             -- table rebuilt by hand rather than passed through.
             ammoTypeSlots = math.max(0, Arena.ToInt(Config.Loadouts.ammoTypeSlots) or 0),
             categories = Config.Loadouts.categories or {},
-            armor = Config.Loadouts.armor,
+
+            -- THE SUPPLIES, BUILT BY HAND AND WITHOUT THE ITEM NAMES.
+            --
+            -- The panel needs the key, the label, the numbers and the
+            -- one-tap options. It does not need to know that a bandage is
+            -- called `bandage` in ox_inventory, and sending that would be
+            -- handing every client the vocabulary for asking to be given
+            -- one -- the same reason ammoTypesFor strips `item` before the
+            -- ammo types go down.
+            supplies = supplies,
             weapons = weapons,
         },
 

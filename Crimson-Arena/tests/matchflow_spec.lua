@@ -1562,14 +1562,19 @@ t.test('entering the arena gives the fighter the armour their loadout says', fun
     t.equals(f.health, 200, 'the fighter walked in on less than full health')
 end)
 
-t.test('and an operator who ships NO armour gets none, rather than a default', function()
-    -- The control. Without it, "armour is applied" passes against a client
-    -- that hands out a hundred points whatever the loadout says.
+t.test('AND A LOADOUT THAT SAYS NONE STILL STARTS THEM ON A FULL PLATE', function()
+    -- THE CONTROL, INVERTED, because the rule it is controlling for changed.
+    -- It used to prove that armour came from the loadout rather than being
+    -- hard-coded on the client; a server shipping zero got zero. Both realms
+    -- now read one rule -- Arena.StartingVitals -- and what the client
+    -- applies is a FLOOR, so a payload carrying nothing, or a stale one
+    -- built before the rule existed, still opens the round on a full plate
+    -- instead of on whatever happened to be in the table.
     local f = newClientFixture()
 
     enterWithArmour(f, 0)
 
-    t.equals(f.armour, 0, 'armour was handed out on a server that configured none')
+    t.equals(f.armour, 100, 'a loadout asking for no armour was honoured')
 end)
 
 t.test('EVERY LIFE, not just the first -- a respawn re-armours too', function()

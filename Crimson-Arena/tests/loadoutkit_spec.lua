@@ -86,12 +86,46 @@ local function newKit(opts)
             into[#into + 1] = { name = name, count = count, metadata = metadata }
             return true
         end,
+        --- HOW MANY OF ONE ITEM A PLAYER REALLY HOLDS. Modelled because the
+        --- reclaim asks: a supply exists to be spent, so what was issued and
+        --- what is still there are different numbers, and taking back the
+        --- first from a player holding the second is how a build refuses the
+        --- whole removal.
+        GetItemCount = function(_self, id, name)
+            if fail.noCounter then error('this build has no GetItemCount') end
+            local total = 0
+            for _, item in ipairs(bucket(id)) do
+                if item.name == name then total = total + (tonumber(item.count) or 1) end
+            end
+            return total
+        end,
         RemoveItem = function(_self, id, name, count)
             local from = bucket(id)
-            for index = #from, 1, -1 do
-                if from[index].name == name then table.remove(from, index); return true end
+            -- COUNT-AWARE, and refusing outright when there are not enough,
+            -- which is what ox_inventory really does. A fixture that removes
+            -- one entry whatever it was asked for cannot see the defect this
+            -- models.
+            local held = 0
+            for _, item in ipairs(from) do
+                if item.name == name then held = held + (tonumber(item.count) or 1) end
             end
-            return false
+            local wanted = tonumber(count) or 1
+            if held < wanted then return false end
+
+            local left = wanted
+            for index = #from, 1, -1 do
+                if from[index].name == name and left > 0 then
+                    local have = tonumber(from[index].count) or 1
+                    if have <= left then
+                        left = left - have
+                        table.remove(from, index)
+                    else
+                        from[index].count = have - left
+                        left = 0
+                    end
+                end
+            end
+            return true
         end,
         ClearInventory = function(_self, id)
             if type(id) == 'number' then inv[id] = {} else stashes[id] = {} end
@@ -137,6 +171,14 @@ local function newKit(opts)
                 if item.name == name then return item end
             end
             return nil
+        end,
+        --- How many of one item a player is holding right now.
+        countOf = function(src, name)
+            local total = 0
+            for _, item in ipairs(inv[src] or {}) do
+                if item.name == name then total = total + (tonumber(item.count) or 1) end
+            end
+            return total
         end,
         --- Every item name a player holds, sorted.
         carrying = function(src)
@@ -660,6 +702,247 @@ t.test('a confiscated weapon is FORGOTTEN as well as taken back', function()
 
     t.equals(f.carrying(1), 'WEAPON_TEST',
         'the exit took the player\'s OWN weapon, chasing one already confiscated')
+end)
+
+-- ======================================================================
+-- SUPPLIES -- the spare plate and the bandage
+--
+-- A DIFFERENT PROMISE FROM THE AMMUNITION, and the difference is what a
+-- player DOES with them. Rounds come back because nobody spends an item to
+-- fire; a plate and a bandage exist to be spent, so what was issued and what
+-- is still held are different numbers by the time the round ends. Ask
+-- ox_inventory to take back two bandages from somebody holding none and it
+-- refuses the whole removal -- so the arena would take back nothing at all
+-- from exactly the players who used the most, which is the free-item shop
+-- this record exists to close, arriving through the one path nobody would
+-- think to test.
+-- ======================================================================
+
+--- A loadout carrying one weapon and whatever supplies a test names.
+local function withSupplies(...)
+    local kit = oneWeapon()
+    kit.supplies = { ... }
+    return kit
+end
+
+t.test('the supplies a player picked are handed over', function()
+    local f = newKit()
+    f.ammo.Issue(7, 'm1', withSupplies(
+        { key = 'armour', item = 'armour', count = 2 },
+        { key = 'bandage', item = 'bandage', count = 3 }))
+
+    t.equals(f.countOf(7, 'armour'), 2, 'the plates were not handed over')
+    t.equals(f.countOf(7, 'bandage'), 3, 'the bandages were not handed over')
+end)
+
+t.test('and they do not depend on ammunition being handed out as items', function()
+    -- TWO DIFFERENT SETTINGS IN TWO DIFFERENT BLOCKS. ammoItems answers "is
+    -- this server handing out ROUNDS as items", which is a question about
+    -- ammunition. A server keeping its ammunition in the weapon's metadata
+    -- can still want a fighter to carry a spare plate.
+    local f = newKit()
+    f.config.Loadouts.ammoItems.enabled = false
+    f.ammo.Issue(7, 'm1', withSupplies({ key = 'armour', item = 'armour', count = 1 }))
+
+    t.equals(f.countOf(7, 'armour'), 1,
+        'switching ammunition items off took the supplies with them')
+end)
+
+t.test('A SUPPLY ox_inventory REFUSES DOES NOT COST THE PLAYER THEIR GUN', function()
+    -- THE TRAP. `failed` is a list of WEAPON keys: it goes back to
+    -- server/match.lua and, with allowWeaponWithoutAmmoItem off, feeds
+    -- removeWeaponsByKey. Push a bandage refusal into it and an operator
+    -- whose ox_inventory has never heard of `bandage` confiscates every
+    -- fighter's rifle, every round, for a missing consumable.
+    local f = newKit()
+    f.breakOn('refuseNamed', { bandage = true })
+
+    local failed = f.ammo.Issue(7, 'm1', withSupplies({ key = 'bandage', item = 'bandage', count = 2 }))
+
+    t.equals(#failed, 0, 'a refused supply was reported as a failed WEAPON')
+    t.isTrue(f.log():find('bandage', 1, true) ~= nil,
+        'a supply that could not be handed over was not named in the console')
+end)
+
+t.test('what was issued is taken back on the way out', function()
+    local f = newKit()
+    f.config.Loadouts.inventory.stripOnEntry = false
+
+    f.ammo.Issue(7, 'm1', withSupplies({ key = 'armour', item = 'armour', count = 2 }))
+    t.equals(f.countOf(7, 'armour'), 2)
+
+    f.ammo.Reclaim(7)
+    t.equals(f.countOf(7, 'armour'), 0, 'the player walked out still holding arena plates')
+end)
+
+t.test('THE FARM: a player who SPENT some still has the rest taken back', function()
+    -- The whole point. Issued three, used two, holds one. Asking for three
+    -- back is refused outright by ox_inventory -- so an exit that removes
+    -- what it issued rather than what is there takes back NOTHING, and the
+    -- player keeps a bandage every round for as long as they care to.
+    local f = newKit()
+    f.config.Loadouts.inventory.stripOnEntry = false
+
+    f.ammo.Issue(7, 'm1', withSupplies({ key = 'bandage', item = 'bandage', count = 3 }))
+    t.equals(f.countOf(7, 'bandage'), 3)
+
+    -- Two of them used during the round.
+    f.env.exports.ox_inventory:RemoveItem(7, 'bandage', 2)
+    t.equals(f.countOf(7, 'bandage'), 1)
+
+    f.ammo.Reclaim(7)
+    t.equals(f.countOf(7, 'bandage'), 0,
+        'a player who used most of their supplies kept the remainder')
+end)
+
+t.test('and a player who spent them ALL is not an error', function()
+    local f = newKit()
+    f.config.Loadouts.inventory.stripOnEntry = false
+
+    f.ammo.Issue(7, 'm1', withSupplies({ key = 'bandage', item = 'bandage', count = 2 }))
+    f.env.exports.ox_inventory:RemoveItem(7, 'bandage', 2)
+
+    f.ammo.Reclaim(7)
+    t.equals(f.countOf(7, 'bandage'), 0)
+end)
+
+t.test('a build with no counter is asked for the whole amount', function()
+    -- Taking back what was issued is the right answer when nothing can say
+    -- otherwise, and a refusal there costs the arena nothing it had.
+    local f = newKit()
+    f.config.Loadouts.inventory.stripOnEntry = false
+    f.ammo.Issue(7, 'm1', withSupplies({ key = 'armour', item = 'armour', count = 2 }))
+    f.breakOn('noCounter')
+
+    f.ammo.Reclaim(7)
+    t.equals(f.countOf(7, 'armour'), 0, 'nothing was taken back on a build with no item counter')
+end)
+
+t.test('a second reclaim takes nothing more', function()
+    -- The player's OWN plates, bought with their own money, must not be
+    -- taken by a record that was never cleared.
+    local f = newKit()
+    f.config.Loadouts.inventory.stripOnEntry = false
+
+    f.ammo.Issue(7, 'm1', withSupplies({ key = 'armour', item = 'armour', count = 1 }))
+    f.ammo.Reclaim(7)
+
+    f.give(7, 'armour', 3)
+    f.ammo.Reclaim(7)
+    t.equals(f.countOf(7, 'armour'), 3, 'the arena took plates it never issued')
+end)
+
+-- ======================================================================
+-- WHAT THE SERVER WILL AGREE TO CARRY
+-- ======================================================================
+
+t.test('the item name comes from config and never off the wire', function()
+    -- The rule ResolveAmmoType follows, for the same reason: an item name
+    -- taken from a client is a client choosing what to be given.
+    local f = newKit()
+    local resolved = f.env.Arena.ResolveSupplies({
+        { key = 'armour', count = 1, item = 'gold_bar' },
+    })
+
+    -- Every enabled supply comes back -- one the request did not name comes
+    -- back at the operator's default, which is what a partial request from
+    -- an older panel has to mean. What matters here is the armour row.
+    local plates
+    for _, entry in ipairs(resolved) do
+        if entry.key == 'armour' then plates = entry end
+    end
+    t.isNotNil(plates, 'the armour row was dropped')
+    t.isTrue(plates.item ~= 'gold_bar', 'a client named the item it wanted and got it')
+    t.equals(plates.item, 'armour')
+end)
+
+t.test('an unknown or disabled key is dropped, and the rest is honoured', function()
+    local f = newKit()
+    local resolved = f.env.Arena.ResolveSupplies({
+        { key = 'nonsense', count = 5 },
+        { key = 'armour', count = 1 },
+    })
+
+    for _, entry in ipairs(resolved) do
+        t.isTrue(entry.key ~= 'nonsense', 'a key nobody configured was carried anyway')
+        t.isTrue(entry.item ~= 'nonsense')
+    end
+
+    local carried = false
+    for _, entry in ipairs(resolved) do
+        if entry.key == 'armour' and entry.count == 1 then carried = true end
+    end
+    t.isTrue(carried, 'the good half of the request was dropped along with the bad')
+end)
+
+t.test('a count over the item\'s own max is clamped to it', function()
+    local f = newKit()
+    local resolved = f.env.Arena.ResolveSupplies({ { key = 'armour', count = 9999 } })
+
+    local max = 0
+    for _, entry in ipairs(f.config.Loadouts.supplies.items) do
+        if entry.key == 'armour' then max = entry.max end
+    end
+    t.equals(resolved[1].count, max, 'a client asked for nine thousand plates and got them')
+end)
+
+t.test('and the whole list is held to the shared ceiling', function()
+    -- A per-item max alone lets a server with six supplies hand one player
+    -- every entry's own maximum at once, which is a different match to the
+    -- one those numbers describe.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.supplies.totalItems = 3
+    end })
+    local resolved = f.env.Arena.ResolveSupplies({
+        { key = 'armour', count = 4 },
+        { key = 'bandage', count = 6 },
+    })
+
+    local total = 0
+    for _, entry in ipairs(resolved) do total = total + entry.count end
+    t.isTrue(total <= 3, ('the ceiling of 3 was passed: %d items carried'):format(total))
+end)
+
+t.test('a negative or fractional count cannot become a negative carry', function()
+    local f = newKit()
+    for _, bad in ipairs({ -5, -1, 0.4 }) do
+        local resolved = f.env.Arena.ResolveSupplies({ { key = 'armour', count = bad } })
+        for _, entry in ipairs(resolved) do
+            t.isTrue(entry.count >= 0, ('%s produced a count of %d'):format(tostring(bad), entry.count))
+        end
+    end
+end)
+
+t.test('with the section off, nothing is carried whatever the client asks', function()
+    local f = newKit({ mutate = function(config) config.Loadouts.supplies.enabled = false end })
+    t.equals(#f.env.Arena.ResolveSupplies({ { key = 'armour', count = 4 } }), 0)
+end)
+
+t.test('and with choosing off, everybody carries the operator\'s defaults', function()
+    local f = newKit({ mutate = function(config) config.Loadouts.supplies.allowChoose = false end })
+    local resolved = f.env.Arena.ResolveSupplies({ { key = 'armour', count = 0 } })
+
+    local byKey = {}
+    for _, entry in ipairs(resolved) do byKey[entry.key] = entry.count end
+    for _, entry in ipairs(f.config.Loadouts.supplies.items) do
+        if entry.default > 0 then
+            t.equals(byKey[entry.key], entry.default,
+                ('%s did not fall back to the operator default'):format(entry.key))
+        end
+    end
+end)
+
+t.test('THE VITALS ARE A RULE, not a field a client can send', function()
+    -- Full health and a full plate on every life, whatever the request says
+    -- and whatever config says -- there is no longer a config key for either.
+    local f = newKit()
+    local fullHealth, fullArmour = f.env.Arena.StartingVitals()
+
+    local loadout = f.env.Arena.ResolveLoadout({ weapons = {}, armor = 0, health = 1 })
+    t.equals(loadout.health, fullHealth)
+    t.equals(loadout.armor, fullArmour)
+    t.equals(fullHealth, 200)
+    t.equals(fullArmour, 100)
 end)
 
 os.exit(t.summary())

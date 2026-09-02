@@ -167,7 +167,7 @@
            "nobody has chosen one yet" is the difference between sending the
            field and leaving it off the wire. */
         draftWeapons: [],
-        draftArmor: null,
+        draftSupplies: null,
         loadoutDirty: false,
 
         betPick: null,
@@ -712,11 +712,27 @@
             });
         });
 
-        var armor = (cfg().loadouts || {}).armor || {};
         state.draftWeapons = picks;
-        state.draftArmor = (loadout.armor === undefined || loadout.armor === null)
-            ? int(armor.default, 0)
-            : int(loadout.armor, 0);
+
+        /* SEEDED FROM WHAT THE PLAYER IS ACTUALLY CARRYING, falling back to
+           the operator's default per entry. A supply the server did not send
+           back is one the player is not carrying, which is a 0 rather than a
+           reason to re-apply the default -- otherwise a player who
+           deliberately took none is handed some again every time the panel
+           reopens. */
+        var carried = {};
+        var have = arrayOf(loadout.supplies);
+        have.forEach(function (entry) {
+            if (entry && entry.key) carried[entry.key] = int(entry.count, 0);
+        });
+
+        var draft = {};
+        supplyCatalogue().forEach(function (supply) {
+            draft[supply.key] = (have.length > 0 || loadout.supplies !== undefined)
+                ? int(carried[supply.key], 0)
+                : int(supply.default, 0);
+        });
+        state.draftSupplies = draft;
     }
 
     function draftIndexOf(key) {
@@ -2030,7 +2046,7 @@
 
         guarded(function () { renderWeaponSections(plan); });
         guarded(function () { renderLoadoutSlots(plan); });
-        guarded(renderArmorPicker);
+        guarded(renderSuppliesPicker);
         guarded(renderLoadoutSaveRow);
     }
 
@@ -2642,45 +2658,106 @@
         }
     }
 
-    function renderArmorPicker() {
-        var host = byId('armor-picker');
+    /* The supplies block as the server sent it, or an empty stand-in. */
+    function supplyConfig() {
+        return (cfg().loadouts || {}).supplies || {};
+    }
+
+    function supplyCatalogue() {
+        return arrayOf(supplyConfig().items);
+    }
+
+    /* How many items the draft asks for across every supply, for the shared
+       ceiling. Counted rather than tracked, so it cannot drift out of step
+       with the draft it describes. */
+    function suppliesTaken(exceptKey) {
+        var total = 0;
+        var draft = state.draftSupplies || {};
+        supplyCatalogue().forEach(function (supply) {
+            if (supply.key === exceptKey) return;
+            total += int(draft[supply.key], 0);
+        });
+        return total;
+    }
+
+    function renderSuppliesPicker() {
+        var host = byId('supplies-picker');
         if (!has(host)) return;
         clear(host);
 
-        var armor = (cfg().loadouts || {}).armor || {};
-        host.appendChild(makeEl('span', 'field-label', 'Armour'));
+        var config = supplyConfig();
+        var catalogue = supplyCatalogue();
+        /* Off, or nothing switched on: the section is not drawn at all
+           rather than drawn empty. An empty box with a heading reads as
+           something broken. */
+        if (config.enabled !== true || catalogue.length === 0) return;
 
-        var options = arrayOf(armor.options);
-        if (armor.allowChoose === false || !canChooseLoadout() || options.length === 0) {
-            /* WHAT THEY WILL ACTUALLY BE HANDED, which on a host-picks server
-               is the host's choice and not the operator's default -- reading
-               the default told a player they were starting with 100 while the
-               host had set them to none. */
-            var stored = (player().loadout || {}).armor;
-            var fixed = int(stored === undefined || stored === null ? armor.default : stored, 0);
-            host.appendChild(makeEl('span', 'muted', fixed === 0 ? 'None' : String(fixed)));
+        host.appendChild(makeEl('span', 'field-label', 'Supplies'));
+
+        var draft = state.draftSupplies || {};
+        var picking = config.allowChoose !== false && canChooseLoadout();
+        var ceiling = int(config.totalItems, 0);
+
+        catalogue.forEach(function (supply) {
+            var row = makeEl('div', 'supply-row');
+            row.appendChild(makeEl('span', 'supply-name', supply.label || supply.key));
+
+            if (!picking) {
+                /* WHAT THEY WILL ACTUALLY BE HANDED, which on a host-picks
+                   server is the host's choice and not the operator's default
+                   -- reading the default told a player they were carrying two
+                   bandages while the host had set them none. */
+                row.appendChild(makeEl('span', 'muted', String(int(draft[supply.key], 0))));
+                host.appendChild(row);
+                return;
+            }
+
+            var options = arrayOf(supply.options);
+            if (options.length === 0) options = [0, int(supply.max, 0)];
+
+            options.forEach(function (value) {
+                var amount = int(value, 0);
+                var max = int(supply.max, 0);
+                if (amount > max) amount = max;
+
+                var chip = makeEl('button', 'chip', amount === 0 ? 'None' : String(amount));
+                chip.type = 'button';
+                if (amount === int(draft[supply.key], -1)) chip.classList.add('active');
+
+                /* THE SHARED CEILING IS SHOWN, NOT JUST ENFORCED. The server
+                   clamps the total either way; a chip that silently gives
+                   less than it says is how a player learns to distrust the
+                   panel. */
+                var wouldTotal = suppliesTaken(supply.key) + amount;
+                if (ceiling > 0 && wouldTotal > ceiling) {
+                    chip.classList.add('disabled');
+                    chip.disabled = true;
+                    chip.title = 'That would put you over the ' + ceiling + ' item limit.';
+                }
+
+                chip.addEventListener('click', function () {
+                    state.draftSupplies[supply.key] = amount;
+                    state.loadoutDirty = true;
+                    render();
+                });
+                row.appendChild(chip);
+            });
+
+            host.appendChild(row);
+        });
+
+        if (!picking) {
             host.appendChild(makeEl('div', 'hint', hostPicksLoadout() && player().isHost !== true
-                ? 'Set by the host of this match. You start every life with this much.'
-                : 'Set by the server. You start every life with this much.'));
+                ? 'Set by the host of this match.'
+                : 'Set by the server.'));
             return;
         }
 
-        options.forEach(function (value) {
-            var amount = int(value, 0);
-            /* '0' is a choice a player makes on purpose; 'None' is what
-               they think they are choosing. */
-            var chip = makeEl('button', 'chip', amount === 0 ? 'None' : String(amount));
-            chip.type = 'button';
-            if (amount === int(state.draftArmor, -1)) chip.classList.add('active');
-            chip.addEventListener('click', function () {
-                state.draftArmor = amount;
-                state.loadoutDirty = true;
-                render();
-            });
-            host.appendChild(chip);
-        });
-
-        host.appendChild(makeEl('div', 'hint', 'Body armour you start every life with.'));
+        var hint = 'Spare kit you carry in. You always start every life on full health and full armour.';
+        if (ceiling > 0) {
+            hint += ' ' + suppliesTaken(null) + ' of ' + ceiling + ' carried.';
+        }
+        host.appendChild(makeEl('div', 'hint', hint));
     }
 
     function saveLoadout() {
@@ -2697,7 +2774,14 @@
                 if (type !== null) entry.ammoType = type;
                 return entry;
             }),
-            armor: int(state.draftArmor, 0)
+            /* NAMED, and only the ones with a count. The server reads a
+               missing entry as "the operator's default for that supply",
+               which is the right answer for a panel that never drew the
+               section -- and the wrong one to invent for a player who chose
+               none, so a zero is sent rather than left out. */
+            supplies: supplyCatalogue().map(function (supply) {
+                return { key: supply.key, count: int((state.draftSupplies || {})[supply.key], 0) };
+            })
         });
         /* Cleared optimistically: the server's answer is the next snapshot,
            and leaving the draft dirty would stop it re-seeding from what

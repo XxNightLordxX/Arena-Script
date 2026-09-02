@@ -126,6 +126,23 @@ local COVER_CLEARANCE = 7.0
 --- that it is never more than a player asked for on any shipped weapon.
 local DEFAULT_MAGAZINE = 30
 
+--- WHAT EVERY FIGHTER STARTS EVERY LIFE ON, and deliberately not a setting.
+---
+--- These used to be `Config.Loadouts.health` and a `Config.Loadouts.armor`
+--- block with its own `allowChoose`, `options`, `default` and `max` -- four
+--- keys deciding a thing that should not have been decidable. A round where
+--- one player opened on a full plate and another on none because of a
+--- picker, or because an operator lowered a default once and forgot, is not
+--- a fair round; and a client sending its own armour value was a client
+--- choosing how hard it was to kill.
+---
+--- 200 is a stock GTA full health bar and 100 a full plate. Whatever state a
+--- player walked up to the arena in, and whatever their loadout says, a
+--- round starts even. Their real health and armour are captured on the way
+--- in and handed back on the way out.
+local FULL_HEALTH = 200
+local FULL_ARMOR = 100
+
 --- The clearance this arena keeps around its cover.
 ---
 --- Configurable because it depends on the props: an arena built out of
@@ -627,28 +644,128 @@ end
 --- Same shape of decision for body armour.
 --- @param requested any
 --- @return integer armor
-function Arena.ResolveArmor(requested)
-    local armor = Config.Loadouts.armor or {}
-    local maximum = Arena.ToInt(armor.max) or 100
-    local default = Arena.ClampInt(armor.default, 0, maximum) or 0
+function Arena.StartingVitals()
+    return FULL_HEALTH, FULL_ARMOR
+end
 
-    if armor.allowChoose == false or Config.Loadouts.allowChoose == false then
-        return default
-    end
+-- ======================================================================
+-- SUPPLIES -- what a player carries INTO the round on top of the kit
+--
+-- SEPARATE FROM THE STARTING ARMOUR, and the separation is the whole point.
+-- The number above is what you are wearing when the countdown ends and it
+-- is not negotiable. These are ITEMS in the inventory: a spare plate to put
+-- on when the first one is gone, a bandage to patch up behind cover. What a
+-- player picks here changes what they carry, never what they start on.
+--
+-- SHAPED LIKE THE WEAPON CATALOGUE on purpose, down to the key/label/item
+-- triple and the `enabled` switch, because an operator who has already
+-- edited one list should not have to learn a second grammar to edit this
+-- one.
+-- ======================================================================
 
-    local wanted = Arena.ToInt(requested)
-    if not wanted or wanted < 0 then return default end
+--- @return table
+local function suppliesConfig()
+    return (Config.Loadouts or {}).supplies or {}
+end
 
-    if type(armor.options) == 'table' and #armor.options > 0 then
-        for _, option in ipairs(armor.options) do
-            if Arena.ToInt(option) == wanted then
-                return Arena.ClampInt(wanted, 0, maximum) or default
-            end
+--- Every supply an operator has left switched on, in config order.
+--- @return table[]
+function Arena.GetEnabledSupplies()
+    local out = {}
+    for _, entry in ipairs(suppliesConfig().items or {}) do
+        if type(entry) == 'table' and entry.enabled ~= false and Arena.IsKey(entry.key) then
+            out[#out + 1] = entry
         end
-        return default
+    end
+    return out
+end
+
+--- The most of one supply a player may carry in.
+--- @param supply table
+--- @return integer
+function Arena.SupplyMax(supply)
+    if type(supply) ~= 'table' then return 0 end
+    return math.max(0, Arena.ToInt(supply.max) or 0)
+end
+
+--- Turns whatever a client asked to carry into a list the server is willing
+--- to hand over.
+---
+--- THE KEY COMES OFF THE WIRE; THE ITEM NAME NEVER DOES. Exactly the rule
+--- Arena.ResolveAmmoType follows, and for the same reason: an item name
+--- taken from a client is a client choosing what to be given, and the answer
+--- to "which item is a bandage" lives in config or nowhere.
+---
+--- THREE CAPS, and each of them exists because one of the others does not
+--- catch what it catches. A per-item `max` stops one line asking for a
+--- thousand plates. A `totalItems` cap stops twenty different supplies each
+--- asking for their own legal maximum. And the entry list itself is bounded
+--- by the caller, because a request with ten thousand entries is a request
+--- that costs the server the whole tick before any of these are consulted.
+---
+--- FAILS SOFT, like every other resolver here: an unknown key is dropped and
+--- the rest of the list is honoured. A player who sends rubbish carries
+--- nothing extra, not nothing at all.
+--- @param requested any -- { { key = string, count = any }, ... }
+--- @return table[] supplies -- { { key, label, item, count }, ... }
+function Arena.ResolveSupplies(requested)
+    local out = {}
+
+    local config = suppliesConfig()
+    if config.enabled ~= true then return out end
+
+    -- With choosing switched off at the loadout level the whole request is
+    -- ignored and everybody carries the operator's defaults, which is the
+    -- same rule ResolveLoadout applies to weapons.
+    local wanted = requested
+    if config.allowChoose == false or (Config.Loadouts or {}).allowChoose == false then
+        wanted = nil
     end
 
-    return Arena.ClampInt(wanted, 0, maximum) or default
+    local asked = {}
+    for _, entry in ipairs(type(wanted) == 'table' and wanted or {}) do
+        if type(entry) == 'table' and Arena.IsKey(entry.key) then
+            asked[entry.key] = Arena.ToInt(entry.count)
+        end
+    end
+
+    -- 0 MEANS NO CEILING, which is why this is tracked as "is there one"
+    -- plus a remaining count rather than as a number that means both.
+    local capped = (Arena.ToInt(config.totalItems) or 0) > 0
+    local remaining = capped and Arena.ToInt(config.totalItems) or 0
+
+    for _, supply in ipairs(Arena.GetEnabledSupplies()) do
+        local maximum = Arena.SupplyMax(supply)
+        -- The operator's own default is what a player who chose nothing
+        -- carries, and it is clamped to that supply's own ceiling rather
+        -- than trusted -- a default above `max` is a typo, not a licence.
+        local fallback = Arena.ClampInt(supply.default, 0, maximum) or 0
+
+        local count = fallback
+        if wanted ~= nil and asked[supply.key] ~= nil then
+            count = Arena.ClampInt(asked[supply.key], 0, maximum) or 0
+        end
+
+        -- CLAMPED EVEN WHEN THERE IS NOTHING LEFT, which is the whole
+        -- difference between a ceiling and a suggestion. Reading "is there
+        -- budget" as "is the remaining count above zero" stopped clamping
+        -- the moment it hit zero, so the first supply took the whole
+        -- allowance and every one after it was unbounded -- a ceiling of
+        -- three handing out nine.
+        if capped and count > remaining then count = remaining end
+
+        if count > 0 and Arena.IsKey(supply.item) then
+            if capped then remaining = remaining - count end
+            out[#out + 1] = {
+                key = supply.key,
+                label = supply.label or supply.key,
+                item = supply.item,
+                count = count,
+            }
+        end
+    end
+
+    return out
 end
 
 -- ======================================================================
@@ -669,8 +786,8 @@ end
 --- rubbish gets a knife and a bad match, not a stuck lobby. The one thing
 --- it will not do is exceed `weaponSlots` or hand out a weapon that is not
 --- in the enabled catalogue.
---- @param request table? -- { weapons = { { key = string, ammo = any }, ... }, armor = any }; a weapons entry flagged `alwaysGive` is the operator's own and is skipped, since the list below re-appends it
---- @return table loadout -- { weapons = { { weapon = string, ammo = integer, components = table, tint = integer } }, armor = integer, health = integer }
+--- @param request table? -- { weapons = { { key = string, ammo = any }, ... }, supplies = { { key = string, count = any }, ... } }; a weapons entry flagged `alwaysGive` is the operator's own and is skipped, since the list below re-appends it
+--- @return table loadout -- { weapons = { { weapon = string, ammo = integer, components = table, tint = integer } }, armor = integer, health = integer, supplies = { { key, label, item, count } } }
 --- @return string[] rejected -- keys that were dropped, for logging/telemetry
 function Arena.ResolveLoadout(request)
     local rejected = {}
@@ -845,10 +962,16 @@ function Arena.ResolveLoadout(request)
         end
     end
 
+    local health, armor = Arena.StartingVitals()
     return {
         weapons = resolved,
-        armor = Arena.ResolveArmor(type(source) == 'table' and source.armor or nil),
-        health = Arena.ClampInt(Config.Loadouts.health, 100, 200) or 200,
+        -- CONSTANTS, not resolved from anything. See Arena.StartingVitals:
+        -- what you start a life on is a rule of the arena, and neither a
+        -- config edit nor a crafted payload gets a say in it. They are still
+        -- carried on the loadout so the client has one thing to read.
+        armor = armor,
+        health = health,
+        supplies = Arena.ResolveSupplies(type(source) == 'table' and source.supplies or nil),
     }, rejected
 end
 

@@ -535,11 +535,12 @@ t.test('walking in leaves everything that is not a weapon choice alone', functio
     goLive(f, match)
 
     local payload = f.lastPayload('crimson_arena:client:enterArena', 1)
-    -- A full plate, whatever the request asked for: armour is not choosable
-    -- (Config.Loadouts.armor.allowChoose is false, so every round starts even)
-    -- and the ladder does not touch it either way.
-    t.equals(payload.loadout.armor, f.Config.Loadouts.armor.default)
-    t.equals(payload.loadout.health, f.Config.Loadouts.health)
+    -- A full plate and full health, whatever the request asked for: both are
+    -- rules of the arena rather than settings, and the ladder does not touch
+    -- either one.
+    local health, armour = f.Arena.StartingVitals()
+    t.equals(payload.loadout.armor, armour)
+    t.equals(payload.loadout.health, health)
     -- The operator's alwaysGive list is the house's, not the player's, and
     -- it survives the ladder the same way it survives the slot limit.
     t.equals(payload.loadout.weapons[2].weapon, 'WEAPON_KNIFE')

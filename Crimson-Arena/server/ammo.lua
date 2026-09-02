@@ -398,6 +398,20 @@ local issuedWeapons = {}
 --- @type table<string, table<number, table<string, integer>>>
 local issuedAmmo = {}
 
+--- SUPPLIES handed out, per match, per player, by item name.
+---
+--- A FOURTH RECORD RATHER THAN A COLUMN IN THE THIRD, and the reason is what
+--- the third one MEANS. `issuedAmmo` is rounds: ArenaAmmo.OnLoan sums it and
+--- reports it as rounds in the console line an operator reads, and a future
+--- ammunition-only change would silently reach into anything else stored
+--- there. A plate is not a round.
+---
+--- It is also the thing standing between this feature and a shop. Supplies
+--- are real items with real value on a Qbox server; issued and not recorded,
+--- a player joins a match, walks out, and keeps them, once a minute, forever.
+--- @type table<string, table<number, table<string, integer>>>
+local issuedSupplies = {}
+
 --- How the rounds a player picked are split between the magazine in the gun
 --- and the loose items in their pocket.
 ---
@@ -595,6 +609,40 @@ local function reclaimWeapons(ox, src)
             byPlayer[src] = nil
         end
     end
+
+    -- AND THE SUPPLIES, WHICH ARE THE ONES A PLAYER MEANS TO SPEND.
+    --
+    -- TAKEN BACK AGAINST WHAT THEY STILL HOLD, not against what they were
+    -- given, and that is the difference between this loop and the two above.
+    -- A plate and a bandage exist to be used: a fighter who was handed two
+    -- bandages and used both holds none, and asking ox_inventory to remove
+    -- two from a player holding none is refused OUTRIGHT on most builds --
+    -- it does not remove one and shrug. So the arena would take back nothing
+    -- at all from exactly the players who consumed the most, which is the
+    -- farm this record exists to close, arriving through the one path nobody
+    -- would think to test.
+    for _, byPlayer in pairs(issuedSupplies) do
+        local given = byPlayer[src]
+        if given then
+            for item, count in pairs(given) do
+                local held = 0
+                local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
+                if ok then held = Arena.ToInt(answer) or 0 end
+
+                -- A build with no counter at all is asked for the full
+                -- amount: taking back what was issued is the right answer
+                -- when nothing can tell us otherwise, and a refusal there
+                -- costs the arena nothing it had.
+                if not ok then held = count end
+
+                local take = math.min(count, held)
+                if take > 0 then
+                    pcall(function() return ox:RemoveItem(src, item, take) end)
+                end
+            end
+            byPlayer[src] = nil
+        end
+    end
 end
 
 --- Forgets a player's weapon record without removing anything -- for the
@@ -603,6 +651,7 @@ end
 local function forgetWeapons(src)
     for _, byPlayer in pairs(issuedWeapons) do byPlayer[src] = nil end
     for _, byPlayer in pairs(issuedAmmo) do byPlayer[src] = nil end
+    for _, byPlayer in pairs(issuedSupplies) do byPlayer[src] = nil end
 end
 
 -- ======================================================================
@@ -712,6 +761,41 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     if ox then
         local missingWeapons = issueWeapons(ox, src, matchId, loadout)
         for _, key in ipairs(missingWeapons) do failed[#failed + 1] = key end
+    end
+
+    -- ---- THE SUPPLIES ----------------------------------------------------
+    --
+    -- OUTSIDE THE AMMO-ITEM GATE, and that is a real distinction rather than
+    -- a tidy one. `ArenaAmmo.IsEnabled` answers "is this server handing out
+    -- ammunition as ITEMS", which is a question about rounds. A server that
+    -- keeps its ammunition in the weapon's metadata can still want a fighter
+    -- to carry a spare plate, and the two settings are in different blocks
+    -- of config for that reason.
+    --
+    -- FAILURES DO NOT JOIN `failed`. That list is weapon KEYS: it goes back
+    -- to server/match.lua and, with `allowWeaponWithoutAmmoItem = false`,
+    -- feeds removeWeaponsByKey -- so a bandage item this server does not
+    -- have would confiscate the player's rifle. A supply that cannot be
+    -- handed over costs that supply and nothing else, and says so once.
+    issuedSupplies[matchId] = issuedSupplies[matchId] or {}
+    local supplyRecord = issuedSupplies[matchId][src] or {}
+    issuedSupplies[matchId][src] = supplyRecord
+
+    for _, entry in ipairs(loadout.supplies or {}) do
+        local item = entry.item
+        local count = Arena.ToInt(entry.count) or 0
+        if Arena.IsKey(item) and count > 0 then
+            -- The same proof the rounds use: pcall succeeding only says the
+            -- call did not throw, and ox_inventory answers `false` for a
+            -- full inventory or an item name it does not know.
+            local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
+            if ok and granted ~= false then
+                supplyRecord[item] = (supplyRecord[item] or 0) + count
+            else
+                ArenaLog('supplies: could not give %s x%d to %s -- check that item exists on this server.',
+                    item, count, tostring(src))
+            end
+        end
     end
 
     if not ArenaAmmo.IsEnabled() then return failed end
@@ -893,6 +977,11 @@ function ArenaAmmo.ReclaimAll(matchId, reasonKey)
         if record.matchId == matchId then add(src) end
     end
     for src in pairs(issuedWeapons[matchId] or {}) do add(src) end
+    -- THE OTHER TWO RECORDS TOO. A player whose weapons all failed to issue
+    -- but who was handed rounds or a plate is in neither of the tables this
+    -- walk used to read, so nothing was ever taken back from them.
+    for src in pairs(issuedAmmo[matchId] or {}) do add(src) end
+    for src in pairs(issuedSupplies[matchId] or {}) do add(src) end
 
     for _, src in ipairs(sources) do
         ArenaAmmo.Reclaim(src, reasonKey)
@@ -900,6 +989,8 @@ function ArenaAmmo.ReclaimAll(matchId, reasonKey)
 
     issued[matchId] = nil
     issuedWeapons[matchId] = nil
+    issuedAmmo[matchId] = nil
+    issuedSupplies[matchId] = nil
     return #sources
 end
 
@@ -927,6 +1018,7 @@ function ArenaAmmo.Clear(matchId)
     issued[matchId] = nil
     issuedAmmo[matchId] = nil
     issuedWeapons[matchId] = nil
+    issuedSupplies[matchId] = nil
     return true
 end
 

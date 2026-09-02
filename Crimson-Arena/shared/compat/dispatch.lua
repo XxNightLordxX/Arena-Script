@@ -883,22 +883,36 @@ function ArenaCompat.Report()
         lines[#lines + 1] = 'start order: this resource started first, so it answers a death before any emergency script does.'
     end
 
+    -- THE COMMAND FORMS ARE GONE, so nothing counts them. Counting a key
+    -- that no longer exists is how a report comes to describe a resource
+    -- that no longer exists -- and this report's whole value is that it
+    -- describes what is really running.
     local revive = (Config.Dispatch or {}).revive
     local named = type(revive) == 'table'
-        and (#(revive.commands or {}) + #(revive.serverEvents or {})
-             + #(revive.clientEvents or {}) + #(revive.exports or {}))
+        and (#(revive.serverEvents or {}) + #(revive.clientEvents or {}) + #(revive.exports or {}))
         or 0
     local reviveOn = type(revive) == 'table' and revive.enabled == true and named > 0
 
+    -- WHAT THE ARENA DOES ITSELF, said first, because it is the half an
+    -- operator keeps mistaking for the other one. Every detected medical
+    -- script's own revive event is fired for a player leaving the arena,
+    -- with no configuration at all -- that is the catalogue doing its job.
+    local detected = ArenaCompat.ReviveClientEvents()
+    if #detected > 0 then
+        lines[#lines + 1] = ('revive: %d detected medical script(s) are told to revive a player directly -- %s.')
+            :format(#detected, table.concat(detected, ', '))
+    end
+
     if reviveOn then
-        lines[#lines + 1] = ('revive: configured -- %d command(s), %d event(s) and %d export(s) run when a player leaves the arena.')
-            :format(#(revive.commands or {}),
-                #(revive.serverEvents or {}) + #(revive.clientEvents or {}),
+        lines[#lines + 1] = ('revive: and %d event(s) and %d export(s) you named run as well when a player leaves the arena.')
+            :format(#(revive.serverEvents or {}) + #(revive.clientEvents or {}),
                 #(revive.exports or {}))
-    else
-        lines[#lines + 1] = 'revive: NOT configured. A player who dies in a match will be stood back up by the arena,'
-        lines[#lines + 1] = '  but your medical/ambulance script keeps its own death state and nothing here has told it.'
-        lines[#lines + 1] = '  They will walk out of the arena still dead as far as that script is concerned.'
+    elseif #detected == 0 then
+        lines[#lines + 1] = 'revive: NOTHING IS TELLING YOUR MEDICAL SCRIPT. No script this catalogue knows is running,'
+        lines[#lines + 1] = '  and Config.Dispatch.revive names nothing -- so a player who dies in a match walks out of'
+        lines[#lines + 1] = '  the arena still dead as far as that script is concerned. The arena no longer stands'
+        lines[#lines + 1] = '  players up itself, deliberately: two resources arguing over one body is a flicker, not'
+        lines[#lines + 1] = '  a revive.'
         lines[#lines + 1] = '  Fix: name whatever revives a player on this server in Config.Dispatch.revive'
         lines[#lines + 1] = '       (serverEvents / clientEvents / exports) and set enabled = true.'
     end

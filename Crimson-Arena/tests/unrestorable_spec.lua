@@ -73,20 +73,21 @@ t.test('and the file still explains why, so the next person does not re-add it',
         'the note explaining why these three are never called has gone -- without it the rule reads as arbitrary')
 end)
 
-t.test('the revive is what regressed, so it says so where it ends', function()
+t.test('and the client has no revive left to put it back in', function()
+    -- WHERE THE BUG WENT IN, and where it can no longer go. The note used to
+    -- live inside ArenaDispatch.Revive on the client, warning whoever
+    -- touched it not to reach for the recharge multiplier. That whole
+    -- function is gone -- the arena does not stand players up itself any
+    -- more -- so the note has nowhere to be and the assertion becomes the
+    -- stronger one: the function is not there to regress.
     local handle = assert(io.open('../client/dispatch.lua', 'r'))
     local source = handle:read('a')
     handle:close()
 
-    local revive = source:match('function ArenaDispatch%.Revive.-\nend')
-    t.isNotNil(revive, 'ArenaDispatch.Revive could not be found to check')
-
-    -- One word, not a phrase: the note is prose and prose gets re-wrapped,
-    -- so an assertion on several words together fails the next time somebody
-    -- reflows the paragraph -- which is a test failing for no reason, and the
-    -- fastest way to teach people to delete it.
-    t.contains(revive, 'recharge',
-        'the revive no longer carries the note about what it must not touch, which is where the bug went in')
+    t.isNil(source:match('function ArenaDispatch%.Revive%s*%('),
+        'the client revive came back -- with it comes the setter that has no getter')
+    t.isNil(source:match('function ArenaDispatch%.RevivePersistently'),
+        'the persistent revive came back')
 end)
 
 print('unrestorable_spec')

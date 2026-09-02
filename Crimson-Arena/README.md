@@ -874,9 +874,7 @@ revive *is* a command — name it in `commands` and grant the right in
 `server.cfg`, where the console is doing the granting and it needs
 permission from nobody:
 
-```cfg
-add_ace resource.Crimson-Arena command.revive allow
-```
+*(There is nothing here to grant. The resource runs no commands.)*
 
 ---
 
@@ -1163,7 +1161,7 @@ are client-side because only a client can ask the game what models it has.
 - **A player who looks alive but is treated as dead** — cuffed, bleeding out, refused a weapon, dragged by EMS — is the handoff, not the revive. Their ped is up; your medical script's own list has not been told. Name its revive in `Config.Dispatch.revive`.
 - **Still down right after a respawn?** Raise `Config.Dispatch.revive.afterRespawnDelayMs` (2000 by default). The revive has to land *after* the client has stood the ped up and finished the teleport; told sooner, whatever it does is undone by the teardown behind it.
 - **Still down after the match ends?** `Config.Dispatch.revive.sweepAfterMatchMs` (5000 by default) is a second blanket pass over everyone who played, run once everybody is home. `0` turns it off; raise it if your teleport home is slow.
-- `Access denied` in the console means something in `Config.Dispatch.revive.commands` is being refused by your server. Nothing needs that command — the list ships empty — so the fix is usually to empty it again.
+- **There are no command forms any more.** `commands` and `clientCommands` are gone, along with the `add_ace` instructions that came with them: the resource asks the server for no permissions and has no channel for running one. What is left is events and exports — things a script publishes on purpose for other scripts to call.
 
 ### The leaderboard is empty
 

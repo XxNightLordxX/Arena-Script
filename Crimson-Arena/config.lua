@@ -2187,24 +2187,22 @@ Config.Dispatch = {
             -- withdrawn, which is the safe direction: an id shape that is
             -- close but wrong clears nothing rather than clearing the wrong
             -- call.
+            --
+            -- SO EVERY SHAPE BELOW WAS READ OUT OF THE SCRIPT THAT BUILDS
+            -- IT, and the line it came from is beside it. Not one is a
+            -- guess, and a shape nobody has checked does not go in here.
             idTemplates = {
-                ['sc-dispatch:server:ShotsFired'] = 'shots_%d_%d',
-                ['hospital:server:EMSDownAlert'] = 'emsdown_%d_%d',
+                -- sc-dispatch/server/main.lua, each built as
+                -- '<kind>_' .. src .. '_' .. os.time():
+                ['sc-dispatch:server:ShotsFired'] = 'shots_%d_%d',      -- :2544
+                ['sc-dispatch:server:PlayerDown'] = 'playerdown_%d_%d', -- :2618
+                ['sc-dispatch:server:PlayerDead'] = 'playerdead_%d_%d', -- :2645
+                ['mydispatch:requestEMS'] = 'emshelp_%d_%d',            -- :2576
 
-                -- ---- THE THREE THAT HAD NO SHAPE ------------------------
-                -- Read out of sc-dispatch/server/main.lua, where each id is
-                -- built as '<kind>_' .. src .. '_' .. os.time():
-                --   :2618 playerdown_   :2645 playerdead_   :2576 emshelp_
-                --
-                -- Without a shape here retractFor returns early and the call
-                -- is never withdrawn, so these stood on the board for the
-                -- full AutoClearTime. mydispatch:requestEMS was already in
-                -- the cancel list above and still had no template, which is
-                -- the quietest version of this: listed, matched, and then
-                -- silently unable to do the one thing listing it was for.
-                ['sc-dispatch:server:PlayerDown'] = 'playerdown_%d_%d',
-                ['sc-dispatch:server:PlayerDead'] = 'playerdead_%d_%d',
-                ['mydispatch:requestEMS'] = 'emshelp_%d_%d',
+                -- sc-ambulance/server/main.lua:297, which files its own call
+                -- through exports['sc-dispatch']:AddNotification with
+                -- unique_id = 'emsdown_' .. src .. '_' .. os.time().
+                ['hospital:server:EMSDownAlert'] = 'emsdown_%d_%d',
             },
         },
     },
@@ -2217,19 +2215,6 @@ Config.Dispatch = {
     -- Those exist whether or not anything here is switched on. They report;
     -- they do not enforce.
 
-    -- ==================================================================
-    -- GTA'S OWN FIVE-STAR WANTED SYSTEM
-    --
-    -- OFF, deliberately. If you run a custom dispatch script you have almost
-    -- certainly disabled the vanilla wanted system server-wide already, and
-    -- touching these natives on top of that ranges from pointless to
-    -- actively harmful -- plenty of custom systems drive their own logic off
-    -- the native wanted level, and pinning it to zero mid-match would fight
-    -- them for it.
-    --
-    -- Turn this on ONLY if NPC police still respond to gunfire on your
-    -- server. Everything it changes is restored on the way out, wanted stars
-    -- included: walking into an arena is not an amnesty.
     -- ==================================================================
     -- ---- TELLING YOUR AMBULANCE SCRIPT THEY ARE ALIVE ----------------
     -- SEPARATE FROM EVERYTHING ELSE IN THIS BLOCK, and the one setting

@@ -309,6 +309,28 @@ t.test('both realms load the same shared files, so the rules cannot drift apart'
     end
 end)
 
+t.test('the weapon catalogue is loaded straight after the config it writes into', function()
+    -- LOAD ORDER, NOT TIDINESS. config.weapons.lua assigns
+    -- `Config.Loadouts.weapons`, and Config.Loadouts is built by config.lua.
+    -- The other way round is a nil index at start-up, and the resource does
+    -- not come up at all -- which is worth failing here rather than there.
+    local order = {}
+    for index, entry in ipairs(manifest.shared_scripts or {}) do order[entry] = index end
+
+    t.isNotNil(order['config.lua'], 'config.lua is not in shared_scripts')
+    t.isNotNil(order['config.weapons.lua'], 'the weapon catalogue is not loaded at all')
+    t.isTrue(order['config.weapons.lua'] > order['config.lua'],
+        'config.weapons.lua is loaded before the table it writes into exists')
+end)
+
+t.test('and the catalogue it loads really has weapons in it', function()
+    -- The other half: the file could be listed, load cleanly, and assign an
+    -- empty table -- which is a server where nobody can pick anything.
+    local shipped = Sandbox.shippedConfig()
+    t.isTrue(#((shipped.Loadouts or {}).weapons or {}) > 0,
+        'the shipped weapon catalogue is empty -- every player would fight unarmed')
+end)
+
 t.test('no file is loaded into a realm twice', function()
     for _, realm in ipairs({ server, client }) do
         local seen = {}

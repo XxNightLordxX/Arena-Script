@@ -55,6 +55,12 @@ files['config.lua'] = {
     read_globals = { 'vector3', 'vector4' },
 }
 
+-- The weapon catalogue, split out of config.lua. It writes one key into the
+-- table config.lua has already built, so it both reads and mutates `Config`.
+files['config.weapons.lua'] = {
+    globals = { 'Config' },
+}
+
 files['shared/arena.lua'] = {
     globals = { 'Arena' },
     read_globals = { 'Config' },

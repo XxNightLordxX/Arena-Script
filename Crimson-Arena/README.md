@@ -28,7 +28,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 **Weapons and ammo**
 
-- The weapon list is `Config.Loadouts.weapons`. Delete an entry or set `enabled = false` and it is gone from the arena — the server refuses it even when a modified client asks for it by name.
+- The weapon list is `Config.Loadouts.weapons`, and it lives in **`config.weapons.lua`** rather than `config.lua` — a thousand lines of weapon blocks that everybody editing a timer or a payout used to scroll past. Delete an entry or set `enabled = false` and it is gone from the arena — the server refuses it even when a modified client asks for it by name.
 - **96 entries ship and 77 of them are enabled**, in six categories: 25 sidearm, 24 automatic, 9 shotgun, 7 precision, 13 heavy and 18 melee. **All eighteen melee weapons are on.** What ships off is the whole `heavy` category — launchers, the minigun, explosives — plus six sidearms.
 - **Twelve MK II weapons ship and every one of them is enabled**, Heavy Sniper MK2 included. Each carries its own `ammoTypes` list naming the item that weapon fires.
 - Each weapon carries its own ammo block: `options` is what the picker offers, `max` is the ceiling the server clamps to. A weapon with no `options` (melee) offers no ammo choice and is handed out at `default` — with `max` left as the only limit on the wire for it, so every shipped melee entry sets the two to the same number.
@@ -143,7 +143,7 @@ Player-facing text lives in `locales/en.json`. To translate it, copy the file to
 
 ### Adding a weapon and its ammo options
 
-Add an entry to `Config.Loadouts.weapons`. `key` is what the panel and the wire use and must be unique; `weapon` is the real GTA weapon name and is what is actually given.
+Add an entry to `Config.Loadouts.weapons`, in `config.weapons.lua`. `key` is what the panel and the wire use and must be unique; `weapon` is the real GTA weapon name and is what is actually given.
 
 ```lua
 {
@@ -353,7 +353,7 @@ The two are independent and you can have either, both, or neither:
 
 | Carries | What happens |
 |---|---|
-| `component` only | The magazine is attached to the weapon on entry. **This needs no inventory and works with `ammoItems.enabled = false`.** The mechanism is live in code, but **nothing in the shipped config uses it** — `COMPONENT_` does not appear in `config.lua` at all. |
+| `component` only | The magazine is attached to the weapon on entry. **This needs no inventory and works with `ammoItems.enabled = false`.** The mechanism is live in code, but **nothing in the shipped config uses it** — `COMPONENT_` does not appear in the catalogue at all. |
 | `item` only | Your ammo script's item is handed over and reclaimed. Works on any weapon that takes ammunition. |
 | both | Both. The magazine is attached *and* the item is issued. |
 | neither | The type still resolves and is still named in the loadout, and nothing is handed over. |

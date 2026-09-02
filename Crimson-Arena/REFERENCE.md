@@ -284,7 +284,8 @@ line-number map that is regenerated whenever the file changes.
 
 | File | Realm | What lives there |
 |---|---|---|
-| `config.lua` | shared | Everything an operator edits. |
+| `config.lua` | shared | Everything an operator edits, except the weapon catalogue. |
+| `config.weapons.lua` | shared | The weapon catalogue. Loaded straight after `config.lua` and writes `Config.Loadouts.weapons` into it. |
 | `shared/arena.lua` | shared | The rules: the catalogue readers, the validators, the spawn and payout maths. No side effects. |
 | `shared/compat/dispatch.lua` | shared | The police/EMS catalogue, the detection walk, the mutes and the startup report. |
 | `server/util.lua` | server | Logging, notifications, permissions, rate limiting, webhooks, match ids. |

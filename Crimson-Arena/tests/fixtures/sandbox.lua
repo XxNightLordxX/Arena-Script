@@ -235,6 +235,11 @@ end
 function Sandbox.newArenaEnv(overrides)
     local env = Sandbox.newEnv(overrides)
     Sandbox.loadInto('../config.lua', env)
+    -- The weapon catalogue, split out of config.lua and loaded straight after
+    -- it in fxmanifest.lua's shared_scripts. Loaded in the same order here for
+    -- the same reason: it writes one key into a table config.lua has already
+    -- built, and reversing the two raises on a nil index.
+    Sandbox.loadInto('../config.weapons.lua', env)
 
     -- EVERY ARENA SWITCHED ON, and this is a deliberate decision about what
     -- these specs are for.
@@ -273,6 +278,7 @@ end
 function Sandbox.shippedConfig()
     local env = Sandbox.newEnv()
     Sandbox.loadInto('../config.lua', env)
+    Sandbox.loadInto('../config.weapons.lua', env)
     return env.Config
 end
 

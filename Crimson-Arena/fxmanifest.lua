@@ -51,9 +51,13 @@ dependencies {
 -- SHARED. Loaded into BOTH Lua VMs from the same source.
 --
 -- ORDER IS LOAD-BEARING: config.lua defines the `Config` global that
--- shared/arena.lua reads on every call, so config must come first. Both
--- must come before any client or server file, since every one of them
--- calls Arena.* at some point.
+-- shared/arena.lua reads on every call, so config must come first.
+-- config.weapons.lua is the weapon catalogue, split out of config.lua so the
+-- file an operator edits stays short -- it writes one key into a table
+-- config.lua has already built, so it must come straight after it and would
+-- raise on a nil index the other way round. All three must come before any
+-- client or server file, since every one of them calls Arena.* at some
+-- point.
 --
 -- shared/compat/dispatch.lua comes last of the three because it reads both:
 -- Config for the operator's hook names, and Arena.IsKey to validate every
@@ -67,6 +71,7 @@ shared_scripts {
     '@ox_lib/init.lua',
     '@qbx_core/modules/lib.lua',
     'config.lua',
+    'config.weapons.lua',
     'shared/arena.lua',
     'shared/compat/dispatch.lua',
 }

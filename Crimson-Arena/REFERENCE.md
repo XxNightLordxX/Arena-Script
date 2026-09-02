@@ -273,7 +273,7 @@ line-number map that is regenerated whenever the file changes.
 | `Config.UI` | Panel title, subtitle, logo, theme, sounds, and whether the in-match HUD is drawn. |
 | `Config.Permissions` | Admin groups, and the jobs allowed to create or join matches. |
 | `Config.Arenas` | Every arena: where it is, its boundary, its spawn points or spawn area, the floor and cover it builds, and how it scales with the roster. |
-| `Config.Loadouts` | The weapon catalogue, categories, slots, ammunition amounts and types, armour, the loadout chooser, and the inventory door. |
+| `Config.Loadouts` | Categories, slots, ammunition amounts and types, the extra supplies a player carries in, the loadout chooser, and the inventory door. The weapons themselves are in `config.weapons.lua`. |
 | `Config.Database` | The oxmysql-backed leaderboard, off by default. |
 | `Config.Webhook` | Discord embeds for matches and money. |
 | `Config.Dispatch` | Routing-bucket isolation first, then the layers of police/EMS integration and the timing of the medical handoff. |

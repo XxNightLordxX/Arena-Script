@@ -756,10 +756,10 @@ local function hookLine(running)
     end
 
     -- Named but unridden still earns a clause, because the events really do
-    -- fire: an operator who has written a listener this file cannot see
-    -- must not be told they have none. It is stated as a fact about the
-    -- events and paired with the one thing that would make it visible,
-    -- rather than banked as credit for an integration.
+    -- fire: an operator who has written a listener this file cannot see must
+    -- not be told they have none. It is stated as a fact about the events
+    -- rather than banked as credit for an integration -- this file can see a
+    -- mute it calls itself, and nothing else.
     local tail = ''
     if not ridden and (enter or exit) then
         tail = ' The entry/exit events fire, but nothing here can see a listener for them.'

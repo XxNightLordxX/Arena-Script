@@ -95,7 +95,7 @@ Those two are the whole `dependencies` block in `fxmanifest.lua`, and that list 
 | Resource | Used for | Without it |
 |---|---|---|
 | [ox_target](https://github.com/overextended/ox_target) | the option on the lobby NPC | no NPC is spawned and the console says so. Set `Config.Lobby.interaction` to `'marker'` or `'both'` if you want the ground marker instead |
-| [ox_inventory](https://github.com/overextended/ox_inventory) | [ammo items](#ammo-types--handing-out-your-own-ammo-items), and the stash that holds a player's own kit during a match | ammo items are not handed out, nobody is stripped, and the console says so once |
+| [ox_inventory](https://github.com/overextended/ox_inventory) | **the arena weapons themselves**, [their ammo items](#ammo-types--handing-out-your-own-ammo-items), and the stash that holds a player's own kit during a match | nothing is issued at all — weapons are items, so fighters would stand in the round with only what they walked in carrying, and nobody's own kit is stashed |
 | [oxmysql](https://github.com/overextended/oxmysql) | the all-time leaderboard, and only when `Config.Database.enabled` is on — it ships **off** | the leaderboard covers the current server run |
 
 None of those three is named in the manifest and none is imported by it, so with the shipped settings this resource starts on a server that has no database resource, no target script and no inventory script at all. Turn a feature on and the resource asks for what it needs at that moment; if the answer is no, it says so in the console once and carries on.
@@ -333,7 +333,7 @@ Turn `Config.Debug` on and the door says what it did on each exit:
 
 Worth knowing before you go looking for a bug that is not there. Items are handed over **once**, at the moment a player is placed in the arena, for the weapons in the loadout they chose. Specifically:
 
-- **Respawns do not issue more.** A player who dies and comes back is re-handed their weapon and its rounds in-game; no second item is put in their inventory. One loadout's worth per player per match is the whole of what the arena lends.
+- **Respawns do not issue more.** A player who dies and comes back still has their weapon, because it is an `ox_inventory` item that was never taken off them — nothing re-hands it and no second item is put in their inventory. One loadout's worth per player per match is the whole of what the arena lends.
 
 #### MK II magazines are components, not items
 
@@ -479,8 +479,10 @@ thirty-two lands the full stated separation, checked across sixty random
 seeds for each of seven roster sizes — four hundred and twenty rosters — in
 `tests/skyarena_spec.lua`.
 
-Leave the block out and nothing changes — which is what the trailer park
-does, since it is a real place with a fixed amount of room in it.
+Leave the block out and the arena stays the size you configured. Both
+shipped arenas do scale, to different ceilings: the skydome up to 2.0x
+because it is built from nothing, the trailer park only to 1.35x because it
+is a real place with a fence and a highway around it.
 
 ### maxPlayers = 0 means unlimited
 
@@ -593,9 +595,16 @@ The same server once the dispatch board is handled through its own ignore export
 [crimson_arena] dispatch compat: 2 police/EMS resource(s) running.
 [crimson_arena]   sc-dispatch          police+EMS  muted automatically -- disableExports calls exports.sc-dispatch:SetIgnoredPlayer
 [crimson_arena]   qbx_ambulancejob     EMS         NOT muted -- needs the line below
-[crimson_arena] Isolation is on: no OTHER player's client can see the fight.
+[crimson_arena] Isolation is on: no OTHER player's client can see the fight. An arena player's own client still can, and nothing here is confirmed wired -- that is what the line below is for.
+[crimson_arena]   Paste at the top of whatever sends the alert, in that script:
+[crimson_arena]       if Player(src).state.crimsonArena then return end        -- server realm
+[crimson_arena]       if LocalPlayer.state.crimsonArena then return end        -- client realm
 [crimson_arena] Hooks configured: 1 disableExport(s). /arenadispatch re-runs this report.
 ```
+
+One row is handled and one is not, so the report keeps the caveat and keeps
+printing the line to paste: a single uncovered resource is enough for it to
+stop claiming the setup is wired.
 
 Reading it:
 

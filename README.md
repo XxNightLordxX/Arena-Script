@@ -16,7 +16,7 @@ By John Allday, for Crimson Roleplay.
 
 4. Start the server.
 
-There is no SQL to import and nothing to install first beyond `qbx_core` and `ox_lib`, which every Qbox server already runs. `ox_target`, `ox_inventory` and `oxmysql` are used when you switch on the features that want them and are not required otherwise.
+There is no SQL to import and nothing to install first beyond `qbx_core` and `ox_lib`, which every Qbox server already runs. `ox_target` puts the lobby NPC up, `ox_inventory` is what the arena hands weapons and ammunition over as, and `oxmysql` is only for the all-time leaderboard, which ships off. Each is checked at run time and says so in the console when it is missing.
 
 ## Documentation
 

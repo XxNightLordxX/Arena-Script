@@ -20,16 +20,16 @@
        78   Lobby         The NPC players walk up to
       151   Match         Lives, timers, player counts, win condition
       366   Teams         The sides, and whether they may be uneven
-      468   Modes         Free-for-all and team deathmatch
-      487   DefaultMode   Which of them a new lobby opens on
-      506   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      699   UI            Panel colours, logo and title
-      762   Permissions   Who may open a match, who may force-stop one
-      843   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1380   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1770   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1780   Webhook       Optional: a Discord line per finished match
-     1817   Dispatch      Optional: keeping police and EMS out of the arena
+      469   Modes         Free-for-all and team deathmatch
+      488   DefaultMode   Which of them a new lobby opens on
+      507   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      700   UI            Panel colours, logo and title
+      763   Permissions   Who may open a match, who may force-stop one
+      844   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1381   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1773   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1783   Webhook       Optional: a Discord line per finished match
+     1820   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -406,10 +406,11 @@ Config.Teams = {
     showTeamBlips = true,
 
     -- THE OTHER SIDE, NEVER. A permanent dot on every enemy turns a round
-    -- into a map to be read rather than a place to be searched. The radar
-    -- below is how an enemy position is learned: opt-in, and a sweep that
-    -- goes dark again. Turn this on for a server that wants the old
-    -- permanent behaviour, and the radar stops running.
+    -- into a map to be read rather than a place to be searched.
+    -- Config.Match.radar above is how an enemy position is learned instead:
+    -- set once by the host for the whole match, and a sweep that goes dark
+    -- again. Turn this on for a server that wants the old permanent
+    -- behaviour, and the radar stops running.
     showEnemyBlips = false,
 
     -- A COLOURED EDGE ROUND YOUR TEAMMATES, in that team's own colour --
@@ -1656,8 +1657,10 @@ Config.Loadouts = {
     -- broken, and this file's own rule is that a name which merely sounds
     -- right is worse than no name.
     --
-    -- 5.56x45 is the fallback because it is the round the most weapons here
-    -- take. Add a variant the moment an item exists to back it.
+    -- ammo-rifle is the fallback because a weapon added without an
+    -- `ammoTypes` of its own is most likely a rifle. Every weapon that ships
+    -- names its own item -- 14 take ammo-9 and 12 take ammo-rifle -- so
+    -- nothing in the shipped catalogue reaches this line at all.
     defaultAmmoTypes = {
         { key = 'standard', label = '5.56x45', item = 'ammo-rifle' },
     },

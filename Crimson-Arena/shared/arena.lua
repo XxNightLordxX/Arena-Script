@@ -2583,7 +2583,6 @@ end
 ---   pot         -- integer, everything staked
 ---   players     -- array of { id, team, kills, stake, placement }
 ---   winners     -- array of ids (already decided by the match, not here)
----   teams       -- boolean, whether this was a team mode
 ---   contestants -- integer, how many the round was FOUGHT with; optional,
 ---                  and only ever read for the minPlayersToPayOut threshold
 ---

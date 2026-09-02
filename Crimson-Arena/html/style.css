@@ -1558,3 +1558,31 @@ option {
         font-size: 6rem;
     }
 }
+
+/* ----------------------------------------------------------------------
+   SUPPLIES -- one row per item, its name then its amount chips.
+   Laid out as a row rather than a block so a catalogue of two reads as two
+   choices rather than two sections, and wraps rather than overflowing when
+   an operator adds a third.
+   ---------------------------------------------------------------------- */
+.supply-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0;
+}
+
+.supply-name {
+    min-width: 110px;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.75;
+}
+
+.chip.disabled,
+.chip:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}

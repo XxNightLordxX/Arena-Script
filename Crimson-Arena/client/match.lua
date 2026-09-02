@@ -228,8 +228,14 @@ local function applyLoadout(ped, loadout)
     -- Health and armour are the ped's either way -- no inventory resource
     -- has an opinion about them, and starting every round full is a rule
     -- rather than a loadout choice.
-    local wantedHealth = loadout.health or Config.Loadouts.health
-    local wantedArmour = loadout.armor or 0
+    -- A FLOOR, NOT A READ. The loadout carries both numbers so this side has
+    -- one thing to look at, but what it applies is never less than the rule
+    -- -- so a loadout that arrived without them, or a stale one built before
+    -- the rule existed, still starts this player on full health and a full
+    -- plate rather than on whatever happened to be in the table.
+    local fullHealth, fullArmour = Arena.StartingVitals()
+    local wantedHealth = math.max(Arena.ToInt(loadout.health) or 0, fullHealth)
+    local wantedArmour = math.max(Arena.ToInt(loadout.armor) or 0, fullArmour)
 
     SetEntityHealth(ped, wantedHealth)
     SetPedArmour(ped, wantedArmour)

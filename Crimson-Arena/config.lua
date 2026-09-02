@@ -22,9 +22,9 @@
       769   Permissions   Who may open a match, who may force-stop one
       848   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1548   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     3025   Database      Optional: all-time leaderboard. Off, no SQL to import
-     3035   Webhook       Optional: a Discord line per finished match
-     3073   Dispatch      Optional: keeping police and EMS out of the arena
+     3095   Database      Optional: all-time leaderboard. Off, no SQL to import
+     3105   Webhook       Optional: a Discord line per finished match
+     3143   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -2980,18 +2980,88 @@ Config.Loadouts = {
     --
     -- Turn `allowChoose` back on and the options below become a picker again,
     -- for a server that wants armour to be part of the loadout decision.
-    armor = {
-        allowChoose = false,
-        options = { 0, 50, 100 },
-        default = 100,
-        max = 100,
+    -- ==================================================================
+    -- EXTRA SUPPLIES -- what a player carries IN, on top of the kit
+    --
+    -- NOT THE STARTING ARMOUR. There used to be an `armor` block here with
+    -- its own allowChoose / options / default / max, four keys deciding
+    -- something that should never have been decidable: a round where one
+    -- fighter opens on a full plate and another on none, because of a picker
+    -- or because a default was lowered once and forgotten, is not a fair
+    -- round. Every player now starts every life on full health and a full
+    -- plate, always, and no setting here reaches that -- see
+    -- Arena.StartingVitals in shared/arena.lua.
+    --
+    -- What this block is for is the SPARE. A second plate to put on when the
+    -- first one is gone, a bandage to patch up behind cover. They are real
+    -- ox_inventory items, handed over at the start of the round and taken
+    -- back on the way out with everything else the arena issued -- a player
+    -- cannot walk out of a match holding free plates.
+    --
+    -- Shaped like the weapon catalogue on purpose, down to the key / label /
+    -- item triple and the `enabled` switch: an operator who has already
+    -- edited that list should not have to learn a second grammar for this
+    -- one.
+    -- ==================================================================
+    supplies = {
+        -- Off, the whole section is hidden and nobody carries any. Players
+        -- still start on full health and a full plate: that is a rule, and
+        -- this switch does not reach it.
+        enabled = true,
+
+        -- Whether the PLAYER picks the amounts. Off, everybody carries the
+        -- `default` on each entry below -- which is how an operator sets one
+        -- kit for the whole server. Also forced off by
+        -- Config.Loadouts.allowChoose, like every other picker here.
+        allowChoose = true,
+
+        -- A ceiling across ALL supplies together, not per entry. `0` means
+        -- no ceiling. Without it a server with six supplies lets one player
+        -- carry every entry's own maximum at once, which is a different
+        -- match to the one the per-item numbers describe.
+        totalItems = 8,
+
+        -- THE ITEM NAMES ARE THE ONLY PART THAT MATTERS TO ox_inventory, and
+        -- they must exist in YOUR ox_inventory data. `armour` and `bandage`
+        -- are the QB/ox defaults and are what ships. A name that does not
+        -- exist is refused by ox_inventory, and the arena says so once in
+        -- the console naming the item -- it does not fail the round.
+        items = {
+            {
+                key = 'armour',
+                label = 'Body Armour',
+                item = 'armour',
+                -- The most one player may carry in.
+                max = 4,
+                -- What somebody who picks nothing carries. Kept at 1 rather
+                -- than 0 so the feature is visible on a fresh install
+                -- without anybody having to find this block first.
+                default = 1,
+                -- What the picker offers as one-tap amounts. A player may
+                -- still type any number up to `max`.
+                options = { 0, 1, 2, 4 },
+            },
+            {
+                key = 'bandage',
+                label = 'Bandage',
+                item = 'bandage',
+                max = 6,
+                default = 2,
+                options = { 0, 2, 4, 6 },
+            },
+        },
     },
 
-    -- Health every player starts a round on. 200 is a stock GTA full bar, and
-    -- everyone gets one -- whatever state they walked up to the arena in, a
-    -- round starts even. Their real health is captured on the way in and
-    -- handed back on the way out.
-    health = 200,
+    -- THERE IS NO `health` KEY HERE ANY MORE, and saying why is worth more
+    -- than the key was. It read `health = 200` -- a stock GTA full bar --
+    -- and the only thing it could usefully be set to was 200: lower it and
+    -- the arena starts handicapping everybody for no stated reason, raise it
+    -- and nothing happens, because nothing here raises a ped's ceiling.
+    --
+    -- Full health and a full plate on every life are a rule of the arena
+    -- now, in shared/arena.lua where both realms read the same number. Their
+    -- real health and armour are still captured on the way in and handed
+    -- back on the way out.
 }
 
 -- ======================================================================

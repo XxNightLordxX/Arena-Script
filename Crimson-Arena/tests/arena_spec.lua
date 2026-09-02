@@ -526,37 +526,48 @@ t.test('ResolveLoadout drops a table where a key should be, like any other bad k
 end)
 
 t.test('everybody starts a round on a full plate, whatever they ask for', function()
-    -- Config.Loadouts.armor.allowChoose ships FALSE: a round starts even, and
-    -- nobody can hand themselves a disadvantage by accident or hand an
-    -- opponent one on purpose. Every request resolves to the default.
-    t.isFalse(Config.Loadouts.armor.allowChoose)
-    t.equals(Config.Loadouts.armor.default, Config.Loadouts.armor.max)
+    -- A RULE NOW, NOT A SETTING. There used to be a Config.Loadouts.armor
+    -- block with allowChoose / options / default / max -- four keys deciding
+    -- something that should never have been decidable. A round where one
+    -- fighter opens on a full plate and another on none, because of a picker
+    -- or because a default was lowered once and forgotten, is not a fair
+    -- round; and a client sending its own armour value was a client choosing
+    -- how hard it is to kill them.
+    local health, armour = Arena.StartingVitals()
+    t.equals(armour, 100, 'a full plate is 100')
+    t.equals(health, 200, 'a stock GTA full bar is 200')
 
     for _, asked in ipairs({ 0, 50, 75, 500, -50 }) do
-        t.equals(Arena.ResolveLoadout({ armor = asked }).armor, 100,
+        t.equals(Arena.ResolveLoadout({ armor = asked }).armor, armour,
             ('asking for %s should still be a full plate'):format(tostring(asked)))
     end
-    t.equals(Arena.ResolveLoadout({ armor = 'max' }).armor, 100)
-    t.equals(Arena.ResolveLoadout({}).armor, 100, 'and asking for nothing is the same')
+    t.equals(Arena.ResolveLoadout({ armor = 'max' }).armor, armour)
+    t.equals(Arena.ResolveLoadout({}).armor, armour, 'and asking for nothing is the same')
 end)
 
 t.test('and full health, whoever walked up to the arena half dead', function()
-    t.equals(Arena.ResolveLoadout({}).health, Config.Loadouts.health)
-    t.equals(Config.Loadouts.health, 200, 'a stock GTA full bar')
+    local health = Arena.StartingVitals()
+    t.equals(Arena.ResolveLoadout({}).health, health)
+    for _, asked in ipairs({ 1, 50, 100, 9999, -1, 'lots' }) do
+        t.equals(Arena.ResolveLoadout({ health = asked }).health, health,
+            ('a client asked for %s health and was given it'):format(tostring(asked)))
+    end
 end)
 
-t.test('turning the armour picker back on makes the options real again', function()
-    -- The switch has to actually do something, or it is the sort of dead key
-    -- this suite exists to catch.
-    local choosable = tweaked(function(config) config.Loadouts.armor.allowChoose = true end)
+t.test('and no config key can turn either of them down', function()
+    -- THE POINT OF MAKING THEM CONSTANTS. An operator can switch off the
+    -- supplies section, empty the weapon list, or take the whole loadout
+    -- picker away; none of it reaches what a fighter starts a life on.
+    local off = tweaked(function(config)
+        config.Loadouts.allowChoose = false
+        config.Loadouts.supplies.enabled = false
+        config.Loadouts.health = 1
+        config.Loadouts.armor = { allowChoose = true, default = 0, max = 0, options = { 0 } }
+    end)
 
-    t.equals(choosable.ResolveLoadout({ armor = 50 }).armor, 50)
-    t.equals(choosable.ResolveLoadout({ armor = 0 }).armor, 0)
-    -- 75 is not one of the offered options, so it takes the default -- the
-    -- same refusal ammo gets, for the same reason.
-    t.equals(choosable.ResolveLoadout({ armor = 75 }).armor, 100)
-    t.equals(choosable.ResolveLoadout({ armor = 500 }).armor, 100)
-    t.equals(choosable.ResolveLoadout({ armor = 'max' }).armor, 100)
+    local health, armour = off.StartingVitals()
+    t.equals(off.ResolveLoadout({ armor = 0 }).armor, armour)
+    t.equals(off.ResolveLoadout({}).health, health)
 end)
 
 t.test('ResolveLoadout swaps the request for the operator fixed list when allowChoose is off', function()

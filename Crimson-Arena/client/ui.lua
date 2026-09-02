@@ -259,7 +259,12 @@ register('setLoadout', function(data)
     -- decides which of these weapons exist and how much ammo they get.
     TriggerServerEvent('crimson_arena:server:setLoadout', {
         weapons = data.weapons,
-        armor = data.armor,
+        -- NAMED HERE OR IT DOES NOT EXIST. A field the panel posts and this
+        -- relay does not forward is not an error at either end: the server
+        -- reads nil, falls back to the operator's default and reports
+        -- success. That is the defect this file keeps producing, and
+        -- nuicontract_spec is what stops it.
+        supplies = data.supplies,
     })
 end)
 

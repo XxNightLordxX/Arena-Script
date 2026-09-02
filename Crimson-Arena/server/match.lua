@@ -484,7 +484,11 @@ local function ladderLoadout(weapon, previous)
         end
     end
 
-    return { weapons = weapons, armor = base.armor, health = base.health }
+    -- SUPPLIES COME ALONG. A gun-game promotion rewrites the loadout in
+    -- place, and a hand-built table that forgets a field silently takes it
+    -- away -- here, the plates and bandages a player carried in would vanish
+    -- from the record the moment they earned a rung.
+    return { weapons = weapons, armor = base.armor, health = base.health, supplies = base.supplies }
 end
 
 --- The loadout a player should be holding for this match right now: their

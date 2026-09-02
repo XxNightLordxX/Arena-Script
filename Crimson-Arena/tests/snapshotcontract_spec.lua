@@ -850,8 +850,20 @@ t.test('a full loadout built from the snapshot -- every slot filled -- is accept
         wanted[#wanted + 1] = melee[index]
     end
 
-    local loadout, rejected = server.Arena.ResolveLoadout({ weapons = request, armor = loadouts.armor.default })
+    -- SUPPLIES COME OFF THE SNAPSHOT TOO, at the maximum the panel offers,
+    -- because a request the panel can build has to be one the server takes.
+    local supplies = {}
+    for _, entry in ipairs((loadouts.supplies or {}).items or {}) do
+        supplies[#supplies + 1] = { key = entry.key, count = entry.max }
+    end
+
+    local loadout, rejected = server.Arena.ResolveLoadout({ weapons = request, supplies = supplies })
     t.equals(#rejected, 0, 'a loadout the panel could build was refused: ' .. table.concat(rejected, ', '))
+
+    -- AND THE TWO VITALS ARE THE RULE, not anything the request said.
+    local fullHealth, fullArmour = server.Arena.StartingVitals()
+    t.equals(loadout.health, fullHealth, 'a round did not start on full health')
+    t.equals(loadout.armor, fullArmour, 'a round did not start on a full plate')
 
     for index, weapon in ipairs(wanted) do
         local got = resolvedByKey(loadout, weapon.key)

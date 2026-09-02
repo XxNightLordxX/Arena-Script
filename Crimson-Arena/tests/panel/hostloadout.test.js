@@ -77,7 +77,15 @@ function snapshot(who, chooser) {
                     { key: 'sidearm', label: 'Sidearms', order: 1 },
                     { key: 'primary', label: 'Primaries', order: 2 },
                 ],
-                armor: { allowChoose: true, options: [0, 50, 100], default: 100 },
+                supplies: {
+                    enabled: true,
+                    allowChoose: true,
+                    totalItems: 8,
+                    items: [
+                        { key: 'armour', label: 'Body Armour', max: 4, default: 4, options: [0, 1, 2, 4] },
+                        { key: 'bandage', label: 'Bandage', max: 6, default: 6, options: [0, 2, 4, 6] },
+                    ],
+                },
             },
             teams: { list: [] },
             ui: {},
@@ -93,7 +101,7 @@ function snapshot(who, chooser) {
                     { key: 'rifle', weapon: 'WEAPON_RIFLE', ammo: 137 },
                     { key: 'knife', weapon: 'WEAPON_KNIFE', ammo: 1 },
                 ],
-                armor: 50,
+                supplies: [{ key: 'armour', count: 2 }, { key: 'bandage', count: 0 }],
             },
         },
         matches: [{
@@ -147,13 +155,24 @@ test('and told why the lists are not there', () => {
         'the note does not point at where the answer actually is: ' + note);
 });
 
-test('the armour line names what the HOST set, not the server default', () => {
-    /* Reading the config default told a player they were starting with 100
-       while the host had set them to 50. */
+test('the supplies line names what the HOST set, not the server default', () => {
+    /* Reading the config default told a player they were carrying four
+       plates while the host had set them two. Same defect, same place, one
+       feature along -- so the same assertion follows it. */
     const panel = opened('guest');
-    const armor = panel.text('armor-picker');
-    assert.ok(/50/.test(armor), 'the armour shown is not the host\'s choice: ' + armor);
-    assert.ok(!/100/.test(armor), 'the server default was shown instead: ' + armor);
+    const supplies = panel.text('supplies-picker');
+    assert.ok(/2/.test(supplies), 'the supplies shown are not the host\'s choice: ' + supplies);
+    assert.ok(!/4/.test(supplies), 'the server default was shown instead: ' + supplies);
+});
+
+test('and a supply the host took none of shows as none, not as the default', () => {
+    /* The other half, and the one a fallback gets wrong: an entry the host
+       deliberately zeroed must not re-seed from the operator's default the
+       moment the panel reopens. */
+    const panel = opened('guest');
+    const supplies = panel.text('supplies-picker');
+    assert.ok(/Bandage/.test(supplies), 'the bandage row was not drawn: ' + supplies);
+    assert.ok(!/6/.test(supplies), 'a supply the host set to none showed the default: ' + supplies);
 });
 
 test('and there is no Save button for a choice they cannot make', () => {

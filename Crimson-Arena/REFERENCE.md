@@ -97,7 +97,8 @@ instancing really happened rather than assuming it did.
 - **You pick an amount of ammunition, not a type.** The correct ammo item for that
   weapon is worked out and handed over automatically: one magazine loaded in the
   gun, the rest as items, totalling exactly what was picked.
-- **Body armour** as part of the loadout, inside an operator band.
+- **Full health and a full plate on every life, by rule** — not a config key, not a field a client can send.
+- **Choosable spare kit**: extra armour plates and bandages, per-item maximums and a shared ceiling, issued as real items and reclaimed against what the player still holds.
 - **The door.** A player's own inventory is stowed in a stash keyed to their
   citizen id — so a reconnect finds it and a recycled server id cannot open it —
   and handed back on the way out.
@@ -344,7 +345,10 @@ listed; the source documents them where they are.
 | `Arena.AllAmmoItems()` | Every item name any ammo type in the catalogue can hand out, deduplicated. |
 | `Arena.ResolveAmmoType(weapon, requested)` | Turns whatever ammo type a client asked for into one this server is willing to load. |
 | `Arena.MagazineFor(weapon, rounds)` | What a weapon starts LOADED with, when the rest of the rounds a player picked are handed over as inventory items instead. |
-| `Arena.ResolveArmor(requested)` | Same shape of decision for body armour. |
+| `Arena.StartingVitals()` | The health and armour every fighter starts every life on — a rule, not a setting. |
+| `Arena.GetEnabledSupplies()` | Every extra supply an operator has left switched on, in config order. |
+| `Arena.SupplyMax(supply)` | The most of one supply a player may carry in. |
+| `Arena.ResolveSupplies(requested)` | Turns whatever a client asked to carry into a list the server will hand over. |
 | `Arena.ResolveLoadout(request)` | Validates a whole loadout request and returns the concrete thing to hand a player -- real GTA weapon names and real ammo counts, nothing the caller supplied passed through untouched. |
 | `Arena.CountTeams(players)` | Head count per team, from a list of players. |
 | `Arena.SuggestTeam(players)` | The team a newly joining player should land on when they did not pick one: the smallest enabled team WITH ROOM IN IT, ties broken by config order so the choice is deterministic rather than dependent on pairs() ordering. |
@@ -418,6 +422,8 @@ listed; the source documents them where they are.
 |---|---|
 | `ArenaDispatch.Set(src, matchId)` | Marks a player as being in `matchId`. |
 | `ArenaDispatch.Clear(src)` | Clears the flag. |
+| `ArenaDispatch.ClearDownState(src)` | Puts the medical script's down flags back down, at the death rather than at the revive. |
+| `ArenaDispatch.HoldDownState()` | One pass: the flags put back down for everybody currently in a match. |
 | `ArenaDispatch.Revive(src, keepHold)` | Tells whatever handles death on this server that a player is alive again. |
 | `ArenaDispatch.IsPlayerInArena(src)` | Whether the server has this player flagged as being in a match. |
 | `ArenaDispatch.GetPlayerMatchId(src)` | The match a flagged player is in, or nil. |

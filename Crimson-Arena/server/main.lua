@@ -67,6 +67,11 @@ local MAX_KEY_LENGTH = 64
 --- is the number a sender controls.
 local MAX_WEAPON_ENTRIES = 32
 
+--- The same bound for the supplies list. A request naming every supply on
+--- the server twice over is not a player picking a loadout, and the list is
+--- walked before anything in it is validated.
+local MAX_SUPPLY_ENTRIES = 16
+
 --- @param value any
 --- @return table|nil
 local function tableArg(value)
@@ -146,7 +151,31 @@ local function loadoutArg(data)
         end
     end
 
-    return { weapons = weapons, armor = intArg(payload.armor) }
+    -- SUPPLIES, REBUILT THE SAME WAY AND FOR THE SAME REASON. A key and a
+    -- count, both scalars, both bounded here before Arena.ResolveSupplies
+    -- decides which key names a real item and how many of it a player may
+    -- carry. Nothing the sender supplied is passed on by reference.
+    --
+    -- `armor` is deliberately NOT rebuilt any more. Starting armour is a
+    -- rule of the arena rather than a loadout field, so a client sending one
+    -- is a client trying to choose how hard it is to kill them -- and the
+    -- honest way to refuse that is to stop reading the field at all rather
+    -- than to read it and clamp it somewhere further in.
+    local supplies = {}
+    local askedSupplies = tableArg(payload.supplies)
+    if askedSupplies then
+        for index = 1, MAX_SUPPLY_ENTRIES do
+            local entry = tableArg(askedSupplies[index])
+            if not entry then break end
+
+            local key = keyArg(entry.key)
+            if key then
+                supplies[#supplies + 1] = { key = key, count = intArg(entry.count) }
+            end
+        end
+    end
+
+    return { weapons = weapons, supplies = supplies }
 end
 
 -- ======================================================================

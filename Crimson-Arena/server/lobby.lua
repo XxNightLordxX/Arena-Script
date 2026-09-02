@@ -149,12 +149,6 @@ local function removeFromOrder(match, src)
     end
 end
 
---- The match a player is in AND their row in it, in one lookup. The two can
---- only fall out of step if something removed a row without clearing the
---- index; reporting that as "not in a match" beats indexing a nil.
---- @param src number
---- @return table|nil match
---- @return table|nil player
 --- The loadout a player joining `match` should start with.
 ---
 --- In host mode that is whatever the host is currently holding, so a late
@@ -178,6 +172,12 @@ local function hostLoadoutFor(match)
     return (Arena.ResolveLoadout(host.loadout))
 end
 
+--- The match a player is in AND their row in it, in one lookup. The two can
+--- only fall out of step if something removed a row without clearing the
+--- index; reporting that as "not in a match" beats indexing a nil.
+--- @param src number
+--- @return table|nil match
+--- @return table|nil player
 local function findPlayer(src)
     local match = ArenaLobby.GetByPlayer(src)
     local player = match and match.players[src] or nil
@@ -706,8 +706,6 @@ local function pushState(src)
     TriggerClientEvent('crimson_arena:client:state', src, ArenaLobby.BuildState(src))
 end
 
---- @param src number
---- @return table snapshot
 --- The arenas a player must be kept OUT of, because a round is being fought
 --- in them and they are not in it.
 ---
@@ -823,6 +821,8 @@ local function snapshotKeepOut(src)
     return zones
 end
 
+--- @param src number
+--- @return table snapshot
 function ArenaLobby.BuildState(src)
     refreshLeaderboard()
     return {
@@ -1286,22 +1286,6 @@ function ArenaLobby.Destroy(matchId, reasonKey)
     return true
 end
 
---- The host closing their own lobby.
----
---- A cancel is its own exit rather than a Destroy with a different notice
---- because it is the ONE way of closing a lobby an operator can make cost
---- something. Everything else that closes one -- the idle sweep, an admin
---- force-stop, the last player walking out, a resource restart -- refunds in
---- full and none of them come through here, which is exactly why they are
---- unaffected by `refundOnCancel`: an operator punishing a host who calls
---- their own match off has not asked to punish a lobby the server itself
---- closed.
----
---- WHICH MATCH is never taken from the caller: it is the one they are
---- standing in, and they have to be its host.
---- @param src any
---- @return boolean ok
---- @return string|nil reasonKey
 --- Puts a counting-down lobby back to being a lobby.
 ---
 --- WHAT THE PANEL'S BUTTON ALWAYS SAID IT DID. "Stop The Countdown" posted
@@ -1348,6 +1332,22 @@ function ArenaLobby.HoldCountdown(src)
     return true, nil
 end
 
+--- The host closing their own lobby.
+---
+--- A cancel is its own exit rather than a Destroy with a different notice
+--- because it is the ONE way of closing a lobby an operator can make cost
+--- something. Everything else that closes one -- the idle sweep, an admin
+--- force-stop, the last player walking out, a resource restart -- refunds in
+--- full and none of them come through here, which is exactly why they are
+--- unaffected by `refundOnCancel`: an operator punishing a host who calls
+--- their own match off has not asked to punish a lobby the server itself
+--- closed.
+---
+--- WHICH MATCH is never taken from the caller: it is the one they are
+--- standing in, and they have to be its host.
+--- @param src any
+--- @return boolean ok
+--- @return string|nil reasonKey
 function ArenaLobby.Cancel(src)
     local target = tonumber(src)
     if not target then return false, 'error.invalid_request' end

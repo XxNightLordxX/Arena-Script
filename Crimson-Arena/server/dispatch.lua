@@ -196,22 +196,6 @@ end
 --     add_ace resource.Crimson-Arena command.revive allow
 -- ======================================================================
 
---- Tells whatever handles death on this server that a player is alive again.
----
---- WHY THIS IS NEEDED AT ALL. The arena stands its own players back up with
---- NetworkResurrectLocalPlayer, and for the PED that is the whole job. It is
---- not the whole job for the SERVER: an ambulance or medical script keeps its
---- own death state -- metadata, a table, a state bag -- and nothing about
---- resurrecting a ped tells it anything. So a player who died in a match
---- walks out of the arena on their feet and their medical script still has
---- them dead: downed on the next check, or refused a respawn, or simply
---- unable to do anything until someone revives them.
----
---- NOTHING IS GUESSED HERE. Every name comes from config; an empty config
---- calls nothing. A guessed export or event name is worse than none, because
---- it detects as wired up and then silently does nothing -- the same reason
---- the catalogue further down this file is detection-only.
---- @param src number
 --- Clears the medical script's own down-state metadata for one player.
 ---
 --- The keys come from Config.Dispatch.revive.clearMetadata, so an operator
@@ -269,6 +253,21 @@ local function clearDownMetadata(src)
     return cleared
 end
 
+--- Tells whatever handles death on this server that a player is alive again.
+---
+--- WHY THIS IS NEEDED AT ALL. The arena stands its own players back up with
+--- NetworkResurrectLocalPlayer, and for the PED that is the whole job. It is
+--- not the whole job for the SERVER: an ambulance or medical script keeps its
+--- own death state -- metadata, a table, a state bag -- and nothing about
+--- resurrecting a ped tells it anything. So a player who died in a match
+--- walks out of the arena on their feet and their medical script still has
+--- them dead: downed on the next check, or refused a respawn, or simply
+--- unable to do anything until someone revives them.
+---
+--- NOTHING IS GUESSED HERE. Every name comes from config; an empty config
+--- calls nothing. A guessed export or event name is worse than none, because
+--- it detects as wired up and then silently does nothing -- the same reason
+--- the catalogue further down this file is detection-only.
 --- @param src number
 --- @param keepHold boolean|nil -- true on elimination: the round is still running
 function ArenaDispatch.Revive(src, keepHold)

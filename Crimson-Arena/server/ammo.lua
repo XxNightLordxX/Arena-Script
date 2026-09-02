@@ -132,15 +132,6 @@ local function stashFor(citizenid)
     return prefix .. citizenid
 end
 
---- Moves everything a player is carrying into their stash.
----
---- RETURNS FALSE IF ANYTHING AT ALL GOES WRONG, and the caller must then leave
---- the player's inventory alone. Every branch here is written around that: it
---- reads first, writes the stash second, and only clears the player once every
---- item is provably somewhere else.
---- @param src number
---- @param citizenid string
---- @return boolean stowed
 --- Calls one ox_inventory export and answers the only question that
 --- matters: did it actually do the thing.
 ---
@@ -179,6 +170,15 @@ local function oxDid(label, fn)
     return true
 end
 
+--- Moves everything a player is carrying into their stash.
+---
+--- RETURNS FALSE IF ANYTHING AT ALL GOES WRONG, and the caller must then leave
+--- the player's inventory alone. Every branch here is written around that: it
+--- reads first, writes the stash second, and only clears the player once every
+--- item is provably somewhere else.
+--- @param src number
+--- @param citizenid string
+--- @return boolean stowed
 local function stow(src, citizenid)
     local ox = inventory()
     if not ox then return false end

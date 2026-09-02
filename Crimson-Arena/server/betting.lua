@@ -1038,9 +1038,6 @@ end
 -- losing one is kept by it, and the fighters' pot is untouched either way.
 -- ======================================================================
 
---- @param matchId string
---- @param src integer
---- @return boolean
 --- Everything staked in side-bets that will be settled as a pool.
 ---
 --- THE NUMBER ON SCREEN HAS TO BE THE NUMBER THAT GETS PAID. GetPot above
@@ -1125,6 +1122,9 @@ function ArenaBetting.HoldsSideBet(matchId, src)
     return holdsSideBet(matchId, id)
 end
 
+--- @param matchId string
+--- @param src integer
+--- @return boolean
 function ArenaBetting.HasSpectatorBet(matchId, src)
     local id = serverId(src)
     if not id then return false end

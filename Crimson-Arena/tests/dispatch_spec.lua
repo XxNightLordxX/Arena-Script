@@ -455,10 +455,10 @@ end
 -- player pin has nothing to work with and the alert goes out.
 --
 -- The location is the one thing such a payload does have, and an arena is a
--- place. Requiring a LIVE match is the whole safety of it: these arenas sit
--- on real map locations that ordinary play uses the rest of the time, and
--- suppressing every alert that ever happens at an airfield would silence
--- real crimes -- a worse failure than the one this fixes.
+-- place. Requiring a LIVE match is the whole safety of it: an arena can sit
+-- on a real map location that ordinary play uses the rest of the time, and
+-- suppressing every alert that ever happens there would silence real crimes
+-- -- a worse failure than the one this fixes.
 -- ========================================================================
 
 --- A dispatch config whose one cancel entry is pinned on location.
@@ -673,7 +673,7 @@ end)
 
 t.test('the same alert is left alone with no match running', function()
     -- The safety line. Outside a match these coordinates are an ordinary
-    -- airfield, and an alert about one is somebody else's business.
+    -- piece of the map, and an alert about one is somebody else's business.
     local f = newFixture(locationConfig())
     local inside = arenaPoints(f.env)
 

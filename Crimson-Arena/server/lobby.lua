@@ -156,8 +156,8 @@ end
 --- player carrying the default. A fresh resolve otherwise.
 ---
 --- Always a NEW table. Handing back the host's own would tie two players'
---- loadouts together for the rest of the match, and gun game rewrites a
---- player's loadout in place as they climb.
+--- loadouts together for the rest of the match, and a loadout is rewritten
+--- in place on entry and on every respawn.
 --- @param match table
 --- @return table loadout
 local function hostLoadoutFor(match)

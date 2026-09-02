@@ -72,9 +72,7 @@ Open `config.lua`. The three things that are certainly wrong for your server:
   ends. Nothing under it. It also **grows with the roster** — six fighters get
   the 35 m circle in config, twenty get a 57 m one on a floor to match.
 
-  `airfield` and `beach` are the older ground arenas, switched off rather than
-  deleted, so turning one back on is one word. The config carries a copy-paste
-  block for adding more.
+  The config carries a copy-paste block for adding more.
 - `Config.Betting` — decide whether money is in play at all before players can
   stake it. `Config.Betting.enabled = false` if you are unsure.
 
@@ -301,8 +299,8 @@ wrong here is something the resource did that it should not have.
 - [ ] Create a match, second player joins, both see each other in the roster.
 - [ ] Pick a weapon and an ammo amount. Pick a team if the mode has them.
 - [ ] Start it. Both players are teleported, frozen, then released together.
-- [ ] **You have exactly the weapon and ammo you chose — no more.** If you
-      brought your own gun in, it is gone (`stripWeaponsOnEntry`).
+- [ ] **You have exactly the weapon and ammo you chose — no more.** Your own
+      kit went into the arena stash at the door and comes back at the end.
 - [ ] Kill each other. The HUD scoreboard updates.
 - [ ] The match ends, both are returned to `returnCoords`, and **your own
       weapons and armour are back**. Losing a player's inventory is the
@@ -480,11 +478,10 @@ keep the inventory UI open next to you.
 
 **One interaction only a live server can settle.** Some inventory setups tie a
 weapon's in-game round count to the ammo item that backs it. This resource
-grants weapons with the game's own natives and strips them on entry
-(`Config.Match.stripWeaponsOnEntry`), which is a separate mechanism from the
-item ledger. If your ammo script reconciles the two, run the "you still have
-your own" step above twice before trusting the numbers — that is where a
-double-count would show.
+hands over arena weapons as `ox_inventory` items and takes them back the same
+way. If your ammo script reconciles the two, run the "you still have your own"
+step above twice before trusting the numbers — that is where a double-count
+would show.
 
 ### 9. The nasty ones
 - [ ] Have a player leave during the **frozen countdown**, after the teleport

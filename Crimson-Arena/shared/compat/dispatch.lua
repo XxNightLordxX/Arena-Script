@@ -336,18 +336,16 @@ end
 --
 -- The resource NAMES this server's police dispatch and EMS run under.
 --
--- DELIBERATELY SHORT, AND KEPT THAT WAY. It once carried twenty names --
--- every dispatch board and ambulance job in common circulation -- on the
--- theory that a generous catalogue costs nothing. It does cost something:
+-- DELIBERATELY SHORT, AND KEPT THAT WAY. A generous catalogue is not free:
 -- every name in here is a name an operator reading the report has to decide
--- is irrelevant to them, and a row that never matches is a row that has
--- never been tested against a running copy of the thing it claims to
--- recognise. What is left is Qbox's own scripts and this server's own, both
--- of which can be checked.
+-- is irrelevant to them, and a row that never matches is a row nobody has
+-- ever tested against a running copy of the thing it claims to recognise.
+-- What is in it is Qbox's own scripts and this server's own, both of which
+-- can be checked.
 --
--- ADDING ONE BACK IS FOUR CHARACTERS PLUS A NAME, and worth doing the day
--- this server actually runs that script -- not before. See this file's
--- header for what an entry may and may not claim.
+-- ADDING ONE IS FOUR CHARACTERS PLUS A NAME, and worth doing the day this
+-- server actually runs that script -- not before. See this file's header for
+-- what an entry may and may not claim.
 --
 -- Every one of these is DETECTION-ONLY: a name, and what that resource is.
 -- Not one carries a mute call, because not one of their export names can be

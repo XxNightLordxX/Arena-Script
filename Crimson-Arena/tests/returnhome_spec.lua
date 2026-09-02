@@ -13,7 +13,7 @@
       the spectators    never fought, but were moved into the round's own
                         routing bucket to watch it
 
-    A player this forgets is left standing in an empty airfield in an
+    A player this forgets is left standing in an empty arena in an
     instance nobody else is in, with no panel and no way back except
     reconnecting. So the assertion is a headcount: every one of them is sent
     home, and to the same place.

@@ -20,15 +20,6 @@
        publish, in two forms anyone can read, the fact that a player is
        mid-match, so one line in that resource can decline to send.
 
-    GTA'S OWN NPC POLICE ARE NOT A THIRD PROBLEM, and this file no longer
-    pretends they are. It used to carry a Config.Dispatch.vanillaPolice
-    block that shipped OFF and stayed off: a server running a custom
-    dispatch script has disabled the vanilla wanted system already, and the
-    ones that drive their own logic off the native wanted level would have
-    been fought for it by an arena zeroing it mid-match. Three sub-switches
-    and a stash-and-restore for a system this server does not run is not
-    coverage, it is a block an operator has to read and dismiss. Gone.
-
     WHAT IS PUBLISHED, and it is deliberately the same fact twice because
     different scripts want it different ways:
       * a replicated state bag on the player, keyed by
@@ -44,19 +35,17 @@
     This file reads its own local record for its own exports and never writes
     the bag at all.
 
-    EVERYTHING HERE IS PER-MATCH AND REVERSIBLE. A player who walks into the
-    arena with two wanted stars walks back out with two wanted stars. This
-    file is not allowed to leak a single setting into the rest of someone's
-    session, which is why every Enter() has a matching Exit(), why Exit() is
-    safe to call when nothing is active, and why a setting this file cannot
-    read back is one it does not set at all -- see ENTER / EXIT below.
+    EVERYTHING HERE IS PER-MATCH AND REVERSIBLE. This file is not allowed to
+    leak a single setting into the rest of someone's session, which is why
+    every Enter() has a matching Exit(), why Exit() is safe to call when
+    nothing is active, and why a setting this file cannot read back is one it
+    does not set at all -- see ENTER / EXIT below.
 ]]
 
 ArenaDispatch = {}
 
 --- Nil when not in a match, and the match id while one is running. It is
---- the in-a-match latch Enter/Exit pair on, nothing more -- there is no
---- longer any game setting to stash and hand back.
+--- the in-a-match latch Enter/Exit pair on, nothing more.
 local restore = nil
 
 -- ======================================================================
@@ -119,14 +108,14 @@ end
 -- ======================================================================
 -- ENTER / EXIT
 --
--- NO GAME SETTING IS TOUCHED ON THE WAY IN ANY MORE, which is why there is
--- nothing to hand back on the way out. Everything this pair does now is the
--- operator's own disableExports list, and that is symmetric by construction:
--- the same entries called with true on entry and false on exit.
+-- NO GAME SETTING IS TOUCHED ON THE WAY IN, which is why there is nothing to
+-- hand back on the way out. All this pair does is the operator's own
+-- disableExports list, and that is symmetric by construction: the same
+-- entries called with true on entry and false on exit.
 --
--- THE RULE THAT EMPTIED IT, kept here because it is the one worth applying
--- to anything added later: A SETTING THIS RESOURCE CANNOT READ BACK IS ONE
--- IT DOES NOT SET. SetMaxWantedLevel, SetCreateRandomCops and
+-- THE RULE THAT KEEPS IT THAT WAY, and the one to apply to anything added
+-- later: A SETTING THIS RESOURCE CANNOT READ BACK IS ONE IT DOES NOT SET.
+-- SetMaxWantedLevel, SetCreateRandomCops and
 -- SetPlayerHealthRechargeMultiplier can all be set and none of them can be read
 -- -- CitizenFX ships no getter for any of the three. A match that
 -- changed one could only put it back by assuming the stock value, and an

@@ -591,10 +591,6 @@ end
 --- @type table<number, string>
 local instanced = {}
 
---- One event to every fighter and every spectator of a match.
---- @param match table
---- @param event string
---- @param payload table
 --- The ONE way anybody is told to leave the arena.
 ---
 --- Every exit path in this file routes through here specifically so the
@@ -636,6 +632,10 @@ local function sendExitArena(src, payload)
     TriggerClientEvent('crimson_arena:client:exitArena', src, payload)
 end
 
+--- One event to every fighter and every spectator of a match.
+--- @param match table
+--- @param event string
+--- @param payload table
 local function pushToMatch(match, event, payload)
     for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
         TriggerClientEvent(event, player.src, payload)

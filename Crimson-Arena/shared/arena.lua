@@ -1462,14 +1462,6 @@ function Arena.UsesExactSpawnZ(arenaKey)
     return type(arena) == 'table' and arena.exactSpawnZ == true
 end
 
---- The spawn AREA an arena defines, if it defines one.
----
---- `spawns` is a list of exact points; `spawnArea` is one point and a radius,
---- and the arena works out the rest. An operator who only wants to drop a
---- marker in the middle of a field and say "a hundred metres around here"
---- should not have to write out twenty coordinates to do it.
---- @param arenaKey any
---- @return table|nil
 --- HOW MUCH BIGGER THIS ARENA IS FOR THIS MATCH.
 ---
 --- The radii in config describe an arena sized for a small round. Twenty
@@ -1517,6 +1509,15 @@ function Arena.SizeFactor(arenaKey, players)
     return math.min(factor, ceiling)
 end
 
+--- The spawn AREA an arena defines, if it defines one.
+---
+--- `spawns` is a list of exact points; `spawnArea` is one point and a radius,
+--- and the arena works out the rest. An operator who only wants to drop a
+--- marker in the middle of a field and say "a hundred metres around here"
+--- should not have to write out twenty coordinates to do it.
+--- @param arenaKey any
+--- @param factor number|nil -- growth from Arena.SizeFactor; 1.0 or nil asks for the size the operator typed
+--- @return table|nil
 function Arena.GetSpawnArea(arenaKey, factor)
     local arena = Arena.GetArenaByKey(arenaKey)
     if type(arena) ~= 'table' then return nil end
@@ -1951,12 +1952,6 @@ end
 -- kind of bug nobody reports and everybody notices.
 -- ======================================================================
 
---- Clamps a requested entry fee into the configured band. Returns nil when
---- betting or entry fees are off, which callers treat as "reject the bet"
---- rather than "bet zero".
---- @param requested any
---- @return integer|nil amount
---- @return string|nil reason
 --- How many lives a host may give a match, resolved from what they asked for.
 ---
 --- Mirrors ResolveEntryFee deliberately: both are numbers a host picks at
@@ -2017,6 +2012,12 @@ function Arena.ResolveRadar(requested)
     return fallback, nil
 end
 
+--- Clamps a requested entry fee into the configured band. Returns nil when
+--- betting or entry fees are off, which callers treat as "reject the bet"
+--- rather than "bet zero".
+--- @param requested any
+--- @return integer|nil amount
+--- @return string|nil reason
 function Arena.ResolveEntryFee(requested)
     if Config.Betting.enabled ~= true then return nil, 'error.betting_disabled' end
 
@@ -2036,9 +2037,6 @@ function Arena.ResolveEntryFee(requested)
     return wanted, nil
 end
 
---- @param requested any
---- @return integer|nil amount
---- @return string|nil reason
 --- One side-bet band, checked.
 ---
 --- SHARED BY THE TWO KINDS BECAUSE THEY ARE THE SAME CHECK ON DIFFERENT
@@ -2388,7 +2386,6 @@ end
 -- the whole resource down over a typo in a weapon label.
 -- ======================================================================
 
---- @return string[] problems -- empty when the config is clean
 --- Who picks the loadout everyone fights with.
 ---
 --- 'host'   -- the host picks once and every player in the match carries it.
@@ -2413,6 +2410,7 @@ local function arenaSpawnAreaOf(arenaKey)
     return Arena.GetSpawnArea(arenaKey, 1.0)
 end
 
+--- @return string[] problems -- empty when the config is clean
 function Arena.ValidateConfig()
     local problems = {}
     local function complain(message)

@@ -146,171 +146,143 @@ local function newDispatch(opts)
     return f
 end
 
---- The last value recorded in a list, or nil when nothing was recorded.
-local function last(list) return list[#list] end
+--- The one export list every teardown test below shares, named once so a
+--- change to it cannot make two of those tests disagree about what "the
+--- operator's mute" is.
+local function withIgnoreExport(config)
+    config.Dispatch.custom.disableExports = {
+        { resource = 'ps_dispatch', export = 'setIgnore' },
+    }
+end
 
---- Switches the vanilla police block on, which ships OFF.
-local function withVanillaPolice(config)
-    config.Dispatch.vanillaPolice.enabled = true
+--- A fixture with that export wired and its resource running.
+local function newMuted(extra)
+    local opts = { running = { ps_dispatch = true }, mutate = withIgnoreExport }
+    for key, value in pairs(extra or {}) do opts[key] = value end
+    return newDispatch(opts)
 end
 
 -- ========================================================================
--- WHAT ENTERING TURNS OFF
+-- NOTHING IS TAKEN, SO THERE IS NOTHING TO PUT BACK
+--
+-- This file used to open with a dozen tests about GTA's own wanted system:
+-- a `vanillaPolice` block that shipped OFF, three sub-switches under it, and
+-- a stash-and-restore for the player's stars. All of it is gone. The server
+-- this resource runs on has a custom dispatch script, which disabled the
+-- vanilla wanted system years ago, and a block that has never executed is
+-- not coverage.
+--
+-- What replaced those tests is a stronger claim and a shorter one: ENTERING
+-- OR LEAVING A MATCH TOUCHES NO GAME SETTING AT ALL. It is asserted as a
+-- count of natives rather than a list of names, so a native added later
+-- fails here whatever it is called.
 -- ========================================================================
 
-t.test('entering tells the vanilla police to ignore this player', function()
-    local f = newDispatch({ mutate = withVanillaPolice })
-    f.wantedLevel = 3
-
-    f.D.Enter('match-1')
-
-    t.equals(last(f.police), true, 'the police were never told to ignore the player')
-    t.equals(last(f.dispatchCops), false, 'dispatch was never told to stop sending cops')
-    t.equals(last(f.wanted), 0, 'the player kept their wanted stars into the arena')
-end)
-
-t.test('and the block ships OFF, so a stock config touches none of it', function()
-    -- The whole gate is `vanillaPolice.enabled` and its three sub-switches.
-    -- A server running a custom dispatch script has almost certainly
-    -- disabled the vanilla wanted system already, and plenty drive their
-    -- own logic off the native wanted level -- zeroing it mid-match would
-    -- fight them for it.
+t.test('entering a match touches no game setting', function()
     local f = newDispatch()
 
     f.D.Enter('match-1')
 
-    t.equals(#f.police, 0, 'a stock config reached for the vanilla police natives')
+    t.equals(#f.police, 0, 'entering reached for the vanilla police natives')
+    t.equals(#f.dispatchCops, 0, 'entering told the game to stop dispatching cops')
+    t.equals(#f.wanted, 0, 'entering zeroed the player\'s wanted level')
+end)
+
+t.test('and leaving one touches none either', function()
+    -- The half that matters more. A native called only on the way OUT would
+    -- leak a setting into the rest of that player's session with nothing
+    -- captured on the way in to undo it.
+    local f = newDispatch()
+
+    f.D.Enter('match-1')
+    f.D.Exit()
+
+    t.equals(#f.police, 0, 'leaving handed back a police setting the arena never took')
     t.equals(#f.dispatchCops, 0)
-    t.equals(#f.wanted, 0, 'a stock config zeroed the player\'s wanted level')
+    t.equals(#f.wanted, 0, 'leaving set a wanted level the arena never captured')
 end)
 
-t.test('each sub-switch is honoured on its own', function()
-    -- Three separate decisions, and an operator may want any one without
-    -- the others.
+t.test('even for an operator who switched the removed block back on', function()
+    -- THE REGRESSION GUARD. These keys do not exist any more, so the only
+    -- way this fixture reaches a native is if the code that reads them came
+    -- back. Naming them here is what makes that visible.
     local f = newDispatch({ mutate = function(config)
-        withVanillaPolice(config)
-        config.Dispatch.vanillaPolice.ignorePlayer = false
-        config.Dispatch.vanillaPolice.stashWantedLevel = false
+        config.Dispatch.vanillaPolice = {
+            enabled = true, ignorePlayer = true,
+            stopDispatch = true, stashWantedLevel = true,
+        }
     end })
-
-    f.D.Enter('match-1')
-
-    t.equals(#f.police, 0, 'ignorePlayer = false still told the police to ignore them')
-    t.equals(#f.wanted, 0, 'stashWantedLevel = false still zeroed their stars')
-    t.equals(last(f.dispatchCops), false, 'the switch that WAS left on did nothing')
-end)
-
--- ========================================================================
--- AND PUTTING IT BACK
--- ========================================================================
-
-t.test('leaving gives the police, dispatch and the wanted level back', function()
-    -- THE FAILURE NOBODY REPORTS. A player who keeps `ignorePlayer` on
-    -- walks out permanently invisible to the police, with their stars
-    -- pinned at zero, and nothing on their screen says so.
-    local f = newDispatch({ mutate = withVanillaPolice })
     f.wantedLevel = 3
-    f.D.Enter('match-1')
 
+    f.D.Enter('match-1')
     f.D.Exit()
 
-    t.equals(last(f.police), false, 'the player was left permanently ignored by the police')
-    t.equals(last(f.dispatchCops), true, 'dispatch was left permanently switched off for them')
-    t.equals(last(f.wanted), 3, 'the player\'s wanted level was not the one they walked in with')
-    -- And handed back the same way it was taken: without flashing the
-    -- stars back onto their screen as they walk out of the lobby.
-    t.equals(last(f.wantedNow), false, 'the restored wanted level was flashed on screen')
+    t.equals(#f.police + #f.dispatchCops + #f.wanted, 0,
+        'a removed config block is being read again -- the vanilla police branch is back')
 end)
 
-t.test('stars earned INSIDE the round do not follow them out', function()
-    -- Walking into an arena is not an amnesty and walking out is not a
-    -- conviction: the captured number is restored, not the current one.
-    local f = newDispatch({ mutate = withVanillaPolice })
-    f.wantedLevel = 1
-    f.D.Enter('match-1')
-
-    f.wantedLevel = 5           -- earned in the arena somehow
-    f.D.Exit()
-
-    t.equals(last(f.wanted), 1, 'stars earned inside the arena followed the player out')
-end)
-
-t.test('and a player who walked in CLEAN is restored to clean, not skipped', function()
-    -- Restored unconditionally rather than only when the number is above
-    -- zero: a player who entered with no stars and earned some inside must
-    -- come out with none.
-    local f = newDispatch({ mutate = withVanillaPolice })
-    f.wantedLevel = 0
-    f.D.Enter('match-1')
-
-    f.wantedLevel = 4
-    f.D.Exit()
-
-    t.equals(last(f.wanted), 0, 'a clean player walked out of the arena wanted')
-end)
-
-t.test('what was never touched is never RESTORED either', function()
-    -- Restoring a native this resource did not touch stamps on whatever
-    -- the server's own scripts had set -- the arena handing the police
-    -- back to a player some other script had deliberately hidden.
-    local f = newDispatch({ mutate = function(config)
-        withVanillaPolice(config)
-        config.Dispatch.vanillaPolice.ignorePlayer = false
-    end })
-    f.D.Enter('match-1')
-
-    f.D.Exit()
-
-    t.equals(#f.police, 0, 'the arena handed back a police setting it never took')
-    t.equals(last(f.dispatchCops), true, 'the setting it DID take was not handed back')
-end)
+-- ========================================================================
+-- AND PUTTING THE ONE THING THAT IS TAKEN BACK
+--
+-- The operator's own mute export is now the whole of what Enter/Exit do, so
+-- the symmetry tests that used to ride on the wanted level ride on that.
+-- ========================================================================
 
 t.test('an Exit with no Enter behind it does nothing at all', function()
     -- Safe at any time, which is what lets client/match.lua call it on
     -- every exit path without working out whether it needs to.
-    local f = newDispatch({ mutate = withVanillaPolice })
+    local f = newMuted()
 
     f.D.Exit()
 
-    t.equals(#f.police, 0, 'an exit with nothing to undo touched the police anyway')
-    t.equals(#f.wanted, 0)
+    t.equals(#f.exportCalls, 0, 'an exit with nothing to undo called the mute export anyway')
 end)
 
 t.test('and a second Exit does not undo the restore twice', function()
-    local f = newDispatch({ mutate = withVanillaPolice })
+    local f = newMuted()
     f.D.Enter('match-1')
     f.D.Exit()
-    local calls = #f.police
+    local calls = #f.exportCalls
 
     f.D.Exit()
 
-    t.equals(#f.police, calls, 'a second exit reached for the police natives again')
+    t.equals(#f.exportCalls, calls, 'a second exit called the operator\'s export again')
 end)
 
-t.test('a restart mid-match puts everything back', function()
+t.test('a second Enter does not mute twice', function()
+    -- The guard in Enter. Two mutes and one unmute leaves the operator's
+    -- dispatch script silenced for the rest of that player's session, and
+    -- nothing on their screen says so.
+    local f = newMuted()
+    f.D.Enter('match-1')
+
+    f.D.Enter('match-2')
+
+    t.equals(#f.exportCalls, 1, 'a re-entry muted a second time, so one exit cannot undo it')
+end)
+
+t.test('a restart mid-match puts it back', function()
     -- The one teardown that has to happen when nothing else gets the
     -- chance to run. Without it a `restart crimson_arena` during a round
-    -- leaves every fighter permanently ignored by the police.
-    local f = newDispatch({ mutate = withVanillaPolice })
-    f.wantedLevel = 2
+    -- leaves every fighter's dispatch script muted for good.
+    local f = newMuted()
     f.D.Enter('match-1')
 
     t.isTrue(f.fire('onResourceStop', 'crimson_arena'))
 
-    t.equals(last(f.police), false, 'a restart left the player ignored by the police forever')
-    t.equals(last(f.wanted), 2, 'a restart left their wanted level pinned')
+    t.equals(#f.exportCalls, 2, 'a restart left the operator\'s dispatch script muted forever')
+    t.equals(f.exportCalls[2].enabled, false)
 end)
 
-t.test('but SOME OTHER resource stopping leaves the suppression alone', function()
+t.test('but SOME OTHER resource stopping leaves the mute alone', function()
     -- onResourceStop fires for every resource. Undoing on somebody else's
-    -- stop hands a fighter back to the police in the middle of a round.
-    local f = newDispatch({ mutate = withVanillaPolice })
+    -- stop un-mutes a dispatch script in the middle of a round.
+    local f = newMuted()
     f.D.Enter('match-1')
-    local calls = #f.police
 
     t.isTrue(f.fire('onResourceStop', 'some_other_script'))
 
-    t.equals(#f.police, calls, 'an unrelated resource stopping handed a live fighter back to the police')
+    t.equals(#f.exportCalls, 1, 'an unrelated resource stopping un-muted a live fighter\'s dispatch')
 end)
 
 -- ========================================================================
@@ -498,17 +470,6 @@ t.test('the hold is local to this client, and keeps no physics', function()
 
     t.equals(f.entity.visibleNetwork, false, 'the hold was replicated to every other player')
     t.equals(f.entity.keepPhysics, false)
-end)
-
-t.test('zeroing the wanted level does not flash the stars first', function()
-    -- The second argument is the "show the change" flag. True and the
-    -- player watches their stars tick away as they walk through the door.
-    local f = newDispatch({ mutate = withVanillaPolice })
-    f.wantedLevel = 3
-
-    f.D.Enter('match-1')
-
-    t.equals(last(f.wantedNow), false, 'the wanted level change was flashed on screen')
 end)
 
 -- ========================================================================

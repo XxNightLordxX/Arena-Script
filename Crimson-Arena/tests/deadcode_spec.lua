@@ -84,9 +84,9 @@ t.test('every public function is called, tested, exported or documented', functi
     -- behaviour, even where production has not called it yet.
     for _, spec in ipairs({
         'ammo_spec', 'ammochain_spec', 'arena_spec', 'betting_spec', 'bettingdefects_spec',
-        'blipscope_spec', 'boot_spec', 'clientrevive_spec', 'concurrent_spec',
+        'blipscope_spec', 'boot_spec', 'concurrent_spec',
         'countdownexit_spec', 'deadcode_spec', 'dispatch_spec', 'doorguarantee_spec',
-        'dropin_spec', 'gungame_spec', 'holdstart_spec', 'isolation_spec', 'lobbyexit_spec',
+        'dropin_spec', 'holdstart_spec', 'isolation_spec', 'lobbyexit_spec',
         'lobbyrules_spec', 'locale_spec', 'matchflow_spec', 'nuicontract_spec',
         'panel_spec', 'panelpresence_spec', 'payaccount_spec', 'payoutchain_spec',
         'radarrule_spec', 'respawn_spec', 'returnhome_spec', 'rulesdefects_spec',

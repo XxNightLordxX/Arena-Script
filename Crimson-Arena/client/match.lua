@@ -37,9 +37,8 @@ local deathReported = false
 -- cannot unfreeze, damage or teleport a player who has since moved on.
 local matchToken = 0
 
--- What the player owned before we touched them, and what we handed them.
+-- What the player owned before we touched them.
 local carried
-local givenWeapons = {}
 
 -- The last scoreboard the server pushed, and the blips drawn from it keyed
 -- by server id. Every handle in `playerBlips` is one this file created, and
@@ -97,53 +96,25 @@ local function captureOwnLoadout()
     }
 end
 
---- Takes back exactly the weapons the arena issued and nothing else -- a
---- blanket wipe here would delete an inventory-managed weapon the player
---- re-equipped mid-match.
+--- Clears the ped so nothing the arena produced leaves with anybody.
 --- @param ped integer
 local function stripIssuedWeapons(ped)
-    -- THE STRONG PATH, taken whenever we hold a capture to put back. Wiping
-    -- everything and restoring what they walked in with is the only version
-    -- of this that is airtight: removing only what we tracked leaves behind
-    -- anything picked up inside the arena, and a player who leaves carrying a
-    -- weapon the arena produced is exactly what this must never allow.
-    --
-    -- Guarded on `carried`, and that guard is the whole safety of it: with no
-    -- capture to restore from, a full wipe would take the player's own
-    -- weapons and give nothing back. In that case -- a capture that failed,
-    -- or an exit path that somehow runs before entry completed -- fall back
-    -- to removing only what we know we issued, which can never cost them
-    -- anything of their own.
-    -- AND GUARDED ON THE RESTORE SETTING TOO, because the wipe and the
-    -- restore are one decision and were being made separately.
+    -- GUARDED ON BOTH THE CAPTURE AND THE RESTORE SETTING, because the wipe
+    -- and the restore are one decision and were once being made separately.
     --
     -- With Config.Match.restoreLoadoutOnExit off, restoreOwnLoadout below
     -- deliberately gives nothing back -- and this still wiped the ped. The
     -- player walked out having lost every weapon they arrived with, and the
     -- setting that caused it says "give players back the weapons and armour
-    -- they walked in with", not "confiscate them". Nobody asks for the
-    -- second thing, and the resource's own headline promise is that a match
-    -- cannot cost anyone anything.
+    -- they walked in with", not "confiscate them". The resource's headline
+    -- promise is that a match cannot cost anyone anything.
     --
-    -- It is survivable on a server running ox_inventory, which owns weapons
-    -- and re-equips the ped from the inventory afterwards -- which is
-    -- probably why the setting exists and why this went unnoticed. On a
-    -- server without one, the ped IS the player's weapons and the wipe is
-    -- final.
-    --
-    -- So when nothing is going to be restored, only what the arena issued is
-    -- taken. That still keeps the promise that matters -- an arena weapon
-    -- never leaves with anybody -- and it costs the player nothing of their
-    -- own.
+    -- ox_inventory re-equips the ped from the inventory afterwards, so the
+    -- wipe costs a player nothing they still own an item for -- and the door
+    -- has already handed their own kit back by the time this runs.
     if carried and Config.Match.restoreLoadoutOnExit == true then
         RemoveAllPedWeapons(ped, true)
-    else
-        for _, hash in ipairs(givenWeapons) do
-            RemoveWeaponFromPed(ped, hash)
-        end
     end
-
-    givenWeapons = {}
 end
 
 --- @param ped integer
@@ -191,40 +162,14 @@ local VITALS_REASSERT_MS = 1500
 local function applyLoadout(ped, loadout)
     if type(loadout) ~= 'table' then return end
 
-    -- WHO OWNS THE WEAPON. With ox_inventory running, a weapon is an item and
-    -- ox_inventory reconciles the ped against the inventory continuously:
-    -- anything handed to the ped here that has no item behind it is taken
-    -- back off the player within moments, and SetPedAmmo goes the same way.
-    -- server/ammo.lua adds the item instead, magazine and all, and this side
-    -- keeps its hands off -- two writers for one weapon is how you get a
-    -- player standing in a live round unarmed.
-    local inventoryOwnsWeapons = GetResourceState('ox_inventory') == 'started'
-
-    if Config.Match.stripWeaponsOnEntry == true and not inventoryOwnsWeapons then
-        -- Skipped under ox_inventory as well: the door already emptied the
-        -- player's inventory, and wiping the ped afterwards would delete the
-        -- arena weapon the server had just issued as an item.
-        RemoveAllPedWeapons(ped, true)
-        givenWeapons = {}
-    end
-
-    if not inventoryOwnsWeapons then
-        for _, entry in ipairs(loadout.weapons or {}) do
-            local hash = joaat(entry.weapon)
-            GiveWeaponToPed(ped, hash, entry.ammo, false, false)
-            SetPedAmmo(ped, hash, entry.ammo)
-
-            for _, component in ipairs(entry.components or {}) do
-                GiveWeaponComponentToPed(ped, hash, joaat(component))
-            end
-            if (entry.tint or 0) > 0 then
-                SetPedWeaponTintIndex(ped, hash, entry.tint)
-            end
-
-            givenWeapons[#givenWeapons + 1] = hash
-        end
-    end
-
+    -- THIS SIDE DOES NOT TOUCH WEAPONS. ox_inventory owns them: a weapon is
+    -- an item, and ox_inventory reconciles the ped against the inventory
+    -- continuously, so anything handed to the ped here that has no item
+    -- behind it is taken back off the player within moments and SetPedAmmo
+    -- goes the same way. server/ammo.lua adds the item instead, magazine and
+    -- all -- two writers for one weapon is how you get a player standing in
+    -- a live round unarmed.
+    --
     -- Health and armour are the ped's either way -- no inventory resource
     -- has an opinion about them, and starting every round full is a rule
     -- rather than a loadout choice.
@@ -1969,56 +1914,6 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     -- here as well means the numbers this respawn just applied are held from
     -- the instant they are applied, whatever else reaches for them.
     holdVitals()
-end)
-
---- A gun game promotion: the rung below is taken away and the next one
---- handed over.
----
---- REGISTERED AT LAST. The server has sent this event since gun game
---- shipped and no client file listened for it, so climbing a rung changed
---- the server's idea of what a player was carrying and never their hands.
---- The notification said they had been promoted; the weapon never arrived.
----
---- On an ox_inventory server the swap has already happened as items, before
---- this message was sent, and touching the ped here would only fight it --
---- so this side does the announcing and leaves the weapons alone.
-RegisterNetEvent('crimson_arena:client:gunGameRung', function(data)
-    if not currentMatch or type(data) ~= 'table' then return end
-    -- `.id`, NOT `.matchId`. enterArena builds currentMatch with the field
-    -- called `id`, so this compared a real match id against nil and was never
-    -- once equal: every promotion the server sent was dropped here, and a
-    -- climber kept the bottom rung's weapon for the whole round while the
-    -- server's idea of what they were holding walked up the ladder without
-    -- them. Silent at both ends -- the server had sent its message and this
-    -- side had "checked" it belonged to the right match.
-    if data.matchId ~= currentMatch.id then return end
-    if not Arena.IsKey(data.weapon) then return end
-
-    if GetResourceState('ox_inventory') == 'started' then return end
-
-    local ped = PlayerPedId()
-
-    if Arena.IsKey(data.remove) then
-        local old = joaat(data.remove)
-        RemoveWeaponFromPed(ped, old)
-        for index = #givenWeapons, 1, -1 do
-            if givenWeapons[index] == old then table.remove(givenWeapons, index) end
-        end
-    end
-
-    local hash = joaat(data.weapon)
-    local ammo = Arena.ToInt(data.ammo) or 0
-    GiveWeaponToPed(ped, hash, ammo, false, true)
-    SetPedAmmo(ped, hash, ammo)
-
-    for _, component in ipairs(data.components or {}) do
-        GiveWeaponComponentToPed(ped, hash, joaat(component))
-    end
-    if (data.tint or 0) > 0 then
-        SetPedWeaponTintIndex(ped, hash, data.tint)
-    end
-
-    givenWeapons[#givenWeapons + 1] = hash
 end)
 
 RegisterNetEvent('crimson_arena:client:eliminated', function(data)

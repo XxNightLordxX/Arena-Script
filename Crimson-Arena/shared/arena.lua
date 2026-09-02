@@ -3045,12 +3045,6 @@ function Arena.ValidateConfig()
         if mode.teams and #Arena.GetEnabledTeams() < 2 then
             complain(('Config.Modes["%s"] is a team mode but fewer than two teams are enabled.'):format(mode.key))
         end
-        if mode.key == 'gungame' then
-            local ladder = (Config.Modes[mode.key] or {}).gunGameLadder
-            if type(ladder) ~= 'table' or #ladder == 0 then
-                complain('Config.Modes["gungame"] is enabled but its gunGameLadder is empty.')
-            end
-        end
     end
 
     -- Betting numbers that cannot be satisfied.

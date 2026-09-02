@@ -373,55 +373,25 @@ t.test('a dispatch handler that throws does not take the caller down with it', f
 end)
 
 -- ========================================================================
--- Resync, and shutdown
+-- Shutdown
 -- ========================================================================
 
-t.test('a named dispatch resource restarting re-announces everyone still fighting', function()
+t.test('another resource starting announces nothing at all', function()
+    -- onResourceStart fires for every resource on the box. This file has no
+    -- business reacting to any of them: a re-announcement nobody asked for
+    -- hands a dispatch script an ignore entry it never lost.
     local f = newFixture({ custom = {
         enterEvent = 'crimson_arena:dispatch:enter',
         exitEvent = 'crimson_arena:dispatch:exit',
-        resyncResources = { 'my_dispatch' },
     } })
     f.D.Set(1, 'm1')
     f.D.Set(2, 'm1')
     local before = #f.events
 
     f.fire('onResourceStart', 'my_dispatch')
-
-    t.equals(#f.events - before, 2)
-    t.equals(f.events[#f.events].name, 'crimson_arena:dispatch:enter')
-end)
-
-t.test('an unrelated resource restarting announces nothing', function()
-    local f = newFixture({ custom = {
-        enterEvent = 'crimson_arena:dispatch:enter',
-        resyncResources = { 'my_dispatch' },
-    } })
-    f.D.Set(1, 'm1')
-    local before = #f.events
-
-    f.fire('onResourceStart', 'some_other_script')
     f.fire('onResourceStart', 'crimson_arena')
 
-    t.equals(#f.events, before)
-end)
-
-t.test('resync with nobody in an arena is silent, not an empty announcement', function()
-    local f = newFixture({ custom = {
-        enterEvent = 'crimson_arena:dispatch:enter',
-        resyncResources = { 'my_dispatch' },
-    } })
-    f.fire('onResourceStart', 'my_dispatch')
-    t.equals(#f.events, 0)
-    t.equals(#f.logs, 0)
-end)
-
-t.test('no resyncResources means no resync, whatever restarts', function()
-    local f = newFixture()
-    f.D.Set(1, 'm1')
-    local before = #f.events
-    f.fire('onResourceStart', 'my_dispatch')
-    t.equals(#f.events, before)
+    t.equals(#f.events, before, 'a resource restarting made this file announce something')
 end)
 
 t.test('stopping this resource leaves nobody flagged', function()
@@ -756,25 +726,25 @@ end)
 -- ========================================================================
 
 --- A dispatch config with revive wired to one command template.
-local function reviveConfig(eventName)
+local function reviveConfig(_eventName)
     return {
         enabled = true,
         stateBagKey = 'crimsonArena',
         isolation = { enabled = false },
         custom = { enabled = false, disableExports = {}, cancelEvents = {} },
-        vanillaPolice = { enabled = false },
-        revive = {
-            enabled = true,
-            -- AN EVENT, NOT A COMMAND. The two command forms are gone: a
-            -- resource may not run an admin command, which is what dragged
-            -- the whole ace story into this block in the first place. What a
-            -- medical script publishes for other scripts to call is an event
-            -- or an export, and those are what is left.
-            serverEvents = { eventName },
-            clientEvents = {},
-            exports = {},
-        },
+        revive = { afterRespawnDelayMs = 2000, sweepAfterMatchMs = 5000 },
     }
+end
+
+--- The detected medical script whose revive event the handoff fires. The
+--- catalogue is the only source of these names, so a fixture that wants the
+--- handoff to reach something stands in for the catalogue rather than
+--- configuring one.
+local function withDetectedMedical(f, eventName)
+    f.env.ArenaCompat = {
+        ReviveClientEvents = function() return { eventName } end,
+    }
+    return f
 end
 
 -- ========================================================================
@@ -800,7 +770,7 @@ end
 t.test('nothing is granted, ever, whatever the revive is configured to do', function()
     -- Not "unless asked for" -- there is nothing left to ask with. A
     -- resource that never writes a permission cannot hold one it should not.
-    local f = newFixture(reviveConfig('revive %s'))
+    local f = newFixture(reviveConfig())
     f.step()
 
     local ran = table.concat(f.commands, '\n')
@@ -859,34 +829,35 @@ end)
 -- path on demand.
 -- ========================================================================
 
---- Every server event the revive handoff fired, in order.
-local function firedFor(f)
+--- Every send of the detected medical script's revive event, in order.
+local function firedFor(f, eventName)
     local out = {}
-    for _, call in ipairs(f.events or {}) do out[#out + 1] = call end
+    for _, call in ipairs(f.toClients or {}) do
+        if call.name == eventName then out[#out + 1] = call end
+    end
     return out
 end
 
 t.test('/arenarevive runs the same path a finished match runs', function()
-    local f = newFixture(reviveConfig('mymedical:revive'))
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
     f.env.ArenaIsAdmin = function() return true end
 
     f.runCommand('arenarevive', 1, { '7' })
 
-    local fired = firedFor(f)
+    local fired = firedFor(f, 'mymedical:revive')
     t.equals(#fired, 1, 'the handoff did not run, or ran more than once')
-    t.equals(fired[1].name, 'mymedical:revive')
-    t.equals(fired[1].args[1], 7, 'the handoff ran against the wrong player')
+    t.equals(fired[1].target, 7, 'the handoff ran against the wrong player')
 end)
 
 t.test('and defaults to whoever ran it, since that is the common case', function()
     -- An admin lying on the floor testing this on themselves should not have
     -- to look up their own server id first.
-    local f = newFixture(reviveConfig('mymedical:revive'))
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
     f.env.ArenaIsAdmin = function() return true end
 
     f.runCommand('arenarevive', 4, {})
 
-    t.equals(firedFor(f)[1].args[1], 4)
+    t.equals(firedFor(f, 'mymedical:revive')[1].target, 4)
 end)
 
 t.test('the client is told to hold the arena\'s vitals over the handoff', function()
@@ -900,7 +871,7 @@ t.test('the client is told to hold the arena\'s vitals over the handoff', functi
     --
     -- It used to ride on the arena's own revive event. That went with the
     -- self-made revive and took the signal with it, so it is its own event.
-    local f = newFixture(reviveConfig('mymedical:revive'))
+    local f = newFixture(reviveConfig())
     f.D.Revive(7)
 
     local told = nil
@@ -922,7 +893,7 @@ t.test('AND IT NO LONGER STANDS THE PLAYER UP ITSELF', function()
     -- Nothing is left on the floor by dropping it: ClearDeadState already
     -- resurrects in the frame the ped dies, and the respawn releases that
     -- hold and re-applies the loadout.
-    local f = newFixture(reviveConfig('mymedical:revive'))
+    local f = newFixture(reviveConfig())
     f.D.Revive(7)
 
     for _, message in ipairs(f.toClients) do
@@ -934,7 +905,7 @@ t.test('AND IT NO LONGER STANDS THE PLAYER UP ITSELF', function()
 end)
 
 t.test('a non-admin gets nothing, not even a revive of themselves', function()
-    local f = newFixture(reviveConfig('revive %s'))
+    local f = newFixture(reviveConfig())
     f.env.ArenaIsAdmin = function() return false end
 
     f.runCommand('arenarevive', 9, { '9' })
@@ -953,72 +924,44 @@ end)
 -- that and concludes the arena is broken.
 -- ========================================================================
 
-t.test('an unconfigured revive is called out at start, with the consequence', function()
-    -- Set up explicitly rather than leaned on: this resource now SHIPS with
-    -- revive pointed at a /revive command, so the shipped config is the
-    -- configured case and testing the warning against it would test nothing.
-    local env = newCompat(function(config)
-        config.Dispatch.revive = { enabled = false, commands = {}, serverEvents = {},
-                                   clientEvents = {}, exports = {} }
-    end)
+t.test('a box with no medical script detected is warned, with the consequence', function()
+    local env = newCompat()
     local report = table.concat(env.ArenaCompat.Report(), '\n')
 
     t.contains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
     t.contains(report, 'still dead',
-        'the report names the setting but never says what goes wrong without it')
-    t.contains(report, 'Config.Dispatch.revive',
+        'the report raises the alarm but never says what goes wrong')
+    t.contains(report, 'shared/compat/dispatch.lua',
         'the report describes the problem but not where to fix it')
 end)
 
-t.test('and a configured one is reported as configured', function()
+t.test('and a detected one is reported by the event it will be sent', function()
+    -- Named rather than counted. An operator who sees the wrong event name
+    -- here has found their bug; one who sees "1 script" has not.
+    local env = newCompat()
+    env.GetResourceState = function(name)
+        return name == 'sc-ambulance' and 'started' or 'missing'
+    end
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'hospital:client:Revive')
+    t.notContains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
+end)
+
+t.test('the warning cannot be silenced from config', function()
+    -- THE CONTRACT. Whether a dead player comes back is a fact about which
+    -- resources are running, and nothing an operator writes in config.lua is
+    -- allowed to make the report claim a handoff this box does not have.
     local env = newCompat(function(config)
         config.Dispatch.revive = {
             enabled = true,
             serverEvents = { 'my_ambulance:server:revive' },
-            clientEvents = {},
             exports = { { resource = 'my_ambulance', export = 'Revive' } },
         }
     end)
 
-    local report = table.concat(env.ArenaCompat.Report(), '\n')
-
-    t.contains(report, 'you named run as well')
-    t.notContains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
-end)
-
-t.test('the shipped config reports the handoff as unconfigured -- and says the arena revives anyway', function()
-    -- The default that ships is the one nearly every operator runs, so what
-    -- it reports about itself is worth an assertion of its own.
-    --
-    -- It ships with NOTHING named, and that is correct: the only things it
-    -- could name are another server's commands and events, and this resource
-    -- cannot know them. Guessing produces a line that looks wired up and
-    -- calls nothing, which is the worst of both.
-    --
-    -- So the report has to name the thing that IS happening. Every detected
-    -- medical script's own revive event is fired for a player leaving the
-    -- arena with no configuration at all -- and on a box where none is
-    -- detected and nothing is named, the report has to say so plainly rather
-    -- than describe a handoff nobody has.
-    local env = newCompat()
-    local report = table.concat(env.ArenaCompat.Report(), '\n')
-
-    t.contains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT',
-        'the shipped config claims a handoff it has not been given the names for')
-    t.contains(report, 'no longer stands',
-        'the report does not say that the arena stopped reviving players itself, which is the fact behind the warning')
-end)
-
-t.test('enabled with nothing named counts as not configured', function()
-    -- The trap: switching it on and leaving the lists empty looks configured
-    -- in the file and calls nothing at run time. That has to read as OFF in
-    -- the report, or the report is worse than not having one.
-    local env = newCompat(function(config)
-        config.Dispatch.revive = { enabled = true, commands = {}, serverEvents = {},
-                                   clientEvents = {}, exports = {} }
-    end)
-
-    t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
+    t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'NOTHING IS TELLING YOUR MEDICAL SCRIPT',
+        'config keys are being read as a handoff again -- the report is describing a setup nobody has')
 end)
 
 -- ========================================================================
@@ -1133,9 +1076,9 @@ t.test('isolation keeps its caveat when nothing is confirmed wired', function()
 end)
 
 t.test('and drops it once every detected resource is accounted for', function()
-    local env = compatWith({ 'ps-dispatch' }, function(config)
+    local env = compatWith({ 'sc-dispatch' }, function(config)
         config.Dispatch.custom.disableExports = {
-            { resource = 'ps-dispatch', export = 'SetIgnoredPlayer' },
+            { resource = 'sc-dispatch', export = 'SetIgnoredPlayer' },
         }
     end)
     local report = table.concat(env.ArenaCompat.Report(), '\n')
@@ -1148,7 +1091,7 @@ t.test('the caveat and the line it promises appear together or not at all', func
     -- The caveat ends "that is what the line below is for", so a run where one
     -- prints without the other is a report contradicting itself on screen.
     -- Isolation ships on, which is the case the caveat is written for.
-    local cases = { {}, { 'my_dispatch' }, { 'ps-dispatch' } }
+    local cases = { {}, { 'my_dispatch' }, { 'sc-dispatch' } }
 
     for _, running in ipairs(cases) do
         local report = table.concat(compatWith(running).ArenaCompat.Report(), '\n')
@@ -1174,46 +1117,42 @@ t.test('the shipped entry/exit event names are not reported as configuration', f
         'the events do still fire, and the report has to say so rather than go quiet')
 end)
 
-t.test('but they are, once a resource named in resyncResources is running', function()
+t.test('but they are, once a detected script carries a mute hung off them', function()
     -- And not by comparing names against the shipped default: what earns the
     -- credit is something demonstrably riding the events, so renaming them
     -- changes nothing.
     local env = compatWith({ 'my_dispatch' }, function(config)
         config.Dispatch.custom.enterEvent = 'my_arena:enter'
         config.Dispatch.custom.exitEvent = 'my_arena:exit'
-        config.Dispatch.custom.resyncResources = { 'my_dispatch' }
     end)
+    env.ArenaCompat.RegisterAdapter({
+        resource = 'my_dispatch', kind = 'both', mute = function() end,
+    })
     local report = table.concat(env.ArenaCompat.Report(), '\n')
 
     t.contains(report, 'Hooks configured: entry/exit events')
     t.notContains(report, 'nothing here can see a listener')
 end)
 
-t.test('a resyncResources entry for a script that is not running earns nothing', function()
-    local env = compatWith({}, function(config)
-        config.Dispatch.custom.resyncResources = { 'my_dispatch' }
-    end)
-    local report = table.concat(env.ArenaCompat.Report(), '\n')
-
-    t.notContains(report, 'Hooks configured: entry/exit events')
-    t.contains(report, 'Paste at the top')
-end)
-
 -- ========================================================================
--- THE VANILLA POLICE BLOCK, AND THE SWITCH THAT USED TO SIT ABOVE IT
+-- ENTERING A MATCH CHANGES NO GAME SETTING
 --
--- THE DEFECT THESE EXIST FOR. Config.Dispatch opened with a key named
--- `suppressPoliceShotsFired`, introduced as one of "the two switches you
--- actually came here for" and shipped true. Its only reader was inside the
--- `vanillaPolice` branch of client/dispatch.lua, and that branch is gated on
--- `vanillaPolice.enabled`, which ships FALSE. So on a stock config the key
--- did nothing in either position -- and it was the first thing an operator
--- whose police still turned up at a round would reach for, and the one thing
--- that could not have been the cause.
+-- THE DEFECT THESE EXIST FOR, in two rounds. Config.Dispatch opened with a
+-- key named `suppressPoliceShotsFired`, introduced as one of "the two
+-- switches you actually came here for" and shipped true. Its only reader was
+-- inside a `vanillaPolice` branch of client/dispatch.lua, and that branch was
+-- gated on `vanillaPolice.enabled`, which shipped FALSE. So on a stock config
+-- the key did nothing in either position -- and it was the first thing an
+-- operator whose police still turned up at a round would reach for, and the
+-- one thing that could not have been the cause.
 --
--- The key is gone from config.lua and the branch is gated on
--- `vanillaPolice.enabled` alone. Both halves are asserted below, separately,
--- because either one can be put back on its own and the trap is back.
+-- The second round removed the block it was unreachable behind. A block that
+-- ships off, has never run on this server, and could not have helped against
+-- a custom dispatch script is not coverage; it is something to read and
+-- dismiss at every edit. So neither key exists now, and what these tests
+-- assert is the stronger and simpler fact that replaced them: ENTERING A
+-- MATCH REACHES NO GAME NATIVE AT ALL. Anything put back here has to earn
+-- its way past a test that counts every native by name.
 --
 -- These are the only tests in this suite that load the REAL
 -- client/dispatch.lua. Its natives are recorded by name rather than
@@ -1295,53 +1234,56 @@ t.test('the shipped config declares no suppressPoliceShotsFired switch', functio
         'the unreachable police switch is back at the top of Config.Dispatch')
 end)
 
-t.test('as shipped, entering a match touches no vanilla police native', function()
-    -- The other half of the same fact, and the reason that key was
-    -- unreachable rather than merely redundant.
+t.test('the shipped config declares no vanillaPolice block either', function()
+    -- The key half of the removal. `suppressPoliceShotsFired` above was
+    -- unreachable BECAUSE of this block, and a block that ships off is the
+    -- place an unreachable key goes to hide. Put it back and the hiding
+    -- place is back with it.
     local f = newClientFixture()
 
-    t.isFalse(f.env.Config.Dispatch.vanillaPolice.enabled,
-        'vanillaPolice now ships ON, so this whole block is asserting the wrong world')
-
-    f.D.Enter('match-1')
-    t.equals(#f.calls, 0, 'the vanilla wanted system was touched on a stock config')
+    t.isNil(f.env.Config.Dispatch.vanillaPolice,
+        'the vanilla police block is back in Config.Dispatch')
 end)
 
-t.test('vanillaPolice.enabled is the whole gate -- nothing above it can veto it', function()
-    -- THE REGRESSION GUARD. The gate used to read
-    --     vanilla.enabled == true and config.suppressPoliceShotsFired ~= false
-    -- so a config could switch the block on and have a top-level key switch
-    -- it silently back off. This sets exactly that pair, so restoring the old
-    -- gate fails here rather than passing quietly on a nil.
-    local f = newClientFixture(function(dispatch)
-        dispatch.vanillaPolice.enabled = true
-        dispatch.suppressPoliceShotsFired = false
-    end)
+t.test('entering a match reaches no game native at all', function()
+    -- The behavioural half, and deliberately stated as a count rather than a
+    -- list of names: a test that checked three specific natives would pass
+    -- for a fourth one added later. Nothing about walking into an arena is
+    -- allowed to change a setting on this player's game.
+    local f = newClientFixture()
 
     f.D.Enter('match-1')
-
-    t.isTrue(f.called('SetPoliceIgnorePlayer'),
-        'a key that no longer exists vetoed the block an operator switched on')
-    t.isTrue(f.called('SetDispatchCopsForPlayer'))
-    t.isTrue(f.called('SetPlayerWantedLevel'))
+    t.equals(#f.calls, 0, 'entering a match changed a game setting')
 end)
 
-t.test('and the three switches inside the block still gate one native each', function()
-    -- Why the dead key was removed rather than moved down into this block:
-    -- there is already a master switch here and already per-native control,
-    -- so a second master switch would have been the same trap one level down.
+t.test('and leaving one reaches none either, so there is nothing to restore', function()
+    -- The symmetry that used to need a stash-and-restore record. With
+    -- nothing set on the way in there is nothing to hand back, and this is
+    -- what says so: a native called only on exit would leak a setting into
+    -- the rest of that player's session with no capture to undo it.
+    local f = newClientFixture()
+
+    f.D.Enter('match-1')
+    f.D.Exit()
+    t.equals(#f.calls, 0, 'leaving a match changed a game setting')
+end)
+
+t.test('a config that switches something on cannot put a native back', function()
+    -- THE REGRESSION GUARD, and the reason it sets keys that no longer
+    -- exist. Restoring the old block means restoring the code that reads
+    -- these, so a build where this fixture reaches a native is a build where
+    -- the block came back -- whatever it ends up being called.
     local f = newClientFixture(function(dispatch)
         dispatch.vanillaPolice = {
-            enabled = true, ignorePlayer = false,
-            stopDispatch = false, stashWantedLevel = true,
+            enabled = true, ignorePlayer = true,
+            stopDispatch = true, stashWantedLevel = true,
         }
+        dispatch.suppressPoliceShotsFired = true
     end)
 
     f.D.Enter('match-1')
-
-    t.isFalse(f.called('SetPoliceIgnorePlayer'), 'ignorePlayer = false was ignored')
-    t.isFalse(f.called('SetDispatchCopsForPlayer'), 'stopDispatch = false was ignored')
-    t.isTrue(f.called('SetPlayerWantedLevel'), 'stashWantedLevel = true did nothing')
+    t.equals(#f.calls, 0,
+        'a removed config block is being read again -- the vanilla police branch is back')
 end)
 
 -- ========================================================================
@@ -1382,7 +1324,7 @@ end)
 t.test('two scripts sharing the event name are told once, not twice', function()
     -- The QBCore family shares 'hospital:client:Revive'. A box running two of
     -- them would otherwise get the same event fired at it repeatedly.
-    local env = compatWith({ 'sc-ambulance', 'qb-ambulancejob' })
+    local env = compatWith({ 'sc-ambulance', 'qbx_ambulancejob' })
     t.equals(#env.ArenaCompat.ReviveClientEvents(), 1,
         'the same revive event is sent once per resource rather than once per name')
 end)

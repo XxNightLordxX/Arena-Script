@@ -2,6 +2,8 @@
 
 A configurable PvP arena for FiveM servers running Qbox. Players walk up to an NPC at the lobby, open a red-and-black panel, pick their weapons, their ammo and their side, and fight it out on grounds you define in `config.lua`. An optional entry fee is held in escrow for the length of the round and paid to the winners when it ends.
 
+**Looking for the inventory rather than the explanation?** [`REFERENCE.md`](REFERENCE.md) lists every feature, command, export and event, and every function in every file with a line on what it is for.
+
 ---
 
 ## What it does

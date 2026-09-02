@@ -562,16 +562,6 @@ end
 -- MUTING
 -- ======================================================================
 
---- Calls every detected adapter's mute, if it has one.
----
---- SERVER ONLY, and wired below to the same entry and exit events
---- server/dispatch.lua announces -- so an adapter mute is driven by the
---- server's own record of who is in a match, never by a client saying so.
----
---- One pcall per adapter: a third-party export that throws must not take a
---- match start or a match end down with it, which is the same rule
---- server/dispatch.lua's announce() and client/dispatch.lua's
---- callDisableExports() both already follow.
 --- The client events that clear a RUNNING medical script's own death record.
 ---
 --- THE HALF THE ARENA CANNOT DO ITSELF. Standing a ped up is entirely within
@@ -599,6 +589,16 @@ function ArenaCompat.ReviveClientEvents()
     return events
 end
 
+--- Calls every detected adapter's mute, if it has one.
+---
+--- SERVER ONLY, and wired below to the same entry and exit events
+--- server/dispatch.lua announces -- so an adapter mute is driven by the
+--- server's own record of who is in a match, never by a client saying so.
+---
+--- One pcall per adapter: a third-party export that throws must not take a
+--- match start or a match end down with it, which is the same rule
+--- server/dispatch.lua's announce() and client/dispatch.lua's
+--- callDisableExports() both already follow.
 --- @param src number -- server id
 --- @param active boolean -- true entering a match, false leaving it
 --- @return integer called -- how many adapters were asked

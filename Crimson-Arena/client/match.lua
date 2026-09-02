@@ -1470,6 +1470,17 @@ local function buildArenaProps(arenaKey, factor, boundary)
     -- check written to stop it.
     local built, builtFloor, failed = 0, 0, {}
 
+    -- COUNTED SO THE CONSOLE CAN ANSWER "IS THE WALL IN THIS COPY".
+    --
+    -- The perimeter of a sky arena is cover like any other piece, so nothing
+    -- in the build distinguishes it -- and an operator standing on an
+    -- unwalled platform has no way to tell a copy of the resource that
+    -- predates the wall from a build whose container model would not load.
+    -- Those are opposite problems with opposite fixes, and the two numbers
+    -- below separate them in one line: how many cover pieces this copy asked
+    -- for, and how far out the furthest one stands.
+    local builtCover, coverReach = 0, 0.0
+
     for _, piece in ipairs(wanted) do
         local hash = loadPropModel(piece.models or piece.model)
         if hash then
@@ -1514,7 +1525,17 @@ local function buildArenaProps(arenaKey, factor, boundary)
 
             local object = CreateObject(hash, piece.x, piece.y, placeZ, false, false, false)
             if object and object ~= 0 then
-                if piece.kind == 'floor' then builtFloor = builtFloor + 1 end
+                if piece.kind == 'floor' then
+                    builtFloor = builtFloor + 1
+                else
+                    builtCover = builtCover + 1
+                    -- The offsets are already relative to the arena's middle,
+                    -- which is what makes this a radius rather than a
+                    -- world coordinate nobody can read at a glance.
+                    local ox, oy = piece.offsetX or 0.0, piece.offsetY or 0.0
+                    local out = math.sqrt(ox * ox + oy * oy)
+                    if out > coverReach then coverReach = out end
+                end
                 SetEntityHeading(object, heading)
                 -- Frozen and collidable: it is scenery to stand on and hide
                 -- behind, not something to shove off the edge.
@@ -1540,9 +1561,17 @@ local function buildArenaProps(arenaKey, factor, boundary)
             :format(tostring(model)))
     end
 
-    if built > 0 and measured then
-        print(('[crimson_arena] arena scenery: %d piece(s) built, %d of them floor; the floor prop measures %.2f x %.2fm and its surface is at %.2f.')
-            :format(built, builtFloor, measured.x, measured.y, arenaSurfaceZ or 0.0))
+    -- PRINTED WHENEVER ANYTHING WAS ASKED FOR, not only when the floor could
+    -- be measured. It used to be gated on `measured`, so the one arena most
+    -- likely to be misbuilt -- the one whose floor prop this build does not
+    -- have -- was also the one that printed nothing about what it did build.
+    if #wanted > 0 then
+        print(('[crimson_arena] arena scenery: %d of %d piece(s) built -- %d floor, %d cover, furthest cover %.2fm out.')
+            :format(built, #wanted, builtFloor, builtCover, coverReach))
+        if measured then
+            print(('[crimson_arena] arena scenery: the floor prop measures %.2f x %.2fm and its surface is at %.2f.')
+                :format(measured.x, measured.y, arenaSurfaceZ or 0.0))
+        end
     end
 
     -- DOES THE FLOOR STICK OUT OF THE ARENA, measured against the prop this

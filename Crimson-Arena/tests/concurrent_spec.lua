@@ -320,6 +320,63 @@ t.test('but somebody with no business there is still kept out, exactly once', fu
     t.isTrue(fences[1].radius > 0, 'the zone has no radius, so it fences nothing')
 end)
 
+t.test('DEFECT: and somebody WATCHING that round is not fenced out of it', function()
+    -- THE OTHER HALF OF MAKING SPECTATING WORK, and without it the first
+    -- half is undone four times a second.
+    --
+    -- client/spectate.lua parks a viewer's body AT the arena, because with
+    -- OneSync on the server culls players around a body: a viewer standing
+    -- at the lobby is never sent the fighters, and the camera waits out its
+    -- grace window on an arena it will never see. But a spectator is not "in
+    -- the arena" by the dispatch flag -- that records who has been PLACED in
+    -- the round -- so the fence was still drawn around the very ground they
+    -- had just been put on, and the client's barrier loop teleports anyone
+    -- inside a zone straight back out of it.
+    --
+    -- At the skydome that is 116m from the middle, off a platform that
+    -- reaches 90, into a kilometre of air.
+    local server = fourPlayers({ 5 })
+    local matchId = runMatch(server, 'skydome', { 1, 2 })
+
+    t.isTrue(#fencesFor(server, 5) > 0,
+        'player 5 is not fenced out to begin with, so this proves nothing')
+
+    local ok = server.lobby.AddSpectator(5, matchId)
+    t.isTrue(ok, 'the onlooker could not start watching at all')
+
+    t.equals(#fencesFor(server, 5), 0,
+        'the viewer was fenced out of the very arena they were parked at to watch')
+end)
+
+t.test('and they are fenced out again the moment they stop watching', function()
+    -- The exemption is for watching, not a standing pass. Somebody who
+    -- closes the camera is an outsider stood on live ground again.
+    local server = fourPlayers({ 5 })
+    local matchId = runMatch(server, 'skydome', { 1, 2 })
+    server.lobby.AddSpectator(5, matchId)
+    t.equals(#fencesFor(server, 5), 0, 'the exemption never applied, so this proves nothing')
+
+    server.lobby.RemoveSpectator(5)
+
+    t.equals(#fencesFor(server, 5), 1,
+        'somebody who stopped watching kept a free pass onto a live arena')
+end)
+
+t.test('and watching one arena is no pass onto another', function()
+    -- The exemption is per arena, like the fence itself.
+    local server = fourPlayers({ 5 })
+    local skyMatch = runMatch(server, 'skydome', { 1, 2 })
+    runMatch(server, 'trailerpark', { 3, 4 })
+
+    t.equals(#fencesFor(server, 5), 2, 'two live arenas did not produce two zones')
+
+    server.lobby.AddSpectator(5, skyMatch)
+
+    local fences = fencesFor(server, 5)
+    t.equals(#fences, 1,
+        ('watching the skydome exempted them from %d zone(s) instead of one'):format(#fences))
+end)
+
 t.test('DEFECT: cancelling a lobby does not strand the person watching it', function()
     -- Watching puts a player in the match's own instance so they can see it.
     -- ArenaLobby.Destroy forgot the spectator index and left the routing

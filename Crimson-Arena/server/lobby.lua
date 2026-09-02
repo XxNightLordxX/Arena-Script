@@ -762,6 +762,31 @@ local function snapshotKeepOut(src)
         end
     end
 
+    -- AND THE ARENA THEY ARE WATCHING, which is not covered by the flag
+    -- above and has to be.
+    --
+    -- A spectator's body is PARKED at the arena -- client/spectate.lua moves
+    -- it there, because with OneSync on the server culls players around a
+    -- body and a viewer standing at the lobby is simply never sent the
+    -- fighters. They are not "in the arena" by the dispatch flag: that
+    -- records who has been placed in the round, and a spectator has not.
+    --
+    -- So without this the fence is drawn around the very arena we just put
+    -- them in, and the client's barrier loop teleports them back out of it
+    -- four times a second -- undoing the parking, and with it the watch.
+    --
+    -- Nothing is handed to them by being exempt: they are invisible, frozen,
+    -- collisionless, have every control but looking disabled, and the
+    -- crossfire guard refuses damage in both directions between somebody in
+    -- a round and somebody who is not.
+    local watching = spectatorIndex[id]
+    if watching then
+        local match = matches[watching]
+        if match and Arena.IsKey(match.arenaKey) then
+            mine[match.arenaKey] = true
+        end
+    end
+
     local zones, drawn = {}, {}
 
     for _, match in pairs(matches) do

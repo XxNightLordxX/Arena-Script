@@ -60,6 +60,17 @@ local waitingSince = nil
 --- that really has emptied does not leave somebody staring at nothing.
 local STREAM_GRACE_MS = 12000
 
+--- Where the viewer's body was before it was moved to the arena, or nil if
+--- it was never moved. See parkAtArena.
+local parkedFrom = nil
+
+--- How far from the arena the viewer's body has to be before it is worth
+--- moving. An eliminated fighter is already standing in the round -- inside a
+--- boundary of 110m, 180m at the largest the arena grows to -- so nothing at
+--- 300m is somebody this applies to, and their body is left exactly where the
+--- match put it.
+local PARK_DISTANCE_M = 300.0
+
 local ORBIT_DISTANCE_MIN = 1.5
 local ORBIT_DISTANCE_MAX = 12.0
 
@@ -112,6 +123,41 @@ local function anyUnstreamed()
         if ped == 0 or not DoesEntityExist(ped) then return true end
     end
     return false
+end
+
+--- Puts the viewer's BODY at the arena, once, and remembers where it was.
+---
+--- THE FOCUS NATIVE IS NOT ENOUGH, and believing it was is why watching a
+--- match you are not in showed an empty field.
+---
+--- SetFocusPosAndVel moves where the engine loads the MAP. It does not move
+--- where the SERVER thinks you are, and with OneSync on it is the server that
+--- decides which players you are sent at all -- culled around your body, not
+--- around your camera. So a viewer standing at the lobby is never sent the
+--- fighters however long the camera waits: the grace window below expires,
+--- the watch ends, and the panel says there is nobody to watch about a round
+--- with people alive in it.
+---
+--- An eliminated fighter never had this problem, which is exactly why it took
+--- a live report to find: their body is already in the arena, so the fighters
+--- are already theirs to see. The two paths differ in nothing else.
+---
+--- The body is invisible, frozen and collisionless by now, so moving it is
+--- unobservable -- and Stop puts it back.
+local function parkAtArena()
+    if not focusPoint or parkedFrom then return end
+
+    local ped = PlayerPedId()
+    local here = GetEntityCoords(ped)
+    if not Arena.IsPoint(here) then return end
+
+    local dx = (here.x or 0.0) - focusPoint.x
+    local dy = (here.y or 0.0) - focusPoint.y
+    local dz = (here.z or 0.0) - focusPoint.z
+    if (dx * dx + dy * dy + dz * dz) < (PARK_DISTANCE_M * PARK_DISTANCE_M) then return end
+
+    parkedFrom = { x = here.x, y = here.y, z = here.z }
+    SetEntityCoordsNoOffset(ped, focusPoint.x, focusPoint.y, focusPoint.z, false, false, false)
 end
 
 --- Announces who is on screen. Cheap orientation for the viewer, and the
@@ -172,6 +218,10 @@ local function runCameraThread()
                     local loading = #targets > 0 and anyUnstreamed()
                     if focusPoint and loading then
                         SetFocusPosAndVel(focusPoint.x, focusPoint.y, focusPoint.z, 0.0, 0.0, 0.0)
+                        -- AND THE BODY, WHICH IS THE HALF THAT MATTERS. The
+                        -- line above loads the map; this is what makes the
+                        -- server send the fighters at all.
+                        parkAtArena()
                     end
 
                     waitingSince = waitingSince or GetGameTimer()
@@ -365,6 +415,15 @@ function ArenaSpectate.Stop()
             FreezeEntityPosition(ped, false)
             frozeLocalPed = false
         end
+    end
+
+    -- PUT BACK WHERE THEY WERE STANDING, and unconditionally: a body is
+    -- only ever parked when it was 300m or more from the arena, which is a
+    -- player who was never in the round -- so there is no match exit coming
+    -- along afterwards to move them home.
+    if parkedFrom then
+        SetEntityCoordsNoOffset(ped, parkedFrom.x, parkedFrom.y, parkedFrom.z, false, false, false)
+        parkedFrom = nil
     end
 
     matchId = nil

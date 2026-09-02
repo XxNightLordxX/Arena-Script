@@ -1160,7 +1160,7 @@ local function newArena(world)
     function fixture.newMatch(matchId, ids)
         local match = {
             id = matchId,
-            arenaKey = 'airfield',
+            arenaKey = 'trailerpark',
             modeKey = 'ffa',
             hostSource = ids[1],
             state = 'lobby',

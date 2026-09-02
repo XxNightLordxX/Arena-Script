@@ -124,7 +124,7 @@ local function newServer(wallets, mutate)
 
     --- Opens a free lobby with 1 and 2 in it and returns the match id.
     function server.openMatch()
-        server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
         local match = server.lobby.All()[1]
         server.fire('joinMatch', 2, { matchId = match.id, account = 'cash' })
         return match.id
@@ -208,7 +208,7 @@ t.test('and dying first and walking out does not forfeit it either', function()
         [2] = { cash = 100000, bank = 100000 },
         [3] = { cash = 100000, bank = 100000 },
     })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     local matchId = server.lobby.All()[1].id
     server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
     server.fire('joinMatch', 3, { matchId = matchId, account = 'cash' })
@@ -299,7 +299,7 @@ local function potRound(fee, account, loser, mutate)
         [1] = { cash = 100000, bank = 100000 },
         [2] = { cash = 100000, bank = 100000 },
     }, mutate)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = fee, account = account })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee, account = account })
     local matchId = server.lobby.All()[1].id
     server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
     server.settle(matchId, loser)
@@ -316,7 +316,7 @@ t.test('a bank-funded entry fee is won back into the bank', function()
         [1] = { cash = 100000, bank = 100000 },
         [2] = { cash = 100000, bank = 100000 },
     })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 5000, account = 'bank' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 5000, account = 'bank' })
     local matchId = server.lobby.All()[1].id
     server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
 
@@ -375,7 +375,7 @@ local function feeRound(mutate)
         [1] = { cash = 100000, bank = 100000 },
         [2] = { cash = 100000, bank = 100000 },
     }, mutate)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 5000, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 5000, account = 'cash' })
     local matchId = server.lobby.All()[1].id
     server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
 

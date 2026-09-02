@@ -244,7 +244,7 @@ function Sandbox.newArenaEnv(overrides)
     -- sky, a hundred and seventy-seven assertions went red at once -- none of
     -- them about arenas. They were about lives, ammunition, betting, panel
     -- presence and the countdown, and every one of them had quietly been
-    -- leaning on 'airfield' being open.
+    -- leaning on 'trailerpark' being open.
     --
     -- So a spec gets a config with every arena available and asks its own
     -- question. A spec that really is about what SHIPS uses

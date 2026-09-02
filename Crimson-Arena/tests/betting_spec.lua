@@ -497,121 +497,33 @@ t.test('a 100 percent house cut pays nobody and hands the house the lot', functi
 end)
 
 -- ======================================================================
--- ComputePayouts -- top_three
+-- ComputePayouts -- a mode nobody configured
 -- ======================================================================
 
-t.test('top_three pays three qualifying finishers by the configured split', function()
-    local Arena = arenaWith(function(betting)
-        betting.payout = 'top_three'
-        betting.topThreeSplit = { 60, 30, 10 }
-    end)
-    local payouts = Arena.ComputePayouts({
-        pot = 1000,
-        players = playersOf({
-            { id = 1, stake = 250 }, { id = 2, stake = 250 },
-            { id = 3, stake = 250 }, { id = 4, stake = 250 },
-        }),
-        winners = { 1, 2, 3 },
-        teams = false,
-    })
-    t.equals(#payouts, 3)
-    t.equals(amountFor(payouts, 1), 600)
-    t.equals(amountFor(payouts, 2), 300)
-    t.equals(amountFor(payouts, 3), 100)
-    t.equals(reasonFor(payouts, 1), 'placement')
-    t.equals(payoutTotal(payouts), 1000)
-end)
+t.test('an unrecognised payout mode splits evenly rather than paying nobody', function()
+    -- THE FALLBACK, AND WHY IT IS THAT ONE. A typo in Config.Betting.payout
+    -- must not swallow a pot: winner_takes_all is the answer for anything
+    -- unrecognised, so the worst a bad value can do is pay the wrong shape,
+    -- never nothing.
+    --
+    -- `top_three` is named deliberately: it was a real mode once, and a
+    -- server still carrying it in config has to keep paying out.
+    for _, mode in ipairs({ 'top_three', 'nonsense', '', 42 }) do
+        local Arena = arenaWith(function(betting) betting.payout = mode end)
+        local payouts = Arena.ComputePayouts({
+            pot = 1000,
+            players = playersOf({
+                { id = 1, stake = 250 }, { id = 2, stake = 250 },
+                { id = 3, stake = 250 }, { id = 4, stake = 250 },
+            }),
+            winners = { 1, 2 },
+            teams = false,
+        })
 
-t.test('top_three with only two finishers still pays the whole pot out', function()
-    local Arena = arenaWith(function(betting)
-        betting.payout = 'top_three'
-        betting.topThreeSplit = { 60, 30, 10 }
-    end)
-    local payouts = Arena.ComputePayouts({
-        pot = 1000,
-        players = playersOf({ { id = 1, stake = 500 }, { id = 2, stake = 500 } }),
-        winners = { 1, 2 },
-        teams = false,
-    })
-    t.equals(#payouts, 2)
-    t.equals(amountFor(payouts, 1), 667)
-    t.equals(amountFor(payouts, 2), 333)
-    t.equals(payoutTotal(payouts), 1000, 'the third place share must not be left in the pot')
-end)
-
-t.test('top_three with a single finisher pays them everything', function()
-    local Arena = arenaWith(function(betting)
-        betting.payout = 'top_three'
-        betting.topThreeSplit = { 60, 30, 10 }
-    end)
-    local payouts = Arena.ComputePayouts({
-        pot = 1000,
-        players = playersOf({ { id = 1, stake = 500 }, { id = 2, stake = 500 } }),
-        winners = { 1 },
-        teams = false,
-    })
-    t.equals(#payouts, 1)
-    t.equals(amountFor(payouts, 1), 1000)
-    t.equals(payoutTotal(payouts), 1000)
-end)
-
-t.test('top_three pays nobody past third place', function()
-    local Arena = arenaWith(function(betting)
-        betting.payout = 'top_three'
-        betting.topThreeSplit = { 60, 30, 10 }
-    end)
-    local payouts = Arena.ComputePayouts({
-        pot = 1000,
-        players = playersOf({
-            { id = 1, stake = 200 }, { id = 2, stake = 200 }, { id = 3, stake = 200 },
-            { id = 4, stake = 200 }, { id = 5, stake = 200 },
-        }),
-        winners = { 1, 2, 3, 4, 5 },
-        teams = false,
-    })
-    t.equals(#payouts, 3)
-    t.isNil(amountFor(payouts, 4), 'fourth place is not paid')
-    t.equals(payoutTotal(payouts), 1000)
-end)
-
-t.test('top_three with a short split list pays the remaining place nothing, not a share', function()
-    local Arena = arenaWith(function(betting)
-        betting.payout = 'top_three'
-        betting.topThreeSplit = { 70, 30 }
-    end)
-    local payouts = Arena.ComputePayouts({
-        pot = 1000,
-        players = playersOf({ { id = 1, stake = 400 }, { id = 2, stake = 300 }, { id = 3, stake = 300 } }),
-        winners = { 1, 2, 3 },
-        teams = false,
-    })
-    t.equals(amountFor(payouts, 1), 700)
-    t.equals(amountFor(payouts, 2), 300)
-    t.equals(amountFor(payouts, 3), 0)
-    t.equals(payoutTotal(payouts), 1000)
-end)
-
-t.test('top_three in a team match falls back to splitting across the winning team', function()
-    -- Placement is a free-for-all idea. A team win has no second place, so
-    -- the split would be paying three members of one side by finishing
-    -- order they never had.
-    local Arena = arenaWith(function(betting)
-        betting.payout = 'top_three'
-        betting.topThreeSplit = { 60, 30, 10 }
-    end)
-    local payouts = Arena.ComputePayouts({
-        pot = 900,
-        players = playersOf({
-            { id = 1, team = 'crimson', stake = 300 }, { id = 2, team = 'crimson', stake = 300 },
-            { id = 3, team = 'ash', stake = 300 },
-        }),
-        winners = { 1, 2 },
-        teams = true,
-    })
-    t.equals(reasonFor(payouts, 1), 'winner')
-    t.equals(amountFor(payouts, 1), 450)
-    t.equals(amountFor(payouts, 2), 450)
-    t.equals(payoutTotal(payouts), 900)
+        t.equals(#payouts, 2, tostring(mode))
+        t.equals(reasonFor(payouts, 1), 'winner', tostring(mode))
+        t.equals(payoutTotal(payouts), 1000, tostring(mode) .. ' left money in the pot')
+    end
 end)
 
 -- ======================================================================
@@ -793,7 +705,7 @@ t.test('ComputePayouts survives an empty context', function()
 end)
 
 t.test('every payout mode conserves the pot across cuts and pot sizes', function()
-    local modes = { 'winner_takes_all', 'top_three', 'per_kill', 'nonsense' }
+    local modes = { 'winner_takes_all', 'per_kill', 'nonsense' }
     local percents = { 0, 1, 33, 99, 100 }
     for _, mode in ipairs(modes) do
         for _, percent in ipairs(percents) do

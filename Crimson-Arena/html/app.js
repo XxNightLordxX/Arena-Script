@@ -289,7 +289,6 @@
        pot: 'It all goes into the pot: the winner takes it.' */
     var PAYOUT_TEXT = {
         winner_takes_all: 'the winner takes the lot',
-        top_three: 'the top three split it',
         per_kill: 'it is split by kills scored'
     };
 
@@ -297,7 +296,6 @@
        the bets summary. */
     var PAYOUT_SHORT = {
         winner_takes_all: 'Winner takes all',
-        top_three: 'Top three split',
         per_kill: 'Split by kills'
     };
 
@@ -495,8 +493,6 @@
     }
 
     function canChooseLoadout() {
-        if ((cfg().loadouts || {}).allowChoose === false) return false;
-
         /* In host mode the picker belongs to the host alone. Read-only for
            everyone else rather than hidden: what it shows is what they will
            be handed, which is worth seeing even when it cannot be changed. */
@@ -672,9 +668,7 @@
     // DRAFT LOADOUT
     //
     // Seeded from the server's resolved loadout so the picker opens on
-    // what the player is actually holding. `alwaysGive` entries are the
-    // operator's, not the player's -- they occupy no slot and are left out
-    // of the draft, or saving would try to spend a slot on the house knife.
+    // what the player is actually holding.
     // ==================================================================
 
     function seedDraft() {
@@ -689,7 +683,7 @@
         var usedBlades = 0;
 
         arrayOf(loadout.weapons).forEach(function (entry) {
-            if (!entry || entry.alwaysGive === true) return;
+            if (!entry) return;
             var weapon = weaponByKey(entry.key);
             if (!weapon) return;
 

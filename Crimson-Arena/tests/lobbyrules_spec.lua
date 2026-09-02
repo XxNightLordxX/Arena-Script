@@ -256,7 +256,7 @@ end
 --- @param ids integer[]
 --- @return string matchId
 local function openLobby(server, fee, ids)
-    server.fire('createMatch', ids[1], { arenaKey = 'airfield', modeKey = 'ffa', entryFee = fee })
+    server.fire('createMatch', ids[1], { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')
@@ -636,7 +636,7 @@ t.test('a host joinJobs excludes cannot open a match either', function()
         config.Permissions.joinJobs = { 'police' }
     end)
 
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 1000 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 1000 })
 
     t.equals(#server.lobby.All(), 0, 'a lobby its own host may not enter was left open')
     t.equals(server.movements(1), 0)
@@ -658,7 +658,7 @@ t.test('createJobs and joinJobs stay two separate lists', function()
     local matchId = openLobby(server, 1000, { 1, 2 })
     t.equals(server.betting.GetPot(matchId), 2000)
 
-    server.fire('createMatch', 2, { arenaKey = 'beach', modeKey = 'ffa', entryFee = 1000 })
+    server.fire('createMatch', 2, { arenaKey = 'skydome', modeKey = 'ffa', entryFee = 1000 })
     t.equals(#server.lobby.All(), 1, 'an unlisted job opened a second match')
 end)
 
@@ -880,7 +880,7 @@ end)
 
 t.test('the number the host picks is the number every player gets', function()
     local server = newArena({ [1] = 5000, [2] = 5000 })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, lives = 5 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, lives = 5 })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the lobby was refused')
@@ -894,14 +894,14 @@ t.test('a number outside the allowed range is refused, not quietly clamped', fun
     -- A host who typed 99 and silently got 10 would believe they were running
     -- a different match to the one they are in.
     local server = newArena({ [1] = 5000 })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, lives = 99 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, lives = 99 })
 
     t.equals(#server.lobby.All(), 0, 'an out-of-range choice opened a lobby anyway')
 end)
 
 t.test('a host who picks nothing gets the operator default', function()
     local server = newArena({ [1] = 5000 })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match)
@@ -915,7 +915,7 @@ t.test('an operator who fixes the number takes the choice away entirely', functi
     local server = newArena({ [1] = 5000 }, function(config)
         config.Match.lives = 2
     end)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, lives = 9 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, lives = 9 })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'a fixed-lives server refused a match')
@@ -935,10 +935,10 @@ t.test('the host can change the arena, the mode and the lives of an open lobby',
     local server = newArena({ [1] = 5000, [2] = 5000 })
     local matchId = openLobby(server, 0, { 1, 2 })
 
-    server.fire('updateMatch', 1, { arenaKey = 'beach', modeKey = 'tdm', lives = 5 })
+    server.fire('updateMatch', 1, { arenaKey = 'skydome', modeKey = 'tdm', lives = 5 })
 
     local match = server.lobby.Get(matchId)
-    t.equals(match.arenaKey, 'beach', 'the arena did not change')
+    t.equals(match.arenaKey, 'skydome', 'the arena did not change')
     t.equals(match.modeKey, 'tdm', 'the mode did not change')
     t.equals(match.lives, 5, 'the lives did not change')
 end)
@@ -960,10 +960,10 @@ t.test('a guest cannot edit the host\'s match', function()
     local server = newArena({ [1] = 5000, [2] = 5000 })
     local matchId = openLobby(server, 0, { 1, 2 })
 
-    server.fire('updateMatch', 2, { arenaKey = 'beach', lives = 9 })
+    server.fire('updateMatch', 2, { arenaKey = 'skydome', lives = 9 })
 
     local match = server.lobby.Get(matchId)
-    t.equals(match.arenaKey, 'airfield', 'a guest moved the match to another arena')
+    t.equals(match.arenaKey, 'trailerpark', 'a guest moved the match to another arena')
     t.equals(match.lives, 3, 'a guest rewrote the rules')
 end)
 
@@ -986,10 +986,10 @@ t.test('nothing can be edited once the round has started', function()
     local matchId = openLobby(server, 0, { 1, 2 })
     server.lobby.Get(matchId).state = 'live'
 
-    server.fire('updateMatch', 1, { arenaKey = 'beach', lives = 9 })
+    server.fire('updateMatch', 1, { arenaKey = 'skydome', lives = 9 })
 
     local match = server.lobby.Get(matchId)
-    t.equals(match.arenaKey, 'airfield', 'a match being fought is not a form')
+    t.equals(match.arenaKey, 'trailerpark', 'a match being fought is not a form')
     t.equals(match.lives, 3)
 end)
 
@@ -1002,7 +1002,7 @@ t.test('a request naming an arena that does not exist changes nothing at all', f
     server.fire('updateMatch', 1, { arenaKey = 'atlantis', lives = 8 })
 
     local match = server.lobby.Get(matchId)
-    t.equals(match.arenaKey, 'airfield')
+    t.equals(match.arenaKey, 'trailerpark')
     t.equals(match.lives, 3, 'the legal half of an illegal request was applied anyway')
 end)
 

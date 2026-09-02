@@ -237,54 +237,27 @@ t.test('ResolveAmmo hands out nothing for a weapon with no ammo block', function
     t.equals(Arena.ResolveAmmo(nil, 60), 0)
 end)
 
-t.test('ResolveAmmo ignores the request entirely when allowChoose is off', function()
-    local arena = tweaked(function(config) config.Loadouts.allowChoose = false end)
-    local fixedPistol = arena.GetWeaponByKey('pistol')
-    -- Even a perfectly legal on-list request is not honoured: with choosing
-    -- switched off there is no request, only the operator's default.
-    t.equals(arena.ResolveAmmo(fixedPistol, 120), 60)
-    t.equals(arena.ResolveAmmo(fixedPistol, 30), 60)
-    t.equals(arena.ResolveAmmo(fixedPistol, nil), 60)
-end)
-
 -- ======================================================================
 -- ResolveLoadout
 --
--- alwaysGive SHIPS EMPTY, so these set up their own where they need one.
---
--- They used to lean on a house knife that was in the shipped config, and
--- counted it in every assertion -- so removing it failed six tests that were
--- not about it. A test that says what it needs survives a config decision it
--- has no opinion on.
+-- A PLAYER CARRIES WHAT THEY PICKED AND NOTHING ELSE. There is no house
+-- list layered on top any more, and no operator-fixed list underneath: the
+-- request is the whole input.
 -- ======================================================================
 
---- Hands everybody the house knife, for the tests that are about that.
-local function houseKnife()
-    Config.Loadouts.alwaysGive = { { key = 'knife' } }
-end
-
---- Nothing on top of what the player picked -- the shipped arrangement.
-local function noHouseWeapon()
-    Config.Loadouts.alwaysGive = {}
-end
-
 t.test('ResolveLoadout drops an unknown weapon key and honours the rest', function()
-    houseKnife()
     local loadout, rejected = Arena.ResolveLoadout({
         weapons = { { key = 'railgun', ammo = 300 }, { key = 'rifle', ammo = 300 } },
     })
 
     t.equals(#rejected, 1)
     t.equals(rejected[1], 'railgun')
-    t.equals(#loadout.weapons, 2)
+    t.equals(#loadout.weapons, 1)
     t.equals(loadout.weapons[1].weapon, 'WEAPON_ASSAULTRIFLE')
     t.equals(loadout.weapons[1].ammo, 300)
-    t.equals(loadout.weapons[2].weapon, 'WEAPON_KNIFE')
-    t.isTrue(loadout.weapons[2].alwaysGive)
 end)
 
 t.test('ResolveLoadout refuses a disabled weapon by key exactly as it refuses an unknown one', function()
-    houseKnife()
     -- `enabled = false` has to be indistinguishable from "no such weapon",
     -- or it is only a UI hint and a modified client walks straight past it.
     t.isNil(Arena.GetWeaponByKey('grenadelauncher'))
@@ -296,14 +269,12 @@ t.test('ResolveLoadout refuses a disabled weapon by key exactly as it refuses an
     t.equals(disabledRejected[1], 'grenadelauncher')
     t.equals(#unknownRejected, 1)
     t.equals(unknownRejected[1], 'nosuchweapon')
-    -- Both end up carrying the house knife and nothing else.
-    t.equals(#disabled.weapons, 1)
+    -- Both end up carrying nothing at all.
+    t.equals(#disabled.weapons, 0)
     t.equals(#unknown.weapons, #disabled.weapons)
-    t.equals(disabled.weapons[1].weapon, 'WEAPON_KNIFE')
 end)
 
 t.test('ResolveLoadout burns one slot for the same weapon asked for twice, not two', function()
-    houseKnife()
     local loadout, rejected = Arena.ResolveLoadout({
         weapons = {
             { key = 'rifle', ammo = 60 },
@@ -315,27 +286,23 @@ t.test('ResolveLoadout burns one slot for the same weapon asked for twice, not t
     t.equals(#rejected, 1)
     t.equals(rejected[1], 'rifle')
     -- The duplicate did not eat the second slot, so the pistol still got in.
-    t.equals(#loadout.weapons, 3)
+    t.equals(#loadout.weapons, 2)
     t.equals(loadout.weapons[1].weapon, 'WEAPON_ASSAULTRIFLE')
     t.equals(loadout.weapons[1].ammo, 60)
     t.equals(loadout.weapons[2].weapon, 'WEAPON_PISTOL')
     t.equals(loadout.weapons[2].ammo, 120)
-    t.equals(loadout.weapons[3].weapon, 'WEAPON_KNIFE')
 end)
 
 t.test('ResolveLoadout stops at weaponSlots, and names what did not fit', function()
-    houseKnife()
     t.equals(Config.Loadouts.weaponSlots, 2)
 
     local loadout, rejected = Arena.ResolveLoadout({
         weapons = { { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' }, { key = 'shotgun' } },
     })
 
-    -- Two picks plus the house knife.
-    t.equals(#loadout.weapons, 3)
+    t.equals(#loadout.weapons, 2)
     t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
     t.equals(loadout.weapons[2].weapon, 'WEAPON_ASSAULTRIFLE')
-    t.equals(loadout.weapons[3].weapon, 'WEAPON_KNIFE')
 
     -- The overflow is REPORTED, not silently swallowed. This changed when
     -- melee got an allowance of its own: the loop can no longer stop at the
@@ -421,87 +388,65 @@ end)
 t.test('ResolveLoadout honours a smaller weaponSlots, and zero slots', function()
     -- Set INSIDE the callback: tweaked() builds a fresh env from the shipped
     -- config, so mutating the outer one does not reach it.
-    local oneSlot = tweaked(function(config)
-        config.Loadouts.weaponSlots = 1
-        config.Loadouts.alwaysGive = { { key = 'knife' } }
-    end)
+    local oneSlot = tweaked(function(config) config.Loadouts.weaponSlots = 1 end)
     local single = oneSlot.ResolveLoadout({ weapons = { { key = 'pistol' }, { key = 'rifle' } } })
-    t.equals(#single.weapons, 2)
+    t.equals(#single.weapons, 1)
     t.equals(single.weapons[1].weapon, 'WEAPON_PISTOL')
-    t.equals(single.weapons[2].weapon, 'WEAPON_KNIFE')
 
-    -- Zero slots is a legal, if joyless, arena: nobody picks anything and
-    -- everybody still walks in with what the operator hands out.
-    local noSlots = tweaked(function(config)
-        config.Loadouts.weaponSlots = 0
-        config.Loadouts.alwaysGive = { { key = 'knife' } }
-    end)
+    -- Zero slots is a legal, if joyless, arena: nobody carries a firearm.
+    local noSlots = tweaked(function(config) config.Loadouts.weaponSlots = 0 end)
     local empty = noSlots.ResolveLoadout({ weapons = { { key = 'pistol' } } })
-    t.equals(#empty.weapons, 1)
-    t.equals(empty.weapons[1].weapon, 'WEAPON_KNIFE')
+    t.equals(#empty.weapons, 0)
 
     -- A negative slot count is floored to zero rather than read as "all".
-    local negative = tweaked(function(config)
-        config.Loadouts.weaponSlots = -5
-        config.Loadouts.alwaysGive = { { key = 'knife' } }
-    end)
+    local negative = tweaked(function(config) config.Loadouts.weaponSlots = -5 end)
     local none = negative.ResolveLoadout({ weapons = { { key = 'pistol' } } })
-    t.equals(#none.weapons, 1)
-    t.equals(none.weapons[1].weapon, 'WEAPON_KNIFE')
+    t.equals(#none.weapons, 0)
 end)
 
-t.test('with alwaysGive empty a player carries exactly what they picked', function()
-    -- THE SHIPPED ARRANGEMENT. The house knife made the melee allowance a
-    -- lie: somebody who deliberately took no blade still had one, and
-    -- somebody who picked a different blade carried two.
-    noHouseWeapon()
-
+t.test('a player carries exactly what they picked and nothing else', function()
+    -- THE WHOLE ARRANGEMENT NOW. A house weapon layered on top made the
+    -- melee allowance a lie: somebody who deliberately took no blade still
+    -- had one, and somebody who picked a different blade carried two.
     local loadout = Arena.ResolveLoadout({ weapons = { { key = 'pistol' } } })
 
     t.equals(#loadout.weapons, 1, 'something was handed out that the player did not ask for')
     t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
-    t.isNil(loadout.weapons[1].alwaysGive)
 end)
 
-t.test('and the shipped config really is empty, so that is not just this test', function()
-    local shipped = Sandbox.newArenaEnv()
-    t.equals(#(shipped.Config.Loadouts.alwaysGive or {}), 0,
-        'the shipped config hands out a weapon nobody picked')
-end)
+t.test('and no config key can add one back', function()
+    -- THE CONTRACT. Both of the old ways to hand out a weapon nobody picked
+    -- are gone, and neither name is read any more. Setting them is what
+    -- makes that visible: a build where this fixture arms anybody is a build
+    -- where one of them came back.
+    local arena = tweaked(function(config)
+        config.Loadouts.alwaysGive = { { key = 'knife' } }
+        config.Loadouts.fixed = { { key = 'rifle' } }
+        config.Loadouts.allowChoose = false
+    end)
 
-t.test('ResolveLoadout appends alwaysGive past the slot limit', function()
-    houseKnife()
-    local loadout = Arena.ResolveLoadout({ weapons = { { key = 'rifle' }, { key = 'shotgun' } } })
-
-    -- Both slots are spent on the player's own picks and the operator's
-    -- entry still lands: you cannot spend your way out of the house knife.
-    t.equals(#loadout.weapons, 3)
-    t.equals(loadout.weapons[3].weapon, 'WEAPON_KNIFE')
-    t.equals(loadout.weapons[3].ammo, 1)
-    t.isTrue(loadout.weapons[3].alwaysGive)
-    t.isNil(loadout.weapons[1].alwaysGive)
+    local loadout = arena.ResolveLoadout({ weapons = {} })
+    t.equals(#loadout.weapons, 0, 'a removed config key is being read again')
 end)
 
 t.test('ResolveLoadout survives a request that is not a table at all', function()
     for _, request in ipairs({ 'rifle', 42, true }) do
         local loadout, rejected = Arena.ResolveLoadout(request)
-        t.equals(#loadout.weapons, 1, tostring(request))
-        t.equals(loadout.weapons[1].weapon, 'WEAPON_KNIFE', tostring(request))
+        t.equals(#loadout.weapons, 0, tostring(request))
         t.equals(#rejected, 0, tostring(request))
         t.equals(loadout.armor, 100, tostring(request))
         t.equals(loadout.health, 200, tostring(request))
     end
 
     local fromNil = Arena.ResolveLoadout(nil)
-    t.equals(#fromNil.weapons, 1)
+    t.equals(#fromNil.weapons, 0)
     local fromNothing = Arena.ResolveLoadout()
-    t.equals(#fromNothing.weapons, 1)
+    t.equals(#fromNothing.weapons, 0)
 end)
 
 t.test('ResolveLoadout ignores a weapons field that is not a list', function()
     local loadout = Arena.ResolveLoadout({ weapons = 'rifle' })
-    t.equals(#loadout.weapons, 1)
-    t.equals(loadout.weapons[1].weapon, 'WEAPON_KNIFE')
+    t.equals(#loadout.weapons, 0)
 end)
 
 t.test('ResolveLoadout reads a bare string entry as a weapon key, at default ammo', function()
@@ -521,7 +466,7 @@ t.test('ResolveLoadout drops a table where a key should be, like any other bad k
     -- passed through as whatever arrived.
     t.equals(type(rejected[1]), 'string')
     t.equals(rejected[2], '12')
-    t.equals(#loadout.weapons, 2)
+    t.equals(#loadout.weapons, 1)
     t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
 end)
 
@@ -559,7 +504,6 @@ t.test('and no config key can turn either of them down', function()
     -- supplies section, empty the weapon list, or take the whole loadout
     -- picker away; none of it reaches what a fighter starts a life on.
     local off = tweaked(function(config)
-        config.Loadouts.allowChoose = false
         config.Loadouts.supplies.enabled = false
         config.Loadouts.health = 1
         config.Loadouts.armor = { allowChoose = true, default = 0, max = 0, options = { 0 } }
@@ -568,29 +512,6 @@ t.test('and no config key can turn either of them down', function()
     local health, armour = off.StartingVitals()
     t.equals(off.ResolveLoadout({ armor = 0 }).armor, armour)
     t.equals(off.ResolveLoadout({}).health, health)
-end)
-
-t.test('ResolveLoadout swaps the request for the operator fixed list when allowChoose is off', function()
-    local arena = tweaked(function(config)
-        config.Loadouts.allowChoose = false
-        config.Loadouts.alwaysGive = { { key = 'knife' } }
-    end)
-    local loadout, rejected = arena.ResolveLoadout({
-        weapons = { { key = 'sniper', ammo = 40 } },
-        armor = 50,
-    })
-
-    t.equals(#rejected, 0)
-    t.equals(#loadout.weapons, 3)
-    t.equals(loadout.weapons[1].weapon, 'WEAPON_ASSAULTRIFLE')
-    t.equals(loadout.weapons[2].weapon, 'WEAPON_PISTOL')
-    t.equals(loadout.weapons[3].weapon, 'WEAPON_KNIFE')
-    -- Rule 3 in ResolveAmmo's own header: with choosing off EVERY weapon gets
-    -- its default, so the ammo written next to each `fixed` entry (250 / 100)
-    -- never reaches the player -- they get the weapon's own 150 / 60.
-    t.equals(loadout.weapons[1].ammo, 150)
-    t.equals(loadout.weapons[2].ammo, 60)
-    t.equals(loadout.armor, 100)
 end)
 
 -- ======================================================================
@@ -738,46 +659,46 @@ t.test('PickSpawn hands out spawn points round-robin and wraps past the end', fu
     -- point to a shipped arena -- which this resource actively invites -- must
     -- not turn a spec red, and the round-robin is the behaviour under test,
     -- not how many points happen to be in the config today.
-    local spawns = Config.Arenas.airfield.spawns
+    local spawns = Config.Arenas.trailerpark.spawns
     local count = #spawns
     t.isTrue(count >= 2, 'the round-robin cannot be shown with fewer than two spawn points')
 
     for index = 1, count do
-        t.equals(Arena.PickSpawn('airfield', nil, index), spawns[index], 'index ' .. index)
+        t.equals(Arena.PickSpawn('trailerpark', nil, index), spawns[index], 'index ' .. index)
     end
     -- More players than spawn points: the list starts over rather than running out.
-    t.equals(Arena.PickSpawn('airfield', nil, count + 1), spawns[1])
-    t.equals(Arena.PickSpawn('airfield', nil, count + 2), spawns[2])
-    t.equals(Arena.PickSpawn('airfield', nil, (count * 2) + 1), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', nil, count + 1), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', nil, count + 2), spawns[2])
+    t.equals(Arena.PickSpawn('trailerpark', nil, (count * 2) + 1), spawns[1])
     -- A number no lobby will ever reach still lands somewhere real.
-    t.equals(Arena.PickSpawn('airfield', nil, (count * 100)), spawns[count])
+    t.equals(Arena.PickSpawn('trailerpark', nil, (count * 100)), spawns[count])
 end)
 
 t.test('PickSpawn uses a team own spawn list, and wraps that too', function()
-    local crimson = Config.Arenas.airfield.teamSpawns.crimson
+    local crimson = Config.Arenas.trailerpark.teamSpawns.crimson
     local count = #crimson
     t.isTrue(count >= 2, 'a team needs at least two spawn points to show the wrap')
 
     for index = 1, count do
-        t.equals(Arena.PickSpawn('airfield', 'crimson', index), crimson[index], 'index ' .. index)
+        t.equals(Arena.PickSpawn('trailerpark', 'crimson', index), crimson[index], 'index ' .. index)
     end
-    t.equals(Arena.PickSpawn('airfield', 'crimson', count + 1), crimson[1], 'the team list wraps too')
+    t.equals(Arena.PickSpawn('trailerpark', 'crimson', count + 1), crimson[1], 'the team list wraps too')
 end)
 
 t.test('PickSpawn falls back from an empty or missing teamSpawns to the shared list', function()
-    local spawns = Config.Arenas.airfield.spawns
+    local spawns = Config.Arenas.trailerpark.spawns
     -- 'bone' ships disabled and has no spawns anywhere: this is what an
     -- operator enabling a third team gets before they edit any arena.
-    t.equals(Arena.PickSpawn('airfield', 'bone', 1), spawns[1])
-    t.equals(Arena.PickSpawn('airfield', 'bone', #spawns + 1), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', 'bone', 1), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', 'bone', #spawns + 1), spawns[1])
 
-    local arena, config = tweaked(function(c) c.Arenas.airfield.teamSpawns.crimson = {} end)
-    t.equals(arena.PickSpawn('airfield', 'crimson', 1), config.Arenas.airfield.spawns[1])
-    t.equals(arena.PickSpawn('airfield', 'crimson', 2), config.Arenas.airfield.spawns[2])
+    local arena, config = tweaked(function(c) c.Arenas.trailerpark.teamSpawns.crimson = {} end)
+    t.equals(arena.PickSpawn('trailerpark', 'crimson', 1), config.Arenas.trailerpark.spawns[1])
+    t.equals(arena.PickSpawn('trailerpark', 'crimson', 2), config.Arenas.trailerpark.spawns[2])
 
     -- A teamSpawns table that is not a table is worth no more than a missing one.
-    local broken, brokenConfig = tweaked(function(c) c.Arenas.airfield.teamSpawns = 'nope' end)
-    t.equals(broken.PickSpawn('airfield', 'crimson', 2), brokenConfig.Arenas.airfield.spawns[2])
+    local broken, brokenConfig = tweaked(function(c) c.Arenas.trailerpark.teamSpawns = 'nope' end)
+    t.equals(broken.PickSpawn('trailerpark', 'crimson', 2), brokenConfig.Arenas.trailerpark.spawns[2])
 end)
 
 t.test('PickSpawn returns nil for an unknown arena', function()
@@ -789,34 +710,34 @@ t.test('PickSpawn returns nil for an unknown arena', function()
 
     -- A disabled arena is unknown as far as everything outside config is
     -- concerned, spawn points or not.
-    local arena = tweaked(function(config) config.Arenas.airfield.enabled = false end)
-    t.isNil(arena.PickSpawn('airfield', nil, 1))
+    local arena = tweaked(function(config) config.Arenas.trailerpark.enabled = false end)
+    t.isNil(arena.PickSpawn('trailerpark', nil, 1))
 end)
 
 t.test('PickSpawn returns nil for an arena with nowhere to land', function()
     local emptied = tweaked(function(config)
-        config.Arenas.airfield.spawns = {}
-        config.Arenas.airfield.teamSpawns = nil
+        config.Arenas.trailerpark.spawns = {}
+        config.Arenas.trailerpark.teamSpawns = nil
     end)
-    t.isNil(emptied.PickSpawn('airfield', nil, 1))
-    t.isNil(emptied.PickSpawn('airfield', 'crimson', 1))
+    t.isNil(emptied.PickSpawn('trailerpark', nil, 1))
+    t.isNil(emptied.PickSpawn('trailerpark', 'crimson', 1))
 
     local removed = tweaked(function(config)
-        config.Arenas.airfield.spawns = nil
-        config.Arenas.airfield.teamSpawns = nil
+        config.Arenas.trailerpark.spawns = nil
+        config.Arenas.trailerpark.teamSpawns = nil
     end)
-    t.isNil(removed.PickSpawn('airfield', nil, 1))
+    t.isNil(removed.PickSpawn('trailerpark', nil, 1))
 end)
 
 t.test('PickSpawn puts a junk index on the first spawn rather than nowhere', function()
-    local spawns = Config.Arenas.airfield.spawns
-    t.equals(Arena.PickSpawn('airfield', nil, 0), spawns[1])
-    t.equals(Arena.PickSpawn('airfield', nil, -3), spawns[1])
-    t.equals(Arena.PickSpawn('airfield', nil, nil), spawns[1])
-    t.equals(Arena.PickSpawn('airfield', nil, 'first'), spawns[1])
-    t.equals(Arena.PickSpawn('airfield', nil, {}), spawns[1])
-    t.equals(Arena.PickSpawn('airfield', nil, '3'), spawns[3])
-    t.equals(Arena.PickSpawn('airfield', nil, 2.9), spawns[2])
+    local spawns = Config.Arenas.trailerpark.spawns
+    t.equals(Arena.PickSpawn('trailerpark', nil, 0), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', nil, -3), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', nil, nil), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', nil, 'first'), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', nil, {}), spawns[1])
+    t.equals(Arena.PickSpawn('trailerpark', nil, '3'), spawns[3])
+    t.equals(Arena.PickSpawn('trailerpark', nil, 2.9), spawns[2])
 end)
 
 -- ======================================================================
@@ -920,22 +841,22 @@ t.test('ValidateConfig catches an ammo option above the weapon max', function()
 end)
 
 t.test('ValidateConfig catches an arena with no spawns', function()
-    local emptied = tweaked(function(config) config.Arenas.beach.spawns = {} end)
+    local emptied = tweaked(function(config) config.Arenas.skydome.spawns = {} end)
     local problems = emptied.ValidateConfig()
     t.equals(#problems, 1, table.concat(problems, ' | '))
-    t.contains(problems[1], 'beach')
+    t.contains(problems[1], 'skydome')
     t.contains(problems[1], 'no spawns')
 
     -- A spawns key that was deleted rather than emptied is the same fault.
-    local removed = tweaked(function(config) config.Arenas.beach.spawns = nil end)
+    local removed = tweaked(function(config) config.Arenas.skydome.spawns = nil end)
     local removedProblems = removed.ValidateConfig()
     t.equals(#removedProblems, 1, table.concat(removedProblems, ' | '))
-    t.contains(removedProblems[1], 'beach')
+    t.contains(removedProblems[1], 'skydome')
 end)
 
 t.test('ValidateConfig reports rather than throws, and finds every fault at once', function()
     local arena = tweaked(function(config)
-        config.Arenas.beach.spawns = {}
+        config.Arenas.skydome.spawns = {}
         config.Loadouts.weapons[1].key = nil
         config.Match.lives = 0
     end)

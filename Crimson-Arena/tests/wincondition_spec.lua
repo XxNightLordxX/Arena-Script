@@ -125,7 +125,7 @@ local env = Sandbox.newArenaEnv({
     --- Opens a match with `count` fighters and starts it.
     function server.play(count, teams)
         fire('createMatch', 1, {
-            arenaKey = 'airfield',
+            arenaKey = 'trailerpark',
             modeKey = teams and 'tdm' or 'ffa',
             entryFee = 0, account = 'cash',
         })

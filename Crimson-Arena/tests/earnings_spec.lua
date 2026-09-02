@@ -143,7 +143,7 @@ local function newServer(mutate)
 
     --- Opens a `fee` match between 1 and 2, runs it, and 2 loses.
     function server.playMatch(fee)
-        server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = fee, account = 'cash' })
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee, account = 'cash' })
         local matchId = server.lobby.All()[1].id
         server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
         return matchId

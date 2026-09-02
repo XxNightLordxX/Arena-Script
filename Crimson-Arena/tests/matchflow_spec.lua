@@ -317,7 +317,7 @@ local function newMatch(fixture, count)
     local match = {
         id = 'm1',
         label = 'test match',
-        arenaKey = 'airfield',
+        arenaKey = 'trailerpark',
         modeKey = 'ffa',
         hostSource = 1,
         state = 'lobby',
@@ -1386,7 +1386,7 @@ t.test('and a round-robin spawn still gets the scatter it needs', function()
     -- players in four piles.
     local f = newFixture(function(config)
         instantRound(config)
-        config.Arenas.airfield.spawnArea.enabled = false
+        config.Arenas.trailerpark.spawnArea.enabled = false
     end)
     local match = newMatch(f, 3)
     goLive(f, match)
@@ -1404,7 +1404,7 @@ end)
 --- An airfield that grows, so a roster can be measured against it.
 local function growing(config)
     instantRound(config)
-    config.Arenas.airfield.scale = {
+    config.Arenas.trailerpark.scale = {
         enabled = true, baseline = 2, perPlayer = 4.0, maxGrowth = 3.0,
     }
 end
@@ -1440,7 +1440,7 @@ t.test('DEFECT: and the boundary grows with it, so the floor is never outside th
     local match = newMatch(f, 3)
     goLive(f, match)
 
-    local configured = f.Config.Arenas.airfield.boundary.radius
+    local configured = f.Config.Arenas.trailerpark.boundary.radius
     local entry = f.lastPayload('crimson_arena:client:enterArena', 1)
 
     t.isNotNil(entry.boundary, 'the arena sent no boundary at all')
@@ -1456,7 +1456,7 @@ t.test('and an arena that does not scale is sent exactly what config says', func
 
     local entry = f.lastPayload('crimson_arena:client:enterArena', 1)
     t.equals(entry.sizeFactor, 1.0)
-    t.equals(entry.boundary.radius, f.Config.Arenas.airfield.boundary.radius)
+    t.equals(entry.boundary.radius, f.Config.Arenas.trailerpark.boundary.radius)
 end)
 
 

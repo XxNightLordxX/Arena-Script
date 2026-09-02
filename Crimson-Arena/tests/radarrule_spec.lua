@@ -163,7 +163,7 @@ end
 --- @return string matchId
 local function lobby(radar, mutate)
     local server = newServer(mutate)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', radar = radar })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', radar = radar })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')
@@ -221,7 +221,7 @@ t.test('a junk value is not a radar', function()
     -- arrives as nil, which means "did not choose" and falls to the default.
     for _, junk in ipairs({ 'true', 1, {}, 'yes' }) do
         local server = newServer(function(config) config.Match.radar.defaultOn = false end)
-        server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', radar = junk })
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', radar = junk })
         t.equals(server.lobby.All()[1].radar, false,
             ('%s was accepted as a radar'):format(tostring(junk)))
     end

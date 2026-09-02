@@ -137,7 +137,7 @@ end
 --- Opens a lobby at `fee`, with the host paying from `account`.
 local function openLobby(server, fee, account)
     server.fire('createMatch', 1, {
-        arenaKey = 'airfield', modeKey = 'ffa', entryFee = fee, account = account,
+        arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee, account = account,
     })
     local match = server.lobby.All()[1]
     return match and match.id or nil
@@ -356,7 +356,7 @@ t.test('DEFECT: changing a lobby\'s mode hands every side-bet back', function()
         [2] = { cash = 50000, bank = 50000 },
         [3] = { cash = 50000, bank = 50000 },
     })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'tdm', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
     local matchId = server.lobby.All()[1].id
     server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'crimson' })
     server.fire('setTeam', 1, { teamKey = 'crimson' })
@@ -385,7 +385,7 @@ t.test('but editing anything ELSE leaves the bets exactly where they are', funct
         [2] = { cash = 50000, bank = 50000 },
         [3] = { cash = 50000, bank = 50000 },
     })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'tdm', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
     local matchId = server.lobby.All()[1].id
     server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'crimson' })
     server.fire('setTeam', 1, { teamKey = 'crimson' })
@@ -399,7 +399,7 @@ t.test('but editing anything ELSE leaves the bets exactly where they are', funct
     t.equals(server.cash(3), 49500,
         'editing the LIVES handed a standing bet back and emptied the pool')
 
-    server.fire('updateMatch', 1, { arenaKey = 'beach' })
+    server.fire('updateMatch', 1, { arenaKey = 'skydome' })
     t.equals(server.cash(3), 49500,
         'changing the ARENA handed a standing bet back -- the side they picked still exists')
 
@@ -410,7 +410,7 @@ t.test('and a mode change with no bets on it is uneventful', function()
     -- The guard must not fire on the ordinary case: a host adjusting an empty
     -- lobby is not a settlement.
     local server = newServer({ [1] = { cash = 50000, bank = 50000 } })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'tdm', entryFee = 1000 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 1000 })
     local matchId = server.lobby.All()[1].id
 
     server.fire('updateMatch', 1, { modeKey = 'ffa' })

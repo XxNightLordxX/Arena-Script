@@ -647,6 +647,77 @@ t.test('and it says the footprint it measured out loud, so F8 settles it', funct
         ('the reported footprint is not the prop\'s real size:\n%s'):format(console))
 end)
 
+t.test('and the same line answers "is the wall in this copy" without going up there', function()
+    -- THE REPORT THIS EXISTS FOR. An operator standing on an unwalled
+    -- platform cannot tell a copy of the resource that predates the wall
+    -- from a build whose container model will not load. Those are opposite
+    -- problems with opposite fixes, and nothing about an empty rim says
+    -- which one it is -- so the count of cover pieces and how far out the
+    -- furthest one stands are printed on every build.
+    local c = newClient()
+    c.enter('skydome')
+
+    local console = c.console()
+    local cover = console:match('(%d+) cover')
+    t.isTrue(cover ~= nil, ('the scenery line never said how much cover it built:\n%s'):format(console))
+    t.equals(tonumber(cover), #c.Arena.GetCover('skydome', 1.0),
+        'the console disagrees with the arena about how many cover pieces there are')
+
+    -- The rim, in one number. The wall stands at 44.5m; every layout that
+    -- came before it stopped well short, so a reading in the twenties is an
+    -- old copy of config.lua and a reading of nothing is a build with no
+    -- container model.
+    local reach = tonumber(console:match('furthest cover ([%d%.]+)m out'))
+    t.isTrue(reach ~= nil, ('the scenery line never said how far the cover reaches:\n%s'):format(console))
+
+    -- A RADIUS FROM THE MIDDLE OF THE ARENA, not a world coordinate. The
+    -- skydome sits at 1500, 3000, so a reading taken from the world position
+    -- rather than the piece's own offset comes out in the thousands -- still
+    -- comfortably past any "is the wall there" threshold, and completely
+    -- meaningless to the operator reading it.
+    local furthest = 0.0
+    for _, piece in ipairs(c.Arena.GetCover('skydome', 1.0)) do
+        local out = math.sqrt(piece.x * piece.x + piece.y * piece.y)
+        if out > furthest then furthest = out end
+    end
+    t.isTrue(math.abs(reach - furthest) < 0.05,
+        ('the console says the cover reaches %.2fm and the arena says %.2fm'):format(reach, furthest))
+
+    -- And the wall is out at the rim rather than huddled in the middle,
+    -- which is the whole reported symptom.
+    t.isTrue(reach > 44.0, ('the furthest cover is %.2fm out -- the perimeter wall is not being built'):format(reach))
+end)
+
+t.test('the scenery line is printed even when the floor prop could not be measured', function()
+    -- IT USED TO BE GATED ON THE MEASUREMENT, so the one arena most likely
+    -- to be misbuilt -- the one whose floor chain this build does not have
+    -- at all -- was the one that printed nothing whatever about what it did
+    -- build. An operator looking at an empty platform got an empty console.
+    local models = {}
+    for name, size in pairs(World.DEFAULT_MODELS) do models[name] = size end
+    -- The whole floor chain, every fallback included, so there is nothing to
+    -- measure and the `measured` branch cannot run.
+    models.stt_prop_stunt_bblock_huge_01 = nil
+    models.bkr_prop_biker_bblock_huge_01 = nil
+    models.imp_prop_impexp_bblock_huge_01 = nil
+    models.ar_prop_ar_bblock_huge_01 = nil
+    models.prop_container_01a = nil
+
+    local c = newClient({ models = models })
+    c.enter('skydome')
+
+    local console = c.console()
+    t.isTrue(console:find('arena scenery:', 1, true) ~= nil,
+        ('an arena whose floor would not load reported nothing about the pieces it did build:\n%s'):format(console))
+    -- And it is the COUNTING line, not just the missing-model warning: the
+    -- question an operator has in that moment is what DID get built.
+    t.isTrue(console:find('piece(s) built', 1, true) ~= nil,
+        ('the count was never printed:\n%s'):format(console))
+    -- Nothing to measure, so no measurement is claimed.
+    t.isTrue(console:find('measures', 1, true) == nil,
+        'a footprint was reported for a model that never loaded')
+end)
+
 t.test('DEFECT: every spawn the arena can hand out has a piece under it', function()
     -- Not just the one this test drew. A floor with a hole in it is a hole
     -- somebody eventually spawns over, and the fall is a kilometre.

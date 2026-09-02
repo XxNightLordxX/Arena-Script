@@ -475,16 +475,6 @@ t.test('an operator who turned the immediate clear off gets none of it', functio
     t.equals(#f.resurrects, 0)
 end)
 
-t.test('and one who turned the whole ambulance suppression off gets none either', function()
-    local f = heldAfterDeath(function(config)
-        config.Dispatch.suppressAmbulanceDown = false
-    end)
-
-    t.isFalse(f.handled, 'the clear ran on a server that switched the suppression off')
-    t.equals(#f.resurrects, 0)
-end)
-
-
 -- ========================================================================
 -- THE ARGUMENTS PAST THE FIRST
 --

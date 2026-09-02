@@ -3141,14 +3141,17 @@ Config.Webhook = {
 -- nothing to see in the first place. Read that block before any of the rest.
 -- ======================================================================
 Config.Dispatch = {
-    -- THE ONE SWITCH AT THIS LEVEL. It only ever applies to players who are
-    -- IN a match -- it does not follow anyone back out. What it governs is
-    -- `clearDeadStateImmediately` at the bottom of this block: the arena
-    -- standing its own casualties straight back up, so a medical script's
-    -- polling loop never catches one. That is something this resource does
-    -- to its own players in its own file, which is why one switch can
-    -- honestly turn it off.
-    suppressAmbulanceDown = true,
+    -- THERE IS NO `suppressAmbulanceDown` KEY HERE ANY MORE, and it is worth
+    -- one paragraph saying why rather than a silent removal.
+    --
+    -- It sat at the top of this block reading like the headline medical
+    -- setting, and all it did was gate `clearDeadStateImmediately` at the
+    -- bottom of it -- two keys, in two places, that an operator had to set
+    -- the same way to change one behaviour, and either of them alone
+    -- silently doing nothing. That is the same pathology the missing
+    -- `suppressPoliceShotsFired` key below has its own paragraph about.
+    --
+    -- `clearDeadStateImmediately` is the switch.
 
     -- THERE IS NO `suppressPoliceShotsFired` KEY HERE, and saying why is
     -- worth more than the key was. It sat on this line reading like the

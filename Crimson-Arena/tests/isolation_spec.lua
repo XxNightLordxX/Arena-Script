@@ -516,9 +516,11 @@ t.test('the older pair of convars counts, however the operator spelled the yes',
             ('onesync_enabled "%s" was read as OneSync being off'):format(said))
     end
 
-    -- And the same for the infinity half of the pair.
+    -- And the same for the infinity half of the pair, read through the one
+    -- reader that survived: ArenaDispatch.OneSync was a public one-line
+    -- wrapper with no production caller, so it went.
     local inf = newFixture(nil, nil, nil, { convars = { onesync = '', onesync_enableInfinity = '1' } })
-    t.equals(inf.D.OneSync(), 'infinity')
+    t.equals(inf.D.IsolationState().oneSync, 'infinity')
 end)
 
 t.test('and a no is a no however THAT is spelled', function()

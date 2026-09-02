@@ -145,8 +145,7 @@ instancing really happened rather than assuming it did.
   cooperation down to the one that admits it is best-effort — plus a catalogue
   that detects the police and EMS resources actually running and a startup report
   that says, per resource, whether the arena reaches it.
-- **The arena revives its own casualties**, and can hand off to a medical
-  script's own revive so their death list is cleared too.
+- **The arena does not revive players itself.** It stopped: two resources writing to one body is a flicker with a winner, not a revive. Its own death handling stands the ped up in the frame it dies, and the medical script's revive — fired automatically for every script the catalogue detects — is what clears that script's casualty list.
 - **A crossfire guard**, so a shot fired inside the arena cannot hurt somebody
   outside it and vice versa.
 
@@ -190,7 +189,7 @@ qualifies.
 |---|---|
 | `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. |
 | `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without a restart. |
-| `/arenarevive <id>` | Runs the end-of-match revive against any player on demand, so the medical handoff can be tested without playing a round. |
+| `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
 | `/arenaisolation` | Prints what instancing is really doing: the mode the server reports for `onesync`, whether a routing bucket has been caught not landing, the bucket each live match was allocated, and the bucket the server says each of those players is standing in right now. |
 
 **No player-facing slash command ships.** The panel opens from the lobby ped or
@@ -552,8 +551,6 @@ listed; the source documents them where they are.
 | `ArenaDispatch.Exit()` | Undoes Enter(), exactly. |
 | `ArenaDispatch.ClearDeadState(ped)` | Puts an arena casualty back on their feet in the same instant they went down, held frozen, invisible and untouchable until the server says what happens next. |
 | `ArenaDispatch.ReleaseDeadState(ped)` | Undoes ClearDeadState's holding pattern. |
-| `ArenaDispatch.Revive(health, keepHold)` | The arena's OWN revive: everything a revive command would do, done here. |
-| `ArenaDispatch.RevivePersistently(health, keepHold)` | Revives, then keeps re-checking for a few seconds so a medical script that downs the player again is answered. |
 
 #### `client/main.lua` — 4 functions
 

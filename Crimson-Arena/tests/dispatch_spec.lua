@@ -756,7 +756,7 @@ end)
 -- ========================================================================
 
 --- A dispatch config with revive wired to one command template.
-local function reviveConfig(template)
+local function reviveConfig(eventName)
     return {
         enabled = true,
         stateBagKey = 'crimsonArena',
@@ -765,21 +765,17 @@ local function reviveConfig(template)
         vanillaPolice = { enabled = false },
         revive = {
             enabled = true,
-            commands = { template },
-            serverEvents = {},
+            -- AN EVENT, NOT A COMMAND. The two command forms are gone: a
+            -- resource may not run an admin command, which is what dragged
+            -- the whole ace story into this block in the first place. What a
+            -- medical script publishes for other scripts to call is an event
+            -- or an export, and those are what is left.
+            serverEvents = { eventName },
             clientEvents = {},
             exports = {},
         },
     }
 end
-
-t.test('the revive command runs with the player id substituted in', function()
-    local f = newFixture(reviveConfig('revive %s'))
-    f.D.Revive(7)
-
-    t.equals(#f.commands, 1, 'the command did not run')
-    t.equals(f.commands[1], 'revive 7', 'the wrong player was revived')
-end)
 
 -- ========================================================================
 -- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS
@@ -854,15 +850,6 @@ t.test('and no source file reaches for the permission natives at all', function(
     end
 end)
 
-t.test('the shipped config still runs no console command at all', function()
-    -- The remaining half of the same decision: with nothing granting itself
-    -- anything, a configured command on a server that gates it is an
-    -- "Access denied" line per death.
-    local revive = Sandbox.newArenaEnv().Config.Dispatch.revive
-    t.equals(#revive.commands, 0,
-        'the shipped config runs a console command again -- on a server that gates it, that is an "Access denied" line per death')
-end)
-
 -- ========================================================================
 -- TESTING THE REVIVE WITHOUT PLAYING A MATCH
 --
@@ -872,24 +859,55 @@ end)
 -- path on demand.
 -- ========================================================================
 
+--- Every server event the revive handoff fired, in order.
+local function firedFor(f)
+    local out = {}
+    for _, call in ipairs(f.events or {}) do out[#out + 1] = call end
+    return out
+end
+
 t.test('/arenarevive runs the same path a finished match runs', function()
-    local f = newFixture(reviveConfig('revive %s'))
+    local f = newFixture(reviveConfig('mymedical:revive'))
     f.env.ArenaIsAdmin = function() return true end
 
     f.runCommand('arenarevive', 1, { '7' })
 
-    t.equals(f.commands[1], 'revive 7', 'the command ran against the wrong player, or not at all')
+    local fired = firedFor(f)
+    t.equals(#fired, 1, 'the handoff did not run, or ran more than once')
+    t.equals(fired[1].name, 'mymedical:revive')
+    t.equals(fired[1].args[1], 7, 'the handoff ran against the wrong player')
 end)
 
 t.test('and defaults to whoever ran it, since that is the common case', function()
     -- An admin lying on the floor testing this on themselves should not have
     -- to look up their own server id first.
-    local f = newFixture(reviveConfig('revive %s'))
+    local f = newFixture(reviveConfig('mymedical:revive'))
     f.env.ArenaIsAdmin = function() return true end
 
     f.runCommand('arenarevive', 4, {})
 
-    t.equals(f.commands[1], 'revive 4')
+    t.equals(firedFor(f)[1].args[1], 4)
+end)
+
+t.test('AND IT NO LONGER STANDS THE PLAYER UP ITSELF', function()
+    -- THE REMOVAL, ASSERTED. The arena used to resurrect the ped here on top
+    -- of the handoff -- a second writer for a body the medical script also
+    -- has an opinion about, racing whatever that script does next and then
+    -- re-asserting its own numbers to win. Two resources arguing over one
+    -- ped is a flicker with a winner, not a revive.
+    --
+    -- Nothing is left on the floor by dropping it: ClearDeadState already
+    -- resurrects in the frame the ped dies, and the respawn releases that
+    -- hold and re-applies the loadout.
+    local f = newFixture(reviveConfig('mymedical:revive'))
+    f.D.Revive(7)
+
+    for _, message in ipairs(f.toClients) do
+        t.isTrue(message.name ~= 'crimson_arena:client:revive',
+            'the arena is still sending itself a revive')
+        t.isTrue(message.name ~= 'crimson_arena:client:runCommand',
+            'the arena still has a channel for running commands on a client')
+    end
 end)
 
 t.test('a non-admin gets nothing, not even a revive of themselves', function()
@@ -899,214 +917,6 @@ t.test('a non-admin gets nothing, not even a revive of themselves', function()
     f.runCommand('arenarevive', 9, { '9' })
 
     t.equals(#f.commands, 0, 'anybody could revive anybody by typing a command')
-end)
-
-t.test('/arenarevive still stands the player up when the handoff is switched off', function()
-    -- THE REGRESSION THIS EXISTS FOR. The command used to return early here,
-    -- logging "nothing would be called. Nothing was." -- true when the only
-    -- revive was somebody else's command, and false the moment the arena
-    -- started reviving players itself.
-    --
-    -- With `enabled = false` it was refusing to do the one thing that works,
-    -- and telling an admin lying on the floor that nothing could be done for
-    -- them. The switch governs telling OTHER scripts. It has never governed
-    -- whether this resource picks its own players up.
-    local config = reviveConfig('revive %s')
-    config.revive.enabled = false
-
-    local f = newFixture(config)
-    f.env.ArenaIsAdmin = function() return true end
-
-    f.runCommand('arenarevive', 1, { '3' })
-
-    local revived = nil
-    for _, message in ipairs(f.toClients) do
-        if message.name == 'crimson_arena:client:revive' then revived = message end
-    end
-
-    t.isNotNil(revived, 'the command refused to revive because the handoff to other scripts is off')
-    t.equals(revived.target, 3, 'the wrong player was revived')
-
-    t.equals(#f.commands, 0, 'a command ran despite the handoff being switched off')
-    t.contains(table.concat(f.logs, '\n'), 'enabled is off',
-        'nothing said why no other script was told')
-end)
-
-t.test('the arena revives the player itself, before anything is configured', function()
-    -- THE CHANGE THAT MATTERS. Every route to somebody else's revive turned
-    -- out to be shut: the command was refused because a resource may not run
-    -- an admin command, and granting the permission was refused because a
-    -- resource may not grant itself permissions -- which is correct, and is
-    -- why that door exists.
-    --
-    -- So the arena stands its own players up directly and needs nobody's
-    -- permission for it. This has to work on a config with NOTHING filled
-    -- in, which is what this asserts.
-    local f = newFixture({
-        stateBagKey = 'crimsonArena',
-        isolation = { enabled = false },
-        custom = { disableExports = {}, cancelEvents = {} },
-        vanillaPolice = { enabled = false },
-        revive = { enabled = false, commands = {}, clientCommands = {}, serverEvents = {}, exports = {} },
-    })
-
-    f.D.Revive(5)
-
-    local revived = nil
-    for _, message in ipairs(f.toClients) do
-        if message.name == 'crimson_arena:client:revive' then revived = message end
-    end
-
-    t.isNotNil(revived, 'a player the arena knocked down was left on the floor by default')
-    t.equals(revived.target, 5, 'the wrong player was revived')
-    t.equals(#f.commands, 0, 'a command ran on a config that names none')
-end)
-
-t.test('the config AS SHIPPED revives, and runs no console command doing it', function()
-    -- The test above proves the built-in revive works on an empty config.
-    -- This one proves it on the config an operator actually downloads, which
-    -- is a different question and the one that kept regressing: the code was
-    -- right while the shipped defaults still pointed at an admin command
-    -- this resource is not allowed to run.
-    --
-    -- Both halves matter. The revive has to happen, AND nothing may reach for
-    -- the console to do it -- because a refused command is not an error, it
-    -- is a line of "Access denied" per death with the player getting up
-    -- anyway. That log is what made a working revive look broken.
-    --
-    -- newFixture() with no argument is the real ../config.lua, untouched.
-    local f = newFixture()
-
-    f.D.Revive(7)
-    f.step()
-
-    local revived = nil
-    for _, message in ipairs(f.toClients) do
-        if message.name == 'crimson_arena:client:revive' then revived = message end
-    end
-
-    t.isNotNil(revived, 'the shipped config does not stand its own dead back up')
-    t.equals(revived.target, 7, 'the shipped config revived the wrong player')
-
-    local ran = table.concat(f.commands, '\n')
-    t.equals(#f.commands, 0,
-        'the shipped config runs a console command -- on a server that refuses it that is an "Access denied" line every death: ' .. ran)
-end)
-
-t.test('a client-side revive is sent to that player, and to nobody else', function()
-    -- The failure this covers is silent by construction. A command
-    -- registered CLIENT-side does not exist as far as the server console is
-    -- concerned, so the server's own ExecuteCommand finds nothing, does
-    -- nothing, and reports nothing wrong -- the arena says it revived
-    -- everybody while every player is still on the floor.
-    local config = reviveConfig('revive %s')
-    config.revive.commands = {}
-    config.revive.clientCommands = { 'revive' }
-
-    local f = newFixture(config)
-    f.D.Revive(9)
-
-    t.equals(#f.commands, 0, 'a client command was run on the server console instead')
-
-    -- FILTERED BY NAME NOW, because the arena's own revive is sent to the
-    -- same client on the same path. Counting messages rather than naming
-    -- them would make this test fail the moment a second, correct one
-    -- appeared -- which is exactly what happened.
-    local ran = nil
-    for _, message in ipairs(f.toClients) do
-        if message.name == 'crimson_arena:client:runCommand' then ran = message end
-    end
-
-    t.isNotNil(ran, 'the client was never asked to run anything')
-    t.equals(ran.target, 9, 'the wrong player was asked')
-    t.equals(ran.args[1], 'revive')
-end)
-
-t.test('a client template WITH a placeholder still gets the id', function()
-    local config = reviveConfig('revive %s')
-    config.revive.commands = {}
-    config.revive.clientCommands = { 'heal %s' }
-
-    local f = newFixture(config)
-    f.D.Revive(4)
-
-    local ran = nil
-    for _, message in ipairs(f.toClients) do
-        if message.name == 'crimson_arena:client:runCommand' then ran = message end
-    end
-    t.isNotNil(ran, 'the client was never asked to run anything')
-    t.equals(ran.args[1], 'heal 4')
-end)
-
-t.test('both forms can run together, and each goes to its own realm', function()
-    local config = reviveConfig('revive %s')
-    config.revive.clientCommands = { 'revive' }
-
-    local f = newFixture(config)
-    f.D.Revive(6)
-
-    t.equals(f.commands[1], 'revive 6', 'the server console line is gone')
-
-    local sawRunCommand = false
-    for _, message in ipairs(f.toClients) do
-        if message.name == 'crimson_arena:client:runCommand' then sawRunCommand = true end
-    end
-    t.isTrue(sawRunCommand, 'the client line is gone')
-end)
-
-t.test('a server command that ran is reported, so a silent failure is visible', function()
-    -- Running a command that has no effect looks exactly like running no
-    -- command at all. An operator watching a player stay dead has to be able
-    -- to tell those apart.
-    local f = newFixture(reviveConfig('revive %s'))
-    f.D.Revive(5)
-
-    t.contains(table.concat(f.logs, '\n'), 'revive 5',
-        'nothing was logged, so there is no way to tell the command ran')
-end)
-
-t.test('a template with no placeholder gets the id appended', function()
-    -- 'revive' and 'revive %s' are both things an operator will reasonably
-    -- write, and only one of them is documented. Guessing wrong here revives
-    -- nobody, silently.
-    local f = newFixture(reviveConfig('revive'))
-    f.D.Revive(12)
-
-    t.equals(f.commands[1], 'revive 12')
-end)
-
-t.test('a template that cannot be built is reported rather than run', function()
-    -- A stray percent is a format error. Running the half-built line would
-    -- be worse than not running it, and running nothing silently is how an
-    -- operator concludes the arena is broken.
-    local f = newFixture(reviveConfig('revive %q %d'))
-    f.D.Revive(3)
-
-    t.equals(#f.commands, 0, 'a malformed command line was executed anyway')
-    t.contains(table.concat(f.logs, '\n'), 'revive',
-        'nothing was logged, so the operator has no way to know')
-end)
-
-t.test('nothing runs while revive is switched off', function()
-    local config = reviveConfig('revive %s')
-    config.revive.enabled = false
-
-    local f = newFixture(config)
-    f.D.Revive(7)
-
-    t.equals(#f.commands, 0, 'a disabled revive still ran a command')
-end)
-
-t.test('a bad server id never reaches the command line', function()
-    -- The id is interpolated straight into a console command, so what may
-    -- reach it is worth an assertion rather than an assumption.
-    local f = newFixture(reviveConfig('revive %s'))
-    f.D.Revive(nil)
-    f.D.Revive(0)
-    f.D.Revive(-1)
-    f.D.Revive('7; quit')
-
-    t.equals(#f.commands, 0, 'something other than a real server id was put on a command line')
 end)
 
 -- ========================================================================
@@ -1130,7 +940,7 @@ t.test('an unconfigured revive is called out at start, with the consequence', fu
     end)
     local report = table.concat(env.ArenaCompat.Report(), '\n')
 
-    t.contains(report, 'revive: NOT configured')
+    t.contains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
     t.contains(report, 'still dead',
         'the report names the setting but never says what goes wrong without it')
     t.contains(report, 'Config.Dispatch.revive',
@@ -1149,8 +959,8 @@ t.test('and a configured one is reported as configured', function()
 
     local report = table.concat(env.ArenaCompat.Report(), '\n')
 
-    t.contains(report, 'revive: configured')
-    t.notContains(report, 'revive: NOT configured')
+    t.contains(report, 'you named run as well')
+    t.notContains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
 end)
 
 t.test('the shipped config reports the handoff as unconfigured -- and says the arena revives anyway', function()
@@ -1162,18 +972,18 @@ t.test('the shipped config reports the handoff as unconfigured -- and says the a
     -- cannot know them. Guessing produces a line that looks wired up and
     -- calls nothing, which is the worst of both.
     --
-    -- So the report says NOT configured -- but the danger in that word is an
-    -- operator reading it as "revives are broken" on an install where they
-    -- work fine. They do work: the arena stands its own dead back up in code.
-    -- The only thing missing is telling a SEPARATE medical script, so the
-    -- report has to say both halves or it is scarier than the truth.
+    -- So the report has to name the thing that IS happening. Every detected
+    -- medical script's own revive event is fired for a player leaving the
+    -- arena with no configuration at all -- and on a box where none is
+    -- detected and nothing is named, the report has to say so plainly rather
+    -- than describe a handoff nobody has.
     local env = newCompat()
     local report = table.concat(env.ArenaCompat.Report(), '\n')
 
-    t.contains(report, 'revive: NOT configured',
+    t.contains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT',
         'the shipped config claims a handoff it has not been given the names for')
-    t.contains(report, 'stood back up by the arena',
-        'the report says the handoff is missing without saying players still get up -- that reads as broken')
+    t.contains(report, 'no longer stands',
+        'the report does not say that the arena stopped reviving players itself, which is the fact behind the warning')
 end)
 
 t.test('enabled with nothing named counts as not configured', function()
@@ -1185,7 +995,7 @@ t.test('enabled with nothing named counts as not configured', function()
                                    clientEvents = {}, exports = {} }
     end)
 
-    t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'revive: NOT configured')
+    t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
 end)
 
 -- ========================================================================
@@ -1588,14 +1398,17 @@ t.test('and it still stands the player up first, whatever the handoff does', fun
     -- broken or throwing must not cost the player their own revive.
     local f = newFixture()
     f.env.ArenaCompat = { ReviveClientEvents = function() return {} end }
+    f.givePlayer(4, { inlaststand = true })
 
     f.D.Revive(4)
 
-    local own = nil
-    for _, message in ipairs(f.toClients) do
-        if message.name == 'crimson_arena:client:revive' then own = message end
-    end
-    t.isNotNil(own, 'with no medical script detected the arena stopped reviving its own player')
+    -- WHAT IS LEFT WHEN NOTHING IS DETECTED, and it is not nothing. The
+    -- arena does not resurrect the ped any more -- ClearDeadState did that
+    -- in the frame the ped died -- but it still puts the medical script's
+    -- own down flag back down, which is the half that reaches another
+    -- resource's records.
+    t.isFalse(f.metadata(4).inlaststand,
+        'with no medical script detected nothing was done for the player at all')
 end)
 
 -- ========================================================================

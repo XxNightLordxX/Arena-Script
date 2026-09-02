@@ -207,20 +207,38 @@ end)
 -- THE REVIVE HANDOFF
 -- ========================================================================
 
-t.test('an unconfigured revive is reported as NOT configured, with the reason', function()
-    -- Ships with every list empty, deliberately: the only names it could
-    -- carry are the operator's own. So the report has to explain what
-    -- that costs rather than leaving a blank.
+t.test('A DETECTED MEDICAL SCRIPT IS TOLD DIRECTLY, with nothing configured', function()
+    -- THE HALF OPERATORS KEPT MISTAKING FOR THE OTHER ONE. The catalogue
+    -- carries the revive event three of these scripts really listen for --
+    -- read out of their own source -- so a box running one of them has a
+    -- working handoff with no configuration at all. The report has to say
+    -- that, or an operator reads "NOT configured" and goes looking for a
+    -- problem they do not have.
     local f = newReport({ running = { ['qb-ambulancejob'] = true } })
     local said = f.text()
 
-    t.contains(said, 'revive: NOT configured')
+    t.contains(said, 'told to revive a player directly')
+    t.contains(said, 'hospital:client:Revive',
+        'the report does not name the event it is actually firing')
+    t.notContains(said, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
+end)
+
+t.test('and a box with nothing detected and nothing named is warned, plainly', function()
+    -- The case that is genuinely broken: no script this catalogue knows, and
+    -- no names in config. Nobody is being told anything, and since the arena
+    -- no longer stands players up itself either, the report has to say both.
+    local f = newReport({ running = {} })
+    local said = f.text()
+
+    t.contains(said, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
     t.contains(said, 'still dead as far as that script is concerned',
         'the report does not say what an unconfigured revive actually costs')
     t.contains(said, 'Config.Dispatch.revive', 'the report does not name where to configure it')
+    t.contains(said, 'no longer stands',
+        'the report does not say the arena stopped reviving players itself')
 end)
 
-t.test('and one with events named is reported as configured, with its counts', function()
+t.test('names the operator added are reported ON TOP of what is detected', function()
     local f = newReport({
         running = { ['qb-ambulancejob'] = true },
         config = function(dispatch)
@@ -232,63 +250,39 @@ t.test('and one with events named is reported as configured, with its counts', f
     })
     local said = f.text()
 
-    t.contains(said, 'revive: configured', 'a configured revive was reported as missing')
+    t.contains(said, 'you named run as well', 'a configured revive was reported as missing')
     t.contains(said, '2 event(s)', 'the report miscounts the events -- server and client are both events')
     t.contains(said, '1 export(s)', 'the report miscounts the exports')
 end)
 
-t.test('a revive with lists but enabled = false is NOT configured', function()
-    -- Both halves are required. Naming the events and leaving the switch
-    -- off is the commonest way to have a handoff that never runs, and a
-    -- report calling that "configured" sends the operator looking
-    -- somewhere else entirely.
+t.test('a revive with lists but enabled = false is not counted', function()
+    -- Both halves are required. Naming the events and leaving the switch off
+    -- is the commonest way to have a handoff that never runs.
     local f = newReport({
-        running = { ['qb-ambulancejob'] = true },
+        running = {},
         config = function(dispatch)
             dispatch.revive.enabled = false
             dispatch.revive.serverEvents = { 'hospital:server:revive' }
         end,
     })
 
-    t.contains(f.text(), 'revive: NOT configured',
+    t.contains(f.text(), 'NOTHING IS TELLING YOUR MEDICAL SCRIPT',
         'a revive with its switch off was reported as configured')
 end)
 
-t.test('and one enabled with EMPTY lists is NOT configured either', function()
-    -- The other half of the same trap: the switch on and nothing named
-    -- runs nothing at all.
+t.test('and one enabled with EMPTY lists is not counted either', function()
     local f = newReport({
-        running = { ['qb-ambulancejob'] = true },
+        running = {},
         config = function(dispatch)
             dispatch.revive.enabled = true
-            dispatch.revive.commands = {}
             dispatch.revive.serverEvents = {}
             dispatch.revive.clientEvents = {}
             dispatch.revive.exports = {}
         end,
     })
 
-    t.contains(f.text(), 'revive: NOT configured',
+    t.contains(f.text(), 'NOTHING IS TELLING YOUR MEDICAL SCRIPT',
         'a revive with nothing named was reported as configured')
-end)
-
-t.test('a single named command is enough to count as configured', function()
-    -- Each of the four kinds counts on its own; requiring more than one
-    -- would report a working handoff as missing.
-    local f = newReport({
-        running = { ['qb-ambulancejob'] = true },
-        config = function(dispatch)
-            dispatch.revive.enabled = true
-            dispatch.revive.commands = { 'revive %s' }
-            dispatch.revive.serverEvents = {}
-            dispatch.revive.clientEvents = {}
-            dispatch.revive.exports = {}
-        end,
-    })
-    local said = f.text()
-
-    t.contains(said, 'revive: configured', 'a revive with one command named was reported as missing')
-    t.contains(said, '1 command(s)')
 end)
 
 -- ========================================================================

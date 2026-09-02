@@ -3606,145 +3606,44 @@ Config.Dispatch = {
         -- part is optional, and it is the only part these settings control.
         enabled = true,
 
-        -- COMMANDS run from the SERVER CONSOLE. `%s` is where the player's
-        -- server id goes; a line with no `%s` gets the id appended, so
-        -- 'revive' and 'revive %s' both work.
+        -- THERE ARE NO COMMAND FORMS HERE ANY MORE, and saying why is worth
+        -- more than the keys were.
         --
-        -- EMPTY ON PURPOSE. An admin revive command checks whether its caller
-        -- is allowed, and a resource is not an admin -- so on most servers
-        -- this is refused, which prints an "Access denied" line for every
-        -- single death while the built-in revive quietly does the real work.
-        -- Since nothing needs the command any more, the noise is not worth
-        -- shipping on. Add your medical script's own command here if you want
-        -- it run as well:
-        --     commands = { 'revive %s' },
-        commands = {},
+        -- `commands` ran a line on the server console with ExecuteCommand,
+        -- and `clientCommands` relayed one to the player's own client to run
+        -- there. Both shipped empty. Both existed because an ambulance
+        -- script's revive is very often an admin command -- and an admin
+        -- command run by a resource is refused, which is how this block came
+        -- to carry instructions for granting this resource an ace.
+        --
+        -- All of it is gone rather than switched off: the resource asks for
+        -- no permissions, runs no commands, and no longer has a channel for
+        -- running one. What is left below are EVENTS and EXPORTS, which are
+        -- things a script publishes on purpose for other scripts to call.
 
-        -- THE SAME COMMANDS, RUN ON THE PLAYER'S OWN CLIENT.
+        -- HOW LONG AFTER A RESPAWN THE MEDICAL SCRIPT IS TOLD, in ms.
         --
-        -- Use these when the server console line above appears but nothing
-        -- happens. A command registered CLIENT-side does not exist as far as
-        -- the server console is concerned: `commands` finds nothing, does
-        -- nothing, and reports nothing wrong -- the quietest failure there
-        -- is, and the reason both forms exist.
+        -- The client needs a moment to be placed and standing before there
+        -- is a living player for anybody's revive to be about. Two seconds
+        -- covers the teleport and the collision wait.
         --
-        -- Same `%s` rule. Many client-side revives revive whoever ran them
-        -- and take no id at all, so 'revive' on its own is the common case
-        -- here -- and unlike the server list, a template with no placeholder
-        -- is sent AS IS rather than having the id appended.
-        --     clientCommands = { 'revive' },
-        clientCommands = {},
-
-        -- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS, and there is
-        -- deliberately no setting here to make it try.
-        --
-        -- It used to have two: one to grant itself an ace for the commands
-        -- above, one to put itself in the admin group. Both are removed.
-        --
-        --   THEY DID NOT WORK. A server that lets a resource write its own
-        --   permissions is a server with no permissions, so the sensible
-        --   ones refuse -- and a refusal is not an error. ExecuteCommand
-        --   returns normally and the console prints "Access denied", so the
-        --   arena carried a page of settings for a capability it did not
-        --   have.
-        --
-        --   THEY WERE NOT NEEDED. The arena revives its own players in code
-        --   and asks nobody's permission to undo something it did itself.
-        --   The command hooks above exist only to tell a SEPARATE medical
-        --   script, which keeps a death list no resurrect reaches.
-        --
-        --   AND THE ADMIN ONE COST SOMETHING. Group membership made any flaw
-        --   anywhere in this resource a way to run any command on the box.
-        --
-        -- If a command you named above is gated on an ace, grant it yourself
-        -- in server.cfg -- the console needs permission from nobody:
-        --     add_ace resource.Crimson-Arena command.revive allow
-
-        -- HOW LONG AFTER A MID-MATCH RESPAWN TO REVIVE, in milliseconds.
-        --
-        -- The revive has to come AFTER the client has stood the player up,
-        -- not before. Told first, your medical script is being told somebody
-        -- is alive while their body is still a corpse -- and whatever it does
-        -- then is undone by the resurrect, the collision wait and the
-        -- teleport that follow. That is what put players back into a round
-        -- still dead.
-        --
-        -- Raise it if a respawned player is still down. 0 reverts to
-        -- reviving immediately, which is almost certainly not what you want.
-        -- THE MEDICAL SCRIPT'S DOWN FLAG, cleared where it really lives.
-        --
-        -- The QB-family scripts -- sc-ambulance and qbx_ambulancejob among
-        -- them -- keep "this player is down" as PLAYER METADATA on the
-        -- framework object rather than in a table of their own. That is
-        -- qbx_core's data, so this resource can write it, and writing it is
-        -- the one suppression that does not depend on winning a race at the
-        -- moment of death:
-        --
-        --   sc-dispatch's client polls this metadata every 500ms and raises
-        --   its own PlayerDown / PlayerDead alerts when it goes up. Cleared
-        --   before the next poll, those are never raised at all.
-        --
-        --   sc-ambulance's EMSDownAlert handler admits a call ONLY for a
-        --   player carrying `inlaststand`. Cleared, its own guard refuses it.
-        --
-        -- It is also simply TRUE: the arena has just stood this player back
-        -- up, so a flag saying they are down is the thing that is wrong.
-        --
-        -- MOVED OUT OF THIS BLOCK. It used to be `clearMetadata` here, and
-        -- being here was most of the problem: it was only ever written by
-        -- the revive, and the revive runs seven seconds after a death. It is
-        -- `Config.Dispatch.downState` now, above, where it is cleared at the
-        -- death itself and then held.
-
+        -- IT IS NOT WHAT KEEPS THE DISPATCH QUIET ANY MORE, and that is the
+        -- correction worth reading. The down flags used to be cleared by
+        -- this same handoff, seven seconds after a death, against a poll
+        -- running twice a second -- so raising or lowering this number moved
+        -- a guarantee that was never being kept. Config.Dispatch.downState
+        -- clears them at the death itself now and holds them down; this is
+        -- only about telling another script.
         afterRespawnDelayMs = 2000,
 
-        -- KEEPING THEM UP, whatever your server.cfg order is.
+        -- A SECOND, BLANKET PASS over everybody who played, this many ms
+        -- after the match ends. `0` switches it off.
         --
-        -- A medical script hooks the same death event this resource does, and
-        -- handlers on a shared event run in the order their resources
-        -- STARTED. Win that race and the medical script asks "is this player
-        -- dead", is told no, and does nothing at all. Lose it and it has
-        -- already decided they are a casualty, and drops them into bleed-out
-        -- a frame or several after our revive has been and gone -- player on
-        -- the floor with the EMS prompt up, console showing a clean revive.
-        --
-        -- Rather than asking you to get a line in server.cfg right, the arena
-        -- watches for this long after standing somebody up, and puts them
-        -- back up if something else puts them down. Start order stops
-        -- mattering for the part this resource can reach.
-        --
-        -- It looks for DEAD or WRITHING specifically -- a medical bleed-out
-        -- -- and never for the arena's own hold, which leaves an eliminated
-        -- player alive while the spectator camera starts. So it cannot pull
-        -- somebody out of a hold this resource put them in on purpose.
-        --
-        -- 0 turns it off and goes back to a single revive.
-        assertWindowMs = 2000,
-        assertIntervalMs = 250,
-
-        -- WHAT THIS CANNOT DO, said plainly. It fixes the PLAYER: on their
-        -- feet, out of the animation, off the floor. It does not reach a
-        -- medical script's own list of who is dead, because nothing can from
-        -- outside that script. If yours keeps one, name its revive in
-        -- serverEvents / clientEvents / exports below and set enabled = true;
-        -- that is the half this cannot cover, and the only half.
-
-        -- ONE MORE SWEEP AFTER THE MATCH, in milliseconds. 0 turns it off.
-        --
-        -- The per-player revive runs as each player is sent home -- before
-        -- their body is stood up, before the teleport, before they leave the
-        -- arena instance. A medical script told "alive" at that moment is
-        -- being told it about somebody who is still a corpse somewhere else,
-        -- and anything it does can be undone by the teardown behind it.
-        --
-        -- So the whole roster is revived once more, this long after the match
-        -- has finished and everybody is home. Reviving somebody already alive
-        -- costs nothing, which is what makes a blanket sweep the safe answer
-        -- rather than a clever one.
+        -- The belt to the exit path's braces: every exit tells the medical
+        -- script already, and this is what covers the exit nobody has
+        -- written yet. Run once, when everybody is home.
         sweepAfterMatchMs = 5000,
 
-        -- Server events. Each is triggered with the player's server id.
-        --     serverEvents = { 'my_ambulance:server:revivePlayer' },
         serverEvents = {},
 
         -- Client events. Each is sent to that player only, with no

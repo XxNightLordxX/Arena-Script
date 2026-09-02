@@ -167,33 +167,27 @@ end
 --- @return boolean
 
 -- ======================================================================
--- NO PERMISSIONS ARE ASKED FOR, AND NONE ARE GRANTED
+-- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS, AND RUNS NO COMMANDS
 --
--- This resource used to try to give ITSELF the rights its revive command
--- needed -- `add_ace` for the command, and failing that `add_principal` into
--- the admin group. Both are gone, and neither is coming back.
+-- There is nothing here to grant an ace to. It used to try: a revive was an
+-- admin command on most servers, so the arena ran one with ExecuteCommand,
+-- was refused, and then tried to grant itself the ace and the admin group to
+-- get past the refusal. Both failed -- correctly, because a server that lets
+-- a resource write its own permissions has no permissions -- and neither
+-- failure was an error, so the resource carried a page of configuration for
+-- a capability it never had.
 --
--- IT DID NOT WORK. A server that lets a resource write its own permissions
--- is a server with no permissions, so the sensible ones refuse, and a
--- refusal is not an error: ExecuteCommand returns normally, the console
--- prints "Access denied", and the arena carried a page of config explaining
--- a capability it did not have.
+-- It was also the worst thing in the file while it lasted: membership of the
+-- admin group would have made any flaw anywhere in here a way to run any
+-- command on the box, in exchange for something that did not work.
 --
--- IT WAS NOT NEEDED EITHER. The arena revives its own players directly --
--- NetworkResurrectLocalPlayer plus the flags it set itself -- and asks
--- nobody's permission to undo something it did. The command hooks below
--- exist only to tell a SEPARATE medical script, which keeps its own death
--- list that no amount of resurrecting a ped reaches.
---
--- AND IT COST SOMETHING REAL. Admin group membership made any flaw anywhere
--- in this resource a way to run any command on the box, in exchange for a
--- capability that was no longer used.
---
--- If your own revive command is gated on an ace and you want the arena to be
--- able to run it, grant that yourself in server.cfg, where the console is
--- doing the granting and nothing has to ask:
---
---     add_ace resource.Crimson-Arena command.revive allow
+-- Every route that needed it is gone rather than switched off. The arena
+-- does not stand players up itself any more, does not run commands on the
+-- server console, and no longer has a client channel for running one. What
+-- is left of the medical handoff is events and exports -- things a script
+-- publishes on purpose for other scripts to call, needing no permission from
+-- anybody. tests/publicapi_spec.lua fails if any source file reaches for
+-- those natives again.
 -- ======================================================================
 
 --- Clears the medical script's own down-state metadata for one player.
@@ -355,25 +349,28 @@ function ArenaDispatch.Revive(src, keepHold)
     local revive = (Config.Dispatch or {}).revive
     if type(revive) ~= 'table' then revive = {} end
 
-    -- THE ARENA'S OWN REVIVE, FIRST AND UNCONDITIONALLY.
+    -- THE ARENA NO LONGER STANDS PLAYERS UP ITSELF, and the removal is the
+    -- point rather than a side effect.
     --
-    -- Every route to somebody else's revive turned out to be shut. The
-    -- command answered "Access denied", because a resource may not run an
-    -- admin command. Granting the permission answered "Access denied" too,
-    -- because a resource may not grant itself permissions either -- which is
-    -- correct, and is exactly why that door is closed.
+    -- It used to resurrect the ped here, on top of everything below -- a
+    -- second writer for a body the medical script also has an opinion about,
+    -- racing whatever that script does next and then re-asserting its own
+    -- numbers for a moment afterwards to win. Two resources arguing over one
+    -- ped is not a revive; it is a flicker with a winner.
     --
-    -- So the arena stops knocking on it. Standing up a player this resource
-    -- knocked down is not a privileged act, and it needs no permission from
-    -- anybody: client/dispatch.lua does it directly. This runs whether or not
-    -- anything below is configured, which is what makes a fresh install work
-    -- with no integration at all.
+    -- NOTHING IS LEFT ON THE FLOOR BY DROPPING IT, and that is what made it
+    -- safe to drop. ClearDeadState already resurrects in the frame the ped
+    -- dies -- that is death handling, not a revive, and it is what keeps the
+    -- death from registering anywhere at all -- and the respawn releases that
+    -- hold and re-applies the loadout, which starts every life on full health
+    -- and a full plate by rule. A player is stood up by the arena's ordinary
+    -- flow whether or not a single line below is configured.
     --
-    -- Everything after this point is for reaching a MEDICAL SCRIPT's own
-    -- records, which the arena cannot see and will not guess at.
-    TriggerClientEvent('crimson_arena:client:revive', src, nil, keepHold == true)
+    -- What is left here is the half the arena genuinely cannot do: reaching
+    -- a MEDICAL SCRIPT's own records, which it cannot see and will not guess
+    -- at.
 
-    -- AND THE MEDICAL SCRIPT'S OWN RECORD, for every one this box is really
+    -- THE MEDICAL SCRIPT'S OWN REVIVE, for every one this box is really
     -- running, without the operator naming a thing.
     --
     -- This is the half the arena cannot do by resurrecting: a medical script
@@ -427,71 +424,20 @@ function ArenaDispatch.Revive(src, keepHold)
 
     if revive.enabled ~= true then return end
 
-    -- COMMANDS, and this is the form most servers actually have. An
-    -- ambulance script's revive is very often just `/revive <id>`, run by an
-    -- admin, with no event and no export behind it worth calling directly.
-    -- ExecuteCommand runs it from the server console, which is the identity
-    -- a restricted command already trusts.
-    for _, template in ipairs(revive.commands or {}) do
-        if Arena.IsKey(template) then
-            -- `%s` is where the player's id goes. A template without one is
-            -- taken as the bare command and the id is appended, because
-            -- "revive" and "revive %s" are both things an operator will
-            -- reasonably write and only one of them is documented.
-            local line
-            if template:find('%%') then
-                local ok, formatted = pcall(string.format, template, src)
-                line = ok and formatted or nil
-                if not line then
-                    ArenaLog('revive: could not build a command from "%s" -- use %%s where the player id goes.',
-                        template)
-                end
-            else
-                line = ('%s %d'):format(template, src)
-            end
-
-            if line then
-                local ok, err = pcall(ExecuteCommand, line)
-                if ok then
-                    -- SAID OUT LOUD, not traced. Running a command that has
-                    -- no effect looks exactly like running no command at all,
-                    -- and an operator watching a player stay dead needs to
-                    -- know which of those they are looking at. If this line
-                    -- appears and the player is still down, the command is
-                    -- not the right mechanism on this server -- try
-                    -- clientCommands below.
-                    ArenaLog('revive: ran "%s" on the server console.', line)
-                else
-                    ArenaLog('revive: command "%s" errored (%s).', line, tostring(err))
-                end
-            end
-        end
-    end
-
-    -- THE SAME THING, ON THE PLAYER'S OWN CLIENT. A command registered
-    -- client-side does not exist as far as the server console is concerned:
-    -- ExecuteCommand above finds nothing, does nothing, and reports nothing
-    -- wrong -- which is the quietest possible failure and exactly what a
-    -- server whose /revive lives on the client would see.
-    for _, template in ipairs(revive.clientCommands or {}) do
-        if Arena.IsKey(template) then
-            local line
-            if template:find('%%') then
-                local ok, formatted = pcall(string.format, template, src)
-                line = ok and formatted or nil
-            else
-                line = template
-            end
-
-            if line then
-                TriggerClientEvent('crimson_arena:client:runCommand', src, line)
-                ArenaLog('revive: asked %s\'s client to run "%s".', tostring(src), line)
-            else
-                ArenaLog('revive: could not build a client command from "%s" -- use %%s where the player id goes.',
-                    template)
-            end
-        end
-    end
+    -- NO COMMANDS, AND NO WAY TO ASK FOR ANY. There were two more forms
+    -- here -- `commands`, run from the server console with ExecuteCommand,
+    -- and `clientCommands`, relayed to the player's own client to run there.
+    -- Both shipped empty, and both existed only because an ambulance
+    -- script's revive is often an admin command; and an admin command run by
+    -- a resource is refused, which is why the config beside them ended up
+    -- explaining how to grant this resource an ace.
+    --
+    -- That whole story is gone. The resource asks for no permissions, runs
+    -- no commands, and has no channel for running one -- the client event
+    -- that carried them was the only server-to-client arbitrary-command path
+    -- in the resource, kept alive by a producer that was always empty. What
+    -- is left below are events and exports: things a script publishes on
+    -- purpose for other scripts to call.
 
     for _, name in ipairs(revive.serverEvents or {}) do
         if Arena.IsKey(name) then

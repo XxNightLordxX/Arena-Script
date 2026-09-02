@@ -1577,6 +1577,50 @@ t.test('AND A LOADOUT THAT SAYS NONE STILL STARTS THEM ON A FULL PLATE', functio
     t.equals(f.armour, 100, 'a loadout asking for no armour was honoured')
 end)
 
+t.test('AND THE MEDICAL HANDOFF DOES NOT TAKE THE PLATE STRAIGHT BACK OFF', function()
+    -- THE HOLE THE REVIVE REMOVAL OPENED, and it lands on exactly the
+    -- promise this section is about.
+    --
+    -- Two seconds after a respawn the server asks the medical script to
+    -- revive this player. A medical revive does not only clear a death
+    -- record -- it sets health, and most of them set ARMOUR TO ZERO doing
+    -- it. So the arena hands a fighter a full plate for their next life and
+    -- then, by its own handoff, has it taken off them again, on every
+    -- respawn of every round.
+    --
+    -- The client insists on the arena's numbers for a moment afterwards.
+    -- That used to ride on the arena's own revive event; that event went
+    -- with the self-made revive, and the signal went with it, so it is its
+    -- own event now.
+    local f = newClientFixture()
+    enterWithArmour(f, 100)
+
+    f.dead = true
+    f.step()
+    f.fireThreaded('crimson_arena:client:respawn', {
+        spawn = { x = 11.0, y = 21.0, z = 31.0, w = 0.0 },
+        loadout = {
+            weapons = {},
+            health = 200,
+            armor = 100,
+        },
+    })
+    for _ = 1, 6 do f.step() end
+    t.equals(f.armour, 100, 'the respawn did not apply the plate at all')
+
+    -- The medical script, doing what medical scripts do.
+    f.armour = 0
+    f.health = 150
+
+    -- The server tells the client it has just asked another script to touch
+    -- this body.
+    f.fire('crimson_arena:client:holdVitals')
+    for _ = 1, 4 do f.step() end
+
+    t.equals(f.armour, 100, 'the medical handoff took the plate off and nothing put it back')
+    t.equals(f.health, 200, 'the medical handoff left the fighter on less than full health')
+end)
+
 t.test('EVERY LIFE, not just the first -- a respawn re-armours too', function()
     -- The reported symptom is about the lives AFTER the first. The
     -- respawn payload carries the same numbers the entry did, and this is
@@ -1632,14 +1676,21 @@ t.test('and again on the life after that', function()
     t.equals(f.health, 200, 'the second respawn left the fighter hurt')
 end)
 
-t.test('a respawn payload carrying NO loadout leaves them as they were', function()
-    -- An older server, or a payload that lost its loadout on the way. The
-    -- client must not zero somebody's armour because it was told nothing
-    -- about it -- that is the difference between "no instruction" and "no
-    -- armour".
+t.test('a respawn payload carrying NO loadout still starts the life full', function()
+    -- AN OLDER SERVER, OR A PAYLOAD THAT LOST ITS LOADOUT ON THE WAY -- and
+    -- the answer changed when the vitals did.
+    --
+    -- This used to assert that the client left the ped alone, because armour
+    -- was a loadout FIELD and "no instruction" is not the same as "no
+    -- armour". It is not a field any more: full health and a full plate on
+    -- every life is a rule of the arena, so a payload that says nothing
+    -- about them says nothing that could stop it. A fighter who comes back
+    -- on 55 armour because a message was malformed is exactly the outcome
+    -- the rule exists to remove.
     local f = newClientFixture()
     enterWithArmour(f, 100)
     f.armour = 55
+    f.health = 90
 
     f.dead = true
     f.step()
@@ -1648,7 +1699,8 @@ t.test('a respawn payload carrying NO loadout leaves them as they were', functio
     })
     for _ = 1, 6 do f.step() end
 
-    t.equals(f.armour, 55, 'a respawn with no loadout stripped the fighter\'s armour to zero')
+    t.equals(f.armour, 100, 'a respawn with no loadout left the fighter on partial armour')
+    t.equals(f.health, 200, 'a respawn with no loadout left the fighter on partial health')
 end)
 
 
@@ -1687,7 +1739,7 @@ t.test('a medical script that clears armour on revive does not get the last word
 
     -- The handoff, and the medical script behind it doing what medical
     -- scripts do.
-    f.fire('crimson_arena:client:revive')
+    f.fire('crimson_arena:client:holdVitals')
     f.armour = 0
     f.health = 150
 
@@ -1704,7 +1756,7 @@ t.test('but armour lost to being SHOT is not handed back', function()
     local f = newClientFixture()
     enterWithArmour(f, 100)
 
-    f.fire('crimson_arena:client:revive')
+    f.fire('crimson_arena:client:holdVitals')
     for _ = 1, 3 do f.step() end
     f.clock = f.clock + 30000            -- well past the re-assert window
 
@@ -1720,7 +1772,7 @@ t.test('and a revive OUTSIDE a match re-asserts nothing', function()
     -- would hand a player a hundred points of it in the middle of town.
     local f = newClientFixture()
 
-    f.fire('crimson_arena:client:revive')
+    f.fire('crimson_arena:client:holdVitals')
     f.armour = 0
     f.step()
 

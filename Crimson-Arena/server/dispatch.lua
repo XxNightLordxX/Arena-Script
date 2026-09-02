@@ -391,6 +391,23 @@ function ArenaDispatch.Revive(src, keepHold)
         end
     end
 
+    -- AND THE PLAYER'S CLIENT IS TOLD TO INSIST ON THE ARENA'S NUMBERS FOR
+    -- A MOMENT, because everything above this line is a request to another
+    -- script to do something to this player's body.
+    --
+    -- A medical revive does not only clear a death record: it sets health,
+    -- and most of them set ARMOUR TO ZERO doing it. The arena has just put
+    -- this fighter back on full health and a full plate for their next life,
+    -- and two seconds later asks a script to revive them -- so without this
+    -- the plate a player is promised every life is taken off them by the
+    -- arena's own handoff, on every respawn of every round.
+    --
+    -- This used to ride on `crimson_arena:client:revive`, which the arena
+    -- sent in the same breath. That event is gone with the self-made revive,
+    -- and the signal went with it -- so it is its own event now, named for
+    -- the one thing it does.
+    TriggerClientEvent('crimson_arena:client:holdVitals', src)
+
     -- THE MEDICAL SCRIPT'S OWN RECORD OF WHO IS DOWN, cleared where it
     -- actually lives.
     --

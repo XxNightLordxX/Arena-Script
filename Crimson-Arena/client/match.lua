@@ -574,15 +574,20 @@ AddEventHandler('gameEventTriggered', function(event, data)
     handleDeath(victim)
 end)
 
--- THE HANDOFF IS THE SIGNAL. The arena's own revive is harmless -- it sets
--- full health and does not touch armour -- but it is sent in the same breath
--- as the events that reach the medical script, and those are what overwrite
--- both. Rather than guess at which script or how long it takes, the arena
--- simply insists on its own numbers for a moment afterwards.
-AddEventHandler('crimson_arena:client:revive', function()
+--- Insist on the arena's health and armour for a moment.
+---
+--- THE HANDOFF IS THE SIGNAL. Everything the server does at this moment is
+--- a request to ANOTHER script to do something to this player's body, and a
+--- medical revive does not only clear a death record -- it sets health, and
+--- most of them set armour to zero doing it. Rather than guess at which
+--- script or how long it takes, the arena puts its own numbers back for a
+--- moment afterwards.
+local function holdVitals()
     if not currentMatch then return end
     arenaVitals.until_ = GetGameTimer() + VITALS_REASSERT_MS
-end)
+end
+
+RegisterNetEvent('crimson_arena:client:holdVitals', holdVitals)
 
 local function startArenaThread()
     local token = matchToken
@@ -1956,6 +1961,14 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     if not placed or matchToken ~= token or not currentMatch then return end
 
     applyLoadout(ped, data.loadout)
+
+    -- EVERY LIFE, NOT ONLY THE ONES A MEDICAL SCRIPT IS TOLD ABOUT. The
+    -- server opens this window again when it runs the medical handoff, which
+    -- is the case that needs it most -- but the handoff is two seconds away
+    -- and optional, and a fighter is standing in a live round NOW. Opening it
+    -- here as well means the numbers this respawn just applied are held from
+    -- the instant they are applied, whatever else reaches for them.
+    holdVitals()
 end)
 
 --- A gun game promotion: the rung below is taken away and the next one

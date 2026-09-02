@@ -934,6 +934,9 @@ end
 --- @param arenaKey any
 --- @param modeKey any
 --- @param entryFee any
+--- @param lives any -- the host's pick, resolved against Config.Match.lives
+--- @param radar any -- the host's pick, resolved against Config.Match.radar
+--- @param account any -- which of their accounts pays the entry fee
 --- @return string|nil matchId
 --- @return string|nil reasonKey
 function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account)
@@ -1023,6 +1026,7 @@ end
 --- @param src any
 --- @param matchId any
 --- @param teamKey any
+--- @param account any -- which of their accounts pays the entry fee
 --- @return boolean ok
 --- @return string|nil reasonKey
 function ArenaLobby.Join(src, matchId, teamKey, account)

@@ -323,11 +323,14 @@ end)
 --- them dead: downed on the next check, or refused a respawn, or simply
 --- unable to do anything until someone revives them.
 ---
---- NOTHING IS GUESSED HERE, and nothing is configured either. The one event
---- this sends comes from the catalogue in shared/compat/dispatch.lua, read
---- out of the medical script's own source, and only for a resource this box
---- is really running. A guessed event name is worse than none, because it
---- detects as wired up and then silently does nothing.
+--- NOTHING IS GUESSED HERE, and nothing is configured either. Every revive
+--- event this sends comes from the catalogue in shared/compat/dispatch.lua,
+--- read out of the medical script's own source, and only for a resource this
+--- box is really running. A guessed event name is worse than none, because
+--- it detects as wired up and then silently does nothing.
+---
+--- It also sends this resource's own `crimson_arena:client:holdVitals`, and
+--- clears the down metadata itself -- see the body.
 --- @param src number
 --- @return nil
 function ArenaDispatch.Revive(src)

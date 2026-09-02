@@ -705,9 +705,9 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     end
 
     -- THE WEAPONS, and note where this sits: BEFORE the ammo-items check
-    -- below. Ammo items are an opt-in feature that ships off; the weapons
-    -- are the arena. Putting this behind that toggle is what would leave an
-    -- ox_inventory server issuing nobody anything at all.
+    -- below. Ammo items are a switch an operator may turn off; the weapons
+    -- are the arena. Putting this behind that toggle would leave a server
+    -- that switched ammo items off issuing nobody anything at all.
     if ox then
         local missingWeapons = issueWeapons(ox, src, matchId, loadout)
         for _, key in ipairs(missingWeapons) do failed[#failed + 1] = key end

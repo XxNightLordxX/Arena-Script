@@ -23,7 +23,8 @@
     WHAT IS PUBLISHED, and it is deliberately the same fact twice because
     different scripts want it different ways:
       * a replicated state bag on the player, keyed by
-        Config.Dispatch.stateBagKey, holding { active = true, matchId = ... }
+        Config.Dispatch.custom.stateBagKey, holding
+        { active = true, matchId = ... }
       * an export, `exports.crimson_arena:IsInArena()`
 
     THE STATE BAG IS WRITTEN BY THE SERVER, NOT HERE -- see server/dispatch.lua.

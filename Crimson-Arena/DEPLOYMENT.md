@@ -39,9 +39,11 @@ below and it is deliberately near the top.
    `qbx_core`. Those are the only two hard dependencies — `qbx_core` and
    `ox_lib` — and they are the whole `dependencies` block. `ox_target`,
    `ox_inventory` and `oxmysql` are checked at run time by the features that
-   need them, so a server missing one still starts: no lobby NPC is spawned,
-   nobody is issued ammo items, and the leaderboard covers the server run.
-   Each says so once in the console.
+   need them, so a server missing one still starts -- though `ox_inventory`
+   is the one you will notice: without it nobody is issued a weapon at all,
+   because the arena hands weapons over as items. Without `ox_target` no
+   lobby NPC is spawned, and without `oxmysql` the leaderboard covers the
+   server run. Each says so once in the console.
 3. Optionally import `sql/install.sql`. **`Config.Database.enabled` ships
    `false`**, so on a default install there is no table and no query at all —
    the leaderboard keeps its numbers in memory for the server run. If you turn

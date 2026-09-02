@@ -14,10 +14,11 @@
 -- ======================================================================
 -- CACHED SERVER STATE
 --
--- One snapshot, replaced wholesale on every `state` push. Exposed rather
--- than left as an upvalue because the other client files read it -- the
--- panel bridge, the match layer and the spectate camera all need the same
--- server truth, and none of them should keep its own copy of it.
+-- One snapshot, replaced wholesale on every `state` push. A global rather
+-- than an upvalue so there is one copy of the server's truth for the whole
+-- client realm to read: nothing outside this file reads it today, and
+-- keeping it reachable is what stops the next thing that needs it building
+-- a second cache that can disagree with this one.
 -- ======================================================================
 ArenaState = {}
 

@@ -1401,7 +1401,7 @@ end)
 -- THE ARENA GROWS WITH THE ROSTER, AND EVERY CLIENT IS TOLD THE SAME NUMBER
 -- ======================================================================
 
---- An airfield that grows, so a roster can be measured against it.
+--- An arena that grows, so a roster can be measured against it.
 local function growing(config)
     instantRound(config)
     config.Arenas.trailerpark.scale = {

@@ -34,7 +34,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 - Each weapon carries its own ammo block: `options` is what the picker offers, `max` is the ceiling the server clamps to. A weapon with no `options` (melee) offers no ammo choice and is handed out at `default` — with `max` left as the only limit on the wire for it, so every shipped melee entry sets the two to the same number.
 - **Ammo items ship switched ON** (`Config.Loadouts.ammoItems.enabled = true`), with a real item name on every weapon — `ammo-9`, `ammo-shotgun`, `ammo-heavysniper` — read out of that weapon's own `ammoname` in ox_inventory. The round follows the weapon; the player is never asked to choose one. See [Ammo types](#ammo-types--handing-out-your-own-ammo-items).
 - **The amount is a total**, split between the magazine and the pocket: 60 rounds on a Pistol is 30 loaded and 30 as items.
-- `weaponSlots` caps how many **shootable** weapons one player may take — 2 as shipped. **Melee has its own allowance**, `meleeSlots`, also 2, so a player carries two firearms *and* two melee weapons. `alwaysGive` is added on top of both and cannot be spent away.
+- `weaponSlots` caps how many **shootable** weapons one player may take — 2 as shipped. **Melee has its own allowance**, `meleeSlots`, also 2, so a player carries two firearms *and* two melee weapons. Nothing is added on top: a player carries what they picked and nothing else.
 - **Full health and a full plate on every life, always.** That is a rule of the arena and not a setting — there is no `Config.Loadouts.armor` block and no `health` key any more, and neither a config edit nor a crafted client payload reaches it. Both realms read the same two numbers from `Arena.StartingVitals` (200 and 100), and what the client applies is a *floor*, so even a stale loadout starts you on a full plate.
 - **What you *can* pick is the spare kit you carry in.** `Config.Loadouts.supplies` ships on, with body armour (max 4, default 1) and bandages (max 6, default 2) and a shared ceiling of 8 items across everything. They are real `ox_inventory` items, handed over at the start of the round and taken back on the way out with the rest of the arena's kit — and taken back *against what the player still holds*, so somebody who used two of three bandages does not keep the third.
 - **The host picks the loadout, not the player.** `Config.Loadouts.chooser` ships as `'host'`: the host chooses once and everyone in that match fights with it. The server *refuses* a loadout request from anybody else rather than merely greying the panel out. Set it to `'player'` for everyone to pick their own.
@@ -50,7 +50,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 **Matches**
 
 - `Config.Match.maxPlayers = 0` — any number of players in one match. Several matches can run side by side (`maxConcurrentMatches = 0` for no ceiling).
-- Modes: **Free For All** and **Team Deathmatch** are on. **Gun Game ships disabled**, and turning it on is not a second free-for-all: `gunGameLadder` replaces every player's own loadout with the rung they are standing on — on entry, on every promotion and on every respawn — each kill moves them up one, and finishing the ladder wins the round outright, ahead of whatever `Config.Match.winCondition` says. A rung naming a weapon that is not in the enabled catalogue is dropped and the ladder is that much shorter.
+- Modes: **Free For All** and **Team Deathmatch**.
 - Win conditions: `last_standing` (default), `most_kills`, `score_limit`. A tie is a draw and refunds rather than picking one of two equal scores.
 - Lives, respawn delay, a round clock (`roundTimeSeconds = 0` for none), a lobby countdown players can still back out of, and a frozen start countdown.
 - Per-arena boundary sphere: a warning, then damage per tick until the player comes back. `boundary.enabled = false` for an open arena.
@@ -61,7 +61,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 **Betting**
 
 - One switch — `Config.Betting.enabled` — hides every bet control and makes the server reject any bet that arrives anyway.
-- Entry fees are held in escrow, not tracked against a balance. Payout is `winner_takes_all` (default), `top_three` or `per_kill`, with an optional house cut.
+- Entry fees are held in escrow, not tracked against a balance. Payout is `winner_takes_all` (default) or `per_kill`, with an optional house cut. Anything else is read as `winner_takes_all`, so a typo cannot swallow a pot.
 - Spectator side-bets on a team or a fighter, on by default. **Parimutuel as shipped**: winners split the pool in proportion to what they staked, funded by the losing bets and never by the server. Fixed odds at `oddsMultiplier` is the alternative, per crowd, in `Config.Betting.betPayout`.
 - **One pot as shipped, not two.** `betPayout.sharedPool` puts the fighters' and the spectators' bets in the same pool, and `betPayout.includeEntryPot` puts the entry fees in it as well — a fighter's fee is a stake on their own side. So a bystander's money *does* reach the winner, on purpose: it is what makes a small arena's pool worth betting into. Turn either off to keep the crowds' money apart.
 - **A pool with nobody on the other side is handed back, not won.** A share of a pool that contains only your own stake is exactly your own stake, so the arena returns it and says so rather than announcing a win that pays nothing.
@@ -117,8 +117,6 @@ Drag, drop, one line in `server.cfg`, start.
 4. **Optional, and the arena works before you do any of it.** Edit `config.lua`: move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere that suits your map, and check the two shipped arenas suit you.
 
    They are deliberately different animals. **Trailer Park** (`trailerpark`) is a real place on the map — it has its own trailers and fences to fight around, so it spawns nothing of its own. **The Skydome** (`skydome`) is built rather than found: a floor of props tiled into a disc at 1201 m over open water, walled in by a double-stacked ring of shipping containers so nobody walks off the edge, with cover inside it, spawned per match and deleted when it ends, and it grows with the roster. Nothing is built over the top — it is a wall, not a box. Coordinates are a starting point rather than a finished map.
-
-   Two older ground arenas — Sandy Shores Airfield and Vespucci beach — ship **switched off** rather than deleted, so turning one back on is one word.
 5. Start the server and read the console. Config problems are printed by name at start — they are warnings, not failures, and the resource keeps running:
 
    ```
@@ -339,8 +337,6 @@ Nineteen rounds down the range is a fought match, not a leak.
 
 Worth knowing before you go looking for a bug that is not there. Items are handed over **once**, at the moment a player is placed in the arena, for the weapons in the loadout they chose. Specifically:
 
-- **`alwaysGive` weapons get no ammo items.** The house knife is the operator's own entry, not a picked weapon, and it never carries a type.
-- **Gun Game rungs get no ammo items.** The ladder replaces a player's loadout with the rung's own weapon at the rung's own ammo count, and that path does not go through the type resolution.
 - **Respawns do not issue more.** A player who dies and comes back is re-handed their weapon and its rounds in-game; no second item is put in their inventory. One loadout's worth per player per match is the whole of what the arena lends.
 
 #### MK II magazines are components, not items
@@ -581,11 +577,11 @@ Every other layer is either invisible when it works or needs something from you.
 
 Five seconds after the resource starts — five, because resource start order is not guaranteed and a dispatch script listed below this one in `server.cfg` has not started yet at zero — the arena looks up every police and EMS resource name it knows about, sees which are running on **your** server, and prints one short block naming each one and what it can do about it.
 
-Nothing wired up yet, with Project Sloth's dispatch and the Qbox ambulance job running:
+Nothing wired up yet, with this server's dispatch and the Qbox ambulance job running:
 
 ```
 [crimson_arena] dispatch compat: 2 police/EMS resource(s) running.
-[crimson_arena]   ps-dispatch          police+EMS  NOT muted -- needs the line below
+[crimson_arena]   sc-dispatch          police+EMS  NOT muted -- needs the line below
 [crimson_arena]   qbx_ambulancejob     EMS         NOT muted -- needs the line below
 [crimson_arena] Isolation is on: no OTHER player's client can see the fight. An arena player's own client still can -- that is what the line below is for.
 [crimson_arena]   Paste at the top of whatever sends the alert, in that script:
@@ -594,14 +590,14 @@ Nothing wired up yet, with Project Sloth's dispatch and the Qbox ambulance job r
 [crimson_arena] Hooks configured: entry/exit events. /arenadispatch re-runs this report.
 ```
 
-The same server once both are handled — one through its own ignore export, one through the entry/exit events:
+The same server once the dispatch board is handled through its own ignore export:
 
 ```
 [crimson_arena] dispatch compat: 2 police/EMS resource(s) running.
-[crimson_arena]   ps-dispatch          police+EMS  muted automatically -- disableExports calls exports.ps-dispatch:SetIgnoredPlayer
-[crimson_arena]   qbx_ambulancejob     EMS         assumed handled -- you named it in resyncResources, so it hears crimson_arena:dispatch:enter
+[crimson_arena]   sc-dispatch          police+EMS  muted automatically -- disableExports calls exports.sc-dispatch:SetIgnoredPlayer
+[crimson_arena]   qbx_ambulancejob     EMS         NOT muted -- needs the line below
 [crimson_arena] Isolation is on: no OTHER player's client can see the fight.
-[crimson_arena] Hooks configured: entry/exit events, 1 disableExport(s), 1 resyncResource(s). /arenadispatch re-runs this report.
+[crimson_arena] Hooks configured: 1 disableExport(s). /arenadispatch re-runs this report.
 ```
 
 Reading it:
@@ -609,7 +605,6 @@ Reading it:
 | Row says | It means |
 |---|---|
 | `muted automatically` | The arena really calls something on that resource on entry and exit. Nothing more to do. |
-| `assumed handled` | You named it in `resyncResources`, so you have evidently wired it to the entry/exit events. That is evidence, not proof — the report cannot see inside your script. |
 | `NOT muted -- needs the line below` | Nothing in the arena reaches it. Paste the line it prints. |
 | `Isolation is off` | Layer 1 is switched off, so every client on the server can see arena gunfire and arena bodies. |
 | `Isolation is CONFIGURED ON BUT NOT IN FORCE` | You asked for it and the server is not doing it. The report says which of the two it is: OneSync off, or a routing bucket the server accepted and then ignored. Run `/arenaisolation` for the readings. |
@@ -622,9 +617,9 @@ Detected by name today:
 
 | Kind | Resources |
 |---|---|
-| Dispatch boards (`police+EMS`) | `ps-dispatch`, `cd_dispatch`, `qs-dispatch`, `core_dispatch`, `rcore_dispatch`, `codem-dispatch`, `emergencydispatch` |
-| Police (`police`) | `linden_outlawalert`, `origen_police`, `qbx_policejob`, `qbx_police`, `qb-policejob`, `wasabi_police` |
-| EMS (`EMS`) | `qbx_ambulancejob`, `qbx_medical`, `qb-ambulancejob`, `wasabi_ambulance` |
+| Dispatch boards (`police+EMS`) | `sc-dispatch` |
+| Police (`police`) | `sc-police`, `qbx_policejob`, `qbx_police` |
+| EMS (`EMS`) | `sc-ambulance`, `qbx_ambulancejob`, `qbx_medical` |
 
 If yours is not on that list the report says so and tells you where to add the name — `shared/compat/dispatch.lua`, one line. A name nobody runs simply never matches, so the list being generous with spellings costs nothing.
 
@@ -653,12 +648,6 @@ end)
 ```
 
 Both are **server** events and are never sent to a client — who may be ignored by dispatch is not a decision a client gets a say in. Rename them with `custom.enterEvent` / `custom.exitEvent`, or set either to `nil` to fire nothing.
-
-If your dispatch script restarts mid-round it comes back with an empty ignore list and starts alerting on a fight already in progress. Name it in `custom.resyncResources` and every player currently in an arena is re-announced the moment it comes back up:
-
-```lua
-resyncResources = { 'my_dispatch' },
-```
 
 **Form 2 — you read a flag.** A replicated state bag, readable from either realm with no call and no event:
 
@@ -769,15 +758,13 @@ if Player(src).state.crimsonArena then return end
 
 That is the same line the startup report prints, with your own `stateBagKey` already filled in, next to the name of the resource that needs it.
 
-**The report cannot then see that you pasted it.** It does not read other people's files, so that row keeps saying `NOT muted` afterwards — what confirms the fix is a round of the arena and a dispatch board that stays quiet. If you would rather the report stopped raising a resource you have handled by hand, name it in `custom.resyncResources`; the row becomes `assumed handled`, worded as an assumption because that is exactly what it is.
+**The report cannot then see that you pasted it.** It does not read other people's files, so that row keeps saying `NOT muted` afterwards — what confirms the fix is a round of the arena and a dispatch board that stays quiet.
 
 #### GTA's own five-star system
 
-`Config.Dispatch.vanillaPolice.enabled` ships **false**, on purpose.
+**The arena does not touch it.** Entering and leaving a match reaches no game native at all, which is why there is nothing to hand back on the way out.
 
-If you run a custom dispatch script you have almost certainly disabled the vanilla wanted system server-wide already, and touching these natives on top of that ranges from pointless to actively harmful — plenty of custom systems drive their own logic off the native wanted level, and pinning it to zero mid-match would fight them for it.
-
-Turn it on only if NPC police still respond to gunfire on your server. It stops NPC cops being dispatched, stops them reacting to the player, and pins the wanted level at zero for the match. Everything it changes is restored on the way out, wanted stars included — walking into an arena is not an amnesty.
+A server running a custom dispatch script has disabled the vanilla wanted system server-wide already, and touching those natives on top of that ranges from pointless to actively harmful — plenty of custom systems drive their own logic off the native wanted level, and pinning it to zero mid-match would fight them for it. If NPC police still respond to gunfire on your server, that is a setting on your server rather than something the arena can turn off for one round.
 
 ---
 
@@ -785,17 +772,10 @@ Turn it on only if NPC police still respond to gunfire on your server. It stops 
 
 None. Every key in `config.lua` is read by something.
 
-Four were removed rather than left sitting here doing nothing:
-`Config.Betting.entryFee.hostSetsForEveryone`, because joining always charges
-the host's fee and no payout mode weights a share by what a player staked;
-`Config.Dispatch.disableHealthRecharge`, because the multiplier it set cannot
-be read back, so the arena could only "restore" it to a guess; and
-`Config.Dispatch.revive.grantSelfPermission` and `.grantSelfAdmin`, which are
-covered under *Getting back up after a death* below — one of them had a page
-of documentation, a stated default that disagreed with its own value, and no
-code reading it at all. Per-player
-stakes and a stake-weighted payout are a real feature if you want them, but a
-switch that silently does nothing is worse than no switch at all.
+A key that silently does nothing is worse than no key at all, so anything
+that stops being read is removed rather than left here. Per-player stakes and
+a stake-weighted payout are a real feature if you want them; a switch that
+pretends to offer them is not.
 
 This section is kept whether or not it has anything in it: it is the right
 place to record the next one, and an operator who has read this file once will
@@ -810,71 +790,51 @@ the server for permission to do it.
 
 That happens on a mid-match respawn and again when the match ends, so nobody
 walks out of the arena still on the floor. It works on a fresh install with an
-untouched `config.lua`, and it keeps working with
-`Config.Dispatch.revive.enabled = false`.
+untouched `config.lua`.
 
-#### Then what is `Config.Dispatch.revive` for?
+#### Telling your medical script
 
-Telling **another** script. A medical or ambulance resource keeps its own
-record of who is dead, and nothing about resurrecting a ped reaches it — so a
-player can be up and walking while that script still has them listed as a
-casualty, and does whatever it does to a casualty. That handoff is the only
-thing those settings control.
+A medical or ambulance resource keeps its **own** record of who is dead, and
+nothing about resurrecting a ped reaches it — so a player can be up and
+walking while that script still has them listed as a casualty, and does
+whatever it does to a casualty.
 
-It ships with every list empty, and that is deliberate: the only things it
-could name are your server's own commands, events and exports, which this
-resource cannot know. A name that is close but not right looks wired up and
-calls nothing, which is worse than an empty list.
-
-So the startup report says:
+**You do not configure that handoff, and there is nothing in `config.lua` to
+fill in.** The catalogue in `shared/compat/dispatch.lua` carries the revive
+event each medical script listens for, read out of that script's own source,
+and the arena fires it for whichever of them is really running on your box.
+The startup report names the event it will send:
 
 ```
-revive: NOT configured. A player who dies in a match will be stood back up by the arena,
-  but your medical/ambulance script keeps its own death state and nothing here has told it.
+revive: 1 detected medical script(s) are told to revive a player directly -- hospital:client:Revive.
 ```
 
-**That is not "revives are broken".** Players get up either way. It is saying
-the handoff has not been given any names. If your medical script does not care
-— many do not, because they poll the ped's health rather than keeping a list —
-you can leave it exactly as it is.
+If nothing is detected, the report says so plainly and points at the one place
+to fix it:
 
-To wire it up, name whatever revives a player on your server:
-
-```lua
-serverEvents = { 'my_ambulance:server:revivePlayer' },
-clientEvents = { 'my_ambulance:client:revive' },
-exports      = { { resource = 'my_ambulance', export = 'RevivePlayer' } },
 ```
+revive: NOTHING IS TELLING YOUR MEDICAL SCRIPT. No script this catalogue knows is
+  running, so a player who dies in a match walks out of the arena
+  still dead as far as that script is concerned.
+```
+
+The fix is a line in that catalogue naming your script and the event it
+listens for — read out of its own source, never guessed. A name that is close
+but not right looks wired up and calls nothing, which is worse than no name.
 
 #### Why it does not run `/revive`
 
-It used to try, and on most servers it silently failed. A command run from a
-resource is run **by** that resource, and an admin command checks whether its
-caller is allowed — a resource is not an admin, so the command was refused.
-A refused command is not an error, it is a command that did nothing, so the
-console could honestly report running it while the player stayed on the floor.
+A command run from a resource is run **by** that resource, and an admin
+command checks whether its caller is allowed — a resource is not an admin, so
+the command is refused. A refused command is not an error, it is a command
+that did nothing, so a console could honestly report running it while the
+player stayed on the floor.
 
 Granting the permission does not fix it either, because a resource may not
 grant itself permissions — correctly, since a server where it could is a
-server with no permissions at all. Both doors are shut, which is why the
-arena stopped knocking on them.
-
-So the settings that tried to open them are **gone**, not merely switched
-off. The arena no longer writes an ace, no longer joins a group, and has no
-setting to make it try. The admin one in particular meant any flaw anywhere
-in this resource was a way to run any command on your box — paid for a
-capability nothing uses any more.
-
-`commands` still ships empty for the same reason: with nothing granting
-itself anything, a configured command on a server that gates it is an
-"Access denied" line per death.
-
-If you still want the arena to run a command — because your medical script's
-revive *is* a command — name it in `commands` and grant the right in
-`server.cfg`, where the console is doing the granting and it needs
-permission from nobody:
-
-*(There is nothing here to grant. The resource runs no commands.)*
+server with no permissions at all. Both doors are shut, so the arena does not
+knock on them: it writes no ace, joins no group, runs no command, and has no
+setting to make it try.
 
 ---
 
@@ -1103,9 +1063,8 @@ are client-side because only a client can ask the game what models it has.
 - Rejected keys produce a toast naming them. A panel left open across a config reload is the usual cause.
 - **Off-list ammo falls back to `default`, it is not rounded.** If players report getting less ammo than they picked, check that the value is in that weapon's `options` list and not above its `max`.
 - `weaponSlots` caps how many weapons are honoured. Entries past the cap are silently dropped — the request still succeeds.
-- `Config.Loadouts.allowChoose = false` ignores the picker entirely and hands out `Config.Loadouts.fixed`.
 - If it is the **ammo item** rather than the weapon that is missing, that is a different failure — see [Ammo items are not arriving](#ammo-items-are-not-arriving).
-- `Config.Match.stripWeaponsOnEntry = true` (the default) wipes carried weapons on entry. If players are arriving unarmed, check that their chosen loadout resolved to something — a request that resolves to nothing still succeeds and carries only `alwaysGive`.
+- A request that resolves to nothing still **succeeds**, and the player walks in empty-handed. If players are arriving unarmed, check that their chosen loadout resolved to something.
 - Loadouts are re-resolved at match start against the live catalogue. Turn `Config.Debug` on to see what was dropped:
 
   ```
@@ -1119,7 +1078,7 @@ are client-side because only a client can ask the game what models it has.
 - **`ox_inventory` must be started.** If it is not, the console says so in as many words — `ammo items are switched on but ox_inventory is not started` — and nobody is given any.
 - **The item name is the usual answer.** The names in the shipped config are placeholders. A name that does not exist on your server produces one console line per attempt, naming the item: `ammo: could not give ammo-rifle-ap x60 to 12 -- check that item exists on this server.` Nothing checks those names at startup, so this line is the only place a typo shows up.
 - The same line appears for a **full inventory**, which is not a typo. `allowWeaponWithoutAmmoItem` decides whether that player still fights.
-- **Melee, `alwaysGive` weapons and Gun Game rungs never carry an item.** That is by design, not a fault — see [what is not issued an item](#what-is-not-issued-an-item).
+- **Melee weapons never carry an item.** That is by design, not a fault — see [what is not issued an item](#what-is-not-issued-an-item).
 - A weapon with `ammoTypes = false`, or one whose ammo `max` is 1 or less, offers no types and so has no item to issue.
 - Turn `Config.Debug` on and the grant and the reclaim both print: `ammo: gave ammo-rifle-ap x60 to 12 on match m4f2a1`, then `ammo: reclaimed 41 of 60 item(s) from 12`.
 
@@ -1180,7 +1139,6 @@ are client-side because only a client can ask the game what models it has.
 - **With isolation on, an alert that still arrives almost certainly came from the fighter's own client.** No other machine on the server was sent the fight, so there is nothing else it could have been watching. That narrows it to one file, and the state bag line goes in it.
 - If it is only *EMS* being called, the likeliest cause is a script hooking the death **event** rather than polling the death **state**. Layer 2 cannot help with those; the state bag can.
 - If a `cancelEvents` entry is not silencing anything, that is the documented behaviour rather than a fault — see [layer 5](#layer-5--cancelling-the-alert-event-and-it-is-best-effort-only). Use the state bag line instead.
-- A dispatch script that starts alerting again after *it* restarts has lost its ignore list. Name it in `Config.Dispatch.custom.resyncResources`.
 
 ### Two matches can see and shoot each other
 

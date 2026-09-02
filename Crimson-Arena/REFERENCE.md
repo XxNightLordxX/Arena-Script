@@ -50,9 +50,8 @@ instancing really happened rather than assuming it did.
 
 - **Player-run lobbies.** Any player who passes `Config.Permissions.createJobs`
   opens a match from the panel; others browse and join. No admin has to be online.
-- **Free-for-all and team deathmatch**, plus a gun game ladder that ships off.
-  A mode decides whether teams exist, whether friendly fire lands, and what ends
-  the round.
+- **Free-for-all and team deathmatch.** A mode decides whether teams exist,
+  whether friendly fire lands, and what ends the round.
 - **Uneven teams are allowed on purpose.** The startability rule is that every
   enabled team has somebody in it, not that the sides are equal.
 - **Lives, not one death.** The host picks how many, inside a band the operator
@@ -115,7 +114,8 @@ instancing really happened rather than assuming it did.
 - **Side bets** from spectators, and fighters may back themselves, each with their
   own enabled/min/max band.
 - **Payout modes**: `winner_takes_all` — one player, or the winning team splitting
-  it evenly — or `top_three`, split by `topThreeSplit` and free-for-all only.
+  it evenly — or `per_kill`, divided by share of the kills. Anything else is read
+  as `winner_takes_all`, so a typo cannot swallow a pot.
   Side-bet pools settle in proportion to what each backer staked. A configurable
   house cut, and integer maths that distributes every remaining dollar rather than
   dropping it.
@@ -167,8 +167,8 @@ instancing really happened rather than assuming it did.
 
 | | Enabled | Also in the catalogue, switched off |
 |---|---|---|
-| Arenas | **The Skydome** (`skydome`), **Trailer Park** (`trailerpark`) | Sandy Shores Airfield (`airfield`), Vespucci Sands (`beach`) |
-| Modes | **Free For All** (`ffa`, the default), **Team Deathmatch** (`tdm`) | Gun Game (`gungame`) |
+| Arenas | **The Skydome** (`skydome`), **Trailer Park** (`trailerpark`) | — |
+| Modes | **Free For All** (`ffa`, the default), **Team Deathmatch** (`tdm`) | — |
 | Teams | **Crimson** (`crimson`), **Ash** (`ash`) | Bone (`bone`), Ember (`ember`) |
 | Weapons | 77 | 19 |
 
@@ -235,10 +235,6 @@ Both are **server** events, and both are configurable in
 | `crimson_arena:dispatch:enter(src, matchId)` | A player is placed in an arena. |
 | `crimson_arena:dispatch:exit(src, matchId)` | A player leaves one, by any path. |
 
-Name your own resource in `Config.Dispatch.custom.resyncResources` and the entry
-event is re-fired for everyone currently in an arena whenever that resource
-restarts, so a dispatch script that lost its ignore list gets it back.
-
 ---
 
 ## The network surface
@@ -272,7 +268,7 @@ line-number map that is regenerated whenever the file changes.
 | `Config.Lobby` | The lobby ped, the ground marker, the blip, how players interact with it, and where they are returned to. |
 | `Config.Match` | Player counts, lives, countdowns, win conditions, respawn timing, spawn scatter, the keep-out barrier, the crossfire guard, the radar, and the rules about being dead or in a vehicle. |
 | `Config.Teams` | The team list, their colours and their order. |
-| `Config.Modes`, `Config.DefaultMode` | Free-for-all, team deathmatch, gun game: whether teams exist, what ends a round. |
+| `Config.Modes`, `Config.DefaultMode` | Free-for-all and team deathmatch: whether teams exist, what ends a round. |
 | `Config.Betting` | Entry fees, spectator bets, fighter bets, payout mode, house cut, which accounts may be used, and every refund rule. |
 | `Config.UI` | Panel title, subtitle, logo, theme, sounds, and whether the in-match HUD is drawn. |
 | `Config.Permissions` | Admin groups, and the jobs allowed to create or join matches. |
@@ -524,8 +520,6 @@ listed; the source documents them where they are.
 | `ArenaMatch.Abort(matchId, reasonKey)` | The refund-everything path: a resource stop, an admin force-stop, a lobby that emptied out, a round that could not start. |
 | `ArenaMatch.RemovePlayer(src, reasonKey)` | One player out, mid-round: they left, they were dropped, or an admin pulled them. |
 | `ArenaMatch.IsLive(matchId)` | Whether a match is in its live phase. |
-| `ArenaMatch.GetLadder(modeKey)` | The rungs of a mode's gun-game ladder that can actually be handed out, resolved against the live weapon catalogue. |
-| `ArenaMatch.RungForKills(kills, rungs)` | Which rung `kills` has earned on a ladder `rungs` long, and whether that finished it. |
 
 #### `client/ui.lua` — 9 functions
 

@@ -15,16 +15,16 @@
        73   Lobby         The NPC players walk up to
       144   Match         Lives, timers, player counts, win condition
       352   Teams         The sides, and whether they may be uneven
-      454   Modes         Free-for-all, team deathmatch, gun game
+      454   Modes         Free-for-all and team deathmatch
       473   DefaultMode   Which of them a new lobby opens on
       492   Betting       Entry fees, self-bets, side-bets, how the pot is split
       685   UI            Panel colours, logo and title
       748   Permissions   Who may open a match, who may force-stop one
       827   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1362   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     2874   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2884   Webhook       Optional: a Discord line per finished match
-     2922   Dispatch      Optional: keeping police and EMS out of the arena
+     2866   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2876   Webhook       Optional: a Discord line per finished match
+     2914   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -2739,15 +2739,13 @@ Config.Loadouts = {
     -- exact item its ox_inventory entry declares, so this is only consulted
     -- for a weapon added later without one.
     --
-    -- The variant rounds that used to sit here -- ammo-rifle-fmj, -ap,
-    -- -incendiary, -hollowpoint, -tracer -- were removed rather than left
-    -- looking configured: NONE of them exists in this server's inventory.
-    -- Offering a player a round the inventory cannot produce is the quietest
-    -- kind of broken, and this file's own rule is that a name which merely
-    -- sounds right is worse than no name.
+    -- ONE ENTRY, AND IT NAMES AN ITEM THIS SERVER REALLY HAS. Offering a
+    -- player a round the inventory cannot produce is the quietest kind of
+    -- broken, and this file's own rule is that a name which merely sounds
+    -- right is worse than no name.
     --
     -- 5.56x45 is the fallback because it is the round the most weapons here
-    -- take. Add variants back the moment the items exist to back them.
+    -- take. Add a variant the moment an item exists to back it.
     defaultAmmoTypes = {
         { key = 'standard', label = '5.56x45', item = 'ammo-rifle' },
     },
@@ -2831,16 +2829,10 @@ Config.Loadouts = {
         },
     },
 
-    -- THERE IS NO `health` KEY HERE ANY MORE, and saying why is worth more
-    -- than the key was. It read `health = 200` -- a stock GTA full bar --
-    -- and the only thing it could usefully be set to was 200: lower it and
-    -- the arena starts handicapping everybody for no stated reason, raise it
-    -- and nothing happens, because nothing here raises a ped's ceiling.
-    --
-    -- Full health and a full plate on every life are a rule of the arena
-    -- now, in shared/arena.lua where both realms read the same number. Their
-    -- real health and armour are still captured on the way in and handed
-    -- back on the way out.
+    -- FULL HEALTH AND A FULL PLATE ON EVERY LIFE ARE A RULE, NOT A SETTING.
+    -- Both numbers live in shared/arena.lua, where the panel and the server
+    -- read the same one. A player's real health and armour are captured on
+    -- the way in and handed back on the way out.
 }
 
 -- ======================================================================
@@ -2920,36 +2912,14 @@ Config.Webhook = {
 -- nothing to see in the first place. Read that block before any of the rest.
 -- ======================================================================
 Config.Dispatch = {
-    -- THERE IS NO `suppressAmbulanceDown` KEY HERE ANY MORE, and it is worth
-    -- one paragraph saying why rather than a silent removal.
-    --
-    -- It sat at the top of this block reading like the headline medical
-    -- setting, and all it did was gate `clearDeadStateImmediately` at the
-    -- bottom of it -- two keys, in two places, that an operator had to set
-    -- the same way to change one behaviour, and either of them alone
-    -- silently doing nothing. That is the same pathology the missing
-    -- `suppressPoliceShotsFired` key below has its own paragraph about.
-    --
-    -- `clearDeadStateImmediately` is the switch.
-
-    -- THERE IS NO POLICE SWITCH HERE, and no `vanillaPolice` block either.
-    --
-    -- GTA's own NPC cops used to have one: a block with an `enabled` and
-    -- three sub-switches that shipped OFF and stayed off, because a server
-    -- running a custom dispatch script has already disabled the vanilla
-    -- wanted system, and the ones that drive their own logic off the native
-    -- wanted level would have been fought for it by an arena zeroing it
-    -- mid-match. It never ran on this server and could never have helped
-    -- with sc-dispatch, so it is gone rather than left here to be read and
-    -- dismissed at every edit.
-    --
-    -- What is left is the one thing that does reach a dispatch script:
-    -- `custom` below. Each of its forms is governed by whether you filled
-    -- that form's own list in -- an empty list does nothing whatever a
-    -- switch says, which is why `custom` has no master switch either.
-    -- `cancelEvents` explains in its own comment why it is deliberately not
-    -- tied to a police-or-medical switch at all: an event name does not say
-    -- which of the two it is.
+    -- EVERY SWITCH IN HERE SITS WITH THE THING IT CONTROLS, and there is no
+    -- master one at the top of the block. `clearDeadStateImmediately` at the
+    -- bottom is the medical switch. `custom` below is the dispatch one, and
+    -- each of its forms is governed by whether you filled that form's own
+    -- list in -- an empty list does nothing whatever a switch says, which is
+    -- why `custom` has no master switch either. `cancelEvents` explains in
+    -- its own comment why it is deliberately not tied to a police-or-medical
+    -- switch at all: an event name does not say which of the two it is.
 
     -- ==================================================================
     -- ROUTING BUCKET ISOLATION -- the layer that needs nothing from anybody
@@ -3041,13 +3011,11 @@ Config.Dispatch = {
     -- race against another handler; it is a write against a wall clock, and
     -- it does not care what order anything started in.
     --
-    -- THE BUG THIS REPLACES, stated plainly because the old comment claimed
-    -- the opposite. These keys used to live under `revive` and were written
-    -- only by the revive -- which, on the path a fighter takes most, runs
+    -- WHY IT IS DONE AT THE DEATH AND NOT AT THE REVIVE: the revive runs
     -- `Config.Match.respawnDelaySeconds` (5s) plus `afterRespawnDelayMs`
-    -- (2000ms) AFTER the death. Seven seconds, against a 500ms poll:
-    -- fourteen windows. Those two alerts were not "never raised". They were
-    -- certain, on every death of every round.
+    -- (2000ms) after a death, on the path a fighter takes most. Seven
+    -- seconds, against a 500ms poll, is fourteen windows in which those two
+    -- alerts are not merely possible but certain.
     --
     -- WHAT IT STILL CANNOT DO, and this is not a limit that more code fixes:
     -- sc-ambulance sends its own EMSDownAlert from the VICTIM'S CLIENT,
@@ -3202,16 +3170,13 @@ Config.Dispatch = {
         -- failing to cancel one about a fighter, so anything doubtful is
         -- passed straight through.
         --
-        -- Not tied to the two suppress switches at the top of this block: an
-        -- event name does not say whether it is a police alert or a medical
-        -- one. Empty this list to switch it off.
+        -- Not tied to any police-or-medical switch: an event name does not
+        -- say which of the two it is. Empty this list to switch it off.
         cancelEvents = {
             -- ---- sc-dispatch / sc-ambulance, READ OFF THEIR OWN SOURCE ----
             -- These four are the events those two resources ACTUALLY raise on
-            -- this box. The two names that used to sit here --
-            -- 'sc-dispatch:server:AddNotification' and
-            -- 'sc-dispatch:AddNotification' -- exist in neither resource and
-            -- never fired once, so this whole layer was listening to silence.
+            -- this box.
+            --
             -- AddNotification is an EXPORT, not an event:
             -- `exports['sc-dispatch']:AddNotification(data)`. Nothing can
             -- register a handler on an export call, which is why `retract`
@@ -3388,21 +3353,14 @@ Config.Dispatch = {
     -- The catalogue in shared/compat/dispatch.lua already knows which revive
     -- event each medical script listens for, read out of that script's own
     -- source, and fires it for whichever of them this box is really running.
-    -- It happens on each mid-match respawn and again on the way out -- both,
-    -- because a death inside the arena is a death as far as your medical
-    -- script is concerned, and a player who is only revived at the end
-    -- fights the rest of the round as a casualty.
+    -- Add a script to that catalogue and it is told; there is nothing to
+    -- configure here. It happens on each mid-match respawn and again on the
+    -- way out -- both, because a death inside the arena is a death as far as
+    -- your medical script is concerned, and a player who is only revived at
+    -- the end fights the rest of the round as a casualty.
     --
-    -- WHAT USED TO BE HERE, and why it is not: an `enabled` switch and three
-    -- lists -- serverEvents, clientEvents and exports -- for naming that
-    -- revive by hand. The switch shipped ON and all three lists shipped
-    -- EMPTY, so the block read as a feature that was turned on and gated
-    -- nothing. It was the escape hatch for a medical script the catalogue
-    -- had never heard of; adding one line to the catalogue is a better
-    -- answer to that than four keys carried by every server that does not
-    -- need them.
-    --
-    -- WHAT IS LEFT IS TIMING, and both numbers below are load-bearing.
+    -- WHAT THIS BLOCK IS, THEN, IS TIMING. Both numbers below are
+    -- load-bearing.
     revive = {
         -- HOW LONG AFTER A RESPAWN THE MEDICAL SCRIPT IS TOLD, in ms.
         --

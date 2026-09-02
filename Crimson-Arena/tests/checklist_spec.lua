@@ -20,10 +20,9 @@
       by NAME now, and the first test below is what stops numbers coming
       back.
 
-      THE ARENAS IT NAMES. It used to tell an operator the two shipped arenas
-      were Sandy Shores Airfield and Vespucci beach. Both had been switched
-      off for a while by then, and the two that ship now are somewhere else
-      entirely. Somebody following that would go and stand in an empty field.
+      THE ARENAS IT NAMES. Both documents have to name the arenas that
+      really ship, at the coordinates they really sit on. Somebody following
+      a stale name goes and stands in an empty field.
 
     THAT SECOND ONE IS CHECKED IN BOTH DOCUMENTS, and the reason is that
     fixing it in one was not enough. DEPLOYMENT.md was corrected and README.md

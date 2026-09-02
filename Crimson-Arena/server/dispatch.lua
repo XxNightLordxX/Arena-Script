@@ -169,34 +169,22 @@ end
 -- ======================================================================
 -- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS, AND RUNS NO COMMANDS
 --
--- There is nothing here to grant an ace to. It used to try: a revive was an
--- admin command on most servers, so the arena ran one with ExecuteCommand,
--- was refused, and then tried to grant itself the ace and the admin group to
--- get past the refusal. Both failed -- correctly, because a server that lets
--- a resource write its own permissions has no permissions -- and neither
--- failure was an error, so the resource carried a page of configuration for
--- a capability it never had.
---
--- It was also the worst thing in the file while it lasted: membership of the
--- admin group would have made any flaw anywhere in here a way to run any
--- command on the box, in exchange for something that did not work.
---
--- Every route that needed it is gone rather than switched off. The arena
--- does not stand players up itself any more, does not run commands on the
--- server console, and no longer has a client channel for running one. What
--- is left of the medical handoff is events and exports -- things a script
--- publishes on purpose for other scripts to call, needing no permission from
--- anybody. tests/publicapi_spec.lua fails if any source file reaches for
--- those natives again.
+-- A server that lets a resource write its own permissions has no
+-- permissions, so this one does not ask for any and has no route that would
+-- need them: it runs nothing on the server console and has no client channel
+-- for running anything. The medical handoff is events and exports -- things
+-- a script publishes on purpose for other scripts to call, needing no
+-- permission from anybody. tests/publicapi_spec.lua fails if any source file
+-- reaches for the permission natives.
 -- ======================================================================
 
 --- Clears the medical script's own down-state metadata for one player.
 ---
---- The keys come from Config.Dispatch.revive.clearMetadata, so an operator
---- whose script uses different names says so rather than being guessed at --
---- and an empty list switches this off entirely. The two shipped names are
---- the QB-family convention and are the ones this file's own catalogue
---- already documents sc-ambulance setting.
+--- The keys come from Config.Dispatch.downState.keys, so an operator whose
+--- script uses different names says so rather than being guessed at -- and
+--- an empty list switches this off entirely. The two shipped names are the
+--- QB-family convention and are the ones this file's own catalogue already
+--- documents sc-ambulance setting.
 ---
 --- WRITES NOTHING IT DOES NOT HAVE TO. A key that is already false or absent
 --- is left alone, so on a server using neither name this costs two lookups
@@ -346,26 +334,21 @@ end)
 function ArenaDispatch.Revive(src, keepHold)
     if type(src) ~= 'number' or src <= 0 then return end
 
-    -- THE ARENA NO LONGER STANDS PLAYERS UP ITSELF, and the removal is the
-    -- point rather than a side effect.
+    -- THE ARENA DOES NOT STAND PLAYERS UP HERE, and that is deliberate.
+    -- Resurrecting the ped from this function would make it a second writer
+    -- for a body the medical script also has an opinion about, racing
+    -- whatever that script does next. Two resources arguing over one ped is
+    -- not a revive; it is a flicker with a winner.
     --
-    -- It used to resurrect the ped here, on top of everything below -- a
-    -- second writer for a body the medical script also has an opinion about,
-    -- racing whatever that script does next and then re-asserting its own
-    -- numbers for a moment afterwards to win. Two resources arguing over one
-    -- ped is not a revive; it is a flicker with a winner.
+    -- NOTHING IS LEFT ON THE FLOOR BY LEAVING IT OUT. ClearDeadState already
+    -- resurrects in the frame the ped dies -- that is death handling, not a
+    -- revive, and it is what keeps the death from registering anywhere at all
+    -- -- and the respawn releases that hold and re-applies the loadout, which
+    -- starts every life on full health and a full plate by rule. A player is
+    -- stood up by the arena's ordinary flow either way.
     --
-    -- NOTHING IS LEFT ON THE FLOOR BY DROPPING IT, and that is what made it
-    -- safe to drop. ClearDeadState already resurrects in the frame the ped
-    -- dies -- that is death handling, not a revive, and it is what keeps the
-    -- death from registering anywhere at all -- and the respawn releases that
-    -- hold and re-applies the loadout, which starts every life on full health
-    -- and a full plate by rule. A player is stood up by the arena's ordinary
-    -- flow whether or not a single line below is configured.
-    --
-    -- What is left here is the half the arena genuinely cannot do: reaching
-    -- a MEDICAL SCRIPT's own records, which it cannot see and will not guess
-    -- at.
+    -- What this function does is the half the arena genuinely cannot: reach a
+    -- MEDICAL SCRIPT's own records, which it cannot see and will not guess at.
 
     -- THE MEDICAL SCRIPT'S OWN REVIVE, for every one this box is really
     -- running, without the operator naming a thing.
@@ -399,10 +382,9 @@ function ArenaDispatch.Revive(src, keepHold)
     -- the plate a player is promised every life is taken off them by the
     -- arena's own handoff, on every respawn of every round.
     --
-    -- This used to ride on `crimson_arena:client:revive`, which the arena
-    -- sent in the same breath. That event is gone with the self-made revive,
-    -- and the signal went with it -- so it is its own event now, named for
-    -- the one thing it does.
+    -- Its own event, named for the one thing it does: open a short window in
+    -- which the client re-asserts the arena's numbers over anything another
+    -- script writes.
     TriggerClientEvent('crimson_arena:client:holdVitals', src)
 
     -- THE MEDICAL SCRIPT'S OWN RECORD OF WHO IS DOWN, cleared where it
@@ -436,23 +418,11 @@ function ArenaDispatch.Revive(src, keepHold)
     -- costs two table lookups.
     clearDownMetadata(src)
 
-    -- THERE IS NO GENERIC HANDOFF BELOW THIS LINE ANY MORE, and the removal
-    -- is worth a paragraph because what went was a whole configuration
-    -- surface, not a line of code.
-    --
-    -- Config.Dispatch.revive carried four keys: an `enabled` switch and three
-    -- lists -- serverEvents, clientEvents and exports -- for naming a medical
-    -- script's own revive by hand. The switch shipped ON and all three lists
-    -- shipped EMPTY, which is the worst arrangement of those two facts: a
-    -- reader saw a feature switched on, and it gated nothing whatsoever.
-    --
-    -- WHAT MADE THEM REDUNDANT rather than merely unused: the catalogue
-    -- above already names the revive event for every medical script this box
-    -- actually runs, verified out of that script's own source, and fires it
-    -- without an operator naming a thing. The hand-written lists were the
-    -- escape hatch for a script the catalogue had never heard of -- which is
-    -- not a situation this server is in, and one more entry in the catalogue
-    -- is the answer if it ever is.
+    -- THAT IS THE WHOLE HANDOFF. There is nothing to configure and nothing
+    -- to name by hand: the catalogue above already carries the revive event
+    -- for every medical script this box runs, verified out of that script's
+    -- own source. A script it has never heard of is one more line THERE, not
+    -- a list of names here.
 end
 
 -- ======================================================================
@@ -483,10 +453,9 @@ RegisterCommand('arenarevive', function(src, args)
         return
     end
 
-    -- NOT GATED ON ANYTHING, and there is no longer anything to gate it on.
-    -- The handoff is whatever the catalogue detected on this box, so what
-    -- this command does is exactly what a real match does -- which is the
-    -- only property that makes it worth having.
+    -- NOT GATED ON ANYTHING. The handoff is whatever the catalogue detected
+    -- on this box, so what this command does is exactly what a real match
+    -- does -- which is the only property that makes it worth having.
     ArenaLog('arenarevive: running the end-of-match revive against %d. Everything below is what a real match would do.',
         target)
     ArenaDispatch.Revive(target)

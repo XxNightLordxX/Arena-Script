@@ -204,7 +204,7 @@ local INTACT = 'ammo-rifle-apx40,burgerx3,phonex1'
 --- @return string matchId
 local function liveMatch(ids, mutate)
     local server = newServer(ids, mutate)
-    server.fire('createMatch', ids[1], { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', ids[1], { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')
@@ -226,7 +226,7 @@ end
 
 t.test('a lobby does not touch anybody: only entering the arena does', function()
     local server = newServer({ 1, 2 })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local match = server.lobby.All()[1]
     server.fire('joinMatch', 2, { matchId = match.id })
 
@@ -331,7 +331,7 @@ end
 --- @return string matchId
 local function armedDoorOffMatch(ids)
     local server = newServer(ids, doorOff)
-    server.fire('createMatch', ids[1], { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', ids[1], { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')
@@ -388,7 +388,7 @@ t.test('and two rounds in a row do not stack two kits on them', function()
     server.match.End(first, 'match.ended')
     server.step(4)
 
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local second = server.lobby.All()[1]
     server.fire('joinMatch', 2, { matchId = second.id })
     local weapon = firstArmedWeapon(server.env.Config)
@@ -442,7 +442,7 @@ end)
 t.test('two rounds in a row leave them exactly as they started', function()
     local server = newServer({ 1, 2 })
     for _ = 1, 2 do
-        server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
         local match = server.lobby.All()[1]
         server.fire('joinMatch', 2, { matchId = match.id })
         server.fire('setReady', 1, { ready = true })

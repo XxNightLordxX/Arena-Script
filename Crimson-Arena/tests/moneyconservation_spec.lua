@@ -314,7 +314,7 @@ local function run(plan)
     --- the bottom is reading facts rather than intentions.
     local took = {}
 
-    local id = server.lobby.Create(1, 'airfield', plan.teams and 'tdm' or 'ffa',
+    local id = server.lobby.Create(1, 'trailerpark', plan.teams and 'tdm' or 'ffa',
         plan.fee, nil, nil, plan.accounts[1])
     if not id then
         -- The host could not pay the fee out of the pocket they named. Create
@@ -666,7 +666,7 @@ local function pinned(fee, mutate, finish)
         [3] = { cash = WALLET, bank = WALLET },
     }
     local server = newServer(wallets, mutate)
-    local id = server.lobby.Create(1, 'airfield', 'ffa', fee, nil, nil, 'cash')
+    local id = server.lobby.Create(1, 'trailerpark', 'ffa', fee, nil, nil, 'cash')
     server.lobby.Join(2, id, nil, 'cash')
     server.lobby.Join(3, id, nil, 'cash')
     finish(server, id)
@@ -749,9 +749,9 @@ t.test('two matches settling side by side do not pay each other', function()
     for src = 1, 5 do wallets[src] = { cash = WALLET, bank = WALLET } end
     local server = newServer(wallets)
 
-    local first = server.lobby.Create(1, 'airfield', 'ffa', 2500, nil, nil, 'cash')
+    local first = server.lobby.Create(1, 'trailerpark', 'ffa', 2500, nil, nil, 'cash')
     server.lobby.Join(2, first, nil, 'bank')
-    local second = server.lobby.Create(3, 'airfield', 'ffa', 1000, nil, nil, 'bank')
+    local second = server.lobby.Create(3, 'trailerpark', 'ffa', 1000, nil, nil, 'bank')
     server.lobby.Join(4, second, nil, 'cash')
 
     t.isTrue(server.betting.PlaceSpectatorBet(5, first, 1, 3000, 'cash'), 'bet on the first match')
@@ -785,7 +785,7 @@ t.test('a bet refused for want of funds moves nothing at all', function()
         [3] = { cash = 0, bank = WALLET },
     }
     local server = newServer(wallets)
-    local id = server.lobby.Create(1, 'airfield', 'ffa', 0, nil, nil, 'cash')
+    local id = server.lobby.Create(1, 'trailerpark', 'ffa', 0, nil, nil, 'cash')
     server.lobby.Join(2, id, nil, 'cash')
 
     -- An empty pocket, and cash is the account they picked. accountsFor

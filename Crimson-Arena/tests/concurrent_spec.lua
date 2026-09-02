@@ -195,8 +195,8 @@ end
 
 t.test('two matches can be fought in the SAME arena at the same time', function()
     local server = fourPlayers()
-    local first = runMatch(server, 'airfield', { 1, 2 })
-    local second = runMatch(server, 'airfield', { 3, 4 })
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
+    local second = runMatch(server, 'trailerpark', { 3, 4 })
 
     t.isNotNil(server.lobby.Get(first), 'the first match did not survive the second being opened')
     t.isNotNil(server.lobby.Get(second), 'the second match could not be opened in an arena already in use')
@@ -210,8 +210,8 @@ t.test('and their fighters stand in DIFFERENT instances of the world', function(
     -- The whole mechanism. Same coordinates, different buckets: they cannot
     -- see, shoot or collide with each other.
     local server = fourPlayers()
-    runMatch(server, 'airfield', { 1, 2 })
-    runMatch(server, 'airfield', { 3, 4 })
+    runMatch(server, 'trailerpark', { 1, 2 })
+    runMatch(server, 'trailerpark', { 3, 4 })
 
     local a, b = server.bucket(1), server.bucket(3)
     t.isTrue(a ~= 0, 'the first match fights in the open world, where everybody can see it')
@@ -411,8 +411,8 @@ end)
 
 t.test('every fighter is in exactly one instance, and it is their own match\'s', function()
     local server = fourPlayers()
-    local first = runMatch(server, 'airfield', { 1, 2 })
-    local second = runMatch(server, 'airfield', { 3, 4 })
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
+    local second = runMatch(server, 'trailerpark', { 3, 4 })
 
     local instanced = server.instanced()
     t.equals(server.bucket(1), server.bucket(2))
@@ -430,8 +430,8 @@ end)
 
 t.test('a death in one match is not a death in the other', function()
     local server = fourPlayers()
-    local first = runMatch(server, 'airfield', { 1, 2 })
-    local second = runMatch(server, 'airfield', { 3, 4 })
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
+    local second = runMatch(server, 'trailerpark', { 3, 4 })
 
     server.fire('reportDeath', 2, { killerServerId = 1 })
     server.step(2)
@@ -446,8 +446,8 @@ end)
 
 t.test('and a kill is credited in the match it happened in, to nobody else', function()
     local server = fourPlayers()
-    runMatch(server, 'airfield', { 1, 2 })
-    local second = runMatch(server, 'airfield', { 3, 4 })
+    runMatch(server, 'trailerpark', { 1, 2 })
+    local second = runMatch(server, 'trailerpark', { 3, 4 })
 
     server.fire('reportDeath', 2, { killerServerId = 1 })
     server.step(2)
@@ -463,8 +463,8 @@ t.test('a fighter cannot be claimed as a killer from a match they are not in', f
     -- server id -- and an id from another match is exactly the shape of a
     -- crafted one.
     local server = fourPlayers()
-    local first = runMatch(server, 'airfield', { 1, 2 })
-    runMatch(server, 'airfield', { 3, 4 })
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
+    runMatch(server, 'trailerpark', { 3, 4 })
 
     -- Player 2 dies and blames player 3, who is fighting somewhere else.
     server.fire('reportDeath', 2, { killerServerId = 3 })
@@ -482,8 +482,8 @@ end)
 
 t.test('ending one match leaves the other running, and its fighters where they are', function()
     local server = fourPlayers()
-    local first = runMatch(server, 'airfield', { 1, 2 })
-    local second = runMatch(server, 'airfield', { 3, 4 })
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
+    local second = runMatch(server, 'trailerpark', { 3, 4 })
     local held = server.bucket(3)
 
     server.match.End(first, 'match.ended')
@@ -501,7 +501,7 @@ t.test('and the finished match hands its instance back to the world', function()
     -- Or a server that has run for a week is carrying a bucket per match it
     -- has ever held.
     local server = fourPlayers()
-    local first = runMatch(server, 'airfield', { 1, 2 })
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
 
     server.match.End(first, 'match.ended')
     server.step(4)
@@ -523,9 +523,9 @@ t.test('a third match opens into an instance of its own', function()
         config.Match.maxConcurrentMatches = 0
     end)
 
-    runMatch(server, 'airfield', { 1, 2 })
-    runMatch(server, 'airfield', { 3, 4 })
-    runMatch(server, 'airfield', { 5, 6 })
+    runMatch(server, 'trailerpark', { 1, 2 })
+    runMatch(server, 'trailerpark', { 3, 4 })
+    runMatch(server, 'trailerpark', { 5, 6 })
 
     local seen = {}
     for _, src in ipairs({ 1, 3, 5 }) do
@@ -561,12 +561,12 @@ t.test('with instancing OFF, a second match is refused the arena in use', functi
         config.Dispatch.isolation.enabled = false
     end)
 
-    runMatch(server, 'airfield', { 1, 2 })
+    runMatch(server, 'trailerpark', { 1, 2 })
     t.isNil(server.dispatch.GetBucket('anything'), 'isolation is still on, so this proves nothing')
 
     -- The second lobby opens -- that is not what is refused -- but it cannot
     -- be STARTED into ground somebody is already fighting on.
-    server.fire('createMatch', 3, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 3, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local second
     for _, entry in ipairs(server.lobby.All()) do
         if entry.hostSource == 3 then second = entry end
@@ -596,8 +596,8 @@ t.test('but a DIFFERENT arena is still fine with instancing off', function()
         config.Dispatch.isolation.enabled = false
     end)
 
-    local first = runMatch(server, 'airfield', { 1, 2 })
-    local second = runMatch(server, 'beach', { 3, 4 })
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
+    local second = runMatch(server, 'skydome', { 3, 4 })
 
     t.equals(server.lobby.Get(first).state, 'live')
     t.equals(server.lobby.Get(second).state, 'live',
@@ -607,8 +607,8 @@ end)
 t.test('and with instancing ON the same arena is shared, as designed', function()
     -- The other side of the guard: it must not cost the feature it protects.
     local server = fourPlayers()
-    local first = runMatch(server, 'airfield', { 1, 2 })
-    local second = runMatch(server, 'airfield', { 3, 4 })
+    local first = runMatch(server, 'trailerpark', { 1, 2 })
+    local second = runMatch(server, 'trailerpark', { 3, 4 })
 
     t.equals(server.lobby.Get(first).state, 'live')
     t.equals(server.lobby.Get(second).state, 'live',

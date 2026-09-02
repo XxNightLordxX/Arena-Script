@@ -398,33 +398,32 @@ t.test('and the map blip goes with it', function()
     t.equals(f.built.blipAt.y, wanted.y)
 end)
 
-t.test('and with ox_target absent the blip follows the MARKER instead', function()
-    -- The fallback puts the marker up in the NPC's place. Both live in
-    -- config and an operator may legitimately move one and not the other,
-    -- so the blip has to point at whichever fixture is really there.
+t.test('and with ox_target absent the blip still points at the NPC spot', function()
+    -- The blip follows the SETTING, not what happened to succeed. A 'ped'
+    -- lobby whose NPC could not go up still sends the operator to the place
+    -- they have to stand to understand why it did not.
     local f = newLobbyFixture({ targetState = 'missing' })
-    local wanted = f.env.Config.Lobby.marker.coords
+    local wanted = f.env.Config.Lobby.ped.coords
 
-    t.isTrue(f.built.markerThread, 'no marker went up in the NPC\'s place')
+    t.isNil(f.built.markerThread, 'a marker went up in a lobby nobody asked for one in')
     t.isNotNil(f.built.blipAt)
     t.equals(f.built.blipAt.x, wanted.x)
     t.equals(f.built.blipAt.y, wanted.y)
 end)
 
-t.test('DEFECT: an NPC that RAISES does not take the blip and marker with it', function()
+t.test('DEFECT: an NPC that RAISES does not take the blip and the command with it', function()
     -- THE SYMPTOM, and it was unexplainable from outside: no NPC and no blip,
     -- on a resource reporting itself started. The blip is created two lines
     -- after the spawn on the same thread, so anything that raises in the
-    -- spawn kills the rest of the start-up -- the marker fallback, the blip,
-    -- and the /arena command with them, leaving the arena unreachable by any
-    -- route and nothing in the console pointing at the cause.
+    -- spawn kills the rest of the start-up -- the blip and the /arena command
+    -- with it, leaving the arena unreachable by any route and nothing in the
+    -- console pointing at the cause.
     --
     -- This file already said exactly that, about ONE call inside the spawn,
     -- and guarded only that one.
     local f = newLobbyFixture({ pedRaises = true })
 
     t.isTrue(f.built.blip, 'A RAISE IN THE NPC TOOK THE MAP BLIP DOWN WITH IT')
-    t.isTrue(f.built.markerThread, 'and the ground-marker fallback, so there is no way in at all')
     t.equals(f.built.command, f.env.Config.UI.command,
         'and the command, so there is not even a way to open the panel by typing')
 end)
@@ -506,7 +505,7 @@ t.test('with ox_target running the NPC goes up and no marker is drawn over it', 
         "a marker was drawn as well as the NPC, but Config.Lobby.interaction ships as 'ped'")
 end)
 
-t.test('with ox_target stopped the marker takes the NPC\'s place and the rest of the lobby survives', function()
+t.test('with ox_target stopped no NPC goes up, and the rest of the lobby survives', function()
     local f = newLobbyFixture({ targetState = 'missing' })
 
     -- No silent NPC. An NPC standing there with nothing able to target it
@@ -514,16 +513,17 @@ t.test('with ox_target stopped the marker takes the NPC\'s place and the rest of
     t.isNil(f.built.ped, 'an NPC was spawned that nothing can interact with')
     t.isNil(f.built.target)
 
-    -- The part that matters. Config ships the marker on the same coordinates
-    -- as the NPC, so players walk to the same place and press a key instead.
-    t.isTrue(f.built.markerThread, 'no marker went up, so there is now no way into the arena at all')
+    -- And no marker in its place: the operator asked for an NPC, and a
+    -- resource that plays a setting other than the one in the file is a
+    -- resource whose config cannot be trusted.
+    t.isNil(f.built.markerThread, 'a marker went up in a lobby nobody asked for one in')
 
-    -- These three are the collateral the old raise took with it. Each is
-    -- reached AFTER the ox_target call in the start-up thread, which is
-    -- precisely why they are asserted here.
+    -- These are the collateral the old raise took with it. Each is reached
+    -- AFTER the ox_target call in the start-up thread, which is precisely
+    -- why they are asserted here.
     t.isTrue(f.built.blip, 'the map blip is gone, so players cannot even find the lobby')
     t.equals(f.built.command, f.env.Config.UI.command,
-        'the fallback command was never registered')
+        'the panel command was never registered')
     t.equals(#f.serverEvents, 0)
 end)
 

@@ -120,8 +120,8 @@ local function spawnLobbyPed()
     local target = targeting()
     if not target then
         warn('ox_target is not started, so the lobby NPC would have nobody able to talk to it. ' ..
-             'Falling back to the ground marker at the same spot -- start ox_target, or set ' ..
-             "Config.Lobby.interaction = 'marker' to make that the intent.")
+             'No NPC spawned -- start ox_target, or set ' ..
+             "Config.Lobby.interaction = 'marker' if the marker is what you want.")
         return false
     end
 
@@ -266,12 +266,13 @@ end)
 CreateThread(function()
     local mode = resolveInteraction()
 
-    -- The marker is started when it was asked for, and ALSO when the NPC was
-    -- asked for and could not be put up. Both fixtures sit on the same spot
-    -- in config, so the fallback leaves players walking to the same place and
-    -- opening the same panel -- it just costs them a keypress instead of a
-    -- target prompt. Better a lobby that reads slightly wrong than one that
-    -- is not there.
+    -- WHICH FIXTURE GOES UP IS THE OPERATOR'S DECISION AND NOBODY ELSE'S.
+    -- An NPC that cannot be put up leaves the lobby without one, and says so
+    -- in the console; it does not quietly become a ground marker instead.
+    -- A resource that silently plays a different setting than the one in the
+    -- file is a resource whose config cannot be trusted, and 'both' is
+    -- already there for an operator who wants the marker as a safety net.
+    --
     -- WRAPPED, because a raise in here used to take everything after it down.
     --
     -- This file already says so about `targeting()`: "a raise inside the
@@ -297,8 +298,8 @@ CreateThread(function()
         end
     end
 
-    if mode == 'marker' or mode == 'both' or not pedUp then startMarkerThread() end
-    createBlip(pedUp and mode or 'marker')
+    if mode == 'marker' or mode == 'both' then startMarkerThread() end
+    createBlip(mode)
 
     -- WHERE THE ARENA ACTUALLY WENT, said out loud on every start.
     --
@@ -306,17 +307,16 @@ CreateThread(function()
     -- coordinate that appears not to take is the most confusing failure it
     -- has: the resource works, the panel works, and the arena is somewhere
     -- they did not put it. From outside, "my edit was ignored", "I am looking
-    -- at the old spot", "the folder the server runs is not the one I edited"
-    -- and "ox_target is down so there is a marker rather than an NPC" all
-    -- look identical -- nothing was in the console to tell them apart.
+    -- at the old spot" and "the folder the server runs is not the one I
+    -- edited" all look identical -- nothing was in the console to tell them
+    -- apart.
     --
     -- Not gated on Config.Debug: this is one line at start-up, and it is
     -- worth more to the person who needs it than it costs everybody else.
     local where = pedUp and Config.Lobby.ped.coords or Config.Lobby.marker.coords
-    warn(('lobby: %s at %.2f, %.2f, %.2f (interaction = %s%s).'):format(
-        pedUp and 'NPC' or 'ground marker',
-        where.x, where.y, where.z, tostring(mode),
-        (not pedUp and mode ~= 'marker') and ', fell back -- see the warning above' or ''))
+    local fixture = pedUp and 'NPC' or (mode == 'ped' and 'NOTHING -- see the warning above' or 'ground marker')
+    warn(('lobby: %s at %.2f, %.2f, %.2f (interaction = %s).'):format(
+        fixture, where.x, where.y, where.z, tostring(mode)))
 
     if Config.UI.command then
         RegisterCommand(Config.UI.command, openPanel, false)

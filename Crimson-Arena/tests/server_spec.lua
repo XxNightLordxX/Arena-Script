@@ -207,8 +207,7 @@ local function ffaMatch(mutate, stakes)
 end
 
 --- The settlement context for that free-for-all. `winners` is in placement
---- order, best first: top_three reads it as the podium, every other mode as
---- the set of people who won.
+--- order, best first, and is read as the set of people who won.
 --- @param winners integer[]
 --- @param stakes integer[]?
 --- @return table
@@ -481,11 +480,12 @@ t.test('Settle pays the net pot when the house takes a cut, and not a dollar mor
     t.equals(server.betting.GetPot('m1'), 0)
 end)
 
-t.test('top_three pays each place its configured share, remainder and all', function()
-    -- The odd stake is what stops 60/30/10 dividing the pot cleanly. Two
-    -- dollars are left over after the three percentages are taken, and they
-    -- have to land on somebody: a split that "balances" by dropping them
-    -- shrinks the pot by a couple of dollars every single match.
+t.test('an unrecognised payout mode still pays the winners the whole pot', function()
+    -- THE FALLBACK, END TO END. A typo in Config.Betting.payout -- or a
+    -- server still carrying `top_three`, which was a real mode once -- must
+    -- not swallow a pot. The odd stake is what stops it dividing cleanly:
+    -- the remainder has to land on somebody, or every match with an odd pot
+    -- shrinks the world by a dollar.
     local stakes = { 1000, 1000, 1000, 999 }
     local server = ffaMatch(function(config) config.Betting.payout = 'top_three' end, stakes)
     t.equals(server.betting.GetPot('m1'), 3999)
@@ -493,41 +493,12 @@ t.test('top_three pays each place its configured share, remainder and all', func
     local payouts = server.betting.Settle('m1', ffaContext({ 1, 2, 3 }, stakes))
 
     t.equals(#payouts, 3)
-    t.equals(payouts[1].amount, 2401, '60% of 3999, plus the 2 no other share could carry')
-    t.equals(payouts[2].amount, 1199)
-    t.equals(payouts[3].amount, 399)
-    t.equals(payouts[1].reason, 'placement')
-
-    t.equals(server.cash(1), 6401)
-    t.equals(server.cash(2), 5199)
-    t.equals(server.cash(3), 4399)
-    t.equals(server.cash(4), 4001, 'fourth place staked and takes nothing home')
-    t.equals(server.qbx.movements(4), 1, 'off the podium is one movement, not two')
+    t.equals(payouts[1].reason, 'winner', 'an unrecognised mode was read as a real one')
+    t.equals(payouts[1].amount + payouts[2].amount + payouts[3].amount, 3999,
+        'the remainder was dropped rather than paid to somebody')
+    t.equals(server.cash(4), 4001, 'somebody who did not win took money home')
     t.equals(server.ledgerTotal(), 0, 'the pot paid out is exactly the pot taken in')
     t.equals(server.betting.GetPot('m1'), 0)
-    t.isTrue(server.betting.Clear('m1'))
-end)
-
-t.test('top_three in a team match pays the winning side, not a podium', function()
-    -- topThreeSplit is free-for-all only. Ranking two sides onto a podium
-    -- would pay the LOSING team's runner-up out of the winners' pot, so the
-    -- mode falls back rather than doing it -- and the fallback is what an
-    -- operator who set top_three on a team server actually gets.
-    local server = teamMatch(nil, function(config)
-        separatePot(config)
-        config.Betting.payout = 'top_three'
-    end)
-    t.equals(server.betting.GetPot('m1'), 2000)
-
-    local payouts = server.betting.Settle('m1', teamContext())
-
-    t.equals(#payouts, 1)
-    t.equals(payouts[1].id, 1)
-    t.equals(payouts[1].amount, 2000)
-    t.equals(payouts[1].reason, 'winner', 'not a placement -- nothing was placed')
-    t.equals(server.cash(1), 6000)
-    t.equals(server.cash(2), 4000)
-    t.equals(server.ledgerTotal(), 0)
     t.isTrue(server.betting.Clear('m1'))
 end)
 

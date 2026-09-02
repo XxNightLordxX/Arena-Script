@@ -84,10 +84,6 @@ local function captureOwnLoadout()
     for _, weapon in ipairs(Arena.GetEnabledWeapons()) do
         remember(joaat(weapon.weapon))
     end
-    for _, entry in ipairs(Config.Loadouts.alwaysGive or {}) do
-        if entry.weapon then remember(joaat(entry.weapon)) end
-    end
-
     carried = {
         weapons = weapons,
         selected = selected,

@@ -217,7 +217,7 @@ end
 --- @return string matchId
 local function frozenCountdown(mutate)
     local server = newServer(mutate)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
 
     local match = server.lobby.GetByPlayer(1)
     t.isNotNil(match, 'the host could not open a lobby')
@@ -263,7 +263,7 @@ t.test('the lobby countdown is still cancellable: nobody has been moved yet', fu
     -- is this exact state, and it wears the same name as the frozen one. A
     -- fix that read the name would have taken this away.
     local server = newServer(function(config) config.Match.lobbyCountdownSeconds = 10 end)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
 
     local matchId = server.lobby.GetByPlayer(1).id
     server.fire('joinMatch', 2, { matchId = matchId })
@@ -368,7 +368,7 @@ t.test('Destroy over a lobby nobody was placed in sends no arena exit', function
     -- in the lobby would strip weapons they never received and teleport
     -- people who never moved.
     local server = newServer()
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local matchId = server.lobby.GetByPlayer(1).id
     server.fire('joinMatch', 2, { matchId = matchId })
 
@@ -542,7 +542,7 @@ t.test('being knocked out of your own round is not a pass into somebody else', f
     server.fire('reportDeath', 2, { killerServerId = 1 })
 
     -- A second lobby, opened by somebody with no connection to the first.
-    server.fire('createMatch', 3, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 3, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local other = server.lobby.GetByPlayer(3).id
 
     local ok, reason = server.lobby.AddSpectator(2, other)

@@ -282,8 +282,8 @@ local function evaluate(match)
 end
 
 --- Ranks everybody who is still standing when the round stops, so the
---- results board and a `top_three` payout have a full finishing order to
---- read rather than a hole where the survivors are.
+--- results board has a full finishing order to read rather than a hole
+--- where the survivors are.
 --- @param match table
 local function assignFinalPlacements(match)
     local unplaced = {}
@@ -300,23 +300,6 @@ local function assignFinalPlacements(match)
     end)
 
     for index, player in ipairs(unplaced) do player.placement = index end
-end
-
---- Server ids in finishing order, best first.
---- @param match table
---- @return integer[]
-local function standings(match)
-    local ordered = {}
-    for _, player in pairs(match.players) do ordered[#ordered + 1] = player end
-    table.sort(ordered, function(a, b)
-        local aPlace, bPlace = a.placement or math.maxinteger, b.placement or math.maxinteger
-        if aPlace ~= bPlace then return aPlace < bPlace end
-        return a.src < b.src
-    end)
-
-    local ids = {}
-    for index, player in ipairs(ordered) do ids[index] = player.src end
-    return ids
 end
 
 --- The live scoreboard, sorted the way the panel renders it.
@@ -1226,18 +1209,6 @@ function ArenaMatch.End(matchId, reasonKey, winners)
 
     local endReason = Arena.IsKey(reasonKey) and reasonKey or 'match.ended'
 
-    -- `top_three` reads `winners` as a podium, best first, so under that
-    -- payout a free-for-all hands over the finishing order rather than the
-    -- single survivor. Every other payout mode splits evenly across whoever
-    -- is in the list, which is why the list stays exactly the winners
-    -- everywhere else.
-    local payoutWinners = winners
-    if Config.Betting.payout == 'top_three' and not teamMode and #winners > 0 then
-        local ranked = standings(match)
-        payoutWinners = {}
-        for index = 1, math.min(3, #ranked) do payoutWinners[index] = ranked[index] end
-    end
-
     -- TWO DIFFERENT HEAD COUNTS, and conflating them is what let a mid-round
     -- quitter take their stake home.
     --
@@ -1263,7 +1234,7 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     -- true answer available.
     local context = {
         teams = teamMode,
-        winners = payoutWinners,
+        winners = winners,
         contestants = match.contestants or #players,
         players = {},
     }

@@ -160,7 +160,7 @@ end
 --- "one match at a time" rule and the limiter is never consulted -- which is
 --- how the first version of this test passed with the limiter switched off.
 local function openAndLeave(server, src)
-    server.fire('createMatch', src, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', src, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     server.fire('leaveMatch', src)
 end
 
@@ -174,7 +174,7 @@ t.test('DEFECT: a second createMatch inside the interval does nothing', function
     t.equals(#server.matches(), 0, 'the lobby was not left, so this proves nothing')
 
     -- Same millisecond, same player, nothing else standing in the way.
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     t.equals(#server.matches(), 0,
         'a second createMatch from the same player inside the interval opened another lobby')
 end)
@@ -183,7 +183,7 @@ t.test('and a DIFFERENT player is not held back by it', function()
     local server = newServer()
     openAndLeave(server, 1)
 
-    server.fire('createMatch', 2, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 2, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     t.equals(#server.matches(), 1, 'one player\'s spam rate-limited somebody else')
 end)
 
@@ -194,7 +194,7 @@ t.test('and the same call after the interval is allowed', function()
     openAndLeave(server, 1)
 
     server.advance(60000)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     t.equals(#server.matches(), 1, 'the player was still refused a minute later')
 end)
 
@@ -209,12 +209,12 @@ t.test('and the boundary is exact -- at the interval, not one past it', function
 
     -- One short: still refused.
     server.advance(2999)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     t.equals(#server.matches(), 0, 'a call one millisecond inside the interval was let through')
 
     -- Exactly the interval: allowed.
     server.advance(1)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     t.equals(#server.matches(), 1, 'a call at exactly the interval was refused')
 end)
 
@@ -223,7 +223,7 @@ t.test('and the buckets are per EVENT, not one budget for everything', function(
     -- Sharing a bucket across events is how a rate limiter becomes a way to
     -- strand somebody in a match.
     local server = newServer()
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     t.equals(#server.matches(), 1, 'the lobby was never opened')
 
     -- Same millisecond, different event: this must go through.
@@ -239,7 +239,7 @@ t.test('and forgetting a player clears their history, not everybody\'s', functio
     server.env.ArenaForgetPlayer(1)
 
     -- 1 is forgotten, so their next create is a first call again.
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     t.equals(#server.matches(), 1, 'a forgotten player was still rate-limited')
 end)
 
@@ -336,7 +336,7 @@ end)
 
 t.test('a match id the player is not in is refused', function()
     local server = newServer()
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     local matchId = server.matches()[1].id
 
     -- 3 never joined. Nothing they send about this match may be acted on.
@@ -353,7 +353,7 @@ t.test('and a bet on a side that does not exist is refused', function()
     -- pickExists is the guard. A bet on a pick that cannot win is a bet the
     -- settlement has no answer for.
     local server = newServer()
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0, account = 'cash' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash' })
     local matchId = server.matches()[1].id
     server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
 

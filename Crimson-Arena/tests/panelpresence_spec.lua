@@ -164,7 +164,7 @@ end
 --- Something that makes the lobby broadcast, without involving the player
 --- whose presence is under test.
 local function stirTheLobby(server)
-    server.fire('createMatch', 2, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 2, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
 end
 
 -- ======================================================================
@@ -235,7 +235,7 @@ t.test('but somebody actually IN a match is told regardless', function()
     -- The flag is not the only route onto the list, and a fix that made it
     -- the only route would silence the people who need it most.
     local server = idle()
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     server.fire('panelClosed', 1)
     server.forgetSent()
 

@@ -18,13 +18,13 @@
       454   Modes         Free-for-all, team deathmatch, gun game
       473   DefaultMode   Which of them a new lobby opens on
       492   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      687   UI            Panel colours, logo and title
-      750   Permissions   Who may open a match, who may force-stop one
-      829   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1529   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     3076   Database      Optional: all-time leaderboard. Off, no SQL to import
-     3086   Webhook       Optional: a Discord line per finished match
-     3124   Dispatch      Optional: keeping police and EMS out of the arena
+      685   UI            Panel colours, logo and title
+      748   Permissions   Who may open a match, who may force-stop one
+      827   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1362   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     2874   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2884   Webhook       Optional: a Discord line per finished match
+     2922   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -622,10 +622,8 @@ Config.Betting = {
 
     -- HOW THE POT IS SPLIT.
     --   'winner_takes_all' -- one player (or the winning team, split evenly)
-    --   'top_three'        -- split by `topThreeSplit` below, FFA only
     --   'per_kill'         -- divided by share of total kills
     payout = 'winner_takes_all',
-    topThreeSplit = { 60, 30, 10 },
 
     -- Below this head count the match still runs, but the pot is refunded
     -- rather than paid out -- stops two friends farming each other.
@@ -827,171 +825,6 @@ Config.Permissions = {
 -- sides opposite ends of the ground if you want the match to open cleanly.
 -- ======================================================================
 Config.Arenas = {
-    ['airfield'] = {
-        label = 'Sandy Shores Airfield',
-        description = 'Open tarmac. Nowhere to hide, long sightlines, rifles win.',
-        -- OFF, at the operator's request: this server fights in the sky
-        -- instead. Nothing here is deleted -- the coordinates, spawns, teams
-        -- and boundary are all intact, so switching it back on is this one
-        -- word.
-        enabled = false,
-
-        -- ONE POINT AND A RADIUS. Every player lands somewhere random
-        -- inside this circle, no two closer than minSeparation, and in a
-        -- team mode each team lands together on its own side of it.
-        --
-        -- Centred on this arena's own boundary and pulled inside it, so a
-        -- spawn cannot put somebody out of bounds and bleeding before the
-        -- round has started. Set enabled = false to use the exact `spawns`
-        -- list below instead.
-        spawnArea = {
-            enabled = true,
-            center = vector3(1722.00, 3270.00, 41.12),
-            radius = 97.5,
-            minSeparation = 12.0,
-            teamRadius = 26.0,
-        },
-
-        -- Used in free-for-all, and as the fallback for any team with no
-        -- entry in `teamSpawns` below. Spread wide across the apron so
-        -- nobody lands on top of anybody.
-        spawns = {
-            vector4(1692.40, 3231.80, 41.09, 30.0),
-            vector4(1751.60, 3230.10, 41.09, 330.0),
-            vector4(1690.90, 3300.20, 41.15, 150.0),
-            vector4(1753.80, 3298.70, 41.15, 210.0),
-            vector4(1722.30, 3266.50, 41.12, 90.0),
-            vector4(1722.90, 3324.10, 41.16, 180.0),
-        },
-
-        -- Team modes. Keys must match `Config.Teams.list`. A team missing
-        -- here falls back to `spawns` above.
-        teamSpawns = {
-            crimson = {
-                vector4(1692.40, 3231.80, 41.09, 30.0),
-                vector4(1699.10, 3238.60, 41.09, 30.0),
-                vector4(1686.20, 3239.40, 41.09, 30.0),
-            },
-            ash = {
-                vector4(1753.80, 3298.70, 41.15, 210.0),
-                vector4(1746.90, 3292.10, 41.15, 210.0),
-                vector4(1760.20, 3291.40, 41.15, 210.0),
-            },
-        },
-
-        -- Wide, because the ground is. A boundary tight enough for a
-        -- warehouse would have people bleeding out crossing the apron.
-        boundary = {
-            enabled = true,
-            center = vector3(1722.00, 3270.00, 41.12),
-            radius = 130.0,
-            warningSeconds = 5,
-            -- LETHAL, AND QUICKLY. 20 twice a second is 40 a second, so a
-            -- player who ignores the warning is dead in about seven and a
-            -- half seconds from a full bar and a full plate.
-            --
-            -- It used to be 8 once a second, which is 35 seconds through
-            -- health and armour -- long enough to walk out of the arena,
-            -- take a look around and stroll back with most of a bar left.
-            -- That is not a boundary, it is a suggestion.
-            --
-            -- Twice a second rather than once, too: the damage arrives as
-            -- steady pressure a player can feel and react to, instead of
-            -- four big unexplained hits.
-            damagePerTick = 20,
-            tickMs = 500,
-        },
-
-        weatherOverride = nil,
-        timeOverride = nil,
-    },
-
-    ['beach'] = {
-        label = 'Vespucci Sands',
-        description = 'Flat open sand at the waterline. No cover at all -- pure aim.',
-        -- OFF, for the same reason as the airfield above. Intact, not
-        -- deleted.
-        enabled = false,
-
-        -- ONE POINT AND A RADIUS. Every player lands somewhere random
-        -- inside this circle, no two closer than minSeparation, and in a
-        -- team mode each team lands together on its own side of it.
-        --
-        -- Centred on this arena's own boundary and pulled inside it, so a
-        -- spawn cannot put somebody out of bounds and bleeding before the
-        -- round has started. Set enabled = false to use the exact `spawns`
-        -- list below instead.
-        spawnArea = {
-            enabled = true,
-            center = vector3(-1255.00, -1507.00, 3.20),
-            radius = 82.5,
-            minSeparation = 12.0,
-            teamRadius = 22.0,
-        },
-
-        spawns = {
-            vector4(-1222.60, -1531.40, 4.35, 35.0),
-            vector4(-1288.10, -1483.20, 2.30, 215.0),
-            vector4(-1246.90, -1489.70, 3.10, 125.0),
-            vector4(-1263.80, -1524.90, 3.20, 305.0),
-            vector4(-1210.40, -1494.30, 3.90, 180.0),
-            vector4(-1299.20, -1528.60, 2.10, 0.0),
-        },
-
-        teamSpawns = {
-            crimson = {
-                vector4(-1222.60, -1531.40, 4.35, 35.0),
-                vector4(-1215.30, -1524.10, 4.30, 35.0),
-            },
-            ash = {
-                vector4(-1288.10, -1483.20, 2.30, 215.0),
-                vector4(-1295.40, -1490.60, 2.25, 215.0),
-            },
-        },
-
-        boundary = {
-            enabled = true,
-            center = vector3(-1255.00, -1507.00, 3.20),
-            radius = 110.0,
-            warningSeconds = 5,
-            -- LETHAL, AND QUICKLY. 20 twice a second is 40 a second, so a
-            -- player who ignores the warning is dead in about seven and a
-            -- half seconds from a full bar and a full plate.
-            --
-            -- It used to be 8 once a second, which is 35 seconds through
-            -- health and armour -- long enough to walk out of the arena,
-            -- take a look around and stroll back with most of a bar left.
-            -- That is not a boundary, it is a suggestion.
-            --
-            -- Twice a second rather than once, too: the damage arrives as
-            -- steady pressure a player can feel and react to, instead of
-            -- four big unexplained hits.
-            damagePerTick = 20,
-            tickMs = 500,
-        },
-
-        weatherOverride = nil,
-        timeOverride = nil,
-    },
-
-    -- ==================================================================
-    -- AN ARENA IN THE SKY, for a map whose ground is all spoken for.
-    --
-    -- Nothing is up here, so this arena brings its own floor: one prop
-    -- tiled into a disc, spawned when a fighter walks in and deleted when
-    -- they walk out. It costs nothing while nobody is fighting.
-    --
-    -- ONE SKY ARENA SERVES EVERY MATCH AT ONCE, and that is worth being
-    -- clear about because it looks like it should not. Every match is
-    -- fought in its own routing bucket, so two matches at these exact
-    -- coordinates cannot see, shoot or collide with each other -- they are
-    -- in different instances of the world. There is no need for a second
-    -- location, and no need to move anything when a match ends.
-    --
-    -- The floor is CLIENT-SIDE and local to each fighter: they each build
-    -- their own copy at the same coordinates, so it is solid for all of
-    -- them and invisible to everybody else on the server.
-    -- ==================================================================
     ['trailerpark'] = {
         label = 'Trailer Park',
         description = 'Close ground between the vans. Corners everywhere, nothing to see across.',
@@ -1527,8 +1360,6 @@ Config.Arenas = {
 -- count is meant to be fixed.
 -- ======================================================================
 Config.Loadouts = {
-    -- Players choose their own weapons. With this off, everyone is given
-    -- `Config.Loadouts.fixed` instead and the picker is hidden.
     -- WHO PICKS, and this is a rule about the match rather than a menu
     -- option -- it decides whether an arena round is a test of skill or a
     -- test of who picked the better gun.
@@ -1545,8 +1376,6 @@ Config.Loadouts = {
     --
     -- Anything else is treated as 'host' and a warning is printed at start.
     chooser = 'host',
-
-    allowChoose = true,
 
     -- How many SHOOTABLE weapons one player may take. Raise it for
     -- loadout-style play, drop it to 1 for a duel server.
@@ -1567,35 +1396,6 @@ Config.Loadouts = {
     -- firearms above, so this buys a second melee weapon and never a third
     -- gun.
     meleeSlots = 2,
-
-    -- Handed to everyone on top of what they picked. Use it for a knife,
-    -- a parachute, or nothing at all.
-    -- EMPTY, so a player carries what they picked and nothing else.
-    --
-    -- The knife used to be here, handed to everybody on top of their loadout.
-    -- That made the melee allowance a lie: a player who deliberately took no
-    -- blade still had one, and a player who picked a different blade carried
-    -- two. It is still in the weapon list, so anyone who wants a knife can
-    -- take one -- it just is not decided for them.
-    --
-    -- Put something back by key, which inherits the real entry from the list
-    -- below -- label, category, and the ammunition that weapon takes:
-    --
-    --     alwaysGive = { { key = 'knife' } },
-    --
-    -- A bare `weapon = 'WEAPON_X'` also works, for handing out something
-    -- deliberately not in the list at all, like a parachute.
-    alwaysGive = {},
-
-    -- Used only when `allowChoose = false`. Keys from the weapon list below,
-    -- and keys only: with choosing switched off there is no request to
-    -- resolve, so every weapon here is handed out at its OWN `ammo.default`.
-    -- Change the amount in the weapon's entry, not here -- an `ammo` written
-    -- next to one of these lines is a number nothing reads.
-    fixed = {
-        { key = 'rifle' },
-        { key = 'pistol' },
-    },
 
     -- Purely for grouping the picker into tabs. A weapon whose `category`
     -- is not listed here still shows, under 'Other'.
@@ -2857,8 +2657,7 @@ Config.Loadouts = {
         -- What a weapon starts loaded with when it names no `magazine` of its
         -- own AND its `ammo.options` list is empty. Every firearm shipped
         -- below has an options list, so this is only reached by a weapon an
-        -- operator adds without one, or by an `alwaysGive` entry that names
-        -- no catalogue weapon.
+        -- operator adds without one.
         --
         -- Never more than the player picked: it is a ceiling on the magazine,
         -- not an amount handed out.
@@ -2992,8 +2791,7 @@ Config.Loadouts = {
 
         -- Whether the PLAYER picks the amounts. Off, everybody carries the
         -- `default` on each entry below -- which is how an operator sets one
-        -- kit for the whole server. Also forced off by
-        -- Config.Loadouts.allowChoose, like every other picker here.
+        -- kit for the whole server.
         allowChoose = true,
 
         -- A ceiling across ALL supplies together, not per entry. `0` means

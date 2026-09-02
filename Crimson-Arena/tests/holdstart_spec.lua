@@ -142,7 +142,7 @@ local function counting(fee, mutate)
         [2] = { cash = 50000, bank = 50000 },
     }, mutate)
 
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = fee or 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee or 0 })
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')
 
@@ -305,7 +305,7 @@ end)
 
 t.test('and a lobby that is not counting down has nothing to stop', function()
     local server = newServer({ [1] = { cash = 50000, bank = 50000 } })
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local ok = server.lobby.HoldCountdown(1)
     t.isFalse(ok, 'a lobby that never started was "stopped"')
 end)

@@ -182,7 +182,7 @@ end
 --- One lobby with both players in it, ready to start.
 local function lobby(mutate)
     local server = newServer(mutate)
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa' })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa' })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')

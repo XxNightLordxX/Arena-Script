@@ -1254,17 +1254,20 @@ t.test('the skydome and the trailer park are the arenas this server runs', funct
         'the enabled arenas are not the ones this server was set up to run')
 end)
 
-t.test('and the ground arenas are switched off, not deleted', function()
-    -- Keeping the coordinates means turning one back on is one word rather
-    -- than an afternoon with a map.
+t.test('and every shipped arena is one somebody can actually fight in', function()
+    -- The config no longer carries an arena that is switched off. Each one
+    -- in it is on, and each one has the two things a match cannot start
+    -- without: somewhere to put people, and an edge to hold them inside.
     local config = Sandbox.shippedConfig()
-    for _, key in ipairs({ 'airfield', 'beach' }) do
-        local arena = config.Arenas[key]
-        t.isNotNil(arena, ('%s was deleted rather than disabled'):format(key))
-        t.isFalse(arena.enabled)
-        t.isTrue(#(arena.spawns or {}) > 0, ('%s lost the spawns that make it re-enableable'):format(key))
-        t.isNotNil(arena.boundary, ('%s lost its boundary'):format(key))
+    local count = 0
+    for key, arena in pairs(config.Arenas) do
+        count = count + 1
+        t.isTrue(arena.enabled, ('%s ships switched off'):format(key))
+        t.isTrue(#(arena.spawns or {}) > 0 or type(arena.spawnArea) == 'table',
+            ('%s has nowhere to put anybody'):format(key))
+        t.isNotNil(arena.boundary, ('%s has no boundary'):format(key))
     end
+    t.isTrue(count >= 2, 'the arena list is down to one -- the host has no choice to make')
 end)
 
 t.test('and the shipped skydome is completely described', function()

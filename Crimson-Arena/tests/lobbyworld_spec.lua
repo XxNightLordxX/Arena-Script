@@ -221,7 +221,7 @@ end
 -- ========================================================================
 
 t.test('the marker is drawn when the player is inside the draw distance', function()
-    local f = newLobby({ targetState = 'missing' })
+    local f = newLobby({ interaction = 'marker' })
     standAt(f, f.env.Config.Lobby.marker.drawDistance - 1.0)
 
     f.step()
@@ -238,7 +238,7 @@ t.test('and NOT drawn to a player standing outside it', function()
     -- server: outside the radius this loop sleeps a full second, and a
     -- marker drawn regardless is a per-frame draw call on ninety-nine
     -- players who are nowhere near the lobby.
-    local f = newLobby({ targetState = 'missing' })
+    local f = newLobby({ interaction = 'marker' })
     standAt(f, f.env.Config.Lobby.marker.drawDistance + 1.0)
 
     f.step()
@@ -251,7 +251,7 @@ t.test('DISTANCE IS A DISTANCE -- walking away stops the draw', function()
     -- passes just as happily against a loop that measures the sum of the
     -- two positions rather than the gap between them; only moving proves
     -- the number tracks the player.
-    local f = newLobby({ targetState = 'missing' })
+    local f = newLobby({ interaction = 'marker' })
 
     standAt(f, 1.0)
     f.step()
@@ -270,7 +270,7 @@ t.test('the help prompt appears only inside the INTERACT distance', function()
     -- Two radii, not one. The marker is visible from a distance; the
     -- "press E" prompt is not, or every player crossing the block is told
     -- to press a key that does nothing.
-    local f = newLobby({ targetState = 'missing' })
+    local f = newLobby({ interaction = 'marker' })
     local marker = f.env.Config.Lobby.marker
 
     standAt(f, (marker.interactDistance + marker.drawDistance) / 2)
@@ -285,7 +285,7 @@ t.test('the help prompt appears only inside the INTERACT distance', function()
 end)
 
 t.test('pressing the key inside range opens the panel', function()
-    local f = newLobby({ targetState = 'missing' })
+    local f = newLobby({ interaction = 'marker' })
     standAt(f, f.env.Config.Lobby.marker.interactDistance - 0.5)
 
     f.keyPressed = true
@@ -298,7 +298,7 @@ t.test('and pressing it from outside range does NOT', function()
     -- The key is read inside the interact branch. Read outside it, a
     -- player anywhere on the map gets the arena panel every time they
     -- press that key.
-    local f = newLobby({ targetState = 'missing' })
+    local f = newLobby({ interaction = 'marker' })
     standAt(f, f.env.Config.Lobby.marker.drawDistance * 10)
 
     f.keyPressed = true
@@ -309,7 +309,7 @@ t.test('and pressing it from outside range does NOT', function()
 end)
 
 t.test('the loop keeps running -- it is not a one-shot', function()
-    local f = newLobby({ targetState = 'missing' })
+    local f = newLobby({ interaction = 'marker' })
     standAt(f, 1.0)
 
     f.step(); f.step(); f.step()
@@ -369,27 +369,47 @@ t.test('and a valid setting produces NO such warning', function()
     end
 end)
 
-t.test("ox_target missing turns 'ped' into the marker, loudly", function()
+t.test("ox_target missing leaves a 'ped' lobby with no NPC, and says so", function()
     -- The most common real deployment: ox_target stopped, and an NPC
     -- nobody can talk to is worse than no NPC because it looks like the
     -- resource is working.
+    --
+    -- AND IT DOES NOT QUIETLY BECOME A MARKER. The operator asked for an
+    -- NPC; a resource that plays a different setting than the one in the
+    -- file is a resource whose config cannot be trusted, and 'both' is
+    -- already there for anyone who wants the marker as a safety net.
     local f = newLobby({ interaction = 'ped', targetState = 'missing' })
     standAt(f, 1.0)
     f.step()
 
     t.equals(#f.targeted, 0, 'an NPC was registered with a targeting resource that is not running')
-    t.equals(#f.markers, 1, 'no marker replaced the NPC that could not go up')
+    t.equals(#f.markers, 0, 'a marker went up in a lobby nobody asked for one in')
     t.contains(f.log(), 'ox_target is not started')
-    t.contains(f.log(), 'fell back', 'the start-up line does not say the lobby fell back')
+    t.contains(f.log(), "interaction = 'marker'",
+        'the warning does not say what to set to get a marker instead')
 end)
 
-t.test('and an NPC that RAISES falls back to the marker too', function()
+t.test('and an NPC that RAISES leaves no marker either, but is reported', function()
+    -- A raise must not take the rest of the start-up down with it, which is
+    -- what the pcall is for -- but surviving it is not the same as papering
+    -- over it.
     local f = newLobby({ interaction = 'ped', pedRaises = true })
     standAt(f, 1.0)
     f.step()
 
-    t.equals(#f.markers, 1, 'a raise in the spawn left the player with no way into the arena')
+    t.equals(#f.markers, 0, 'a marker went up in a lobby nobody asked for one in')
     t.contains(f.log(), 'could not be spawned')
+end)
+
+t.test("but 'both' really does keep the marker when the NPC cannot go up", function()
+    -- The setting that exists for exactly this: an operator who wants the
+    -- NPC and a way in when it is not there asks for both, and gets both.
+    local f = newLobby({ interaction = 'both', targetState = 'missing' })
+    standAt(f, 1.0)
+    f.step()
+
+    t.equals(#f.targeted, 0)
+    t.equals(#f.markers, 1, "'both' left the player with no way into the arena")
 end)
 
 -- ========================================================================
@@ -417,15 +437,16 @@ t.test('the blip follows the NPC when the NPC is what went up', function()
     t.equals(f.blips[1].at.y, wanted.y)
 end)
 
-t.test('and the MARKER when the NPC could not', function()
-    -- Both live in config and an operator may move one and not the other,
-    -- so a blip that always points at the ped sends players to an empty
-    -- spot on exactly the servers where the fallback fired.
+t.test('and stays on the NPC spot even when the NPC could not go up', function()
+    -- Both live in config and an operator may move one and not the other.
+    -- The blip follows the SETTING, not what happened to succeed: a 'ped'
+    -- lobby whose NPC is missing still sends the operator to the place they
+    -- have to go and look at to understand why.
     local f = newLobby({ interaction = 'ped', targetState = 'missing', mutate = separate })
-    local wanted = f.env.Config.Lobby.marker.coords
+    local wanted = f.env.Config.Lobby.ped.coords
 
     t.equals(#f.blips, 1)
-    t.equals(f.blips[1].at.x, wanted.x, 'the blip points at an NPC that never went up')
+    t.equals(f.blips[1].at.x, wanted.x, 'the blip moved to the marker in a lobby that asked for an NPC')
     t.equals(f.blips[1].at.y, wanted.y)
 end)
 
@@ -604,7 +625,7 @@ t.test('the marker is drawn at the size, colour and style config gives it', func
     -- Every one of these is a hand-edited config value reaching a native
     -- positionally. A pair swapped here is a marker of the wrong shape in
     -- the wrong colour, and nothing else in the resource would notice.
-    local f = newLobby({ targetState = 'missing' })
+    local f = newLobby({ interaction = 'marker' })
     local marker = f.env.Config.Lobby.marker
     standAt(f, 1.0)
 
@@ -634,7 +655,7 @@ t.test('and an operator turning bob and rotate ON gets them', function()
     -- that they arrive as false passes against a native call that hardcodes
     -- false.
     local f = newLobby({
-        targetState = 'missing',
+        interaction = 'marker',
         mutate = function(config)
             config.Lobby.marker.bobUpAndDown = true
             config.Lobby.marker.rotate = true
@@ -682,12 +703,12 @@ end
 t.test('a state push hands the keep-out boundary down to the match layer', function()
     local f = newLobbyWithMatch()
 
-    t.isTrue(f.fire('crimson_arena:client:state', { keepOut = { arena = 'airfield' } }),
+    t.isTrue(f.fire('crimson_arena:client:state', { keepOut = { arena = 'trailerpark' } }),
         'nothing listens for the server state push')
 
     t.equals(f.seen.calls, 1, 'the keep-out fence was never told anything')
     t.isNotNil(f.seen.last, 'the boundary was dropped between the state and the fence')
-    t.equals(f.seen.last.arena, 'airfield', 'the fence was handed the wrong value')
+    t.equals(f.seen.last.arena, 'trailerpark', 'the fence was handed the wrong value')
 end)
 
 t.test('and a push with NO keep-out clears the fence rather than leaving it up', function()
@@ -696,7 +717,7 @@ t.test('and a push with NO keep-out clears the fence rather than leaving it up',
     -- after the match that justified it has ended.
     local f = newLobbyWithMatch()
 
-    f.fire('crimson_arena:client:state', { keepOut = { arena = 'airfield' } })
+    f.fire('crimson_arena:client:state', { keepOut = { arena = 'trailerpark' } })
     f.fire('crimson_arena:client:state', {})
 
     t.equals(f.seen.calls, 2, 'a state push with no keep-out was not relayed at all')
@@ -706,7 +727,7 @@ end)
 t.test('and rubbish where the state belongs clears it too, rather than raising', function()
     local f = newLobbyWithMatch()
 
-    f.fire('crimson_arena:client:state', { keepOut = { arena = 'airfield' } })
+    f.fire('crimson_arena:client:state', { keepOut = { arena = 'trailerpark' } })
     for _, bad in ipairs({ 'state', 42, true }) do
         f.fire('crimson_arena:client:state', bad)
         t.isNil(f.seen.last, ('%s as a state left the fence up'):format(tostring(bad)))
@@ -722,37 +743,44 @@ t.test('the relay survives client/match.lua not being loaded yet', function()
         local f = newLobby()
         f.env.ArenaMatch = stub.SetKeepOut and stub or nil
 
-        t.isTrue(f.fire('crimson_arena:client:state', { keepOut = { arena = 'airfield' } }),
+        t.isTrue(f.fire('crimson_arena:client:state', { keepOut = { arena = 'trailerpark' } }),
             'the state handler raised rather than skipping an absent match layer')
     end
 end)
 
 -- ========================================================================
--- THE FALLBACK IS ANNOUNCED ONLY WHEN IT HAPPENED
+-- THE START-UP LINE SAYS WHAT IS REALLY STANDING THERE
 -- ========================================================================
 
-t.test('a marker-only lobby is NOT reported as having fallen back', function()
+t.test('a marker-only lobby is reported as a marker, with no hint of failure', function()
     -- An operator who chose the marker deliberately must not be told
-    -- something went wrong -- that line sends them looking for a warning
-    -- above it that is not there.
+    -- something went wrong -- that sends them looking for a warning above
+    -- it that is not there.
     local f = newLobby({ interaction = 'marker' })
 
-    t.notContains(f.log(), 'fell back',
+    t.contains(f.log(), 'ground marker')
+    t.notContains(f.log(), 'see the warning above',
         'a deliberate marker lobby was reported as a failure')
 end)
 
-t.test('but a ped lobby that could not put one up IS', function()
+t.test('but a ped lobby with no NPC in it says NOTHING is there', function()
+    -- The failure that used to hide behind the fallback: the operator asked
+    -- for an NPC, there is no NPC, and the line has to say so rather than
+    -- name whatever went up in its place.
     local f = newLobby({ interaction = 'ped', targetState = 'missing' })
-    t.contains(f.log(), 'fell back', 'a lobby that fell back said nothing about it')
+
+    t.contains(f.log(), 'NOTHING', 'a lobby with no way into it reported itself as fine')
+    t.contains(f.log(), 'see the warning above')
 end)
 
 -- ========================================================================
 -- WHAT HAPPENS WHEN THE MODEL WILL NOT LOAD
 -- ========================================================================
 
-t.test('a lobby ped model that never loads falls back to the marker', function()
-    -- A bad model name in config is a typo, and the resource has to stay
-    -- reachable through it rather than leaving no way into the arena.
+t.test('a lobby ped model that never loads is reported, and spawns nothing', function()
+    -- A bad model name in config is a typo, and the console line is what
+    -- makes it a typo an operator can find rather than a lobby that is
+    -- mysteriously empty.
     local f = newLobby({
         interaction = 'ped',
         mutate = function(config) config.Lobby.ped.model = 'not_a_real_ped' end,
@@ -762,7 +790,6 @@ t.test('a lobby ped model that never loads falls back to the marker', function()
     f.step()
 
     t.equals(#f.targeted, 0, 'an NPC was registered for a model that never loaded')
-    t.equals(#f.markers, 1, 'a model that would not load left no way into the arena')
     t.contains(f.log(), 'would not load')
 end)
 

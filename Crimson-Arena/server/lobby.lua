@@ -384,7 +384,7 @@ local function snapshotConfig()
     local supplyConfig = (Config.Loadouts or {}).supplies or {}
     local supplies = {
         enabled = supplyConfig.enabled == true,
-        allowChoose = supplyConfig.allowChoose ~= false and Config.Loadouts.allowChoose ~= false,
+        allowChoose = supplyConfig.allowChoose ~= false,
         totalItems = math.max(0, Arena.ToInt(supplyConfig.totalItems) or 0),
         items = {},
     }
@@ -421,7 +421,6 @@ local function snapshotConfig()
         },
 
         loadouts = {
-            allowChoose = Config.Loadouts.allowChoose ~= false,
             -- The global switch, for a weapon the panel is drawing before it
             -- has a per-weapon answer.
             allowCustomAmmo = Config.Loadouts.allowCustomAmmo == true,
@@ -1098,10 +1097,10 @@ function ArenaLobby.Join(src, matchId, teamKey, account)
         team = team,
         ready = false,
         -- Resolved rather than nil so somebody who never opens the loadout
-        -- tab still walks in carrying the operator's alwaysGive list. In
-        -- host mode the host's pick is inherited instead, so somebody who
-        -- joins after it was made is armed the same as everyone else rather
-        -- than being the one player holding the default.
+        -- tab still walks in with a real loadout. In host mode the host's
+        -- pick is inherited instead, so somebody who joins after it was made
+        -- is armed the same as everyone else rather than being the one
+        -- player holding the default.
         loadout = hostLoadoutFor(match),
         kills = 0,
         deaths = 0,

@@ -256,84 +256,44 @@ t.test('an alwaysGive entry does not overwrite the ammo the player chose for the
     t.equals(loadout.weapons[1].ammo, 120)
 end)
 
-t.test('alwaysGive still lands for a player who picked something else', function()
-    stock.Config.Loadouts.alwaysGive = { { key = 'knife' } }
-    -- The guard must not have been bought by making the house entry easy to
-    -- lose: you still cannot spend your slots out of it.
-    local loadout = Arena.ResolveLoadout({ weapons = { { key = 'rifle' }, { key = 'shotgun' } } })
-
-    t.equals(#loadout.weapons, 3)
-    t.equals(loadout.weapons[3].weapon, 'WEAPON_KNIFE')
-    t.isTrue(loadout.weapons[3].alwaysGive)
-end)
-
 t.test('a stored loadout re-resolved at match start rejects nothing it handed out itself', function()
     -- server/match.lua re-runs the stored loadout through ResolveLoadout on
-    -- entry and logs whatever comes back rejected. The alwaysGive entry was
-    -- stored under its GTA name, which is not a catalogue key, so every
-    -- player of every match produced a false "dropped 1 loadout entr(ies)"
-    -- line -- burying the one diagnostic an operator has for a real one.
+    -- entry and logs whatever comes back rejected. Anything the lobby itself
+    -- put in that table has to survive the second pass, or every player of
+    -- every match produces a false "dropped 1 loadout entr(ies)" line --
+    -- burying the one diagnostic an operator has for a real one.
     local first, firstRejected = Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 120 } } })
     t.equals(#firstRejected, 0)
-    t.equals(#first.weapons, 2)
+    t.equals(#first.weapons, 1)
 
     local second, secondRejected = reresolve(Arena, first)
     t.equals(#secondRejected, 0, 'match start rejected the entry the lobby itself put there')
-    t.equals(#second.weapons, 2)
+    t.equals(#second.weapons, 1)
     t.equals(weaponsOf(second)[1], 'WEAPON_PISTOL')
     t.equals(second.weapons[1].ammo, 120)
-    t.equals(weaponsOf(second)[2], 'WEAPON_KNIFE')
-    t.isTrue(second.weapons[2].alwaysGive)
 
     -- And it is stable: a third pass is the same loadout again, not a
     -- shorter one.
     local third, thirdRejected = reresolve(Arena, second)
     t.equals(#thirdRejected, 0)
-    t.equals(#third.weapons, 2)
+    t.equals(#third.weapons, 1)
 end)
 
 t.test('a re-resolved loadout still loses a weapon the operator has since switched off', function()
-    -- The re-resolve is a check, not a pass-through, and skipping the house
-    -- entry must not have turned it into one.
+    -- The re-resolve is a check, not a pass-through.
     local arena = tweaked(function(config)
         for _, weapon in ipairs(config.Loadouts.weapons) do
             if weapon.key == 'sniper' then weapon.enabled = false end
         end
-        -- The house weapon this test's stored loadout carries. alwaysGive
-        -- ships empty, and without an entry here the re-appending loop has
-        -- nothing to re-append, so the knife below would vanish for a reason
-        -- that has nothing to do with the disabled sniper.
-        config.Loadouts.alwaysGive = { { key = 'knife' } }
     end)
 
-    local stored = {
-        weapons = {
-            { key = 'sniper', ammo = 20 },
-            { key = 'WEAPON_KNIFE', weapon = 'WEAPON_KNIFE', ammo = 1, alwaysGive = true },
-        },
-    }
+    local stored = { weapons = { { key = 'sniper', ammo = 20 }, { key = 'pistol', ammo = 60 } } }
     local loadout, rejected = arena.ResolveLoadout(stored)
 
     t.equals(#rejected, 1)
     t.equals(rejected[1], 'sniper')
     t.equals(#loadout.weapons, 1)
-    t.equals(loadout.weapons[1].weapon, 'WEAPON_KNIFE')
-end)
-
-t.test('an alwaysGive flag on an entry buys nothing but being skipped', function()
-    -- server/main.lua rebuilds every wire loadout as { key, ammo } scalars,
-    -- so the flag cannot arrive from a client at all today. This pins what it
-    -- is worth if one ever reaches here anyway -- through the panel's own copy
-    -- of this file, or a caller written later: the entry is passed over, and a
-    -- weapon that is not in the enabled catalogue is still not handed out.
-    local loadout = Arena.ResolveLoadout({
-        weapons = {
-            { key = 'grenadelauncher', weapon = 'WEAPON_GRENADELAUNCHER', ammo = 30, alwaysGive = true },
-        },
-    })
-
-    t.equals(#loadout.weapons, 1)
-    t.equals(loadout.weapons[1].weapon, 'WEAPON_KNIFE')
+    t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
 end)
 
 -- ======================================================================
@@ -451,20 +411,15 @@ end)
 -- corrected comments now describe, so the next edit to either notices.
 -- ======================================================================
 
-t.test('no shipped fixed-loadout entry carries an ammo count the resolver would ignore', function()
-    -- With Config.Loadouts.allowChoose off, ResolveAmmo's rule 3 hands every
-    -- weapon its own catalogue default and the request is never read -- and
-    -- the operator's `fixed` list is a request like any other. An `ammo`
-    -- written there is a number nothing hands out.
-    for _, entry in ipairs(stock.Config.Loadouts.fixed or {}) do
-        t.isNil(entry.ammo, tostring(entry.key) .. ' promises an ammo count nothing reads')
-    end
+t.test('a weapon asked for with no ammo count is handed its catalogue default', function()
+    -- ResolveAmmo rule 3: anything non-numeric gets the default. The panel
+    -- sends no ammo for a weapon whose picker is off, so this is the path a
+    -- real request takes far more often than the one that names a number.
+    local loadout = Arena.ResolveLoadout({ weapons = { { key = 'rifle' }, { key = 'pistol' } } })
 
-    local arena = tweaked(function(config) config.Loadouts.allowChoose = false end)
-    local loadout = arena.ResolveLoadout({ weapons = { { key = 'sniper', ammo = 40 } } })
     t.equals(loadout.weapons[1].weapon, 'WEAPON_ASSAULTRIFLE')
-    t.equals(loadout.weapons[1].ammo, arena.GetWeaponByKey('rifle').ammo.default)
-    t.equals(loadout.weapons[2].ammo, arena.GetWeaponByKey('pistol').ammo.default)
+    t.equals(loadout.weapons[1].ammo, Arena.GetWeaponByKey('rifle').ammo.default)
+    t.equals(loadout.weapons[2].ammo, Arena.GetWeaponByKey('pistol').ammo.default)
 end)
 
 t.test('every shipped weapon with no ammo picker is pinned by max, not by trust', function()

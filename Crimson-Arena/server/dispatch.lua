@@ -1211,9 +1211,9 @@ end
 --- place. If the alert is about a spot inside an arena with a live match in
 --- it, it is an arena alert.
 ---
---- REQUIRING A LIVE MATCH IS THE WHOLE SAFETY OF IT. The arenas sit on real
---- map locations that ordinary play uses the rest of the time -- an airfield
---- and a public beach. Suppressing every alert that ever happens there would
+--- REQUIRING A LIVE MATCH IS THE WHOLE SAFETY OF IT. An arena can sit on a
+--- real map location that ordinary play uses the rest of the time -- the
+--- trailer park does. Suppressing every alert that ever happens there would
 --- silence real crimes, which is a worse failure than the one this is fixing.
 --- With no match running, nothing here suppresses anything.
 --- @param point any -- a vector3, or any table carrying x/y/z

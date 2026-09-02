@@ -402,8 +402,7 @@ end
 ---      the ceiling not at all.
 ---   2. A weapon with no `options` list is a free-form ammo weapon: the
 ---      request is clamped into [0, max].
----   3. Anything non-numeric, and any weapon at all when
----      `Config.Loadouts.allowChoose` is off, gets the default.
+---   3. Anything non-numeric gets the default.
 --- @param weapon table
 --- @param requested any -- straight off the wire; may be anything
 --- @return integer ammo
@@ -413,8 +412,6 @@ function Arena.ResolveAmmo(weapon, requested)
 
     local maximum = Arena.ToInt(ammo.max) or Arena.ToInt(ammo.default) or 0
     local default = Arena.ClampInt(ammo.default, 0, maximum) or 0
-
-    if Config.Loadouts.allowChoose == false then return default end
 
     local wanted = Arena.ToInt(requested)
     if not wanted or wanted < 0 then return default end
@@ -578,7 +575,6 @@ function Arena.ResolveAmmoType(weapon, requested)
         end
     end
 
-    if Config.Loadouts.allowChoose == false then return fallback end
     if not Arena.IsKey(requested) then return fallback end
 
     for _, entry in ipairs(types) do
@@ -714,13 +710,10 @@ function Arena.ResolveSupplies(requested)
     local config = suppliesConfig()
     if config.enabled ~= true then return out end
 
-    -- With choosing switched off at the loadout level the whole request is
-    -- ignored and everybody carries the operator's defaults, which is the
-    -- same rule ResolveLoadout applies to weapons.
+    -- With choosing switched off for supplies the whole request is ignored
+    -- and everybody carries the operator's defaults.
     local wanted = requested
-    if config.allowChoose == false or (Config.Loadouts or {}).allowChoose == false then
-        wanted = nil
-    end
+    if config.allowChoose == false then wanted = nil end
 
     local asked = {}
     for _, entry in ipairs(type(wanted) == 'table' and wanted or {}) do
@@ -782,11 +775,10 @@ end
 ---
 --- FAILS SOFT, NOT CLOSED. An unknown weapon key is dropped and the rest
 --- of the request is honoured; a request that ends up with no weapons at
---- all still succeeds, carrying only `alwaysGive`. A player who sends
---- rubbish gets a knife and a bad match, not a stuck lobby. The one thing
---- it will not do is exceed `weaponSlots` or hand out a weapon that is not
---- in the enabled catalogue.
---- @param request table? -- { weapons = { { key = string, ammo = any }, ... }, supplies = { { key = string, count = any }, ... } }; a weapons entry flagged `alwaysGive` is the operator's own and is skipped, since the list below re-appends it
+--- all still succeeds, empty-handed. A player who sends rubbish gets a bad
+--- match, not a stuck lobby. The one thing it will not do is exceed
+--- `weaponSlots` or hand out a weapon that is not in the enabled catalogue.
+--- @param request table? -- { weapons = { { key = string, ammo = any }, ... }, supplies = { { key = string, count = any }, ... } }
 --- @return table loadout -- { weapons = { { weapon = string, ammo = integer, components = table, tint = integer } }, armor = integer, health = integer, supplies = { { key, label, item, count } } }
 --- @return string[] rejected -- keys that were dropped, for logging/telemetry
 function Arena.ResolveLoadout(request)
@@ -817,13 +809,7 @@ function Arena.ResolveLoadout(request)
     local usedFirearm, usedMelee = 0, 0
     local typesTaken, distinctTypes = {}, 0
 
-    -- With choosing switched off the request is ignored entirely and the
-    -- operator's `fixed` list is what everybody gets.
     local source = request
-    if Config.Loadouts.allowChoose == false then
-        source = { weapons = Config.Loadouts.fixed or {}, armor = nil }
-    end
-
     local wanted = (type(source) == 'table' and type(source.weapons) == 'table') and source.weapons or {}
 
     for _, entry in ipairs(wanted) do
@@ -832,14 +818,7 @@ function Arena.ResolveLoadout(request)
         -- make the answer depend on the order the panel happened to send.
         if usedFirearm >= slots and usedMelee >= meleeSlots then break end
 
-        -- An `alwaysGive` entry coming back round. A loadout is stored
-        -- resolved and re-resolved at match start, so the operator's list
-        -- below arrives here as part of the request, under a GTA weapon name
-        -- that is not a catalogue key. Ignored rather than read: the loop
-        -- below appends it again regardless, so honouring it here would spend
-        -- a player's slot on the house weapon, and rejecting it would name
-        -- that weapon in the dropped-weapon log of every match ever started.
-        if not (type(entry) == 'table' and entry.alwaysGive == true) then
+        do
             local key = type(entry) == 'table' and entry.key or entry
             local weapon = Arena.GetWeaponByKey(key)
 
@@ -863,9 +842,9 @@ function Arena.ResolveLoadout(request)
                     usedFirearm = usedFirearm + 1
                 end
 
-                -- BOTH SPELLINGS, because the two loops speak different ones:
-                -- a picked weapon is known by its catalogue key, and the
-                -- `alwaysGive` guard below has only the GTA name to test with.
+                -- BOTH SPELLINGS: a weapon is known by its catalogue key in
+                -- one place and by its GTA name in another, and a duplicate
+                -- under either spelling is still a duplicate.
                 seen[weapon.key] = true
                 seen[weapon.weapon] = true
                 local ammoType = Arena.ResolveAmmoType(weapon, type(entry) == 'table' and entry.ammoType or nil)
@@ -908,57 +887,6 @@ function Arena.ResolveLoadout(request)
                     tint = Arena.ToInt(weapon.tint) or 0,
                 }
             end
-        end
-    end
-
-    -- `alwaysGive` is appended AFTER the slot limit is applied, on purpose:
-    -- it is the operator's own list, not the player's, and it should not be
-    -- possible to spend your slots in a way that denies you the house knife.
-    -- A CATALOGUE KEY IS RESOLVED, A RAW WEAPON NAME IS TAKEN AS WRITTEN.
-    --
-    -- This used to gate on `entry.weapon` alone and never look at the weapon
-    -- list, so the obvious way to write the operator's own line --
-    --     { key = 'knife' }
-    -- was skipped in silence, and the form that DID work produced a weapon
-    -- labelled 'WEAPON_KNIFE', in no category, paired with no ammunition,
-    -- because every one of those fields lives in the catalogue entry it never
-    -- read.
-    --
-    -- Now a `key` is looked up and the real entry is inherited -- label,
-    -- category, components, tint, and the ammo type that weapon actually
-    -- takes -- while `weapon` still works verbatim for handing out something
-    -- deliberately not in the list, like a parachute.
-    for _, entry in ipairs(Config.Loadouts.alwaysGive or {}) do
-        local catalogue = Arena.IsKey(entry.key) and Arena.GetWeaponByKey(entry.key) or nil
-        local weapon = entry.weapon or (catalogue and catalogue.weapon)
-
-        if Arena.IsKey(weapon) and not seen[weapon] then
-            seen[weapon] = true
-
-            -- The amount, in order of who gets to decide: the operator's own
-            -- line, then the weapon's own default, then one -- never zero,
-            -- because a weapon handed out with no ammunition at all is a
-            -- weapon that looks broken to the player holding it.
-            local ammo = Arena.ToInt(entry.ammo)
-            if ammo == nil and catalogue then ammo = Arena.ToInt((catalogue.ammo or {}).default) end
-
-            local types = catalogue and Arena.GetAmmoTypes(catalogue) or nil
-            local firstType = types and types[1] or nil
-
-            resolved[#resolved + 1] = {
-                key = entry.key or (catalogue and catalogue.key) or weapon,
-                weapon = weapon,
-                label = entry.label or (catalogue and catalogue.label) or weapon,
-                category = entry.category or (catalogue and catalogue.category) or nil,
-                ammo = math.max(0, ammo or 1),
-                ammoType = firstType and firstType.key or nil,
-                ammoTypeLabel = firstType and firstType.label or nil,
-                ammoTypeItem = firstType and firstType.item or nil,
-                components = type(entry.components) == 'table' and entry.components
-                    or (catalogue and catalogue.components) or {},
-                tint = Arena.ToInt(entry.tint) or (catalogue and Arena.ToInt(catalogue.tint)) or 0,
-                alwaysGive = true,
-            }
         end
     end
 
@@ -2728,22 +2656,6 @@ function Arena.ComputePayouts(context)
         return payouts, cut
     end
 
-    if mode == 'top_three' and context.teams ~= true then
-        -- Ordered by finishing position; `winners` is already in placement
-        -- order for FFA, best first.
-        local placed = {}
-        for index = 1, math.min(3, #winners) do placed[index] = winners[index] end
-        local percents = {}
-        for index = 1, #placed do
-            percents[index] = (Config.Betting.topThreeSplit or {})[index] or 0
-        end
-        local shares = Arena.SplitByPercent(net, percents)
-        for index, id in ipairs(placed) do
-            payouts[#payouts + 1] = { id = id, amount = shares[index] or 0, reason = 'placement' }
-        end
-        return payouts, cut
-    end
-
     -- winner_takes_all, and the fallback for any unrecognised mode: split
     -- evenly across every winner. In a team match that is the whole winning
     -- team, which is what makes a 7v1 win worth less per head than a 1v1 --
@@ -2851,8 +2763,8 @@ function Arena.ValidateConfig()
     if #Arena.GetEnabledModes() == 0 then
         complain('Config.Modes has no enabled mode -- no match can be created.')
     end
-    if #Arena.GetEnabledWeapons() == 0 and #(Config.Loadouts.alwaysGive or {}) == 0 then
-        complain('Config.Loadouts has no enabled weapon and no alwaysGive entry -- players would spawn empty-handed.')
+    if #Arena.GetEnabledWeapons() == 0 then
+        complain('Config.Loadouts has no enabled weapon -- players would spawn empty-handed.')
     end
 
     -- A weapon key used twice means one of the two is unreachable.

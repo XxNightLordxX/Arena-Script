@@ -443,8 +443,8 @@ local function splitRounds(entry)
     -- THE CATALOGUE ENTRY, not the resolved one, because the magazine is
     -- read off the weapon's own `ammo.options` and a resolved entry has
     -- already collapsed that to a single number. A loadout entry with no
-    -- catalogue behind it -- the operator's `alwaysGive` list, or a test
-    -- double -- falls through to the configured default.
+    -- catalogue behind it -- a test double, say -- falls through to the
+    -- configured default.
     local catalogue = Arena.IsKey(entry.key) and Arena.GetWeaponByKey(entry.key) or nil
 
     -- NOT RE-CLAMPED HERE. Arena.MagazineFor floors its input at zero and

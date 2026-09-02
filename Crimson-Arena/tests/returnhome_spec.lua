@@ -202,7 +202,7 @@ end
 local function liveMatch(mutate, ids)
     ids = ids or { 1, 2 }
     local server = newServer(mutate)
-    server.fire('createMatch', ids[1], { arenaKey = 'airfield', modeKey = 'ffa' })
+    server.fire('createMatch', ids[1], { arenaKey = 'trailerpark', modeKey = 'ffa' })
 
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')

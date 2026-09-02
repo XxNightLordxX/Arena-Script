@@ -563,7 +563,7 @@ end)
 
 t.test('no ammo item name appears in the match list or the leaderboard either', function()
     local server = newArena()
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local match = server.lobby.All()[1]
     t.isNotNil(match, 'the host could not open a lobby')
     server.fire('joinMatch', 2, { matchId = match.id })
@@ -602,7 +602,7 @@ t.test('DEFECT: a saved loadout carries its ammo item name into the player block
     end
     if not carrier then return end
 
-    server.fire('createMatch', 1, { arenaKey = 'airfield', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     server.fire('setLoadout', 1, {
         weapons = { { key = carrier.key, ammo = carrier.ammo.default, ammoType = carrierType.key } },
         armor = 0,
@@ -637,7 +637,6 @@ t.test('weaponSlots and meleeSlots arrive and match config', function()
     t.equals(type(loadouts.meleeSlots), 'number', 'meleeSlots never reached the panel')
     t.equals(loadouts.weaponSlots, server.config.Loadouts.weaponSlots)
     t.equals(loadouts.meleeSlots, server.config.Loadouts.meleeSlots)
-    t.equals(loadouts.allowChoose, server.config.Loadouts.allowChoose ~= false)
 end)
 
 t.test('ammoTypeSlots -- the third allowance -- reaches the panel too', function()
@@ -996,27 +995,17 @@ t.test('a stored loadout re-resolves without losing anything -- the round trip s
     end
 end)
 
-t.test('a fixed-loadout server sends the picker no choice and still answers the same way', function()
-    -- allowChoose = false is the one mode where the panel sends nothing at
-    -- all. The snapshot still has to describe what the player will be given,
-    -- or the loadout tab is a blank panel.
-    local server = newArena(function(config)
-        config.Loadouts.allowChoose = false
-    end)
+t.test('a player who has picked nothing still gets a preview and a catalogue', function()
+    -- The snapshot has to describe what the player will be given even before
+    -- they have opened the loadout tab, or that tab is a blank panel.
+    local server = newArena()
     local loadouts = server.loadouts()
 
-    t.isFalse(loadouts.allowChoose, 'the panel was not told the picker is off')
-    t.isTrue(#loadouts.weapons > 0, 'a fixed-loadout server sent no catalogue to display')
+    t.isTrue(#loadouts.weapons > 0, 'the server sent no catalogue to display')
 
-    local loadout, rejected = server.Arena.ResolveLoadout(nil)
-    t.equals(#rejected, 0)
-    t.isTrue(#loadout.weapons > 0, 'nobody would be handed anything at all')
-
-    -- And the preview in the player block is that same answer, so the tab
-    -- shows what a round will actually start with.
     local preview = server.snapshot(1).player.loadout
     t.isNotNil(preview, 'the player block carries no loadout to preview')
-    t.equals(#preview.weapons, #loadout.weapons)
+    t.equals(type(preview.weapons), 'table')
 end)
 
 -- ========================================================================

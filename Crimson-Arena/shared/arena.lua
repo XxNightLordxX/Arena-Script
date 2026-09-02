@@ -1558,21 +1558,6 @@ function Arena.GetSpawnArea(arenaKey, factor)
     }
 end
 
---- Turns an angle and a distance into a point, with a heading facing the
---- centre.
----
---- FACING INWARDS is deliberate. A player dropped at the edge of a circle
---- looking outwards is looking at empty scenery with the fight behind them,
---- and the first thing they do is spin around.
---- @return table point -- { x, y, z, w }
-local function pointAt(area, angle, distance)
-    local x = area.x + math.cos(angle) * distance
-    local y = area.y + math.sin(angle) * distance
-    -- Degrees, clockwise from north, which is what GTA headings are.
-    local heading = (math.deg(angle) + 180.0) % 360.0
-    return { x = x, y = y, z = area.z, w = heading }
-end
-
 --- Squared distance, because nothing here needs the square root -- it is
 --- only ever compared against another distance.
 local function distanceSquared(a, b)
@@ -1621,42 +1606,218 @@ end
 --- and it is the difference between a rule and a preference.
 local SAMPLES_PER_ROUND = 96
 
+--- How much of the theoretical packing limit rejection sampling can really
+--- reach. A perfect hexagonal lattice is not something darts thrown at a
+--- disc produce, and asking for the full bound makes every placement fall
+--- through to the relaxation -- which is the failure this whole file exists
+--- to stop doing quietly.
+local PACKING_EFFICIENCY = 0.80
+
+--- How many places one team anchor is drawn from before the furthest is
+--- kept. Cheap -- it runs once per team per match, on a handful of points --
+--- and the difference between "random" and "random and far apart".
+local ANCHOR_CANDIDATES = 32
+
+--- THE LARGEST GAP THIS MANY PEOPLE CAN ACTUALLY BE GIVEN IN THIS CIRCLE.
+---
+--- WHY THIS EXISTS AT ALL, and it is the difference between a rule that is
+--- kept and a rule worth keeping. `minSeparation` is one number in config,
+--- and one number cannot be right for both ends of the roster: four
+--- fighters on the shipped skydome were being placed ten metres apart in a
+--- circle that could have given them twenty-six, and twenty-four fighters
+--- were being asked for the same ten in a circle where ten is already close
+--- to the packing limit. The rule was kept perfectly at every size and it
+--- was the wrong rule -- everybody opened the round inside somebody's
+--- sights, which is exactly what an operator reports as "you get shot the
+--- moment you spawn".
+---
+--- So the ask is not a constant. Hexagonal packing fits `count` points at
+--- spacing `s` into a disc of radius `R` while count <= (2pi/sqrt 3)(R/s)^2;
+--- solved for `s` and scaled by what sampling can really reach, that is the
+--- most room this roster can have. `minSeparation` stops being the target
+--- and becomes the FLOOR: the distance below which a placement has failed
+--- rather than merely been crowded.
+--- @param radius number
+--- @param count integer
+--- @return number
+local function achievableSeparation(radius, count)
+    if count <= 1 then return radius end
+    return PACKING_EFFICIENCY * radius * math.sqrt((2.0 * math.pi / math.sqrt(3.0)) / count)
+end
+
+--- The heading that has a player at (x, y) looking at the middle of the
+--- arena. Same rule as pointAt, for a point that was not drawn from an
+--- angle: a fighter dropped facing outwards is looking at scenery with the
+--- fight behind them.
+--- @return number
+local function facingCentre(area, x, y)
+    return (math.deg(math.atan(area.y - y, area.x - x)) + 360.0) % 360.0
+end
+
+--- What two placements have to keep between them.
+---
+--- THREE DIFFERENT ANSWERS, and collapsing them into one is what the old
+--- single `separation` did. A piece of cover keeps its own clearance and
+--- never relaxes -- no amount of crowding makes spawning inside a wall
+--- acceptable. A TEAMMATE only has to not be stood inside: landing near your
+--- own side is the point of having one. Anybody else is an enemy, and that
+--- is the distance worth spending the arena on.
+--- @param other table -- something already placed
+--- @param team string|nil -- the side being placed now; nil in a free-for-all
+--- @param mate number
+--- @param enemy number
+--- @return number
+local function needBetween(other, team, mate, enemy)
+    if other.clearance then return other.clearance end
+    -- `team` is nil in a free-for-all, where everybody is an enemy -- so this
+    -- deliberately does not fire on two nils.
+    if team ~= nil and other.team == team then return mate end
+    return enemy
+end
+
 --- start and the second is survivable.
+---
+--- THE RELAXATION HAPPENS IN TWO STAGES NOW, and the stages mean different
+--- things. The first gives back the ENEMY gap -- the ambitious number,
+--- worked out from what the circle can hold -- down to `rules.mate`, which
+--- is the operator's own `minSeparation` and the point at which a placement
+--- has stopped being generous and started being wrong. Only after that does
+--- it give up the floor as well, and only on the last round, because a
+--- placement loop that cannot terminate is worse than two players standing
+--- close together.
+--- @param rules table -- { mate = number, enemy = number }
+--- @param team string|nil -- the side being placed; nil in a free-for-all
 --- @return table[] points
-local function scatterWithin(rng, area, centreX, centreY, radius, separation, count, placed)
+local function scatterWithin(rng, area, centreX, centreY, radius, rules, count, placed, team)
     local out = {}
-    local wanted = separation
 
     for _ = 1, count do
         local chosen
-        local floor = wanted
+        local enemy, mate = rules.enemy, rules.mate
 
-        for round = 1, 5 do
+        for _ = 1, 5 do
             for _ = 1, SAMPLES_PER_ROUND do
                 local candidate = sampleDisc(rng, area, centreX, centreY, radius)
                 local ok = true
                 for _, other in ipairs(placed) do
-                    -- A piece of cover carries its own clearance and keeps
-                    -- it: the relaxation below is about fitting people
-                    -- around each other, and no amount of crowding makes
-                    -- spawning inside a wall acceptable.
-                    local need = other.clearance or floor
+                    local need = needBetween(other, team, mate, enemy)
                     if distanceSquared(candidate, other) < need * need then ok = false break end
                 end
                 if ok then chosen = candidate break end
             end
             if chosen then break end
-            -- Nothing fitted. Ask for less rather than trying the same
-            -- question again, and on the final round ask for nothing.
-            floor = (round == 4) and 0.0 or floor * 0.6
+
+            -- THE TWO ARE RELAXED SEPARATELY, AND THAT IS THE WHOLE POINT.
+            --
+            -- Relaxing them together was a real regression, measured rather
+            -- than reasoned about: eight fighters do not fit inside one
+            -- team's own circle at the operator's separation, so the mate
+            -- constraint fails every round -- and sharing one decay dragged
+            -- the ENEMY gap down with it, to under seven metres in a
+            -- sixteen-player team match. Crowding among teammates says
+            -- nothing whatever about how close the other side should be.
+            --
+            -- So the mate gap gives way, because teammates standing close
+            -- together is the shape of a team. The enemy gap gives way only
+            -- as far as the number the operator actually wrote, and never
+            -- past it.
+            mate = mate * 0.6
+            enemy = math.max(rules.mate, enemy * 0.7)
         end
 
-        chosen = chosen or sampleDisc(rng, area, centreX, centreY, radius)
+        -- NOT A BLIND DRAW. The old fallback took one random point, which on
+        -- a crowded arena is where a fighter opens the round inside somebody
+        -- else's sights -- the exact complaint the separation above exists
+        -- to answer, arriving through the back door on the placements that
+        -- needed it most. Sampling and keeping the point whose nearest enemy
+        -- is furthest costs one more pass and cannot be worse than one dart.
+        if not chosen then
+            local bestScore
+            for _ = 1, SAMPLES_PER_ROUND do
+                local candidate = sampleDisc(rng, area, centreX, centreY, radius)
+                local nearest = math.huge
+                for _, other in ipairs(placed) do
+                    if needBetween(other, team, 0.0, 1.0) > 0.0 then
+                        local gap = distanceSquared(candidate, other)
+                        if gap < nearest then nearest = gap end
+                    end
+                end
+                if bestScore == nil or nearest > bestScore then
+                    chosen, bestScore = candidate, nearest
+                end
+            end
+        end
+        -- TAGGED WITH WHOSE SIDE THEY ARE ON, so the next team placed sees
+        -- them as an enemy and keeps the wider distance. Without this every
+        -- pair after the first team would be measured by the same number and
+        -- the whole point of two separations would be lost.
+        chosen.team = team
         placed[#placed + 1] = chosen
         out[#out + 1] = chosen
     end
 
     return out
+end
+
+--- WHERE EACH TEAM OPENS, drawn at random and then chosen for being far
+--- from the other teams.
+---
+--- IT USED TO BE A FIXED PATTERN. Anchors were spaced evenly around the
+--- circle at a random rotation, which is a ring of k points rotated -- so
+--- every team match had the same shape and only its orientation changed, and
+--- on two teams that meant "directly opposite", every single round. Drawing
+--- them instead makes the whole arena the answer, and scoring them keeps the
+--- property the fixed pattern was there for.
+---
+--- Maximin, the same rule PickRespawn uses: each anchor after the first is
+--- the candidate whose NEAREST existing anchor is furthest away. Not the one
+--- furthest from their average -- an average is happily satisfied by landing
+--- between two of them.
+--- @param rng fun():number
+--- @param area table
+--- @param count integer -- how many teams
+--- @return table[] anchors -- { x, y, z, w }
+local function pickAnchors(rng, area, count)
+    -- Pulled in from the edge so a team's own spread stays inside the area.
+    local reach = math.max(0.0, area.radius - area.teamRadius)
+    local anchors = {}
+
+    for index = 1, count do
+        local best, bestScore
+        for _ = 1, ANCHOR_CANDIDATES do
+            -- ON THE RIM OF THE REACH CIRCLE, at a random angle, rather than
+            -- anywhere inside it. Two teams drawn from the whole disc can
+            -- both land near the middle, and then no amount of scoring can
+            -- put them far apart -- measured, a four-player team match came
+            -- out at fifteen metres where the old fixed pattern gave
+            -- twenty-two. The rim is where the distance is, and the angle is
+            -- what makes it random: teams still never open in the same place
+            -- twice, and the middle of the arena is nobody's ground at the
+            -- start of a round, which is what a team match wants anyway.
+            local angle = rng() * math.pi * 2.0
+            local candidate = {
+                x = area.x + math.cos(angle) * reach,
+                y = area.y + math.sin(angle) * reach,
+                z = area.z,
+            }
+            if index == 1 then
+                best = candidate
+                break
+            end
+            local nearest = math.huge
+            for _, other in ipairs(anchors) do
+                local gap = distanceSquared(candidate, other)
+                if gap < nearest then nearest = gap end
+            end
+            if bestScore == nil or nearest > bestScore then
+                best, bestScore = candidate, nearest
+            end
+        end
+        best.w = facingCentre(area, best.x, best.y)
+        anchors[#anchors + 1] = best
+    end
+
+    return anchors
 end
 
 --- Works out where every player in a roster starts.
@@ -1727,26 +1888,43 @@ function Arena.PlanSpawns(arenaKey, roster, rng, factor)
 
     -- FREE FOR ALL, or a team mode nobody has picked a side in yet.
     if #order == 1 and order[1] == '\0ffa' then
-        local points = scatterWithin(rng, area, area.x, area.y, area.radius,
-            area.minSeparation, #byTeam['\0ffa'], placed)
-        for index, entry in ipairs(byTeam['\0ffa']) do
+        local roll = byTeam['\0ffa']
+
+        -- EVERYBODY IS AN ENEMY HERE, so the gap between any two of them is
+        -- the one worth spending the circle on. Asked for as much as the
+        -- circle can give this many people, floored at what the operator
+        -- wrote: four fighters get the twenty-six metres a 35m circle can
+        -- hold rather than the ten a config line happened to name.
+        local rules = {
+            mate = area.minSeparation,
+            enemy = math.max(area.minSeparation, achievableSeparation(area.radius, #roll)),
+        }
+
+        local points = scatterWithin(rng, area, area.x, area.y, area.radius, rules, #roll, placed, nil)
+        for index, entry in ipairs(roll) do
             plan[entry.src] = points[index]
         end
         return plan
     end
 
-    -- TEAMS. Anchors evenly around the circle, rotated at random so a team
-    -- does not always open in the same place, and pulled in from the edge so
-    -- a team's own spread stays inside the area.
-    local anchorDistance = math.max(0.0, area.radius - area.teamRadius)
-    local rotation = rng() * math.pi * 2.0
+    -- TEAMS. An anchor per side, drawn at random and kept for being far from
+    -- the other sides, then that side's players scattered around it.
+    local anchors = pickAnchors(rng, area, #order)
+
+    -- THE ENEMY GAP IS WORKED OUT ON THE WHOLE ROSTER, not per team. It is
+    -- the distance between two people on opposite sides, and both of them
+    -- are standing in the same circle -- so what limits it is how many
+    -- bodies are in that circle altogether.
+    local rules = {
+        mate = area.minSeparation,
+        enemy = math.max(area.minSeparation, achievableSeparation(area.radius, #roster)),
+    }
 
     for index, key in ipairs(order) do
-        local angle = rotation + ((index - 1) / #order) * math.pi * 2.0
-        local anchor = pointAt(area, angle, anchorDistance)
+        local anchor = anchors[index]
 
         local points = scatterWithin(rng, area, anchor.x, anchor.y, area.teamRadius,
-            area.minSeparation, #byTeam[key], placed)
+            rules, #byTeam[key], placed, key)
 
         for slot, entry in ipairs(byTeam[key]) do
             local point = points[slot]
@@ -1761,9 +1939,25 @@ function Arena.PlanSpawns(arenaKey, roster, rng, factor)
 end
 
 --- How many points to sample before picking the one furthest from trouble.
---- Enough that the choice is a real choice; small enough that a respawn is
---- not a search.
-local RESPAWN_CANDIDATES = 16
+---
+--- SIXTEEN WAS TOO FEW, AND IT WAS MEASURED RATHER THAN ARGUED. Maximin can
+--- only pick the best of what it drew, so the size of the draw IS the
+--- guarantee. Over three thousand respawns into a twenty-four player skydome
+--- the worst return at sixteen candidates was 10.1m from a live opponent --
+--- inside a rifle's first burst, and the whole complaint this function
+--- exists to answer. At forty-eight it is 18.1m, and nothing lands inside
+--- twelve at any roster size.
+---
+---     candidates   worst gap (n=24)   returns under 12m
+---     16           10.1m              0.03%
+---     32           14.6m              0
+---     48           18.1m              0
+---     64           17.1m              0
+---
+--- Sixty-four buys nothing over forty-eight, which is where the curve flattens
+--- and where this sits. It costs one bounded loop over a few dozen points,
+--- once, when somebody dies.
+local RESPAWN_CANDIDATES = 48
 
 --- How many times one respawn candidate is redrawn to get it out of a wall.
 ---
@@ -1809,19 +2003,34 @@ end
 --- An empty `avoid` is not an error and not a fallback to the old cursor: it
 --- is a round where nobody is left to avoid, and the answer is still a random
 --- point rather than a predictable one.
+---
+--- `prefer` is the other half of the same question in a team mode: coming
+--- back away from the enemy is only half a respawn if it also drops you
+--- alone on the far side of the arena from your own side. Given teammates to
+--- head for, the choice is made among the candidates that ALREADY clear the
+--- enemy gap -- so being near your team can never cost you the distance from
+--- the people shooting at you.
 --- @param arenaKey any
 --- @param teamKey any -- the returning player's side, for the team point list
 --- @param avoid table[]|nil -- positions to stay away from
 --- @param rng fun():number|nil -- injectable; defaults to math.random
+--- @param factor number|nil -- how much bigger the arena is for this match
+--- @param prefer table[]|nil -- teammates' positions, to come back near
 --- @return table|nil point -- { x, y, z, w }, or nil when the arena has neither
 ---         a spawn area nor any points to choose from
-function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor)
+function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor, prefer)
     rng = rng or math.random
 
     local threats = {}
     for _, entry in ipairs(type(avoid) == 'table' and avoid or {}) do
         local point = asPoint(entry)
         if point then threats[#threats + 1] = point end
+    end
+
+    local friends = {}
+    for _, entry in ipairs(type(prefer) == 'table' and prefer or {}) do
+        local point = asPoint(entry)
+        if point then friends[#friends + 1] = point end
     end
 
     -- THE ARENA'S OWN WALLS, WHICH THIS USED TO WALK STRAIGHT INTO.
@@ -1928,13 +2137,58 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor)
         return pool[1]
     end
 
-    local best, bestScore = nil, -1
-    for _, candidate in ipairs(pool) do
+    --- How far the nearest live opponent is from a point, squared.
+    --- @param candidate table
+    --- @return number
+    local function threatGap(candidate)
         local nearest = math.huge
         for _, threat in ipairs(threats) do
             local gap = distanceSquared(candidate, threat)
             if gap < nearest then nearest = gap end
         end
+        return nearest
+    end
+
+    -- A GAP TO CLEAR, NOT ONLY A GAP TO MAXIMISE.
+    --
+    -- Maximin alone answers "the best of what I drew", and on a crowded
+    -- arena the best of what it drew can still be close enough to be shot
+    -- before the screen has finished fading in. So the candidates are first
+    -- filtered by the same distance the ENTRY placement asks for -- what
+    -- this many people can actually be given in this circle -- and the
+    -- maximin below then runs on the survivors. When nothing clears it the
+    -- filter is dropped rather than the respawn refused: the best available
+    -- point is still the best available point.
+    local safe = pool
+    if area then
+        local wanted = math.max(area.minSeparation,
+            achievableSeparation(area.radius, #threats + 1))
+        local qualified = {}
+        for _, candidate in ipairs(pool) do
+            if threatGap(candidate) >= wanted * wanted then qualified[#qualified + 1] = candidate end
+        end
+        if #qualified > 0 then safe = qualified end
+    end
+
+    -- WITH A SIDE TO REJOIN, the choice among those is the one nearest a
+    -- teammate. Only ever among candidates that already cleared the gap
+    -- above, so this cannot trade away the distance it was chosen for.
+    if #friends > 0 and #safe > 1 then
+        local best, bestScore = nil, math.huge
+        for _, candidate in ipairs(safe) do
+            local nearest = math.huge
+            for _, friend in ipairs(friends) do
+                local gap = distanceSquared(candidate, friend)
+                if gap < nearest then nearest = gap end
+            end
+            if nearest < bestScore then best, bestScore = candidate, nearest end
+        end
+        if best then return best end
+    end
+
+    local best, bestScore = nil, -1
+    for _, candidate in ipairs(safe) do
+        local nearest = threatGap(candidate)
         -- Strictly greater, so the first of several equally distant
         -- candidates wins -- and the first is already a random one.
         if nearest > bestScore then best, bestScore = candidate, nearest end

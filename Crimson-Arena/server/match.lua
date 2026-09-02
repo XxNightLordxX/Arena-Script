@@ -789,14 +789,20 @@ end
 --- @param match table
 --- @param player table -- the one coming back
 --- @return table[] positions
-local function liveOpponentPositions(match, player)
+local function livePositions(match, player, sameSideWanted)
     local teams = Arena.ModeUsesTeams(match.modeKey)
     local own = teams and teamOf(match, player) or nil
+
+    -- A MODE WITH NO SIDES HAS NO TEAMMATES, and asking for them must answer
+    -- nothing rather than everybody: in a free-for-all "not an opponent" is
+    -- true of nobody except yourself, and reading it the other way would hand
+    -- the respawn the whole roster to head towards.
+    if sameSideWanted and not (teams and Arena.IsKey(own)) then return {} end
 
     local out = {}
     for src, entry in pairs(match.players or {}) do
         local sameSide = teams and Arena.IsKey(own) and teamOf(match, entry) == own
-        if src ~= player.src and entry.alive == true and not sameSide then
+        if src ~= player.src and entry.alive == true and sameSide == sameSideWanted then
             local ped = GetPlayerPed(src)
             if ped and ped ~= 0 then
                 local coords = GetEntityCoords(ped)
@@ -809,6 +815,27 @@ local function liveOpponentPositions(match, player)
         end
     end
     return out
+end
+
+--- Everyone still alive who is allowed to shoot the player coming back.
+--- @param match table
+--- @param player table
+--- @return table[] positions
+local function liveOpponentPositions(match, player)
+    return livePositions(match, player, false)
+end
+
+--- Everyone still alive on the returning player's OWN side.
+---
+--- Coming back away from the enemy is only half a respawn if it drops you
+--- alone on the far side of the arena from your team. Arena.PickRespawn uses
+--- this only to choose among points that ALREADY clear the enemy gap, so
+--- rejoining your side can never cost you the distance you were placed for.
+--- @param match table
+--- @param player table
+--- @return table[] positions
+local function liveTeammatePositions(match, player)
+    return livePositions(match, player, true)
 end
 
 --- Puts a player back in at a fresh point with a fresh loadout once
@@ -857,7 +884,7 @@ local function scheduleRespawn(match, player)
         -- only for that fallback.
         local team = teamOf(current, entry)
         local planned = Arena.PickRespawn(current.arenaKey, team, liveOpponentPositions(current, entry),
-            nil, current.sizeFactor)
+            nil, current.sizeFactor, liveTeammatePositions(current, entry))
         local point = planned or Arena.PickSpawn(current.arenaKey, team, current.spawnCursor)
 
         TriggerClientEvent('crimson_arena:client:respawn', src, {

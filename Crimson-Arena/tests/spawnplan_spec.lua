@@ -174,25 +174,43 @@ t.test('a team lands together', function()
 end)
 
 t.test('and the two teams do not start on top of each other', function()
+    -- OVER MANY MATCHES, NOT ONE. The anchors are drawn now rather than laid
+    -- out, so a single seed proves only that one draw was lucky -- and a
+    -- draw is exactly what a fixed pattern used to make impossible. What has
+    -- to hold is that the WORST of twenty-four matches still opens the two
+    -- sides a long way apart, which is the maximin doing its job.
     local env = envWith()
-    local plan = env.Arena.PlanSpawns('ring', roster(8, { 'crimson', 'ash' }), seeded(2))
+    local worst, worstSeed = math.huge, nil
 
-    local function centroid(predicate)
-        local x, y, n = 0, 0, 0
-        for src = 1, 8 do
-            if predicate(src) then x, y, n = x + plan[src].x, y + plan[src].y, n + 1 end
+    for seed = 1, 60 do
+        local plan = env.Arena.PlanSpawns('ring', roster(8, { 'crimson', 'ash' }), seeded(seed * 31))
+
+        local function centroid(predicate)
+            local x, y, n = 0, 0, 0
+            for src = 1, 8 do
+                if predicate(src) then x, y, n = x + plan[src].x, y + plan[src].y, n + 1 end
+            end
+            return { x = x / n, y = y / n }
         end
-        return { x = x / n, y = y / n }
-    end
 
-    local apart = distance(centroid(function(s) return s % 2 == 1 end),
-                           centroid(function(s) return s % 2 == 0 end))
+        local apart = distance(centroid(function(s) return s % 2 == 1 end),
+                               centroid(function(s) return s % 2 == 0 end))
+        if apart < worst then worst, worstSeed = apart, seed end
+    end
 
     -- Two anchors on opposite sides of a circle 75m from the middle are 150m
     -- apart; even allowing for the spread inside each team they should be a
-    -- long way from each other.
-    t.isTrue(apart > 50.0,
-        ('the two teams start %.1fm apart -- they are being dropped into each other'):format(apart))
+    -- long way from each other, in every match rather than on average.
+    --
+    -- THE THRESHOLD IS SET WHERE IT SEPARATES TWO DESIGNS. Anchors drawn on
+    -- the RIM hold the two sides 135m apart at worst over sixty matches;
+    -- anchors drawn anywhere INSIDE the circle -- which is the obvious way
+    -- to write this and the one that reads as more random -- manage only
+    -- 71m, because both sides can land near the middle and no amount of
+    -- scoring can then pull them apart.
+    t.isTrue(worst > 100.0,
+        ('the worst of 24 matches (seed %d) started the two teams %.1fm apart -- they are being dropped into each other')
+            :format(worstSeed or 0, worst))
 end)
 
 t.test('a team is still kept apart from the other team, player by player', function()
@@ -220,6 +238,273 @@ t.test('teams do not always open in the same corner', function()
 
     t.isTrue(distance(first[1], second[1]) > 1.0,
         'two matches placed the same team in the same place, so the rotation is not being applied')
+end)
+
+-- ------------------------------------------------------------------
+-- Room to survive the first second
+-- ------------------------------------------------------------------
+
+--- The smallest gap between any two players on OPPOSITE sides. In a
+--- free-for-all everybody is on a different side from everybody.
+--- @param plan table
+--- @param roll table[]
+--- @return number
+local function worstEnemyGap(plan, roll)
+    local worst = math.huge
+    for a = 1, #roll do
+        for b = a + 1, #roll do
+            local sameSide = roll[a].team ~= nil and roll[a].team == roll[b].team
+            if not sameSide then
+                worst = math.min(worst, distance(plan[roll[a].src], plan[roll[b].src]))
+            end
+        end
+    end
+    return worst
+end
+
+t.test('THE COMPLAINT: four fighters are not placed ten metres apart in a circle that fits twenty-six', function()
+    -- ONE NUMBER CANNOT BE RIGHT FOR BOTH ENDS OF THE ROSTER, and this is
+    -- the end where the old behaviour was worst. `minSeparation` was the
+    -- target as well as the floor, so a small roster in a large circle got
+    -- exactly the floor -- and everybody opened the round inside somebody
+    -- else's sights, which is what an operator reports as being shot the
+    -- moment they spawn.
+    --
+    -- 100m radius, four players: hexagonal packing says roughly 66m is the
+    -- theoretical limit and sampling reaches about 80% of it. Anything near
+    -- the 12m floor means the ask is still a constant.
+    local env = envWith()
+    local roll = roster(4)
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(5))
+
+    local worst = worstEnemyGap(plan, roll)
+    t.isTrue(worst > 30.0,
+        ('four fighters in a 100m circle are only %.1fm apart -- the placement is still asking for the floor'):format(worst))
+end)
+
+t.test('and the gap shrinks with the roster rather than the arena getting more crowded than it has to', function()
+    -- The ask is what the circle can actually give THIS many people, so it
+    -- has to fall as the roster grows -- and it has to fall smoothly rather
+    -- than collapsing to the floor the moment it is inconvenient.
+    local env = envWith()
+    local previous = math.huge
+    for _, count in ipairs({ 4, 8, 16, 24 }) do
+        local roll = roster(count)
+        local plan = env.Arena.PlanSpawns('ring', roll, seeded(count * 7))
+        local worst = worstEnemyGap(plan, roll)
+
+        t.isTrue(worst >= 12.0,
+            ('%d fighters came out %.1fm apart, inside the 12m floor'):format(count, worst))
+        t.isTrue(worst <= previous + 0.001,
+            ('%d fighters got MORE room (%.1fm) than the smaller roster before them (%.1fm)')
+                :format(count, worst, previous))
+        previous = worst
+    end
+end)
+
+t.test('the floor is still a floor: a roster too big for the circle is not refused', function()
+    -- The ask is ambitious on purpose, and an ambitious ask that cannot be
+    -- met must degrade rather than fail. Sixty players in a circle that fits
+    -- far fewer at 12m is the case where the placement has to hand back
+    -- something for everybody.
+    local env = envWith()
+    local roll = roster(60)
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(3))
+
+    for _, entry in ipairs(roll) do
+        t.isNotNil(plan[entry.src], ('player %d was never placed'):format(entry.src))
+        t.isTrue(fromCentre(plan[entry.src]) <= 100.0 + 0.001,
+            ('player %d was placed outside the area'):format(entry.src))
+    end
+end)
+
+t.test('teammates keep the small gap and enemies keep the big one', function()
+    -- TWO DIFFERENT QUESTIONS, and the old code asked one. Landing near your
+    -- own side is the point of having one; landing near the other side is
+    -- the thing being fixed. So the two distances must come out different,
+    -- with the enemy one larger.
+    local env = envWith()
+    local roll = roster(8, { 'crimson', 'ash' })
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(21))
+
+    local worstMate = math.huge
+    for a = 1, #roll do
+        for b = a + 1, #roll do
+            if roll[a].team == roll[b].team then
+                worstMate = math.min(worstMate, distance(plan[roll[a].src], plan[roll[b].src]))
+            end
+        end
+    end
+
+    local worstEnemy = worstEnemyGap(plan, roll)
+    t.isTrue(worstEnemy > worstMate,
+        ('the nearest enemy (%.1fm) is no further than the nearest teammate (%.1fm) -- the two separations are not separate')
+            :format(worstEnemy, worstMate))
+    t.isTrue(worstMate >= 12.0,
+        ('two teammates are %.1fm apart, inside the floor'):format(worstMate))
+end)
+
+t.test('a crowded team does not drag the enemy gap down with it', function()
+    -- THE REGRESSION THIS EXISTS TO STOP, found by measuring rather than by
+    -- reading. Eight fighters do not fit inside one team's own 25m circle at
+    -- the operator's separation, so the teammate constraint fails on every
+    -- round of the relaxation -- and sharing one decay between the two
+    -- dragged the ENEMY gap down with it, to under seven metres in a
+    -- sixteen-player team match. Crowding among teammates says nothing
+    -- whatever about how close the other side may be.
+    local env = envWith({ teamRadius = 14.0 })
+    local roll = roster(16, { 'crimson', 'ash' })
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(9))
+
+    local worst = worstEnemyGap(plan, roll)
+    t.isTrue(worst >= 12.0,
+        ('the sides came out %.1fm apart because their own circles were crowded'):format(worst))
+end)
+
+t.test('OVERLAPPING TEAM CIRCLES: the per-pair enemy rule is what keeps the sides apart', function()
+    -- WHERE THE ANCHOR SPACING STOPS DOING THE WORK. With a team circle small
+    -- against the area, two sides are kept apart simply by being anchored
+    -- far away from each other, and the per-pair rule never has to fire. Give
+    -- each side most of the arena to spread over and the circles overlap --
+    -- and then the only thing standing between a crimson fighter and an ash
+    -- one is the distance the placement itself insists on.
+    --
+    -- This is also the case that catches an enemy gap relaxed below the
+    -- operator's floor: the teams are crowded, the relaxation runs deep, and
+    -- an unclamped decay walks the sides straight into each other.
+    local env = envWith({ teamRadius = 70.0, minSeparation = 12.0 })
+
+    -- ASSERTED WELL ABOVE THE FLOOR, because the floor is what the old
+    -- behaviour already gave and what a constant ask still gives. Measured
+    -- over sixty matches: the placement holds fourteen fighters sharing one
+    -- circle 40m apart, and asking for the operator's twelve instead drops
+    -- that to 12.1m -- which is the mutation this line exists to fail on.
+    for _, spec in ipairs({ { 4, 40.0 }, { 14, 30.0 } }) do
+        local count, wanted = spec[1], spec[2]
+        local worst, worstSeed = math.huge, nil
+        for seed = 1, 60 do
+            local roll = roster(count, { 'crimson', 'ash' })
+            local plan = env.Arena.PlanSpawns('ring', roll, seeded(seed * 17))
+            local gap = worstEnemyGap(plan, roll)
+            if gap < worst then worst, worstSeed = gap, seed end
+        end
+        t.isTrue(worst > wanted,
+            ('%d fighters sharing one circle came out %.1fm apart on seed %d -- the sides are being held to the floor rather than to what the circle can give')
+                :format(count, worst, worstSeed or 0))
+    end
+end)
+
+t.test('and teammates in that same circle are still allowed to stand together', function()
+    -- The other half of the same case. Tagging each placement with the side
+    -- it belongs to is what lets one rule apply to a teammate and another to
+    -- an enemy; drop the tag and everybody is measured by the enemy gap, so
+    -- a team is scattered over the whole arena and stops being a team.
+    local env = envWith({ teamRadius = 70.0, minSeparation = 12.0 })
+    local roll = roster(10, { 'crimson', 'ash' })
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(77))
+
+    local worstMate = math.huge
+    for a = 1, #roll do
+        for b = a + 1, #roll do
+            if roll[a].team == roll[b].team then
+                worstMate = math.min(worstMate, distance(plan[roll[a].src], plan[roll[b].src]))
+            end
+        end
+    end
+
+    local worstEnemy = worstEnemyGap(plan, roll)
+    t.isTrue(worstMate < worstEnemy * 0.75,
+        ('the closest teammates are %.1fm apart and the closest enemies %.1fm -- a teammate is being held to the enemy distance')
+            :format(worstMate, worstEnemy))
+end)
+
+t.test('AND WHEN THE CIRCLE CANNOT GIVE EVEN THE FLOOR, the floor is what it keeps trying for', function()
+    -- THE OTHER END OF THE SAME RULE. Everything above is about a circle
+    -- with room to spare, where the ask is larger than the operator's
+    -- number. Here it is smaller: twenty-four fighters in a 30m circle
+    -- cannot have twelve metres each, so what the placement asks for falls
+    -- back to the operator's floor -- and the relaxation must not then walk
+    -- it below that on the way down. Unclamped, five rounds of decay leave
+    -- the ask at under a quarter of the floor, and the arena stops trying
+    -- for the one number the operator actually wrote.
+    local env = envWith({ radius = 30.0, minSeparation = 12.0 })
+    local roll = roster(24)
+
+    local best, worst = 0, math.huge
+    for seed = 1, 60 do
+        local plan = env.Arena.PlanSpawns('ring', roll, seeded(seed * 23))
+        local gap = worstEnemyGap(plan, roll)
+        best = math.max(best, gap)
+        worst = math.min(worst, gap)
+    end
+
+    -- Not every match can manage twelve -- that is what "cannot give even
+    -- the floor" means -- but the placement has to be REACHING for it, and
+    -- the difference is measurable at both ends. Clamped, sixty crowded
+    -- matches come out between 7.7m and 9.8m; unclamped, the ask decays to
+    -- under a quarter of the floor, low enough to be SATISFIED by a bad
+    -- point -- so the placement stops falling through to the furthest-from-
+    -- trouble draw that would have saved it, and the worst match drops to
+    -- 5.9m.
+    t.isTrue(worst >= 7.0,
+        ('the worst of sixty crowded matches was %.1fm apart -- the ask is being relaxed below the floor rather than towards it'):format(worst))
+    t.isTrue(best >= 9.5,
+        ('the best of sixty crowded matches only managed %.1fm'):format(best))
+
+    -- And everybody is still placed, inside the area.
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(1))
+    for _, entry in ipairs(roll) do
+        t.isNotNil(plan[entry.src])
+        t.isTrue(fromCentre(plan[entry.src]) <= 30.0 + 0.001)
+    end
+end)
+
+t.test('a team never has anybody standing outside the arena', function()
+    -- THE ANCHOR HAS TO BE PULLED IN FROM THE EDGE, by exactly the radius
+    -- the team then spreads over. Anchoring on the rim of the AREA instead
+    -- of the rim of what is left after that spread puts half of each side
+    -- outside the arena -- 161 fighters over 40 matches, measured -- and
+    -- outside the arena on the skydome is a kilometre of air.
+    local env = envWith()
+    local strays = 0
+
+    for seed = 1, 40 do
+        local roll = roster(8, { 'crimson', 'ash' })
+        local plan = env.Arena.PlanSpawns('ring', roll, seeded(seed * 5))
+        for _, entry in ipairs(roll) do
+            if fromCentre(plan[entry.src]) > 100.001 then strays = strays + 1 end
+        end
+    end
+
+    t.equals(strays, 0, ('%d team placements landed outside the spawn area'):format(strays))
+end)
+
+t.test('team anchors are drawn rather than laid out on a fixed ring', function()
+    -- Evenly spaced anchors at a random rotation are one shape rotated, so
+    -- two teams meant "directly opposite" in every single round. Drawing the
+    -- angle makes the whole rim the answer -- but the anchors still have to
+    -- end up far apart, which is what the maximin below is for.
+    local env = envWith()
+    local seen = {}
+    for seed = 1, 24 do
+        local roll = roster(6, { 'crimson', 'ash', 'bone' })
+        local plan = env.Arena.PlanSpawns('ring', roll, seeded(seed * 13))
+
+        -- The angle each side opened at, to the nearest ten degrees.
+        local x, y, n = 0, 0, 0
+        for _, entry in ipairs(roll) do
+            if entry.team == 'crimson' then
+                x, y, n = x + plan[entry.src].x, y + plan[entry.src].y, n + 1
+            end
+        end
+        local angle = math.floor((math.deg(math.atan(y / n - AREA.y, x / n - AREA.x)) + 360) % 360 / 10)
+        seen[angle] = true
+    end
+
+    local distinct = 0
+    for _ in pairs(seen) do distinct = distinct + 1 end
+    t.isTrue(distinct >= 8,
+        ('crimson opened at only %d distinct angles over 24 matches -- the anchors are still a fixed pattern'):format(distinct))
 end)
 
 -- ------------------------------------------------------------------

@@ -233,8 +233,8 @@ local lastCall = {}
 --- @return boolean allowed -- true when the caller may proceed
 function ArenaRateLimit(src, bucket, intervalMs)
     -- A REAL PLAYER ID IS ALWAYS ABOVE ZERO, and everything else in this
-    -- resource that takes one says so -- ArenaDispatch.Set and the notify
-    -- helper below both refuse `<= 0`. This did not, so it was the one entry
+    -- resource that takes one says so -- ArenaDispatch.Set and ArenaNotify
+    -- above both refuse `<= 0`. This did not, so it was the one entry
     -- point that would open a bucket for an id no `playerDropped` will ever
     -- arrive for, and ArenaForgetPlayer is the only thing that clears one.
     --

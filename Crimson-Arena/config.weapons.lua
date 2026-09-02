@@ -32,7 +32,7 @@
 --         key = 'microsmg',                 -- unique; the panel and wire use it
 --         weapon = 'WEAPON_MICROSMG',       -- the real GTA name; this is what is given
 --         label = 'Micro SMG',              -- what the player reads
---         category = 'automatic',           -- a key from `categories` above
+--         category = 'automatic',           -- a key from Config.Loadouts.categories, in config.lua
 --         enabled = true,
 --         ammo = { default = 120, options = { 60, 120, 250 }, max = 400 },
 --         components = {},
@@ -45,7 +45,8 @@
 --
 --   key      -- what the panel and the wire use. Must be unique.
 --   weapon   -- the real GTA weapon name. This is what is actually given.
---   ammo     -- default/options/max, see the note above this table.
+--   ammo     -- default/options/max; the rules are in config.lua's
+--               Config.Loadouts header, which is loaded before this file.
 --   enabled  -- false hides it everywhere without deleting the entry.
 Config.Loadouts.weapons = {
     -- GENERATED FROM THIS SERVER'S OWN ox_inventory weapons.lua.
@@ -59,8 +60,8 @@ Config.Loadouts.weapons = {
     --
     -- `ammoTypes` is per weapon here rather than one shared list, because
     -- on this server the round differs by weapon -- a 9mm and a 12 gauge
-    -- are separate items. That is exactly the per-weapon override the
-    -- note further down describes.
+    -- are separate items. That is exactly the per-weapon override
+    -- config.lua's Config.Loadouts.defaultAmmoTypes note describes.
     --
     -- ENABLED = FALSE ON EXPLOSIVES, LAUNCHERS AND NOVELTIES. They are
     -- present so they can be switched on deliberately, rather than absent

@@ -244,22 +244,23 @@ is a kilometre of air.
 - [ ] With `Config.Debug` on, F8 names the piece count and the surface height:
 
       ```
-      [crimson_arena] arena scenery: 141 piece(s) built, 121 of them floor; the floor prop measures 8.00 x 8.00m and its surface is at 1201.00.
+      [crimson_arena] arena scenery: 87 of 87 piece(s) built -- 9 floor, 78 cover, furthest cover 44.53m out.
+      [crimson_arena] arena scenery: the floor prop measures 40.00 x 40.00m and its surface is at 1201.00.
       ```
 
       **The cover count is always 78** -- 44 in the perimeter wall (22
       positions, each doubled), 12 in the outer ring, 8 in the mid band, 8 in
       the four corner pockets and 6 in the middle. Every cover chain ends in a
-      base-game model, so it does not depend on what your build supplied.
-      **The floor count does**: 9 tiles with the 40m stunt block the chain
-      leads with, 137 with an 8m prop, 297 with the base-game shipping
-      container at the end of it. 87 pieces total is the healthy number on a
-      build that has the DLC block; a much larger one is not a fault, it means
-      your build fell back down the chain. Both grow with the roster. The exact figures depend on which
-      model out of the chain your build supplied and how big it measures, which
-      is why the line prints the measurement.
+      base-game model, so it does not depend on what your build supplied, and
+      **`furthest cover 44.53m out` is the wall** -- a much smaller number
+      means an older `config.lua`.
+      **The floor count does depend on your build**: 9 tiles with the 40m
+      stunt block the chain leads with, 137 with an 8m prop, 297 with the
+      base-game shipping container at the end of it. A much larger count is
+      not a fault, it means your build fell back down the chain. Both grow
+      with the roster, which is why the line prints the measurement.
 
-      **`0 of them floor` is the failure to care about.** If the piece count is
+      **`0 floor` is the failure to care about.** If the piece count is
       zero entirely, the floor was asked for somewhere the engine was not
       holding the map — which is the bug this arena shipped with.
 

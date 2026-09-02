@@ -1152,12 +1152,12 @@ function ArenaMatch.OnDeath(src, killerSrc)
         -- two for the rest of the round -- watching, flagged dead by the
         -- medical script, with whatever that script does to a corpse still
         -- being done to them.
-        -- KEEPING THE HOLD, which is the whole difference between this revive
-        -- and every other one. The point here is the medical script's list,
-        -- not the player's freedom: the round is still running and they are
-        -- out of it. Released, they would be visible, solid and MORTAL in a
-        -- live arena -- spectate restores the first two and never touches
-        -- invincibility.
+        -- THE HOLD STAYS, and nothing on this path releases it. The point
+        -- here is the medical script's list, not the player's freedom: the
+        -- round is still running and they are out of it. Released, they
+        -- would be visible, solid and MORTAL in a live arena -- spectate
+        -- restores the first two and never touches invincibility, and the
+        -- client's `eliminated` handler deliberately leaves the hold on.
         ArenaDispatch.Revive(id, true)
 
         TriggerClientEvent('crimson_arena:client:eliminated', id, { matchId = match.id, spectate = spectate })

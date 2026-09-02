@@ -141,8 +141,9 @@ instancing really happened rather than assuming it did.
   says the player is somewhere else, the resource says so once, loudly, and stops
   claiming isolation for the rest of the run. `/arenaisolation` prints the
   readings.
-- **A dispatch integration in five layers**, from the one that needs nobody's
-  cooperation down to the one that admits it is best-effort — plus a catalogue
+- **A dispatch integration in six layers**, from the one that needs nobody's
+  cooperation down to the one that withdraws a call after it has been filed
+  — plus a catalogue
   that detects the police and EMS resources actually running and a startup report
   that says, per resource, whether the arena reaches it.
 - **The arena does not revive players itself.** It stopped: two resources writing to one body is a flicker with a winner, not a revive. Its own death handling stands the ped up in the frame it dies, and the medical script's revive — fired automatically for every script the catalogue detects — is what clears that script's casualty list.
@@ -312,7 +313,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 61 functions
+#### `shared/arena.lua` — 64 functions
 
 | Function | What it does |
 |---|---|
@@ -411,7 +412,7 @@ listed; the source documents them where they are.
 | `ArenaWebhook(title, description, fields)` | Posts one embed to the configured Discord webhook. |
 | `ArenaNewId()` | A fresh match id, unique for this server run. |
 
-#### `server/dispatch.lua` — 12 functions
+#### `server/dispatch.lua` — 13 functions
 
 | Function | What it does |
 |---|---|

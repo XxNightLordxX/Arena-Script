@@ -111,7 +111,9 @@ local function targeting()
     return exports.ox_target
 end
 
---- @return boolean spawned -- false means the caller should fall back
+--- @return boolean spawned -- whether an NPC is really standing there. There
+--- is no fallback: false means the lobby has nothing in it, and the start-up
+--- console line says so.
 local function spawnLobbyPed()
     local ped = Config.Lobby.ped
 

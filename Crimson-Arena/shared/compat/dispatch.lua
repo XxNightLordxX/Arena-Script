@@ -852,8 +852,9 @@ function ArenaCompat.Report()
         lines[#lines + 1] = 'revive: NOTHING IS TELLING YOUR MEDICAL SCRIPT. No script this catalogue knows is'
         lines[#lines + 1] = '  running, so a player who dies in a match walks out of the arena'
         lines[#lines + 1] = '  still dead as far as that script is concerned.'
-        lines[#lines + 1] = '  The arena does not stand players up itself, deliberately: two resources arguing'
-        lines[#lines + 1] = '  over one body is a flicker, not a revive.'
+        lines[#lines + 1] = '  Their PED is fine -- the arena stands it up in the frame they died and again on'
+        lines[#lines + 1] = '  respawn. What is missing is the handoff: nothing has told the script that keeps'
+        lines[#lines + 1] = '  its own list of who is down.'
         lines[#lines + 1] = '  Fix: add your medical script to the catalogue in shared/compat/dispatch.lua, with the'
         lines[#lines + 1] = '       revive event it listens for -- read out of its own source, never guessed.'
     end

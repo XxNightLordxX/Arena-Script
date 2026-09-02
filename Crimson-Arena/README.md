@@ -170,7 +170,7 @@ A weapon with no choice to make sets `options = nil`. The panel offers no chips 
 ammo = { default = 1, options = nil, max = 1 },
 ```
 
-With no list to check a request against, `max` is the only limit that weapon has left on the wire: a modified client asking for a number between `default` and `max` is given it, because that is what `max` means everywhere else in the file. **Set `max` equal to `default` for a weapon whose count is meant to be fixed** — all ten melee entries ship that way, which is why nothing on the shipped catalogue has any headroom to ask into. Leave the two apart only when free-form ammo up to the ceiling is what you meant.
+With no list to check a request against, `max` is the only limit that weapon has left on the wire: a modified client asking for a number between `default` and `max` is given it, because that is what `max` means everywhere else in the file. **Set `max` equal to `default` for a weapon whose count is meant to be fixed** — all eighteen melee entries ship that way, which is why nothing on the shipped catalogue has any headroom to ask into. Leave the two apart only when free-form ammo up to the ceiling is what you meant.
 
 Removing a weapon is `enabled = false`. That genuinely removes it — it does not merely hide a button.
 
@@ -196,7 +196,7 @@ Every firearm in `Config.Loadouts.weapons` carries its **own** single-entry `amm
 If your server names its ammo items differently, the `item` field on each weapon's `ammoTypes` line is the one to edit. Handing out an item name that does not exist is a **silent nothing** in the player's inventory and one console line for you:
 
 ```
-[crimson_arena] ammo: could not give ammo-rifle-ap x60 to 12 -- check that item exists on this server.
+[crimson_arena] ammo: could not give ammo-rifle x60 to 12 -- check that item exists on this server.
 ```
 
 Nothing validates those names at startup — the config validator cannot know what items your inventory has — so that line is the only place a typo shows up. Grep for it after changing any of them.
@@ -226,7 +226,7 @@ One prerequisite: **`ox_inventory` must be running.** It is the only inventory t
 **Nothing checks your item names at startup.** The config validator checks weapon keys, ammo ceilings, spawns, teams and betting numbers; it does not and cannot know what items exist in your inventory. A wrong name surfaces on the first match that asks for it, in the server console, naming the item:
 
 ```
-[crimson_arena] ammo: could not give ammo-rifle-ap x60 to 12 -- check that item exists on this server.
+[crimson_arena] ammo: could not give ammo-rifle x60 to 12 -- check that item exists on this server.
 ```
 
 That is the line to grep for after you first switch this on. Read it as "this name is wrong, or that player's inventory is full".
@@ -253,7 +253,7 @@ Three levers, in order of how often you will want them:
 | Different item names on one weapon — a pistol round and a rifle round are separate items | Give that weapon its own `ammoTypes = { ... }` list. It replaces the shared one for that weapon, it does not add to it. |
 | No types at all on one weapon | `ammoTypes = false` on that weapon. An explicit `false` beats the shared default. |
 
-**Melee is excluded automatically.** A weapon whose ammo `max` is 1 or less never inherits the shared list, because a weapon that carries one "round" is not carrying ammunition, it is carrying a bat. You do not have to write `ammoTypes = false` on the eight melee entries, and you should not: the rule is in the code, so a melee weapon you add later is excluded too.
+**Melee is excluded automatically.** A weapon whose ammo `max` is 1 or less never inherits the shared list, because a weapon that carries one "round" is not carrying ammunition, it is carrying a bat. You do not have to write `ammoTypes = false` on the eighteen melee entries, and you should not: the rule is in the code, so a melee weapon you add later is excluded too.
 
 **Which type a player gets when they express no preference** is `defaultAmmoType` — set per weapon, falling back to `Config.Loadouts.defaultAmmoType` for the whole list, falling back to the first enabled entry. That matters more than it sounds: it is what is issued for anything that never went through a player's choice at all.
 
@@ -315,23 +315,18 @@ Three things worth knowing before you watch it run:
 **Anything that will not come out is named in the console rather than written off.** A silent teardown that took nothing back looks exactly like a clean one, so it is never allowed to look clean:
 
 ```
-[crimson_arena] ammo: ammo-rifle-ap x60 issued to 12 on match m4f2a1 could not be taken back (left the arena). They fired it, dropped it, or are already gone.
+[crimson_arena] door: 3 item(s) of 12's own kit could not be returned -- they stay in stash arena_ABC123.
 ```
-
-The reason in brackets is the exit path — `left the arena`, `disconnected`, `resource stopping` — so a line tells you both what is outstanding and how the player left holding it.
 
 **Reclaiming twice takes nothing twice.** Each record is marked as it is returned, and the exit paths overlap by design — a disconnect mid-round routes through the ordinary exit *and* is caught again by the disconnect handler. The second pass is a no-op. That is deliberate: two guards that both fire are safe, one guard that misses is an ammo printer.
 
-The ledger removes **exactly what it issued**, by item and count, and nothing else. A player who walks in carrying a hundred rounds of the same item and fires none of them walks out with their hundred. Test that deliberately anyway — some inventory setups tie a weapon's in-game round count to the item backing it, and this resource grants and strips weapons with the game's own natives, which is a separate mechanism from the ledger. Whether the two reconcile on your build is a question only your server can answer.
+**The exit clears the whole inventory and gives the stash back**, rather than removing issued items one by one, so nothing the arena produced can leave with anybody and a player's own kit is what returns. Test that deliberately anyway — some inventory setups tie a weapon's in-game round count to the item backing it. Whether the two reconcile on your build is a question only your server can answer.
 
-Turn `Config.Debug` on to watch it work:
+Turn `Config.Debug` on and the door says what it did on each exit:
 
 ```
-[crimson_arena] [debug] ammo: gave ammo-rifle-ap x60 to 12 on match m4f2a1
-[crimson_arena] [debug] ammo: reclaimed 41 of 60 item(s) from 12
+[crimson_arena] [debug] door: 12 left (match ended), kit returned
 ```
-
-Nineteen rounds down the range is a fought match, not a leak.
 
 #### What is *not* issued an item
 
@@ -362,7 +357,7 @@ The component is appended to a **copy** of that weapon's `components` list, neve
 
 Component names are only meaningful on MK II weapons. Adding a `component` to a plain Assault Rifle does nothing useful, because there is no magazine for it to attach.
 
-**The shipped config now does the opposite of what this section was written to warn about.** Every weapon in the catalogue — MK II or not — carries its own `ammoTypes` list with a real `item` filled in and **no `component` at all**. So editing `defaultAmmoTypes` changes nothing for any of them, not just for twelve; and no MK II weapon arrives with a special magazine attached unless you add one. That is exactly right for a server with no ammo script. But a per-weapon list *replaces* the shared one, so if you switch ammo items on and edit only `Config.Loadouts.defaultAmmoTypes`, every weapon in the catalogue starts issuing items **except** the four MK II ones, which quietly keep handing out a magazine and nothing else. Add your `item` names to those four lists as well, or delete their `ammoTypes` lists so they inherit the shared one — at the cost of the MK II magazines, since the shared list carries no components.
+**The shipped config now does the opposite of what this section was written to warn about.** Every weapon in the catalogue — MK II or not — carries its own `ammoTypes` list with a real `item` filled in and **no `component` at all**. So editing `defaultAmmoTypes` changes nothing for any of them, not just for twelve; and no MK II weapon arrives with a special magazine attached unless you add one. That is exactly right for a server with no ammo script. A per-weapon list *replaces* the shared one, so editing `Config.Loadouts.defaultAmmoTypes` reaches only a weapon that has no `ammoTypes` of its own — and every shipped weapon has one.
 
 ### Turning betting off
 
@@ -479,8 +474,9 @@ under the people standing in it.
 
 The shipped `skydome` uses it, so six fighters get the 35 m circle in config
 and twenty get a 57 m one on a floor to match. Every roster size from four to
-thirty-two lands the full stated separation, checked over two hundred rosters
-each in `tests/skyarena_spec.lua`.
+thirty-two lands the full stated separation, checked across sixty random
+seeds for each of seven roster sizes — four hundred and twenty rosters — in
+`tests/skyarena_spec.lua`.
 
 Leave the block out and nothing changes — which is what every arena on the
 map does, including the trailer park.
@@ -704,9 +700,9 @@ cancelEvents = {
 
 Cancelling a shots-fired call about somebody on the other side of the map is a far worse outcome than failing to cancel one about a fighter — it is the same silent hole the state bag's security note is written against, arrived at from the other direction — so anything doubtful is left alone.
 
-**It only ever listens.** These are registered with `AddEventHandler` and never `RegisterNetEvent`. `RegisterNetEvent` is what makes an event triggerable by a client, and calling it on somebody else's server-only event name would let *any* player fire that event — turning a feature meant to silence false alerts into a way to forge real ones.
+**Each name is registered for the network as well as handled.** FXServer delivers a client-raised event only to a resource that has called `RegisterNetEvent` for that name, and gunfire and deaths are raised with `TriggerServerEvent` from the player's own client — so without it this whole layer never ran for the alerts that matter. Safe-for-net is per resource: it marks the name callable into *this* resource's handlers and changes nothing about the script that owns the event.
 
-The list ships pointed at the four events `sc-dispatch` and `sc-ambulance` really raise — `sc-dispatch:server:ShotsFired`, `hospital:server:EMSDownAlert`, `hospital:server:ambulanceAlert` and `mydispatch:requestEMS`. It previously named `sc-dispatch:server:AddNotification` and `sc-dispatch:AddNotification`, neither of which exists in either resource: `AddNotification` is an **export**, and nothing can register a handler on an export call. Those two entries never fired once, so this whole layer was listening to silence while every round paged police and EMS. The startup report counts what you put in the list and labels it `(best effort)` there too.
+The list ships pointed at the six events `sc-dispatch` and `sc-ambulance` really raise — `sc-dispatch:server:ShotsFired`, `hospital:server:EMSDownAlert`, `hospital:server:ambulanceAlert`, `mydispatch:requestEMS`, and `sc-dispatch:server:PlayerDown` and `sc-dispatch:server:PlayerDead`, which sc-dispatch's own client raises off the QB down metadata without anybody pressing a key. It previously named `sc-dispatch:server:AddNotification` and `sc-dispatch:AddNotification`, neither of which exists in either resource: `AddNotification` is an **export**, and nothing can register a handler on an export call. Those two entries never fired once, so this whole layer was listening to silence while every round paged police and EMS. The startup report counts what you put in the list and labels it `(best effort)` there too.
 
 #### Layer 6 — withdrawing the alert after it is created
 
@@ -1008,7 +1004,7 @@ Anything you build on those is subject to the same rule the rest of the resource
   ```
 
 - `Config.Lobby.ped.coords.z` is the **ground z**. The resource drops the ped one unit itself. A ped hovering a metre in the air means the z came from a `/coords` reading taken while standing on something.
-- The NPC standing there with no option to press is ox_target not running.
+- No NPC standing there at all, with `ox_target is not started` in the console, is ox_target not running. Nothing goes up in its place: start ox_target, or set `Config.Lobby.interaction` to `'marker'` or `'both'`.
 - Two NPCs standing on the same spot means something spawned one this resource did not. Its own ped is deleted on `onResourceStop`, so a plain restart cannot leave a duplicate behind.
 
 ### The sky arena does nothing, or I fall through it
@@ -1034,12 +1030,14 @@ are client-side because only a client can ask the game what models it has.
 - **With `Config.Debug = true`** the build reports itself:
 
   ```
-  [crimson_arena] arena scenery: 29 piece(s) built, 9 of them floor; the floor prop measures 40.00 x 40.00m and its surface is at 1201.00.
+  [crimson_arena] arena scenery: 215 of 215 piece(s) built -- 137 floor, 78 cover, furthest cover 44.53m out.
+  [crimson_arena] arena scenery: the floor prop measures 40.00 x 40.00m and its surface is at 1201.00.
   ```
 
-  **`0 of them floor` is the number that matters** — barriers built and the
-  floor did not. A piece count of zero entirely means the pieces were asked
-  for somewhere the engine was not holding the map.
+  **`0 floor` is the number that matters** — cover built and the floor did
+  not. A piece count of zero entirely means the pieces were asked for
+  somewhere the engine was not holding the map. A cover count well below 78,
+  or a furthest cover far inside 44.53 m, means an older `config.lua`.
 
 - **You are standing in the floor rather than on it, or the barriers are
   buried.** `platform.z` is the surface people stand on, not where the pieces
@@ -1075,18 +1073,17 @@ are client-side because only a client can ask the game what models it has.
 - **Check the switch first.** `Config.Loadouts.ammoItems.enabled` ships `true`, so on a stock install this is *not* the answer — but if somebody has turned it off, nothing is asked of any inventory at all: the weapon arrives with the whole pick in its magazine and no item appears.
 - **Check the amount you picked.** A weapon asked for one magazine or less has no spare rounds to issue, so no ammo item is handed over and none is missing. 30 rounds on a Pistol is 30 in the gun and nothing in the pocket, by design.
 - **`ox_inventory` must be started.** If it is not, the console says so in as many words — `ammo items are switched on but ox_inventory is not started` — and nobody is given any.
-- **The item name is the usual answer.** The names in the shipped config are placeholders. A name that does not exist on your server produces one console line per attempt, naming the item: `ammo: could not give ammo-rifle-ap x60 to 12 -- check that item exists on this server.` Nothing checks those names at startup, so this line is the only place a typo shows up.
+- **The item name is worth checking.** Every shipped name is a real one, read out of that weapon's own `ammoname` in ox_inventory — `ammo-9`, `ammo-shotgun`, `ammo-heavysniper`. If your server names its ammo differently, a name that does not exist produces one console line per attempt: `ammo: could not give ammo-rifle x60 to 12 -- check that item exists on this server.` Nothing checks those names at startup, so this line is the only place a typo shows up.
 - The same line appears for a **full inventory**, which is not a typo. `allowWeaponWithoutAmmoItem` decides whether that player still fights.
 - **Melee weapons never carry an item.** That is by design, not a fault — see [what is not issued an item](#what-is-not-issued-an-item).
 - A weapon with `ammoTypes = false`, or one whose ammo `max` is 1 or less, offers no types and so has no item to issue.
-- Turn `Config.Debug` on and the grant and the reclaim both print: `ammo: gave ammo-rifle-ap x60 to 12 on match m4f2a1`, then `ammo: reclaimed 41 of 60 item(s) from 12`.
 
 ### Ammunition is not coming back
 
-- **A shortfall is usually spent ammunition.** Rounds the player fired cannot be removed, because they are gone. `reclaimed 41 of 60` after a fought match is the expected shape.
-- Anything that genuinely will not come out is named: `ammo: <item> x<n> issued to <src> on match <id> could not be taken back (<reason>)`. The reason in brackets is which exit path was running.
+- **There is no per-item shortfall to read.** The exit clears the whole inventory rather than removing what was issued one item at a time, so spent rounds are not a discrepancy anybody has to account for.
+- What will not come back is the player's OWN kit, and it is named: `door: <n> item(s) of <src>'s own kit could not be returned -- they stay in stash <id>.` The stash keeps it and the retry sweep hands it over when it can.
 - **Check the door.** `Config.Loadouts.inventory.stripOnEntry` is what decides whether a player's own kit is taken and given back. With it off, players keep everything they walked in with *and* everything the arena issued — that is the switch that makes the arena a source of free ammunition, and it exists only for servers that want that.
-- `refusing to drop match <id> -- <src> still holds <item> x<n>` means a match record was asked to close with ammunition outstanding and refused. The refusal is the safe outcome — the record stays reachable so a later reclaim can still find it — but it is worth reading as a sign that an exit path did not run.
+- `door: refusing to drop match <id> -- <src>'s kit is still stashed at <stash>.` means a match record was asked to close while somebody's own belongings were still in the stash, and refused. The refusal is the safe outcome — the record stays reachable so a later return can still find it — but it is worth reading as a sign that an exit path did not run.
 
 ### A player's own inventory did not come back
 

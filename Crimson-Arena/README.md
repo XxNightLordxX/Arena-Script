@@ -609,6 +609,7 @@ Reading it:
 | `assumed handled` | You named it in `resyncResources`, so you have evidently wired it to the entry/exit events. That is evidence, not proof — the report cannot see inside your script. |
 | `NOT muted -- needs the line below` | Nothing in the arena reaches it. Paste the line it prints. |
 | `Isolation is off` | Layer 1 is switched off, so every client on the server can see arena gunfire and arena bodies. |
+| `Isolation is CONFIGURED ON BUT NOT IN FORCE` | You asked for it and the server is not doing it. The report says which of the two it is: OneSync off, or a routing bucket the server accepted and then ignored. Run `/arenaisolation` for the readings. |
 
 `/arenadispatch` runs the whole detection again, live, and prints the same block — after installing a dispatch script, or after pasting the line it asked for, without a restart. It is gated on `Config.Permissions.adminGroups`, and the server console always qualifies. An admin who runs it in-game has no console to read, so they get the block as one notification as well.
 
@@ -1179,6 +1180,29 @@ are client-side because only a client can ask the game what models it has.
 - If it is only *EMS* being called, the likeliest cause is a script hooking the death **event** rather than polling the death **state**. Layer 2 cannot help with those; the state bag can.
 - If a `cancelEvents` entry is not silencing anything, that is the documented behaviour rather than a fault — see [layer 5](#layer-5--cancelling-the-alert-event-and-it-is-best-effort-only). Use the state bag line instead.
 - A dispatch script that starts alerting again after *it* restarts has lost its ignore list. Name it in `Config.Dispatch.custom.resyncResources`.
+
+### Two matches can see and shoot each other
+
+That is isolation not happening, and the resource can now tell you which of three things it is rather than leaving you to guess.
+
+**Type `/arenaisolation`.** It prints measurements, not intentions: the mode your server reports for `onesync`, whether a routing bucket has ever been set and then found not to have taken, the bucket each live match was allocated, and — the line that settles it — the bucket the server says each of those players is standing in right now.
+
+```
+[crimson_arena] arenaisolation: config says ON, server reports onesync "on", a move has NOT been caught not landing.
+[crimson_arena] arenaisolation: isolation is IN FORCE right now, one bucket per match.
+[crimson_arena] arenaisolation:   match m1f3a2 was allocated bucket 4210.
+[crimson_arena] arenaisolation:   match m1f3a3 was allocated bucket 4211.
+[crimson_arena] arenaisolation:   3 (match m1f3a2) should be in 4210 and the server says 4210.
+[crimson_arena] arenaisolation:   7 (match m1f3a3) should be in 4211 and the server says 4211.
+```
+
+Two players with the same number and two different match ids is the whole diagnosis. So is a row ending `<-- NOT INSTANCED`.
+
+- **`server reports onesync "off"`** — routing buckets need OneSync, and without it the natives that instance a match do nothing at all: no error, no warning. `set onesync on` in `server.cfg`, then restart. Note that `onesync_enabled 1`, `yes` and `on` all count as on; the arena reads all of them.
+- **`a move has been caught not landing`** — the server accepted a routing bucket and then reported the player somewhere else. The natives are inert here whatever the convars say. Until it is fixed the arena refuses to start a second match at an arena somebody is already fighting in, rather than dropping two armed groups on one platform.
+- **`config says OFF`** — `Config.Dispatch.isolation.enabled` is `false`. Turn it back on.
+
+Like `/arenadispatch` and `/arenarevive`, it is gated on `Config.Permissions.adminGroups`, and the server console always qualifies.
 
 ### Nothing else fits
 

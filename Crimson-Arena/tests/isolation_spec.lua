@@ -52,10 +52,19 @@ print('isolation_spec')
 --- them -- an apartment interior, a heist instance, whatever else the server
 --- runs -- which is the value every restore assertion in this file is
 --- really about. Anyone not named in it is standing in the default world.
+--- `opts` models the two things a server can do that no config setting
+--- describes: answer OneSync through the older pair of convars instead of
+--- the modern one, and accept a SetPlayerRoutingBucket call while doing
+--- nothing with it. The second is the failure an operator actually reported
+--- and the reason `inert` exists -- every line of the allocation still runs
+--- and still looks right, and the players are simply not separated.
 --- @param dispatchConfig table? -- replaces Config.Dispatch entirely when given
 --- @param world table<number, integer>? -- [src] = the bucket they start in
+--- @param oneSyncMode string? -- what GetConvar('onesync') answers
+--- @param opts table? -- { inert = boolean, convars = table, connected = table|boolean }
 --- @return table fixture
-local function newFixture(dispatchConfig, world, oneSyncMode)
+local function newFixture(dispatchConfig, world, oneSyncMode, opts)
+    opts = opts or {}
     local buckets = {}       -- [src] = the bucket that player is in right now
     -- ON unless a test says otherwise, so every case above describes a
     -- server where isolation CAN work and only the ones about OneSync
@@ -83,7 +92,10 @@ local function newFixture(dispatchConfig, world, oneSyncMode)
             return buckets[src] or 0
         end,
         SetPlayerRoutingBucket = function(src, bucket)
-            buckets[src] = bucket
+            -- `inert` is the whole point: the call is accepted, recorded,
+            -- and changes nothing -- which is exactly what FXServer does
+            -- with these natives when routing buckets are not available.
+            if not opts.inert then buckets[src] = bucket end
             calls[#calls + 1] = { kind = 'move', src = src, bucket = bucket }
         end,
         SetRoutingBucketPopulationEnabled = function(bucket, enabled)
@@ -110,8 +122,29 @@ local function newFixture(dispatchConfig, world, oneSyncMode)
         -- above this one still describes a server where isolation can work;
         -- the tests that care set it themselves.
         GetConvar = function(name, fallback)
+            if opts.convars and opts.convars[name] ~= nil then return opts.convars[name] end
             if name == 'onesync' then return oneSync end
             return fallback
+        end,
+
+        -- WHO IS STILL HERE. A bucket that did not take and a player who
+        -- left while it was being set look identical from the inside, and
+        -- only one of them is the server's fault. Everyone is connected
+        -- unless a test names otherwise; `connected = false` is a server
+        -- this resource cannot ask, which must not be read as proof of
+        -- anything either.
+        GetPlayerName = opts.connected ~= 'absent' and function(src)
+            -- 'error' models a build where the native itself is unusable --
+            -- a server this file cannot ask, which is not the same as a
+            -- server that answered no.
+            if opts.connected == 'error' then error('no such player') end
+            -- Builds differ on what a player who has gone answers with:
+            -- some hand back nil, some hand back an empty string, and only
+            -- one of those is caught by a nil check.
+            if opts.connected == 'empty' then return '' end
+            if opts.connected == false then return nil end
+            if type(opts.connected) == 'table' and not opts.connected[src] then return nil end
+            return 'player' .. tostring(src)
         end,
 
         RegisterNetEvent = function() end,
@@ -181,6 +214,17 @@ local function newFixture(dispatchConfig, world, oneSyncMode)
         for _, call in ipairs(calls) do out[#out + 1] = call.kind end
         return table.concat(out, ',')
     end
+
+    --- Makes the routing natives stop working PART WAY THROUGH, which is the
+    --- only way to reach the drift repair on a server that is not honouring
+    --- buckets: the first refused move takes isolation down with it, and
+    --- every later call gives up before the repair is reached.
+    function fixture.goInert() opts.inert = true end
+
+    --- Moves a player the way another resource on the box would -- an
+    --- interior, a job, a heist, an admin tool -- with this file told
+    --- nothing about it.
+    function fixture.somebodyElseMoves(src, bucket) buckets[src] = bucket end
 
     --- @return string
     function fixture.log() return table.concat(logs, '\n') end
@@ -458,6 +502,202 @@ t.test('every OneSync mode that is not off still instances', function()
         t.isTrue(f.D.GetBucket('m1') ~= nil,
             ('OneSync "%s" was treated as no isolation at all'):format(mode))
     end
+end)
+
+t.test('the older pair of convars counts, however the operator spelled the yes', function()
+    -- A CONVAR BOOLEAN IS NOT THE STRING 'true'. `set onesync_enabled 1` is
+    -- the spelling half the guides on the internet use, and yes/on both turn
+    -- up in the wild -- GetConvar hands back whatever was typed, verbatim.
+    -- Comparing against 'true' alone read every one of those as OneSync OFF
+    -- and switched isolation off on servers that had it running.
+    for _, said in ipairs({ '1', 'true', 'TRUE', 'yes', 'on' }) do
+        local f = newFixture(nil, nil, nil, { convars = { onesync = '', onesync_enabled = said } })
+        t.isTrue(f.D.GetBucket('m1') ~= nil,
+            ('onesync_enabled "%s" was read as OneSync being off'):format(said))
+    end
+
+    -- And the same for the infinity half of the pair.
+    local inf = newFixture(nil, nil, nil, { convars = { onesync = '', onesync_enableInfinity = '1' } })
+    t.equals(inf.D.OneSync(), 'infinity')
+end)
+
+t.test('and a no is a no however THAT is spelled', function()
+    for _, said in ipairs({ 'off', 'false', '0', 'no', 'OFF' }) do
+        local f = newFixture(nil, nil, said)
+        t.equals(f.D.GetBucket('m1'), nil,
+            ('onesync "%s" was read as OneSync being on'):format(said))
+    end
+
+    -- Neither list is the other's complement, and that is deliberate: a mode
+    -- name this file has never heard of is not a refusal, because it is far
+    -- more likely to be a build newer than this code.
+    local newer = newFixture(nil, nil, 'something_new')
+    t.isTrue(newer.D.GetBucket('m1') ~= nil)
+end)
+
+-- ======================================================================
+-- WHETHER THE SERVER ACTUALLY DID IT
+--
+-- Every test above this line asks the server a QUESTION -- which convar is
+-- set, what does it name -- and trusts the answer for the rest of the run.
+-- An operator reported twice that matches were still sharing a world while
+-- all of those questions answered yes, and nothing in the resource could
+-- have told them otherwise: the allocation ran, the move ran, the log said
+-- the match was instanced, and the players stood in each other.
+--
+-- Setting a routing bucket is a synchronous write to a field the server
+-- keeps for that client -- there is no race to lose and no tick to wait for
+-- -- so reading it back is a measurement rather than a poll, and a
+-- disagreement is proof rather than a hint.
+-- ======================================================================
+
+t.test('a server that accepts the move and does nothing with it is CAUGHT', function()
+    local f = newFixture(nil, { [7] = 91 }, 'on', { inert = true })
+
+    -- The allocation looks perfectly healthy, because it is: the numbers are
+    -- this file's own and nothing about them needs the server.
+    t.equals(f.D.GetBucket('m1'), 4210)
+
+    t.isFalse(f.D.EnterBucket(7, 'm1'), 'a move that did not land was reported as having landed')
+    t.equals(f.count('move'), 1, 'the native was never even called')
+    t.equals(f.bucketOf(7), 91, 'the fixture is not modelling an inert server')
+end)
+
+t.test('and it says so, loudly, naming what it read', function()
+    local f = newFixture(nil, { [7] = 91 }, 'on', { inert = true })
+    f.D.EnterBucket(7, 'm1')
+
+    local said = f.log()
+    t.isTrue(said:find('4210', 1, true) ~= nil, 'the bucket it asked for was not named')
+    t.isTrue(said:find('91', 1, true) ~= nil, 'the bucket the server actually reported was not named')
+    -- The mode the server reports is named too, because that is the thing
+    -- the operator has to go and change.
+    t.isTrue(said:find('onesync', 1, true) ~= nil, 'the operator was not told where to look')
+
+    -- IN THE OPERATOR'S CONSOLE, not in a debug channel they would have to
+    -- switch on first -- and they cannot switch it on to find out about a
+    -- problem they do not know they have.
+    t.isTrue(f.debug():find('ISOLATION IS NOT IN FORCE', 1, true) == nil,
+        'the one line that explains what they are watching was sent to the debug channel')
+end)
+
+t.test('once, not once a player', function()
+    local f = newFixture(nil, nil, 'on', { inert = true })
+    f.D.EnterBucket(7, 'm1')
+    f.D.EnterBucket(8, 'm1')
+    f.D.EnterBucket(9, 'm2')
+
+    local said, count, from = f.log(), 0, 1
+    while true do
+        local at = said:find('ISOLATION IS NOT IN FORCE', from, true)
+        if not at then break end
+        count = count + 1
+        from = at + 1
+    end
+    t.equals(count, 1, ('the operator was told %d times; a line printed every round is a line nobody reads'):format(count))
+end)
+
+t.test('THE FALLBACK IT UNLOCKS: no bucket is handed out afterwards', function()
+    -- This is the half that matters more than the log line. With no bucket
+    -- to hand out, server/match.lua refuses to start a second match at an
+    -- arena somebody is already fighting in -- two rounds sharing one
+    -- platform is the symptom the operator sees, and that guard was written
+    -- for exactly this and was never reachable, because nothing in the
+    -- resource could tell that it was needed.
+    local f = newFixture(nil, nil, 'on', { inert = true })
+    t.equals(f.D.GetBucket('m1'), 4210, 'the first allocation happens before anything is known')
+    f.D.EnterBucket(7, 'm1')
+
+    t.equals(f.D.GetBucket('m2'), nil, 'a second match was still told the ground was safe to share')
+    t.equals(f.D.GetBucket('m1'), nil)
+    t.isFalse(f.D.IsolationState().inForce)
+    t.isTrue(f.D.IsolationState().provenInert)
+end)
+
+t.test('a player who left while it was being set is NOT held against the server', function()
+    -- The two look identical from the inside and only one of them is the
+    -- server's fault. Reading a disconnect as proof would switch isolation
+    -- off for everybody else on the box for the rest of the run, on the
+    -- strength of somebody's alt-F4.
+    local f = newFixture(nil, nil, 'on', { inert = true, connected = {} })
+    f.D.EnterBucket(7, 'm1')
+
+    t.isFalse(f.D.IsolationState().provenInert)
+    t.isTrue(f.D.GetBucket('m2') ~= nil, 'isolation was switched off by a player leaving')
+end)
+
+t.test('nor is a server this file cannot ask', function()
+    -- CONVICTED ON A READING NOBODY COULD TAKE. If the native that answers
+    -- "is this player still here" is unusable, then the difference between a
+    -- broken server and a player who left cannot be established -- and
+    -- guessing "broken" there switches isolation off for everybody on the
+    -- box for the rest of the run, on no evidence at all.
+    local f = newFixture(nil, nil, 'on', { inert = true, connected = 'error' })
+    f.D.EnterBucket(7, 'm1')
+
+    t.isFalse(f.D.IsolationState().provenInert)
+    t.isTrue(f.D.GetBucket('m2') ~= nil, 'isolation was switched off on a reading that could not be taken')
+
+    -- Same conclusion when the native is not there to call at all, which is
+    -- what every other fixture in this suite looks like from the inside.
+    local absent = newFixture(nil, nil, 'on', { inert = true, connected = 'absent' })
+    absent.D.EnterBucket(7, 'm1')
+    t.isFalse(absent.D.IsolationState().provenInert)
+    t.isTrue(absent.D.GetBucket('m2') ~= nil)
+
+    -- And when the player who left is reported as an empty name rather than
+    -- as nil, which is the same departure spelled the way half the builds
+    -- spell it.
+    local blank = newFixture(nil, nil, 'on', { inert = true, connected = 'empty' })
+    blank.D.EnterBucket(7, 'm1')
+    t.isFalse(blank.D.IsolationState().provenInert)
+    t.isTrue(blank.D.GetBucket('m2') ~= nil)
+end)
+
+t.test('IsolationState keeps the three facts apart', function()
+    -- An operator reading "isolation: off" cannot act on it without knowing
+    -- WHICH of the three said no: they turned it off, their server has no
+    -- OneSync, or their server said one thing and did another.
+    local off = newFixture(isolationOnly({ enabled = false }))
+    t.isFalse(off.D.IsolationState().wanted)
+    t.isFalse(off.D.IsolationState().inForce)
+    t.isFalse(off.D.IsolationState().provenInert)
+
+    local noSync = newFixture(nil, nil, 'off')
+    t.isTrue(noSync.D.IsolationState().wanted)
+    t.equals(noSync.D.IsolationState().oneSync, 'off')
+    t.isFalse(noSync.D.IsolationState().inForce)
+    t.isFalse(noSync.D.IsolationState().provenInert)
+
+    local healthy = newFixture()
+    t.isTrue(healthy.D.IsolationState().inForce)
+    t.isTrue(healthy.D.IsolationState().perMatch)
+end)
+
+t.test('and a server that stops honouring buckets MID-ROUND is caught by that same repair', function()
+    -- THE ONE ROUTE INTO THE DRIFT REPAIR ON A BROKEN SERVER, and the reason
+    -- the repair has to verify rather than just call the native. A server
+    -- that was never instancing is caught by the first fighter and shuts
+    -- isolation off for the run; a server that WAS instancing and stops --
+    -- OneSync restarted, another resource taking the sync component down --
+    -- has live matches already allocated, already held, and every later pass
+    -- walks into the repair branch instead. Firing the native there and not
+    -- reading it back put a player back in the arena on paper, once a
+    -- second, for the rest of the round.
+    local f = newFixture(nil, { [7] = 91 })
+    t.isTrue(f.D.EnterBucket(7, 'm1'), 'the fixture did not start from a working server')
+    t.equals(f.bucketOf(7), 4210)
+
+    f.goInert()
+    f.somebodyElseMoves(7, 91)
+
+    -- Same call the sweep makes once a second on everybody in a match.
+    f.D.EnterBucket(7, 'm1')
+
+    t.isTrue(f.D.IsolationState().provenInert,
+        'the repair fired the native, never read it back, and reported a player instanced who was not')
+    t.isTrue(f.log():find('ISOLATION IS NOT IN FORCE', 1, true) ~= nil,
+        'the operator was never told isolation had stopped working')
 end)
 
 t.test('THE OTHER ONE THAT MATTERS: a player moved out of the arena by something else is put back', function()

@@ -1080,8 +1080,17 @@ t.test('cancelEvents on its own is never counted as wired up', function()
     local env = compatWith({ 'my_dispatch' })
     local report = table.concat(env.ArenaCompat.Report(), '\n')
 
-    t.contains(report, 'cancelEvent(s)',
+    -- AND IT IS LABELLED FOR WHAT IT IS. Listing "6 cancelEvent(s)" beside
+    -- "1 disableExport(s)" read as six more layers of coverage, which is the
+    -- opposite of what they are: a cancelled event reaches nothing unless
+    -- the script that raised it goes back and asks whether anybody objected,
+    -- and the ones this server runs do not.
+    t.contains(report, 'alert event(s) watched',
         'the shipped config has none, so this test proves nothing')
+    t.contains(report, 'DIAGNOSTIC ONLY',
+        'the watched events are still being counted as if they suppressed something')
+    t.notContains(report, 'cancelEvent(s)',
+        'the old wording is back, and it reads as coverage')
     t.contains(report, 'Paste at the top')
 end)
 

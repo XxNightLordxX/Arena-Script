@@ -1139,16 +1139,20 @@ t.test('the respawn does not hand the ped back to the world until it has been pl
     t.equals(f.released[1].ped, f.ped, 'the release went to a handle the resurrect had already replaced')
 end)
 
-t.test('a respawned fighter is re-armed, and only once the round still wants them', function()
+t.test('a respawned fighter has their loadout re-applied, once the round still wants them', function()
+    -- Measured on the vitals rather than the weapons: ox_inventory owns the
+    -- weapons and this side does not touch them, so applying the loadout is
+    -- visible here as the plate and the health going back to full.
     local f = newClientFixture()
     f.toFirstDeath()
-    local armedOnEntry = #f.given
+    f.armour = 0
+    f.health = 5
 
     f.respawn()
     f.step()
 
-    t.equals(#f.given, armedOnEntry + 1, 'the respawned player came back empty-handed')
-    t.equals(f.given[#f.given].ped, f.ped, 'the weapon went to the handle the resurrect replaced')
+    t.equals(f.armour, 100, 'the respawned player came back with no plate')
+    t.equals(f.health, 200, 'the respawned player came back hurt')
     t.equals(#f.released, 1, 'a respawn with the ground already streamed in still releases exactly once')
 end)
 
@@ -1184,6 +1188,7 @@ t.test('a round that ends mid-placement still lets the player out of the hold', 
     f.respawn()
     f.step()
 
+    f.armour = 0
     local releasedByExit = #f.released
     f.fire('crimson_arena:client:exitArena', {})
     t.equals(#f.released, releasedByExit + 1, 'leaveArena did not release the hold on the way home')
@@ -1193,7 +1198,7 @@ t.test('a round that ends mid-placement still lets the player out of the hold', 
 
     t.equals(#f.released, releasedByExit + 2,
         'the parked respawn re-froze the ped on its way out and left nothing to unfreeze it')
-    t.equals(#f.given, 1, 'a player already home was re-armed with the arena loadout')
+    t.equals(f.armour, 0, 'a player already home had the arena loadout applied to them anyway')
 end)
 
 t.test('DEFECT: with the restore switched off, the exit does not wipe the player\'s own guns', function()
@@ -1204,9 +1209,10 @@ t.test('DEFECT: with the restore switched off, the exit does not wipe the player
     -- arrived with, which is not what "do not give them back" means, and
     -- nobody asks for a match that confiscates their guns.
     --
-    -- It is survivable on a server running ox_inventory, which owns weapons
-    -- and re-equips the ped afterwards -- probably why the setting exists,
-    -- and why this went unseen. Without one, the ped IS their weapons.
+    -- ox_inventory owns the weapons and re-equips the ped from the inventory
+    -- afterwards, which is what makes the wipe survivable at all -- but only
+    -- for what the player still owns an item for. A wipe with no restore
+    -- behind it is still the arena reaching for their kit.
     local f = newClientFixture(function(config)
         config.Match.restoreLoadoutOnExit = false
     end)
@@ -1215,15 +1221,12 @@ t.test('DEFECT: with the restore switched off, the exit does not wipe the player
     -- Counted from HERE. Entry wipes the ped too, before issuing the arena
     -- kit, and that one is not what this is about.
     local wipedOnEntry = f.wiped
-    local takenOnEntry = #f.takenBack
 
     f.fire('crimson_arena:client:exitArena', {})
 
     t.equals(f.wiped, wipedOnEntry,
         ('the exit wiped the ped %d time(s) with nothing going to be restored')
             :format(f.wiped - wipedOnEntry))
-    t.isTrue(#f.takenBack > takenOnEntry,
-        'the arena did not take its own issued weapons back either, which it must always do')
 end)
 
 t.test('and with it on, the wipe happens and everything comes back', function()

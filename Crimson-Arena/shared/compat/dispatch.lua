@@ -178,22 +178,6 @@ local function disableExportFor(resource)
     return nil
 end
 
---- Whether the operator named this resource in resyncResources. They only
---- do that for a script they have already wired to the entry/exit events,
---- so it is good evidence they have handled it -- evidence, not proof,
---- which is why the report words that row as an assumption.
---- @param resource string
---- @return boolean
-local function inResyncList(resource)
-    local list = customConfig().resyncResources
-    if type(list) ~= 'table' then return false end
-
-    for _, name in ipairs(list) do
-        if name == resource then return true end
-    end
-    return false
-end
-
 --- Whether the operator named a disableExport for a resource this box is
 --- REALLY running. client/dispatch.lua skips an entry whose resource is not
 --- started, so one left behind for a script since uninstalled calls nothing
@@ -209,23 +193,6 @@ local function hasLiveDisableExport()
             and GetResourceState(entry.resource) == 'started' then
             return true
         end
-    end
-    return false
-end
-
---- Whether a resource named in resyncResources is running AND there is an
---- entry event for it to hear -- the same pair statusOf() demands before it
---- credits a detected row, held to here so the report cannot call one setup
---- wired on one line and unwired on the next.
---- @return boolean
-local function hasLiveResync()
-    if not enterEventName() then return false end
-
-    local list = customConfig().resyncResources
-    if type(list) ~= 'table' then return false end
-
-    for _, name in ipairs(list) do
-        if Arena.IsKey(name) and GetResourceState(name) == 'started' then return true end
     end
     return false
 end
@@ -367,46 +334,37 @@ end
 -- ======================================================================
 -- THE CATALOGUE
 --
--- The resource NAMES police dispatch and EMS are commonly run under. This
--- resource is Qbox -- it talks to qbx_core and nothing else -- but plenty of
--- Qbox servers run a dispatch script that predates Qbox, so the catalogue
--- carries those older names too. It is a list of things to LOOK FOR, not a
--- statement about which framework is supported. Every one of them is
--- DETECTION-ONLY: a name, and
--- what that resource is. Not one carries a mute call, because not one of
--- their export names can be verified from inside this repository, and a
--- guessed export name detects as working and then silently does nothing.
--- See this file's header before adding one.
+-- The resource NAMES this server's police dispatch and EMS run under.
 --
--- A name that nobody runs simply never matches -- GetResourceState answers
--- 'missing' and the row is never printed -- so a catalogue that is generous
--- with spellings (qbx_policejob AND qbx_police) costs nothing, while a
--- missing spelling costs an operator a silent gap in the report.
+-- DELIBERATELY SHORT, AND KEPT THAT WAY. It once carried twenty names --
+-- every dispatch board and ambulance job in common circulation -- on the
+-- theory that a generous catalogue costs nothing. It does cost something:
+-- every name in here is a name an operator reading the report has to decide
+-- is irrelevant to them, and a row that never matches is a row that has
+-- never been tested against a running copy of the thing it claims to
+-- recognise. What is left is Qbox's own scripts and this server's own, both
+-- of which can be checked.
 --
--- A DISPATCH BOARD IS FILED AS 'both'. Almost all of them carry the person-
--- down call as well as shots-fired, so an operator whose EMS keeps getting
--- paged can see which resource is really sending it.
+-- ADDING ONE BACK IS FOUR CHARACTERS PLUS A NAME, and worth doing the day
+-- this server actually runs that script -- not before. See this file's
+-- header for what an entry may and may not claim.
+--
+-- Every one of these is DETECTION-ONLY: a name, and what that resource is.
+-- Not one carries a mute call, because not one of their export names can be
+-- verified from inside this repository, and a guessed export name detects as
+-- working and then silently does nothing.
+--
+-- A DISPATCH BOARD IS FILED AS 'both'. It carries the person-down call as
+-- well as shots-fired, so an operator whose EMS keeps getting paged can see
+-- which resource is really sending it.
 -- ======================================================================
 
 local CATALOGUE = {
-    -- ---- Dispatch boards -------------------------------------------
-    { resource = 'ps-dispatch', kind = 'both' },            -- Project Sloth; the common one on Qbox
-    { resource = 'cd_dispatch', kind = 'both' },            -- Codesign
-    { resource = 'qs-dispatch', kind = 'both' },            -- Quasar
-    { resource = 'core_dispatch', kind = 'both' },
-    { resource = 'rcore_dispatch', kind = 'both' },
-    { resource = 'codem-dispatch', kind = 'both' },         -- CodeM
-    { resource = 'emergencydispatch', kind = 'both' },
-    { resource = 'linden_outlawalert', kind = 'police' },   -- police alerts only, by design
-
-    -- ---- Police jobs, which alert on their own ---------------------
-    { resource = 'origen_police', kind = 'police' },        -- ships its own alerting
+    -- ---- Dispatch and police ---------------------------------------
+    { resource = 'sc-dispatch', kind = 'both' },            -- dispatch for police AND EMS on this family of scripts
+    { resource = 'sc-police', kind = 'police' },
     { resource = 'qbx_policejob', kind = 'police' },
     { resource = 'qbx_police', kind = 'police' },           -- the shorter spelling some builds use
-    { resource = 'qb-policejob', kind = 'police' },
-    { resource = 'wasabi_police', kind = 'police' },
-    { resource = 'sc-police', kind = 'police' },
-    { resource = 'sc-dispatch', kind = 'both' },            -- dispatch for police AND EMS on this family of scripts
 
     -- ---- EMS -------------------------------------------------------
     --
@@ -421,16 +379,14 @@ local CATALOGUE = {
     -- laststand. VERIFIED by reading sc-ambulance's own source --
     -- client/main.lua registers it and its handler opens with
     -- `if isDead or InLaststand then`, which is exactly the pair that has to
-    -- come down. qb-ambulancejob has used the same name for years.
+    -- come down. Qbox's own ambulance job has used the same name for years.
     --
     -- Naming one that a resource does not listen for costs nothing: an event
     -- with no handler is a no-op. Naming the WRONG one would be the harm, and
-    -- that is why none of these is a guess.
+    -- that is why neither of these is a guess.
+    { resource = 'sc-ambulance', kind = 'ambulance', reviveClientEvent = 'hospital:client:Revive' },
     { resource = 'qbx_ambulancejob', kind = 'ambulance', reviveClientEvent = 'hospital:client:Revive' },
     { resource = 'qbx_medical', kind = 'ambulance' },       -- Qbox's death and injury system: the one that watches the dead state
-    { resource = 'qb-ambulancejob', kind = 'ambulance', reviveClientEvent = 'hospital:client:Revive' },
-    { resource = 'wasabi_ambulance', kind = 'ambulance' },
-    { resource = 'sc-ambulance', kind = 'ambulance', reviveClientEvent = 'hospital:client:Revive' },
 }
 
 for _, entry in ipairs(CATALOGUE) do
@@ -657,10 +613,6 @@ local function statusOf(adapter)
         return ('muted automatically -- disableExports calls exports.%s:%s'):format(adapter.resource, exportName)
     end
 
-    if inResyncList(adapter.resource) and enterEventName() then
-        return ('assumed handled -- you named it in resyncResources, so it hears %s'):format(enterEventName())
-    end
-
     return nil
 end
 
@@ -691,7 +643,7 @@ local function somethingWired(running, unhandled)
     -- Nothing was recognised, so no row proved anything either way. What is
     -- left is what the operator named themselves, for a resource that is
     -- actually up.
-    return hasLiveDisableExport() or hasLiveResync() or hasLiveRetract()
+    return hasLiveDisableExport() or hasLiveRetract()
 end
 
 --- One line about Config.Dispatch.isolation, and only when that block
@@ -750,18 +702,17 @@ end
 --- configuration told every such operator they had wired up entry/exit
 --- events when what they had was a default firing into an empty room. A
 --- name is not a listener. What counts is something demonstrably riding
---- them: a running resource the operator named in resyncResources, or a
---- detected adapter carrying a mute this file calls off the entry event
---- itself.
+--- them: a detected adapter carrying a mute this file calls off the entry
+--- event itself.
 --- @param running table[] -- ArenaCompat.Detect()
 --- @return boolean
 local function eventsAreRidden(running)
-    if enterEventName() then
-        for _, adapter in ipairs(running) do
-            if adapter.mute then return true end
-        end
+    if not enterEventName() then return false end
+
+    for _, adapter in ipairs(running) do
+        if adapter.mute then return true end
     end
-    return hasLiveResync()
+    return false
 end
 
 --- What the operator has already wired up, so the report describes their
@@ -805,9 +756,6 @@ local function hookLine(running)
         parts[#parts + 1] = ('retract via exports.%s:%s'):format(customConfig().retract.resource, customConfig().retract.export)
     end
 
-    local resyncCount = countList(customConfig().resyncResources)
-    if resyncCount > 0 then parts[#parts + 1] = ('%d resyncResource(s)'):format(resyncCount) end
-
     -- Named but unridden still earns a clause, because the events really do
     -- fire: an operator who has written a listener this file cannot see
     -- must not be told they have none. It is stated as a fact about the
@@ -815,7 +763,7 @@ local function hookLine(running)
     -- rather than banked as credit for an integration.
     local tail = ''
     if not ridden and (enter or exit) then
-        tail = ' The entry/exit events fire, but nothing here can see a listener -- name it in custom.resyncResources if you have one.'
+        tail = ' The entry/exit events fire, but nothing here can see a listener for them.'
     end
 
     if #parts == 0 then
@@ -893,38 +841,23 @@ function ArenaCompat.Report()
         lines[#lines + 1] = 'start order: this resource started first, so it answers a death before any emergency script does.'
     end
 
-    -- THE COMMAND FORMS ARE GONE, so nothing counts them. Counting a key
-    -- that no longer exists is how a report comes to describe a resource
-    -- that no longer exists -- and this report's whole value is that it
-    -- describes what is really running.
-    local revive = (Config.Dispatch or {}).revive
-    local named = type(revive) == 'table'
-        and (#(revive.serverEvents or {}) + #(revive.clientEvents or {}) + #(revive.exports or {}))
-        or 0
-    local reviveOn = type(revive) == 'table' and revive.enabled == true and named > 0
-
-    -- WHAT THE ARENA DOES ITSELF, said first, because it is the half an
-    -- operator keeps mistaking for the other one. Every detected medical
-    -- script's own revive event is fired for a player leaving the arena,
-    -- with no configuration at all -- that is the catalogue doing its job.
+    -- THE ONE LINE ABOUT A PLAYER COMING BACK, in a report otherwise about
+    -- alerts going out. It is here because the failure it describes is
+    -- completely silent: the medical script keeps its own record of who is
+    -- down, is never told, and the player leaves the arena still dead as far
+    -- as that script is concerned, with nothing in any console.
     local detected = ArenaCompat.ReviveClientEvents()
     if #detected > 0 then
         lines[#lines + 1] = ('revive: %d detected medical script(s) are told to revive a player directly -- %s.')
             :format(#detected, table.concat(detected, ', '))
-    end
-
-    if reviveOn then
-        lines[#lines + 1] = ('revive: and %d event(s) and %d export(s) you named run as well when a player leaves the arena.')
-            :format(#(revive.serverEvents or {}) + #(revive.clientEvents or {}),
-                #(revive.exports or {}))
-    elseif #detected == 0 then
-        lines[#lines + 1] = 'revive: NOTHING IS TELLING YOUR MEDICAL SCRIPT. No script this catalogue knows is running,'
-        lines[#lines + 1] = '  and Config.Dispatch.revive names nothing -- so a player who dies in a match walks out of'
-        lines[#lines + 1] = '  the arena still dead as far as that script is concerned. The arena no longer stands'
-        lines[#lines + 1] = '  players up itself, deliberately: two resources arguing over one body is a flicker, not'
-        lines[#lines + 1] = '  a revive.'
-        lines[#lines + 1] = '  Fix: name whatever revives a player on this server in Config.Dispatch.revive'
-        lines[#lines + 1] = '       (serverEvents / clientEvents / exports) and set enabled = true.'
+    else
+        lines[#lines + 1] = 'revive: NOTHING IS TELLING YOUR MEDICAL SCRIPT. No script this catalogue knows is'
+        lines[#lines + 1] = '  running, so a player who dies in a match walks out of the arena'
+        lines[#lines + 1] = '  still dead as far as that script is concerned.'
+        lines[#lines + 1] = '  The arena does not stand players up itself, deliberately: two resources arguing'
+        lines[#lines + 1] = '  over one body is a flicker, not a revive.'
+        lines[#lines + 1] = '  Fix: add your medical script to the catalogue in shared/compat/dispatch.lua, with the'
+        lines[#lines + 1] = '       revive event it listens for -- read out of its own source, never guessed.'
     end
 
     return lines

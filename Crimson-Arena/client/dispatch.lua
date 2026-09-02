@@ -3,30 +3,31 @@
 
     Keeping the emergency services out of the arena.
 
-    Three separate problems wear the same coat here, and it is worth being
+    Two separate problems wear the same coat here, and it is worth being
     clear about which of them this file actually solves:
 
-    1. THE GAME'S OWN POLICE. GTA dispatches NPC cops at gunfire on its own,
-       with no script involved. This file can switch that off for the length
-       of a match and put it back afterwards -- but it ships OFF, under
-       Config.Dispatch.vanillaPolice. A server running a custom dispatch
-       script has almost certainly disabled the vanilla wanted system
-       already, and some custom systems drive their own logic off the native
-       wanted level, where pinning it to zero would fight them for it.
-
-    2. A DEAD PLAYER BEING SPOTTED BY A MEDICAL SCRIPT. Almost every one of
+    1. A DEAD PLAYER BEING SPOTTED BY A MEDICAL SCRIPT. Almost every one of
        them finds casualties by polling "is this player dead" a couple of
        times a second. This file puts an arena death back on its feet inside
        the same frame it happened, so that poll never catches one. Solved in
        practice, and the limit is stated below rather than glossed over.
 
-    3. AN ALERT SENT BY SOMEBODY ELSE'S RESOURCE. ps-dispatch deciding to
-       broadcast a shots-fired call, or qbx_ambulancejob raising a distress
+    2. AN ALERT SENT BY SOMEBODY ELSE'S RESOURCE. sc-dispatch deciding to
+       broadcast a shots-fired call, or sc-ambulance raising a distress
        signal, is that resource's decision inside its own event handlers.
        No FiveM resource can reach into another one and cancel that. NOT
        solved here, and it cannot be -- what this file does instead is
        publish, in two forms anyone can read, the fact that a player is
        mid-match, so one line in that resource can decline to send.
+
+    GTA'S OWN NPC POLICE ARE NOT A THIRD PROBLEM, and this file no longer
+    pretends they are. It used to carry a Config.Dispatch.vanillaPolice
+    block that shipped OFF and stayed off: a server running a custom
+    dispatch script has disabled the vanilla wanted system already, and the
+    ones that drive their own logic off the native wanted level would have
+    been fought for it by an arena zeroing it mid-match. Three sub-switches
+    and a stash-and-restore for a system this server does not run is not
+    coverage, it is a block an operator has to read and dismiss. Gone.
 
     WHAT IS PUBLISHED, and it is deliberately the same fact twice because
     different scripts want it different ways:
@@ -53,9 +54,9 @@
 
 ArenaDispatch = {}
 
---- Nil when not in a match. Holds what has to be undone on the way out --
---- never a copy of what is currently set, always a record of what was set
---- BEFORE we touched it.
+--- Nil when not in a match, and the match id while one is running. It is
+--- the in-a-match latch Enter/Exit pair on, nothing more -- there is no
+--- longer any game setting to stash and hand back.
 local restore = nil
 
 -- ======================================================================
@@ -118,85 +119,35 @@ end
 -- ======================================================================
 -- ENTER / EXIT
 --
--- THREE NATIVES ARE DELIBERATELY NOT CALLED HERE, and naming them is worth
--- more than the suppression they would have bought: SetMaxWantedLevel,
--- SetCreateRandomCops and SetPlayerHealthRechargeMultiplier can all be set
--- and none of them can be read -- CitizenFX ships no getter for any of the
--- three. A match that changed one could only put it back by assuming the
--- stock value, and an assumption is not a restore: on a server that caps
--- wanted levels, keeps NPC patrols off its streets, or turns passive health
--- regeneration off through its medical script, handing back 5 / true / 1.0
--- on the way out would silently undo that operator's setting for the rest of
--- that player's session, off the back of one arena round. So the ceiling, the
--- ambient patrols and the recharge multiplier are left exactly as they were
--- found.
+-- NO GAME SETTING IS TOUCHED ON THE WAY IN ANY MORE, which is why there is
+-- nothing to hand back on the way out. Everything this pair does now is the
+-- operator's own disableExports list, and that is symmetric by construction:
+-- the same entries called with true on entry and false on exit.
 --
--- Config.Dispatch.disableHealthRecharge was removed rather than left sitting
--- in the config doing nothing. Putting it back honestly needs a second key
--- carrying the value to restore TO, since the multiplier cannot be read; if
--- that is ever wanted, add both keys together or not at all.
---
--- The two suppressions that remain -- SetPoliceIgnorePlayer and
--- SetDispatchCopsForPlayer -- have no getter either, but they are per-player
--- rather than world-wide, so putting them back reaches no further than the
--- player who was just in the match. The wanted level is the one value here
--- that CAN be read, so it is the one that is captured on the way in and
--- handed back exactly as captured.
+-- THE RULE THAT EMPTIED IT, kept here because it is the one worth applying
+-- to anything added later: A SETTING THIS RESOURCE CANNOT READ BACK IS ONE
+-- IT DOES NOT SET. SetMaxWantedLevel, SetCreateRandomCops and
+-- SetPlayerHealthRechargeMultiplier can all be set and none of them can be read
+-- -- CitizenFX ships no getter for any of the three. A match that
+-- changed one could only put it back by assuming the stock value, and an
+-- assumption is not a restore: on a server that caps wanted levels, keeps
+-- NPC patrols off its streets, or turns passive health regeneration off
+-- through its medical script, handing back 5 / true / 1.0 on the way out
+-- would silently undo that operator's setting for the rest of that player's
+-- session, off the back of one arena round.
 -- ======================================================================
 
---- Silences everything this resource is able to silence, and records what
---- has to be put back.
+--- Silences everything this resource is able to silence, and records that
+--- a match is running so Exit() knows there is something to undo.
 ---
---- Safe to call twice: a second call while already active is ignored rather
---- than overwriting the restore record with the values WE set, which would
---- make the player permanently unwanted and permanently ignored by police.
---- That is the failure this guard exists for.
+--- Safe to call twice: a second call while already active is ignored, so a
+--- re-entry cannot fire the operator's mute exports a second time and leave
+--- the unmute one call short.
 --- @param matchId string
 function ArenaDispatch.Enter(matchId)
     if restore then return end
 
-    local config = Config.Dispatch or {}
-    local player = PlayerId()
-
-    restore = {
-        matchId = matchId,
-        wantedLevel = 0,
-        touchedPolice = false,
-        touchedDispatch = false,
-        touchedWanted = false,
-    }
-
-    -- OFF unless an operator asks for it. A server running a custom dispatch
-    -- script has almost certainly disabled the vanilla wanted system already,
-    -- and plenty of custom systems drive their own logic off the native
-    -- wanted level -- zeroing it mid-match would fight them for it.
-    --
-    -- `vanillaPolice.enabled` and the three sub-switches below it are the
-    -- WHOLE gate, deliberately. This used to be AND-ed with a top-level
-    -- Config.Dispatch.suppressPoliceShotsFired, which read as the headline
-    -- police switch in the config and could only ever be consulted from in
-    -- here -- inside a block that ships disabled. An operator toggling it on
-    -- a stock config changed nothing, which made it the worst kind of key:
-    -- the first one reached for when the police still turn up, and the one
-    -- that cannot be the reason. It is gone from config.lua rather than
-    -- silently kept, so this block's scope is the block you can see.
-    local vanilla = config.vanillaPolice or {}
-    if vanilla.enabled == true then
-        if vanilla.ignorePlayer ~= false then
-            restore.touchedPolice = true
-            SetPoliceIgnorePlayer(player, true)
-        end
-        if vanilla.stopDispatch ~= false then
-            restore.touchedDispatch = true
-            SetDispatchCopsForPlayer(player, false)
-        end
-        if vanilla.stashWantedLevel ~= false then
-            restore.touchedWanted = true
-            restore.wantedLevel = GetPlayerWantedLevel(player)
-            SetPlayerWantedLevel(player, 0, false)
-            SetPlayerWantedLevelNow(player, false)
-        end
-    end
+    restore = { matchId = matchId }
 
     callDisableExports(true)
 end
@@ -208,31 +159,9 @@ end
 function ArenaDispatch.Exit()
     if not restore then return end
 
-    local player = PlayerId()
-    local previous = restore
-
-    -- Cleared before the calls below, so a re-entry racing this exit sees
+    -- Cleared before the call below, so a re-entry racing this exit sees
     -- an inactive state rather than being refused by the guard in Enter.
     restore = nil
-
-    -- Each undone only if it was done. Restoring a native this resource never
-    -- touched would stamp on whatever the server's own scripts had set.
-    if previous.touchedPolice then
-        SetPoliceIgnorePlayer(player, false)
-    end
-
-    if previous.touchedDispatch then
-        SetDispatchCopsForPlayer(player, true)
-    end
-
-    if previous.touchedWanted then
-        -- Set to the captured number rather than only when that number is
-        -- above zero: walking into an arena is not an amnesty, and walking
-        -- out of one is not a conviction either -- stars earned inside the
-        -- round belong to the round.
-        SetPlayerWantedLevel(player, previous.wantedLevel, false)
-        SetPlayerWantedLevelNow(player, false)
-    end
 
     callDisableExports(false)
 end

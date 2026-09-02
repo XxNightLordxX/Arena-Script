@@ -18,20 +18,15 @@
     reports success either way, so `ok` alone is not an answer -- and
     reading it as one is the defect that once destroyed players'
     belongings: an item ox_inventory refused was removed from the stash on
-    the next line. The door was fixed and tested. The two other places
-    with the same shape were not:
+    the next line. The door was fixed and tested. The other place with the
+    same shape was not:
 
       issueWeapons        a weapon missing from an operator's ox_inventory
                           data is the single likeliest thing to go wrong
                           here, and the player is in the arena unarmed.
 
-      SwapWeapon          the gun game promotion. Read wrong, a player is
-                          recorded as holding a rung they were refused --
-                          so the exit tries to take back a weapon they
-                          never had, and the ladder moved on without them.
-
-    Both guards are `not (ok and accepted ~= false)`, both had surviving
-    mutants, and both are one operator typo away from mattering.
+    That guard is `not (ok and accepted ~= false)`, it had surviving
+    mutants, and it is one operator typo away from mattering.
 
     Every assertion below was checked by breaking the code it covers and
     watching it fail.
@@ -339,116 +334,6 @@ t.test('a tint an operator set reaches the item, and a zero does not', function(
     local g = newKit()
     g.ammo.Issue(1, 'match-1', oneWeapon({ tint = 0 }))
     t.isNil(g.itemNamed(1, 'WEAPON_TEST').metadata.tint, 'tint zero -- meaning none -- was written as a real tint')
-end)
-
--- ========================================================================
--- THE GUN GAME LADDER
--- ========================================================================
-
---- A player already issued their first rung.
-local function onRungOne()
-    local f = newKit()
-    f.ammo.Issue(1, 'match-1', oneWeapon())
-    return f
-end
-
-t.test('a promotion takes the old weapon away and hands over the new one', function()
-    local f = onRungOne()
-
-    t.isTrue(f.ammo.SwapWeapon(1, 'match-1', 'WEAPON_TEST', 'WEAPON_NEXT', 60))
-
-    t.equals(f.carrying(1), 'WEAPON_NEXT', 'the player kept the rung below as well as the new one')
-    t.equals(f.itemNamed(1, 'WEAPON_NEXT').metadata.ammo, 60, 'the new rung arrived with no magazine')
-end)
-
-t.test('a promotion ox_inventory REFUSES leaves the player on the rung below', function()
-    -- THE ASSERTION THIS SECTION EXISTS FOR. `pcall` did not throw, so
-    -- `ok` is true and the item was still refused. Report success here and
-    -- the player is recorded as holding a weapon they do not have: the
-    -- exit tries to take back something that was never issued, and the
-    -- ladder has moved on without them.
-    local f = onRungOne()
-    f.breakOn('refuseNamed', { WEAPON_NEXT = true })
-
-    t.isFalse(f.ammo.SwapWeapon(1, 'match-1', 'WEAPON_TEST', 'WEAPON_NEXT', 60),
-        'a refused promotion was reported as a successful one')
-    t.contains(f.log(), 'keep the rung below')
-end)
-
-t.test('and one it throws on does too', function()
-    local f = onRungOne()
-    f.breakOn('giveThrows')
-
-    t.isFalse(f.ammo.SwapWeapon(1, 'match-1', 'WEAPON_TEST', 'WEAPON_NEXT', 60),
-        'a promotion that threw was reported as successful')
-end)
-
-t.test('a promotion to nothing is refused before anything is taken away', function()
-    -- The old weapon is removed first, so a junk `addWeapon` that got
-    -- past this would disarm the player entirely.
-    local f = onRungOne()
-
-    for _, bad in ipairs({ '', 42, {}, true }) do
-        t.isFalse(f.ammo.SwapWeapon(1, 'match-1', 'WEAPON_TEST', bad, 60),
-            ('%s was accepted as a weapon to promote to'):format(tostring(bad)))
-    end
-    t.equals(f.carrying(1), 'WEAPON_TEST', 'a junk promotion disarmed the player')
-end)
-
-t.test('a promotion with nothing to remove still hands over the new rung', function()
-    -- The first rung of a ladder replaces nothing.
-    local f = newKit()
-    f.ammo.Issue(1, 'match-1', { weapons = {}, melee = {} })
-
-    t.isTrue(f.ammo.SwapWeapon(1, 'match-1', nil, 'WEAPON_FIRST', 30))
-    t.equals(f.carrying(1), 'WEAPON_FIRST')
-end)
-
---- A player on rung one with the DOOR OFF -- no stash, so nothing is
---- wholesale-cleared on the way out and the exit has to take the arena's
---- weapons back BY NAME, off the issued record. That record is what these
---- two tests are about, and it is the only route that can see it.
-local function onRungOneNoStash()
-    local f = newKit({ mutate = function(config)
-        config.Loadouts.inventory.stripOnEntry = false
-    end })
-    f.ammo.Issue(1, 'match-1', oneWeapon())
-    return f
-end
-
-t.test('the swap FORGETS the old weapon, so the exit does not chase it', function()
-    -- Removed and forgotten are two different lists. Remembered after
-    -- removal, the exit tries to take back a weapon the ladder already
-    -- took -- and on a name that collides with something of the player's
-    -- own, it takes THEIRS.
-    local f = onRungOneNoStash()
-    f.ammo.SwapWeapon(1, 'match-1', 'WEAPON_TEST', 'WEAPON_NEXT', 60)
-
-    -- The player's own copy of the same weapon, bought before the match.
-    f.give(1, 'WEAPON_TEST', 1)
-    f.ammo.Reclaim(1, 'test')
-
-    t.equals(f.carrying(1), 'WEAPON_TEST',
-        'the exit took back the player\'s OWN weapon, chasing one the ladder had already removed')
-end)
-
-t.test('and REMEMBERS the new one, so the exit does take that back', function()
-    -- The other half. Given but not remembered, the arena's own ladder
-    -- weapon walks out in the player's pocket -- a weapon shop with extra
-    -- steps.
-    local f = onRungOneNoStash()
-    f.ammo.SwapWeapon(1, 'match-1', 'WEAPON_TEST', 'WEAPON_NEXT', 60)
-
-    f.ammo.Reclaim(1, 'test')
-
-    t.equals(f.carrying(1), '', 'a ladder weapon left the arena with the player')
-end)
-
-t.test('a swap with no ox_inventory changes nothing and says no', function()
-    local f = newKit()
-    f.env.GetResourceState = function() return 'missing' end
-
-    t.isFalse(f.ammo.SwapWeapon(1, 'match-1', 'WEAPON_TEST', 'WEAPON_NEXT', 60))
 end)
 
 -- ========================================================================

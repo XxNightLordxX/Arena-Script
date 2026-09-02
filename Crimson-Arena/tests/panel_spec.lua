@@ -814,19 +814,18 @@ t.test('a countdown death is settled on the client, not reported and not held', 
         'the countdown death went into ClearDeadState\'s hold, which only a respawn releases')
 end)
 
-t.test('the countdown revive stands the player back up armed, still, and on the new handle', function()
+t.test('the countdown revive stands the player back up whole, still, and on the new handle', function()
+    -- Measured on health rather than weapons: ox_inventory owns the weapons
+    -- and this side never hands the ped one, so re-applying the loadout is
+    -- visible as the vitals going back to full on the new handle.
     local f = newMatchFixture()
     f.enter()
-
-    t.equals(#f.given, 1, 'entry did not arm the player, so this test would prove nothing')
 
     f.dead = true
     f.step()
     local revived = f.ped
 
-    t.equals(#f.given, 2, 'the revived player starts the round with empty hands')
-    t.equals(f.given[2].ped, revived, 'the weapon went to the handle the resurrect replaced')
-    t.equals(f.given[2].weapon, 'WEAPON_PISTOL')
+    t.equals(f.health[#f.health].ped, revived, 'the health went to a handle the resurrect had replaced')
     t.equals(f.health[#f.health].health, 200, 'the revived player starts the round on a sliver of health')
 
     local lastFreeze = f.freezes[#f.freezes]
@@ -999,62 +998,6 @@ t.test('and the panel really does hide with a class, so that rule is the right o
     t.contains(source, "classList.toggle('hidden'",
         'show() no longer hides with a class, so the markup rule above is now backwards')
 end)
-
--- ========================================================================
--- THE GUN-GAME PROMOTION, WHICH REACHED NOBODY
--- ========================================================================
-
-t.test('DEFECT: a promotion for THIS match is acted on', function()
-    -- THE BUG. enterArena builds currentMatch with the field called `id`,
-    -- and the promotion handler guarded on `currentMatch.matchId` -- which
-    -- nothing ever writes. So it compared a real match id against nil, was
-    -- never once equal, and dropped every promotion the server sent.
-    --
-    -- Silent at both ends: the server had sent its message, and this side had
-    -- "checked" the message belonged to the right match. A climber kept the
-    -- bottom rung's weapon for the whole round while the server's idea of
-    -- what they were holding walked up the ladder without them.
-    local f = newMatchFixture()
-    f.enter()
-    local before = #f.given
-
-    f.fire('crimson_arena:client:gunGameRung', {
-        matchId = 'match-1',
-        weapon = 'WEAPON_SMG',
-        ammo = 90,
-        remove = 'WEAPON_PISTOL',
-    })
-
-    t.equals(#f.given, before + 1,
-        'the promotion was dropped -- the climber keeps the rung they started on')
-    t.equals(f.given[#f.given].weapon, 'WEAPON_SMG')
-    t.equals(f.given[#f.given].ammo, 90)
-end)
-
-t.test('and a promotion for a DIFFERENT match is still ignored', function()
-    -- The guard has to keep working, not merely stop refusing everything: a
-    -- message from a match this player is not in must not arm them.
-    local f = newMatchFixture()
-    f.enter()
-    local before = #f.given
-
-    f.fire('crimson_arena:client:gunGameRung', {
-        matchId = 'some-other-match',
-        weapon = 'WEAPON_SMG',
-        ammo = 90,
-    })
-
-    t.equals(#f.given, before, 'a promotion from somebody else\'s match armed this player')
-end)
-
-t.test('and one arriving with no match at all is ignored', function()
-    local f = newMatchFixture()
-    f.fire('crimson_arena:client:gunGameRung', {
-        matchId = 'match-1', weapon = 'WEAPON_SMG', ammo = 90,
-    })
-    t.equals(#f.given, 0, 'a player who is in no match was armed by a promotion')
-end)
-
 
 -- ========================================================================
 -- NOTHING IS CLIPPED AWAY

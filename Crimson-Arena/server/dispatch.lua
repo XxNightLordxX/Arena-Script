@@ -346,9 +346,6 @@ end)
 function ArenaDispatch.Revive(src, keepHold)
     if type(src) ~= 'number' or src <= 0 then return end
 
-    local revive = (Config.Dispatch or {}).revive
-    if type(revive) ~= 'table' then revive = {} end
-
     -- THE ARENA NO LONGER STANDS PLAYERS UP ITSELF, and the removal is the
     -- point rather than a side effect.
     --
@@ -439,58 +436,23 @@ function ArenaDispatch.Revive(src, keepHold)
     -- costs two table lookups.
     clearDownMetadata(src)
 
-    if revive.enabled ~= true then return end
-
-    -- NO COMMANDS, AND NO WAY TO ASK FOR ANY. There were two more forms
-    -- here -- `commands`, run from the server console with ExecuteCommand,
-    -- and `clientCommands`, relayed to the player's own client to run there.
-    -- Both shipped empty, and both existed only because an ambulance
-    -- script's revive is often an admin command; and an admin command run by
-    -- a resource is refused, which is why the config beside them ended up
-    -- explaining how to grant this resource an ace.
+    -- THERE IS NO GENERIC HANDOFF BELOW THIS LINE ANY MORE, and the removal
+    -- is worth a paragraph because what went was a whole configuration
+    -- surface, not a line of code.
     --
-    -- That whole story is gone. The resource asks for no permissions, runs
-    -- no commands, and has no channel for running one -- the client event
-    -- that carried them was the only server-to-client arbitrary-command path
-    -- in the resource, kept alive by a producer that was always empty. What
-    -- is left below are events and exports: things a script publishes on
-    -- purpose for other scripts to call.
-
-    for _, name in ipairs(revive.serverEvents or {}) do
-        if Arena.IsKey(name) then
-            -- pcall because these are other people's handlers: one that
-            -- throws must not take the arena's exit path down with it and
-            -- strand the player mid-transfer.
-            local ok, err = pcall(TriggerEvent, name, src)
-            if not ok then
-                ArenaLog('revive: server event %s errored (%s). The player is out of the arena either way.',
-                    name, tostring(err))
-            end
-        end
-    end
-
-    for _, name in ipairs(revive.clientEvents or {}) do
-        if Arena.IsKey(name) then
-            TriggerClientEvent(name, src)
-        end
-    end
-
-    for _, entry in ipairs(revive.exports or {}) do
-        local resource = type(entry) == 'table' and entry.resource or nil
-        local method = type(entry) == 'table' and entry.export or nil
-
-        if Arena.IsKey(resource) and Arena.IsKey(method) then
-            if GetResourceState(resource) ~= 'started' then
-                ArenaLog('revive: %s is not started, so %s was not called.', resource, method)
-            else
-                local ok, err = pcall(function() return exports[resource][method](nil, src) end)
-                if not ok then
-                    ArenaLog('revive: exports.%s:%s failed (%s). Check the name and its arguments.',
-                        resource, method, tostring(err))
-                end
-            end
-        end
-    end
+    -- Config.Dispatch.revive carried four keys: an `enabled` switch and three
+    -- lists -- serverEvents, clientEvents and exports -- for naming a medical
+    -- script's own revive by hand. The switch shipped ON and all three lists
+    -- shipped EMPTY, which is the worst arrangement of those two facts: a
+    -- reader saw a feature switched on, and it gated nothing whatsoever.
+    --
+    -- WHAT MADE THEM REDUNDANT rather than merely unused: the catalogue
+    -- above already names the revive event for every medical script this box
+    -- actually runs, verified out of that script's own source, and fires it
+    -- without an operator naming a thing. The hand-written lists were the
+    -- escape hatch for a script the catalogue had never heard of -- which is
+    -- not a situation this server is in, and one more entry in the catalogue
+    -- is the answer if it ever is.
 end
 
 -- ======================================================================
@@ -521,28 +483,26 @@ RegisterCommand('arenarevive', function(src, args)
         return
     end
 
-    -- NOT gated on revive.enabled, and that is the point.
-    --
-    -- It used to return here saying "nothing would be called, nothing was",
-    -- which stopped being true the moment the arena started reviving players
-    -- itself: the built-in revive runs first and unconditionally, so with
-    -- `enabled = false` this command was refusing to do the one thing that
-    -- actually works, and telling an admin on the floor that nothing could
-    -- be done for them.
-    local revive = (Config.Dispatch or {}).revive
-    local handoff = type(revive) == 'table' and revive.enabled == true
-
+    -- NOT GATED ON ANYTHING, and there is no longer anything to gate it on.
+    -- The handoff is whatever the catalogue detected on this box, so what
+    -- this command does is exactly what a real match does -- which is the
+    -- only property that makes it worth having.
     ArenaLog('arenarevive: running the end-of-match revive against %d. Everything below is what a real match would do.',
         target)
     ArenaDispatch.Revive(target)
 
-    if handoff then
-        ArenaLog('arenarevive: done. %d has been stood up by the arena, and the handoff in Config.Dispatch.revive ran as well.',
-            target)
-        ArenaLog('arenarevive: if %d is up but something still treats them as dead, the arena has done its part -- that is your medical script\'s own death list, and it needs its revive named in Config.Dispatch.revive.',
+    local told = 0
+    if type(ArenaCompat) == 'table' and type(ArenaCompat.ReviveClientEvents) == 'function' then
+        told = #ArenaCompat.ReviveClientEvents()
+    end
+
+    if told > 0 then
+        ArenaLog('arenarevive: done. %d has been stood up, their down metadata cleared, and %d medical script(s) told.',
+            target, told)
+        ArenaLog('arenarevive: if %d is up but something still treats them as dead, that script is not in the catalogue in shared/compat/dispatch.lua -- add it there with the revive event it listens for.',
             target)
     else
-        ArenaLog('arenarevive: done. %d has been stood up by the arena. Config.Dispatch.revive.enabled is off, so no other script was told -- which is fine unless one of them keeps its own death list.',
+        ArenaLog('arenarevive: done. %d has been stood up and their down metadata cleared. No medical script was detected on this box, so none was told.',
             target)
     end
 end, false)
@@ -1114,32 +1074,6 @@ RegisterCommand('arenaisolation', function(src, _args)
 end, false)
 
 
--- A dispatch script that restarts mid-round comes back with an empty ignore
--- list and starts alerting on a fight already in progress. Operators name
--- those resources in Config.Dispatch.custom.resyncResources and every player
--- currently in an arena is re-announced the moment one comes back up.
-AddEventHandler('onResourceStart', function(resource)
-    if resource == GetCurrentResourceName() then return end
-
-    local watched = customConfig().resyncResources
-    if type(watched) ~= 'table' then return end
-
-    local wanted = false
-    for _, name in ipairs(watched) do
-        if name == resource then wanted = true break end
-    end
-    if not wanted then return end
-
-    local count = 0
-    for src, matchId in pairs(active) do
-        announce(customConfig().enterEvent, src, matchId)
-        count = count + 1
-    end
-
-    if count > 0 then
-        ArenaLog('%s restarted -- re-announced %d player(s) still in an arena.', resource, count)
-    end
-end)
 
 -- THE HANDLER THAT MATTERS MOST IN THIS FILE.
 --

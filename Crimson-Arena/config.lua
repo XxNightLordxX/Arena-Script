@@ -14,17 +14,17 @@
     ------------------------------------------------------------------------------
        73   Lobby         The NPC players walk up to
       144   Match         Lives, timers, player counts, win condition
-      356   Teams         The sides, and whether they may be uneven
-      458   Modes         Free-for-all, team deathmatch, gun game
-      492   DefaultMode   Which of them a new lobby opens on
-      511   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      706   UI            Panel colours, logo and title
-      769   Permissions   Who may open a match, who may force-stop one
-      848   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1548   Loadouts      THE WEAPON AND AMMO LIST players choose from
-     3095   Database      Optional: all-time leaderboard. Off, no SQL to import
-     3105   Webhook       Optional: a Discord line per finished match
-     3143   Dispatch      Optional: keeping police and EMS out of the arena
+      352   Teams         The sides, and whether they may be uneven
+      454   Modes         Free-for-all, team deathmatch, gun game
+      473   DefaultMode   Which of them a new lobby opens on
+      492   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      687   UI            Panel colours, logo and title
+      750   Permissions   Who may open a match, who may force-stop one
+      829   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1529   Loadouts      THE WEAPON AND AMMO LIST players choose from
+     3076   Database      Optional: all-time leaderboard. Off, no SQL to import
+     3086   Webhook       Optional: a Discord line per finished match
+     3124   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -331,10 +331,6 @@ Config.Match = {
     -- they leave. Strongly recommended on.
     restoreLoadoutOnExit = true,
 
-    -- Wipe a player's carried weapons on entry so only arena weapons are
-    -- in play. Turning this off lets people bring their own guns in.
-    stripWeaponsOnEntry = true,
-
     -- A match sitting in the lobby with nobody readying up is closed after
     -- this long, and any stakes refunded. 0 = never.
     idleLobbyTimeoutSeconds = 900,
@@ -470,21 +466,6 @@ Config.Modes = {
         enabled = true,
         teams = true,
         icon = 'fas fa-users',
-    },
-
-    ['gungame'] = {
-        label = 'Gun Game',
-        description = 'Every kill moves you up the weapon ladder. First to the end wins.',
-        -- OFF. Switched off at the operator's request, not because anything
-        -- about it is broken: the ladder below is intact and tested, and
-        -- setting this back to true is the whole of turning the mode on.
-        enabled = false,
-        teams = false,
-        icon = 'fas fa-arrow-up-9-1',
-        -- Weapon keys from Config.Loadouts.weapons, in order. When this mode
-        -- is on, the player's own weapon choice is ignored -- the ladder
-        -- replaces it.
-        gunGameLadder = { 'pistol', 'smg', 'shotgun', 'rifle', 'sniper', 'knife' },
     },
 }
 
@@ -3153,20 +3134,21 @@ Config.Dispatch = {
     --
     -- `clearDeadStateImmediately` is the switch.
 
-    -- THERE IS NO `suppressPoliceShotsFired` KEY HERE, and saying why is
-    -- worth more than the key was. It sat on this line reading like the
-    -- headline police setting, and the only code that ever looked at it was
-    -- inside `vanillaPolice` below -- which ships OFF -- so on a shipped
-    -- config it did nothing in either position. It was the first thing to
-    -- reach for when the police still turned up at a round, and the one
-    -- thing that could not have been the cause.
+    -- THERE IS NO POLICE SWITCH HERE, and no `vanillaPolice` block either.
     --
-    -- There is no single police switch because the police are not a single
-    -- thing here. GTA's own NPC cops are `vanillaPolice` below, behind that
-    -- block's own `enabled`. A custom dispatch script is `custom` below, and
-    -- each of its four forms is already governed by whether you filled that
-    -- form's own list in -- an empty list does nothing whatever a switch
-    -- says, which is the same reason `custom` has no master switch either.
+    -- GTA's own NPC cops used to have one: a block with an `enabled` and
+    -- three sub-switches that shipped OFF and stayed off, because a server
+    -- running a custom dispatch script has already disabled the vanilla
+    -- wanted system, and the ones that drive their own logic off the native
+    -- wanted level would have been fought for it by an arena zeroing it
+    -- mid-match. It never ran on this server and could never have helped
+    -- with sc-dispatch, so it is gone rather than left here to be read and
+    -- dismissed at every edit.
+    --
+    -- What is left is the one thing that does reach a dispatch script:
+    -- `custom` below. Each of its forms is governed by whether you filled
+    -- that form's own list in -- an empty list does nothing whatever a
+    -- switch says, which is why `custom` has no master switch either.
     -- `cancelEvents` explains in its own comment why it is deliberately not
     -- tied to a police-or-medical switch at all: an event name does not say
     -- which of the two it is.
@@ -3320,13 +3302,6 @@ Config.Dispatch = {
         -- take part in. Set either to nil to fire nothing.
         enterEvent = 'crimson_arena:dispatch:enter',
         exitEvent = 'crimson_arena:dispatch:exit',
-
-        -- Your dispatch script restarting mid-round would otherwise lose its
-        -- ignore list and start alerting on a fight already in progress.
-        -- Name it here and this resource re-fires `enterEvent` for everyone
-        -- currently in an arena as soon as it comes back up.
-        -- Add every resource that keeps its own copy of that list.
-        resyncResources = {},
 
         -- ---- FORM 2: you read a flag -------------------------------------
         -- A replicated state bag, readable from either realm with no call
@@ -3610,48 +3585,27 @@ Config.Dispatch = {
     -- still has them down, and they stay stuck until somebody revives
     -- them properly.
     --
-    -- Name whatever your script uses to revive somebody and it is called
-    -- for that player EVERY TIME THE ARENA STANDS THEM BACK UP: on each
-    -- mid-match respawn, and again on the way out.
+    -- YOU DO NOT NAME IT. THIS BLOCK HAS NO NAMES IN IT AT ALL.
     --
-    -- Both, because a death inside the arena is a death as far as your
-    -- medical script is concerned. From that moment it has them down, and
-    -- the arena putting them back on their feet does not reach it -- so a
-    -- player who is only revived at the end fights the rest of the round as
-    -- a casualty, with whatever that script does to a dead player still
-    -- being done to them.
+    -- The catalogue in shared/compat/dispatch.lua already knows which revive
+    -- event each medical script listens for, read out of that script's own
+    -- source, and fires it for whichever of them this box is really running.
+    -- It happens on each mid-match respawn and again on the way out -- both,
+    -- because a death inside the arena is a death as far as your medical
+    -- script is concerned, and a player who is only revived at the end
+    -- fights the rest of the round as a casualty.
     --
-    -- NOTHING IS GUESSED AND NOTHING SHIPS ON. There is no default here
-    -- for the same reason the catalogue below only detects: an event name
-    -- that is close but not right looks wired up and does nothing.
+    -- WHAT USED TO BE HERE, and why it is not: an `enabled` switch and three
+    -- lists -- serverEvents, clientEvents and exports -- for naming that
+    -- revive by hand. The switch shipped ON and all three lists shipped
+    -- EMPTY, so the block read as a feature that was turned on and gated
+    -- nothing. It was the escape hatch for a medical script the catalogue
+    -- had never heard of; adding one line to the catalogue is a better
+    -- answer to that than four keys carried by every server that does not
+    -- need them.
+    --
+    -- WHAT IS LEFT IS TIMING, and both numbers below are load-bearing.
     revive = {
-        -- NOTHING HERE HAS TO BE SET FOR PLAYERS TO GET BACK UP.
-        --
-        -- The arena revives its own players itself, in code, with no command
-        -- and no permission -- it knocked them down, so standing them back up
-        -- is not a privileged act and it does not ask anybody. That happens
-        -- whatever this block says, including with `enabled = false`.
-        --
-        -- What is left below is for telling ANOTHER script -- a medical or
-        -- ambulance resource -- that the player is no longer a casualty. That
-        -- part is optional, and it is the only part these settings control.
-        enabled = true,
-
-        -- THERE ARE NO COMMAND FORMS HERE ANY MORE, and saying why is worth
-        -- more than the keys were.
-        --
-        -- `commands` ran a line on the server console with ExecuteCommand,
-        -- and `clientCommands` relayed one to the player's own client to run
-        -- there. Both shipped empty. Both existed because an ambulance
-        -- script's revive is very often an admin command -- and an admin
-        -- command run by a resource is refused, which is how this block came
-        -- to carry instructions for granting this resource an ace.
-        --
-        -- All of it is gone rather than switched off: the resource asks for
-        -- no permissions, runs no commands, and no longer has a channel for
-        -- running one. What is left below are EVENTS and EXPORTS, which are
-        -- things a script publishes on purpose for other scripts to call.
-
         -- HOW LONG AFTER A RESPAWN THE MEDICAL SCRIPT IS TOLD, in ms.
         --
         -- The client needs a moment to be placed and standing before there
@@ -3674,42 +3628,6 @@ Config.Dispatch = {
         -- script already, and this is what covers the exit nobody has
         -- written yet. Run once, when everybody is home.
         sweepAfterMatchMs = 5000,
-
-        serverEvents = {},
-
-        -- Client events. Each is sent to that player only, with no
-        -- arguments -- the client already knows who it is.
-        --     clientEvents = { 'my_ambulance:client:revive' },
-        clientEvents = {},
-
-        -- Exports, called as exports.<resource>:<export>(src).
-        --     exports = {
-        --         { resource = 'my_ambulance', export = 'RevivePlayer' },
-        --     },
-        -- A resource that is not started, or an export that errors, is
-        -- reported once in the console and skipped. It will not stop a
-        -- match ending.
-        exports = {},
-    },
-
-    vanillaPolice = {
-        enabled = false,
-
-        -- Stop NPC police reacting to this player at all.
-        ignorePlayer = true,
-        -- Stop the game dispatching units for them.
-        stopDispatch = true,
-        -- Stash the stars they walked in with, clear them on the way in, and
-        -- hand back exactly what was captured on the way out -- including
-        -- zero, if that is what they arrived with.
-        --
-        -- The wanted CEILING is deliberately not touched. Pinning it would
-        -- hold stars at zero for the whole match, but there is no native to
-        -- read the ceiling back, so the arena could only "restore" it to the
-        -- stock 5 -- silently undoing a server that had deliberately set its
-        -- own. A setting this resource cannot read back is one it does not
-        -- set. Stars gained inside a round are cleared on exit either way.
-        stashWantedLevel = true,
     },
 
     -- ==================================================================

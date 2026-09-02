@@ -82,27 +82,27 @@ t.test('a box running no emergency script at all says so, and says what to do', 
 end)
 
 t.test('and a box running one names it, and what is being done about it', function()
-    local f = newReport({ running = { ['ps-dispatch'] = true } })
+    local f = newReport({ running = { ['sc-dispatch'] = true } })
     local said = f.text()
 
-    t.contains(said, 'ps-dispatch', 'the report does not name the script this box runs')
+    t.contains(said, 'sc-dispatch', 'the report does not name the script this box runs')
     t.contains(said, '1 police/EMS resource', 'the report does not count what it found')
 end)
 
 t.test('and counts them, rather than reporting the first', function()
-    local f = newReport({ running = { ['ps-dispatch'] = true, ['qb-ambulancejob'] = true } })
+    local f = newReport({ running = { ['sc-dispatch'] = true, ['qbx_ambulancejob'] = true } })
     local said = f.text()
 
     t.contains(said, '2 police/EMS resource', 'the report miscounts what is running')
-    t.contains(said, 'ps-dispatch')
-    t.contains(said, 'qb-ambulancejob', 'the second script is missing from the report')
+    t.contains(said, 'sc-dispatch')
+    t.contains(said, 'qbx_ambulancejob', 'the second script is missing from the report')
 end)
 
 t.test('a resource with nothing reaching it is called out as NOT muted', function()
     -- The whole point of the row. "Running" is not "handled", and an
     -- operator reading a list of names with no verdict against them
     -- learns nothing.
-    local f = newReport({ running = { ['ps-dispatch'] = true } })
+    local f = newReport({ running = { ['sc-dispatch'] = true } })
 
     t.contains(f.text(), 'NOT muted', 'a script nothing reaches was not called out')
 end)
@@ -111,10 +111,10 @@ t.test('and one with an ignore export named is not', function()
     -- The control: without it, "NOT muted" passes against a report that
     -- says it about everything.
     local f = newReport({
-        running = { ['ps-dispatch'] = true },
+        running = { ['sc-dispatch'] = true },
         config = function(dispatch)
             dispatch.custom.disableExports = {
-                { resource = 'ps-dispatch', export = 'setIgnore' },
+                { resource = 'sc-dispatch', export = 'setIgnore' },
             }
         end,
     })
@@ -132,7 +132,7 @@ t.test('a box where nothing is wired is given the exact line, and where to put i
     -- No resource can cancel another one's alert from outside it, so this
     -- is the arena declining from inside theirs. It is one line, and the
     -- report has to carry it exactly or it is a puzzle rather than a fix.
-    local f = newReport({ running = { ['ps-dispatch'] = true } })
+    local f = newReport({ running = { ['sc-dispatch'] = true } })
     local said = f.text()
 
     t.contains(said, 'Paste at the top', 'the report does not offer the line')
@@ -144,7 +144,7 @@ t.test('and the state key in that line is the one really being written', functio
     -- A paste-this line naming a key the resource does not set is worse
     -- than no line: it looks like the fix and silences nothing.
     local f = newReport({
-        running = { ['ps-dispatch'] = true },
+        running = { ['sc-dispatch'] = true },
         config = function(dispatch) dispatch.custom.stateBagKey = 'myArenaFlag' end,
     })
 
@@ -153,10 +153,10 @@ end)
 
 t.test('and a box where something IS wired is not told to paste anything', function()
     local f = newReport({
-        running = { ['ps-dispatch'] = true },
+        running = { ['sc-dispatch'] = true },
         config = function(dispatch)
             dispatch.custom.disableExports = {
-                { resource = 'ps-dispatch', export = 'setIgnore' },
+                { resource = 'sc-dispatch', export = 'setIgnore' },
             }
         end,
     })
@@ -175,18 +175,18 @@ t.test('a script already running when this one loads is reported as EARLIER', fu
     -- catalogue is walked got there first, and will answer a death first.
     -- The report has to say so, because the operator's only lever is a
     -- line in server.cfg.
-    local f = newReport({ running = { ['ps-dispatch'] = true } })
+    local f = newReport({ running = { ['sc-dispatch'] = true } })
     local said = f.text()
 
     t.contains(said, 'started BEFORE this resource', 'the report says nothing about start order')
-    t.contains(said, 'ps-dispatch', 'the start-order line does not name which script beat it')
+    t.contains(said, 'sc-dispatch', 'the start-order line does not name which script beat it')
 end)
 
 t.test('and the fix names THIS resource, so the line can be pasted as written', function()
     -- The folder name is whatever the operator called it, and the line
     -- they need is `ensure <that>`. A hardcoded name would send them to
     -- edit a line that is not in their server.cfg.
-    local f = newReport({ running = { ['ps-dispatch'] = true } })
+    local f = newReport({ running = { ['sc-dispatch'] = true } })
     local said = f.text()
 
     t.contains(said, 'ensure crimson_arena', 'the fix does not name this resource')
@@ -214,7 +214,7 @@ t.test('A DETECTED MEDICAL SCRIPT IS TOLD DIRECTLY, with nothing configured', fu
     -- working handoff with no configuration at all. The report has to say
     -- that, or an operator reads "NOT configured" and goes looking for a
     -- problem they do not have.
-    local f = newReport({ running = { ['qb-ambulancejob'] = true } })
+    local f = newReport({ running = { ['qbx_ambulancejob'] = true } })
     local said = f.text()
 
     t.contains(said, 'told to revive a player directly')
@@ -223,24 +223,30 @@ t.test('A DETECTED MEDICAL SCRIPT IS TOLD DIRECTLY, with nothing configured', fu
     t.notContains(said, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
 end)
 
-t.test('and a box with nothing detected and nothing named is warned, plainly', function()
-    -- The case that is genuinely broken: no script this catalogue knows, and
-    -- no names in config. Nobody is being told anything, and since the arena
-    -- no longer stands players up itself either, the report has to say both.
+t.test('and a box with nothing detected is warned, plainly', function()
+    -- The case that is genuinely broken: no script this catalogue knows.
+    -- Nobody is being told anything, and since the arena does not stand
+    -- players up itself either, the report has to say both.
     local f = newReport({ running = {} })
     local said = f.text()
 
     t.contains(said, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
     t.contains(said, 'still dead as far as that script is concerned',
-        'the report does not say what an unconfigured revive actually costs')
-    t.contains(said, 'Config.Dispatch.revive', 'the report does not name where to configure it')
-    t.contains(said, 'no longer stands',
-        'the report does not say the arena stopped reviving players itself')
+        'the report does not say what a missing handoff actually costs')
+    t.contains(said, 'shared/compat/dispatch.lua',
+        'the report does not name where to add the script')
+    t.contains(said, 'does not stand players up itself',
+        'the report does not say the arena leaves reviving to the medical script')
 end)
 
-t.test('names the operator added are reported ON TOP of what is detected', function()
+t.test('and NOTHING an operator writes in config can silence that warning', function()
+    -- THE CONTRACT. Whether a dead player comes back is a fact about which
+    -- resources are running. Config used to be able to claim a handoff --
+    -- an `enabled` switch and three lists of hand-written names -- and the
+    -- report believed it, so a box with the switch on and a typo in the
+    -- event name read as covered. Only detection counts now.
     local f = newReport({
-        running = { ['qb-ambulancejob'] = true },
+        running = {},
         config = function(dispatch)
             dispatch.revive.enabled = true
             dispatch.revive.serverEvents = { 'hospital:server:revive' }
@@ -248,41 +254,9 @@ t.test('names the operator added are reported ON TOP of what is detected', funct
             dispatch.revive.exports = { { resource = 'ambulance', export = 'revive' } }
         end,
     })
-    local said = f.text()
-
-    t.contains(said, 'you named run as well', 'a configured revive was reported as missing')
-    t.contains(said, '2 event(s)', 'the report miscounts the events -- server and client are both events')
-    t.contains(said, '1 export(s)', 'the report miscounts the exports')
-end)
-
-t.test('a revive with lists but enabled = false is not counted', function()
-    -- Both halves are required. Naming the events and leaving the switch off
-    -- is the commonest way to have a handoff that never runs.
-    local f = newReport({
-        running = {},
-        config = function(dispatch)
-            dispatch.revive.enabled = false
-            dispatch.revive.serverEvents = { 'hospital:server:revive' }
-        end,
-    })
 
     t.contains(f.text(), 'NOTHING IS TELLING YOUR MEDICAL SCRIPT',
-        'a revive with its switch off was reported as configured')
-end)
-
-t.test('and one enabled with EMPTY lists is not counted either', function()
-    local f = newReport({
-        running = {},
-        config = function(dispatch)
-            dispatch.revive.enabled = true
-            dispatch.revive.serverEvents = {}
-            dispatch.revive.clientEvents = {}
-            dispatch.revive.exports = {}
-        end,
-    })
-
-    t.contains(f.text(), 'NOTHING IS TELLING YOUR MEDICAL SCRIPT',
-        'a revive with nothing named was reported as configured')
+        'config keys are being counted as a handoff again')
 end)
 
 -- ========================================================================
@@ -294,7 +268,7 @@ t.test('every line is a string, whatever the config', function()
     -- that list is a raise inside the diagnostic an operator ran BECAUSE
     -- something was already wrong.
     local f = newReport({
-        running = { ['ps-dispatch'] = true, ['qb-ambulancejob'] = true },
+        running = { ['sc-dispatch'] = true, ['qbx_ambulancejob'] = true },
         config = function(dispatch)
             dispatch.custom.stateBagKey = nil
             dispatch.custom.disableExports = nil
@@ -313,7 +287,7 @@ t.test('and a state key an operator emptied falls back to the shipped one', func
     -- The paste-this line has to name a real key. An empty setting means
     -- "I did not choose", not "write nothing".
     local f = newReport({
-        running = { ['ps-dispatch'] = true },
+        running = { ['sc-dispatch'] = true },
         config = function(dispatch) dispatch.custom.stateBagKey = '' end,
     })
 

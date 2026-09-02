@@ -1596,9 +1596,9 @@ function ArenaLobby.SetLoadout(src, request)
 
     if hostPicks then
         -- Everyone gets the host's pick, including anyone who joined before
-        -- it was made. Copied per player rather than shared by reference:
-        -- gun game rewrites a player's loadout as they climb the ladder, and
-        -- one shared table would climb it for the whole match at once.
+        -- it was made. Resolved per player rather than shared by reference:
+        -- one shared table would let a later edit to one player's loadout
+        -- rewrite it for the whole match at once.
         for _, other in pairs(match.players) do
             if other.src ~= target then
                 other.loadout = (Arena.ResolveLoadout(request))

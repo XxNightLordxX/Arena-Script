@@ -737,10 +737,10 @@ t.test('somebody who joins after the pick inherits it rather than the default', 
         'the late joiner is armed differently to everybody else')
 end)
 
-t.test('the copies are separate tables, so one player cannot climb for everyone', function()
-    -- Gun game rewrites a player's loadout in place as they climb the
-    -- ladder. Share one table between players and the first kill promotes
-    -- the entire match at once.
+t.test('the copies are separate tables, so an edit to one is not an edit to all', function()
+    -- Loadouts are rewritten in place on entry and on every respawn. Share
+    -- one table between players and a change meant for one fighter lands on
+    -- the whole match at once.
     local server = newArena({ [1] = 5000, [2] = 5000 }, function(config)
         config.Loadouts.chooser = 'host'
     end)

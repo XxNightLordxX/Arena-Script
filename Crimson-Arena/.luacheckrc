@@ -144,16 +144,13 @@ files['client/'] = {
         'ExecuteCommand', 'Arena',
         'Config',
 
-        -- Dispatch suppression (client/dispatch.lua). The wanted-level and
-        -- police natives are only ever called between entering and leaving a
-        -- match, and every one of them is undone on the way out.
+        -- NO WANTED-LEVEL OR POLICE NATIVE IS LISTED HERE, and that is the
+        -- point rather than an omission. Entering or leaving a match changes
+        -- no game setting at all, so there is nothing to allow: a build that
+        -- needs SetPoliceIgnorePlayer or SetPlayerWantedLevel back has to add
+        -- it here on purpose, in front of whoever is reading the diff.
         'GetEntityMaxHealth',
-        'GetPlayerWantedLevel',
         'GetResourceState',
-        'SetDispatchCopsForPlayer',
-        'SetPlayerWantedLevel',
-        'SetPlayerWantedLevelNow',
-        'SetPoliceIgnorePlayer',
 
         -- ox_lib (@ox_lib/init.lua) and its locale loader.
         'lib',

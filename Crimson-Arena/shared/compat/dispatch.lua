@@ -496,7 +496,7 @@ end
 --- Every catalogued resource that is running right now, in catalogue order.
 ---
 --- DELIBERATELY NOT CACHED. GetResourceState is a cheap lookup and the
---- catalogue is a couple of dozen names, so the whole walk is nothing --
+--- catalogue is a handful of names, so the whole walk is nothing --
 --- while a cache would have to be invalidated every time an operator
 --- restarted their dispatch script, and a stale "not detected" is exactly
 --- the wrong answer for a file whose entire purpose is telling the truth

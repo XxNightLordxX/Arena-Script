@@ -482,10 +482,10 @@ local function issueWeapons(ox, src, matchId, loadout)
             if loaded > 0 then metadata.ammo = loaded end
 
             -- ATTACHMENTS AND TINT RIDE IN THE METADATA TOO, and they were
-            -- being dropped here. client/match.lua applies both with natives
-            -- on a server WITHOUT ox_inventory -- so a suppressor or a scope
-            -- an operator configured arrived on one kind of server and not
-            -- the other, from the same config, with nothing to say why.
+            -- being dropped here. The item IS the weapon, so a suppressor or
+            -- a scope an operator configured reaches the player through this
+            -- table or it does not reach them at all -- nothing downstream
+            -- puts a component on a ped.
             --
             -- Only when there is something to carry: ox_inventory reads an
             -- empty `components` list as a weapon with its attachments

@@ -94,7 +94,7 @@ Those two are the whole `dependencies` block in `fxmanifest.lua`, and that list 
 
 | Resource | Used for | Without it |
 |---|---|---|
-| [ox_target](https://github.com/overextended/ox_target) | the option on the lobby NPC | the ground marker goes up in the NPC's place, at the same spot, and players press **E** instead |
+| [ox_target](https://github.com/overextended/ox_target) | the option on the lobby NPC | no NPC is spawned and the console says so. Set `Config.Lobby.interaction` to `'marker'` or `'both'` if you want the ground marker instead |
 | [ox_inventory](https://github.com/overextended/ox_inventory) | [ammo items](#ammo-types--handing-out-your-own-ammo-items), and the stash that holds a player's own kit during a match | ammo items are not handed out, nobody is stripped, and the console says so once |
 | [oxmysql](https://github.com/overextended/oxmysql) | the all-time leaderboard, and only when `Config.Database.enabled` is on — it ships **off** | the leaderboard covers the current server run |
 
@@ -139,7 +139,7 @@ Player-facing text lives in `locales/en.json`. To translate it, copy the file to
 
 ## Configuring
 
-`config.lua` is the only file an operator needs to edit. Every snippet below is lifted from it.
+`config.lua` and `config.weapons.lua` are the two files an operator edits — settings in the first, the weapon catalogue in the second. Each snippet below is lifted from one of them.
 
 ### Adding a weapon and its ammo options
 
@@ -561,7 +561,6 @@ Things worth knowing before you turn it on for a live server:
 #### Layer 2 — an arena death is undone in the same instant
 
 ```lua
-suppressAmbulanceDown = true,
 clearDeadStateImmediately = true,
 ```
 
@@ -1115,12 +1114,12 @@ are client-side because only a client can ask the game what models it has.
 
 ### A player is still dead
 
-- **`revive: NOT configured` in the console is not this.** Players are stood back up by the arena whatever that line says — see [getting back up after a death](#getting-back-up-after-a-death). That line is about telling a separate medical script, and on many servers there is nothing to tell.
+- **`revive: NOTHING IS TELLING YOUR MEDICAL SCRIPT` in the console is not this.** Players are stood back up by the arena whatever that line says — see [getting back up after a death](#getting-back-up-after-a-death). That line is about telling a separate medical script, and on many servers there is nothing to tell.
 - **Type `/arenarevive <id>`.** It runs exactly the same path a finished match runs, on demand, so you can test it without playing a round. If that puts them up, the revive works and the problem is upstream of it.
-- **A player who looks alive but is treated as dead** — cuffed, bleeding out, refused a weapon, dragged by EMS — is the handoff, not the revive. Their ped is up; your medical script's own list has not been told. Name its revive in `Config.Dispatch.revive`.
+- **A player who looks alive but is treated as dead** — cuffed, bleeding out, refused a weapon, dragged by EMS — is the handoff, not the revive. Their ped is up; your medical script's own list has not been told. Add that script to the catalogue in `shared/compat/dispatch.lua`, with the revive event it listens for.
 - **Still down right after a respawn?** Raise `Config.Dispatch.revive.afterRespawnDelayMs` (2000 by default). The revive has to land *after* the client has stood the ped up and finished the teleport; told sooner, whatever it does is undone by the teardown behind it.
 - **Still down after the match ends?** `Config.Dispatch.revive.sweepAfterMatchMs` (5000 by default) is a second blanket pass over everyone who played, run once everybody is home. `0` turns it off; raise it if your teleport home is slow.
-- **There are no command forms any more.** `commands` and `clientCommands` are gone, along with the `add_ace` instructions that came with them: the resource asks the server for no permissions and has no channel for running one. What is left is events and exports — things a script publishes on purpose for other scripts to call.
+- **The arena runs no commands.** It asks the server for no permissions and has no channel for running one, which is why the handoff is an event a medical script publishes on purpose for other scripts to call.
 
 ### The leaderboard is empty
 

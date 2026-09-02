@@ -2051,15 +2051,12 @@
         clear(host);
 
         if (!canChooseLoadout()) {
-            /* Two different reasons a picker is read-only, and telling them
-               apart matters: one is permanent and one lasts until you host a
-               match of your own. */
-            host.appendChild(makeEl('div', 'hint', hostPicksLoadout()
-                ? 'The host picks one loadout and everyone in the match fights with it, so every '
-                  + 'player carries the same weapons. Into The Round below is exactly what you will '
-                  + 'be handed when the round starts. Host a match yourself to choose it.'
-                : 'This server issues a fixed loadout. The panel on the right is what you will be '
-                  + 'handed when a round starts; nothing here can be changed.'));
+            /* One reason, and it is never permanent: the host picks, and you
+               are not the host of this match. */
+            host.appendChild(makeEl('div', 'hint',
+                'The host picks one loadout and everyone in the match fights with it, so every '
+                + 'player carries the same weapons. Into The Round below is exactly what you will '
+                + 'be handed when the round starts. Host a match yourself to choose it.'));
             return;
         }
 

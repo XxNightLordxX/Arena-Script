@@ -10,9 +10,11 @@
     normal end, elimination, disconnect-driven exit, and resource stop.
 
     Everything else here is enforcement of decisions the server already
-    made: it hands out the exact ammo the server resolved, it reports a
-    death as a HINT and lets the server decide whether it scored, and its
-    match-only threads all die the moment the match does.
+    made: it applies the vitals the server resolved, it reports a death as a
+    HINT and lets the server decide whether it scored, and its match-only
+    threads all die the moment the match does. It never hands the ped a
+    weapon -- ox_inventory owns those, and server/ammo.lua issues them as
+    items.
 ]]
 
 local UNARMED = joaat('WEAPON_UNARMED')
@@ -135,9 +137,9 @@ local function restoreOwnLoadout(ped)
     carried = nil
 end
 
---- Hands out the loadout the server resolved. Nothing is re-derived here:
---- the ammo on the wire already went through Arena.ResolveAmmo server-side
---- and is the authoritative number.
+--- Applies the loadout the server resolved. Nothing is re-derived here, and
+--- nothing about the weapons is touched: what this puts on the player is the
+--- health and armour every life starts on.
 --- What the arena decided this fighter's health and armour should be, and
 --- until when it is worth putting them back.
 ---
@@ -407,9 +409,8 @@ local function reviveForCountdown(ped)
     local revived = PlayerPedId()
     ClearPedBloodDamage(revived)
 
-    -- Back to exactly what the server armed them with on the way in: full
-    -- health and armour, and -- on a server with no inventory resource
-    -- holding the weapons as items -- the guns again too.
+    -- Back to exactly what the server sent them in on: full health and a
+    -- full plate. Their weapons are items and never left them.
     applyLoadout(revived, currentMatch and currentMatch.loadout)
 
     -- Held still again, for the reason entry froze them in the first place:
@@ -1607,9 +1608,9 @@ local function leaveArena(returnCoords)
 
     if ArenaSpectate then ArenaSpectate.Stop() end
 
-    -- Police, wanted level and the arena flag all go back to what they were
-    -- before this player walked in. Safe to call when nothing was ever
-    -- suppressed, which is why it sits on the single shared exit path.
+    -- The operator's own mute exports go back off. Safe to call when
+    -- nothing was ever muted, which is why it sits on the single shared
+    -- exit path.
     ArenaDispatch.Exit()
 
     ClearOverrideWeather()

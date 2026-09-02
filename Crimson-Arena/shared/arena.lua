@@ -637,8 +637,11 @@ function Arena.MagazineFor(weapon, rounds)
     return math.min(fallback, total)
 end
 
---- Same shape of decision for body armour.
---- @param requested any
+--- What every fighter starts each life on: full health and a full plate.
+---
+--- CONSTANTS, NOT SETTINGS, and both realms read them from here so the panel
+--- and the server can never disagree about how hard somebody is to kill.
+--- @return integer health
 --- @return integer armor
 function Arena.StartingVitals()
     return FULL_HEALTH, FULL_ARMOR

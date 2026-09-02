@@ -18,18 +18,18 @@
      line   setting       what it is
     ------------------------------------------------------------------------------
        78   Lobby         The NPC players walk up to
-      149   Match         Lives, timers, player counts, win condition
-      357   Teams         The sides, and whether they may be uneven
-      459   Modes         Free-for-all and team deathmatch
-      478   DefaultMode   Which of them a new lobby opens on
-      497   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      690   UI            Panel colours, logo and title
-      753   Permissions   Who may open a match, who may force-stop one
-      832   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1367   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1762   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1772   Webhook       Optional: a Discord line per finished match
-     1810   Dispatch      Optional: keeping police and EMS out of the arena
+      151   Match         Lives, timers, player counts, win condition
+      359   Teams         The sides, and whether they may be uneven
+      461   Modes         Free-for-all and team deathmatch
+      480   DefaultMode   Which of them a new lobby opens on
+      499   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      692   UI            Panel colours, logo and title
+      755   Permissions   Who may open a match, who may force-stop one
+      835   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1370   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1757   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1767   Webhook       Optional: a Discord line per finished match
+     1804   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -79,8 +79,10 @@ Config.Lobby = {
     -- HOW PLAYERS OPEN THE ARENA PANEL.
     --   'ped'    -- an NPC stands at `ped.coords`; players use ox_target on
     --              them. This is the default. ox_target is the only target
-    --              script wired up -- with it stopped or absent the marker
-    --              below goes up in the NPC's place, on the same spot.
+    --              script wired up, and with it stopped or absent NO NPC is
+    --              spawned and nothing goes up in its place -- the console
+    --              says so. Use 'both' if you want the marker as a safety
+    --              net; the arena will not quietly pick a setting for you.
     --   'marker' -- a glowing marker on the ground; players stand in it and
     --              press the key in `marker.key`. No NPC is spawned.
     --   'both'   -- spawn the NPC AND draw the marker. Either one opens the
@@ -114,8 +116,8 @@ Config.Lobby = {
 
     marker = {
         type = 27,
-        -- The same spot as the NPC above: this is what goes up in its place
-        -- when ox_target is not running, so the two must not drift apart.
+        -- The same spot as the NPC above, so 'both' puts the two fixtures
+        -- in one doorway rather than sending players to two places.
         coords = vector3(-282.0125, -2030.4575, 30.1457),
         size = vector3(1.6, 1.6, 0.6),
         -- Crimson, to match the panel.
@@ -768,9 +770,10 @@ Config.Permissions = {
 -- registration step. Delete a block and it is gone; set `enabled = false` and
 -- it is hidden without losing the coordinates you spent time collecting.
 --
--- THE TWO SHIPPED ARENAS ARE OPEN GROUND ON PURPOSE, and their coordinates
--- are a starting point rather than gospel. Stand where you want a spawn
--- point, take the coordinates with whatever command your server has for it,
+-- THE TWO SHIPPED ARENAS ARE DELIBERATELY DIFFERENT ANIMALS -- one a real
+-- place on the map with its own cover, one built over open water -- and
+-- their coordinates are a starting point rather than gospel. Stand where you
+-- want a spawn point, take the coordinates with whatever command your server has for it,
 -- and paste them in. The heading is the last number -- the direction the
 -- player faces when they land.
 --
@@ -1646,14 +1649,6 @@ Config.Loadouts = {
         { key = 'standard', label = '5.56x45', item = 'ammo-rifle' },
     },
 
-    -- Body armour, picked the same way ammo is.
-    -- BODY ARMOUR. Everyone starts every round on a full plate, and cannot
-    -- choose otherwise -- `allowChoose = false` hides the picker entirely, so
-    -- nobody can hand themselves a disadvantage by accident or hand an
-    -- opponent one on purpose.
-    --
-    -- Turn `allowChoose` back on and the options below become a picker again,
-    -- for a server that wants armour to be part of the loadout decision.
     -- ==================================================================
     -- EXTRA SUPPLIES -- what a player carries IN, on top of the kit
     --
@@ -1787,12 +1782,11 @@ Config.Webhook = {
 -- a person down, and your emergency services spend the evening driving to a
 -- fight nobody wants them at.
 --
--- THIS BLOCK IS BUILT FOR A CUSTOM DISPATCH SCRIPT, not for GTA's own
--- five-star wanted system. Almost every serious RP server has the vanilla
--- system switched off entirely and runs its own alerts, so that is the case
--- treated as normal here: `Config.Dispatch.custom` below is the real
--- integration, and the vanilla block further down ships DISABLED for servers
--- that still use it.
+-- THIS BLOCK IS BUILT FOR A CUSTOM DISPATCH SCRIPT, and for nothing else.
+-- A serious RP server has GTA's own five-star wanted system switched off
+-- entirely and runs its own alerts, which is the case treated as normal
+-- here: `Config.Dispatch.custom` below is the whole integration, and the
+-- arena touches no game native on the way into a match or out of one.
 --
 -- THE ONE THING NO RESOURCE CAN DO. Your dispatch script decides to send an
 -- alert inside its own event handlers. Nothing in FiveM can reach into

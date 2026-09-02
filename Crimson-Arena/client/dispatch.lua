@@ -223,31 +223,10 @@ function ArenaDispatch.ReleaseDeadState(ped)
     FreezeEntityPosition(ped, false)
 end
 
--- A restart mid-match must not leave a player permanently ignored by the
--- police with their wanted level pinned at zero. This is the one teardown
+-- A restart mid-match must not leave the operator's dispatch script muted
+-- for every fighter for the rest of their session. This is the one teardown
 -- that has to happen even when nothing else gets the chance to run.
 AddEventHandler('onResourceStop', function(resource)
     if resource ~= GetCurrentResourceName() then return end
     ArenaDispatch.Exit()
 end)
-
-
---- The arena's OWN revive: everything a revive command would do, done here.
----
---- WHY THIS EXISTS. Every route to somebody else's revive was refused. The
---- command answered "Access denied" because a resource may not run an admin
---- command; granting the permission answered "Access denied" too, because a
---- resource may not grant itself permissions either -- which is correct, and
---- is the whole reason that door is shut.
----
---- So the arena stops knocking on it. A revive is not a privileged act when
---- the thing being revived is a player this resource put in an arena and is
---- now taking out again: it is standing up a body we knocked down.
----
---- WHAT IT DOES NOT DO, and cannot: it does not reach inside a medical
---- script's own bookkeeping. If yours records deaths in metadata of its own,
---- it still holds that record, and Config.Dispatch.revive's events and
---- exports are how to reach it -- with a name from that script's
---- documentation rather than a guess. What this guarantees is the half the
---- arena owns: the player is alive, whole, unfrozen, visible and able to
---- move, wherever they are standing.

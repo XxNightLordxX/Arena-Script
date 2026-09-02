@@ -1561,7 +1561,7 @@ function ArenaLobby.SetTeam(src, teamKey)
 end
 
 --- @param src any
---- @param request any -- { weapons = { { key, ammo } }, armor }, straight off the wire
+--- @param request any -- { weapons = { { key, ammo } }, supplies }, straight off the wire
 --- @return boolean ok
 --- @return string|nil reasonKey
 function ArenaLobby.SetLoadout(src, request)

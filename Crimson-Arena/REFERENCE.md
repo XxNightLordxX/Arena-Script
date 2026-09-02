@@ -72,7 +72,7 @@ instancing really happened rather than assuming it did.
 
 - **Two shipped arenas, both enabled**: *The Skydome*, a walled platform built a
   kilometre up with nothing under it and nothing over it, and *Trailer Park*, a
-  fought-in corner of the real map. Two more ship switched off.
+  fought-in corner of the real map. Nothing ships switched off.
 - **Arenas that build themselves.** An arena can carry its own floor and its own
   cover as props: the client builds them on entry and takes them down on exit,
   and sweeps for anything a crash left standing.
@@ -158,7 +158,7 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **63 spec files** covering the shared, server and client logic, run with `lua5.4`
+- **61 spec files** covering the shared, server and client logic, run with `lua5.4`
   against a fake-native harness.
 
 ---
@@ -252,8 +252,7 @@ from scalars on arrival:
 **Server → client**, all prefixed `crimson_arena:client:`:
 
 `state`, `enterArena`, `exitArena`, `matchLive`, `matchHud`, `countdown`,
-`results`, `eliminated`, `respawn`, `revive`, `notify`, `closePanel`,
-`gunGameRung`, `runCommand`.
+`results`, `eliminated`, `respawn`, `notify`, `closePanel`, `holdVitals`.
 
 ---
 
@@ -276,7 +275,7 @@ line-number map that is regenerated whenever the file changes.
 | `Config.Loadouts` | The weapon catalogue, categories, slots, ammunition amounts and types, armour, the loadout chooser, and the inventory door. |
 | `Config.Database` | The oxmysql-backed leaderboard, off by default. |
 | `Config.Webhook` | Discord embeds for matches and money. |
-| `Config.Dispatch` | Routing-bucket isolation first, then the five layers of police/EMS integration and the arena's own revive. |
+| `Config.Dispatch` | Routing-bucket isolation first, then the layers of police/EMS integration and the timing of the medical handoff. |
 
 ---
 
@@ -297,14 +296,14 @@ line-number map that is regenerated whenever the file changes.
 | `server/match.lua` | server | The round itself: start, deaths, respawns, the end, and the instancing sweep. |
 | `server/main.lua` | server | Every client entry point, its validation and its rate limit. |
 | `client/ui.lua` | client | The NUI bridge. |
-| `client/dispatch.lua` | client | Client-side suppression and the arena's own revive. |
+| `client/dispatch.lua` | client | Client-side suppression, and holding an arena casualty out of every death poll. |
 | `client/main.lua` | client | The lobby ped, the marker, the blip and the cached state. |
 | `client/match.lua` | client | Being in a round: the loadout, the boundary, the props, the blips and outlines, the HUD. |
 | `client/spectate.lua` | client | The spectate camera and its target list. |
 | `html/` | — | The panel. |
 | `locales/` | — | Every player-visible string. |
 | `sql/install.sql` | — | The leaderboard table, for operators who import by hand. |
-| `tests/` | — | 63 spec files and the fake-native harness they run against. |
+| `tests/` | — | 61 spec files and the fake-native harness they run against. |
 
 ---
 
@@ -424,19 +423,17 @@ listed; the source documents them where they are.
 | `ArenaDispatch.IsPlayerInArena(src)` | Whether the server has this player flagged as being in a match. |
 | `ArenaDispatch.GetPlayerMatchId(src)` | The match a flagged player is in, or nil. |
 | `ArenaDispatch.GetArenaPlayers()` | Every player currently in a match, as a server-id -> match-id map. |
-| `ArenaDispatch.OneSync()` | The mode, for the startup report -- which has to describe what the server IS rather than what config asked for. |
 | `ArenaDispatch.GetBucket(matchId)` | The instance a match is fought in, allocating and configuring one the first time it is asked for. |
 | `ArenaDispatch.EnterBucket(src, matchId)` | Moves a player into their match's instance, remembering what they were in beforehand. |
 | `ArenaDispatch.ExitBucket(src)` | Puts a player back in exactly the bucket EnterBucket found them in, and hands the match's number back once the last person has left it. |
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 12 functions
+#### `server/ammo.lua` — 11 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaAmmo.IsEnabled()` | Whether ammunition ITEMS are being handed out. |
-| `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, addWeapon, rounds)` | Swaps one arena weapon for another, as items. |
 | `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.ReclaimAll(matchId, reasonKey)` | Reclaims the kit of every player in one match. |
@@ -510,7 +507,7 @@ listed; the source documents them where they are.
 | `ArenaLobby.AddSpectator(src, matchId)` | Attaches a watcher to a match and puts them in its instance. |
 | `ArenaLobby.RemoveSpectator(src)` | Detaches a watcher and sends them back out. |
 
-#### `server/match.lua` — 9 functions
+#### `server/match.lua` — 7 functions
 
 | Function | What it does |
 |---|---|
@@ -536,14 +533,14 @@ listed; the source documents them where they are.
 | `ArenaUI.Countdown(seconds, label)` | The big centred number before a round goes live. |
 | `ArenaUI.Results(results)` | End-of-match scoreboard. |
 
-#### `client/dispatch.lua` — 8 functions
+#### `client/dispatch.lua` — 6 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaDispatch.IsInArena()` | Whether this player is currently in an arena match. |
 | `ArenaDispatch.MatchId()` | The match this client believes it is in, or nil. |
-| `ArenaDispatch.Enter(matchId)` | Silences everything this resource is able to silence, and records what has to be put back. |
-| `ArenaDispatch.Exit()` | Undoes Enter(), exactly. |
+| `ArenaDispatch.Enter(matchId)` | Calls the operator's own mute exports and latches the match id. No game setting is touched. |
+| `ArenaDispatch.Exit()` | Undoes Enter(), exactly. Safe when nothing is active. |
 | `ArenaDispatch.ClearDeadState(ped)` | Puts an arena casualty back on their feet in the same instant they went down, held frozen, invisible and untouchable until the server says what happens next. |
 | `ArenaDispatch.ReleaseDeadState(ped)` | Undoes ClearDeadState's holding pattern. |
 

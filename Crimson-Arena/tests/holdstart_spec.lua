@@ -89,6 +89,7 @@ local function newServer(wallets, mutate)
             Clear = function(src) inArena[src] = nil end,
             Revive = function() end,
             IsPlayerInArena = function(src) return inArena[src] == true end,
+            ClearDownState = function() return 0 end,
             EnterBucket = function(src) inArena[src] = true end,
             ExitBucket = function(src) inArena[src] = nil end,
             GetBucket = function() end, ReleaseBucket = function() end,

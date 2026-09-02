@@ -118,6 +118,7 @@ local function newArena(mutate)
         ArenaDispatch = {
             Set = function() end, Clear = function() end, Revive = function() end,
             IsPlayerInArena = function() return false end,
+            ClearDownState = function() return 0 end,
             EnterBucket = function() end, ExitBucket = function() end,
             GetBucket = function() return 1 end, ReleaseBucket = function() end,
         },

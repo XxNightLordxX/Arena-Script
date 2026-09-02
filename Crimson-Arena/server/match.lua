@@ -1331,6 +1331,16 @@ function ArenaMatch.OnDeath(src, killerSrc)
             tostring(match.id), tostring(id), tostring(killerSrc))
     end
 
+    -- THE DOWN FLAG COMES BACK DOWN HERE, at the death, not at the revive.
+    --
+    -- A dispatch script polls the medical script's "this player is down"
+    -- metadata and files its own call the moment it goes up. The revive is
+    -- seven seconds away on the respawn path -- five for the respawn delay,
+    -- two more before the medical handoff -- and the poll runs every half
+    -- second, so waiting for it lost the flag fourteen times over on every
+    -- death of every round. ArenaDispatch holds it down from here.
+    ArenaDispatch.ClearDownState(id)
+
     local remaining = (Arena.ToInt(player.lives) or 1) - 1
     player.lives = remaining
 

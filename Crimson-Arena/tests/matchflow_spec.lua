@@ -184,6 +184,7 @@ local function newFixture(mutate)
                 revived[#revived + 1] = src
                 revivedHold[#revivedHold + 1] = { src = src, keepHold = keepHold == true }
             end,
+            ClearDownState = function() return 0 end,
             EnterBucket = function() end,
             ExitBucket = function() end,
             GetBucket = function() end,

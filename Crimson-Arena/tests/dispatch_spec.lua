@@ -121,6 +121,21 @@ local function newFixture(dispatchConfig)
     Sandbox.loadInto('../shared/arena.lua', env)
     if dispatchConfig ~= nil then env.Config.Dispatch = dispatchConfig end
 
+    -- THE HOLD THREAD IS PARKED IN THIS FIXTURE, on purpose. `Wait` here does
+    -- not yield -- it returns immediately -- so a production `while true`
+    -- loop driven by step() would never come back. `0` ends that thread at
+    -- load, which is also the documented way an operator switches the hold
+    -- off, and ArenaDispatch.HoldDownState is what the tests below drive
+    -- instead: the loop is one line, the work is a function, and the work is
+    -- what is worth asserting.
+    env.Config.Dispatch = env.Config.Dispatch or {}
+    local down = env.Config.Dispatch.downState
+    if type(down) ~= 'table' then
+        down = { keys = { 'inlaststand', 'isdead' } }
+        env.Config.Dispatch.downState = down
+    end
+    down.holdIntervalMs = 0
+
     -- AFTER the env exists, not inside its constructor. A closure written in
     -- the table above would capture a GLOBAL `env` -- nil -- rather than the
     -- local being declared by that very statement, and every lookup through
@@ -163,6 +178,15 @@ local function newFixture(dispatchConfig)
         env = env,
         D = env.ArenaDispatch,
         givePlayer = givePlayer,
+        --- Something OTHER than the arena writing to the framework object --
+        --- a medical script putting a player back down, which is exactly
+        --- what the hold exists to answer. Deliberately not routed through
+        --- SetMetaData, so it does not show up in metaWrites and a test can
+        --- still count what the ARENA wrote.
+        setMetadata = function(src, key, value)
+            metadata[src] = metadata[src] or {}
+            metadata[src][key] = value
+        end,
         metadata = function(src) return metadata[src] end,
         metaWrites = metaWrites,
         bag = function(src) return bags[src] end,
@@ -1712,7 +1736,7 @@ end)
 
 t.test('and the keys come from config, so another script can be named', function()
     local f = newFixture()
-    f.env.Config.Dispatch.revive.clearMetadata = { 'myscript_down' }
+    f.env.Config.Dispatch.downState.keys = { 'myscript_down' }
     f.givePlayer(7, { myscript_down = true, inlaststand = true })
 
     f.D.Revive(7)
@@ -1722,9 +1746,93 @@ t.test('and the keys come from config, so another script can be named', function
         'a key the operator did not name was written to anyway')
 end)
 
+t.test('THE SEVEN-SECOND WINDOW: the flag comes down at the death, not at the revive', function()
+    -- THE DEFECT THIS CLOSES, and it was a guaranteed loss rather than a
+    -- risk. These keys used to be written only by ArenaDispatch.Revive, and
+    -- on the path a fighter takes most -- dying with lives left -- that runs
+    -- Config.Match.respawnDelaySeconds (5s) plus revive.afterRespawnDelayMs
+    -- (2000ms) after the death. Seven seconds, against a dispatch client
+    -- polling the same metadata every 500ms: fourteen windows. PlayerDown
+    -- and PlayerDead were not "never raised" as the config claimed. They
+    -- were certain, on every death of every round.
+    --
+    -- ClearDownState is the entry point server/match.lua calls from OnDeath
+    -- itself, with nothing waited on in between.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = true, isdead = true })
+
+    local cleared = f.D.ClearDownState(7)
+
+    t.equals(cleared, 2, 'the down flags were not put back down at the death')
+    t.isFalse(f.metadata(7).inlaststand)
+    t.isFalse(f.metadata(7).isdead)
+end)
+
+t.test('and it refuses a source that is not one', function()
+    local f = newFixture()
+    t.equals(f.D.ClearDownState(nil), 0)
+    t.equals(f.D.ClearDownState(0), 0)
+    t.equals(f.D.ClearDownState(-1), 0)
+    t.equals(#f.metaWrites, 0)
+end)
+
+t.test('CLEARING ONCE IS NOT KEEPING CLEAR: the hold puts them back down again', function()
+    -- A medical script sets its flag from the victim's own client and several
+    -- of them re-assert it -- on a respawn, on a poll of their own, on a
+    -- restart. One clear at one instant answers one of those. The hold is a
+    -- write against a wall clock rather than a race: it does not matter who
+    -- wrote last, only that the arena writes again inside the window the
+    -- flag is being read in.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = false, isdead = false })
+    f.D.Set(7, 'm1')
+
+    -- Something else puts the player down again, the way sc-ambulance does.
+    f.setMetadata(7, 'inlaststand', true)
+
+    t.equals(f.D.HoldDownState(), 1, 'the hold did not put the flag back down')
+    t.isFalse(f.metadata(7).inlaststand)
+
+    -- And it costs nothing on the pass where nothing is set.
+    local before = #f.metaWrites
+    t.equals(f.D.HoldDownState(), 0)
+    t.equals(#f.metaWrites, before, 'the hold wrote to a flag that was already down')
+end)
+
+t.test('AND THE HOLD CANNOT OUTLIVE THE MATCH', function()
+    -- The failure ArenaDispatch.Clear exists to prevent, in a new place. A
+    -- flag held down for a player who has gone home silences that player's
+    -- medical state for the rest of their session -- and unlike the state
+    -- bag, nothing about it is visible to them or to an operator.
+    --
+    -- Keyed on `active` rather than on a list of its own, so every exit path
+    -- that clears the flag stops the hold in the same breath.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = false })
+    f.D.Set(7, 'm1')
+    f.D.Clear(7)
+
+    f.setMetadata(7, 'inlaststand', true)
+
+    t.equals(f.D.HoldDownState(), 0, 'the arena is still holding a flag down for somebody who left the match')
+    t.isTrue(f.metadata(7).inlaststand, 'a player who left the arena had their medical state written anyway')
+end)
+
+t.test('and a player in a match who is NOT down is left alone', function()
+    -- The hold is not a claim that everybody in an arena is healthy. It puts
+    -- back down what something else put up; it does not write to a field
+    -- nobody set.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = false, isdead = false })
+    f.D.Set(7, 'm1')
+
+    t.equals(f.D.HoldDownState(), 0)
+    t.equals(#f.metaWrites, 0)
+end)
+
 t.test('and an empty list switches the whole thing off', function()
     local f = newFixture()
-    f.env.Config.Dispatch.revive.clearMetadata = {}
+    f.env.Config.Dispatch.downState.keys = {}
     f.givePlayer(7, { inlaststand = true })
 
     f.D.Revive(7)

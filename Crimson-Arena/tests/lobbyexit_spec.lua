@@ -120,6 +120,7 @@ local function newServer(mutate)
             end,
             IsPlayerInArena = function(src) return flags[src] ~= nil end,
             GetPlayerMatchId = function(src) return flags[src] end,
+            ClearDownState = function() return 0 end,
             EnterBucket = function(src, matchId) buckets[src] = matchId end,
             ExitBucket = function(src)
                 buckets[src] = nil

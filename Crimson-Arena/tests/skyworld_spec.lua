@@ -718,6 +718,78 @@ t.test('the scenery line is printed even when the floor prop could not be measur
         'a footprint was reported for a model that never loaded')
 end)
 
+t.test('and it still has one at every roster size the arena grows to', function()
+    -- THE HOLE THE FIXED-SIZE TEST CANNOT SEE. The arena grows with the
+    -- roster and the floor grows with it, but they are laid out by different
+    -- arithmetic: the spawn disc is a radius multiplied by the factor, and
+    -- the floor is a grid of whole tiles kept on their nearest corner. Those
+    -- two can part company at a size nobody happened to test, and the
+    -- symptom is one fighter in one big round falling a kilometre.
+    --
+    -- So every size is checked, up to the growth ceiling and past it.
+    local ROSTERS = { 2, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40 }
+
+    for _, players in ipairs(ROSTERS) do
+        local c = newClient()
+        local factor = c.Arena.SizeFactor('skydome', players)
+        c.enter('skydome', nil, factor)
+
+        local area = c.Arena.GetSpawnArea('skydome', factor)
+        local holes, first = 0, nil
+        for ring = 0, math.floor(area.radius) do
+            -- More samples further out, so the outer rings -- which is where
+            -- a tiling mistake shows up -- are not checked more thinly than
+            -- the middle.
+            local steps = math.max(24, ring * 4)
+            for step = 0, steps - 1 do
+                local angle = (step / steps) * math.pi * 2
+                local x = area.x + ring * math.cos(angle)
+                local y = area.y + ring * math.sin(angle)
+                if not c.world.surfaceUnder(x, y) then
+                    holes = holes + 1
+                    first = first or ('%.1f,%.1f (ring %d)'):format(x - area.x, y - area.y, ring)
+                end
+            end
+        end
+
+        t.equals(holes, 0, ('a %d-player round grows the arena by %.3f and leaves %d points in the spawn area with no floor under them, e.g. %s')
+            :format(players, factor, holes, first or ''))
+    end
+end)
+
+t.test('and the last model in the floor chain holds up at every size too', function()
+    -- The fallback is what a build without the stunt blocks gets, and it is
+    -- a shipping container -- long, thin, and 26 times smaller in area, so
+    -- it tiles completely differently. A guarantee that only holds for the
+    -- prop most servers happen to have is not one.
+    local models = {}
+    for name, size in pairs(World.DEFAULT_MODELS) do models[name] = size end
+    models.stt_prop_stunt_bblock_huge_01 = nil
+    models.bkr_prop_biker_bblock_huge_01 = nil
+    models.imp_prop_impexp_bblock_huge_01 = nil
+    models.ar_prop_ar_bblock_huge_01 = nil
+
+    for _, players in ipairs({ 6, 16, 32 }) do
+        local c = newClient({ models = models })
+        local factor = c.Arena.SizeFactor('skydome', players)
+        c.enter('skydome', nil, factor)
+
+        local area = c.Arena.GetSpawnArea('skydome', factor)
+        local holes = 0
+        for ring = 0, math.floor(area.radius) do
+            local steps = math.max(24, ring * 4)
+            for step = 0, steps - 1 do
+                local angle = (step / steps) * math.pi * 2
+                if not c.world.surfaceUnder(area.x + ring * math.cos(angle),
+                                            area.y + ring * math.sin(angle)) then
+                    holes = holes + 1
+                end
+            end
+        end
+        t.equals(holes, 0, ('the container floor has %d holes in it at %d players'):format(holes, players))
+    end
+end)
+
 t.test('DEFECT: every spawn the arena can hand out has a piece under it', function()
     -- Not just the one this test drew. A floor with a hole in it is a hole
     -- somebody eventually spawns over, and the fall is a kilometre.

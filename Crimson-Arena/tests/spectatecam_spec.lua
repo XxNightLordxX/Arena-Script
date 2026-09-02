@@ -81,6 +81,15 @@ local function newCam(opts)
         ped = 500,
         inArena = opts.inArena == true,
         pedAt = opts.pedAt or vec3(0.0, 0.0, 0.0),
+        -- THE VIEWER'S OWN BODY, which is a different thing from the
+        -- FIGHTER's position above and had been the same stub for both.
+        -- Where the viewer is standing decides whether the server sends them
+        -- the fighters at all, so it is the whole subject of the parking
+        -- tests at the bottom of this file. Defaults to the lobby: a long
+        -- way from either shipped arena, which is where somebody pressing
+        -- Watch in the panel actually is.
+        viewerAt = opts.viewerAt or { x = -282.0, y = -2030.0, z = 30.0 },
+        moves = {},
         heading = 0.0,           -- what GetEntityHeading answers on Start
         cams = {},
         nextCam = 900,
@@ -130,7 +139,19 @@ local function newCam(opts)
         IsEntityDead = function(ped) return f.deadPeds[ped] == true end,
         GetPlayerName = function(player) return ('Fighter %d'):format(player or 0) end,
         -- The FIGHTER's position, which is what the camera orbits.
-        GetEntityCoords = function() return vec3(f.pedAt.x, f.pedAt.y, f.pedAt.z) end,
+        -- PER ENTITY NOW. The camera orbits a FIGHTER; the parking check
+        -- asks where the VIEWER is. Answering both with one position made
+        -- those two questions indistinguishable.
+        GetEntityCoords = function(entity)
+            if entity == f.ped then
+                return vec3(f.viewerAt.x, f.viewerAt.y, f.viewerAt.z)
+            end
+            return vec3(f.pedAt.x, f.pedAt.y, f.pedAt.z)
+        end,
+        SetEntityCoordsNoOffset = function(_ped, x, y, z)
+            f.viewerAt = { x = x, y = y, z = z }
+            f.moves[#f.moves + 1] = { x = x, y = y, z = z }
+        end,
         GetEntityHeading = function() return f.heading end,
         GetGameTimer = function() return f.clock end,
 
@@ -896,6 +917,121 @@ t.test('but an arena that stays empty DOES end the watch, eventually', function(
 
     t.isFalse(f.spectate.IsActive(), 'the watch never ended on an arena that stayed empty')
     t.isTrue(#f.notes > 0, 'the watch ended with nothing said about why')
+end)
+
+-- ========================================================================
+-- THE VIEWER'S BODY
+--
+-- Reported live: an eliminated fighter can watch their own round, and
+-- somebody pressing Watch in the panel gets nothing at all.
+--
+-- Those two paths run identical code. The only thing that differs is where
+-- the viewer is STANDING -- and with OneSync on, that is what decides which
+-- players the server sends them. The eliminated fighter is already in the
+-- arena, so the fighters are already theirs. The onlooker is at the lobby
+-- and is never sent anybody, so the camera waits out its grace window on an
+-- arena it will never see and then reports nobody left to watch.
+--
+-- SetFocusPosAndVel does not fix that. It moves where the MAP loads, not
+-- where the server thinks you are.
+-- ========================================================================
+
+t.test('DEFECT: an onlooker at the lobby is moved to the arena, or is sent nobody', function()
+    local f = newCam()
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+
+    local wanted = f.env.Arena.SpectateFocus(f.arenaKey)
+    t.isNotNil(wanted, 'the shipped arena describes no point to focus on')
+
+    f.step()
+
+    t.isTrue(#f.moves > 0,
+        'the viewer watched from the lobby, where the server sends them no fighters at all')
+    t.equals(f.viewerAt.x, wanted.x, 'the body was moved somewhere other than the arena')
+    t.equals(f.viewerAt.y, wanted.y)
+    t.equals(f.viewerAt.z, wanted.z)
+end)
+
+t.test('and an eliminated fighter, already in the round, is left where they stand', function()
+    -- Their body is the match's to place, and it is already somewhere the
+    -- fighters can be seen from. Moving it would drag a dead player across
+    -- their own arena for no reason -- and this is the path that WORKS, so
+    -- it is the one not to touch.
+    local f = newCam()
+    local wanted = f.env.Arena.SpectateFocus(f.arenaKey)
+    t.isNotNil(wanted, 'the fixture arena describes no point to stand near')
+    f.viewerAt = { x = wanted.x + 20.0, y = wanted.y - 15.0, z = wanted.z }
+
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+
+    f.step()
+
+    t.equals(#f.moves, 0, 'a fighter standing in the arena was teleported to the middle of it')
+end)
+
+t.test('and a body that was moved is put back when the watch ends', function()
+    -- Nothing else will. An onlooker was never in the round, so no match
+    -- exit runs for them -- leave them parked and they are standing in the
+    -- arena, visible again, when the next one starts.
+    local home = { x = -282.0, y = -2030.0, z = 30.0 }
+    local f = newCam({ viewerAt = { x = home.x, y = home.y, z = home.z } })
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+    f.step()
+    t.isTrue(#f.moves > 0, 'the body was never parked, so this proves nothing')
+
+    f.spectate.Stop()
+
+    t.equals(f.viewerAt.x, home.x, 'the onlooker was left standing in the arena')
+    t.equals(f.viewerAt.y, home.y)
+    t.equals(f.viewerAt.z, home.z)
+end)
+
+t.test('and it is parked once, not every frame', function()
+    -- The move is a teleport. Repeating it each frame would pin the body to
+    -- the arena centre and fight anything else that moves it.
+    local f = newCam()
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+
+    f.step()
+    f.step()
+    f.step()
+
+    t.equals(#f.moves, 1, ('the body was moved %d times'):format(#f.moves))
+end)
+
+t.test('and where it came from survives something else moving it', function()
+    -- WHY THE PARK IS REMEMBERED AS WELL AS GUARDED. A ped is not this
+    -- resource's alone -- a medical script, an admin teleport, anything can
+    -- move it mid-watch. Park again from wherever it has ended up and the
+    -- home address is overwritten with a waypoint the viewer never chose, so
+    -- the watch ends with them standing somewhere they have never been.
+    local home = { x = -282.0, y = -2030.0, z = 30.0 }
+    local f = newCam({ viewerAt = { x = home.x, y = home.y, z = home.z } })
+    f.spectate.Start('match-1')
+    f.roster('match-1', { A, B })
+    f.unstreamed = true
+    f.step()
+    t.equals(#f.moves, 1, 'the body was never parked, so this proves nothing')
+
+    -- Something else drags them off, far enough to look parkable again.
+    -- Several frames, because the waiting branch yields on its own Wait as
+    -- well as the loop's, so the body only runs on alternate resumes.
+    f.viewerAt = { x = 4000.0, y = 4000.0, z = 100.0 }
+    for _ = 1, 4 do f.step() end
+
+    f.spectate.Stop()
+
+    t.equals(f.viewerAt.x, home.x, 'the watch ended somewhere the viewer had never stood')
+    t.equals(f.viewerAt.y, home.y)
+    t.equals(f.viewerAt.z, home.z)
 end)
 
 os.exit(t.summary())

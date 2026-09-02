@@ -684,13 +684,6 @@ local function oneSyncMode()
     return 'off'
 end
 
---- The mode, for the startup report -- which has to describe what the server
---- IS rather than what config asked for.
---- @return string
-function ArenaDispatch.OneSync()
-    return oneSyncMode()
-end
-
 --- Said once, not once per match. An operator restarting into a misconfigured
 --- server should see this; they should not have it printed at every round.
 local warnedNoOneSync = false
@@ -1212,10 +1205,15 @@ end)
 --- report, so what is reported and what is registered cannot disagree.
 --- @return table
 local function cancelConfig()
+    -- ONE PLACE, AND NOT A SECOND ONE FOR A KEY NOBODY SHIPS.
+    --
+    -- This used to fall back to Config.Dispatch.cancelEvents -- one level
+    -- too high -- for an operator who nested the key wrong. Nothing ships
+    -- that shape, and quietly accepting it is worse than refusing it: a
+    -- config that works by accident teaches the wrong structure, and the
+    -- next thing the operator writes at that level is read by nothing at
+    -- all with no warning either.
     local list = customConfig().cancelEvents
-    if type(list) ~= 'table' then
-        list = Config.Dispatch and Config.Dispatch.cancelEvents
-    end
     return type(list) == 'table' and list or {}
 end
 
@@ -1690,11 +1688,26 @@ local function retractFor(entry, src)
                     ArenaLog('retract: %s:%s failed (%s). Check that export name against that resource\'s own documentation.',
                         config.resource, config.export, tostring(err))
                 end
-                return
+                break
             end
         end
 
-        ArenaDebug('retract: withdrew the call "%s" would have left standing for %s.', entry.event, tostring(src))
+        -- SAYS WHAT IT ASKED FOR, NOT WHAT IT HOPES HAPPENED.
+        --
+        -- ClearNotification called with an id that matches nothing returns
+        -- perfectly normally -- so "withdrew the call" was printed
+        -- identically whether the id shape was right or wrong, which is the
+        -- one thing this line could have told an operator and the one thing
+        -- it did not. The id itself is now in the line: paste it next to
+        -- what the dispatch resource really filed and the answer is
+        -- immediate.
+        --
+        -- AND ONE FAILURE NO LONGER SKIPS THE REST. The loop used to
+        -- `return` on a throw, so an export that failed on offset -1 never
+        -- attempted 0 or +1 -- and the offsets exist precisely because the
+        -- one that matters cannot be known in advance.
+        ArenaDebug('retract: asked %s to clear "%s" (+/-%ds) for %s.',
+            config.resource, template:format(src, at), slack, tostring(src))
     end)
 end
 

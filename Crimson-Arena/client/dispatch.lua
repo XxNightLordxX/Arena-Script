@@ -261,8 +261,12 @@ end
 --- @param ped integer
 --- @return boolean handled
 function ArenaDispatch.ClearDeadState(ped)
+    -- ONE SWITCH, NOT TWO. `suppressAmbulanceDown` sat on the line above
+    -- this one and gated exactly the same function -- two keys an operator
+    -- had to set the same way, in two parts of config, to change one
+    -- behaviour, and either of them alone silently doing nothing. It is
+    -- gone; clearDeadStateImmediately is the switch.
     local config = Config.Dispatch or {}
-    if config.suppressAmbulanceDown == false then return false end
     if config.clearDeadStateImmediately == false then return false end
     if not restore then return false end
 

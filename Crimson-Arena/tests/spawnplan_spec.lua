@@ -214,19 +214,31 @@ t.test('and the two teams do not start on top of each other', function()
 end)
 
 t.test('a team is still kept apart from the other team, player by player', function()
-    -- Teams together must not quietly mean teammates stacked: the minimum
-    -- separation applies across the whole roster, not within each team.
+    -- Teams together must not quietly mean teammates stacked. TWO FLOORS,
+    -- though, not one: the operator's minSeparation is what two ENEMIES are
+    -- held to, and teammates have their own smaller one -- landing together
+    -- is what a team spawn is.
     local env = envWith()
-    local plan = env.Arena.PlanSpawns('ring', roster(8, { 'crimson', 'ash' }), seeded(13))
+    local roll = roster(8, { 'crimson', 'ash' })
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(13))
+    local area = env.Arena.GetSpawnArea('ring')
 
-    local worst = math.huge
-    for a = 1, 8 do
-        for b = a + 1, 8 do
-            worst = math.min(worst, distance(plan[a], plan[b]))
+    local worstEnemy, worstMate = math.huge, math.huge
+    for a = 1, #roll do
+        for b = a + 1, #roll do
+            local gap = distance(plan[roll[a].src], plan[roll[b].src])
+            if roll[a].team == roll[b].team then
+                worstMate = math.min(worstMate, gap)
+            else
+                worstEnemy = math.min(worstEnemy, gap)
+            end
         end
     end
-    t.isTrue(worst >= 12.0,
-        ('two players start %.1fm apart in a team match, inside the 12m minimum'):format(worst))
+
+    t.isTrue(worstEnemy >= 12.0,
+        ('two enemies start %.1fm apart in a team match, inside the 12m minimum'):format(worstEnemy))
+    t.isTrue(worstMate >= area.mateSeparation - 0.001,
+        ('two teammates start %.1fm apart, inside their own %.1fm floor'):format(worstMate, area.mateSeparation))
 end)
 
 t.test('teams do not always open in the same corner', function()
@@ -340,8 +352,9 @@ t.test('teammates keep the small gap and enemies keep the big one', function()
     t.isTrue(worstEnemy > worstMate,
         ('the nearest enemy (%.1fm) is no further than the nearest teammate (%.1fm) -- the two separations are not separate')
             :format(worstEnemy, worstMate))
-    t.isTrue(worstMate >= 12.0,
-        ('two teammates are %.1fm apart, inside the floor'):format(worstMate))
+    local area = env.Arena.GetSpawnArea('ring')
+    t.isTrue(worstMate >= area.mateSeparation - 0.001,
+        ('two teammates are %.1fm apart, inside their own %.1fm floor'):format(worstMate, area.mateSeparation))
 end)
 
 t.test('a crowded team does not drag the enemy gap down with it', function()
@@ -505,6 +518,128 @@ t.test('team anchors are drawn rather than laid out on a fixed ring', function()
     for _ in pairs(seen) do distinct = distinct + 1 end
     t.isTrue(distinct >= 8,
         ('crimson opened at only %d distinct angles over 24 matches -- the anchors are still a fixed pattern'):format(distinct))
+end)
+
+t.test('EVERY FIGHTER IS TURNED TO FACE THE MIDDLE, and for years none of them were', function()
+    -- NINETY DEGREES OUT, IN BOTH PLACES IT WAS WRITTEN. A GTA heading is
+    -- degrees clockwise from north, so a ped at heading h faces
+    -- (-sin h, cos h) -- and the maths angle atan gives back is measured
+    -- anticlockwise from east. The two differ by a quarter turn, and neither
+    -- copy of the formula subtracted it: every fighter placed at the edge of
+    -- a spawn circle was turned side-on to the arena, looking along the rim,
+    -- with the fight ninety degrees to their left. Both copies carried a
+    -- comment promising the opposite.
+    --
+    -- Asserted as a dot product rather than as an angle, because that is the
+    -- question: does the direction this player is facing point at the middle.
+    local env = envWith()
+    local roll = roster(12)
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(4))
+
+    local worst, worstAt = 1.0, nil
+    for _, entry in ipairs(roll) do
+        local point = plan[entry.src]
+        local forward = { x = -math.sin(math.rad(point.w)), y = math.cos(math.rad(point.w)) }
+        local toCentre = { x = AREA.x - point.x, y = AREA.y - point.y }
+        local length = math.sqrt(toCentre.x ^ 2 + toCentre.y ^ 2)
+        if length > 1.0 then
+            local dot = (forward.x * toCentre.x + forward.y * toCentre.y) / length
+            if dot < worst then worst, worstAt = dot, entry.src end
+        end
+    end
+
+    t.isTrue(worst > 0.999,
+        ('player %d is facing %.3f of the way towards the middle -- 0.000 is a quarter turn out, which is what the old formula gave')
+            :format(worstAt or 0, worst))
+end)
+
+t.test('and so is every team, together', function()
+    -- A team faces the middle as a side rather than each player facing
+    -- wherever their own sample happened to land, so the anchor's heading is
+    -- what they all get -- and it has to be right for the same reason.
+    local env = envWith()
+    local roll = roster(8, { 'crimson', 'ash' })
+    local plan = env.Arena.PlanSpawns('ring', roll, seeded(6))
+
+    for _, entry in ipairs(roll) do
+        local point = plan[entry.src]
+        local forward = { x = -math.sin(math.rad(point.w)), y = math.cos(math.rad(point.w)) }
+        local toCentre = { x = AREA.x - point.x, y = AREA.y - point.y }
+        local length = math.sqrt(toCentre.x ^ 2 + toCentre.y ^ 2)
+        local dot = (forward.x * toCentre.x + forward.y * toCentre.y) / length
+        -- Looser than the free-for-all case on purpose: a team shares ONE
+        -- heading, so a player on the edge of their own circle is a few
+        -- degrees off the middle by design. A quarter turn out is not a few
+        -- degrees.
+        t.isTrue(dot > 0.85,
+            ('player %d faces %.3f of the way to the middle'):format(entry.src, dot))
+    end
+end)
+
+t.test('TEAMMATES HAVE THEIR OWN FLOOR, and it is one the arena actually keeps', function()
+    -- `minSeparation` used to answer for teammates as well as enemies, and
+    -- answering both is what made it untrue: on an arena whose cover fills
+    -- most of a team circle, teammates came out FOUR METRES apart against a
+    -- stated ten, because the placement relaxed its way down rather than
+    -- admit it could not hold the number.
+    --
+    -- The honest split is that the ten was never about teammates. Landing
+    -- together IS a team spawn. What matters is that nobody lands INSIDE
+    -- anybody -- a body's width and a step -- and unlike the enemy gap that
+    -- floor is not relaxed on the way down.
+    local env = envWith({ teamRadius = 14.0 })
+    local area = env.Arena.GetSpawnArea('ring')
+    t.isTrue(area.mateSeparation > 0, 'there is no teammate floor to keep')
+    t.isTrue(area.mateSeparation < area.minSeparation,
+        'the teammate floor is the enemy gap again, which is the thing that was untrue')
+
+    --- The closest two players on the SAME side come, over `seeds` matches.
+    local function worstMateOver(world, count, seeds)
+        local worst = math.huge
+        for seed = 1, seeds do
+            local roll = roster(count, { 'crimson', 'ash' })
+            local plan = world.Arena.PlanSpawns('ring', roll, seeded(seed * 3))
+            for a = 1, #roll do
+                for b = a + 1, #roll do
+                    if roll[a].team == roll[b].team then
+                        worst = math.min(worst, distance(plan[roll[a].src], plan[roll[b].src]))
+                    end
+                end
+            end
+        end
+        return worst
+    end
+
+    local worst = worstMateOver(env, 16, 40)
+    t.isTrue(worst >= area.mateSeparation - 0.001,
+        ('two teammates landed %.2fm apart against a floor of %.2fm'):format(worst, area.mateSeparation))
+
+    -- AND IN A CIRCLE FAR TOO SMALL FOR THE SIDE STANDING IN IT, which is
+    -- where a floor stops being a formality. Eight fighters cannot be put
+    -- eight metres apart inside an eight-metre circle, so every round of the
+    -- relaxation fails and the placement falls through to its last-resort
+    -- draw -- and BOTH of those paths have to keep the floor, or a team
+    -- spawn becomes a pile.
+    local tight = envWith({ teamRadius = 8.0 })
+    local tightArea = tight.Arena.GetSpawnArea('ring')
+    local crushed = worstMateOver(tight, 16, 40)
+
+    t.isTrue(crushed >= tightArea.mateSeparation - 0.001,
+        ('in a circle too small for the side, two teammates landed %.2fm apart against a floor of %.2fm')
+            :format(crushed, tightArea.mateSeparation))
+
+    -- AND PAST THE POINT WHERE NO FLOOR CAN BE KEPT, the last-resort draw is
+    -- still the best of what it saw. Eight fighters in a THREE-metre circle
+    -- cannot be four metres apart by any arrangement, so every constrained
+    -- round fails and the fallback is what places them -- and that draw has
+    -- to score against everyone already placed, not only the other side.
+    -- Scoring enemies alone keeps a fighter clear of the opposition by
+    -- stacking them on their own teammate: measured, 0.01m apart, which is
+    -- two people standing inside each other.
+    local hopeless = envWith({ teamRadius = 3.0 })
+    local piled = worstMateOver(hopeless, 16, 40)
+    t.isTrue(piled > 0.5,
+        ('the last-resort draw put two teammates %.2fm apart -- it is scoring the other side only'):format(piled))
 end)
 
 -- ------------------------------------------------------------------

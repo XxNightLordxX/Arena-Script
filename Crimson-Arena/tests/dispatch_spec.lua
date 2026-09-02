@@ -1312,24 +1312,6 @@ t.test('and the three switches inside the block still gate one native each', fun
     t.isTrue(f.called('SetPlayerWantedLevel'), 'stashWantedLevel = true did nothing')
 end)
 
-t.test('suppressAmbulanceDown, the switch that survived, works on a stock config', function()
-    -- The difference that decided which of the two headline switches was
-    -- honest: this one's reader is gated on nothing an operator cannot see,
-    -- so BOTH its positions change behaviour on the config as it ships.
-    local on = newClientFixture()
-    on.D.Enter('match-1')
-    t.isTrue(on.D.ClearDeadState(11),
-        'the shipped config no longer suppresses the person-down alert')
-
-    local off = newClientFixture(function(dispatch)
-        dispatch.suppressAmbulanceDown = false
-    end)
-    off.D.Enter('match-1')
-    t.isFalse(off.D.ClearDeadState(11),
-        'suppressAmbulanceDown = false left the medical suppression running')
-    t.isFalse(off.called('NetworkResurrectLocalPlayer'))
-end)
-
 -- ========================================================================
 -- THE HANDOFF TO A MEDICAL SCRIPT, WIRED FROM THE CATALOGUE
 --

@@ -1666,6 +1666,25 @@ function Arena.GetSpawnArea(arenaKey, factor)
         -- and the relaxation below would just grind through every attempt
         -- before giving up.
         minSeparation = math.max(0.0, math.min(tonumber(area.minSeparation) or 10.0, radius)),
+        -- HOW CLOSE TWO PEOPLE ON THE SAME SIDE MAY LAND, which is a
+        -- different question from how close two enemies may.
+        --
+        -- `minSeparation` used to answer both, and answering both is what
+        -- made it untrue: on the shipped skydome, whose cover fills most of
+        -- a 16m team circle, teammates were coming out FOUR METRES apart
+        -- against a stated ten, because the placement relaxed its way down
+        -- rather than admit it could not hold the number.
+        --
+        -- The honest split is that the ten was never about teammates.
+        -- Landing together IS a team spawn, and a fighter four metres from
+        -- their own side is exactly where they want to be -- what matters is
+        -- that nobody lands INSIDE anybody, which is a body's width and a
+        -- step, not ten metres. So this is its own number with its own
+        -- promise, and unlike the enemy gap it is not relaxed on the way
+        -- down.
+        mateSeparation = math.max(0.0, math.min(
+            tonumber(area.mateSeparation) or math.min(tonumber(area.minSeparation) or 10.0, 4.0),
+            radius)),
         -- How tightly a team lands together. Defaults to a quarter of the
         -- area, which reads as "same corner of the field" rather than "same
         -- square metre".
@@ -1688,6 +1707,27 @@ local function distanceSquared(a, b)
     return dx * dx + dy * dy
 end
 
+--- THE HEADING THAT LOOKS AT (centreX, centreY) FROM (x, y).
+---
+--- ONE FORMULA IN ONE PLACE, AND IT WAS NINETY DEGREES OUT IN BOTH OF THE
+--- TWO PLACES IT USED TO LIVE. A GTA heading is degrees clockwise from
+--- north, so a ped at heading h faces (-sin h, cos h) -- and the maths angle
+--- of a direction, which is what atan gives back, is measured
+--- anticlockwise from east. The two differ by a quarter turn, and neither
+--- copy subtracted it: every fighter placed at the edge of a spawn circle
+--- was turned side-on to the arena, looking along the rim, with the fight
+--- ninety degrees to their left. Both copies carried a comment promising
+--- the opposite, which is why it survived so long.
+---
+--- Checked rather than reasoned about: the forward vector this returns dots
+--- to +1.000 with the direction to the centre, and spawnplan_spec asserts
+--- exactly that.
+--- @return number heading -- degrees, GTA convention
+local function facingCentre(centreX, centreY, x, y)
+    local toCentre = math.deg(math.atan(centreY - y, centreX - x))
+    return (toCentre - 90.0 + 360.0) % 360.0
+end
+
 --- One random point inside a disc, uniformly.
 ---
 --- sqrt() ON THE RADIUS, and it is not decoration: sampling the distance
@@ -1701,8 +1741,9 @@ local function sampleDisc(rng, area, centreX, centreY, radius)
         x = centreX + math.cos(angle) * distance,
         y = centreY + math.sin(angle) * distance,
         z = area.z,
-        w = (math.deg(math.atan(area.y - (centreY + math.sin(angle) * distance),
-                                area.x - (centreX + math.cos(angle) * distance))) + 360.0) % 360.0,
+        w = facingCentre(area.x, area.y,
+            centreX + math.cos(angle) * distance,
+            centreY + math.sin(angle) * distance),
     }
 end
 
@@ -1768,15 +1809,6 @@ local function achievableSeparation(radius, count)
     return PACKING_EFFICIENCY * radius * math.sqrt((2.0 * math.pi / math.sqrt(3.0)) / count)
 end
 
---- The heading that has a player at (x, y) looking at the middle of the
---- arena. Same rule as pointAt, for a point that was not drawn from an
---- angle: a fighter dropped facing outwards is looking at scenery with the
---- fight behind them.
---- @return number
-local function facingCentre(area, x, y)
-    return (math.deg(math.atan(area.y - y, area.x - x)) + 360.0) % 360.0
-end
-
 --- What two placements have to keep between them.
 ---
 --- THREE DIFFERENT ANSWERS, and collapsing them into one is what the old
@@ -1808,7 +1840,7 @@ end
 --- it give up the floor as well, and only on the last round, because a
 --- placement loop that cannot terminate is worse than two players standing
 --- close together.
---- @param rules table -- { mate = number, enemy = number }
+--- @param rules table -- { mate = number, floor = number, enemy = number }
 --- @param team string|nil -- the side being placed; nil in a free-for-all
 --- @return table[] points
 local function scatterWithin(rng, area, centreX, centreY, radius, rules, count, placed, team)
@@ -1816,7 +1848,8 @@ local function scatterWithin(rng, area, centreX, centreY, radius, rules, count, 
 
     for _ = 1, count do
         local chosen
-        local enemy, mate = rules.enemy, rules.mate
+        local enemy = rules.enemy
+        local mate = rules.mate
 
         for _ = 1, 5 do
             for _ = 1, SAMPLES_PER_ROUND do
@@ -1844,8 +1877,18 @@ local function scatterWithin(rng, area, centreX, centreY, radius, rules, count, 
             -- together is the shape of a team. The enemy gap gives way only
             -- as far as the number the operator actually wrote, and never
             -- past it.
-            mate = mate * 0.6
-            enemy = math.max(rules.mate, enemy * 0.7)
+            -- THE MATE FLOOR DOES NOT MOVE. It is already the smallest
+            -- distance this file asks for anywhere -- a body's width and a
+            -- step -- and relaxing it means placing somebody inside
+            -- somebody, which no amount of crowding makes acceptable.
+            --
+            -- What gives way is the enemy gap, down to `rules.floor` -- the
+            -- operator's own minSeparation -- and no further. Relaxing it to
+            -- the MATE floor instead was a regression I introduced and
+            -- measured: it let two enemies in a crowded free-for-all come
+            -- out four metres apart, which is the whole complaint arriving
+            -- back through the door marked "teammates land together".
+            enemy = math.max(rules.floor, enemy * 0.7)
         end
 
         -- NOT A BLIND DRAW. The old fallback took one random point, which on
@@ -1858,12 +1901,15 @@ local function scatterWithin(rng, area, centreX, centreY, radius, rules, count, 
             local bestScore
             for _ = 1, SAMPLES_PER_ROUND do
                 local candidate = sampleDisc(rng, area, centreX, centreY, radius)
+                -- EVERY PLACED PLAYER, not only the enemies. This is the
+                -- draw taken when nothing fitted, so it is also the only
+                -- thing standing between two teammates and the same square
+                -- metre -- scoring enemies alone would keep somebody clear
+                -- of the other side by stacking them on their own.
                 local nearest = math.huge
                 for _, other in ipairs(placed) do
-                    if needBetween(other, team, 0.0, 1.0) > 0.0 then
-                        local gap = distanceSquared(candidate, other)
-                        if gap < nearest then nearest = gap end
-                    end
+                    local gap = distanceSquared(candidate, other)
+                    if gap < nearest then nearest = gap end
                 end
                 if bestScore == nil or nearest > bestScore then
                     chosen, bestScore = candidate, nearest
@@ -1899,10 +1945,12 @@ end
 --- @param rng fun():number
 --- @param area table
 --- @param count integer -- how many teams
+--- @param spread number -- the radius each team scatters over
 --- @return table[] anchors -- { x, y, z, w }
-local function pickAnchors(rng, area, count)
-    -- Pulled in from the edge so a team's own spread stays inside the area.
-    local reach = math.max(0.0, area.radius - area.teamRadius)
+local function pickAnchors(rng, area, count, spread)
+    -- Pulled in from the edge by exactly what each side spreads over, so a
+    -- team's own scatter stays inside the arena.
+    local reach = math.max(0.0, area.radius - spread)
     local anchors = {}
 
     for index = 1, count do
@@ -1936,7 +1984,7 @@ local function pickAnchors(rng, area, count)
                 best, bestScore = candidate, nearest
             end
         end
-        best.w = facingCentre(area, best.x, best.y)
+        best.w = facingCentre(area.x, area.y, best.x, best.y)
         anchors[#anchors + 1] = best
     end
 
@@ -2019,7 +2067,8 @@ function Arena.PlanSpawns(arenaKey, roster, rng, factor)
         -- wrote: four fighters get the twenty-six metres a 35m circle can
         -- hold rather than the ten a config line happened to name.
         local rules = {
-            mate = area.minSeparation,
+            mate = area.mateSeparation,
+            floor = area.minSeparation,
             enemy = math.max(area.minSeparation, achievableSeparation(area.radius, #roll)),
         }
 
@@ -2032,14 +2081,16 @@ function Arena.PlanSpawns(arenaKey, roster, rng, factor)
 
     -- TEAMS. An anchor per side, drawn at random and kept for being far from
     -- the other sides, then that side's players scattered around it.
-    local anchors = pickAnchors(rng, area, #order)
+    --
+    local anchors = pickAnchors(rng, area, #order, area.teamRadius)
 
     -- THE ENEMY GAP IS WORKED OUT ON THE WHOLE ROSTER, not per team. It is
     -- the distance between two people on opposite sides, and both of them
     -- are standing in the same circle -- so what limits it is how many
     -- bodies are in that circle altogether.
     local rules = {
-        mate = area.minSeparation,
+        mate = area.mateSeparation,
+        floor = area.minSeparation,
         enemy = math.max(area.minSeparation, achievableSeparation(area.radius, #roster)),
     }
 

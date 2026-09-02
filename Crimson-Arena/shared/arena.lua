@@ -221,9 +221,10 @@ end
 -- CATALOGUE LOOKUPS
 --
 -- All four read straight from Config every call rather than caching at
--- load time. That is intentional: an operator editing config.lua and
+-- load time. That is intentional: an operator editing config.lua -- or
+-- config.weapons.lua, which is where the weapon catalogue lives -- and
 -- restarting the resource gets the new list, and there is no second copy
--- of the catalogue that can drift out of sync with the first.
+-- that can drift out of sync with the first.
 -- ======================================================================
 
 --- Every weapon an operator has left switched on, in config order.
@@ -845,11 +846,12 @@ function Arena.ResolveLoadout(request)
                     usedFirearm = usedFirearm + 1
                 end
 
-                -- BOTH SPELLINGS: a weapon is known by its catalogue key in
-                -- one place and by its GTA name in another, and a duplicate
-                -- under either spelling is still a duplicate.
+                -- KEYED BY CATALOGUE KEY, which is the only spelling a
+                -- request can be resolved under: `key` is what the panel and
+                -- the wire send, and GetWeaponByKey is what turns it into an
+                -- entry. A second write under the GTA name would be a key
+                -- nothing ever reads.
                 seen[weapon.key] = true
-                seen[weapon.weapon] = true
                 local ammoType = Arena.ResolveAmmoType(weapon, type(entry) == 'table' and entry.ammoType or nil)
 
                 -- Over the distinct-type cap: fall back to whatever this
@@ -2144,10 +2146,10 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor, prefer)
     -- piece, so nobody is ever placed into a container at the START of a
     -- round. This function did none of it: it drew candidates from the disc
     -- and scored them on distance from the nearest live opponent, with no
-    -- term for the scenery at all. Measured on the shipped skydome, whose
-    -- twenty pieces cover about a tenth of the spawn disc, one respawn in ten
-    -- landed inside one -- and a fighter respawned inside a shipping
-    -- container has nowhere to walk to.
+    -- term for the scenery at all. On the shipped skydome that is 78 cover
+    -- pieces, a third of them standing inside the spawn disc, so a fighter
+    -- could and did come back inside a shipping container -- with nowhere to
+    -- walk to.
     --
     -- It reads as the arena being broken in exactly the way the entry spawns
     -- were reported broken, which is why it went unnoticed: the first spawn

@@ -2148,7 +2148,7 @@
             if (sayEmpty) {
                 empty.appendChild(makeEl('div', 'muted', 'No weapons are enabled on this server.'));
                 empty.appendChild(makeEl('div', 'hint',
-                    'You will fight with whatever the arena hands out when the round starts.'));
+                    'Nothing will be issued to you when the round starts, apart from any supplies you take in.'));
             }
         }
 
@@ -3375,7 +3375,7 @@
                 case 'hud':
                     state.hudVisible = data.visible === true;
                     /* client/match.lua nests the match payload under `hud`;
-                       ArenaUI.ShowHud sends visibility on its own. Both
+                       ArenaUI.UpdateHud sends visibility on its own. Both
                        shapes are read, and a bare visibility message leaves
                        the numbers alone instead of blanking them. */
                     if (data.hud && typeof data.hud === 'object') state.hud = data.hud;

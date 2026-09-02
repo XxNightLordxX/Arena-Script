@@ -35,7 +35,7 @@
           exports.crimson_arena:GetPlayerMatchId(src)
           exports.crimson_arena:GetArenaPlayers()
 
-    The key is Config.Dispatch.stateBagKey, renameable for a server that
+    The key is Config.Dispatch.custom.stateBagKey, renameable for a server that
     already uses `crimsonArena` for something else.
 
     AND ONE THING IT DOES ENFORCE: ROUTING BUCKET ISOLATION. Everything above
@@ -53,11 +53,16 @@
     halves of this file ship on.
 
     WHAT THIS FILE DOES NOT DO: suppress anything on somebody else's behalf.
-    The trick that stops a medical script's polling loop ever seeing a dead
-    player is client-side -- see client/dispatch.lua. The reporting half of
-    this file exists so that the alerts THIS resource cannot reach can be
-    declined at their source, by the resource that owns them, on the strength
-    of a fact it can trust.
+    Resurrecting an arena casualty inside the frame they died -- the trick
+    that stops a medical script's polling loop ever seeing a dead player --
+    is client-side, in client/dispatch.lua.
+
+    WHAT IT DOES DO, beyond reporting: it clears the medical script's own
+    down metadata at the death and holds it down (ClearDownState and
+    HoldDownState below), and it carries the best-effort cancel and retract
+    layer. The reporting half exists so that the alerts THIS resource cannot
+    reach can be declined at their source, by the resource that owns them, on
+    the strength of a fact it can trust.
 ]]
 
 ArenaDispatch = {}
@@ -159,13 +164,6 @@ function ArenaDispatch.Clear(src)
 end
 
 -- ======================================================================
--- READING THE FACT
--- ======================================================================
-
---- @param src number
---- @return boolean
-
--- ======================================================================
 -- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS, AND RUNS NO COMMANDS
 --
 -- A server that lets a resource write its own permissions has no
@@ -177,23 +175,24 @@ end
 -- reaches for the permission natives.
 -- ======================================================================
 
+--- @return table -- Config.Dispatch.downState, or an empty table
+local function downStateConfig()
+    return (Config.Dispatch or {}).downState or {}
+end
+
 --- Clears the medical script's own down-state metadata for one player.
 ---
 --- The keys come from Config.Dispatch.downState.keys, so an operator whose
 --- script uses different names says so rather than being guessed at -- and
 --- an empty list switches this off entirely. The two shipped names are the
---- QB-family convention and are the ones this file's own catalogue already
---- documents sc-ambulance setting.
+--- QB-family convention and are the ones the catalogue in
+--- shared/compat/dispatch.lua already documents sc-ambulance setting.
 ---
 --- WRITES NOTHING IT DOES NOT HAVE TO. A key that is already false or absent
 --- is left alone, so on a server using neither name this costs two lookups
 --- and touches nobody's data.
 --- @param src number
 --- @return integer cleared -- how many keys were really changed
-local function downStateConfig()
-    return (Config.Dispatch or {}).downState or {}
-end
-
 local function clearDownMetadata(src)
     local keys = downStateConfig().keys
     if type(keys) ~= 'table' or #keys == 0 then return 0 end
@@ -466,12 +465,12 @@ RegisterCommand('arenarevive', function(src, args)
     end
 
     if told > 0 then
-        ArenaLog('arenarevive: done. %d has been stood up, their down metadata cleared, and %d medical script(s) told.',
+        ArenaLog('arenarevive: done. %d\'s down metadata was cleared and %d medical script(s) were asked to revive them.',
             target, told)
         ArenaLog('arenarevive: if %d is up but something still treats them as dead, that script is not in the catalogue in shared/compat/dispatch.lua -- add it there with the revive event it listens for.',
             target)
     else
-        ArenaLog('arenarevive: done. %d has been stood up and their down metadata cleared. No medical script was detected on this box, so none was told.',
+        ArenaLog('arenarevive: done. %d\'s down metadata was cleared. No medical script was detected on this box, so none was asked to revive them.',
             target)
     end
 end, false)
@@ -1112,17 +1111,17 @@ end)
 -- cannot pin on an arena player is passed straight through, untouched, and
 -- the name is printed once so the operator can fix the config.
 --
--- WHY AddEventHandler AND NEVER RegisterNetEvent. RegisterNetEvent is what
--- makes an event triggerable by a client. Calling it on somebody else's
--- server-only event name would let ANY player fire that event -- turning a
--- feature meant to silence false alerts into a way to forge real ones. So
--- this only ever listens. An event the owning resource has not itself opened
--- to clients stays closed.
+-- WHY BOTH RegisterNetEvent AND AddEventHandler, which is not obvious and
+-- was got wrong here once. FXServer delivers a network-sourced event only to
+-- resources that have called RegisterNetEvent for that name, so a handler
+-- registered with AddEventHandler alone never runs for the alerts that
+-- matter -- gunfire and deaths are raised with TriggerServerEvent from the
+-- player's own client, because that is where they are detected. The full
+-- reasoning, including why this does not open anybody else's event to
+-- clients, is at the RegisterNetEvent call itself further down.
 -- ======================================================================
 
---- The operator's list, from either of the two places it is plausibly
---- written. shared/compat/dispatch.lua counts the same two for its startup
---- report, so what is reported and what is registered cannot disagree.
+--- The operator's list, from the one place it is written.
 --- @return table
 local function cancelConfig()
     -- ONE PLACE, AND NOT A SECOND ONE FOR A KEY NOBODY SHIPS.

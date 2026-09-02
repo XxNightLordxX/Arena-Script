@@ -43,11 +43,12 @@ local frozeLocalPed = false
 --- Where the watched match is, and how long the camera has been waiting for
 --- somebody in it to stream in.
 ---
---- THE VIEWER IS NOT MOVED. Spectating hides their body and leaves it
---- exactly where it was standing -- usually the lobby, and the arena can be
---- the far side of the map or a kilometre straight up. Nothing about a
---- routing bucket streams a player in: the engine streams what is near the
---- FOCUS, and until this existed the only line that set one sat inside
+--- THE ENGINE MOVES NOBODY ON ITS OWN. Spectating hides the viewer's body
+--- and normally leaves it where it was standing -- usually the lobby, and
+--- the arena can be the far side of the map or a kilometre straight up.
+--- Nothing about a routing bucket streams a player in: the engine streams
+--- what is near the FOCUS, and until this existed the only line that set one
+--- sat inside
 --- `if ped then`. So the camera needed a fighter to be streamed in order to
 --- ask for a fighter to be streamed, found none on its very first frame,
 --- and stopped with "nobody left to watch" while the round was going on in
@@ -205,12 +206,11 @@ local function runCameraThread()
                     --
                     -- Every fighter resolves through GetPlayerPed, and a
                     -- player the engine has not streamed to this client has
-                    -- no ped at all. The viewer's body never moves, so a
-                    -- match across the map -- or the one a kilometre over
-                    -- the water -- has nothing streamed around it until
-                    -- something asks for it. Believing the first empty
-                    -- frame is what made a full arena report "nobody left
-                    -- to watch".
+                    -- no ped at all. Nothing moves the viewer on its own, so
+                    -- a match across the map -- or the one a kilometre up --
+                    -- has nothing streamed around it until something asks
+                    -- for it. Believing the first empty frame is what made a
+                    -- full arena report "nobody left to watch".
                     --
                     -- So point the streamer at the arena and hold it there.
                     -- A round that really has emptied still ends the watch,

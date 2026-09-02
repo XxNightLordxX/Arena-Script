@@ -141,7 +141,7 @@ files['client/'] = {
 
     read_globals = {
         -- Shared realm, read-only from here: the client never writes a rule.
-        'ExecuteCommand', 'Arena',
+        'Arena',
         'Config',
 
         -- NO WANTED-LEVEL OR POLICE NATIVE IS LISTED HERE, and that is the
@@ -194,7 +194,7 @@ files['client/'] = {
 
         -- Entities: the lobby ped, and the player's own.
         'ApplyDamageToPed',
-        'ClearPedBloodDamage', 'ResetPedVisibleDamage', 'ClearPedLastWeaponDamage', 'ClearPedTasksImmediately', 'SetPedCanRagdoll', 'AnimpostfxStopAll', 'IsPedRagdoll', 'IsPedInWrithe',
+        'ClearPedBloodDamage',
         'SetEntityDrawOutline', 'SetEntityDrawOutlineColor',
         'CreatePed',
         'DeleteEntity',
@@ -256,15 +256,12 @@ files['client/'] = {
         'GetAmmoInPedWeapon',
         'GetPedArmour',
         'GetSelectedPedWeapon',
-        'GiveWeaponComponentToPed',
         'GiveWeaponToPed',
         'HasPedGotWeapon',
         'RemoveAllPedWeapons',
-        'RemoveWeaponFromPed',
         'SetCurrentPedWeapon',
         'SetPedAmmo',
         'SetPedArmour',
-        'SetPedWeaponTintIndex',
 
         -- Blips: the one on the lobby, and one on each living fighter for
         -- the length of a round (Config.Teams.showTeamBlips/showEnemyBlips).
@@ -323,8 +320,8 @@ files['client/'] = {
 -- ----------------------------------------------------------------------
 
 files['server/'] = {
-    -- The whole cross-file API, in the order fxmanifest.lua loads it:
-    -- util.lua's helpers, then the four namespaces.
+    -- The whole cross-file API: ArenaCompat from the shared realm, then
+    -- util.lua's helpers, then the six server namespaces.
     globals = {
         -- Defined in shared/compat/dispatch.lua, which the server manifest
         -- loads first. Read here to find the revive event of whichever
@@ -396,10 +393,14 @@ files['server/'] = {
         -- exports.qbx_core:GetPlayer is the only export this realm calls.
         'exports',
 
-        -- oxmysql (@oxmysql/lib/MySQL.lua). Present whatever
-        -- Config.Database.enabled says, because it is a hard fxmanifest
-        -- dependency -- server/stats.lua just never queries through it.
-        'MySQL',
+        -- NO 'MySQL' GLOBAL IS ALLOWED, and that is the point rather than an
+        -- omission. oxmysql is deliberately NOT a manifest dependency --
+        -- fxmanifest.lua says so where the include would go, because listing
+        -- it would make oxmysql mandatory for every install. server/stats.lua
+        -- reaches the database through exports.oxmysql:query instead, behind a
+        -- GetResourceState check, so `MySQL.query` never appears and a file
+        -- that started using it would fail here rather than at run time on a
+        -- server without oxmysql.
 
         -- The server id of whoever raised the event being handled. Read into
         -- a local before anything yields; never assigned.
@@ -444,7 +445,7 @@ files['server/'] = {
         'SetRoutingBucketPopulationEnabled',
 
         -- The Discord webhook.
-        'ExecuteCommand', 'IsPrincipalAceAllowed', 'PerformHttpRequest',
+        'PerformHttpRequest',
         'json',
     },
 }

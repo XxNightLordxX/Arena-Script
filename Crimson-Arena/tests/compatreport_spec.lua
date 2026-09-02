@@ -224,9 +224,13 @@ t.test('A DETECTED MEDICAL SCRIPT IS TOLD DIRECTLY, with nothing configured', fu
 end)
 
 t.test('and a box with nothing detected is warned, plainly', function()
-    -- The case that is genuinely broken: no script this catalogue knows.
-    -- Nobody is being told anything, and since the arena does not stand
-    -- players up itself either, the report has to say both.
+    -- The case that is genuinely broken: no script this catalogue knows, so
+    -- nothing is being told anything.
+    --
+    -- AND IT MUST NOT OVERSTATE IT. The ped really is stood up -- in the
+    -- frame of the death and again on respawn -- so a warning that reads as
+    -- "players stay on the floor" sends an operator hunting a bug that is
+    -- not there. What is missing is the handoff, and only the handoff.
     local f = newReport({ running = {} })
     local said = f.text()
 
@@ -235,8 +239,8 @@ t.test('and a box with nothing detected is warned, plainly', function()
         'the report does not say what a missing handoff actually costs')
     t.contains(said, 'shared/compat/dispatch.lua',
         'the report does not name where to add the script')
-    t.contains(said, 'does not stand players up itself',
-        'the report does not say the arena leaves reviving to the medical script')
+    t.contains(said, 'stands it up in the frame they died',
+        'the report does not say the ped itself is fine, so it reads as a bug in the arena')
 end)
 
 t.test('and NOTHING an operator writes in config can silence that warning', function()

@@ -764,13 +764,6 @@ end)
 -- it.
 -- ======================================================================
 
---- Whether this match could put a blip on the map at all.
----
---- FREE-FOR-ALL HAS NO TEAMMATES, so showTeamBlips has nobody it could ever
---- draw there and showEnemyBlips alone decides. Said here as well as in
---- blipColorFor below so a free-for-all with only team blips on starts no
---- loop at all, rather than one that wakes twice a second to work out it has
---- nothing to do.
 --- Whether the OTHER SIDE is drawn permanently, which is the one thing
 --- that switches the radar off entirely.
 ---
@@ -1794,9 +1787,9 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- placeAt waits for the ground to stream in, so this handler YIELDS for
     -- up to five seconds and an exitArena can be delivered inside that
     -- window. By the time placeAt returns, leaveArena has already taken this
-    -- player home and given them their own weapons back: arming them with
-    -- the arena loadout now would strip exactly what was just restored, in
-    -- the open world, with nothing left that would ever take it away again.
+    -- player home and put their own vitals back: applying the arena loadout
+    -- now would put them on full health and a full plate in the open world,
+    -- with nothing left that would ever take it off again.
     if matchToken ~= token or not currentMatch then return end
 
     applyLoadout(ped, data.loadout)

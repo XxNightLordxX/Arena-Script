@@ -25,11 +25,11 @@
       499   Betting       Entry fees, self-bets, side-bets, how the pot is split
       692   UI            Panel colours, logo and title
       755   Permissions   Who may open a match, who may force-stop one
-      835   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1370   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1757   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1767   Webhook       Optional: a Discord line per finished match
-     1804   Dispatch      Optional: keeping police and EMS out of the arena
+      836   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1371   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1760   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1770   Webhook       Optional: a Discord line per finished match
+     1807   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -771,8 +771,9 @@ Config.Permissions = {
 -- it is hidden without losing the coordinates you spent time collecting.
 --
 -- THE TWO SHIPPED ARENAS ARE DELIBERATELY DIFFERENT ANIMALS -- one a real
--- place on the map with its own cover, one built over open water -- and
--- their coordinates are a starting point rather than gospel. Stand where you
+-- place on the map with its own cover, one built out of props a kilometre
+-- up with nothing under it -- and their coordinates are a starting point
+-- rather than gospel. Stand where you
 -- want a spawn point, take the coordinates with whatever command your server has for it,
 -- and paste them in. The heading is the last number -- the direction the
 -- player faces when they land.
@@ -961,7 +962,7 @@ Config.Arenas = {
     ['skydome'] = {
         label = 'The Skydome',
         description = 'A walled platform in the clouds, with nothing under it and nothing over it.',
-        -- ON, and the only arena this server runs.
+        -- ON, and one of the two arenas that ship. Both are enabled.
         --
         -- THE PROP MODELS BELOW ARE THE ONE THING HERE THAT CANNOT BE CHECKED
         -- FROM OUTSIDE THE GAME. If a model is not on your build the floor
@@ -986,7 +987,7 @@ Config.Arenas = {
             -- The first model written here was invented and does not exist,
             -- which would have meant no floor at all -- tests/skyarena_spec
             -- now pins every model named in this file against a dump of all
-            -- 21,631 real ones.
+            -- 21,629 real ones.
             -- TRIED IN ORDER; the first one this build actually has is used,
             -- and the console says which if it was not the first. A name
             -- being real is not the same as it being on YOUR server: a build
@@ -1364,8 +1365,8 @@ Config.Arenas = {
 -- that is what the player is handed. It is FREE-FORM on the wire, though --
 -- with no list to check a request against, the only limit left is `max`, so
 -- a modified client asking for a number in between is given it. Set
--- `max = default`, the way the melee entries below do, for a weapon whose
--- count is meant to be fixed.
+-- `max = default`, the way every melee entry in config.weapons.lua does,
+-- for a weapon whose count is meant to be fixed.
 -- ======================================================================
 Config.Loadouts = {
     -- WHO PICKS, and this is a rule about the match rather than a menu
@@ -1380,7 +1381,8 @@ Config.Loadouts = {
     --               hiding it. Somebody who joins after the host has picked
     --               inherits it rather than starting on the default.
     --
-    --   'player' -- everybody picks their own from the lists below.
+    --   'player' -- everybody picks their own from the weapon catalogue in
+    --               config.weapons.lua.
     --
     -- Anything else is treated as 'host' and a warning is printed at start.
     chooser = 'host',
@@ -1396,8 +1398,8 @@ Config.Loadouts = {
     -- list is decoration. Two firearms and one blade is a loadout; "any three
     -- things" is not.
     --
-    -- 0 removes melee from the arena entirely while leaving the weapons in the
-    -- list below, ready to switch back on.
+    -- 0 removes melee from the arena entirely while leaving the weapons in
+    -- config.weapons.lua, ready to switch back on.
     --
     -- TWO, at the operator's request: a blade and a blunt, or a knife kept
     -- back for the end of a round. It is still counted apart from the
@@ -1509,8 +1511,9 @@ Config.Loadouts = {
     -- ==================================================================
     ammoItems = {
         -- ON, because this server has real per-round ammo items and the
-        -- weapon list above names the right one for every single weapon,
-        -- read out of that weapon's own `ammoname` in ox_inventory.
+        -- catalogue in config.weapons.lua names the right one for every
+        -- single weapon, read out of that weapon's own `ammoname` in
+        -- ox_inventory.
         --
         -- WHAT A PLAYER GETS. They pick a weapon, they pick an amount from
         -- that weapon's own list, and they are handed exactly that many
@@ -1634,8 +1637,8 @@ Config.Loadouts = {
     --   enabled   -- false hides it without deleting it.
     -- THE FALLBACK, and on this server almost nothing reaches it.
     --
-    -- Every weapon in the list above carries its own `ammoTypes` naming the
-    -- exact item its ox_inventory entry declares, so this is only consulted
+    -- Every weapon in config.weapons.lua carries its own `ammoTypes` naming
+    -- the exact item its ox_inventory entry declares, so this is only consulted
     -- for a weapon added later without one.
     --
     -- ONE ENTRY, AND IT NAMES AN ITEM THIS SERVER REALLY HAS. Offering a
@@ -1935,10 +1938,13 @@ Config.Dispatch = {
     -- ==================================================================
     -- YOUR DISPATCH SCRIPT
     --
-    -- Three ways to hand it the same fact so it can decline the alert
-    -- itself, and then a fourth that tries to decline on its behalf and
-    -- works only sometimes -- read FORM 4's own comment before using it.
-    -- Pick one; the others cost nothing.
+    -- FIVE FORMS. Three hand your script the same fact so it can decline the
+    -- alert itself; a fourth tries to decline on its behalf and works only
+    -- sometimes; and a fifth withdraws the call after it has been filed.
+    --
+    -- ON THIS SERVER FORM 5 IS THE ONE THAT ACTUALLY REMOVES A CALL, and it
+    -- is reached only through Form 4 -- so those two are a pair rather than
+    -- alternatives. Of the first three, pick one; the others cost nothing.
     -- ==================================================================
     custom = {
         -- ---- FORM 1: this resource tells you -----------------------------
@@ -2211,8 +2217,10 @@ Config.Dispatch = {
 
     -- ==================================================================
     -- ---- TELLING YOUR AMBULANCE SCRIPT THEY ARE ALIVE ----------------
-    -- SEPARATE FROM EVERYTHING ELSE IN THIS BLOCK, and the one setting
-    -- most likely to be the reason a player "is still dead" after a match.
+    -- TWO TIMINGS, AND NOTHING ELSE. There is no switch here and nothing to
+    -- name: a player who is "still dead" after a match means their medical
+    -- script is not in the catalogue in shared/compat/dispatch.lua, which is
+    -- where that is fixed rather than here.
     --
     -- The arena stands its own players back up itself, and for the
     -- character model that is the whole job. It is not the whole job for

@@ -1383,8 +1383,21 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         end
 
         local results = {
-            matchId = match.id,
-            reason = endReason,
+            -- THE SENTENCE, NOT THE KEY. This used to carry `endReason` --
+            -- a locale key -- and nothing on the client could do anything
+            -- with it: the panel has no locale file, so the field was dead
+            -- on the wire for as long as it has existed.
+            --
+            -- Rendered here instead, and drawn on the board. It is not a
+            -- duplicate of the toast below: the toast tells a LOSER why the
+            -- round ended and tells a winner they won, and the spectators
+            -- further down are sent no toast at all -- so the one screen
+            -- everybody in the round is shown was also the one that never
+            -- said what had happened.
+            --
+            -- `matchId` went with it, for the same reason: sent since the
+            -- payload was written, read by nothing.
+            reason = locale(endReason),
             won = won[player.src] == true,
             placement = player.placement,
             kills = math.max(0, Arena.ToInt(player.kills) or 0),
@@ -1415,9 +1428,12 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     -- reason they are sent anything at all at the end of a round.
     for src in pairs(match.spectators or {}) do
         if not match.players[src] then
+            -- A spectator is sent no notification at the end of a round --
+            -- they staked nothing and won nothing -- so this board is the
+            -- only thing that tells them how the fight they just watched
+            -- finished.
             local results = {
-                matchId = match.id,
-                reason = endReason,
+                reason = locale(endReason),
                 won = false,
                 earnings = 0,
                 scoreboard = board,

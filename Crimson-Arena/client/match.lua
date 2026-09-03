@@ -2023,12 +2023,38 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
         NetworkOverrideClockTime(data.timeOverride.hour or 12, data.timeOverride.minute or 0, 0)
     end
 
-    local freezeSeconds = tonumber(data.freezeSeconds) or 0
+    -- THE FROZEN START COUNTDOWN, WITH A CLOCK ON IT.
+    --
+    -- This used to be a silent Wait. A player was teleported into an arena,
+    -- frozen where they landed, unable to move or shoot -- Config.Match
+    -- .startCountdownSeconds ships as five -- and given nothing on screen
+    -- saying why or for how long. The LOBBY countdown has had a clock since
+    -- it was written; this one, the one you spend standing in the arena
+    -- looking at the people about to shoot you, had none, and reads as the
+    -- game having locked up.
+    --
+    -- Drawn from here rather than pushed from the server: the client was
+    -- already told how long the freeze is, in this very payload, so a
+    -- per-second message per fighter would be a wire cost for a number this
+    -- side already has. The overlay is the same one the lobby countdown
+    -- uses, under the same label -- the round has not started until goLive
+    -- says so, which is exactly what "STARTING" means.
+    local freezeSeconds = math.floor(tonumber(data.freezeSeconds) or 0)
     if freezeSeconds <= 0 then
         FreezeEntityPosition(ped, false)
     else
         CreateThread(function()
-            Wait(math.floor(freezeSeconds * 1000))
+            local remaining = freezeSeconds
+            while remaining > 0 do
+                -- The round this thread belongs to may have ended, been
+                -- aborted, or been left, and the ped it would unfreeze is
+                -- somebody else's problem by then.
+                if matchToken ~= token or not currentMatch then return end
+                ArenaUI.Countdown(remaining, locale('match.countdown_label'))
+                Wait(1000)
+                remaining = remaining - 1
+            end
+
             if matchToken == token and currentMatch then
                 FreezeEntityPosition(PlayerPedId(), false)
             end

@@ -1596,6 +1596,13 @@ function ArenaLobby.SetLoadout(src, request)
     -- anyone else is refused here, not merely undrawn there.
     local hostPicks = Arena.LoadoutChooser() == 'host'
     if hostPicks and match.hostSource ~= target then
+        -- SAID OUT LOUD, because from the panel this is indistinguishable
+        -- from the pick being ignored: the player chooses, the round starts,
+        -- and they are carrying something else. Config.Loadouts.chooser
+        -- ships 'host', so on a default server this is the answer for
+        -- everybody except the person who opened the lobby.
+        ArenaDebug('loadout: %s picked, but Config.Loadouts.chooser is \'host\' and the host is %s -- refused, they will carry the host\'s pick.',
+            tostring(target), tostring(match.hostSource))
         return false, 'error.host_picks_loadout'
     end
 
@@ -1603,6 +1610,26 @@ function ArenaLobby.SetLoadout(src, request)
     -- request: the panel's copy is a preview, this one is handed out.
     local loadout, rejected = Arena.ResolveLoadout(type(request) == 'table' and request or nil)
     player.loadout = loadout
+
+    -- WHAT WAS ASKED FOR, next to what was allowed.
+    --
+    -- The only weapon line on the server was `weapons: gave X to N`, which is
+    -- what the player ENDED UP with. That cannot tell "the pick never
+    -- arrived" from "it arrived and was rejected" from "it arrived, was
+    -- honoured, and something later overwrote it" -- three different faults
+    -- with the same symptom, which is a player saying they chose a weapon and
+    -- did not get it.
+    local asked = {}
+    for _, entry in ipairs(type(request) == 'table' and request.weapons or {}) do
+        if type(entry) == 'table' and entry.key then asked[#asked + 1] = tostring(entry.key) end
+    end
+    local got = {}
+    for _, entry in ipairs(loadout.weapons or {}) do got[#got + 1] = tostring(entry.key or entry.weapon) end
+    ArenaDebug('loadout: %s asked for [%s] and was allowed [%s]%s',
+        tostring(target),
+        #asked > 0 and table.concat(asked, ', ') or 'nothing -- no weapons in the request',
+        #got > 0 and table.concat(got, ', ') or 'nothing',
+        #rejected > 0 and (' -- REFUSED: ' .. table.concat(rejected, ', ')) or '')
 
     -- A panel left open across a config change asks for weapons that are no
     -- longer there. Saying so costs a toast; staying quiet costs the player

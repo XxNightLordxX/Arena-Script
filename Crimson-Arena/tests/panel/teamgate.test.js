@@ -232,6 +232,56 @@ test('and taking a ready BACK is never refused for it', () => {
 });
 
 console.log('');
+console.log('==> and creating one more round than the server runs');
+
+/* Snapshot with `n` matches on the board and a ceiling of `ceiling`, seen
+   by somebody who is in none of them. */
+function board(n, ceiling) {
+    const snap = snapshot({ inMatch: false });
+    snap.player.matchId = null;
+    snap.player.spectating = false;
+    snap.config.match.maxConcurrentMatches = ceiling;
+    snap.matches = [];
+    for (let i = 0; i < n; i += 1) {
+        snap.matches.push({
+            id: 'm' + i, arenaKey: 'a', arenaLabel: 'Arena',
+            modeKey: 'tdm', modeLabel: 'Team Deathmatch', state: 'lobby',
+            teams: true, playerCount: 1, hostName: 'Someone', pot: 0, entryFee: 0,
+            teamCounts: {}, players: [],
+        });
+    }
+    const panel = loadPanel(ROOT);
+    panel.send('open', snap);
+    panel.send('state', snap);
+    return panel;
+}
+
+test('THE BUG: Create Match was lit at a ceiling the server enforces', () => {
+    const panel = board(2, 2);
+
+    assert.strictEqual(panel.node('create-submit').disabled, true,
+        'Create Match was offered on a server already running its limit');
+    assert.ok(/at a time/i.test(panel.text('create-hint')),
+        'the form did not say why: ' + panel.text('create-hint'));
+
+    panel.fire('create-submit', 'click');
+    assert.strictEqual(panel.posted.filter((p) => p.name === 'createMatch').length, 0,
+        'the panel posted a create the server had already decided to refuse');
+});
+
+test('and is offered with room left', () => {
+    const panel = board(1, 2);
+    assert.strictEqual(panel.node('create-submit').disabled, false,
+        'Create Match was refused with room to spare: ' + panel.text('create-hint'));
+});
+
+test('and zero means unlimited, the way it does everywhere else', () => {
+    const panel = board(9, 0);
+    assert.strictEqual(panel.node('create-submit').disabled, false,
+        'maxConcurrentMatches 0 was read as "no matches allowed"');
+});
+
+console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 if (failures.length > 0) {
     console.log('');

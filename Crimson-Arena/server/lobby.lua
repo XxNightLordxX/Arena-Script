@@ -541,6 +541,12 @@ local function snapshotConfig()
         match = {
             minPlayers = math.max(1, Arena.ToInt(Config.Match.minPlayers) or 1),
             maxPlayers = math.max(0, Arena.ToInt(Config.Match.maxPlayers) or 0),
+            -- HOW MANY ROUNDS THIS SERVER RUNS AT ONCE. Create refuses over
+            -- this ceiling, and the panel could not see it -- so on a server
+            -- that sets one, Create Match stayed lit at the limit and
+            -- answered with a toast. 0 is unlimited, which is how it ships,
+            -- and is why nobody hit it.
+            maxConcurrentMatches = math.max(0, Arena.ToInt(Config.Match.maxConcurrentMatches) or 0),
             -- The default a host starts on, plus the range they may move
             -- within. Sent because the SERVER enforces the range: a panel
             -- that did not know it would offer a number the server refuses.

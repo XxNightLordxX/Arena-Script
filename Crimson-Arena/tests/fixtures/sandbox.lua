@@ -208,9 +208,50 @@ function Sandbox.newEnv(overrides)
     -- BEFORE the overrides, so a spec that genuinely needs the plain one can
     -- still say so -- and after the _G copy, which brought the plain one in.
     env.type = Sandbox.type
+    env.json = Sandbox.json
     for key, value in pairs(overrides or {}) do env[key] = value end
     return env
 end
+
+--- FiveM's own `json`, modelled well enough to be worth asserting against.
+---
+--- ONLY `encode`, and only the shape this resource sends: the Discord webhook
+--- payload. It ESCAPES rather than concatenating, because the question a spec
+--- asks of it is "can a player's NAME break out of its JSON string" -- a stub
+--- that pasted values in raw would answer yes to that no matter what the
+--- production code did, and one that dropped them would answer no.
+---
+--- Not a general encoder. Anything outside string/number/boolean/table/nil
+--- becomes null rather than guessing.
+--- @param value any
+--- @return string
+local function jsonEncode(value)
+    local t = type(value)
+    if value == nil then return 'null' end
+    if t == 'boolean' or t == 'number' then return tostring(value) end
+    if t == 'string' then
+        return '"' .. value:gsub('[%c"\\]', function(c)
+            local named = { ['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
+            return named[c] or ('\\u%04x'):format(c:byte())
+        end) .. '"'
+    end
+    if t == 'table' then
+        if #value > 0 then
+            local out = {}
+            for _, item in ipairs(value) do out[#out + 1] = jsonEncode(item) end
+            return '[' .. table.concat(out, ',') .. ']'
+        end
+        local keys = {}
+        for k in pairs(value) do keys[#keys + 1] = tostring(k) end
+        table.sort(keys)
+        local out = {}
+        for _, k in ipairs(keys) do out[#out + 1] = jsonEncode(k) .. ':' .. jsonEncode(value[k]) end
+        return '{' .. table.concat(out, ',') .. '}'
+    end
+    return 'null'
+end
+
+Sandbox.json = { encode = jsonEncode }
 
 --- Loads and immediately executes `path` inside `env`. Any top-level
 --- `function Foo() end` / `Foo = ...` in the source becomes `env.Foo`; any

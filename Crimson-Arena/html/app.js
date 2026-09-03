@@ -169,6 +169,10 @@
         draftWeapons: [],
         draftSupplies: null,
         loadoutDirty: false,
+        /* Posted and not yet answered. The server's answer is the next
+           snapshot -- it pushes one whether it accepted the loadout or
+           refused it -- so this is cleared there and nowhere else. */
+        loadoutSaving: false,
 
         betPick: null,
         betAmount: null,
@@ -2684,17 +2688,40 @@
 
         var save = byId('loadout-save');
         if (has(save)) {
+            /* UNSAVED CHANGES WIN OVER AN ANSWER STILL IN FLIGHT. Greying
+               the button out while waiting would be tidier and is a trap:
+               an answer that never arrives -- a dropped event, a resource
+               restart -- would leave the player unable to save at all, and
+               they have edits in front of them that they can see are not
+               sent. */
             save.disabled = !state.loadoutDirty;
             save.title = state.loadoutDirty
                 ? 'Keep these weapons for your next round.'
-                : 'Nothing has changed since your last save.';
+                : (state.loadoutSaving
+                    ? 'Waiting for the server to confirm.'
+                    : 'Nothing has changed since your last save.');
         }
 
+        /* THREE STATES, NOT TWO, and the third is why. This used to flip
+           straight from "Unsaved" to "Saved." the instant the button was
+           pressed -- before anything had left the machine. A save the
+           server refused (the host picks the loadout on this server, a
+           weapon that has since been switched off, a request that arrived
+           malformed) put a red toast on screen while the picker underneath
+           it went on showing the rejected weapons and calling them saved.
+
+           "Saved." is now only ever printed about a picker that is showing
+           the server's OWN answer: the draft re-seeds from player().loadout
+           on every snapshot, and a snapshot is what clears `loadoutSaving`. */
         var status = byId('loadout-save-status');
         if (has(status)) {
-            status.textContent = state.loadoutDirty
-                ? 'Unsaved — press Save Loadout or you will fight with what you had before.'
-                : 'Saved. This is what you are handed when a round starts.';
+            if (state.loadoutDirty) {
+                status.textContent = 'Unsaved — press Save Loadout or you will fight with what you had before.';
+            } else if (state.loadoutSaving) {
+                status.textContent = 'Saving — waiting for the server.';
+            } else {
+                status.textContent = 'Saved. This is what you are handed when a round starts.';
+            }
         }
     }
 
@@ -2823,10 +2850,13 @@
                 return { key: supply.key, count: int((state.draftSupplies || {})[supply.key], 0) };
             })
         });
-        /* Cleared optimistically: the server's answer is the next snapshot,
-           and leaving the draft dirty would stop it re-seeding from what
-           the player was actually given. */
+        /* The draft stops being dirty because the next snapshot has to be
+           allowed to re-seed it -- that snapshot is the server's answer,
+           and it carries what the player was actually given. Until it
+           arrives this is neither unsaved nor saved, which is what
+           `loadoutSaving` is for. */
         state.loadoutDirty = false;
+        state.loadoutSaving = true;
         render();
     }
 
@@ -3427,6 +3457,13 @@
                     break;
 
                 case 'state':
+                    /* THE SERVER HAS ANSWERED. Cleared before the snapshot
+                       is applied, so the render below draws the picker's
+                       new contents with the right word under them. Both
+                       outcomes land here: server/main.lua pushes a snapshot
+                       when it refuses a loadout as well as when it takes
+                       one. */
+                    state.loadoutSaving = false;
                     applySnapshot(data);
                     render();
                     /* The overlay reads config for the pot line, so a

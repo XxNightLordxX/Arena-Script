@@ -333,12 +333,28 @@ onClient('crimson_arena:server:setTeam', RATE.choice, function(src, data)
     if not ok then return refuse(src, reason) end
 end)
 
+--- THE ONE REFUSAL THAT HAS TO PUT THE SCREEN BACK, and the reason it is
+--- the only one: every other control on the panel renders straight off the
+--- snapshot, so a refused request leaves it showing what the server already
+--- holds. The loadout picker is different -- it holds a DRAFT that exists
+--- only in the browser until the server agrees -- so a refusal that was
+--- only a red toast left the picker showing the rejected weapons, under the
+--- word "Saved."
+---
+--- ArenaLobby.SetLoadout pushes its own snapshot when it succeeds; this is
+--- the other half of that.
 onClient('crimson_arena:server:setLoadout', RATE.choice, function(src, data)
     local request = loadoutArg(data)
-    if not request then return refuse(src) end
+    if not request then
+        ArenaLobby.PushState(src)
+        return refuse(src)
+    end
 
     local ok, reason = ArenaLobby.SetLoadout(src, request)
-    if not ok then return refuse(src, reason) end
+    if not ok then
+        ArenaLobby.PushState(src)
+        return refuse(src, reason)
+    end
 end)
 
 onClient('crimson_arena:server:setReady', RATE.choice, function(src, data)

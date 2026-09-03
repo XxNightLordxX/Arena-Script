@@ -202,5 +202,79 @@ test('and on a chooser = player server, everybody does', () => {
 });
 
 console.log('');
+console.log('==> and what the save row claims about a save');
+
+/* Presses one weapon card, so the draft is dirty and Save is live. */
+function edit(panel) {
+    panel.fire('weapon-card-pistol', 'click');
+}
+
+test('a fresh screen says the picker is showing what the server holds', () => {
+    const panel = opened('host');
+    assert.strictEqual(panel.text('loadout-save-status'),
+        'Saved. This is what you are handed when a round starts.',
+        'an untouched picker did not say it was saved');
+});
+
+test('an edit says so, and offers the button', () => {
+    const panel = opened('host');
+    edit(panel);
+
+    assert.ok(/^Unsaved/.test(panel.text('loadout-save-status')),
+        'an edited picker did not say it was unsaved: ' + panel.text('loadout-save-status'));
+    assert.strictEqual(panel.node('loadout-save').disabled, false,
+        'Save Loadout was greyed out over unsaved changes');
+});
+
+test('THE BUG: pressing Save no longer claims the server agreed', () => {
+    /* It used to print "Saved." the instant the button was pressed --
+       before anything had left the machine. A save the server refused (the
+       host picks the loadout here, a weapon switched off since the panel
+       opened, a malformed request) put a red toast on screen while the
+       picker underneath went on showing the rejected weapons and calling
+       them saved. */
+    const panel = opened('host');
+    edit(panel);
+    panel.fire('loadout-save', 'click');
+
+    assert.strictEqual(panel.posted.filter((p) => p.name === 'setLoadout').length, 1,
+        'the loadout never reached the wire');
+    assert.strictEqual(panel.text('loadout-save-status'), 'Saving — waiting for the server.',
+        'the panel claimed a save the server had not answered: ' + panel.text('loadout-save-status'));
+});
+
+test('and says it IS saved once the server answers', () => {
+    const panel = opened('host');
+    edit(panel);
+    panel.fire('loadout-save', 'click');
+
+    /* The server's answer is a snapshot -- server/main.lua pushes one when
+       it refuses a loadout as well as when it takes one -- and the picker
+       re-seeds from the loadout inside it. So this sentence is only ever
+       printed about a picker showing the server's own answer. */
+    panel.send('state', snapshot('host'));
+
+    assert.strictEqual(panel.text('loadout-save-status'),
+        'Saved. This is what you are handed when a round starts.',
+        'the panel never acknowledged the server\'s answer: ' + panel.text('loadout-save-status'));
+});
+
+test('and an edit made while waiting still offers the button', () => {
+    /* Greying Save out while an answer is in flight would be tidier and is
+       a trap: an answer that never arrives -- a dropped event, a resource
+       restart -- would leave the player unable to save at all with edits in
+       front of them they can see are not sent. */
+    const panel = opened('host');
+    edit(panel);
+    panel.fire('loadout-save', 'click');
+    panel.fire('weapon-card-rifle', 'click');
+
+    assert.strictEqual(panel.node('loadout-save').disabled, false,
+        'an edit made while a save was in flight could not be saved');
+    assert.ok(/^Unsaved/.test(panel.text('loadout-save-status')),
+        'unsaved changes were reported as a save in progress: ' + panel.text('loadout-save-status'));
+});
+
+console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

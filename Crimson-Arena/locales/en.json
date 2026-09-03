@@ -80,6 +80,8 @@
   "notify": {
     "bet_placed": "Bet is down.",
     "eliminated": "You are out.",
+    "kit_held": "Your own gear could not be handed back yet. It is safe in the arena's hands and it keeps trying.",
+    "kit_returned": "Your own gear is back.",
     "loadout_rejected": "Refused from your loadout: %s",
     "lobby_timed_out": "Lobby sat idle too long. Closed, stakes back.",
     "match_cancelled": "The host called it off.",

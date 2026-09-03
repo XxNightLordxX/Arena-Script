@@ -27,9 +27,9 @@
       812   Permissions   Who may open a match, who may force-stop one
       893   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1430   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1859   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1869   Webhook       Optional: a Discord line per finished match
-     1906   Dispatch      Optional: keeping police and EMS out of the arena
+     1866   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1876   Webhook       Optional: a Discord line per finished match
+     1913   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1789,7 +1789,14 @@ Config.Loadouts = {
         -- no ceiling. Without it a server with six supplies lets one player
         -- carry every entry's own maximum at once, which is a different
         -- match to the one the per-item numbers describe.
-        totalItems = 8,
+        --
+        -- IT IS THE REAL LIMIT, AND IT BINDS BEFORE THE PER-ITEM ONES. At 8,
+        -- the 25 armour and 30 bandages below were unreachable -- a player
+        -- could carry eight things in total whatever those numbers said. 55
+        -- is 25 + 30, so both may be maxed at once and the per-item numbers
+        -- are the ones actually doing the limiting. Lower this and it takes
+        -- over again.
+        totalItems = 55,
 
         -- THE ITEM NAMES ARE THE ONLY PART THAT MATTERS TO ox_inventory, and
         -- they must exist in YOUR ox_inventory data. `armour` and `bandage`
@@ -1802,22 +1809,22 @@ Config.Loadouts = {
                 label = 'Body Armour',
                 item = 'armour',
                 -- The most one player may carry in.
-                max = 4,
+                max = 25,
                 -- What somebody who picks nothing carries. Kept at 1 rather
                 -- than 0 so the feature is visible on a fresh install
                 -- without anybody having to find this block first.
                 default = 1,
                 -- What the picker offers as one-tap amounts. A player may
                 -- still type any number up to `max`.
-                options = { 0, 1, 2, 4 },
+                options = { 0, 1, 5, 10, 25 },
             },
             {
                 key = 'bandage',
                 label = 'Bandage',
                 item = 'bandage',
-                max = 6,
+                max = 30,
                 default = 2,
-                options = { 0, 2, 4, 6 },
+                options = { 0, 5, 10, 20, 30 },
             },
         },
     },

@@ -193,10 +193,9 @@ qualifies.
 | `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
 | `/arenaisolation` | Prints what instancing is really doing: the mode the server reports for `onesync`, whether a routing bucket has been caught not landing, the bucket each live match was allocated, and the bucket the server says each of those players is standing in right now. |
 
-**No player-facing slash command ships.** The panel opens from the lobby ped or
-the ground marker, whichever `Config.Lobby.interaction` names. `Config.UI.command`
-is `nil`; set it to a name like `'arena'` if you want a command as well, which is
-mostly useful for testing.
+**No player-facing slash command exists.** The panel opens from the lobby ped or
+the ground marker, whichever `Config.Lobby.interaction` names, and there is no
+setting that adds a second way in.
 
 ---
 

@@ -20,16 +20,16 @@
        83   Lobby         The NPC players walk up to
       156   Match         Lives, timers, player counts, win condition
       376   Teams         The sides, and whether they may be uneven
-      493   Modes         Free-for-all and team deathmatch
-      512   DefaultMode   Which of them a new lobby opens on
-      531   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      724   UI            Panel colours, logo and title
-      782   Permissions   Who may open a match, who may force-stop one
-      863   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1400   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1816   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1826   Webhook       Optional: a Discord line per finished match
-     1863   Dispatch      Optional: keeping police and EMS out of the arena
+      514   Modes         Free-for-all and team deathmatch
+      533   DefaultMode   Which of them a new lobby opens on
+      552   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      745   UI            Panel colours, logo and title
+      803   Permissions   Who may open a match, who may force-stop one
+      884   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1421   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1837   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1847   Webhook       Optional: a Discord line per finished match
+     1884   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -398,10 +398,31 @@ Config.Teams = {
     -- to pick and the start is refused until they do.
     autoAssignIfUnchosen = true,
 
-    -- Can teammates hurt each other? Off means the shot itself is refused,
-    -- not merely that the kill goes uncredited -- Config.Match.crossfireGuard
-    -- is what enforces it, so this setting does nothing with that switched
-    -- off.
+    -- Can teammates hurt each other? Off means the SHOT is refused, not
+    -- merely that the kill goes uncredited. Config.Match.crossfireGuard is
+    -- what enforces it, so this setting does nothing with that switched off.
+    --
+    -- WHAT "REFUSED" COVERS, exactly, because the engine decides the shape
+    -- of this and not us:
+    --
+    --   Bullets and melee are refused on the server, from the damage packet.
+    --
+    --   Nothing stops the TRIGGER. Aiming at your own side still fires,
+    --   still spends the round, and still plays the flinch on the shooter's
+    --   own screen -- their client draws that before the server has seen
+    --   anything. Judge it by your teammate's health bar, not by the feel.
+    --
+    --   A SPREAD THAT CATCHES A TEAMMATE ON ITS WAY TO AN ENEMY GOES
+    --   THROUGH, teammate included. One shotgun blast is one damage packet
+    --   naming everybody it touched, and the engine allows the packet or
+    --   refuses it whole -- there is no per-ped answer. Refusing it would
+    --   mean standing next to a teammate made you immune to every spread
+    --   weapon in the arena, which is worse than the splash. The kill is
+    --   still not credited.
+    --
+    --   Explosions are NOT refused. No explosive ships enabled; if you turn
+    --   one on in config.weapons.lua, teammates can blow each other up
+    --   whatever this says.
     friendlyFire = false,
 
     -- Team blips on the map during a match.

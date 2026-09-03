@@ -587,17 +587,108 @@ t.test('and a lobby that has not answered yet lets the round fight', function()
     t.isFalse(f.shoot(1, { 2 }), 'a round could not fight because the lobby had lost the match')
 end)
 
-t.test('and a fighter the roster has no team for is not protected by accident', function()
+t.test('and a fighter ON the roster with no team is not protected by accident', function()
     -- A player mid-join, or a roster row that lost its team. Arena.CanDamage
     -- already answers this -- an unknown side is not the same side -- and
     -- this pins that the guard does not add an opinion on top of it.
+    --
+    -- ON the roster is the whole point of this case: a row that exists and
+    -- carries no team is a different thing from no row at all, which is the
+    -- spectator case below and is refused.
     local f = newFixture()
     f.enter(1, 'm1')
     f.enter(2, 'm1')
-    f.teams('m1', 'tdm', { [1] = 'crimson' })   -- 2 is in the match with no team
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = false })   -- 2 is listed, with no team
 
     t.isFalse(f.shoot(1, { 2 }), 'a fighter with no team recorded was treated as a teammate')
     t.isFalse(f.shoot(2, { 1 }), 'a fighter with no team recorded could not shoot')
+end)
+
+t.test('THE HOLE THIS FOUND: a spectator carries the fighters\' own match flag', function()
+    -- AND IT IS THE FIRST CASE config.lua NAMES as the reason the guard
+    -- exists, which had been open the whole time.
+    --
+    -- server/match.lua's syncMatchBuckets does two things to a spectator: it
+    -- puts them in the match's routing bucket, and -- because a state-bag
+    -- guard in somebody's dispatch script has to suppress what their client
+    -- is seeing -- it raises the SAME flag on them that a fighter carries.
+    -- So `active[spectator] == active[fighter]`, the crossfire half passes,
+    -- and the team half was handed a nil team for somebody who is not on the
+    -- roster at all and read it as 'not the same side'.
+    --
+    -- The test above this one modelled a spectator with f.spawn -- no flag --
+    -- which is the one shape the server never produces.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(7, 'm1')                                          -- flagged, as the sweep flags them
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'ash' })    -- and NOT on the roster
+
+    t.isTrue(f.shoot(1, { 7 }), 'a fighter shot the spectator watching them')
+    t.isTrue(f.shoot(7, { 1 }), 'a spectator shot a fighter')
+    t.isFalse(f.shoot(1, { 2 }), 'the round could no longer fight itself')
+end)
+
+t.test('and a spread that catches a spectator is refused whole', function()
+    -- Not in the round is not in the round, whoever else the packet named.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(7, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'ash' })
+
+    t.isTrue(f.shoot(1, { 2, 7 }), 'a spread that clipped a spectator was allowed')
+end)
+
+-- ======================================================================
+-- 8b. ONE PACKET, SEVERAL PEOPLE
+-- ======================================================================
+--
+-- CancelEvent kills the WHOLE packet -- the engine offers nothing finer --
+-- and a shotgun names every ped its spread touched in one event. That did
+-- not matter while crossfire was the only refusal: two people in the same
+-- round never reached the refusing branch, so a packet was all-legal or
+-- part-illegal-across-the-line. Friendly fire broke it, and the first
+-- version of that fix shipped the consequence.
+
+t.test('THE REGRESSION: a spread that catches a teammate still hits the enemy', function()
+    -- Weaponised in one sentence: stand next to a teammate and no spread
+    -- weapon in the arena can touch you. Nine shotguns ship enabled.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'ash' })
+
+    t.isTrue(f.shoot(1, { 2 }), 'aiming AT a teammate was allowed')
+    t.isFalse(f.shoot(1, { 3 }), 'a clean shot at an enemy was refused')
+    t.isFalse(f.shoot(1, { 3, 2 }),
+        'a spread that hit an enemy AND a teammate was cancelled -- '
+        .. 'hugging a teammate makes you shotgun-proof')
+    t.isFalse(f.shoot(1, { 2, 3 }), 'the same spread, refused because of the order it arrived in')
+end)
+
+t.test('but a spread with nothing legitimate in it is still refused', function()
+    -- Two teammates and no enemy is aiming at your own side, which is the
+    -- report. The bend is only for a packet that also had a lawful victim.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'crimson' })
+
+    t.isTrue(f.shoot(1, { 2, 3 }), 'a spread that hit two teammates and nobody else was allowed')
+end)
+
+t.test('and crossfire never bends, whatever else the packet hit', function()
+    -- The half that is a safety property rather than a match rule.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'ash' })
+    f.spawn(9)
+
+    t.isTrue(f.shoot(1, { 2, 9 }), 'a spread that clipped a passer-by was allowed through')
 end)
 
 t.test('and the switch takes friendly fire with it, on purpose', function()

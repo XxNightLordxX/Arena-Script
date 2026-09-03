@@ -51,6 +51,29 @@ local playerBlips = {}
 --- Peds currently wearing a team outline, so one can be taken off again.
 local outlined = {}
 
+--- WHICH OF THE ENGINE'S THREE OUTLINE RENDERERS DRAWS THE HAZE.
+---
+--- Read out of the engine rather than guessed at, because the guess cost two
+--- rounds of "the haze still is not working". citizenfx/fivem's
+--- GamePrimitives_Outlines.cpp registers exactly three, and
+--- SET_ENTITY_DRAW_OUTLINE_SHADER just picks one by index:
+---
+---   0  GaussOutlineRenderer -- width 30, intensity 55. A wide soft glow.
+---      Ignores the alpha argument (SetColorNoAlpha).
+---   1  FirmOutlineRenderer  -- width 2. A hairline.
+---   2  MaskRenderer         -- a flat silhouette.
+---
+--- NONE OF THEM IS OCCLUDED BY ANYTHING. Depth testing is switched off in
+--- the shared base class -- OutlineRenderer::StoreState() calls
+--- SetDepthStencilState(...DepthStencilStateNoDepth) -- so all three draw
+--- through geometry, and the shader index chooses the LOOK and nothing else.
+---
+--- This file used to say the opposite: that 0 was hidden behind walls and 1
+--- was the see-through variant. That was invented, not read, and acting on
+--- it replaced a thirty-pixel glow with a two-pixel line -- which is why the
+--- report came back a second time in the word "haze".
+local OUTLINE_SHADER = 0
+
 --- The colour that outline should currently be, or nil when nothing is
 --- outlined. DECLARED UP HERE because the per-frame arena thread reads it to
 --- hold the global outline state, and that thread is defined long before the
@@ -597,17 +620,23 @@ local function startArenaThread()
             -- and every case where the hook lost the ordering race.
             handleDeath(PlayerPedId())
 
-            -- HOLD THE TEAM OUTLINE AGAINST EVERY OTHER RESOURCE ON THE BOX.
+            -- HOLD THE TEAM OUTLINE AGAINST THE OTHER RESOURCES ON THE BOX.
             --
             -- The outline colour and shader are ONE setting for the whole
             -- game, not a property of the ped. refreshOutlines sets them, but
             -- it runs twice a second at best, and any resource that sets them
             -- every frame -- a target script highlighting what you look at, a
             -- job script marking a delivery -- owns them for the other four
-            -- hundred milliseconds. The teammate outline then draws in that
-            -- resource's colour on the default shader, which is hidden behind
-            -- anything solid. On a server running several such scripts that is
-            -- indistinguishable from the outline not working at all.
+            -- hundred milliseconds, and the teammate outline goes that
+            -- resource's colour. On a server running several such scripts
+            -- that is indistinguishable from the outline not working at all.
+            --
+            -- NOT A GUARANTEE. The setting is sampled once a frame at render,
+            -- so two per-frame writers are resolved by which ticks last --
+            -- resource start order, not anything in this file. Before this we
+            -- lost to such a resource always; now we lose only to one that
+            -- starts after us. If that ever turns out to be happening, start
+            -- crimson_arena last.
             --
             -- Done HERE rather than in a thread of its own: this loop is
             -- already per-frame for the death backstop above, so holding the
@@ -617,7 +646,7 @@ local function startArenaThread()
             local tint = outlineTint
             if tint and next(outlined) ~= nil then
                 SetEntityDrawOutlineColor(tint.r, tint.g, tint.b, 255)
-                SetEntityDrawOutlineShader(1)
+                SetEntityDrawOutlineShader(OUTLINE_SHADER)
             end
 
             Wait(0)
@@ -1022,18 +1051,27 @@ local function refreshOutlines()
             -- here -- once per refresh, which is BLIP_REFRESH_MS apart -- on
             -- the reasoning that anything else drawing an outline sets them
             -- too. That reasoning is right and the schedule was wrong: a
-            -- resource that sets them EVERY FRAME wins every frame in
-            -- between, and the teammate outline goes the colour of whatever
-            -- that resource wanted, on the default shader, which is occluded
-            -- by everything in front of it.
+            -- resource that writes them EVERY FRAME wins every frame in
+            -- between, and the teammate outline goes whatever colour that
+            -- resource wanted.
             --
-            -- On a server running several prop, target and job scripts that
-            -- is indistinguishable from the outline not working at all.
-            -- Remembered here and re-asserted every frame by the thread
-            -- below, which costs two native calls and cannot be outvoted.
+            -- Remembered here and re-asserted every frame by the arena
+            -- thread, which costs two native calls. That is a strict
+            -- improvement and NOT a guarantee: the setting is sampled once a
+            -- frame at render, so between two per-frame writers the last one
+            -- to tick wins, and tick order follows resource start order. We
+            -- win unless something started after us also writes every frame.
+            --
+            -- ONLY WHILE WE ARE ACTUALLY DRAWING SOMETHING. Writing the
+            -- game-wide colour with no teammate on screen makes this resource
+            -- the offender for every other one on the box -- somebody else's
+            -- highlight flickering to a team colour once a second -- which is
+            -- the exact complaint being fixed here.
             outlineTint = { r = r, g = g, b = b }
-            SetEntityDrawOutlineColor(r, g, b, 255)
-            SetEntityDrawOutlineShader(1)
+            if streamed > 0 then
+                SetEntityDrawOutlineColor(r, g, b, 255)
+                SetEntityDrawOutlineShader(OUTLINE_SHADER)
+            end
         end
     end
 

@@ -899,8 +899,45 @@ local outlined = {}
 --- be a wallhack with a colour scheme: it draws THROUGH geometry, which is
 --- the whole point of it for finding a friend and exactly the problem with
 --- it for finding a target.
+--- The last thing outlineReason said, so a state that has not changed is not
+--- reprinted twice a second.
+local lastOutlineReason = nil
+
+--- SAYS WHY THERE IS NO HAZE, once per change of answer.
+---
+--- Every gate below is a legitimate reason to draw nothing, and from a
+--- player's seat they are indistinguishable: no colour round your team.
+--- "Team outlines are off in the config", "this mode has no teams" and
+--- "your teammate is not streamed to you yet" are three different problems
+--- with three different fixes, and the resource used to report none of them.
+---
+--- Debug-gated because a healthy team round would otherwise say the same
+--- thing forever.
+--- @param reason string
+local function outlineReason(reason)
+    if reason == lastOutlineReason then return end
+    lastOutlineReason = reason
+    -- print, not ArenaDebug: that helper is server-side. This is the client
+    -- realm, and F8 is where somebody wondering why their team is not
+    -- outlined is actually looking.
+    if Config.Debug then
+        print(('[crimson_arena] [debug] team outline: %s'):format(reason))
+    end
+end
+
 local function refreshOutlines()
     local wanted = {}
+
+    if not currentMatch then
+        outlineReason('not in a match')
+    elseif Config.Teams.showTeamOutline ~= true then
+        outlineReason('Config.Teams.showTeamOutline is not true')
+    elseif not Arena.ModeUsesTeams(currentMatch.modeKey) then
+        outlineReason(('mode "%s" has no teams, so there is nobody to outline')
+            :format(tostring(currentMatch.modeKey)))
+    elseif not Arena.IsKey(currentMatch.teamKey) then
+        outlineReason('this client was not told which team it is on')
+    end
 
     if currentMatch and Config.Teams.showTeamOutline == true
         and Arena.ModeUsesTeams(currentMatch.modeKey)
@@ -912,21 +949,40 @@ local function refreshOutlines()
 
         -- No usable colour is a reason not to draw, not a reason to guess:
         -- a white outline round half the lobby says nothing about sides.
+        if not r then
+            outlineReason(('team "%s" has no readable colour (%s), so nothing is drawn')
+                :format(tostring(currentMatch.teamKey), tostring(team and team.color)))
+        end
+
         if r then
+            -- Counted so the console can separate "no teammates" from "a
+            -- teammate the engine has not sent this client yet", which look
+            -- identical from a player's seat and are not the same problem.
+            local mates, alive, streamed = 0, 0, 0
             for _, row in ipairs(roster) do
                 local serverId = type(row) == 'table' and Arena.ToInt(row.id) or nil
-                if serverId and serverId ~= selfId and row.alive == true
-                    and row.team == currentMatch.teamKey
-                then
-                    local ped = pedForServerId(serverId)
-                    if ped then
-                        wanted[ped] = true
-                        if not outlined[ped] then
-                            SetEntityDrawOutline(ped, true)
-                            outlined[ped] = true
+                if serverId and serverId ~= selfId and row.team == currentMatch.teamKey then
+                    mates = mates + 1
+                    if row.alive == true then
+                        alive = alive + 1
+                        local ped = pedForServerId(serverId)
+                        if ped then
+                            streamed = streamed + 1
+                            wanted[ped] = true
+                            if not outlined[ped] then
+                                SetEntityDrawOutline(ped, true)
+                                outlined[ped] = true
+                            end
                         end
                     end
                 end
+            end
+
+            if streamed > 0 then
+                outlineReason(('drawing %d teammate(s) in %s'):format(streamed, tostring(currentMatch.teamKey)))
+            else
+                outlineReason(('nothing to draw -- roster %d, on your side %d, of those alive %d, of those streamed 0')
+                    :format(#roster, mates, alive))
             end
 
             -- Set every pass rather than once: it is global state on the

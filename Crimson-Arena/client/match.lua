@@ -1621,6 +1621,27 @@ local function buildArenaProps(arenaKey, factor, boundary)
             print(('[crimson_arena] arena scenery: THE FLOOR REACHES OUTSIDE THE ARENA -- it extends %.2fm from the middle and the boundary is %.2fm. The outer ring is solid ground you bleed on. Raise Config.Arenas["%s"].boundary.radius above %.2fm, or lower platform.radius.')
                 :format(reach, radius, tostring(arenaKey), reach))
         end
+
+        -- AND DOES THE WALL ACTUALLY ENCLOSE IT.
+        --
+        -- The check above asks whether the floor sticks out of the BOUNDARY,
+        -- which is the sphere that bleeds you. It says nothing about the ring
+        -- of cover, and on a sky arena that ring is the only thing between a
+        -- fighter and a kilometre of air.
+        --
+        -- THEY CAN ONLY AGREE BY ACCIDENT. Cover is placed at hand-written
+        -- offsets in config.lua, and the floor's real extent depends on the
+        -- prop THIS BUILD supplied: the shipped chain leads with a stunt
+        -- block, and a floor tiled out of one reaches far past the
+        -- platform.radius the wall was positioned from. Measured on a real
+        -- server: a wall at 44.53m around a floor reaching 82.60m, so 38
+        -- metres of walkable ground OUTSIDE the wall -- fighters simply walk
+        -- round the containers and off the edge, and every count in the line
+        -- above says 87 of 87 built.
+        if coverReach > 0.0 and reach > coverReach + 0.5 then
+            print(('[crimson_arena] arena scenery: THE WALL DOES NOT ENCLOSE THE FLOOR -- the furthest cover stands %.2fm out and the floor reaches %.2fm, so there is %.2fm of walkable ground OUTSIDE the wall and fighters can walk round it and fall. Either move the cover ring out to %.2fm in Config.Arenas["%s"].cover, or give platform.models a smaller prop so the floor stops short of the wall.')
+                :format(coverReach, reach, reach - coverReach, reach, tostring(arenaKey)))
+        end
     end
 
     if needsFloor and builtFloor == 0 then

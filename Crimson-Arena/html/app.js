@@ -3637,6 +3637,20 @@
             color: won ? 'var(--success)' : 'var(--accent-bright)'
         }));
 
+        /* HOW THE ROUND ENDED, in words, above the numbers. The server
+           renders the sentence -- the panel has no locale file -- and it is
+           the only thing on this screen that tells a spectator what they
+           just watched finish, because they are sent no notification at the
+           end of a round. Absent on an older server, and then the board
+           looks exactly as it did. */
+        if (typeof results.reason === 'string' && results.reason !== '') {
+            root.appendChild(styled(makeEl('div', null, results.reason), {
+                marginTop: '0.3rem',
+                textAlign: 'center',
+                color: 'var(--text)'
+            }));
+        }
+
         var summary = resultsSummary(results);
         if (summary !== '') {
             root.appendChild(styled(makeEl('div', null, summary), {
@@ -3667,7 +3681,10 @@
            open would see nothing at all. The toast rail is inside the panel
            and is exactly what they are looking at. */
         if (state.open) {
-            var said = (won ? 'You won.' : 'Match over.') + (summary === '' ? '' : '  ·  ' + summary);
+            var reason = (typeof results.reason === 'string' && results.reason !== '')
+                ? results.reason
+                : (won ? 'You won.' : 'Match over.');
+            var said = reason + (summary === '' ? '' : '  ·  ' + summary);
             toast(said, won ? 'success' : 'info');
         }
     }

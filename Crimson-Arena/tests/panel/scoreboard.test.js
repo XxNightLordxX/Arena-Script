@@ -284,6 +284,29 @@ test('and losing does not', () => {
     assert.ok(/Match Over/i.test(text), 'the board says nothing at all: ' + text);
 });
 
+test('and it says HOW the round ended, in words', () => {
+    /* The field used to carry a locale key, which this page has no locale
+       file to render -- so it was dead on the wire for as long as it
+       existed. The server renders the sentence now. */
+    const panel = panelWith(false);
+
+    panel.send('results', { results: { won: false, reason: 'Match over. Clock ran out.', kills: 0, deaths: 1 } });
+
+    assert.ok(/Clock ran out/.test(panel.text('arena-results')),
+        'the board never says how the round ended: ' + panel.text('arena-results'));
+});
+
+test('and an older server that sends no sentence still gets a board', () => {
+    // Absent, not empty: the board looks exactly as it did before.
+    const panel = panelWith(false);
+
+    panel.send('results', { results: { won: true, kills: 1, deaths: 0 } });
+
+    assert.ok(panel.built('arena-results'), 'the board vanished when the sentence was missing');
+    assert.ok(/You Won/i.test(panel.text('arena-results')),
+        'the board lost its title along with the sentence: ' + panel.text('arena-results'));
+});
+
 test('the summary line carries placement, kills and deaths', () => {
     const panel = panelWith(false);
 

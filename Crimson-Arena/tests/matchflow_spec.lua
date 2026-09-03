@@ -563,7 +563,15 @@ t.test('the winner leaves with a results block naming their placement, score and
     local results = f.lastPayload('crimson_arena:client:results', 1)
     t.isNotNil(results, 'the winner was never sent a results board')
 
-    t.equals(results.matchId, 'm1')
+    -- HOW THE ROUND ENDED, as a SENTENCE. This field used to carry the
+    -- locale key, which the panel has no locale file to render -- so it was
+    -- dead on the wire for as long as it existed. `matchId` sat beside it,
+    -- read by nothing, and went with it.
+    t.isTrue(type(results.reason) == 'string' and #results.reason > 0,
+        'the board carries no sentence saying how the round ended')
+    t.notContains(results.reason, 'match.',
+        'the board was sent a locale key rather than the sentence it renders to: ' .. tostring(results.reason))
+    t.isNil(results.matchId, 'the results block still carries a match id nothing reads')
     t.isTrue(results.won)
     t.equals(results.placement, 1)
     t.equals(results.kills, 1)
@@ -608,6 +616,12 @@ t.test('a spectator is sent the board too, and is owed nothing by it', function(
     -- of a round they were never in.
     local results = f.lastPayload('crimson_arena:client:results', 9)
     t.isNotNil(results, 'the spectator was sent home with nothing to show for it')
+    -- AND IT IS THE ONLY THING THAT TELLS THEM. A spectator is sent no
+    -- notification at the end of a round -- they staked nothing and won
+    -- nothing -- so a board with no sentence on it left the one person
+    -- watching with no idea how the fight had finished.
+    t.isTrue(type(results.reason) == 'string' and #results.reason > 0,
+        'the spectator\'s board never says how the round ended')
     t.isFalse(results.won)
     t.equals(results.earnings, 0)
     t.equals(#results.scoreboard, 2)

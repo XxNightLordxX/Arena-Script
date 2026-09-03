@@ -1016,10 +1016,25 @@ function Arena.CountTeams(players)
     return counts
 end
 
---- The team a newly joining player should land on when they did not pick
---- one: the smallest enabled team WITH ROOM IN IT, ties broken by config
---- order so the choice is deterministic rather than dependent on pairs()
---- ordering.
+--- The team a player who did not pick one should land on: the smallest
+--- enabled team WITH ROOM IN IT, and where several are equally small, one of
+--- them at random.
+---
+--- EVENING THE SIDES IS THE FIRST RULE and the random draw never overrides
+--- it: a side with fewer people in it always wins outright, so the only time
+--- chance is consulted at all is when the choice cannot make the teams any
+--- more even than they already are. Callers assign in place, counting each
+--- player as they go, so a lobby of unchosen players still comes out level --
+--- only which side gets the first one, and the odd one at the end, is drawn.
+---
+--- THE RANDOM PART IS THE TIE, NOT THE ORDER. The old note here said ties
+--- broke on config order "so the choice is deterministic rather than
+--- dependent on pairs() ordering", and that reasoning is still doing its job:
+--- Config.Teams.list is a hash, and GetEnabledTeams sorting it is what stops
+--- the candidate list itself varying between runs. What was never intended is
+--- what fell out of it -- crimson winning every single tie, so the first
+--- player into an empty lobby was on crimson every round of every day. One
+--- explicit draw among equals is not the same thing as leaving it to a hash.
 ---
 --- `Config.Teams.maxTeamSize` is read here as well as in
 --- Arena.TeamsAreStartable because a suggestion that ignored it does not
@@ -1027,19 +1042,39 @@ end
 --- over-capacity side already written onto the player, and with the switch
 --- they would need to fix it themselves refused for the same reason.
 --- @param players table[]
+--- @param rng fun():number|nil -- injectable; defaults to math.random
 --- @return string|nil teamKey -- nil when no team is enabled, and when every enabled team is full
-function Arena.SuggestTeam(players)
+function Arena.SuggestTeam(players, rng)
     local counts = Arena.CountTeams(players)
     local cap = Arena.ToInt(Config.Teams.maxTeamSize) or 0
-    local best, bestCount
+
+    -- EVERY smallest side with room, not the first one found.
+    local tied, bestCount = {}, nil
     for _, team in ipairs(Arena.GetEnabledTeams()) do
         local count = counts[team.key] or 0
         local hasRoom = cap <= 0 or count < cap
-        if hasRoom and (not bestCount or count < bestCount) then
-            best, bestCount = team.key, count
+        if hasRoom then
+            if bestCount == nil or count < bestCount then
+                tied, bestCount = { team.key }, count
+            elseif count == bestCount then
+                tied[#tied + 1] = team.key
+            end
         end
     end
-    return best
+
+    if #tied == 0 then return nil end
+    if #tied == 1 then return tied[1] end
+
+    rng = rng or math.random
+
+    -- Clamped rather than trusted. math.random() is [0, 1), but an injected
+    -- one is somebody else's function and a returned 1.0 would index off the
+    -- end of the list -- a nil team written onto a player, which reads as
+    -- "never picked a side" and sends them straight back through here.
+    local pick = math.floor(rng() * #tied) + 1
+    if pick < 1 then pick = 1 end
+    if pick > #tied then pick = #tied end
+    return tied[pick]
 end
 
 --- Whether a team match may start with these sides.

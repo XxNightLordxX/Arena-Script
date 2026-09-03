@@ -20,16 +20,16 @@
        83   Lobby         The NPC players walk up to
       156   Match         Lives, timers, player counts, win condition
       376   Teams         The sides, and whether they may be uneven
-      514   Modes         Free-for-all and team deathmatch
-      533   DefaultMode   Which of them a new lobby opens on
-      552   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      745   UI            Panel colours, logo and title
-      803   Permissions   Who may open a match, who may force-stop one
-      884   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1421   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1850   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1860   Webhook       Optional: a Discord line per finished match
-     1897   Dispatch      Optional: keeping police and EMS out of the arena
+      523   Modes         Free-for-all and team deathmatch
+      542   DefaultMode   Which of them a new lobby opens on
+      561   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      754   UI            Panel colours, logo and title
+      812   Permissions   Who may open a match, who may force-stop one
+      893   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1430   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1859   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1869   Webhook       Optional: a Discord line per finished match
+     1906   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -394,8 +394,17 @@ Config.Teams = {
     maxTeamSize = 0,
 
     -- Someone who joins a team match without picking a side is dropped onto
-    -- the smallest team when the match starts. With this off they are asked
-    -- to pick and the start is refused until they do.
+    -- the SMALLEST team when the match starts -- and where the sides are
+    -- already level, onto one of them at random. Evening up always wins: the
+    -- draw only happens when the choice cannot make the teams any more even
+    -- than they are, so a lobby of players who all skipped the picker still
+    -- comes out level.
+    --
+    -- Applied at START, not at join, so "smallest" means smallest when the
+    -- fighting begins rather than when the first player wandered in.
+    --
+    -- With this off they are asked to pick and the start is refused until
+    -- they do.
     autoAssignIfUnchosen = true,
 
     -- Can teammates hurt each other? Off means the SHOT is refused, not

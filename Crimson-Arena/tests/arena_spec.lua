@@ -677,18 +677,74 @@ t.test('TeamsAreStartable refuses before anything else when no team is enabled',
     t.isNil(arena.SuggestTeam({}))
 end)
 
-t.test('SuggestTeam is deterministic, and picks the smallest side', function()
-    -- Config.Teams.list is a hash, so without the sort in GetEnabledTeams this
-    -- would depend on pairs() ordering and differ between runs.
-    for _ = 1, 25 do
-        t.equals(Arena.SuggestTeam({}), 'crimson')
+t.test('SuggestTeam picks the smallest side, every time', function()
+    -- THE RULE THAT NEVER BENDS. Chance is only ever consulted between sides
+    -- that are already equal, so a side with fewer people in it wins outright
+    -- however the draw falls -- asserted over enough draws that a random
+    -- answer could not survive.
+    for _ = 1, 100 do
+        t.equals(Arena.SuggestTeam(roster({ { team = 'crimson', count = 1 } })), 'ash')
+        t.equals(Arena.SuggestTeam(roster({ { team = 'crimson', count = 3 }, { team = 'ash', count = 1 } })), 'ash')
+        t.equals(Arena.SuggestTeam(roster({ { team = 'ash', count = 2 } })), 'crimson')
+    end
+end)
+
+t.test('and breaks a TIE at random, rather than handing crimson every one', function()
+    -- ASKED FOR FROM THE GAME: "if they do not choose a team it will put them
+    -- on one to even the sides or just put them on a random team if they are
+    -- even."
+    --
+    -- The first half was already true. The second was not: ties broke on
+    -- config order, so the first player into an empty lobby was on crimson
+    -- every round of every day, and so was the odd player out of any even
+    -- split. That was a side effect of the sort that stops the candidate list
+    -- depending on pairs() ordering -- the sort is still there and still
+    -- needed; only the choice among equals is drawn now.
+    local seen = {}
+    for _ = 1, 400 do
+        seen[Arena.SuggestTeam({})] = true
+        seen[Arena.SuggestTeam(roster({ { team = 'crimson', count = 2 }, { team = 'ash', count = 2 } }))] = true
     end
 
-    t.equals(Arena.SuggestTeam(roster({ { team = 'crimson', count = 1 } })), 'ash')
-    t.equals(Arena.SuggestTeam(roster({ { team = 'crimson', count = 3 }, { team = 'ash', count = 1 } })), 'ash')
-    -- A tie breaks on config order, every time.
-    for _ = 1, 25 do
-        t.equals(Arena.SuggestTeam(roster({ { team = 'crimson', count = 2 }, { team = 'ash', count = 2 } })), 'crimson')
+    t.isTrue(seen['crimson'], 'crimson never came up in 800 tied draws')
+    t.isTrue(seen['ash'], 'ash never came up in 800 tied draws -- the tie is not being drawn')
+
+    -- And nothing OUTSIDE the tie is ever reachable, however the draw falls.
+    for key in pairs(seen) do
+        t.isTrue(key == 'crimson' or key == 'ash', 'a tie produced "' .. tostring(key) .. '"')
+    end
+end)
+
+t.test('and the draw is injectable, so a caller can pin it', function()
+    -- The same shape Arena.PlanSpawns takes, and the reason is the same: a
+    -- test that cannot predict the answer cannot assert on what follows it.
+    local tie = roster({ { team = 'crimson', count = 2 }, { team = 'ash', count = 2 } })
+
+    t.equals(Arena.SuggestTeam(tie, function() return 0.0 end), 'crimson')
+    t.equals(Arena.SuggestTeam(tie, function() return 0.99 end), 'ash')
+
+    -- CLAMPED, because an injected rng is somebody else's function. math.random()
+    -- is [0, 1), but a 1.0 would index off the end and write a nil team onto a
+    -- player -- which reads as "never picked a side" and sends them back here.
+    t.equals(Arena.SuggestTeam(tie, function() return 1.0 end), 'ash')
+    t.equals(Arena.SuggestTeam(tie, function() return -0.5 end), 'crimson')
+end)
+
+t.test('and an unchosen lobby still comes out level', function()
+    -- THE POINT OF THE WHOLE THING, and the half a random tie could have
+    -- broken. Callers assign in place, counting each player as they go, so
+    -- every draw after the first sees an uneven split and has no choice to
+    -- make. Ten runs, because one run of a random function proves nothing.
+    for _ = 1, 10 do
+        local players = {}
+        for id = 1, 8 do players[id] = { id = id } end
+        for _, player in ipairs(players) do
+            player.team = Arena.SuggestTeam(players)
+        end
+
+        local counts = Arena.CountTeams(players)
+        t.equals(counts.crimson, 4, 'a random tie-break unbalanced an eight-player lobby')
+        t.equals(counts.ash, 4)
     end
 end)
 

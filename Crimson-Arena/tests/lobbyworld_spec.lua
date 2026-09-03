@@ -561,33 +561,21 @@ t.test('the target option carries the label, icon and distance from config', fun
 end)
 
 -- ========================================================================
--- THE COMMAND
+-- NO COMMAND, BY CONSTRUCTION
 -- ========================================================================
 
-t.test('SHIPPED DEFAULT -- no command is registered at all', function()
-    -- Config.UI.command is nil out of the box: the ped is the way in, and
-    -- a command that opens the arena panel from anywhere is opt-in.
-    -- Asserted so that turning one on by accident is a red test rather
-    -- than a shipped default nobody chose.
+t.test('the client registers no command at all, and there is no key to set', function()
+    -- THE NPC IS THE WAY IN. There is no Config.UI.command and no
+    -- RegisterCommand on the client: a slash command that opens the panel
+    -- from anywhere was a second door into a lobby that already has one.
+    --
+    -- Both halves are asserted, and the KEY is named on purpose: a build
+    -- that puts `command` back in config.lua fails here even if nothing
+    -- reads it yet, which is the point at which somebody would notice.
     local f = newLobby()
 
-    t.isNil(f.env.Config.UI.command, 'the shipped config now names a panel command')
-    t.equals(#f.commands, 0, 'a command was registered for an operator who asked for none')
-end)
-
-t.test('and the one an operator names is registered UNRESTRICTED', function()
-    -- The restricted flag is the difference between a command everybody
-    -- can use and one that silently needs an ACE nobody has granted --
-    -- which reads as "the command does nothing" for every player who
-    -- tries it.
-    local f = newLobby({ mutate = function(config) config.UI.command = 'arena' end })
-
-    t.equals(#f.commands, 1, 'the command an operator asked for was not registered')
-    t.equals(f.commands[1].name, 'arena')
-    t.equals(f.commands[1].restricted, false, 'the panel command was registered as restricted')
-
-    f.commands[1].fn()
-    t.equals(f.opened, 1, 'the command does not open the panel')
+    t.isNil(f.env.Config.UI.command, 'config.lua names a panel command again')
+    t.equals(#f.commands, 0, 'the client registered a command')
 end)
 
 -- ========================================================================

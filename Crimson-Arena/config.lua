@@ -24,12 +24,12 @@
       488   DefaultMode   Which of them a new lobby opens on
       507   Betting       Entry fees, self-bets, side-bets, how the pot is split
       700   UI            Panel colours, logo and title
-      763   Permissions   Who may open a match, who may force-stop one
-      844   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1381   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1773   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1783   Webhook       Optional: a Discord line per finished match
-     1820   Dispatch      Optional: keeping police and EMS out of the arena
+      758   Permissions   Who may open a match, who may force-stop one
+      839   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1376   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1768   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1778   Webhook       Optional: a Discord line per finished match
+     1815   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -741,11 +741,6 @@ Config.UI = {
         danger = '#ff3b3b',
         success = '#37d67a',
     },
-
-    -- Command that opens the panel from anywhere, for testing or for
-    -- servers that would rather not use a ped at all. Set to nil to
-    -- register no command.
-    command = nil,
 
     -- Sound the panel plays on open/close/ready. false = silent panel.
     sounds = true,

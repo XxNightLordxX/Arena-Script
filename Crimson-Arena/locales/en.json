@@ -7,7 +7,6 @@
         "match_row": "%s | %s | %d in | pot %d",
         "match_stopped": "Match %s stopped. Every stake went back.",
         "no_matches": "Nothing running.",
-        "open_panel": "Step into the Crimson Arena",
         "usage": "/arenaadmin list | stop <id> | wipe",
         "wiped": "Wiped %d match(es). Every stake went back."
     },

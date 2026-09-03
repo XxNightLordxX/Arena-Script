@@ -14,7 +14,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 - An NPC at `Config.Lobby.ped.coords` with an ox_target option, a ground marker with a keypress, or both — `Config.Lobby.interaction` picks. Ships as `'ped'`.
 - A map blip at the lobby. On by default.
-- **No slash command ships.** The NPC is the way in, deliberately. `Config.UI.command` is `nil`; set it to a name like `'arena'` if you want a command as well, which is mostly useful for testing.
+- **No slash command exists.** The NPC is the way in, and it is the only way in. There is no setting that adds a second one.
 
 **Staying out of everyone else's way**
 
@@ -949,7 +949,7 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 
 | Command | Where | Who |
 |---|---|---|
-| *(none by default)* | client | `Config.UI.command` is `nil`, so no command is registered and the NPC is the only way in. Set it to a name to add one. |
+| *(none)* | client | The client registers no command at all. The lobby ped, or the marker, is the way in. |
 | `/arenaadmin list` | server | admins. Lists every match with its state, head count and pot. |
 | `/arenaadmin stop <id>` | server | admins. Aborts one match and refunds everybody. |
 | `/arenaadmin wipe` | server | admins. Aborts every match and refunds everybody. |
@@ -997,7 +997,7 @@ Anything you build on those is subject to the same rule the rest of the resource
 - The folder name is not the problem. The panel addresses its calls to `https://<this resource>/<callback>` and gets that name from the game, so it holds under any folder name — including the `-main` suffix a downloaded zip gives you.
 - Check start order in `server.cfg`. ox_lib must be started before this resource; a missing `lib` is a client-side error at load, not at open.
 - The panel fetches the state snapshot *before* it takes focus. If the server is not answering, you get `The arena is not answering. Try again.` — look for a Lua error in the server console at start, which will have stopped the callback being registered.
-- `Config.UI.command = nil` registers no command. Use the ped or the marker.
+- There is no command that opens the panel. Use the ped or the marker.
 - If the mouse is captured and there is no panel, restart the resource — `onResourceStop` releases NUI focus, which is what makes that recoverable.
 
 ### The ped does not spawn

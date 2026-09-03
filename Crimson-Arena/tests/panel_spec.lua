@@ -21,9 +21,9 @@
 
     WHAT IS STUBBED, and no more than that: the NUI bridge (SendNUIMessage,
     SetNuiFocus, RegisterNUICallback), ox_lib's callback and notify, and --
-    for the lobby file -- the fixtures it builds at start: the ped, the blip
-    and the command. Config is the real config.lua, because the interaction
-    mode and the command name are read out of it.
+    for the lobby file -- the fixtures it builds at start: the ped and the
+    blip. Config is the real config.lua, because the interaction mode is read
+    out of it.
 ]]
 
 local t = dofile('testkit.lua')
@@ -411,21 +411,24 @@ t.test('and with ox_target absent the blip still points at the NPC spot', functi
     t.equals(f.built.blipAt.y, wanted.y)
 end)
 
-t.test('DEFECT: an NPC that RAISES does not take the blip and the command with it', function()
+t.test('DEFECT: an NPC that RAISES does not take the rest of start-up with it', function()
     -- THE SYMPTOM, and it was unexplainable from outside: no NPC and no blip,
     -- on a resource reporting itself started. The blip is created two lines
     -- after the spawn on the same thread, so anything that raises in the
-    -- spawn kills the rest of the start-up -- the blip and the /arena command
-    -- with it, leaving the arena unreachable by any route and nothing in the
-    -- console pointing at the cause.
+    -- spawn kills the rest of the start-up -- the blip with it, leaving the
+    -- arena unreachable by any route and nothing in the console pointing at
+    -- the cause.
     --
     -- This file already said exactly that, about ONE call inside the spawn,
     -- and guarded only that one.
     local f = newLobbyFixture({ pedRaises = true })
 
     t.isTrue(f.built.blip, 'A RAISE IN THE NPC TOOK THE MAP BLIP DOWN WITH IT')
-    t.equals(f.built.command, f.env.Config.UI.command,
-        'and the command, so there is not even a way to open the panel by typing')
+    -- The 'lobby:' line is the LAST thing the start-up thread does, so it is
+    -- the witness that the thread ran past the raise rather than merely got
+    -- as far as the blip.
+    t.isTrue(f.log():find('lobby:', 1, true) ~= nil,
+        'the thread died after the blip -- start-up never reached its last line')
 end)
 
 t.test('and the failure is named rather than swallowed', function()
@@ -463,10 +466,11 @@ t.test('starting the resource asks the server for nothing', function()
     local f = newLobbyFixture()
 
     -- Proof the thread ran the whole way rather than dying before the line
-    -- this test is about: both fixtures and the command exist.
+    -- this test is about: both fixtures exist and start-up said where it put
+    -- them, which is its last line.
     t.isTrue(f.built.ped)
     t.isTrue(f.built.blip)
-    t.equals(f.built.command, f.env.Config.UI.command)
+    t.isTrue(f.log():find('lobby:', 1, true) ~= nil)
 
     t.equals(#f.serverEvents, 0, 'the start-up thread sent ' ..
         (f.serverEvents[1] and f.serverEvents[1].name or ''))
@@ -489,9 +493,9 @@ end)
 -- including one that only ever wanted the marker. That decision is only safe
 -- if its absence costs the NPC and nothing else -- and the failure mode it
 -- replaced was not a missing NPC, it was `exports.ox_target` RAISING inside
--- the start-up thread and taking the marker, the blip and the fallback
--- command down with it. A lobby with no way into it at all, and no line in
--- the console naming the cause.
+-- the start-up thread and taking the marker and the blip down with it. A
+-- lobby with no way into it at all, and no line in the console naming the
+-- cause.
 --
 -- So these two tests are about what SURVIVES, not about the NPC.
 -- ------------------------------------------------------------------------
@@ -522,8 +526,8 @@ t.test('with ox_target stopped no NPC goes up, and the rest of the lobby survive
     -- AFTER the ox_target call in the start-up thread, which is precisely
     -- why they are asserted here.
     t.isTrue(f.built.blip, 'the map blip is gone, so players cannot even find the lobby')
-    t.equals(f.built.command, f.env.Config.UI.command,
-        'the panel command was never registered')
+    t.isTrue(f.log():find('lobby:', 1, true) ~= nil,
+        'start-up never reached its last line')
     t.equals(#f.serverEvents, 0)
 end)
 

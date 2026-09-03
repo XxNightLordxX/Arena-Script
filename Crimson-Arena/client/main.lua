@@ -279,10 +279,10 @@ CreateThread(function()
     -- WRAPPED, because a raise in here used to take everything after it down.
     --
     -- This file already says so about `targeting()`: "a raise inside the
-    -- startup thread below takes the marker, the blip and the fallback
-    -- command down with the ped, leaving the arena unreachable with nothing
-    -- in the console pointing at the cause". That was true of exactly one
-    -- call in spawnLobbyPed and the guard was put around that one. Everything
+    -- startup thread below takes the marker and the blip down with the ped,
+    -- leaving the arena unreachable with nothing in the console pointing at
+    -- the cause". That was true of exactly one call in spawnLobbyPed and the
+    -- guard was put around that one. Everything
     -- else in there can raise too -- CreatePed on a model the game will not
     -- give, a scenario name it does not know, and above all
     -- ox_target:addLocalEntity, whose shape is another resource's to change.
@@ -321,11 +321,6 @@ CreateThread(function()
     local fixture = pedUp and 'NPC' or (mode == 'ped' and 'NOTHING -- see the warning above' or 'ground marker')
     warn(('lobby: %s at %.2f, %.2f, %.2f (interaction = %s).'):format(
         fixture, where.x, where.y, where.z, tostring(mode)))
-
-    if Config.UI.command then
-        RegisterCommand(Config.UI.command, openPanel, false)
-        TriggerEvent('chat:addSuggestion', '/' .. Config.UI.command, locale('cmd.open_panel'))
-    end
 
     -- NO STATE REQUEST FROM HERE, deliberately. The server reads one as
     -- "a panel just opened" and adds the asker to the set every broadcast is

@@ -37,7 +37,8 @@ local OWN = {
 --- @param ids integer[]
 --- @param mutate fun(config: table)?
 --- @return table server
-local function newServer(ids, mutate)
+--- @param extra table[]? -- items every player also starts with
+local function newServer(ids, mutate, extra)
     local wallets, inv, stashes = {}, {}, {}
     for _, src in ipairs(ids) do
         wallets[src] = {
@@ -47,6 +48,9 @@ local function newServer(ids, mutate)
         }
         inv[src] = {}
         for _, item in ipairs(OWN) do
+            inv[src][#inv[src] + 1] = { name = item.name, count = item.count }
+        end
+        for _, item in ipairs(extra or {}) do
             inv[src][#inv[src] + 1] = { name = item.name, count = item.count }
         end
     end
@@ -88,8 +92,23 @@ local function newServer(ids, mutate)
             end
             return false
         end,
-        ClearInventory = function(_self, id)
-            if type(id) == 'number' then inv[id] = {} else stashes[id] = {} end
+        -- MODELS ox_inventory's REAL SIGNATURE: ClearInventory(inv, keep),
+        -- where `keep` is a list of item names that survive the clear. The
+        -- stub used to drop the second argument, so a resource that passed
+        -- one and a resource that did not looked identical here -- which is
+        -- exactly how money could be cleared out of a player's pockets with
+        -- every test still green.
+        ClearInventory = function(_self, id, keep)
+            local safe = {}
+            for _, name in ipairs(type(keep) == 'table' and keep or { keep }) do
+                if type(name) == 'string' then safe[name] = true end
+            end
+            local from = type(id) == 'number' and (inv[id] or {}) or (stashes[id] or {})
+            local left = {}
+            for _, item in ipairs(from) do
+                if safe[item.name] then left[#left + 1] = item end
+            end
+            if type(id) == 'number' then inv[id] = left else stashes[id] = left end
             return true
         end,
         registerHook = function() return true end,
@@ -189,6 +208,24 @@ local function newServer(ids, mutate)
         return table.concat(names, ',')
     end
 
+    --- What is sitting in one player's arena stash, as a sorted string.
+    --- The door's promise is about this side as much as the player's side.
+    function server.stashed(src)
+        local names = {}
+        for _, item in ipairs(stashes['crimson_arena_CID' .. src] or {}) do
+            names[#names + 1] = item.name .. 'x' .. tostring(item.count)
+        end
+        table.sort(names)
+        return table.concat(names, ',')
+    end
+
+    --- Puts an item straight into a player's pockets, the way a payout does
+    --- on a server where cash is an ox_inventory item.
+    function server.give(src, name, count)
+        inv[src] = inv[src] or {}
+        inv[src][#inv[src] + 1] = { name = name, count = count }
+    end
+
     function server.log() return table.concat(console, '\n') end
 
     return server
@@ -202,8 +239,8 @@ local INTACT = 'ammo-rifle-apx40,burgerx3,phonex1'
 --- @param ids integer[]
 --- @return table server
 --- @return string matchId
-local function liveMatch(ids, mutate)
-    local server = newServer(ids, mutate)
+local function liveMatch(ids, extra, mutate)
+    local server = newServer(ids, mutate, extra)
     server.fire('createMatch', ids[1], { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
 
     local match = server.lobby.All()[1]
@@ -251,6 +288,57 @@ t.test('a match that finishes normally hands everything back', function()
     t.equals(server.carrying(1), INTACT)
     t.equals(server.carrying(2), INTACT)
     t.isFalse(server.ammo.IsHolding(1))
+end)
+
+-- ========================================================================
+-- MONEY NEVER GOES THROUGH THE DOOR
+--
+-- On a server where ox_inventory holds cash as an item, the door used to
+-- stash it like a burger. The way out then clears the whole inventory before
+-- handing the stash back, on the reasoning that everything the player is
+-- carrying belongs to the arena.
+--
+-- THAT STOPS BEING TRUE BEFORE THE CLEAR RUNS. server/match.lua settles the
+-- pot and the side-bets and only THEN sends everybody home, so a winner's
+-- payout is credited into the inventory the exit is about to wipe. Their own
+-- cash came back out of the stash; the winnings did not. Bank was untouched
+-- throughout, because bank is player data rather than an item -- which is
+-- what made it look like cash bets specifically do not pay out.
+-- ========================================================================
+
+t.test('cash is not taken at the door in the first place', function()
+    local server = liveMatch({ 1, 2 }, { { name = 'money', count = 5000 } })
+    local carrying = server.carrying(1)
+
+    -- PROOF THE DOOR ACTUALLY RAN, first. Without this the test passes on a
+    -- build where the door never opened, which is the one state where money
+    -- surviving means nothing at all.
+    t.isNil(carrying:find('phonex1', 1, true),
+        'the door did not run, so this test proves nothing: ' .. carrying)
+
+    -- ASSERTED ON THE STASH, not on their pockets. Money left in the pockets
+    -- AND copied into the stash looks identical from the player's side and is
+    -- a duplication bug rather than a fix, so the pocket check alone cannot
+    -- tell a working door from a broken one.
+    t.isNil(server.stashed(1):find('money', 1, true),
+        'the door put cash in the arena stash: ' .. server.stashed(1))
+    t.isTrue(carrying:find('moneyx5000', 1, true) ~= nil,
+        'and it did not leave it with the player either: ' .. carrying)
+end)
+
+t.test('and money credited DURING a round survives the way out', function()
+    -- The payout, exactly where the real one lands: after the round is
+    -- decided, before the player is sent home.
+    local server, matchId = liveMatch({ 1, 2 })
+
+    server.give(1, 'money', 7500)
+    server.match.End(matchId, 'match.ended')
+
+    local carrying = server.carrying(1)
+    t.isTrue(carrying:find('moneyx7500', 1, true) ~= nil,
+        'THE PAYOUT WAS DESTROYED BY THE EXIT CLEAR -- ' .. carrying)
+    t.isTrue(carrying:find('phonex1', 1, true) ~= nil,
+        'and their own belongings did not come back either: ' .. carrying)
 end)
 
 t.test('leaving mid-round hands everything back', function()

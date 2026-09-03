@@ -27,9 +27,9 @@
       763   Permissions   Who may open a match, who may force-stop one
       844   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1381   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1773   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1783   Webhook       Optional: a Discord line per finished match
-     1820   Dispatch      Optional: keeping police and EMS out of the arena
+     1797   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1807   Webhook       Optional: a Discord line per finished match
+     1844   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1471,6 +1471,30 @@ Config.Loadouts = {
         -- can never open another's. Change it only if it collides with
         -- something you already use.
         stashPrefix = 'crimson_arena_',
+
+        -- ITEMS THE DOOR MUST NEVER TOUCH, by name.
+        --
+        -- MONEY, AND THIS IS NOT A PREFERENCE. On a server where ox_inventory
+        -- holds cash as an item, the door used to stash it like anything
+        -- else -- and the way out clears the whole inventory before handing
+        -- the stash back, on the reasoning that everything the player is
+        -- carrying at that moment belongs to the arena.
+        --
+        -- A PAYOUT LANDS INSIDE THAT WINDOW. The pot and the side-bets are
+        -- settled in server/match.lua BEFORE anybody is sent home, so a
+        -- winner's cash was credited, turned into a money item, and then
+        -- destroyed by the clear a few lines later. Their own cash came back
+        -- from the stash and their winnings did not. Bank payouts were never
+        -- affected, because bank is player data rather than an item -- which
+        -- is exactly why it looked like "cash bets do not pay out".
+        --
+        -- Cash is also not kit: it cannot be spent in an arena, cannot be
+        -- looted off a body here, and taking it in costs the player nothing.
+        -- So it never goes in the stash and it is never cleared.
+        --
+        -- Add any other item your server treats as currency or as an
+        -- account. Names are ox_inventory item names.
+        neverTouch = { 'money', 'black_money' },
 
         -- Refuse to let players drop anything while they are in a match.
         --

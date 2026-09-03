@@ -121,6 +121,31 @@ local function doorConfig()
     return (Config.Loadouts.inventory or {})
 end
 
+--- Item names the door must not stash and must not clear -- as a lookup for
+--- the stash loop, and as an array for ox_inventory's ClearInventory, whose
+--- second argument is a `keep` list.
+---
+--- MONEY IS THE ONE THAT MATTERS. The pot and the side-bets are settled in
+--- server/match.lua BEFORE anybody is sent home, so a payout is credited
+--- while the player's own belongings are still in the stash. On a server
+--- where cash is an ox_inventory item, that payout is a money item sitting
+--- in an inventory the exit is about to clear -- on the reasoning that
+--- everything in it belongs to the arena, which stopped being true the
+--- moment the winnings arrived. Bank was never affected, because bank is
+--- player data rather than an item; that asymmetry is what makes it look
+--- like "cash bets do not pay out".
+--- @return table<string, boolean>, string[]
+local function untouchable()
+    local map, list = {}, {}
+    for _, name in ipairs(doorConfig().neverTouch or {}) do
+        if Arena.IsKey(name) and not map[name] then
+            map[name] = true
+            list[#list + 1] = name
+        end
+    end
+    return map, list
+end
+
 --- The stash that holds one character's real inventory. Keyed by citizen id
 --- rather than server id, so a reconnect finds the same stash and a recycled
 --- server id can never open somebody else's.
@@ -203,7 +228,13 @@ local function stow(src, citizenid)
 
     -- Nothing to put away is a success, not a failure: an empty-handed player
     -- is still stripped-and-restored correctly, they simply have nothing.
+    local skip, keep = untouchable()
+    local stowed = {}
+
     for _, item in ipairs(items) do
+        -- Never stashed, so never handed back, so never in the way of money
+        -- that arrives while the stash is still holding everything else.
+        if not skip[item.name] then
         local moved = oxDid(('stashing %s x%s'):format(tostring(item.name), tostring(item.count)), function()
             return ox:AddItem(stash, item.name, item.count, item.metadata)
         end)
@@ -212,20 +243,24 @@ local function stow(src, citizenid)
             -- rather than leaving an inventory split across two places.
             ArenaLog('door: could not stash %s x%s for %s -- putting it all back and letting them keep their kit.',
                 tostring(item.name), tostring(item.count), tostring(src))
-            for _, done in ipairs(items) do
+            -- Only what actually moved. Rolling back the untouchables would
+            -- take money out of the stash that was never put into it.
+            for _, done in ipairs(stowed) do
                 pcall(function() return ox:RemoveItem(stash, done.name, done.count, done.metadata) end)
             end
             return false
+        end
+        stowed[#stowed + 1] = item
         end
     end
 
     -- LAST. Everything is provably in the stash before anything is taken.
     local cleared = oxDid('clearing ' .. tostring(src) .. "'s inventory", function()
-        return ox:ClearInventory(src)
+        return ox:ClearInventory(src, keep)
     end)
     if not cleared then
         ArenaLog('door: stashed %s\'s kit but could not clear their inventory -- putting it back.', tostring(src))
-        for _, item in ipairs(items) do
+        for _, item in ipairs(stowed) do
             pcall(function() return ox:RemoveItem(stash, item.name, item.count, item.metadata) end)
         end
         return false
@@ -343,8 +378,9 @@ local function restore(src, record)
     -- which does that before calling this -- which removes what the arena
     -- issued without touching anything else.
     if not record.cleared then
+        local _, keep = untouchable()
         if not oxDid('clearing the arena kit from ' .. tostring(src), function()
-            return ox:ClearInventory(src)
+            return ox:ClearInventory(src, keep)
         end) then
             ArenaLog('door: %s LEFT THE ARENA STILL HOLDING THE KIT IT ISSUED -- their own is being returned on top of it.',
                 tostring(src))

@@ -135,9 +135,26 @@ end
 --- player data rather than an item; that asymmetry is what makes it look
 --- like "cash bets do not pay out".
 --- @return table<string, boolean>, string[]
+--- The names protected when config.lua does not say. NOT an empty list.
+---
+--- `neverTouch` is new, and a key that is new is a key most running servers
+--- do not have: an operator who keeps their own config.lua across the
+--- upgrade -- which is the normal way to upgrade, and the exact population
+--- that reported cash payouts vanishing -- has the `inventory` block without
+--- this key in it.
+---
+--- Defaulting that to {} would hand them back the bug the key exists to fix,
+--- silently, with the door still on because stripOnEntry ships true. So the
+--- safe list is the default and config.lua OVERRIDES it rather than enabling
+--- it. Same shape of trap as the weapon catalogue: a new thing whose absence
+--- must not mean the broken behaviour.
+local DEFAULT_NEVER_TOUCH = { 'money', 'black_money' }
+
 local function untouchable()
     local map, list = {}, {}
-    for _, name in ipairs(doorConfig().neverTouch or {}) do
+    local names = doorConfig().neverTouch
+    if type(names) ~= 'table' then names = DEFAULT_NEVER_TOUCH end
+    for _, name in ipairs(names) do
         if Arena.IsKey(name) and not map[name] then
             map[name] = true
             list[#list + 1] = name

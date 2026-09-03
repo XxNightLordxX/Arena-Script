@@ -326,6 +326,31 @@ t.test('cash is not taken at the door in the first place', function()
         'and it did not leave it with the player either: ' .. carrying)
 end)
 
+t.test('and it protects money even when config.lua has never heard of the key', function()
+    -- THE UPGRADE CASE, and it is the normal one. `neverTouch` is new, so an
+    -- operator who keeps their own config.lua across the upgrade has the
+    -- inventory block WITHOUT it -- and that is exactly the person who
+    -- reported the payout vanishing in the first place.
+    --
+    -- The default therefore has to be the safe list, not an empty one:
+    -- config.lua overrides it, it does not enable it.
+    local server = liveMatch({ 1, 2 }, { { name = 'money', count = 5000 } },
+        function(config) config.Loadouts.inventory.neverTouch = nil end)
+
+    -- CHECKED WHILE THE ROUND IS LIVE, not after it. Ending the match hands
+    -- the stash back and empties it, so a post-match assertion that the stash
+    -- holds no money passes whatever the door did -- which is how the first
+    -- draft of this test passed with the safe default removed.
+    local carrying, stashed = server.carrying(1), server.stashed(1)
+
+    t.isNil(carrying:find('phonex1', 1, true),
+        'the door did not run, so this test proves nothing: ' .. carrying)
+    t.isNil(stashed:find('money', 1, true),
+        'with no neverTouch key the door stashed their cash again: ' .. stashed)
+    t.isTrue(carrying:find('moneyx5000', 1, true) ~= nil,
+        'and it did not leave the money with the player either: ' .. carrying)
+end)
+
 t.test('and money credited DURING a round survives the way out', function()
     -- The payout, exactly where the real one lands: after the round is
     -- decided, before the player is sent home.

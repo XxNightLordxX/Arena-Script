@@ -469,12 +469,20 @@ local function alongRadius(c, entry)
     local size = c.world.models[entry.object.model]
     local heading = math.rad(entry.object.heading or 0.0)
 
-    -- Local +X points along (cos h, -sin h), local +Y along (sin h, cos h).
+    -- GTA forward -- local +Y -- is (-sin h, cos h), so local +X is
+    -- (cos h, sin h).
+    --
+    -- THIS HELPER USED TO SAY THE MIRROR OF THAT, and so did arena_spec's,
+    -- and so did Arena.TangentHeading itself. Three places agreeing with each
+    -- other is how a ring of containers that stood dead along the radius at
+    -- 45 degrees passed every test in the suite for as long as it did. The
+    -- one formula that never carried the mistake is facingCentre, which
+    -- spawnplan_spec dots to +1.000 against the direction to the middle.
     local ax, ay
     if size.x >= size.y then
-        ax, ay = math.cos(heading), -math.sin(heading)
+        ax, ay = math.cos(heading), math.sin(heading)
     else
-        ax, ay = math.sin(heading), math.cos(heading)
+        ax, ay = -math.sin(heading), math.cos(heading)
     end
 
     local length = math.sqrt(entry.dx * entry.dx + entry.dy * entry.dy)

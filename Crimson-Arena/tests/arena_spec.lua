@@ -1017,9 +1017,16 @@ t.test('a piece is turned to stand across the radius, not along it', function()
     -- X. Headings are degrees clockwise from north, so local +X points along
     -- (cos h, -sin h) -- and the answer is the direction, not the number:
     -- a container turned 90 and one turned 270 stand in the same line.
+    -- LOCAL +X IN WORLD, and the sign matters more than anything else here.
+    -- GTA forward is (-sin h, cos h), so right -- local +X -- is
+    -- (cos h, sin h). This helper used to return (cos h, -sin h), the
+    -- mirror, which is the same mistake Arena.TangentHeading itself was
+    -- built on: the two agreed with each other and both were wrong, so a
+    -- wall that was a spoke at 45 degrees passed this test. spawnplan_spec
+    -- has always used the correct one.
     local function longAxis(heading)
         local r = math.rad(heading)
-        return math.cos(r), -math.sin(r)
+        return math.cos(r), math.sin(r)
     end
 
     for _, case in ipairs({
@@ -1040,6 +1047,66 @@ t.test('a piece is turned to stand across the radius, not along it', function()
             ('a piece at %.1f,%.1f was turned to %.1f, which points %.2f along the radius')
                 :format(case.dx, case.dy, heading, dot))
     end
+end)
+
+t.test('THE SHIPPED WALL ACTUALLY SEALS -- measured, not assumed', function()
+    -- THE TEST THIS FILE WAS MISSING. Everything above checks ONE piece at a
+    -- time, and one piece can be perfectly perpendicular while the ring it
+    -- belongs to still has holes in it. What a player meets is the ring.
+    --
+    -- The bug that got through: TangentHeading reflected the angle instead of
+    -- rotating it, so pieces were true walls at the four compass points and
+    -- progressively less so in between -- at 45 degrees a container stood
+    -- dead along the radius. Every per-piece assertion above passed, because
+    -- the helper they used carried the same mirrored convention.
+    --
+    -- Measured as ANGULAR COVERAGE rather than end-to-end distance: the long
+    -- axis flips sign around the ring, so a gap measured from one piece's end
+    -- to the next one's start silently compares the wrong ends.
+    local LEN, WID = 12.19, 2.44        -- a real GTA shipping container
+    local arena = Arena.GetArenaByKey('skydome')
+
+    local blocked, worstDot, pieces = 0.0, 1.0, 0
+    for _, piece in ipairs(arena.cover.pieces) do
+        local radius = math.sqrt(piece.x * piece.x + piece.y * piece.y)
+        if piece.align == 'tangent' and (piece.z or 0.0) == 0.0 and radius > 40.0 then
+            pieces = pieces + 1
+            local heading = math.rad(Arena.TangentHeading(piece.x, piece.y, true))
+            -- local +X in world, which is where the long side points
+            local ax, ay = math.cos(heading), math.sin(heading)
+            local phi = math.atan(piece.y, piece.x)
+            local tx, ty = -math.sin(phi), math.cos(phi)
+            local dot = math.abs(ax * tx + ay * ty)
+            if dot < worstDot then worstDot = dot end
+            -- side-on blocks its length, end-on blocks only its width
+            local across = LEN * dot + WID * (1.0 - dot)
+            blocked = blocked + 2.0 * math.deg(math.atan((across / 2.0) / radius))
+        end
+    end
+
+    t.isTrue(pieces >= 20, ('only %d wall pieces were found to measure'):format(pieces))
+    t.isTrue(worstDot > 0.99,
+        ('a wall piece stands %.2f across the radius -- 1.0 is a wall, 0.0 is a spoke with a gap beside it')
+            :format(worstDot))
+    t.isTrue(blocked > 330.0,
+        ('the ring blocks only %.1f of 360 degrees, so there is a hole in it to walk out through')
+            :format(blocked))
+end)
+
+t.test('and the config headings agree with the formula that will replace them', function()
+    -- align = 'tangent' means the client recomputes from the measured model,
+    -- so the numbers written in config.lua are the fallback for a model this
+    -- build cannot measure. They were generated from the broken formula and
+    -- were mirrored too -- a build that fell back got the spoke wall.
+    local arena = Arena.GetArenaByKey('skydome')
+    local wrong = 0
+    for _, piece in ipairs(arena.cover.pieces) do
+        if piece.align == 'tangent' and not (piece.x == 0.0 and piece.y == 0.0) then
+            local want = Arena.TangentHeading(piece.x, piece.y, true)
+            if math.abs((piece.heading or -1.0) - want) > 0.05 then wrong = wrong + 1 end
+        end
+    end
+    t.equals(wrong, 0, ('%d cover pieces carry a fallback heading the client would not choose'):format(wrong))
 end)
 
 t.test('and the answer is different for a prop built the other way round', function()

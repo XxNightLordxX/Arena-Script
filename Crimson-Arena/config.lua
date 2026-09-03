@@ -27,9 +27,9 @@
       812   Permissions   Who may open a match, who may force-stop one
       893   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1430   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1866   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1876   Webhook       Optional: a Discord line per finished match
-     1913   Dispatch      Optional: keeping police and EMS out of the arena
+     1873   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1883   Webhook       Optional: a Discord line per finished match
+     1920   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1790,13 +1790,20 @@ Config.Loadouts = {
         -- carry every entry's own maximum at once, which is a different
         -- match to the one the per-item numbers describe.
         --
-        -- IT IS THE REAL LIMIT, AND IT BINDS BEFORE THE PER-ITEM ONES. At 8,
-        -- the 25 armour and 30 bandages below were unreachable -- a player
-        -- could carry eight things in total whatever those numbers said. 55
-        -- is 25 + 30, so both may be maxed at once and the per-item numbers
-        -- are the ones actually doing the limiting. Lower this and it takes
-        -- over again.
-        totalItems = 55,
+        -- OFF, so the per-item numbers below are the ONLY limit.
+        --
+        -- It used to be 8, which meant a player carried eight things in total
+        -- however generous the per-item maximums were -- the 25 armour below
+        -- would have been fiction. It was raised to 55 (25 + 30) so both
+        -- could be maxed at once, and then to 0 so it stops being a second
+        -- number to keep in step: add a third supply and it is limited by its
+        -- own `max`, not silently squeezed by a total nobody remembered.
+        --
+        -- The real ceiling now is ox_inventory's, not this one. A fighter
+        -- carrying every maximum is 55 items plus up to 2000 rounds, and
+        -- ox_inventory refuses what will not fit -- server/ammo.lua says so
+        -- in the console, naming weight first.
+        totalItems = 0,
 
         -- THE ITEM NAMES ARE THE ONLY PART THAT MATTERS TO ox_inventory, and
         -- they must exist in YOUR ox_inventory data. `armour` and `bandage`

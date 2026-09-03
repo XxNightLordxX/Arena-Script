@@ -17,19 +17,19 @@
     ------------------------------------------------------------------------------
      line   setting       what it is
     ------------------------------------------------------------------------------
-       78   Lobby         The NPC players walk up to
-      151   Match         Lives, timers, player counts, win condition
-      366   Teams         The sides, and whether they may be uneven
-      469   Modes         Free-for-all and team deathmatch
-      488   DefaultMode   Which of them a new lobby opens on
-      507   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      700   UI            Panel colours, logo and title
-      758   Permissions   Who may open a match, who may force-stop one
-      839   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1376   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1768   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1778   Webhook       Optional: a Discord line per finished match
-     1815   Dispatch      Optional: keeping police and EMS out of the arena
+       83   Lobby         The NPC players walk up to
+      156   Match         Lives, timers, player counts, win condition
+      371   Teams         The sides, and whether they may be uneven
+      474   Modes         Free-for-all and team deathmatch
+      493   DefaultMode   Which of them a new lobby opens on
+      512   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      705   UI            Panel colours, logo and title
+      763   Permissions   Who may open a match, who may force-stop one
+      844   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1381   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1773   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1783   Webhook       Optional: a Discord line per finished match
+     1820   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -66,7 +66,12 @@ Config = {}
 Config.ResourceLabel = 'Crimson Arena'
 
 --- Extra console logging for anyone debugging a match that went wrong.
---- Chatty by design: turn it off once the arena is behaving.
+---
+--- SHIPS ON, DELIBERATELY. This resource is still being run in against a live
+--- server, and the debug channel is how a round that went wrong gets explained
+--- afterwards rather than guessed at. It costs one comparison per call site
+--- when off and a line of console per event when on, and nothing here reaches
+--- a player either way.
 Config.Debug = true
 
 --- ox_lib notification title for every message this resource sends.

@@ -714,6 +714,19 @@ option {
     background: var(--surface-raised);
 }
 
+/* A side this player cannot move to: sides assigned by the server, a match
+   that has already kicked off, or a side that is full. Dimmed rather than
+   removed -- the count on it is still worth reading -- and the hover lift
+   is taken away, because a tile that lights up under the cursor and does
+   nothing when clicked is the panel looking broken. */
+.team-tile.locked {
+    opacity: 0.55;
+}
+
+.team-tile.locked:hover {
+    background: var(--surface);
+}
+
 .team-tile.active {
     background: var(--surface-raised);
     border-color: var(--accent);

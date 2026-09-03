@@ -1653,12 +1653,33 @@
             tile.appendChild(makeEl('div', 'team-tile-count',
                 plural(count, 'player') + (team.key === mine ? ' · you' : '')));
 
-            if (teams.allowChoose !== false && playerMatchId() === match.id) {
+            /* WHY THIS TILE CANNOT BE CLICKED, or null. Each of these is a
+               refusal server/lobby.lua already makes; the panel used to make
+               none of them, so a tile that would be turned down looked
+               exactly like one that would not and answered with a red toast
+               after the click. */
+            var locked = null;
+            if (teams.allowChoose === false) {
+                locked = 'Sides are assigned by the server.';
+            } else if (playerMatchId() !== match.id) {
+                locked = 'You are not in this match.';
+            } else if (match.state !== 'lobby') {
+                /* The lobby countdown still has the panel open, and the
+                   picker went on offering sides through the whole of it. */
+                locked = 'This match has already kicked off — sides are locked.';
+            } else if (team.key !== mine && int(teams.maxTeamSize, 0) > 0
+                       && count >= int(teams.maxTeamSize, 0)) {
+                locked = 'This side is full (' + plural(int(teams.maxTeamSize, 0), 'player') + ').';
+            }
+
+            if (locked === null) {
                 tile.title = 'Fight on this side.';
                 tile.addEventListener('click', function () {
                     post('setTeam', { teamKey: team.key });
                 });
             } else {
+                tile.classList.add('locked');
+                tile.title = locked;
                 tile.style.cursor = 'default';
             }
 
@@ -1668,7 +1689,9 @@
         if (teams.allowChoose === false) {
             host.appendChild(makeEl('div', 'hint', 'Sides are assigned by the server. You cannot pick one.'));
         } else if (playerMatchId() === match.id) {
-            host.appendChild(makeEl('div', 'hint', 'Click a side to move to it. The one you are on is lit.'));
+            host.appendChild(makeEl('div', 'hint', match.state === 'lobby'
+                ? 'Click a side to move to it. The one you are on is lit.'
+                : 'Sides are locked once the match starts. Yours is lit.'));
         }
 
         /* Uneven teams are legal by default -- 7v1 is a match, not an
@@ -1832,14 +1855,29 @@
         var ready = byId('btn-ready');
         var isReady = player().ready === true;
         if (has(ready)) {
+            /* PICK A SIDE FIRST, on a server that says so. With
+               Config.Teams.autoAssignIfUnchosen off, server/lobby.lua
+               refuses a ready from somebody who has not chosen -- and the
+               panel could not see the setting, so the button was lit and
+               answered with a toast, on the one screen where the picker is
+               sitting directly above it. Taking a ready BACK is never
+               refused for this. */
+            var teamRules = cfg().teams || {};
+            var needsSide = !isReady
+                && match.teams === true
+                && teamRules.autoAssignIfUnchosen === false
+                && !keyOr(player().team, null);
+
             /* The label says what pressing it makes you, which is the only
                reading that survives being read in a hurry. */
             ready.textContent = isReady ? 'Not Ready' : 'Ready Up';
-            ready.title = isReady
-                ? 'Take your ready back. Nothing starts without you.'
-                : 'Tell the others you are set. This does not start the round.';
+            ready.title = needsSide
+                ? 'Pick a side above first — this server will not put you on one for you.'
+                : (isReady
+                    ? 'Take your ready back. Nothing starts without you.'
+                    : 'Tell the others you are set. This does not start the round.');
             ready.classList.toggle('btn-primary', !isReady);
-            ready.disabled = !inMatch || match.state !== 'lobby';
+            ready.disabled = !inMatch || match.state !== 'lobby' || needsSide;
             ready.onclick = function () {
                 play('ready');
                 post('setReady', { ready: !isReady });

@@ -417,6 +417,19 @@ local function snapshotConfig()
             -- any difference at all and told a 3v2 lobby the server would
             -- not start it. The server starts it: 1 is within 1.
             maxTeamSizeDifference = math.max(0, Arena.ToInt(Config.Teams.maxTeamSizeDifference) or 1),
+            -- THE CAP ON ONE SIDE, for the same reason as the allowance
+            -- above it: resolveTeam refuses a switch onto a full side and
+            -- the panel could not see the number, so the tile stayed
+            -- clickable and answered "That side is full." after the click.
+            -- 0 is unlimited, the way it is everywhere else in the config.
+            maxTeamSize = math.max(0, Arena.ToInt(Config.Teams.maxTeamSize) or 0),
+            -- WHETHER SKIPPING THE PICKER IS ALLOWED. With this off,
+            -- SetReady refuses a player who has not chosen a side -- and
+            -- the panel could not see it, so Ready Up was lit and answered
+            -- "Somebody still has not picked a side." after the click, on
+            -- the one screen where the picker is sitting right above the
+            -- button.
+            autoAssignIfUnchosen = Config.Teams.autoAssignIfUnchosen ~= false,
             list = Arena.GetEnabledTeams(),
         },
 

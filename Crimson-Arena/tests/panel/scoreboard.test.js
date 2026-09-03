@@ -108,7 +108,7 @@ test('the HUD stays hidden until the client says otherwise', () => {
 
 test('switched on with no numbers yet, the fields are BLANK rather than zero', () => {
     // The sweep that fills them runs once a second, so there is a real
-    // window with the overlay up and nothing in it. "Alive 0 / 0" in that
+    // window with the overlay up and nothing in it. "Remaining 0 / 0" in that
     // window claims an empty arena to a player standing in a full one.
     const panel = panelWith(false);
 
@@ -126,10 +126,10 @@ test('switched on with no numbers yet, the fields are BLANK rather than zero', (
 test('the numbers appear once they arrive', () => {
     const panel = panelWith(false);
 
-    panel.send('hud', { visible: true, hud: { alive: 3, total: 8, kills: 2, deaths: 1, timeLeft: 125 } });
+    panel.send('hud', { visible: true, hud: { remaining: 3, total: 8, kills: 2, deaths: 1, timeLeft: 125 } });
 
-    assert.strictEqual(panel.node('hud-alive').textContent, 'Alive 3 / 8',
-        'the alive count is not what the server sent');
+    assert.strictEqual(panel.node('hud-alive').textContent, 'Remaining 3 / 8',
+        'the remaining count is not what the server sent');
     assert.strictEqual(panel.node('hud-kills').textContent, 'Kills 2  Deaths 1',
         'the kill and death counts are not what the server sent');
 });
@@ -153,11 +153,11 @@ test('and a round with NO time limit shows no clock at all', () => {
     // that has already ended, and the player cannot clear it.
     const panel = panelWith(false);
 
-    panel.send('hud', { visible: true, hud: { alive: 2, total: 2, timeLeft: null } });
+    panel.send('hud', { visible: true, hud: { remaining: 2, total: 2, timeLeft: null } });
 
     assert.strictEqual(panel.node('hud-timer').textContent, '',
         'an untimed round shows a clock it has no business showing');
-    assert.strictEqual(panel.node('hud-alive').textContent, 'Alive 2 / 2',
+    assert.strictEqual(panel.node('hud-alive').textContent, 'Remaining 2 / 2',
         'the rest of the overlay went blank along with the clock');
 });
 

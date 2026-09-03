@@ -3290,7 +3290,7 @@
             timer.textContent = (left === null || left === undefined) ? '' : clock(left);
         }
 
-        if (has(alive)) alive.textContent = 'Alive ' + int(hud.alive, 0) + ' / ' + int(hud.total, 0);
+        if (has(alive)) alive.textContent = 'Remaining ' + int(hud.remaining, 0) + ' / ' + int(hud.total, 0);
 
         if (has(kills)) kills.textContent = 'Kills ' + int(hud.kills, 0) + '  Deaths ' + int(hud.deaths, 0);
 
@@ -3417,7 +3417,7 @@
                        shapes are read, and a bare visibility message leaves
                        the numbers alone instead of blanking them. */
                     if (data.hud && typeof data.hud === 'object') state.hud = data.hud;
-                    else if (data.scoreboard !== undefined || data.alive !== undefined) state.hud = data;
+                    else if (data.scoreboard !== undefined || data.remaining !== undefined) state.hud = data;
                     if (!state.hudVisible) state.hud = null;
                     renderHud();
                     break;

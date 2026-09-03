@@ -665,7 +665,15 @@ local function snapshotMatches()
                 ready = player.ready == true,
                 kills = player.kills,
                 deaths = player.deaths,
-                alive = player.alive == true,
+                -- NOT OUT, which is not the same as breathing, and this
+                -- used to read `player.alive == true`. On the shipped three
+                -- lives a fighter waiting out respawnDelaySeconds has that
+                -- flag down for five seconds a death, so the spectator bet
+                -- board struck their name through as knocked out and put
+                -- "somebody is out of this round" under it -- every death,
+                -- of anyone, in every round. isEliminated is the predicate
+                -- this field has always been documented to carry.
+                alive = not isEliminated(match, player.src),
                 isHost = player.src == match.hostSource,
             }
         end
@@ -1186,10 +1194,14 @@ function ArenaLobby.Leave(src, reasonKey)
     if player.stake > 0 then
         if refund then
             ArenaBetting.RefundOne(match.id, target, reasonKey or 'bet.refund_left')
-        elseif not started then
-            -- Only the lobby forfeit says anything. The mid-round one has
-            -- been silent since it shipped and is not this change's to alter;
-            -- this one is new, so the player it takes money from hears why.
+        else
+            -- EVERY FORFEIT SAYS SO, both of them. The mid-round one used to
+            -- be silent: a player who quit a live round lost their entry fee
+            -- to the pot with nothing on screen about it, and the only way to
+            -- find out was to count your money before and after. KeepInPot
+            -- moves no money -- it reads the stake that is already escrowed
+            -- and names the amount -- so telling the mid-round leaver costs
+            -- exactly one notification and settles nothing early.
             ArenaBetting.KeepInPot(match.id, target)
         end
     end

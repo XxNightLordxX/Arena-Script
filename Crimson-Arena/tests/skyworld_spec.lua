@@ -1984,4 +1984,69 @@ t.test('and its cover block still works if an operator switches it on', function
     t.equals(#c.world.live(), 0, 'ground cover was left standing after the match')
 end)
 
+
+-- ========================================================================
+-- A SPECTATOR GETS THE ARENA TOO
+--
+-- Reported from a live server: "when spectating the skydome it doesn't show
+-- the props."
+--
+-- buildArenaProps was called from exactly one place -- the `enterArena`
+-- handler -- so only a FIGHTER ever had scenery. A spectator is put in the
+-- match's routing bucket, which is what carries the players across, but the
+-- props are LOCAL objects each client creates for itself and nothing ever
+-- asked theirs to. On the sky arena that is fighters standing on empty air,
+-- inside a wall of containers that is not there.
+-- ========================================================================
+
+t.test('a spectator who never entered still gets the floor and the wall', function()
+    local c = newClient({ start = { x = 1500.0, y = 3000.0, z = 1201.0 } })
+    t.equals(#c.world.live(), 0, 'the fixture started with scenery already up')
+
+    -- STANDING WHERE THE FIGHTERS ARE, which is the precondition and not a
+    -- convenience. CreateObject produces nothing outside the streaming
+    -- bubble, so a spectator whose body is still across the map builds an
+    -- arena of nothing -- the same failure this resource had when the sky
+    -- floor was first written. client/spectate.lua parks the watcher at the
+    -- arena and only builds once it has a fighter to follow.
+    local built = c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0)
+
+    t.isTrue(built, 'the spectator was told there is no arena to look at')
+    t.isTrue(#c.world.live() > 0, 'nothing was built for the spectator at all')
+
+    local containers = 0
+    for _, object in ipairs(c.world.live()) do
+        if tostring(object.model):find('container', 1, true) then containers = containers + 1 end
+    end
+    t.isTrue(containers > 0, 'the spectator sees the floor but not the wall')
+end)
+
+t.test('and it comes down again when they stop watching', function()
+    local c = newClient({ start = { x = 1500.0, y = 3000.0, z = 1201.0 } })
+    c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0)
+    t.isTrue(#c.world.live() > 0)
+
+    c.env.ArenaMatch.DropSpectatorScenery()
+
+    t.equals(#c.world.live(), 0, 'a spectator left the arena standing after they stopped watching')
+end)
+
+t.test('but it REFUSES to take down a fighter\'s arena', function()
+    -- An eliminated fighter watching the rest of the round is both things at
+    -- once. They are still standing on that floor: dropping it because they
+    -- stopped watching is a very long fall.
+    local c = newClient()
+    c.enter('skydome')
+    local standing = #c.world.live()
+    t.isTrue(standing > 0, 'the fighter never got an arena to stand on')
+
+    -- Watching the round they are already in must not rebuild it either --
+    -- that would take the floor away and put it back under them.
+    c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0)
+    t.equals(#c.world.live(), standing, 'the fighter\'s arena was rebuilt under them')
+
+    c.env.ArenaMatch.DropSpectatorScenery()
+    t.equals(#c.world.live(), standing, 'THE FLOOR WAS PULLED OUT FROM UNDER A LIVE FIGHTER')
+end)
+
 os.exit(t.summary())

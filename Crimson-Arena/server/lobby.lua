@@ -667,6 +667,20 @@ local function snapshotMatches()
             id = match.id,
             label = match.label,
             arenaKey = match.arenaKey,
+            -- THE SIZE THE ARENA WAS ACTUALLY BUILT AT, for spectators.
+            --
+            -- A fighter is told this in `enterArena` and builds the floor and
+            -- the cover from it. A spectator is never sent that event, so
+            -- nothing ever built the scenery on their machine: on the sky
+            -- arena they watched fighters standing on nothing, inside a wall
+            -- of containers that was not there. Being in the match's routing
+            -- bucket is what lets them see the PLAYERS; the props are local
+            -- objects each client makes for itself, so the bucket does not
+            -- help.
+            --
+            -- nil until the round goes live, which is also the only time
+            -- anybody can watch it.
+            sizeFactor = match.sizeFactor,
             -- An arena or mode switched off while a match was already using
             -- it stops resolving; the key is still better than a blank card.
             arenaLabel = arena and arena.label or match.arenaKey,

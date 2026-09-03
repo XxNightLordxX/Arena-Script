@@ -1197,6 +1197,11 @@ local arenaSurfaceZ = nil
 --- cannot run on the exact paths that leave props standing.
 local builtArena = nil
 
+--- Whether the scenery currently standing was built for a SPECTATOR rather
+--- than for a fighter. Only a spectator's own build is torn down when they
+--- stop watching -- an eliminated fighter is still on their floor.
+local spectatorBuilt = false
+
 --- One prop's real footprint and height, straight from the game.
 ---
 --- ASKED RATHER THAN CONFIGURED, and it removes the two numbers nobody can
@@ -1340,6 +1345,7 @@ end
 --- names the wrong arena.
 local function clearArenaScenery()
     removeArenaProps()
+    spectatorBuilt = false
     if builtArena then sweepStrayArenaProps(builtArena.key, builtArena.factor) end
     arenaSurfaceZ = nil
 end
@@ -1367,6 +1373,11 @@ local function buildArenaProps(arenaKey, factor, boundary)
     -- those stacks two copies of every prop in the same place.
     sweepStrayArenaProps(arenaKey, factor)
     builtArena = { key = arenaKey, factor = factor }
+    -- OWNED BY A FIGHTER UNTIL SOMETHING SAYS OTHERWISE. Reset here rather
+    -- than at the two call sites: a spectator who later joins a round builds
+    -- through this same function, and leaving the flag set would let a later
+    -- DropSpectatorScenery pull the floor out from under them mid-match.
+    spectatorBuilt = false
 
     -- THE SAME FACTOR THE SERVER PLANNED THE SPAWNS WITH. It arrives on the
     -- entry payload rather than being worked out here, because this side
@@ -1635,6 +1646,49 @@ local function leaveArena(returnCoords)
     if Config.UI.showMatchHud then
         ArenaUI.UpdateHud({ visible = false })
     end
+end
+
+--- Builds the arena's floor and cover for somebody who is WATCHING rather
+--- than fighting, and reports whether they are now looking at one.
+---
+--- WHY THIS EXISTS. buildArenaProps is called from exactly one place -- the
+--- `enterArena` handler -- so only a fighter ever had scenery. A spectator is
+--- put in the match's routing bucket, which is what lets them see the
+--- players, but the props are LOCAL objects each client creates for itself
+--- and no event ever asked theirs to. On the sky arena that is fighters
+--- standing on nothing, inside a wall that is not there.
+---
+--- IT REFUSES TO TOUCH A FIGHTER'S SCENERY. An eliminated fighter who
+--- watches the rest of the round already built this arena on the way in, and
+--- rebuilding it under them would take the floor away and put it back. So a
+--- build that matches what is already standing is a no-op, and only a build
+--- this function actually performed is torn down again by DropSpectatorScenery.
+--- @param arenaKey any
+--- @param factor number|nil
+--- @return boolean standing -- whether scenery for this arena is now up
+function ArenaMatch.EnsureSpectatorScenery(arenaKey, factor)
+    if not Arena.IsKey(arenaKey) then return false end
+
+    local wantedFactor = tonumber(factor) or 1.0
+    if builtArena and builtArena.key == arenaKey then return true end
+
+    local arena = Arena.GetArenaByKey(arenaKey)
+    local boundary = type(arena) == 'table' and arena.boundary or nil
+    if not buildArenaProps(arenaKey, wantedFactor, boundary) then
+        clearArenaScenery()
+        return false
+    end
+
+    spectatorBuilt = true
+    return true
+end
+
+--- Takes down only scenery EnsureSpectatorScenery put up. A fighter's own
+--- arena is left exactly where it is: they are still standing on it.
+function ArenaMatch.DropSpectatorScenery()
+    if not spectatorBuilt then return end
+    spectatorBuilt = false
+    clearArenaScenery()
 end
 
 RegisterNetEvent('crimson_arena:client:enterArena', function(data)

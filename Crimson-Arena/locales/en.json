@@ -92,6 +92,7 @@
         "pot_won": "The pot is yours: %s",
         "resource_stopping": "The arena is going down. Stakes back.",
         "respawning": "Back in the fight in %d.",
+        "spectate_controls": "Arrow keys to change fighter, mouse wheel to zoom, BACKSPACE to stop watching.",
         "spectate_no_targets": "Nobody left to watch.",
         "spectate_started": "Watching the fight.",
         "spectating_player": "Watching %s.",

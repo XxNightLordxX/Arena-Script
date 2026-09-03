@@ -67,10 +67,19 @@ t.test('the shipped config validates clean', function()
 end)
 
 t.test('the three weapons this spec leans on are the shape it assumes', function()
-    t.equals(pistol.ammo.default, 60)
-    t.equals(pistol.ammo.max, 250)
-    t.equals(#Arena.GetAmmoOptions(pistol), 3)
-    t.equals(sniper.ammo.default, 20)
+    -- THE SHAPE, NOT THE NUMBERS. This is a canary for the tests below, and
+    -- it used to pin pistol.ammo.max at 250 and its option count at 3 --
+    -- so raising every firearm's ceiling to 500 broke a test that has
+    -- nothing to say about ceilings. What the tests below actually need is
+    -- that this weapon HAS a default, HAS a ladder to pick from, and has
+    -- room above the amounts they type; none of that is a literal.
+    t.equals(type(pistol.ammo.default), 'number')
+    t.isTrue(pistol.ammo.default > 0, 'the pistol has no default to fall back to')
+    t.isTrue(pistol.ammo.max > pistol.ammo.default,
+        'the pistol has no room above its default, so the clamp tests below cannot bite')
+    t.isTrue(#Arena.GetAmmoOptions(pistol) >= 2,
+        'the pistol has no ladder, so the preset tests below prove nothing')
+    t.isTrue(sniper.ammo.default > 0)
     -- Melee has nothing to pick: an EMPTY option list, not "no ammo".
     t.equals(#Arena.GetAmmoOptions(knife), 0)
     t.isNil(knife.ammo.options)
@@ -183,8 +192,18 @@ end)
 t.test('and it is still held to the weapon max, which is the whole safety of it', function()
     custom()
     t.equals(Arena.ResolveAmmo(pistol, 9999), pistol.ammo.max)
-    t.equals(Arena.ResolveAmmo(pistol, 251), pistol.ammo.max)
     t.equals(Arena.ResolveAmmo(sniper, 9999), sniper.ammo.max)
+
+    -- ONE OVER, DERIVED. This was written as the literal 251, which was one
+    -- over the pistol's ceiling at the time. Raising that ceiling turned it
+    -- into a perfectly legal amount, and the test failed while the clamp it
+    -- guards was working exactly as it always had.
+    for _, weapon in ipairs({ pistol, sniper }) do
+        t.equals(Arena.ResolveAmmo(weapon, weapon.ammo.max), weapon.ammo.max,
+            'the ceiling itself was refused')
+        t.equals(Arena.ResolveAmmo(weapon, weapon.ammo.max + 1), weapon.ammo.max,
+            'one round over the ceiling was not clamped to it')
+    end
 end)
 
 t.test('a typed amount below zero is still a refusal, not a clamp to zero', function()

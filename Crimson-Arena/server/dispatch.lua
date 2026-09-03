@@ -1463,13 +1463,14 @@ end
 --- @param victim number
 --- @return boolean ok
 --- @return string|nil reason -- why not, for the log
+--- @return string|nil kind -- 'crossfire' or 'team', which decides how much of the packet dies
 local function mayDamage(attacker, victim)
     if attacker == victim then return true end
 
     local attackerMatch, victimMatch = active[attacker], active[victim]
     if attackerMatch == nil and victimMatch == nil then return true end
     if attackerMatch == nil or attackerMatch ~= victimMatch then
-        return false, 'they are not in the same round'
+        return false, 'they are not in the same round', 'crossfire'
     end
 
     -- SAME ROUND. NOW THE TEAMS DECIDE, and this is where friendlyFire was
@@ -1493,11 +1494,33 @@ local function mayDamage(attacker, victim)
     local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(attackerMatch)
     if type(match) ~= 'table' or type(match.players) ~= 'table' then return true end
 
+    -- A WATCHER IS NOT A FIGHTER, and this is the first case config.lua names
+    -- as the reason this guard exists at all.
+    --
+    -- server/match.lua's syncMatchBuckets puts a spectator in the match's own
+    -- routing bucket -- deliberately, because watching requires seeing -- and
+    -- raises the SAME dispatch flag on them that a fighter carries, so
+    -- `active` says they are in the round. The crossfire half above therefore
+    -- passes for a fighter shooting a spectator, and it always has. The team
+    -- half could not catch it either: a spectator is not on `match.players`,
+    -- so Arena.CanDamage was handed a nil team, read it as "not the same
+    -- side" and allowed the shot. Their body is invisible and collisionless
+    -- while the camera runs, but it is not invincible, and the camera hands
+    -- it back the moment it runs out of fighters to follow.
+    --
+    -- FAILS CLOSED, unlike the missing-lobby case above, and the difference is
+    -- what is unknown. There, the roster had not answered and refusing would
+    -- have frozen a live round into a stalemate. Here the roster answered and
+    -- one of these two is not in it.
     local shooter, target = match.players[attacker], match.players[victim]
-    if Arena.CanDamage(match.modeKey, shooter and shooter.team, target and target.team) then
+    if shooter == nil or target == nil then
+        return false, 'one of them is watching rather than fighting', 'crossfire'
+    end
+
+    if Arena.CanDamage(match.modeKey, shooter.team, target.team) then
         return true
     end
-    return false, 'they are on the same team and friendly fire is off'
+    return false, 'they are on the same team and friendly fire is off', 'team'
 end
 
 AddEventHandler('weaponDamageEvent', function(sender, data)
@@ -1534,17 +1557,55 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         return
     end
 
+    -- RESOLVE THE WHOLE PACKET FIRST, THEN DECIDE, because CancelEvent kills
+    -- the whole packet and one packet can name several people.
+    --
+    -- This used to refuse and return on the first bad hit, which was right
+    -- while the only refusal was crossfire: two people in the same round
+    -- never reached that branch, so a packet could only ever be all-legal or
+    -- part-illegal-across-the-line. Adding the friendly-fire refusal broke
+    -- that. A shotgun names every ped its spread touched in ONE event, so a
+    -- crimson firing at an ash standing next to a crimson teammate produced a
+    -- packet with one legal victim and one refused one -- and cancelling it
+    -- took the enemy hit down too. Standing next to a teammate made you
+    -- immune to every spread weapon in the arena, which is a worse bug than
+    -- the one the friendly-fire check fixed.
+    local allowed, refusal, crossfire = 0, nil, false
+
     for _, entry in ipairs(hits) do
         local netId = tonumber(entry)
         local victim = netId and ownerOfNetId(netId) or nil
-        local ok, reason = true, nil
-        if victim then ok, reason = mayDamage(attacker, victim) end
-        if victim and not ok then
-            ArenaDebug('crossfire: %s may not damage %s -- %s.',
-                tostring(attacker), tostring(victim), reason or 'refused')
-            CancelEvent()
-            return
+        if victim then
+            local ok, reason, kind = mayDamage(attacker, victim)
+            if ok then
+                allowed = allowed + 1
+            else
+                refusal = refusal or { victim = victim, reason = reason }
+                if kind ~= 'team' then crossfire = true end
+            end
         end
+    end
+
+    if refusal == nil then return end
+
+    -- CROSSING THE LINE TAKES THE WHOLE PACKET WITH IT, unchanged. Letting a
+    -- spread through because most of it was legitimate applies the
+    -- illegitimate part too, and the illegitimate part here is somebody who
+    -- is not in this round -- a passer-by, another match, or the spectator
+    -- watching from inside the instance. That is the safety property this
+    -- guard was built for and it does not bend.
+    --
+    -- FRIENDLY FIRE BENDS, and it has to. It is a match rule rather than a
+    -- safety property, and the two refusals cannot be told apart by the
+    -- engine: a packet is cancelled whole or not at all. So a spread that
+    -- caught a teammate on its way to an enemy is allowed -- the teammate
+    -- takes the splash, and server/match.lua's attribution still refuses to
+    -- credit it. A shot with nothing legitimate in it is refused, which is
+    -- the case the report was about: aiming AT your own side.
+    if crossfire or allowed == 0 then
+        ArenaDebug('crossfire: %s may not damage %s -- %s.',
+            tostring(attacker), tostring(refusal.victim), refusal.reason or 'refused')
+        CancelEvent()
     end
 end)
 

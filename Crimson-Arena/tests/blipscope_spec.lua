@@ -932,28 +932,63 @@ end)
 
 
 -- ========================================================================
--- THE OUTLINE HAS TO DRAW THROUGH THE WALL
+-- IT HAS TO BE A HAZE, NOT A HAIRLINE
 --
--- REPORTED FROM LIVE TESTING, in a team deathmatch: no haze on a teammate
--- at all.
+-- REPORTED FROM LIVE TESTING TWICE, in a team deathmatch: no haze on a
+-- teammate. Every test above proves the right PEDS are outlined -- a
+-- teammate is, an enemy is not, a corpse is not, nothing is left behind --
+-- and not one of them can see what the outline LOOKS like.
 --
--- Every test above proves the right PEDS are outlined -- a teammate is, an
--- enemy is not, a corpse is not, and nothing is left behind. None of them
--- could see that the outline was being drawn with the DEFAULT shader,
--- which is occluded by anything in front of it and faint even in the open.
--- The note over refreshOutlines says the outline draws through geometry
--- and that this is the whole point of it; nothing switched that on.
+-- THE FIRST ANSWER WAS WRONG AND THIS TEST HELD IT IN PLACE. It asserted
+-- shader 1 and called it 'the see-through shader', on the reasoning that
+-- the default one is occluded by anything in front of it. That was invented
+-- rather than read. citizenfx/fivem's GamePrimitives_Outlines.cpp registers
+-- three renderers and disables depth testing for all of them in the shared
+-- base -- OutlineRenderer::StoreState() sets DepthStencilStateNoDepth -- so
+-- every shader draws through walls and the index chooses only the look:
+--
+--   0  GaussOutlineRenderer  width 30, intensity 55   a wide soft glow
+--   1  FirmOutlineRenderer   width 2                  a hairline
+--   2  MaskRenderer                                   a flat silhouette
+--
+-- So the first fix swapped a thirty-pixel glow for a two-pixel line and the
+-- report came back, in the word 'haze'. A test that pins a magic number
+-- with a made-up reason beside it is worse than no test: it made the wrong
+-- value look deliberate.
 -- ========================================================================
 
-t.test('the see-through shader is selected, not the default one', function()
+t.test('the haze is the WIDE shader -- a glow, which is what a haze is', function()
     local f = newFixture()
     f.enterLive()
     f.hud()
     f.step()
 
     t.isTrue(f.outlines[1000 + MATE] == true, 'the teammate was not outlined at all')
-    t.equals(f.outlineShader, 1,
-        'the outline is drawn with the default shader, so a teammate behind cover shows nothing')
+    t.equals(f.outlineShader, 0,
+        'shader 1 is a two-pixel line and shader 2 a flat silhouette; only 0 is the '
+        .. '30px glow the word "haze" describes')
+end)
+
+t.test('and nothing is drawn game-wide when there is no teammate on screen', function()
+    -- THE SAME OFFENCE THIS FIX EXISTS TO STOP, committed by us.
+    --
+    -- The colour and shader are one setting for the WHOLE GAME. Writing them
+    -- while drawing nothing of our own makes somebody else's highlight
+    -- flicker to a team colour -- once a second on the shipped radar
+    -- defaults, which is exactly the symptom being fixed here. The per-frame
+    -- hold was given this guard when it was written; the older writer inside
+    -- refreshOutlines was not.
+    local f = newFixture()
+    f.streamed = {}          -- teammates on the roster, none of them nearby
+    f.enterLive()
+    f.hud()
+    for _ = 1, 4 do f.step() end
+
+    t.equals(f.outlineCount(), 0, 'a teammate who is not streamed in was outlined')
+    t.isNil(f.outlineColor,
+        'the game-wide outline colour was set with nothing of ours drawn -- '
+        .. 'that is another resource\'s highlight turning crimson')
+    t.isNil(f.outlineShader, 'the game-wide outline shader was set with nothing of ours drawn')
 end)
 
 -- ========================================================================

@@ -160,7 +160,7 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **63 spec files** covering the shared, server and client logic, run with `lua5.4`
+- **65 spec files** covering the shared, server and client logic, run with `lua5.4`
   against a fake-native harness, plus **9 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
@@ -308,7 +308,7 @@ line-number map that is regenerated whenever the file changes.
 | `html/` | — | The panel. |
 | `locales/` | — | Every player-visible string. |
 | `sql/install.sql` | — | The leaderboard table, for operators who import by hand. |
-| `tests/` | — | 61 spec files and the fake-native harness they run against. |
+| `tests/` | — | The spec suite and the fake-native harness it runs against. |
 
 ---
 

@@ -152,6 +152,42 @@ t.test('and neither of them still points at an arena that ships switched off', f
     end
 end)
 
+t.test('REFERENCE.md counts the specs that are actually on disk', function()
+    -- ANOTHER NUMBER THAT GOES STALE ON ITS OWN, and it had gone stale
+    -- twice over: the same document claimed 63 spec files in its feature
+    -- list and 61 in its file table while 65 sat in tests/. Nobody reading
+    -- either sentence could tell, and a wrong count in the one document
+    -- that describes the test suite is the sentence an operator uses to
+    -- decide how much of this resource is covered.
+    --
+    -- The file table no longer carries a second copy of the number. One
+    -- count in the document is the other half of this fix.
+    local text = read('../REFERENCE.md')
+
+    -- Counted from THIS directory: run.sh cds into tests/ before running a
+    -- spec, so the globs below are the same ones it uses to pick them.
+    local function countOf(pattern)
+        local pipe = io.popen(('ls %s 2>/dev/null'):format(pattern))
+        if not pipe then return 0 end
+        local found = 0
+        for _ in pipe:lines() do found = found + 1 end
+        pipe:close()
+        return found
+    end
+
+    local lua, panel = countOf('*_spec.lua'), countOf('panel/*.test.js')
+
+    t.isTrue(lua > 0, 'no spec files were found at all, so this test is measuring nothing')
+    t.isTrue(panel > 0, 'no panel suites were found at all, so this test is measuring nothing')
+
+    t.contains(text, ('**%d spec files**'):format(lua),
+        ('REFERENCE.md does not say %d spec files, and that is how many there are')
+            :format(lua))
+    t.contains(text, ('**%d panel suites**'):format(panel),
+        ('REFERENCE.md does not say %d panel suites, and that is how many there are')
+            :format(panel))
+end)
+
 t.test('and it tells them where the sky arena is, in the coordinates config uses', function()
     -- The one step that needs a player to fly somewhere specific. A number
     -- that has drifted from config sends them to open sky and they report

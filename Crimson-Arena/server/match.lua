@@ -199,6 +199,26 @@ local function decideOnKills(match, teamMode)
     return leaders
 end
 
+--- STILL IN THE ROUND, not still breathing.
+---
+--- With Config.Match.lives above 1 -- and the shipped default is 3 -- a
+--- player lying on the floor waiting out respawnDelaySeconds has not lost
+--- anything yet. They are coming back, and every count that decides or
+--- reports how much round is left has to say so.
+---
+--- THE REASON THIS IS ONE FUNCTION AND NOT TWO COPIES: the round-end rule
+--- and the scoreboard header used to answer it differently. `evaluate` had
+--- this predicate; `pushHud` counted `player.alive` alone. So on the shipped
+--- config a 1v1 read "Alive 1 / 2" for five seconds after every single death
+--- while the round carried on, and a player watching the number they are
+--- given to judge the fight by was told it was already over. Two readers of
+--- the same question is what let them drift; one function is what stops it.
+--- @param player table
+--- @return boolean
+local function stillIn(player)
+    return player.alive == true or (Arena.ToInt(player.lives) or 0) > 0
+end
+
 --- @param match table
 --- @param teamMode boolean
 --- @return boolean
@@ -230,15 +250,13 @@ end
 local function evaluate(match)
     local teamMode = Arena.ModeUsesTeams(match.modeKey)
 
-    -- STILL IN THE ROUND, not still breathing. With Config.Match.lives above
-    -- 1 a player lying on the floor waiting out respawnDelaySeconds has not
-    -- lost yet, and counting them as eliminated would hand the match to
-    -- whoever shot them before they got back up.
+    -- Counting them as eliminated would hand the match to whoever shot them
+    -- before they got back up; stillIn is what stops that.
     local total, standing, lastStanding = 0, 0, nil
     local standingTeams = {}
     for _, player in pairs(match.players) do
         total = total + 1
-        if player.alive == true or (Arena.ToInt(player.lives) or 0) > 0 then
+        if stillIn(player) then
             standing = standing + 1
             lastStanding = player
             if teamMode and Arena.IsKey(player.team) then
@@ -314,7 +332,12 @@ local function scoreboardOf(players)
             team = player.team,
             kills = math.max(0, Arena.ToInt(player.kills) or 0),
             deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
+            -- Two different facts, and the board needs both. `alive` is
+            -- literally breathing and is what greys a row out -- a corpse
+            -- on the floor should look like one. `remaining` is stillIn:
+            -- whether they can still win, which is what the header counts.
             alive = player.alive == true,
+            remaining = stillIn(player),
         }
     end
 
@@ -453,15 +476,18 @@ local function pushHud(match)
     local players = ArenaLobby.PlayerArray(match)
     local scoreboard = scoreboardOf(players)
 
-    local alive = 0
+    -- The header count, and it is `remaining` rather than `alive` in the
+    -- payload as well as in the sum: a field named for one fact and holding
+    -- another is how the two drifted apart in the first place.
+    local remaining = 0
     for _, row in ipairs(scoreboard) do
-        if row.alive then alive = alive + 1 end
+        if row.remaining then remaining = remaining + 1 end
     end
 
     -- Shared by reference across every recipient; only the personal kill and
     -- death counts differ, and nothing on the client writes back.
     local common = {
-        alive = alive,
+        remaining = remaining,
         total = #players,
         timeLeft = match.endsAt and math.max(0, match.endsAt - os.time()) or nil,
         pot = ArenaBetting.GetPot(match.id),
@@ -471,7 +497,7 @@ local function pushHud(match)
 
     local function hudFor(kills, deaths)
         return {
-            alive = common.alive,
+            remaining = common.remaining,
             total = common.total,
             kills = kills,
             deaths = deaths,

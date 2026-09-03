@@ -1120,6 +1120,11 @@ local function newArena(world)
             GetPot = function() return 0 end,
             GetStake = function() return 0 end,
             Settle = function() return {} end,
+            -- goLive schedules ONE broadcast at the instant the side-bet
+            -- window shuts, and asks this when it is. nil is "no window to
+            -- wait on", which is the right answer for a fixture that models
+            -- no betting at all.
+            SecondsUntilBetsClose = function() return nil end,
             SettleSpectatorBets = function() end,
             RefundAll = function() end,
             Clear = function() end,

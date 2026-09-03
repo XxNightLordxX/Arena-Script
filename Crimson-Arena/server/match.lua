@@ -850,6 +850,30 @@ local function goLive(matchId)
 
     pushToMatch(match, 'crimson_arena:client:matchLive', { endsAt = match.endsAt })
     ArenaLobby.Broadcast()
+
+    -- AND ONE MORE BROADCAST, AT THE MOMENT THE SIDE-BET WINDOW SHUTS.
+    --
+    -- ArenaLobby.Broadcast is driven by things people DO -- a join, a ready,
+    -- a bet, a match ending -- and a window closing is a thing that happens
+    -- to nobody. Without this the snapshot's `betsOpen` would stay true on
+    -- every open panel until somebody else happened to act, which on a quiet
+    -- server is the rest of the round.
+    --
+    -- One timer per live match, at a known instant, and it is cheap to be
+    -- wrong: the broadcast is the same one a join would have sent, and the
+    -- guard below drops it if the round is already over.
+    local untilClosed = ArenaBetting.SecondsUntilBetsClose(match)
+    if untilClosed then
+        CreateThread(function()
+            Wait(untilClosed * 1000)
+            local current = ArenaLobby.Get(matchId)
+            -- Ended, or restarted as a different round under the same id:
+            -- either way this broadcast is about a match that no longer
+            -- exists and End() has already sent its own.
+            if current and current.state == 'live' then ArenaLobby.Broadcast() end
+        end)
+    end
+
     ArenaDebug('match %s is live with %d player(s)', tostring(matchId), #players)
 end
 

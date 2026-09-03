@@ -188,6 +188,84 @@ t.test('REFERENCE.md counts the specs that are actually on disk', function()
             :format(panel))
 end)
 
+t.test('and its function tables list the functions each file really defines', function()
+    -- THE SAME ROT, ONE LEVEL DOWN. REFERENCE.md carries a table per source
+    -- file -- "#### `server/betting.lua` -- 21 functions" and a row for each
+    -- -- and nothing checked it. Three sections had already drifted:
+    -- shared/arena.lua was missing Arena.SlotsPerPlayer, client/match.lua
+    -- was missing both of the spectator-scenery functions, and every
+    -- heading counted the rows below it rather than the file beside it.
+    --
+    -- A reader who cannot trust the list has to go and read the source,
+    -- which is what the list exists to save them.
+    --
+    -- BOTH DIRECTIONS. A function in the file and not in the table is a
+    -- reader who never learns it exists; a row for a function that has been
+    -- deleted sends them looking for something that is not there.
+    local text = read('../REFERENCE.md')
+
+    -- WALKED LINE BY LINE rather than matched section by section. The
+    -- obvious pattern -- '#### ...(.-)\n#### ' -- consumes the NEXT
+    -- heading as its terminator, so gmatch sees every other section and
+    -- silently checked half the document.
+    local sections, current = {}, nil
+    for line in text:gmatch('[^\n]*') do
+        local path, claimed = line:match('^#### `([^`]+)` .- (%d+) functions%s*$')
+        if path then
+            current = { path = path, claimed = tonumber(claimed), rows = {} }
+            sections[#sections + 1] = current
+        elseif line:match('^#### ') then
+            current = nil
+        elseif current then
+            local name = line:match('^| `([%a_][%w_.]*)%(')
+            if name then current.rows[#current.rows + 1] = name end
+        end
+    end
+
+    local checked = 0
+    for _, section in ipairs(sections) do
+        local path, claimed = section.path, section.claimed
+        checked = checked + 1
+
+        local documented, rows = {}, #section.rows
+        for _, name in ipairs(section.rows) do documented[name] = true end
+
+        local defined, count = {}, 0
+        for line in read('../' .. path):gmatch('[^\n]+') do
+            local name = line:match('^function ([%a_][%w_.]*)%(')
+            if name then
+                defined[name] = true
+                count = count + 1
+            end
+        end
+
+        t.equals(rows, claimed,
+            ('%s: the heading says %d functions and %d are listed under it')
+                :format(path, claimed, rows))
+        t.equals(count, rows,
+            ('%s: the file defines %d functions and REFERENCE.md lists %d')
+                :format(path, count, rows))
+
+        for name in pairs(defined) do
+            t.isTrue(documented[name] == true,
+                ('%s defines %s and REFERENCE.md never mentions it'):format(path, name))
+        end
+        for name in pairs(documented) do
+            t.isTrue(defined[name] == true,
+                ('REFERENCE.md lists %s under %s and the file does not define it')
+                    :format(name, path))
+        end
+    end
+
+    -- A loop that runs zero times passes every assertion inside it, so the
+    -- number of sections found is itself asserted: a rewrite of the
+    -- headings that this walk stopped recognising would otherwise turn the
+    -- whole test green while checking nothing.
+    t.isTrue(checked >= 13,
+        ('only %d function tables were found in REFERENCE.md, so this test checked almost nothing')
+            :format(checked))
+end)
+
 t.test('and it tells them where the sky arena is, in the coordinates config uses', function()
     -- The one step that needs a player to fly somewhere specific. A number
     -- that has drifted from config sends them to open sky and they report

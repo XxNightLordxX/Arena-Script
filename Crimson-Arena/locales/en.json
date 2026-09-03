@@ -19,6 +19,7 @@
     "bet_invalid": "That bet makes no sense.",
     "bet_invalid_pick": "Nothing in this match answers to that.",
     "bet_not_spectator": "Fighters do not bet on themselves.",
+    "bet_then_join": "You have money on this match. Watch it or fight it, not both.",
     "bet_out_of_range": "That amount is outside the limits.",
     "bets_closed": "Book is closed on this one.",
     "betting_disabled": "Betting is switched off.",

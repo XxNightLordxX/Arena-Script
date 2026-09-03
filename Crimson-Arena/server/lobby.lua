@@ -642,6 +642,12 @@ local function snapshotPlayer(src)
         -- redraw. False rather than nil so the field is always on the
         -- wire and the panel can tell "no bet" from "not sent".
         bet = (betOn and ArenaBetting.GetSideBet(betOn, src)) or false,
+        -- EVERY match they have money on, which `bet` above cannot cover:
+        -- that one is the bet on the match they are in or watching, and a
+        -- side-bet is placed from the Bets tab on a match they are doing
+        -- neither with. Without this the Join button on a backed match
+        -- stayed lit and the refusal arrived after the click.
+        backing = ArenaBetting.MatchesBackedBy(src),
         isHost = match ~= nil and match.hostSource == src,
     }
 end
@@ -682,6 +688,12 @@ local function snapshotMatches()
             id = match.id,
             label = match.label,
             arenaKey = match.arenaKey,
+            -- WHETHER THE BOOK IS STILL TAKING BETS, asked of the file that
+            -- owns the rule rather than re-derived here. The panel had no
+            -- way to know, so Place Bet stayed lit for the whole of a live
+            -- round and every click on it past the window came back
+            -- "Book is closed on this one."
+            betsOpen = ArenaBetting.BetsAreOpen(match),
             -- THE SIZE THE ARENA WAS ACTUALLY BUILT AT, for spectators.
             --
             -- A fighter is told this in `enterArena` and builds the floor and
@@ -1101,8 +1113,15 @@ function ArenaLobby.Join(src, matchId, teamKey, account)
     -- shipped default fee is ZERO. So on the commonest configuration there
     -- is a documented guard that nothing ever runs, and backing a match then
     -- taking a seat in it was free.
+    --
+    -- REFUSED IN THE WORDS OF THE THING THEY DID. This used to answer
+    -- 'error.bet_not_spectator' -- "Fighters do not bet on themselves." --
+    -- which describes the OTHER half of the rule, the one betting.lua
+    -- enforces when a fighter tries to bet. Read after clicking Join it
+    -- names an action the player did not take and a reason that is not
+    -- theirs.
     if ArenaBetting.IsEnabled() and ArenaBetting.HoldsSideBet(match.id, target) then
-        return false, 'error.bet_not_spectator'
+        return false, 'error.bet_then_join'
     end
 
     -- MONEY FIRST. The player does not exist in this match until the stake

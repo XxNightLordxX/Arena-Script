@@ -159,6 +159,23 @@ local function newServer(mutate)
         return env.ArenaLobby.BuildState(src)
     end
 
+    --- How many state pushes one player has been sent.
+    ---
+    --- A snapshot is the SERVER'S ANSWER, and the panel's loadout picker
+    --- treats it as one: it holds the player's edits as a draft and only
+    --- calls them saved once a snapshot has landed on top of them. So a
+    --- refusal that pushes nothing leaves the picker showing rejected
+    --- weapons under the word "Saved."
+    function server.statePushes(target)
+        local hits = 0
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:state' and message.target == target then
+                hits = hits + 1
+            end
+        end
+        return hits
+    end
+
     --- The loadout ArenaAmmo was asked to hand over to one player.
     function server.issuedTo(src)
         for _, entry in ipairs(issued) do
@@ -327,6 +344,48 @@ t.test('THE SHIPPED DEFAULT: the host picks, and everybody fights with it', func
     t.equals(ammoOf(server.issuedTo(1), weapon.weapon), 137)
     t.equals(ammoOf(server.issuedTo(2), weapon.weapon), 137,
         'a fighter who is not the host did not inherit the host\'s loadout')
+end)
+
+t.test('and a REFUSED loadout is answered with a snapshot, not only a toast', function()
+    -- The panel's loadout picker is the one screen holding state the server
+    -- has not agreed to: a draft, which exists only in the browser until it
+    -- is accepted. A refusal that was only a red toast left the picker
+    -- showing the rejected weapons and calling them saved -- and on the
+    -- shipped chooser = 'host' that is the answer for everybody in the
+    -- lobby except the person who opened it.
+    local server = lobby()
+    local weapon = firstCustomWeapon(server.config)
+    t.equals(server.config.Loadouts.chooser, 'host',
+        'the shipped chooser changed, and this test is about the old one')
+
+    local before = server.statePushes(2)
+    server.fire('setLoadout', 2, { weapons = { { key = weapon.key, ammo = 42 } } })
+
+    t.isTrue(server.statePushes(2) > before,
+        'a refused loadout told the player nothing the panel could redraw from')
+
+    -- AND THE SNAPSHOT IS THE SERVER'S ANSWER, not an echo of the request:
+    -- a push carrying the rejected pick back would be worse than none.
+    local stored = server.snapshot(2).player.loadout
+    local names = {}
+    for _, entry in ipairs((stored or {}).weapons or {}) do
+        names[#names + 1] = tostring(entry.key)
+    end
+    t.notContains(table.concat(names, ','), weapon.key,
+        'the refused pick came back in the snapshot as though it had been taken')
+end)
+
+t.test('and a request the argument readers throw out is answered the same way', function()
+    -- The other refusal on the same handler, and it is reached before
+    -- ArenaLobby.SetLoadout is called at all -- so it was a separate silent
+    -- path to the same stuck picker.
+    local server = lobby(function(config) config.Loadouts.chooser = 'player' end)
+
+    local before = server.statePushes(1)
+    server.fire('setLoadout', 1, 'not a table at all')
+
+    t.isTrue(server.statePushes(1) > before,
+        'a malformed loadout request told the player nothing the panel could redraw from')
 end)
 
 t.test('and with chooser = player, one fighter\'s amount is not handed to the other', function()

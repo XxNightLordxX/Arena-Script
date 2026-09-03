@@ -44,6 +44,7 @@ local function newServer(pockets, mutate, opts)
     opts = opts or {}
     local runner = Sandbox.newThreadRunner()
     local inv, console, handlers, hooks = {}, {}, {}, {}
+    local sent = {}
     -- How many times anything has yielded, which is the only clock this
     -- fixture has and what the late-start test counts against.
     local waits = 0
@@ -189,7 +190,13 @@ local function newServer(pockets, mutate, opts)
             table.sort(out)
             return out
         end,
-        TriggerClientEvent = function() end,
+        -- RECORDED, not swallowed. A player whose belongings could not be
+        -- handed back is told so, and a stub that dropped the message would
+        -- make the assertion about it pass against a server that says
+        -- nothing -- which is the defect it exists to catch.
+        TriggerClientEvent = function(event, target, payload)
+            sent[#sent + 1] = { event = event, target = target, payload = payload }
+        end,
         print = function(line) console[#console + 1] = line end,
         lib = Sandbox.newOxLib(),
         ArenaGetPlayer = function(src)
@@ -300,6 +307,20 @@ local function newServer(pockets, mutate, opts)
         end,
         hook = function(name) return hooks[name] end,
         log = function() return table.concat(console, '\n') end,
+
+        --- Every notification sentence one player has been shown, joined.
+        --- The real server/util.lua renders these off the real locale file,
+        --- so a message whose key does not exist fails here rather than on
+        --- somebody's screen.
+        notices = function(target)
+            local out = {}
+            for _, message in ipairs(sent) do
+                if message.event == 'crimson_arena:client:notify' and message.target == target then
+                    out[#out + 1] = tostring((message.payload or {}).description or '')
+                end
+            end
+            return table.concat(out, '\n')
+        end,
         stopResource = function() handlers['onResourceStop']('crimson_arena') end,
     }
 end
@@ -836,6 +857,64 @@ t.test('DEFECT: a restore that FAILS keeps the record of where the kit is', func
         'and forgot WHICH stash it is in, which is the one thing the player needs')
     t.equals(s.ammo.Owed(), 1,
         'and does not count itself as owing anybody anything, so nothing will come back for it')
+end)
+
+t.test('and the PLAYER is told, not only the console', function()
+    -- All of it was written to the console: the server knew, the retry
+    -- knew, the operator could read it -- and the one person whose
+    -- belongings these are walked out of the arena with empty pockets and
+    -- no reason given. Somebody who thinks a script has eaten their
+    -- inventory files a report and stops playing.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.contains(s.notices(1), 'could not be handed back',
+        'the player was told nothing about belongings the server knows it is holding')
+end)
+
+t.test('and is told nothing when the kit comes back normally', function()
+    -- The other direction. A message on every clean exit is noise on every
+    -- round of a working server, which is most of them.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the ordinary return failed, so this proves nothing')
+    t.notContains(s.notices(1), 'could not be handed back',
+        'a player whose kit came straight back was told it had not')
+    t.notContains(s.notices(1), 'is back',
+        'a player whose kit never went missing was told it had come back')
+end)
+
+t.test('and hears about it when the retry finally hands it over', function()
+    -- The other end of the promise. A player told their gear is held has to
+    -- be told when it stops being held, or the message is worth nothing and
+    -- they go looking for a report to file anyway.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('readStash')
+
+    t.isTrue(s.ammo.ReturnLeftovers(1), 'the retry could not hand the kit back')
+    t.contains(s.notices(1), 'is back',
+        'the kit came back and nobody told the player it had')
+end)
+
+t.test('and a player the sweep merely LOOKED at hears nothing', function()
+    -- ReturnLeftovers is the sweep's one look per character, and it runs
+    -- against everybody on the server, not only debtors -- so an empty
+    -- stash settling cleanly is the ordinary case, over and over. Telling
+    -- somebody their gear is back when they never lost any is noise on a
+    -- working server, and it is what the `returned > 0` guard is for.
+    local s = newServer({ [2] = OWN })
+
+    t.isTrue(s.ammo.ReturnLeftovers(2), 'the empty stash did not settle cleanly')
+    t.notContains(s.notices(2), 'is back',
+        'a player who never left anything behind was told it had come back')
 end)
 
 t.test('and the match cannot be dropped while that is outstanding', function()

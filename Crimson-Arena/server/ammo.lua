@@ -985,6 +985,18 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         -- stash; this remembers that in a form which outlives their server
         -- id. See THE RETRY at the bottom of this file.
         owed[record.citizenid] = record.stash
+
+        -- AND THE PLAYER IS TOLD, which is the half that was missing. All of
+        -- this was written to the console: the server knew, the retry knew,
+        -- the operator could read it -- and the one person whose belongings
+        -- these are walked out of the arena with empty pockets and no reason
+        -- given. Somebody who thinks a script has eaten their inventory
+        -- files a report and stops playing; somebody who has been told it is
+        -- held and coming back waits.
+        --
+        -- The stash is not named. It is a real stash, but not one they can
+        -- open, and an id they cannot use reads as an error code.
+        ArenaNotifyKey(src, 'notify.kit_held', 'error')
     end
 
     ArenaDebug('door: %s left (%s), kit %s', tostring(src), tostring(reasonKey),
@@ -1245,6 +1257,26 @@ function ArenaAmmo.ReturnLeftovers(src)
             stashed[other] = nil
             forgetWeapons(other)
         end
+    end
+
+    -- THE OTHER END OF notify.kit_held, and it is here rather than beside
+    -- the log above for two reasons.
+    --
+    -- ONLY WHEN IT IS ACTUALLY ALL BACK. The partial-return branch above
+    -- returns before this line, so "your gear is back" is never said over a
+    -- stash that still has something in it.
+    --
+    -- AND ONLY WHEN SOMETHING CAME BACK. This function also runs against
+    -- players who owe nothing -- the sweep's one look per character -- and
+    -- an empty stash settles cleanly. Telling somebody their gear is back
+    -- when they never lost any is noise on a working server.
+    --
+    -- The failures branch says nothing at all: it is reached on every pass
+    -- of a retry loop that runs every returnRetrySeconds, and a message
+    -- repeating "still held" every thirty seconds is worse than the silence
+    -- it replaced.
+    if returned > 0 then
+        ArenaNotifyKey(src, 'notify.kit_returned', 'success')
     end
 
     return true, returned, true

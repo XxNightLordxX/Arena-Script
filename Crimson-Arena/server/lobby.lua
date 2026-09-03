@@ -892,6 +892,20 @@ local function snapshotKeepOut(src)
     return zones
 end
 
+--- Sends one player the snapshot as it stands right now.
+---
+--- THE UNDO FOR A REFUSED REQUEST. The loadout picker holds a DRAFT -- the
+--- player's edits, which exist only in the panel until the server agrees --
+--- and a refusal used to be a red toast and nothing else, so the picker
+--- went on showing the rejected draft and calling it saved. Pushing the
+--- snapshot is what puts the screen back on what the server actually holds.
+--- @param src any
+function ArenaLobby.PushState(src)
+    local target = tonumber(src)
+    if not target then return end
+    pushState(target)
+end
+
 --- @param src number
 --- @return table snapshot
 function ArenaLobby.BuildState(src)

@@ -490,7 +490,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.SettleSpectatorBets(matchId, winningPick)` | Settles every side-bet on a match. |
 | `ArenaBetting.Clear(matchId)` | Drops a match's money state. |
 
-#### `server/lobby.lua` — 21 functions
+#### `server/lobby.lua` — 22 functions
 
 | Function | What it does |
 |---|---|
@@ -499,6 +499,7 @@ listed; the source documents them where they are.
 | `ArenaLobby.All()` | Oldest first, id breaking the tie, so two reads of an unchanged registry can never render the match list in a different order. |
 | `ArenaLobby.PlayerCount(match)` | How many players a match has seated. |
 | `ArenaLobby.PlayerArray(match)` | The roster as an ARRAY, in join order -- the shape every Arena.* rule takes, and the order a spawn index is drawn from. |
+| `ArenaLobby.PushState(src)` | Sends one player the snapshot as it stands right now -- the undo for a request the server refused. |
 | `ArenaLobby.BuildState(src)` | The whole snapshot one player is allowed to see: matches, their own row, the leaderboard and their wallet. |
 | `ArenaLobby.Broadcast()` | Pushes the snapshot to everyone who can see it and nobody who cannot. |
 | `ArenaLobby.MarkPanelOpen(src)` | Records that this player has the panel up, so pushes reach them. |

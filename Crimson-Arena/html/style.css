@@ -441,8 +441,7 @@ option {
 }
 
 /* Firefox, which takes neither of the above. */
-.weapon-grid,
-.panel-scroll {
+.weapon-grid {
     scrollbar-width: thin;
     scrollbar-color: var(--text-muted) var(--bg);
 }
@@ -821,15 +820,6 @@ option {
    panel body -- and the page under it -- from ever growing a scrollbar over
    the running game. With one section switched off the other fills the row
    with no rule needed to say so. */
-/* The radar toggle, set apart from the match actions above it: it changes
-   your own map, not the match, and the gap is what says so. */
-#lobby-radar-row {
-    display: flex;
-    margin-top: 0.6rem;
-    padding-top: 0.6rem;
-    border-top: 1px solid var(--border);
-}
-
 #loadout-lists {
     grid-column: 1;
     grid-row: 2;
@@ -1046,8 +1036,7 @@ option {
     border-color: var(--accent-dim);
 }
 
-#loadout-slots,
-#armor-picker {
+#loadout-slots {
     grid-column: 2;
     align-self: start;
     padding: 0.9rem;
@@ -1137,14 +1126,6 @@ option {
     color: var(--accent-bright);
     font-size: 0.75rem;
     line-height: 1.35;
-}
-
-#armor-picker {
-    grid-row: 3;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem;
 }
 
 #loadout-save-row {

@@ -161,7 +161,7 @@ instancing really happened rather than assuming it did.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
 - **65 spec files** covering the shared, server and client logic, run with `lua5.4`
-  against a fake-native harness, plus **9 panel suites** that load the real
+  against a fake-native harness, plus **10 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
   rather than chosen answers, which is what found the self-damage hole in the
@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 64 functions
+#### `shared/arena.lua` — 65 functions
 
 | Function | What it does |
 |---|---|
@@ -383,6 +383,7 @@ listed; the source documents them where they are.
 | `Arena.CanStartMatch(match)` | Whether a lobby may start. |
 | `Arena.HasRoom(currentCount)` | Whether one more player will fit. |
 | `Arena.LoadoutChooser()` | Who picks the loadout everyone fights with. |
+| `Arena.SlotsPerPlayer()` | How many weapons one player may carry, guns and blades together. 0 is no limit. |
 | `Arena.ValidateConfig()` | Walks the whole config and returns everything wrong with it, by name. |
 | `Arena.ReportConfigProblems()` | Prints whatever ValidateConfig found. |
 
@@ -460,7 +461,7 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 21 functions
+#### `server/betting.lua` — 24 functions
 
 | Function | What it does |
 |---|---|
@@ -480,6 +481,9 @@ listed; the source documents them where they are.
 | `ArenaBetting.GetPrizePool(matchId)` | Everything a winner of this match stands to be paid from, as one figure. |
 | `ArenaBetting.GetSideBet(matchId, src)` | One player's own side-bet on a match, or nil. |
 | `ArenaBetting.HoldsSideBet(matchId, src)` | Whether this player is holding an UNSETTLED side-bet on this match. |
+| `ArenaBetting.MatchesBackedBy(src)` | Every match this player currently has an unsettled side-bet on, so the panel can refuse a Join the server would refuse. |
+| `ArenaBetting.BetsAreOpen(match)` | Whether the book is still taking side-bets on this match. |
+| `ArenaBetting.SecondsUntilBetsClose(match)` | Seconds until the book shuts on a live round, or nil when there is no window to wait on. |
 | `ArenaBetting.HasSpectatorBet(matchId, src)` | Whether this player holds any side-bet on this match, settled or not. |
 | `ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)` | Takes a spectator's side-bet on a team or a fighter. |
 | `ArenaBetting.ReturnSideBets(matchId)` | Hands every unsettled side-bet on a match back, unjudged. |
@@ -558,12 +562,14 @@ listed; the source documents them where they are.
 | `ArenaState.MatchId()` | The match this player belongs to, lobby or live, or nil. |
 | `ArenaState.IsInMatch()` | Whether this player is attached to a match, lobby or live. |
 
-#### `client/match.lua` — 2 functions
+#### `client/match.lua` — 4 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaMatch.SetKeepOut(zones)` | Sets the arenas this client is fenced out of because a round it is not in is being fought there. |
 | `ArenaMatch.SetRadar(on)` | Set from `enterArena` -- never from the panel, which no longer has a control that reaches this side. |
+| `ArenaMatch.EnsureSpectatorScenery(arenaKey, factor)` | Builds the arena's props for somebody watching it, who is never sent `enterArena` and so never built them. Refuses to touch a fighter's own scenery. |
+| `ArenaMatch.DropSpectatorScenery()` | Takes down only scenery EnsureSpectatorScenery put up. |
 
 #### `client/spectate.lua` — 5 functions
 

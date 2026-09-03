@@ -1251,6 +1251,17 @@
             return 'This match is full (' + plural(max, 'player') + ').';
         }
 
+        /* MONEY ON IT ALREADY. server/lobby.lua refuses this join -- a bet
+           whose holder can cancel it by taking a seat and walking straight
+           out again is a bet with no risk in it -- and the panel had no way
+           to know, so the button stayed lit and the refusal arrived after
+           the click. `player().bet` cannot answer it: that is the bet on the
+           match they are IN or WATCHING, and a side-bet is placed from the
+           Bets tab on a match they are doing neither with. */
+        if (arrayOf(player().backing).indexOf(match.id) !== -1) {
+            return 'You have money on this match. Watch it or fight it, not both.';
+        }
+
         /* THE ACCOUNT THAT WILL ACTUALLY PAY. `player().money` is a single
            figure from the operator's settlement account, so a player with the
            fee in the bank and nothing in their pocket was told they could not
@@ -3056,6 +3067,23 @@
         }
 
         if (match.state === 'ended') return 'This match has finished.';
+
+        /* THE BOOK SHUTS PART-WAY INTO A LIVE ROUND, and this panel had no
+           idea. server/betting.lua stops taking side-bets
+           `closeAfterStartSeconds` after the fighting starts -- thirty
+           seconds on the shipped config -- and the only thing that knew was
+           the refusal on the way in, so a spectator watching a running match
+           saw a lit Place Bet button, clicked it, and got "Book is closed on
+           this one." The snapshot carries the answer now, and the server
+           broadcasts once at the instant it changes.
+
+           Read as `=== false` rather than `!== true`: a server running an
+           older panel, or a snapshot assembled before this field existed,
+           should keep offering the bet rather than refuse every one. */
+        if (match.betsOpen === false) {
+            return 'The book closed shortly after this round started.';
+        }
+
         if (!state.betPick) return 'Choose who you are backing.';
 
         /* Held to their own side, and told so BEFORE the click rather than

@@ -132,11 +132,30 @@ local function newArena(wallets, mutate)
         handler(data)
     end
 
-    function server.step() threads.step(); threads.step() end
+    --- One pass of every live coroutine, twice by default.
+    ---
+    --- The count is exposed because a broadcast scheduled BY a thread is
+    --- resumed inside the same pass that created it -- ipairs sees an entry
+    --- appended while it is walking -- so a two-pass step can run a timer
+    --- and its wake-up before a test has looked.
+    function server.step(times)
+        for _ = 1, (times or 2) do threads.step() end
+    end
     function server.log() return table.concat(console, '\n') end
 
     --- The snapshot this player would be sent, as the panel receives it.
     function server.state(src) return server.lobby.BuildState(src) end
+
+    --- How many pushes of one client event have gone out, to anybody.
+    --- A broadcast is measured by the fact that it HAPPENED: what it
+    --- carries is what every other test in this file already asserts.
+    function server.pushesOf(event)
+        local hits = 0
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:' .. event then hits = hits + 1 end
+        end
+        return hits
+    end
 
     --- The one match in `matches`, or nil.
     function server.onlyMatch(src)
@@ -342,7 +361,11 @@ t.test('DEFECT: somebody backing a FREE match cannot take a seat in it', functio
 
     local joined, why = s.lobby.Join(3, matchId, nil, nil)
     t.isFalse(joined, 'somebody backing the match took a seat in it')
-    t.equals(why, 'error.bet_not_spectator')
+    -- IN THE WORDS OF THE THING THEY DID. This used to answer
+    -- 'error.bet_not_spectator' -- "Fighters do not bet on themselves." --
+    -- which describes the half of the rule server/betting.lua enforces, and
+    -- names an action the player clicking Join did not take.
+    t.equals(why, 'error.bet_then_join')
 end)
 
 t.test('and somebody with no money on it joins freely', function()
@@ -350,6 +373,90 @@ t.test('and somebody with no money on it joins freely', function()
     local s, matchId = lobbyWithWatcher()
     t.isTrue(s.lobby.Join(3, matchId, nil, nil) == true,
         'a watcher who has bet nothing was refused a seat')
+end)
+
+t.test('the snapshot says whether the book is still taking bets', function()
+    -- server/betting.lua stops taking side-bets `closeAfterStartSeconds`
+    -- after the fighting starts. Nothing carried that to the panel, so
+    -- Place Bet stayed lit for the whole of a live round and every click on
+    -- it past the window came back "Book is closed on this one."
+    local s, matchId = lobbyWithWatcher(function(config)
+        config.Betting.spectatorBets.closeAfterStartSeconds = 30
+    end)
+    local match = s.lobby.Get(matchId)
+
+    t.equals(s.onlyMatch(3).betsOpen, true, 'a lobby was reported as closed to bets')
+
+    -- Put the round live with the window still running. Written onto the
+    -- match rather than driven through Start(), because the subject is what
+    -- the SNAPSHOT reports for a given clock, not how a round begins.
+    match.state = 'live'
+    match.startsAt = os.time() - 5
+    t.equals(s.onlyMatch(3).betsOpen, true,
+        'the book was reported shut five seconds into a thirty-second window')
+
+    match.startsAt = os.time() - 45
+    t.equals(s.onlyMatch(3).betsOpen, false,
+        'the book was reported open forty-five seconds into a thirty-second window')
+end)
+
+t.test('and the round tells every open panel the moment it shuts', function()
+    -- ArenaLobby.Broadcast is driven by things people DO -- a join, a ready,
+    -- a bet, a match ending -- and a window closing is a thing that happens
+    -- to nobody. Without a broadcast of its own the flag above would stay
+    -- true on every open panel until somebody else happened to act, which on
+    -- a quiet server is the rest of the round.
+    local s, matchId = lobbyWithWatcher(function(config)
+        config.Betting.spectatorBets.closeAfterStartSeconds = 30
+        config.Match.lobbyCountdownSeconds = 0
+        config.Match.startCountdownSeconds = 0
+        config.Match.minPlayers = 2
+    end)
+
+    s.lobby.SetReady(1, true)
+    s.lobby.SetReady(2, true)
+    t.isTrue(s.match.Start(matchId), 'the round never started')
+    -- ONE pass, not the default two. goLive runs on this one and the thread
+    -- it schedules is resumed inside the same pass -- far enough to park on
+    -- its Wait, no further -- so a second pass here would run the wake-up
+    -- before this test had looked at anything.
+    s.step(1)
+    t.equals(s.lobby.Get(matchId).state, 'live', 'the round never reached live')
+
+    local before = s.pushesOf('state')
+    -- The sandbox's Wait yields once whatever the duration, so one more pass
+    -- is the whole of the delay: what is under test is that a thread was
+    -- scheduled at all and that it broadcasts when it wakes.
+    s.step(1)
+    t.isTrue(s.pushesOf('state') > before,
+        'nothing was pushed when the book shut, so every open panel kept offering the bet')
+end)
+
+t.test('and the snapshot NAMES the matches they have money on', function()
+    -- THE PANEL COULD NOT SEE THE BET AT ALL, so the Join button on a
+    -- backed match stayed lit and the refusal above arrived as a toast
+    -- after the click.
+    --
+    -- `player.bet` cannot answer it: that field is the bet on the match
+    -- they are IN or WATCHING, and a side-bet is placed from the Bets tab
+    -- on a match they are doing neither with. A list, not one id, because
+    -- one bet per MATCH is a rule and one bet per player is not.
+    local s, matchId = lobbyWithWatcher()
+
+    t.equals(#s.state(3).player.backing, 0,
+        'a player who has bet nothing was listed as backing something')
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 1000, 'cash') == true,
+        'the side-bet was refused, so there is nothing to report')
+
+    local backing = s.state(3).player.backing
+    t.equals(#backing, 1, 'the snapshot named ' .. tostring(#backing) .. ' backed matches, not 1')
+    t.equals(backing[1], matchId, 'the snapshot named the wrong match')
+
+    -- AND NOT EVERYBODY ELSE'S. This is per-head, and a list built off the
+    -- whole book would refuse every player a seat the moment anyone bet.
+    t.equals(#s.state(1).player.backing, 0,
+        'another player was told they had money on a bet they did not place')
 end)
 
 t.test('the countdown can only be held while one is actually running', function()

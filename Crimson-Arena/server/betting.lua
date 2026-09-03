@@ -420,6 +420,44 @@ local function betsAreOpen(match)
     return (now - startedAt) < grace
 end
 
+--- The same question, asked from outside this file.
+---
+--- THE PANEL HAS TO BE ABLE TO ASK IT. Place Bet used to stay lit for the
+--- whole of a live round: the only thing that knew the book had shut was
+--- this predicate, called on the way in to PlaceSpectatorBet, so a
+--- spectator forty seconds into a round clicked an enabled button and was
+--- handed "Book is closed on this one." A control that refuses everything
+--- it offers is worse than one that is not there.
+--- @param match table
+--- @return boolean
+function ArenaBetting.BetsAreOpen(match)
+    return type(match) == 'table' and betsAreOpen(match) or false
+end
+
+--- Seconds until the book shuts on a live round, or nil when there is no
+--- countdown to report -- a lobby (no clock has started), a match that has
+--- ended, or a window that has already passed.
+---
+--- Used by server/match.lua to schedule the ONE broadcast that tells every
+--- open panel the book has shut. ArenaLobby.Broadcast is driven by things
+--- that happen -- a join, a ready, a bet -- and a window closing is a thing
+--- that happens to nobody, so without it the panel keeps whatever it was
+--- last told until somebody else acts.
+--- @param match table
+--- @return integer|nil
+function ArenaBetting.SecondsUntilBetsClose(match)
+    if type(match) ~= 'table' or match.state ~= 'live' then return nil end
+
+    local spectator = Config.Betting.spectatorBets or {}
+    local grace = math.max(0, Arena.ToInt(spectator.closeAfterStartSeconds) or 0)
+    local startedAt = Arena.ToInt(match.startsAt)
+    if grace <= 0 or not startedAt then return nil end
+
+    local left = (startedAt + grace) - os.time()
+    if left <= 0 then return nil end
+    return left
+end
+
 --- A pick has to be something that can actually win: an enabled team that
 --- somebody is standing on, or a fighter really in the match. Backing an
 --- empty team is not a bet, it is a donation.
@@ -1120,6 +1158,39 @@ function ArenaBetting.HoldsSideBet(matchId, src)
     local id = serverId(src)
     if not id or not Arena.IsKey(matchId) then return false end
     return holdsSideBet(matchId, id)
+end
+
+--- Every match this player currently has an unsettled side-bet on.
+---
+--- THE PANEL CANNOT WORK THIS OUT FOR ITSELF. `player.bet` in the snapshot
+--- reports one bet -- the one on the match they are IN or WATCHING -- and a
+--- side-bet is placed from the Bets tab on a match they are doing neither
+--- with. So the Join button on a match the player had money on stayed lit,
+--- and clicking it came back "Fighters do not bet on themselves.", which is
+--- not what they did and not why they were refused.
+---
+--- An array rather than one id: one bet per match is a rule, one bet per
+--- PLAYER is not, and a player watching the board can have money on several
+--- lobbies at once.
+--- @param src any
+--- @return string[] matchIds
+function ArenaBetting.MatchesBackedBy(src)
+    local id = serverId(src)
+    local out = {}
+    if not id then return out end
+
+    for matchId, bets in pairs(sideBets) do
+        for _, bet in ipairs(bets) do
+            -- An entry fee folded into the pool at settle time is not a bet
+            -- they placed, exactly as GetSideBet has it -- and it belongs to
+            -- a match they are already fighting in anyway.
+            if bet.src == id and not bet.settled and bet.fromEntryFee ~= true then
+                out[#out + 1] = matchId
+                break
+            end
+        end
+    end
+    return out
 end
 
 --- @param matchId string

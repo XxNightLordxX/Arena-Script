@@ -163,7 +163,10 @@
                 <section id="loadout-firearms" class="loadout-section">
                     <div class="loadout-section-head">
                         <h2 class="panel-heading">Firearms</h2>
-                        <!-- '2 of 2 guns'. -->
+                        <!-- '3 of 4 weapons' -- the SHARED count. Both
+                             sections show it, because there is one pool and
+                             a player reading the melee list still needs to
+                             know how full they are. -->
                         <span id="firearms-count" class="loadout-count"></span>
                     </div>
                     <!-- Category tabs over the FIREARMS list only. app.js
@@ -174,13 +177,13 @@
                     <div id="weapon-grid" class="weapon-grid"></div>
                 </section>
 
-                <!-- Hidden outright when meleeSlots is 0. The operator turned
-                     melee off, and an empty or greyed-out section would read
-                     as a fault rather than as a decision. -->
+                <!-- Hidden outright when allowMelee is false. The operator
+                     turned melee off, and an empty or greyed-out section would
+                     read as a fault rather than as a decision. -->
                 <section id="loadout-melee" class="loadout-section">
                     <div class="loadout-section-head">
                         <h2 class="panel-heading">Melee</h2>
-                        <!-- '1 of 1 blade'. -->
+                        <!-- The same shared counter as above, on purpose. -->
                         <span id="melee-count" class="loadout-count"></span>
                     </div>
                     <!-- No tabs here: melee is one section already. -->
@@ -188,9 +191,9 @@
                 </section>
             </div>
 
-            <!-- The last thing read before a round locks the choice in: both
-                 counters, and per weapon the weapon, the amount and the
-                 round. -->
+            <!-- The last thing read before a round locks the choice in: the
+                 count, and per weapon the weapon, the amount and the round.
+                 One group, because there is one pool. -->
             <div id="loadout-slots"></div>
             <div id="supplies-picker"></div>
             <!-- The button and the one line that says whether pressing it is

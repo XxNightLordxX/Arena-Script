@@ -487,6 +487,27 @@ local function splitRounds(entry)
     local total = math.max(0, Arena.ToInt(entry.ammo) or 0)
     if total == 0 then return 0, 0 end
 
+    -- MELEE CARRIES NO AMMUNITION, and this line is here because the comment
+    -- claiming it already worked that way was false for every blade that
+    -- ships.
+    --
+    -- Arena.ResolveAmmo returns the weapon's own default, and config.weapons
+    -- .lua gives every melee entry `default = max = 1` -- a bat has one
+    -- "round" so that the ammo machinery has a number to agree on. It was
+    -- never meant to reach ox_inventory, but nothing stopped it: total was 1
+    -- rather than 0, the branch below returned it whole, and every knife and
+    -- bat was issued as an item carrying `metadata.ammo = 1`. ox_inventory
+    -- reads a present ammo key as "this is an ammo weapon", which a bat is
+    -- not.
+    --
+    -- Checked against the CATALOGUE rather than the resolved entry: the
+    -- resolved one has already collapsed to a number and cannot say what kind
+    -- of weapon it came from. An entry with no catalogue behind it -- a test
+    -- double -- falls through, which is the same reading the magazine lookup
+    -- below takes.
+    local melee = Arena.IsKey(entry.key) and Arena.GetWeaponByKey(entry.key) or nil
+    if melee ~= nil and Arena.IsMeleeWeapon(melee) then return 0, 0 end
+
     if not ArenaAmmo.IsEnabled() or not Arena.IsKey(entry.ammoTypeItem) then
         return total, 0
     end
@@ -522,9 +543,10 @@ local function issueWeapons(ox, src, matchId, loadout)
         if Arena.IsKey(name) then
             -- The magazine rides in metadata rather than being set on the ped
             -- afterwards: on an ox_inventory server SetPedAmmo is reconciled
-            -- away exactly like the weapon itself. Melee carries no ammo and
-            -- ResolveAmmo already returns 0 for it, which ox_inventory reads
-            -- as "not an ammo weapon" rather than "an empty one".
+            -- away exactly like the weapon itself. Melee is given no ammo key
+            -- at all -- see splitRounds -- because ox_inventory reads a
+            -- missing one as "not an ammo weapon" and a present zero as an
+            -- empty one.
             local metadata = {}
             -- ONE MAGAZINE, NOT THE WHOLE PICK. The rest is handed over as
             -- items by ArenaAmmo.Issue; see splitRounds above for why putting

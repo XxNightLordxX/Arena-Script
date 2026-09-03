@@ -629,14 +629,14 @@ end)
 -- THE THREE ALLOWANCES
 -- ======================================================================
 
-t.test('weaponSlots and meleeSlots arrive and match config', function()
+t.test('the shared pool and both kind switches arrive and match config', function()
     local server = newArena()
     local loadouts = server.loadouts()
 
-    t.equals(type(loadouts.weaponSlots), 'number', 'weaponSlots never reached the panel')
-    t.equals(type(loadouts.meleeSlots), 'number', 'meleeSlots never reached the panel')
-    t.equals(loadouts.weaponSlots, server.config.Loadouts.weaponSlots)
-    t.equals(loadouts.meleeSlots, server.config.Loadouts.meleeSlots)
+    t.equals(type(loadouts.slots), 'number', 'slots never reached the panel')
+    t.equals(loadouts.slots, server.config.Loadouts.slots)
+    t.equals(loadouts.allowFirearms, server.config.Loadouts.allowFirearms)
+    t.equals(loadouts.allowMelee, server.config.Loadouts.allowMelee)
 end)
 
 t.test('ammoTypeSlots -- the third allowance -- reaches the panel too', function()
@@ -702,36 +702,42 @@ end)
 
 t.test('the allowances follow config rather than being constants', function()
     local server = newArena(function(config)
-        config.Loadouts.weaponSlots = 4
-        config.Loadouts.meleeSlots = 0
+        config.Loadouts.slots = 6
+        config.Loadouts.allowMelee = false
     end)
     local loadouts = server.loadouts()
 
-    t.equals(loadouts.weaponSlots, 4)
-    -- 0 has to survive as 0: it is how an operator removes melee from the
-    -- arena while leaving the weapons in the list, and a default applied
-    -- here would put them back.
-    t.equals(loadouts.meleeSlots, 0, 'meleeSlots = 0 was defaulted away')
+    t.equals(loadouts.slots, 6)
+    t.isFalse(loadouts.allowMelee, 'allowMelee = false was defaulted away')
+    t.isTrue(loadouts.allowFirearms, 'switching melee off switched firearms off too')
+end)
+
+t.test('and ZERO survives as zero, because zero is the generous answer now', function()
+    -- The reversal that makes this worth its own test. Under the two keys
+    -- this replaces, 0 meant "none of this kind" and a default applied on
+    -- the way to the panel would have ADDED weapons back. Under one pool it
+    -- means "no limit", and a default applied here would TAKE them away --
+    -- the panel would cap a picker the server does not cap.
+    local server = newArena(function(config) config.Loadouts.slots = 0 end)
+    t.equals(server.loadouts().slots, 0, 'slots = 0 was defaulted away')
 end)
 
 t.test('an allowance the operator never wrote reads the same in the snapshot as in the resolver', function()
     -- Both halves default on their own. If they ever default differently the
     -- panel draws a slot the server will not fill, or hides one it would.
-    local server = newArena(function(config)
-        config.Loadouts.weaponSlots = nil
-        config.Loadouts.meleeSlots = nil
-    end)
+    -- Arena.SlotsPerPlayer exists so there is only one half to get wrong;
+    -- this is what proves the snapshot actually goes through it.
+    local server = newArena(function(config) config.Loadouts.slots = nil end)
     local loadouts = server.loadouts()
 
-    local melee, firearms = {}, {}
+    local pool = {}
     for _, weapon in ipairs(server.Arena.GetEnabledWeapons()) do
-        local bucket = server.Arena.IsMeleeWeapon(weapon) and melee or firearms
-        bucket[#bucket + 1] = { key = weapon.key, ammo = weapon.ammo and weapon.ammo.default }
+        pool[#pool + 1] = { key = weapon.key, ammo = weapon.ammo and weapon.ammo.default }
     end
+    t.isTrue(#pool >= loadouts.slots, 'not enough weapons enabled to fill the advertised pool')
 
     local request = {}
-    for index = 1, loadouts.weaponSlots do request[#request + 1] = firearms[index] end
-    for index = 1, loadouts.meleeSlots do request[#request + 1] = melee[index] end
+    for index = 1, loadouts.slots do request[#request + 1] = pool[index] end
 
     local _, rejected = server.Arena.ResolveLoadout({ weapons = request })
     t.equals(#rejected, 0,
@@ -834,19 +840,20 @@ t.test('a full loadout built from the snapshot -- every slot filled -- is accept
     local server = newArena()
     local loadouts = server.loadouts()
 
+    -- FILLED WITH A MIX, because the pool takes either and the panel can
+    -- build exactly this: blades first, then guns, in one list.
     local firearms = snapWeaponsByKind(loadouts, false)
     local melee = snapWeaponsByKind(loadouts, true)
-    t.isTrue(#firearms >= loadouts.weaponSlots, 'not enough shootable weapons to fill the slots')
-    t.isTrue(#melee >= loadouts.meleeSlots, 'not enough melee weapons to fill the slots')
+    t.isTrue(#firearms + #melee >= loadouts.slots, 'not enough weapons enabled to fill the pool')
+
+    local pool = {}
+    for _, weapon in ipairs(melee) do pool[#pool + 1] = weapon end
+    for _, weapon in ipairs(firearms) do pool[#pool + 1] = weapon end
 
     local request, wanted = {}, {}
-    for index = 1, loadouts.weaponSlots do
-        request[#request + 1] = panelPick(firearms[index])
-        wanted[#wanted + 1] = firearms[index]
-    end
-    for index = 1, loadouts.meleeSlots do
-        request[#request + 1] = panelPick(melee[index])
-        wanted[#wanted + 1] = melee[index]
+    for index = 1, loadouts.slots do
+        request[#request + 1] = panelPick(pool[index])
+        wanted[#wanted + 1] = pool[index]
     end
 
     -- SUPPLIES COME OFF THE SNAPSHOT TOO, at the maximum the panel offers,
@@ -895,93 +902,82 @@ t.test('and the round trip is not vacuous -- a weapon over the advertised allowa
     -- The negative control. Without it every assertion above would still
     -- pass against a ResolveLoadout that accepted everything.
     --
-    -- ONE allowance is overfilled at a time, with room left in the other.
-    -- Overfilling both at once is a separate case, and a defective one --
-    -- see the test below this.
-    local server = newArena(function(config)
-        config.Loadouts.weaponSlots = 2
-        config.Loadouts.meleeSlots = 1
-    end)
+    -- OVERFILLED WITH EACH KIND IN TURN, because the pool must be spent by
+    -- either -- an all-blade loadout that goes one over has to be refused
+    -- exactly as an all-gun one is.
+    local server = newArena(function(config) config.Loadouts.slots = 2 end)
     local loadouts = server.loadouts()
     local firearms = snapWeaponsByKind(loadouts, false)
     local melee = snapWeaponsByKind(loadouts, true)
-    t.isTrue(#firearms > loadouts.weaponSlots, 'not enough weapons to overfill the slots')
-    t.isTrue(#melee > loadouts.meleeSlots, 'not enough melee weapons to overfill the slots')
+    t.isTrue(#firearms > loadouts.slots, 'not enough firearms to overfill the pool')
+    t.isTrue(#melee > loadouts.slots, 'not enough blades to overfill the pool')
 
-    local guns = {}
-    for index = 1, loadouts.weaponSlots + 1 do guns[#guns + 1] = panelPick(firearms[index]) end
-    local _, gunsRejected = server.Arena.ResolveLoadout({ weapons = guns })
-    t.equals(#gunsRejected, 1, 'the firearm allowance was not enforced')
-    t.equals(gunsRejected[1], firearms[loadouts.weaponSlots + 1].key,
-        'the extra firearm was dropped without being named')
-
-    local blades = {}
-    for index = 1, loadouts.meleeSlots + 1 do blades[#blades + 1] = panelPick(melee[index]) end
-    local _, bladesRejected = server.Arena.ResolveLoadout({ weapons = blades })
-    t.equals(#bladesRejected, 1, 'the melee allowance was not enforced')
-    t.equals(bladesRejected[1], melee[loadouts.meleeSlots + 1].key,
-        'the extra blade was dropped without being named')
+    for _, case in ipairs({ { 'firearms', firearms }, { 'melee', melee } }) do
+        local request = {}
+        for index = 1, loadouts.slots + 1 do request[#request + 1] = panelPick(case[2][index]) end
+        local _, rejected = server.Arena.ResolveLoadout({ weapons = request })
+        t.equals(#rejected, 1, ('the pool was not enforced against %s'):format(case[1]))
+        t.equals(rejected[1], case[2][loadouts.slots + 1].key,
+            ('the extra %s entry was dropped without being named'):format(case[1]))
+    end
 end)
 
-t.test('DEFECT: once BOTH allowances are full the rest of the request is dropped without being named', function()
-    -- shared/arena.lua:512 breaks out of the loop the moment both counters
-    -- are spent, so anything after that point never reaches the branch that
-    -- appends to `rejected`. ArenaLobby.SetLoadout raises its
+t.test('EVERY overflow is named, not just the first one past the line', function()
+    -- WAS A RECORDED DEFECT, and the one pool is what fixed it.
+    --
+    -- The two-allowance resolver broke out of its loop the moment BOTH
+    -- counters were spent, so anything after that point never reached the
+    -- branch that appends to `rejected`. ArenaLobby.SetLoadout raises its
     -- notify.loadout_rejected toast from that list, so a player who sent
-    -- three guns and two blades is told about the gun and never about the
-    -- blade -- the weapon simply is not in their loadout, with nothing said.
+    -- three guns and two blades was told about the gun and never about the
+    -- blade: the weapon simply was not in their loadout, with nothing said.
+    -- Which one got named depended on the order the panel happened to send,
+    -- which is the ordering dependence the break was there to avoid.
     --
-    -- Only ONE of the two overflows can ever be named, whichever order the
-    -- panel sends them in, which is the ordering dependence the comment two
-    -- lines above that break says it is avoiding.
-    --
-    -- Stated as it is today so the suite stays green; if the break is ever
-    -- replaced by a `goto continue` this upgrades itself to the contract.
-    local server = newArena(function(config)
-        config.Loadouts.weaponSlots = 2
-        config.Loadouts.meleeSlots = 1
-    end)
+    -- The shared pool walks to the end -- a request is capped at 32 entries
+    -- long before it reaches here, so there is nothing to save -- and every
+    -- entry past the pool is named. This test is written as the contract
+    -- rather than as a defect note, and it must FAIL if a break comes back.
+    local server = newArena(function(config) config.Loadouts.slots = 2 end)
     local loadouts = server.loadouts()
     local firearms = snapWeaponsByKind(loadouts, false)
     local melee = snapWeaponsByKind(loadouts, true)
 
-    local request = {}
-    for index = 1, loadouts.weaponSlots + 1 do request[#request + 1] = panelPick(firearms[index]) end
-    for index = 1, loadouts.meleeSlots + 1 do request[#request + 1] = panelPick(melee[index]) end
+    -- Two guns fill the pool; everything after it should be named, of both
+    -- kinds, however far down the list it sits.
+    local request = {
+        panelPick(firearms[1]), panelPick(firearms[2]),
+        panelPick(firearms[3]), panelPick(melee[1]), panelPick(melee[2]),
+    }
 
     local loadout, rejected = server.Arena.ResolveLoadout({ weapons = request })
 
-    -- Whatever is reported, the weapon itself never gets in. That half is
-    -- sound and is asserted unconditionally.
-    t.isNil(resolvedByKey(loadout, firearms[loadouts.weaponSlots + 1].key),
-        'the firearm allowance was exceeded')
-    t.isNil(resolvedByKey(loadout, melee[loadouts.meleeSlots + 1].key),
-        'the melee allowance was exceeded')
+    t.equals(#loadout.weapons, 2, 'the pool was exceeded')
+    t.equals(#rejected, 3,
+        'an overflowing weapon was dropped without being named: ' .. table.concat(rejected, ', '))
 
-    local overflowMelee = melee[loadouts.meleeSlots + 1].key
     local named = table.concat(rejected, ',')
-    if named:find(overflowMelee, 1, true) then
-        -- Fixed since this spec was written: both overflows are named now.
-        t.equals(#rejected, 2, 'the second overflow is reported but the first is not')
-        t.contains(named, firearms[loadouts.weaponSlots + 1].key)
-        return
-    end
-
-    t.equals(#rejected, 1, 'exactly one of the two overflows is reported today')
-    t.equals(rejected[1], firearms[loadouts.weaponSlots + 1].key)
+    t.contains(named, firearms[3].key)
+    t.contains(named, melee[1].key)
+    t.contains(named, melee[2].key,
+        'the LAST entry was swallowed -- the loop broke out early again')
 end)
 
 t.test('a stored loadout re-resolves without losing anything -- the round trip survives a round trip', function()
     -- A loadout is stored RESOLVED and resolved again at match start, so the
-    -- resolver's own output has to be a legal request. `alwaysGive` entries
-    -- ride along in it under a GTA weapon name that is not a catalogue key,
-    -- and must not be rejected or charged to a slot.
+    -- resolver's own output has to be a legal request -- every entry it
+    -- produces carries a catalogue `key`, which is the only spelling the
+    -- second pass can resolve under.
     local server = newArena()
     local loadouts = server.loadouts()
+    local melee = snapWeaponsByKind(loadouts, true)
     local firearms = snapWeaponsByKind(loadouts, false)
 
+    -- A MIXED loadout, so the second pass has to spend one pool on two kinds
+    -- rather than two pools on one kind each.
+    local pool = { melee[1], firearms[1], melee[2], firearms[2] }
     local request = {}
-    for index = 1, loadouts.weaponSlots do request[#request + 1] = panelPick(firearms[index]) end
+    for index = 1, loadouts.slots do request[#request + 1] = panelPick(pool[index]) end
 
     local once = server.Arena.ResolveLoadout({ weapons = request })
     local twice, rejected = server.Arena.ResolveLoadout({ weapons = once.weapons })

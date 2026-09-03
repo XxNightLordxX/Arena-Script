@@ -62,9 +62,9 @@ local RATE = {
 --- no legitimate config key comes close to this.
 local MAX_KEY_LENGTH = 64
 
---- Weapon entries read out of a request before giving up. `weaponSlots`
---- decides how many are USED; this decides how many are LOOKED AT, which
---- is the number a sender controls.
+--- Weapon entries read out of a request before giving up.
+--- `Config.Loadouts.slots` decides how many are USED; this decides how many
+--- are LOOKED AT, which is the number a sender controls.
 local MAX_WEAPON_ENTRIES = 32
 
 --- The same bound for the supplies list. A request naming every supply on

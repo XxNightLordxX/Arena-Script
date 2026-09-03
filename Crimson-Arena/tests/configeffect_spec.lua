@@ -510,6 +510,59 @@ local function validate(mutate)
     return table.concat(problems or {}, '\n')
 end
 
+-- ======================================================================
+-- THE CATALOGUE LIVES IN ANOTHER FILE NOW
+--
+-- Splitting the weapon list out of config.lua introduced a failure nobody
+-- had before: a server updated by copying only the files it already had
+-- gets a config.lua that builds Config.Loadouts and NOTHING that ever
+-- writes the catalogue into it. Arena.GetEnabledWeapons reads
+-- `Config.Loadouts.weapons or {}`, so that is silent -- the only symptom
+-- is the panel saying no weapons are enabled.
+--
+-- The console line has to name config.weapons.lua, because the operator's
+-- next move is to open a file and the wrong name sends them to the one
+-- where the list is no longer supposed to be.
+-- ======================================================================
+
+t.test('a MISSING catalogue names config.weapons.lua, not config.lua', function()
+    local output = validate(function(config) config.Loadouts.weapons = nil end)
+
+    t.contains(output, 'config.weapons.lua',
+        'the operator is not told which file the catalogue is in')
+    t.contains(output, 'shared_scripts',
+        'the operator is not told the file has to be in the manifest')
+end)
+
+t.test('and so does a catalogue that is present but EMPTY', function()
+    local output = validate(function(config) config.Loadouts.weapons = {} end)
+
+    t.contains(output, 'config.weapons.lua',
+        'an empty catalogue is the same fault as a missing one and needs the same answer')
+end)
+
+t.test('but a catalogue that is THERE with everything switched off is a different message', function()
+    -- A different decision, in a different place, and the operator does not
+    -- need to be told to go and find the file -- they are already in it.
+    local output = validate(function(config)
+        for _, weapon in ipairs(config.Loadouts.weapons) do weapon.enabled = false end
+    end)
+
+    t.contains(output, 'not one of them is enabled',
+        'switching every weapon off is reported as a missing file')
+    t.isNil(output:find('is empty or missing', 1, true),
+        'a populated catalogue was reported as missing')
+end)
+
+t.test('and the shipped config trips neither', function()
+    local output = validate()
+
+    t.isNil(output:find('config.weapons.lua', 1, true),
+        ('the shipped catalogue does not load:\n%s'):format(output))
+    t.isNil(output:find('not one of them is enabled', 1, true),
+        'the shipped catalogue has nothing enabled in it')
+end)
+
 t.test('the shipped config passes its own validation without this warning', function()
     -- The shipped sky arena states 1201 in five places and they agree. If
     -- this ever fails, the arena itself is misconfigured -- which is the

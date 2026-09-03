@@ -2767,8 +2767,28 @@ function Arena.ValidateConfig()
     if #Arena.GetEnabledModes() == 0 then
         complain('Config.Modes has no enabled mode -- no match can be created.')
     end
-    if #Arena.GetEnabledWeapons() == 0 then
-        complain('Config.Loadouts has no enabled weapon -- players would spawn empty-handed.')
+    -- TWO DIFFERENT FAULTS, and they send you to different files.
+    --
+    -- An empty or missing `weapons` table is almost always config.weapons.lua
+    -- not being there at all: the catalogue used to live in config.lua and
+    -- was split out, so a server updated by copying only the files it already
+    -- had has a config.lua that builds Config.Loadouts and nothing that ever
+    -- writes the catalogue into it. Naming Config.Loadouts for that sends the
+    -- operator to config.lua to look for a weapon list that is no longer
+    -- supposed to be in it.
+    --
+    -- A catalogue that IS there with every entry switched off is a different
+    -- decision, in a different file, and gets the message it always had.
+    local catalogue = Config.Loadouts.weapons
+    if type(catalogue) ~= 'table' or #catalogue == 0 then
+        complain('Config.Loadouts.weapons is empty or missing, so nobody can be issued anything. '
+            .. 'THE WEAPON CATALOGUE IS IN config.weapons.lua, not config.lua. That file must be '
+            .. 'present in the resource folder AND listed in fxmanifest.lua under shared_scripts '
+            .. 'straight after config.lua. If you updated from a copy that predates the split, it '
+            .. 'is a new file -- copy it across.')
+    elseif #Arena.GetEnabledWeapons() == 0 then
+        complain(('Config.Loadouts.weapons has %d entries and not one of them is enabled -- '
+            .. 'players would spawn empty-handed. They are in config.weapons.lua.'):format(#catalogue))
     end
 
     -- A weapon key used twice means one of the two is unreachable.

@@ -1481,6 +1481,16 @@
         if (!blocked && !state.createArena) blocked = 'This server has no arena switched on.';
         if (!blocked && !state.createMode) blocked = 'This server has no mode switched on.';
 
+        /* THE CEILING ON ROUNDS AT ONCE. ArenaLobby.Create refuses over it,
+           and the panel had no idea, so Create Match stayed lit at the limit
+           and answered with a toast. Editing an existing match is never
+           blocked by it -- that match is already one of the ones counted. */
+        var ceiling = int((cfg().match || {}).maxConcurrentMatches, 0);
+        if (!blocked && !editing && ceiling > 0 && state.matches.length >= ceiling) {
+            blocked = 'This server runs ' + plural(ceiling, 'match', 'matches')
+                + ' at a time and they are all going. Join one, or wait for one to finish.';
+        }
+
         /* The fee is the one thing an open lobby cannot change: everybody in
            it paid what was advertised when they joined. The server refuses
            it too -- this only stops the panel offering something that would

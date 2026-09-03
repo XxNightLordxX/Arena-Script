@@ -190,13 +190,22 @@ function loadPanel(root) {
                 stopPropagation() {},
                 preventDefault() {},
             }, event || {});
-            (node.listeners[type] || []).forEach((fn) => fn(detail));
-
             // A disabled control is inert in a browser, so it is inert here:
             // asserting that a greyed-out button does nothing is a real test
             // and it must not pass merely because the handler was called.
+            //
+            // BOTH WIRINGS, and this used to be only the inline one. A
+            // browser does not dispatch a click to an addEventListener
+            // handler on a disabled button either, so a panel test that
+            // greyed a control out and then asserted the click posted
+            // nothing was passing on the inline controls and failing on the
+            // bound ones -- for a difference the player cannot see.
+            if (node.disabled === true) return;
+
+            (node.listeners[type] || []).forEach((fn) => fn(detail));
+
             const inline = node['on' + type];
-            if (typeof inline === 'function' && node.disabled !== true) inline.call(node, detail);
+            if (typeof inline === 'function') inline.call(node, detail);
         },
         /**
          * All text rendered inside a node, children included.

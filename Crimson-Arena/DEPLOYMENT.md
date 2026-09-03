@@ -30,6 +30,12 @@ below and it is deliberately near the top.
 
 ## Install
 
+**Updating rather than installing fresh?** Copy the whole folder. `config.weapons.lua`
+is a separate file from `config.lua` -- the weapon catalogue was split out of it -- so
+replacing only the files you already had leaves the resource with no catalogue and no
+weapons in the panel. `Arena.ValidateConfig` names the file on every start when it is
+missing.
+
 1. Drop this `Crimson-Arena` folder into your resources directory. It is
    already named the way it should be named there. The name is still yours to
    change if you want -- the panel asks the game which resource is serving it

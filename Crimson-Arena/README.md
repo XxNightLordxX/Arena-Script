@@ -104,6 +104,13 @@ None of those three is named in the manifest and none is imported by it, so with
 
 Drag, drop, one line in `server.cfg`, start.
 
+> **Updating an existing install: copy the whole folder, not the files you recognise.**
+> `config.weapons.lua` is a separate file from `config.lua` — the weapon catalogue used
+> to live inside `config.lua` and was split out. A server updated by replacing only the
+> files it already had ends up with no catalogue at all, and the symptom is the panel
+> saying *No weapons are enabled on this server*. The console says which file is
+> missing on every start, so check it if you see that.
+
 1. Drop this `Crimson-Arena` folder into your resources directory. It arrives named the way it should be named there, so there is nothing to rename — but **any folder name works** if you would rather use another: `crimson_arena`, `[custom]/whatever`, or the `-main` suffix a zip leaves behind. The panel asks the game what it was installed as rather than assuming.
 2. Add one line to `server.cfg`, below wherever you already start qbx_core:
 

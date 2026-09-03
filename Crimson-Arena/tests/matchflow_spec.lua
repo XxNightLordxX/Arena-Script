@@ -1496,6 +1496,39 @@ t.test('a player who has just died cannot fire', function()
     t.isTrue(f.disabled[263], 'melee was left enabled on a dead player')
 end)
 
+t.test('THE FROZEN COUNTDOWN IS NOT A FREE-FIRE PERIOD', function()
+    -- REPORTED BY PLAYING IT. Everyone is teleported in, ARMED, and frozen
+    -- for Config.Match.startCountdownSeconds. Freezing a ped stops it
+    -- walking, not shooting -- the note above this block in client/match.lua
+    -- has said so about the DEAD hold since it was written -- so the
+    -- countdown was five seconds in which you could empty a magazine into
+    -- somebody who could not move.
+    --
+    -- And it did not even score: handleDeath's `not matchLive` branch
+    -- re-heals, re-armours and re-freezes the victim with nothing said to
+    -- either player. So the visible result was people dying and popping back
+    -- before the round began, which reads as the arena being broken -- and
+    -- whoever pre-aimed had rounds in the air the instant weapons went live.
+    local f = newClientFixture()
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 5,
+        loadout = { weapons = { { weapon = 'WEAPON_PISTOL', ammo = 42 } }, health = 200, armor = 0 },
+    })
+    -- Deliberately NOT sending matchLive: this is the window between being
+    -- placed and the round starting.
+
+    f.forgetControls()
+    f.step()
+
+    t.equals(f.firingBlocked, true, 'a frozen fighter could shoot during the countdown')
+    t.isTrue(f.disabled[24], 'attack was left enabled during the countdown')
+    t.isTrue(f.disabled[257], 'the alternate attack control was left enabled during the countdown')
+    t.isTrue(f.disabled[263], 'melee was left enabled during the countdown')
+end)
+
 t.test('and a LIVING player in the same round can', function()
     -- The control, and it is the whole point: this must be a hold on the
     -- dead, not a match that nobody can shoot in.

@@ -592,7 +592,22 @@ local function startArenaThread()
             -- flag to set once -- so it belongs on the only per-frame loop
             -- the arena already runs, and it is keyed on the same flag the
             -- respawn clears.
-            if deathReported then
+            --
+            -- AND THE FROZEN COUNTDOWN IS THE SAME PROBLEM, one paragraph
+            -- earlier. Everybody is teleported in, armed, and frozen for
+            -- Config.Match.startCountdownSeconds -- and freezing a ped stops
+            -- it walking, not shooting, exactly as the note above says. So
+            -- the countdown was a free-fire period: you could empty a
+            -- magazine into somebody who could not move, and the server's
+            -- own handler undid it silently (handleDeath's `not matchLive`
+            -- branch re-heals, re-armours and re-freezes the victim with
+            -- nothing said to either of you). A round that opens with people
+            -- visibly dying and popping back reads as broken, and whoever
+            -- pre-aimed had rounds in the air the instant weapons went live.
+            --
+            -- The block, the natives and the loop were all already here. It
+            -- was only the condition that was too narrow.
+            if deathReported or not matchLive then
                 DisablePlayerFiring(PlayerId(), true)
                 DisableControlAction(0, 24, true)       -- attack
                 DisableControlAction(0, 25, true)       -- aim

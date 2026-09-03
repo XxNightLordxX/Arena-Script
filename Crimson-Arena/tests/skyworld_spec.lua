@@ -2049,4 +2049,42 @@ t.test('but it REFUSES to take down a fighter\'s arena', function()
     t.equals(#c.world.live(), standing, 'THE FLOOR WAS PULLED OUT FROM UNDER A LIVE FIGHTER')
 end)
 
+
+-- ========================================================================
+-- DOES THE WALL ACTUALLY ENCLOSE THE FLOOR
+--
+-- Reported from a live server: "the skydome dosent have the shipping
+-- containers for the walls so people can still fall off."
+--
+-- The containers WERE built -- their console said 87 of 87 pieces, furthest
+-- cover 44.53m. The wall was simply nowhere near the edge. Their floor prop
+-- measures 32.60 x 44.38m, and a floor tiled out of one reaches 82.60m at
+-- the corners, so the ring of containers sat in the MIDDLE of the floor with
+-- 38 metres of walkable ground outside it.
+--
+-- Cover is placed at hand-written offsets in config.lua; the floor's real
+-- extent depends on the prop this build supplied. The two can only agree by
+-- accident, and nothing checked.
+-- ========================================================================
+
+t.test('a wall inside the floor edge is named, with both numbers', function()
+    -- The real prop off the user's server, which is what makes the shipped
+    -- numbers disagree in the first place.
+    -- The DEFAULTS with one model resized, not a replacement table: dropping
+    -- the container models would make this pass for the wrong reason -- a
+    -- wall that is missing rather than a wall in the wrong place.
+    local models = {}
+    for name, size in pairs(World.DEFAULT_MODELS) do models[name] = size end
+    models['stt_prop_stunt_bblock_huge_01'] = { x = 32.60, y = 44.38, z = 1.0 }
+
+    local c = newClient({ models = models })
+    c.enter('skydome')
+
+    local said = c.console()
+    t.isTrue(said:find('THE WALL DOES NOT ENCLOSE THE FLOOR', 1, true) ~= nil,
+        'a floor reaching far outside its wall was reported as a healthy build: ' .. said)
+    t.isTrue(said:find('fall', 1, true) ~= nil,
+        'the consequence is not spelled out')
+end)
+
 os.exit(t.summary())

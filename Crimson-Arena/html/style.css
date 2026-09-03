@@ -1036,7 +1036,12 @@ option {
     border-color: var(--accent-dim);
 }
 
-#loadout-slots {
+/* THE TWO BOXES DOWN THE RIGHT-HAND COLUMN share their chrome: the panel
+   surface, the accent rule along the top, and the same inner padding, so
+   "Into The Round" and the supplies below it read as one pair rather than
+   two unrelated widgets. They differ only in which grid rows they take. */
+#loadout-slots,
+#supplies-picker {
     grid-column: 2;
     align-self: start;
     padding: 0.9rem;
@@ -1126,6 +1131,31 @@ option {
     color: var(--accent-bright);
     font-size: 0.75rem;
     line-height: 1.35;
+}
+
+/* THE SLOT #armor-picker USED TO HOLD. The armour picker went when armour
+   became a rule rather than a choice; the supplies picker replaced it in the
+   markup and this rule was never re-pointed, so it had no chrome at all and
+   found row 3 only because grid auto-placement happened to put it there.
+   Stated explicitly now, so a row added above it cannot move it.
+
+   A COLUMN, not a row of chips like its predecessor: this box holds a label
+   and then one line per supply, each with its own amount chips. */
+#supplies-picker {
+    grid-row: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+/* AND NO BOX AT ALL WHEN THERE IS NOTHING IN IT. renderSuppliesPicker clears
+   the host and returns when supplies are switched off or nothing is enabled
+   -- its own comment says an empty box with a heading reads as something
+   broken -- so the chrome above must not draw one. This is the CSS half of
+   that decision; without it, switching supplies off leaves an empty bordered
+   rectangle sitting under the loadout summary. */
+#supplies-picker:empty {
+    display: none;
 }
 
 #loadout-save-row {

@@ -2038,7 +2038,7 @@ CreateThread(function()
     if #missing > 0 then
         print('[crimson_arena] PROPS MISSING ON THIS BUILD -- an arena below cannot be built and will refuse to start:')
         for _, line in ipairs(missing) do print('    ' .. line) end
-        print('[crimson_arena] Add those models to a stream/ folder in this resource, or name props your build does have. See stream/README.md.')
+        print('[crimson_arena] Add those models to a stream/ folder in this resource, or name props your build does have. See STREAMING.md.')
     elseif Config.Debug and #checked > 0 then
         print('[crimson_arena] arena props, checked against this build:')
         for _, line in ipairs(checked) do print('    ' .. line) end

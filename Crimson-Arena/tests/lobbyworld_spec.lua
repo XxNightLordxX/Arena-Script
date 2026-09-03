@@ -178,9 +178,18 @@ local function newLobby(opts)
         IsControlJustReleased = function() return f.keyPressed end,
     })
 
+    -- MANIFEST ORDER, because that is what the game does: config.lua, then
+    -- config.weapons.lua writing the catalogue into it, then shared/arena.lua,
+    -- and only then the client file. This fixture used to load the first and
+    -- the last and nothing between them, which meant `Arena` did not exist in
+    -- a client env that in the real game always has it -- and a catalogue that
+    -- was always empty here, in the one fixture that runs the real start-up.
     Sandbox.loadInto('../config.lua', env)
+    Sandbox.loadInto('../config.weapons.lua', env)
     if opts.interaction ~= nil then env.Config.Lobby.interaction = opts.interaction end
+    -- After the catalogue, so a spec that empties it is not overwritten by it.
     if opts.mutate then opts.mutate(env.Config) end
+    Sandbox.loadInto('../shared/arena.lua', env)
     Sandbox.loadInto('../client/main.lua', env)
 
     f.env = env
@@ -558,6 +567,32 @@ t.test('the target option carries the label, icon and distance from config', fun
 
     option.onSelect()
     t.equals(f.opened, 1, 'selecting the NPC option does not open the panel')
+end)
+
+-- ========================================================================
+-- CONFIG WARNINGS REACH F8, NOT JUST THE SERVER CONSOLE
+--
+-- Arena.ReportConfigProblems always CLAIMED both realms called it. Only the
+-- server did. That is how a server missing config.weapons.lua could name the
+-- file in a window the person testing in-game was not looking at: what they
+-- saw was the panel saying no weapons are enabled, and nothing else.
+-- ========================================================================
+
+t.test('a config fault is reported in the CLIENT console too', function()
+    -- Emptying the catalogue is the exact fault that exposed this, and its
+    -- warning names a file -- so if the client reports at all, the operator
+    -- in F8 is told which file to open.
+    local f = newLobby({ mutate = function(config) config.Loadouts.weapons = {} end })
+
+    t.isTrue(f.log():find('config.weapons.lua', 1, true) ~= nil,
+        'the client console says nothing about a broken config: ' .. f.log())
+end)
+
+t.test('and a healthy config says NOTHING, so this costs a good server no lines', function()
+    local f = newLobby()
+
+    t.isNil(f.log():find('CONFIG:', 1, true),
+        'the shipped config warns on every client start: ' .. f.log())
 end)
 
 -- ========================================================================

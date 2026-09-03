@@ -179,7 +179,7 @@ are separate places and the client ones cannot appear in the server log.
 
       That arena will refuse to start rather than drop anyone into open air.
       Every chain ends in a base-game model, so this should not happen on a
-      stock install — see `stream/README.md` if it does.
+      stock install — see `STREAMING.md` if it does.
 
       With `Config.Debug = true` you get the full report either way, naming
       *which* model out of each chain your build supplied. Worth reading once.

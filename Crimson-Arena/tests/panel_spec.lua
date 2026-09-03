@@ -355,7 +355,11 @@ local function newLobbyFixture(opts)
         EndTextCommandSetBlipName = function() end,
     })
 
+    -- Manifest order, as the game loads it: config, catalogue, shared, client.
+    -- client/main.lua reports config problems at start-up and needs Arena.
     Sandbox.loadInto('../config.lua', env)
+    Sandbox.loadInto('../config.weapons.lua', env)
+    Sandbox.loadInto('../shared/arena.lua', env)
     Sandbox.loadInto('../client/main.lua', env)
 
     return {

@@ -267,6 +267,21 @@ RegisterNetEvent('crimson_arena:client:state', function(newState)
 end)
 
 CreateThread(function()
+    -- SAID IN F8 AS WELL AS THE SERVER CONSOLE, because the symptom of a
+    -- config fault is usually something a player can SEE and an operator
+    -- testing in-game is looking here, not at the server log.
+    --
+    -- The one that made this necessary: the weapon catalogue lives in
+    -- config.weapons.lua, and a server missing that file has no weapons at
+    -- all. What the tester sees is the panel saying so; what named the file
+    -- was a warning printed only on the server, in another window.
+    --
+    -- Normally zero lines, so this costs nothing on a healthy server -- and
+    -- when it is not zero, the arena is misconfigured and everybody's
+    -- console saying so is the point. Same reading as the `lobby:` line
+    -- below, which is also unconditional.
+    Arena.ReportConfigProblems()
+
     local mode = resolveInteraction()
 
     -- WHICH FIXTURE GOES UP IS THE OPERATOR'S DECISION AND NOBODY ELSE'S.

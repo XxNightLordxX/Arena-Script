@@ -139,8 +139,14 @@ ui_page 'html/index.html'
 --
 -- The arena's props are named in config.lua and every one of them names a
 -- CHAIN, ending in a base-game model -- so a build missing a DLC still has a
--- floor. See stream/README.md for how to check your own build, and for how
--- to stream a custom platform if you want one.
+-- floor. See STREAMING.md for how to check your own build, and for how to
+-- stream a custom platform if you want one.
+--
+-- THERE IS NO stream/ FOLDER, deliberately. FiveM registers EVERY file in
+-- stream/ as a streaming asset, so a stray .md or .txt in there prints
+-- "can't register compcache:/...: no streaming module" in every player's
+-- console on every connect -- which is exactly what a README in there used
+-- to do. Create the folder only when you have a real asset to put in it.
 --
 -- Anything you drop in stream/ with a .ydr or .ytd extension is picked up
 -- automatically and needs no line here. A .ytyp does need one, like so:

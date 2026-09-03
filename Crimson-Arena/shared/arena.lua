@@ -3092,9 +3092,15 @@ function Arena.ValidateConfig()
     return problems
 end
 
---- Prints whatever ValidateConfig found. Called once from each realm's own
---- start-up so an operator sees the same list in the console whether the
---- problem would have shown up client-side or server-side.
+--- Prints whatever ValidateConfig found.
+---
+--- CALLED FROM BOTH REALMS -- server/main.lua's onResourceStart and
+--- client/main.lua's start-up thread -- so the same list appears in the
+--- server console AND in F8. It used to say that and only the server did it,
+--- which is how a missing config.weapons.lua could name itself in a window
+--- the person testing in-game was not looking at.
+---
+--- Normally silent: a healthy config produces no lines in either realm.
 function Arena.ReportConfigProblems()
     local problems = Arena.ValidateConfig()
     for _, problem in ipairs(problems) do

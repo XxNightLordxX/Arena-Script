@@ -1043,7 +1043,7 @@ are client-side because only a client can ask the game what models it has.
 
 - **`PROPS MISSING ON THIS BUILD` at start** names which chain ran out. Every
   prop names five models across four DLCs ending in a base-game one, so a stock
-  install should never see this — see `stream/README.md` if you do.
+  install should never see this — see `STREAMING.md` if you do.
 
 - **With `Config.Debug = true`** the build reports itself:
 

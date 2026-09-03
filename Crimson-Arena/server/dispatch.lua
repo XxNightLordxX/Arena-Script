@@ -1578,7 +1578,23 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         if victim then
             local ok, reason, kind = mayDamage(attacker, victim)
             if ok then
-                allowed = allowed + 1
+                -- THE SHOOTER'S OWN BODY IS NOT A LAWFUL VICTIM, and counting
+                -- it as one was a hole.
+                --
+                -- Self-damage is always allowed -- a fall or your own grenade
+                -- is not crossfire, and refusing it would make a fighter
+                -- immortal to the one thing the arena does not control. But
+                -- the friendly-fire bend below exists so that a shot at a
+                -- legitimate ENEMY is not lost to a teammate who was standing
+                -- in the spread, and your own body is not that enemy. Counted
+                -- here, a point-blank shotgun that clipped the shooter and
+                -- their own teammate came out as "one lawful hit, one
+                -- refused" and went through, teammate included.
+                --
+                -- Found by damageproperty_spec, from a generated packet that
+                -- named the attacker alongside a teammate -- a shape no
+                -- hand-written case in this suite had.
+                if victim ~= attacker then allowed = allowed + 1 end
             else
                 refusal = refusal or { victim = victim, reason = reason }
                 if kind ~= 'team' then crossfire = true end

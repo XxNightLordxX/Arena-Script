@@ -160,8 +160,12 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **61 spec files** covering the shared, server and client logic, run with `lua5.4`
-  against a fake-native harness.
+- **63 spec files** covering the shared, server and client logic, run with `lua5.4`
+  against a fake-native harness, plus **9 panel suites** that load the real
+  `html/app.js` under Node. Two of the specs are property-based: they generate
+  thousands of configs, requests and damage packets and assert invariants
+  rather than chosen answers, which is what found the self-damage hole in the
+  friendly-fire guard.
 
 ---
 

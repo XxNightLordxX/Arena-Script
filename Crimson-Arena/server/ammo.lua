@@ -817,8 +817,14 @@ function ArenaAmmo.Issue(src, matchId, loadout)
             if ok and granted ~= false then
                 supplyRecord[item] = (supplyRecord[item] or 0) + count
             else
-                ArenaLog('supplies: could not give %s x%d to %s -- check that item exists on this server.',
-                    item, count, tostring(src))
+                -- BOTH CAUSES, and the weight one first because it is the
+                -- likelier of the two on a server with generous supply caps.
+                -- Naming only the item sends an operator hunting for a
+                -- missing item that is on their server and fine.
+                ArenaLog('supplies: %s x%d was refused for %s -- either their inventory has no room '
+                    .. 'for it (%d is a lot to carry: check the item weight against your '
+                    .. 'ox_inventory player limit) or the item does not exist on this server.',
+                    item, count, tostring(src), count)
             end
         end
     end
@@ -862,7 +868,12 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                 record[item] = (record[item] or 0) + count
             else
                 failed[#failed + 1] = entry.key or entry.weapon
-                ArenaLog('ammo: could not give %s x%d to %s -- check that item exists on this server.',
+                -- Same two causes as the supplies above, and the same order.
+                -- A player who picked the weapon's full ceiling is carrying
+                -- hundreds of rounds, so "no room" is the one to check first.
+                ArenaLog('ammo: %s x%d was refused for %s -- either their inventory has no room for '
+                    .. 'it (check the round weight against your ox_inventory player limit) or the '
+                    .. 'item does not exist on this server.',
                     item, count, tostring(src))
             end
         end

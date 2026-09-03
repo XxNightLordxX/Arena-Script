@@ -175,8 +175,30 @@ end
 --- nothing caught, because eight pieces twenty metres apart look like a ring
 --- whichever way each one is turned.
 ---
---- HEADINGS HERE ARE GTA'S: degrees clockwise from north, so a piece's local
---- +X points along (cos h, -sin h) and its local +Y along (sin h, cos h).
+--- HEADINGS HERE ARE GTA'S: degrees clockwise from north. A piece's local
+--- +Y (its forward) points along (-sin h, cos h) and its local +X along
+--- (cos h, sin h).
+---
+--- THAT SIGN IS THE WHOLE FUNCTION, AND IT USED TO BE WRONG. This block
+--- claimed +X ran along (cos h, -sin h) -- the mirror -- and the maths was
+--- built to match, returning `270 - phi` for a long-X prop. That reflects the
+--- angle instead of rotating it: the long axis came out along
+--- (-sin phi, -cos phi) where the tangent is (-sin phi, cos phi), and the two
+--- agree only where cos(2*phi) is +/-1.
+---
+--- So the wall was a wall at the four compass points and progressively less
+--- of one in between -- at 45 degrees the container stood dead along the
+--- radius, a spoke with twelve metres of open air beside it. Measured on the
+--- shipped twenty-two piece ring: 244.6 degrees of 360 actually blocked, 115
+--- degrees open, which is ninety metres of gap for a fighter to walk out
+--- through and fall.
+---
+--- It looked right in every screenshot facing north, south, east or west,
+--- and arena_spec agreed with it because the spec's own helper carried the
+--- same mirrored convention. shared/arena.lua's OTHER heading formula --
+--- facingCentre, the one spawnplan_spec dots to +1.000 against the direction
+--- to the middle -- has always used (-sin h, cos h). The two contradicted
+--- each other in the same file.
 --- @param dx number -- offset from the arena centre
 --- @param dy number
 --- @param longIsX boolean -- the model's long side runs along its own X
@@ -187,16 +209,25 @@ function Arena.TangentHeading(dx, dy, longIsX)
     -- Dead centre has no radius to be across, so nothing is turned.
     if x == 0.0 and y == 0.0 then return 0.0 end
 
-    local phi = math.atan(y, x)
+    local phi = math.deg(math.atan(y, x))
     local heading
     if longIsX == false then
-        heading = math.deg(math.atan(-math.sin(phi), math.cos(phi)))
+        -- Long side is local +Y = (-sin h, cos h); the tangent at phi is
+        -- (-sin phi, cos phi). They are the same direction when h = phi.
+        heading = phi
     else
-        heading = math.deg(math.atan(-math.cos(phi), -math.sin(phi)))
+        -- Long side is local +X = (cos h, sin h). That equals the tangent
+        -- when h = phi + 90.
+        heading = phi + 90.0
     end
 
     heading = heading % 360.0
     if heading < 0.0 then heading = heading + 360.0 end
+    -- Lua's % already answers in [0, 360), so the only way out of that range
+    -- is rounding: a heading a hair below zero comes back as 360.0 exactly,
+    -- which is not a heading the engine accepts. Caught by arena_spec's range
+    -- check on the piece at 270 degrees, where atan lands a whisker under -90.
+    if heading >= 360.0 then heading = 0.0 end
     return heading
 end
 

@@ -741,7 +741,16 @@ local function newMatchFixture()
         ClearOverrideWeather = function() end,
         NetworkClearClockTimeOverride = function() end,
 
-        ArenaUI = { UpdateHud = function() end },
+        -- Recorded, not swallowed: the frozen start countdown is drawn
+        -- from client/match.lua through this call, and a stub that dropped
+        -- it would let the clock disappear again without a test noticing.
+        ArenaUI = {
+            UpdateHud = function() end,
+            Countdown = function(seconds, label)
+                f.countdowns = f.countdowns or {}
+                f.countdowns[#f.countdowns + 1] = { seconds = seconds, label = label }
+            end,
+        },
         ArenaDispatch = {
             Enter = function() end,
             Exit = function() end,

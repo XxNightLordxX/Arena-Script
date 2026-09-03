@@ -1012,7 +1012,16 @@ local function newClientFixture(mutate)
         ClearOverrideWeather = function() end,
         NetworkClearClockTimeOverride = function() end,
 
-        ArenaUI = { UpdateHud = function() end },
+        -- Recorded, not swallowed: the frozen start countdown is drawn
+        -- from client/match.lua through this call, and a stub that dropped
+        -- it would let the clock disappear again without a test noticing.
+        ArenaUI = {
+            UpdateHud = function() end,
+            Countdown = function(seconds, label)
+                f.countdowns = f.countdowns or {}
+                f.countdowns[#f.countdowns + 1] = { seconds = seconds, label = label }
+            end,
+        },
         ArenaDispatch = {
             Enter = function() end,
             Exit = function() end,
@@ -1546,6 +1555,65 @@ t.test('THE FROZEN COUNTDOWN IS NOT A FREE-FIRE PERIOD', function()
     t.isTrue(f.disabled[24], 'attack was left enabled during the countdown')
     t.isTrue(f.disabled[257], 'the alternate attack control was left enabled during the countdown')
     t.isTrue(f.disabled[263], 'melee was left enabled during the countdown')
+end)
+
+t.test('and the frozen countdown puts a CLOCK on screen while it holds them', function()
+    -- The other half of the same five seconds. A player teleported into an
+    -- arena, frozen where they land and unable to shoot was given nothing
+    -- saying why or for how long: the LOBBY countdown has had a clock since
+    -- it was written, and this one -- the one you spend standing in the
+    -- open looking at the people about to shoot you -- had none. It reads
+    -- as the game having locked up.
+    --
+    -- Drawn from the client, off the number `enterArena` already carries,
+    -- rather than pushed per second per fighter from the server.
+    local f = newClientFixture()
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 3,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+
+    -- One pass to start the freeze thread and draw its first second.
+    f.step()
+
+    local drawn = f.countdowns or {}
+    t.isTrue(#drawn > 0, 'the frozen countdown put nothing on screen at all')
+    t.equals(drawn[1].seconds, 3, 'the clock did not open on the length of the freeze')
+    t.isTrue(type(drawn[1].label) == 'string' and #drawn[1].label > 0,
+        'the clock was drawn with no label to say what it is counting to')
+
+    -- And it counts DOWN rather than repeating the same number.
+    for _ = 1, 3 do f.step() end
+    drawn = f.countdowns or {}
+    t.isTrue(#drawn >= 2, 'the clock was drawn once and never ticked')
+    t.isTrue(drawn[2].seconds < drawn[1].seconds,
+        ('the clock went %d -> %d'):format(drawn[1].seconds, drawn[2].seconds))
+end)
+
+t.test('and a round with no freeze at all draws no clock', function()
+    -- startCountdownSeconds = 0 is a legal setting: straight into the
+    -- fight. A countdown overlay flashed up over a round that has already
+    -- started is worse than none.
+    --
+    -- GUARDED TWICE, so no single mutation breaks this: the freeze branch
+    -- is not entered at all at zero, and the loop inside it would not draw
+    -- a zero second even if it were. Break both -- `if false` on the branch
+    -- and `>= 0` on the loop -- and this fails with one countdown drawn.
+    local f = newClientFixture()
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    for _ = 1, 3 do f.step() end
+
+    t.equals(#(f.countdowns or {}), 0,
+        'a round with no frozen countdown still drew one')
 end)
 
 t.test('and a LIVING player in the same round can', function()

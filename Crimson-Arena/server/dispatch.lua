@@ -1449,24 +1449,70 @@ end
 ---
 --- Nobody in a round means this is not our business, and the answer is yes.
 ---
---- SELF-DAMAGE FALLS OUT OF THE RULE rather than being special-cased. A
---- fall or your own grenade compares a player's match against itself, which
---- is equal whether that is a match id or nil -- so it is allowed, which is
---- right: it is not crossfire, and refusing it would make a fighter immortal
---- to the one thing the arena does not control. An explicit early return for
---- it was written here first and taken back out: mutation testing showed it
---- could not change the answer, and this file does not keep lines that
---- assert behaviour nothing exercises.
+--- SELF-DAMAGE IS ALLOWED, and it now needs saying out loud. It used to
+--- fall out of the crossfire rule -- a player's match compared against
+--- itself is equal whether that is a match id or nil -- and an explicit
+--- early return for it was written here first and taken back out, because
+--- mutation testing showed it could not change the answer. The team check
+--- below changed that: a fighter is on their own team, so `friendlyFire =
+--- false` would refuse a player their own grenade and their own fall, and
+--- make every fighter in a team mode immortal to the one thing the arena
+--- does not control. The line earns its place now; crossfire_spec fails
+--- without it.
 --- @param attacker number
 --- @param victim number
---- @return boolean
+--- @return boolean ok
+--- @return string|nil reason -- why not, for the log
 local function mayDamage(attacker, victim)
+    if attacker == victim then return true end
+
     local attackerMatch, victimMatch = active[attacker], active[victim]
     if attackerMatch == nil and victimMatch == nil then return true end
-    return attackerMatch ~= nil and attackerMatch == victimMatch
+    if attackerMatch == nil or attackerMatch ~= victimMatch then
+        return false, 'they are not in the same round'
+    end
+
+    -- SAME ROUND. NOW THE TEAMS DECIDE, and this is where friendlyFire was
+    -- doing nothing at all.
+    --
+    -- Arena.CanDamage existed, was tested, and had exactly one caller:
+    -- server/match.lua's kill attribution, which decides whether a kill is
+    -- CREDITED. Nothing ever stopped the bullet. So Config.Teams.friendlyFire
+    -- = false meant "shooting your teammate does not score" rather than "you
+    -- cannot shoot your teammate" -- and a player emptying a magazine into
+    -- their own side, killing them, and seeing no score change is not what
+    -- that setting says.
+    --
+    -- weaponDamageEvent is the only place the damage itself can be refused,
+    -- and this handler is already here doing the same job across matches.
+    --
+    -- ArenaLobby is defined by a file loaded after this one; this runs inside
+    -- an event handler long after load, which is the arrangement
+    -- fxmanifest.lua's server_scripts note describes. Guarded anyway, because
+    -- a missing lobby must not turn every shot into an error.
+    local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(attackerMatch)
+    if type(match) ~= 'table' or type(match.players) ~= 'table' then return true end
+
+    local shooter, target = match.players[attacker], match.players[victim]
+    if Arena.CanDamage(match.modeKey, shooter and shooter.team, target and target.team) then
+        return true
+    end
+    return false, 'they are on the same team and friendly fire is off'
 end
 
 AddEventHandler('weaponDamageEvent', function(sender, data)
+    -- THE CROSSFIRE SWITCH CARRIES THE FRIENDLY-FIRE CHECK TOO, and that is
+    -- deliberate rather than an oversight.
+    --
+    -- Both refusals happen here, because weaponDamageEvent is the only place
+    -- a shot can be refused at all. Running this handler with the guard
+    -- switched off would break the promise crossfire_spec holds us to --
+    -- "switching the guard off restores the old behaviour exactly" -- and an
+    -- operator who turned it off asked for this resource to stop touching
+    -- other people's damage.
+    --
+    -- crossfireGuard.enabled ships true, so friendly fire is enforced out of
+    -- the box. config.lua says so beside the switch.
     if not crossfireEnabled() then return end
 
     -- THE CHEAPEST ANSWER FIRST. With nobody in an arena there is nothing to
@@ -1491,9 +1537,11 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     for _, entry in ipairs(hits) do
         local netId = tonumber(entry)
         local victim = netId and ownerOfNetId(netId) or nil
-        if victim and not mayDamage(attacker, victim) then
-            ArenaDebug('crossfire: %s may not damage %s -- they are not in the same round.',
-                tostring(attacker), tostring(victim))
+        local ok, reason = true, nil
+        if victim then ok, reason = mayDamage(attacker, victim) end
+        if victim and not ok then
+            ArenaDebug('crossfire: %s may not damage %s -- %s.',
+                tostring(attacker), tostring(victim), reason or 'refused')
             CancelEvent()
             return
         end

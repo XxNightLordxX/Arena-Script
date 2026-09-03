@@ -54,6 +54,11 @@ local frozeLocalPed = false
 --- and stopped with "nobody left to watch" while the round was going on in
 --- front of it.
 local focusPoint = nil
+
+--- The arena the watched match is being fought in, as the snapshot named it.
+--- Set by refreshTargets and read by the camera thread, which is the only
+--- place that knows the world around a fighter has actually loaded.
+local watchedArena = nil
 local waitingSince = nil
 
 --- How long to hold the focus on an empty arena before believing it. Long
@@ -172,6 +177,17 @@ local function announceTarget()
     ArenaUI.Notify(locale('notify.spectating_player', GetPlayerName(player)), 'info')
 end
 
+--- Said once per watch, not once per target: the controls do not change
+--- between fighters, and repeating them on every cycle is noise.
+---
+--- IT NAMES THE QUIT KEY BECAUSE NOTHING ELSE CAN. Every control is disabled
+--- while the camera runs, so a spectator cannot open the panel to find the
+--- Stop Watching button, and there is no other prompt anywhere in the game
+--- telling them which key gets them out.
+local function announceControls()
+    ArenaUI.Notify(locale('notify.spectate_controls'), 'info')
+end
+
 --- Moves `index` by `step` and stops on the first target that resolves to a
 --- living ped. Bounded by the list length so a lobby full of corpses ends
 --- the search instead of spinning.
@@ -264,6 +280,27 @@ local function runCameraThread()
                     ArenaSpectate.Previous()
                 elseif IsDisabledControlJustPressed(0, 175) then
                     ArenaSpectate.Next()
+                elseif IsDisabledControlJustPressed(0, 202) then
+                    -- THE WAY OUT, AND IT IS THE ONLY ONE THE PLAYER HAS.
+                    --
+                    -- DisableAllControlActions above takes everything, and
+                    -- what is handed back is look, zoom and cycle. There was
+                    -- no quit among them. The panel does carry a Stop
+                    -- Watching button -- but the panel opens from the lobby
+                    -- ped or the ground marker, and a spectator's body is
+                    -- frozen, invisible and possibly parked 300m away, so it
+                    -- cannot be reached. Somebody who pressed Watch was in
+                    -- for the rest of the round.
+                    --
+                    -- THE SERVER IS TOLD FIRST. Stop() is client-side only:
+                    -- it drops the camera and stands nothing up. The server
+                    -- keeps its own spectator list, and that list is what
+                    -- holds the routing bucket -- so stopping locally
+                    -- without saying so leaves a player who is not watching
+                    -- anything still instanced into a match they cannot see.
+                    TriggerServerEvent('crimson_arena:server:stopSpectating')
+                    ArenaSpectate.Stop()
+                    return
                 end
 
                 local pitchRad = math.rad(camPitch)
@@ -281,6 +318,18 @@ local function runCameraThread()
                 -- Keeps the world streamed around the fighter rather than
                 -- around our own parked body, which may be far away.
                 SetFocusEntity(ped)
+
+                -- AND NOW THE PLACE THEY ARE STANDING IN, because there is a
+                -- resolved fighter here: the engine has streamed the world
+                -- around them, which is the one condition CreateObject needs
+                -- and the one refreshTargets could not guarantee.
+                --
+                -- Idempotent, so a call per frame costs a comparison, and it
+                -- refuses to touch scenery an eliminated fighter is already
+                -- standing on.
+                if watchedArena and ArenaMatch and ArenaMatch.EnsureSpectatorScenery then
+                    ArenaMatch.EnsureSpectatorScenery(watchedArena.key, watchedArena.factor)
+                end
             end
         end
     end)
@@ -307,6 +356,24 @@ local function refreshTargets(state)
             -- realms read, so it cannot disagree with where the fight
             -- actually is.
             focusPoint = Arena.SpectateFocus and Arena.SpectateFocus(match.arenaKey) or nil
+
+            -- WHICH ARENA TO BUILD, remembered rather than built here.
+            --
+            -- The props are local objects: a fighter's client makes its own
+            -- copy on `enterArena`, and a spectator never receives that
+            -- event. Being in the match's routing bucket carries the PLAYERS
+            -- across and nothing else, so the sky arena was fighters
+            -- standing on empty air with no floor and no wall.
+            --
+            -- NOT BUILT FROM HERE THOUGH. This runs on every state push,
+            -- including the first one -- when the watcher's body is still
+            -- wherever they were standing, which may be the far side of the
+            -- map. CreateObject only produces anything where the world is
+            -- streamed, so building now is the "floor a kilometre from the
+            -- player" failure this resource has already had once. The camera
+            -- thread builds it, at the point where it has a fighter to
+            -- follow and the world around them is loaded.
+            watchedArena = { key = match.arenaKey, factor = match.sizeFactor }
 
             if type(match.players) == 'table' then
                 for _, player in ipairs(match.players) do
@@ -373,6 +440,7 @@ function ArenaSpectate.Start(matchIdentifier)
     TriggerServerEvent('crimson_arena:server:requestState')
 
     ArenaUI.Notify(locale('notify.spectate_started'), 'info')
+    announceControls()
 end
 
 --- Safe at any time, including when not spectating.
@@ -426,11 +494,19 @@ function ArenaSpectate.Stop()
         parkedFrom = nil
     end
 
+    -- ONLY WHAT WATCHING PUT UP. A spectator who is also an eliminated
+    -- fighter is still standing on the arena's floor, and this refuses to
+    -- take that one down -- client/match.lua owns it until they leave.
+    if ArenaMatch and ArenaMatch.DropSpectatorScenery then
+        ArenaMatch.DropSpectatorScenery()
+    end
+
     matchId = nil
     targets = {}
     index = 1
     focusPoint = nil
     waitingSince = nil
+    watchedArena = nil
 end
 
 function ArenaSpectate.Next()

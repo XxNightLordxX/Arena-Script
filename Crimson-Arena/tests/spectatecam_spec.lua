@@ -1034,4 +1034,57 @@ t.test('and where it came from survives something else moving it', function()
     t.equals(f.viewerAt.z, home.z)
 end)
 
+-- ========================================================================
+-- THE WAY OUT
+--
+-- Reported from a live server: "when i hit the watch button i cant stop
+-- spectating."
+--
+-- The camera thread calls DisableAllControlActions(0) and hands back look,
+-- zoom and cycle. There was no quit among them. The panel does carry a Stop
+-- Watching button -- but the panel opens from the lobby ped or the ground
+-- marker, and a spectator's body is frozen, invisible and possibly parked
+-- 300m away, so it cannot be reached. Pressing Watch was a one-way door for
+-- the rest of the round.
+-- ========================================================================
+
+t.test('BACKSPACE stops the watch', function()
+    local f = watching()
+    t.isTrue(f.spectate.IsActive(), 'the fixture is not watching anything')
+
+    f.pressed[202] = true
+    f.step()
+
+    t.isFalse(f.spectate.IsActive(), 'the player is still stuck in spectate')
+end)
+
+t.test('and the SERVER is told, or the routing bucket leaks', function()
+    -- Stop() is client-side only: it drops the camera and stands nothing up.
+    -- The server keeps its own spectator list, and that list is what holds
+    -- the bucket -- so a player who stopped watching locally without saying
+    -- so is still instanced into a match they can no longer see.
+    local f = watching()
+    f.serverEvents = {}
+
+    f.pressed[202] = true
+    f.step()
+
+    local told = false
+    for _, name in ipairs(f.serverEvents) do
+        if name == 'crimson_arena:server:stopSpectating' then told = true end
+    end
+    t.isTrue(told, 'the server was never told, so the spectator keeps the bucket: '
+        .. table.concat(f.serverEvents, ', '))
+end)
+
+t.test('and the camera stays put while nothing is pressed', function()
+    -- The guard that stops the test above passing for the wrong reason: if
+    -- the watch ended on its own, BACKSPACE proved nothing.
+    local f = watching()
+    f.step()
+    f.step()
+
+    t.isTrue(f.spectate.IsActive(), 'the watch ended without anybody asking it to')
+end)
+
 os.exit(t.summary())

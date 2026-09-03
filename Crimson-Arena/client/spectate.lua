@@ -244,7 +244,17 @@ local function runCameraThread()
                     if focusPoint and loading and (GetGameTimer() - waitingSince) < STREAM_GRACE_MS then
                         Wait(250)
                     else
+                        -- THE SERVER FIRST, for the same reason the
+                        -- BACKSPACE branch below says so at length: Stop()
+                        -- is client-side, and the server's spectator list is
+                        -- what holds the routing bucket. This exit was the
+                        -- one that skipped it, so the registration survived,
+                        -- the next state push re-entered the camera, and the
+                        -- player watched twelve more seconds of nothing --
+                        -- over and over, with no way out but the key they
+                        -- had not been told about yet.
                         ArenaUI.Notify(locale('notify.spectate_no_targets'), 'warning')
+                        TriggerServerEvent('crimson_arena:server:stopSpectating')
                         ArenaSpectate.Stop()
                         return
                     end
@@ -298,7 +308,29 @@ local function runCameraThread()
                     -- holds the routing bucket -- so stopping locally
                     -- without saying so leaves a player who is not watching
                     -- anything still instanced into a match they cannot see.
-                    TriggerServerEvent('crimson_arena:server:stopSpectating')
+                    --
+                    -- WHICH EXIT THIS IS DEPENDS ON WHO IS PRESSING IT, and
+                    -- treating the two the same is what stranded people.
+                    --
+                    -- An ELIMINATED FIGHTER is still in the arena: Stop()
+                    -- deliberately leaves their ped invisible, frozen and
+                    -- collisionless (see its own IsInArena guard), the arena
+                    -- thread keeps the pause menu disabled, and the panel
+                    -- opens only from the lobby ped -- which is a kilometre
+                    -- away and unreachable. So they got their camera taken
+                    -- away and were left with a body that could look around
+                    -- and do nothing else until somebody else finished the
+                    -- round. Stopping watching is not what they want anyway;
+                    -- they want out, and leaving is the path that hands
+                    -- their gear back and puts them on their feet.
+                    --
+                    -- An ONLOOKER is not in the arena, so Stop() stands them
+                    -- up where they were and stopSpectating is exactly right.
+                    if ArenaDispatch.IsInArena() then
+                        TriggerServerEvent('crimson_arena:server:leaveMatch')
+                    else
+                        TriggerServerEvent('crimson_arena:server:stopSpectating')
+                    end
                     ArenaSpectate.Stop()
                     return
                 end

@@ -48,6 +48,15 @@ local carried
 local roster = {}
 local playerBlips = {}
 
+--- Peds currently wearing a team outline, so one can be taken off again.
+local outlined = {}
+
+--- The colour that outline should currently be, or nil when nothing is
+--- outlined. DECLARED UP HERE because the per-frame arena thread reads it to
+--- hold the global outline state, and that thread is defined long before the
+--- outline code that writes it.
+local outlineTint = nil
+
 --- @param key string
 --- @param notifyType string
 --- @param ... any -- locale() substitutions
@@ -588,6 +597,29 @@ local function startArenaThread()
             -- and every case where the hook lost the ordering race.
             handleDeath(PlayerPedId())
 
+            -- HOLD THE TEAM OUTLINE AGAINST EVERY OTHER RESOURCE ON THE BOX.
+            --
+            -- The outline colour and shader are ONE setting for the whole
+            -- game, not a property of the ped. refreshOutlines sets them, but
+            -- it runs twice a second at best, and any resource that sets them
+            -- every frame -- a target script highlighting what you look at, a
+            -- job script marking a delivery -- owns them for the other four
+            -- hundred milliseconds. The teammate outline then draws in that
+            -- resource's colour on the default shader, which is hidden behind
+            -- anything solid. On a server running several such scripts that is
+            -- indistinguishable from the outline not working at all.
+            --
+            -- Done HERE rather than in a thread of its own: this loop is
+            -- already per-frame for the death backstop above, so holding the
+            -- outline costs two native calls and no new thread -- and a new
+            -- thread measurably changed what blipscope_spec measures about
+            -- the blip loop's own sleeping.
+            local tint = outlineTint
+            if tint and next(outlined) ~= nil then
+                SetEntityDrawOutlineColor(tint.r, tint.g, tint.b, 255)
+                SetEntityDrawOutlineShader(1)
+            end
+
             Wait(0)
         end
     end)
@@ -885,9 +917,6 @@ end
 --- Brings what is drawn in line with the last scoreboard: one pass to take
 --- away what should no longer be there -- a fighter who died, left, or was
 --- never ours to see -- and one to draw what should.
---- Peds currently wearing a team outline, so one can be taken off again.
-local outlined = {}
-
 --- Draws a coloured edge round the player's own TEAMMATES.
 ---
 --- The colour is the team's own `color`, the same value the panel is tinted
@@ -985,26 +1014,30 @@ local function refreshOutlines()
                     :format(#roster, mates, alive))
             end
 
-            -- Set every pass rather than once: it is global state on the
-            -- outline shader, and anything else on the server that draws an
-            -- outline sets it too.
+            -- THE COLOUR AND THE SHADER ARE GLOBAL, AND EVERY HALF SECOND
+            -- IS NOT OFTEN ENOUGH.
+            --
+            -- Both of these are one setting for the whole game, not a
+            -- property of the ped. This block used to set them here and only
+            -- here -- once per refresh, which is BLIP_REFRESH_MS apart -- on
+            -- the reasoning that anything else drawing an outline sets them
+            -- too. That reasoning is right and the schedule was wrong: a
+            -- resource that sets them EVERY FRAME wins every frame in
+            -- between, and the teammate outline goes the colour of whatever
+            -- that resource wanted, on the default shader, which is occluded
+            -- by everything in front of it.
+            --
+            -- On a server running several prop, target and job scripts that
+            -- is indistinguishable from the outline not working at all.
+            -- Remembered here and re-asserted every frame by the thread
+            -- below, which costs two native calls and cannot be outvoted.
+            outlineTint = { r = r, g = g, b = b }
             SetEntityDrawOutlineColor(r, g, b, 255)
-
-            -- AND THE SHADER THAT ACTUALLY DRAWS IT THROUGH A WALL.
-            --
-            -- The note above this function says the outline draws through
-            -- geometry and that this is the whole point of it -- knowing
-            -- where your side is, not where the corner is. Nothing switched
-            -- that on. SetEntityDrawOutline alone uses the DEFAULT shader,
-            -- which is occluded by everything in front of it and faint even
-            -- in the open, so a teammate behind any cover at all showed
-            -- nothing and a teammate in the open showed almost nothing.
-            --
-            -- Shader 1 is the see-through variant. Global, like the colour,
-            -- and set on the same schedule for the same reason.
             SetEntityDrawOutlineShader(1)
         end
     end
+
+    if next(wanted) == nil then outlineTint = nil end
 
     for ped in pairs(outlined) do
         if not wanted[ped] then

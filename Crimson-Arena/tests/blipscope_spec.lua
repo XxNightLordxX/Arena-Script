@@ -66,6 +66,8 @@ local function newFixture(mutate)
         outlines = {},     -- [ped] = true while drawn
         outlineCalls = {}, -- every SetEntityDrawOutline, in order
         outlineTicks = {}, -- the blip loop's own clock at each colour refresh
+        colorCalls = {},   -- every SetEntityDrawOutlineColor, with its caller's clock
+        shaderCalls = {},  -- every SetEntityDrawOutlineShader, likewise
         nextBlip = 1,
         streamed = { [MATE] = true, [FOE] = true, [FOE2] = true },
     }
@@ -138,12 +140,42 @@ local function newFixture(mutate)
             f.outlineCalls[#f.outlineCalls + 1] = { ped = ped, on = on }
             if on then f.outlines[ped] = true else f.outlines[ped] = nil end
         end,
-        SetEntityDrawOutlineShader = function(shader) f.outlineShader = shader end,
+        SetEntityDrawOutlineShader = function(shader)
+            f.outlineShader = shader
+            f.shaderCalls[#f.shaderCalls + 1] = { clock = clocks[coroutine.running()] or 0 }
+        end,
         SetEntityDrawOutlineColor = function(r, g, b)
             f.outlineColor = { r, g, b }
-            -- WHICH THREAD IS DOING THE DRAWING, learned rather than assumed.
-            f.outlineThread = coroutine.running()
-            f.outlineTicks[#f.outlineTicks + 1] = clocks[f.outlineThread] or 0
+
+            -- EVERY call, with the caller's own clock beside it. The tick
+            -- list below is the blip loop's alone; this one is how a spec
+            -- can tell WHICH kind of loop set the colour -- a thread whose
+            -- clock never moves has never slept, so it is running every
+            -- frame, and that is exactly the claim the hold makes.
+            f.colorCalls[#f.colorCalls + 1] = { clock = clocks[coroutine.running()] or 0 }
+
+            -- WHICH THREAD IS DOING THE RECONCILING, learned once and then
+            -- held.
+            --
+            -- This used to re-learn it on every call, which was fine while
+            -- exactly one loop set the colour. It is not: the per-frame arena
+            -- thread re-asserts colour and shader every frame, because both
+            -- are ONE global setting for the whole game and any other
+            -- resource that writes them every frame owns them the rest of the
+            -- time. With two callers, re-learning made the tick list alternate
+            -- between two threads' clocks and the measured gap became
+            -- nonsense -- 74,800ms out of a loop that sleeps 500.
+            --
+            -- The blip loop is always the first to call this: it is
+            -- refreshOutlines that works the colour out at all, and the arena
+            -- thread only re-asserts what refreshOutlines has already set. So
+            -- the first caller is the one this test is about, and ticks from
+            -- anything else are not reconciliations.
+            local co = coroutine.running()
+            if f.outlineThread == nil then f.outlineThread = co end
+            if co ~= f.outlineThread then return end
+
+            f.outlineTicks[#f.outlineTicks + 1] = clocks[co] or 0
         end,
 
         NetworkResurrectLocalPlayer = function() end,
@@ -341,11 +373,32 @@ t.test('the haze is the team colour, so the edge matches the dot', function()
     f.hud()
     f.step()
 
-    -- crimson ships as #c81020.
+    -- THE CONFIGURED COLOUR, not a hex pinned here.
+    --
+    -- The claim in the test name is that the edge round a teammate is the
+    -- same colour the team is everywhere else, and that claim has to survive
+    -- the palette being retuned -- which it has been, from #c81020 to a
+    -- brighter #ff2233. A pinned triple turns a colour change into a failing
+    -- test about nothing. Read the hex the fighters' team actually ships
+    -- with and take it apart here rather than calling Arena.HexToRgb, so
+    -- this is a second reading of the config and not an echo of the one
+    -- under test.
+    local hex = (((f.env.Config.Teams or {}).list or {}).crimson or {}).color
+    t.isNotNil(hex, 'the crimson team ships with no colour to draw')
+
+    local body = tostring(hex):gsub('^#', '')
+    t.equals(#body, 6, 'the crimson colour is not a #rrggbb hex: ' .. tostring(hex))
+
+    local want = {
+        tonumber(body:sub(1, 2), 16),
+        tonumber(body:sub(3, 4), 16),
+        tonumber(body:sub(5, 6), 16),
+    }
+
     t.isNotNil(f.outlineColor, 'no outline colour was ever set')
-    t.equals(f.outlineColor[1], 200)
-    t.equals(f.outlineColor[2], 16)
-    t.equals(f.outlineColor[3], 32)
+    t.equals(f.outlineColor[1], want[1], 'the outline red channel is not the team colour')
+    t.equals(f.outlineColor[2], want[2], 'the outline green channel is not the team colour')
+    t.equals(f.outlineColor[3], want[3], 'the outline blue channel is not the team colour')
 end)
 
 t.test('a dead teammate is neither blipped nor hazed', function()
@@ -901,6 +954,93 @@ t.test('the see-through shader is selected, not the default one', function()
     t.isTrue(f.outlines[1000 + MATE] == true, 'the teammate was not outlined at all')
     t.equals(f.outlineShader, 1,
         'the outline is drawn with the default shader, so a teammate behind cover shows nothing')
+end)
+
+-- ========================================================================
+-- AND HELD AGAINST EVERY OTHER RESOURCE ON THE BOX
+--
+-- REPORTED FROM THE GAME, twice: "Also team player haze not working", and
+-- then "I want the team haze to work" after the shader above was already
+-- in. The colour and the shader are not properties of the ped -- they are
+-- ONE setting for the whole game. Setting them once per reconciliation is
+-- correct only if nothing else ever sets them, and a live server runs
+-- several scripts that set them EVERY FRAME: a target script highlighting
+-- what you look at, a job script marking a delivery. Between two of our
+-- refreshes they win every frame, and the teammate outline draws in their
+-- colour on the default shader -- which is occluded by everything in front
+-- of it. That is indistinguishable, in the game, from the haze not working.
+--
+-- So both are re-asserted every frame. What follows is how a spec can see
+-- that: a thread that has never slept is a per-frame thread, and its clock
+-- stays at zero while the blip loop's climbs by BLIP_REFRESH_MS a pass.
+-- ========================================================================
+
+--- Calls made by a loop that has never waited -- i.e. one running per frame.
+local function perFrame(calls)
+    local count = 0
+    for _, call in ipairs(calls) do
+        if call.clock == 0 then count = count + 1 end
+    end
+    return count
+end
+
+t.test('the colour is re-asserted every frame, not once a refresh', function()
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    for _ = 1, 8 do f.step() end
+
+    -- The blip loop's first pass is at clock 0 as well, so one such call is
+    -- not evidence of anything. Eight frames of holding is.
+    t.isTrue(perFrame(f.colorCalls) >= 8,
+        ('the outline colour was set %d time(s) by a per-frame loop over 8 frames -- '
+            .. 'any resource that sets it every frame owns it in between')
+            :format(perFrame(f.colorCalls)))
+end)
+
+t.test('and so is the shader, which is the half that hides behind walls', function()
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    for _ = 1, 8 do f.step() end
+
+    t.isTrue(perFrame(f.shaderCalls) >= 8,
+        ('the see-through shader was selected %d time(s) by a per-frame loop over 8 frames')
+            :format(perFrame(f.shaderCalls)))
+end)
+
+t.test('and the hold stops when there is nothing outlined', function()
+    -- IT MUST NOT BECOME A RESOURCE THAT STOMPS EVERYBODY ELSE. The
+    -- complaint this fixes is exactly that behaviour from someone else's
+    -- script; holding a colour for an outline we are not drawing would make
+    -- this resource the offender for every other one on the server.
+    local f = newFixture()
+    f.enterLive({ modeKey = 'ffa', teamKey = nil })
+    f.hud()
+    for _ = 1, 8 do f.step() end
+
+    t.equals(f.outlineCount(), 0, 'a free-for-all outlined somebody')
+    t.equals(perFrame(f.colorCalls), 0,
+        'the outline colour was held for the whole server with nothing of ours outlined')
+    t.equals(perFrame(f.shaderCalls), 0,
+        'the outline shader was held for the whole server with nothing of ours outlined')
+end)
+
+t.test('and it lets go when the match ends', function()
+    -- The same rule at the other end: a match that is over draws no
+    -- outline, so it has no business holding the setting.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    for _ = 1, 4 do f.step() end
+    t.isTrue(perFrame(f.colorCalls) > 0, 'the hold never started, so this proves nothing')
+
+    f.fire('crimson_arena:client:exitArena', {})
+    local held = perFrame(f.colorCalls)
+    for _ = 1, 8 do f.step() end
+
+    t.equals(perFrame(f.colorCalls), held,
+        'the outline colour was still being held every frame after the match ended')
 end)
 
 os.exit(t.summary())

@@ -19,17 +19,17 @@
     ------------------------------------------------------------------------------
        83   Lobby         The NPC players walk up to
       156   Match         Lives, timers, player counts, win condition
-      371   Teams         The sides, and whether they may be uneven
-      474   Modes         Free-for-all and team deathmatch
-      493   DefaultMode   Which of them a new lobby opens on
-      512   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      705   UI            Panel colours, logo and title
-      763   Permissions   Who may open a match, who may force-stop one
-      844   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1381   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1797   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1807   Webhook       Optional: a Discord line per finished match
-     1844   Dispatch      Optional: keeping police and EMS out of the arena
+      376   Teams         The sides, and whether they may be uneven
+      493   Modes         Free-for-all and team deathmatch
+      512   DefaultMode   Which of them a new lobby opens on
+      531   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      724   UI            Panel colours, logo and title
+      782   Permissions   Who may open a match, who may force-stop one
+      863   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1400   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1816   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1826   Webhook       Optional: a Discord line per finished match
+     1863   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -319,6 +319,11 @@ Config.Match = {
     -- A player hurting THEMSELVES is never refused: a fall or your own
     -- grenade is not crossfire.
     --
+    -- AND IT CARRIES Config.Teams.friendlyFire. The engine gives one place
+    -- a shot can be refused at all, and this is it, so the same guard that
+    -- keeps the arena and the city apart is what keeps you from shooting
+    -- your own side. Switching this off switches that off with it.
+    --
     -- Off is the old behaviour: the bucket alone.
     crossfireGuard = {
         enabled = true,
@@ -393,7 +398,10 @@ Config.Teams = {
     -- to pick and the start is refused until they do.
     autoAssignIfUnchosen = true,
 
-    -- Can teammates hurt each other?
+    -- Can teammates hurt each other? Off means the shot itself is refused,
+    -- not merely that the kill goes uncredited -- Config.Match.crossfireGuard
+    -- is what enforces it, so this setting does nothing with that switched
+    -- off.
     friendlyFire = false,
 
     -- Team blips on the map during a match.
@@ -428,19 +436,30 @@ Config.Teams = {
     -- and exactly the problem with it for finding a target.
     showTeamOutline = true,
 
+    -- COLOURS ARE PICKED TO BE TOLD APART AT A GLANCE, not to be tasteful.
+    --
+    -- `color` is the panel accent AND the tint of the team outline drawn on
+    -- your own side; `blipColor` is the dot on the map. They are two different
+    -- systems -- a hex string and one of GTA's numbered blip colours -- so
+    -- they have to be chosen to MATCH, or the edge round your teammate is one
+    -- colour and their dot on the map is another.
+    --
+    -- Ash used to be #4a4a52 with blip colour 40, which is GTA's DARK GREY:
+    -- a grey dot on a grey minimap and a grey edge on a grey ped. Both are
+    -- now a blue nobody can mistake for the red side.
     list = {
         ['crimson'] = {
             label = 'Crimson',
             -- Panel accent for this team, and the tint used on its blips.
-            color = '#c81020',
+            color = '#ff2233',
             blipColor = 1,      -- red
             enabled = true,
             order = 1,
         },
         ['ash'] = {
             label = 'Ash',
-            color = '#4a4a52',
-            blipColor = 40,     -- grey
+            color = '#2aa6ff',
+            blipColor = 3,      -- blue
             enabled = true,
             order = 2,
         },
@@ -450,15 +469,15 @@ Config.Teams = {
         -- shared `spawns` list.
         ['bone'] = {
             label = 'Bone',
-            color = '#d8d2c4',
-            blipColor = 0,
+            color = '#ffd34d',
+            blipColor = 5,      -- yellow
             enabled = false,
             order = 3,
         },
         ['ember'] = {
             label = 'Ember',
-            color = '#ff6a1a',
-            blipColor = 47,
+            color = '#ff8c1a',
+            blipColor = 17,     -- orange
             enabled = false,
             order = 4,
         },

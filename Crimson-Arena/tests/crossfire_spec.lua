@@ -24,11 +24,16 @@
       setting that four other things also depend on.
 
     So the rule is decided on the server from the damage packet itself. What
-    follows tests it eight ways: what it must allow, what it must refuse,
+    follows tests it nine ways: what it must allow, what it must refuse,
     what a hostile client can put in the packet, what happens at the edges,
     what it costs when nothing is running, that an idle server is untouched,
     that it composes with spectating and with two matches on one arena, and
     that switching it off really does restore the old behaviour.
+
+    The ninth is TEAMS. `friendlyFire = false` is enforced here too, because
+    weaponDamageEvent is the only place a shot can be refused at all -- for
+    months it was only consulted when a kill was SCORED, which meant a
+    player could kill their own teammate and merely not be credited for it.
 ]]
 
 local t = dofile('testkit.lua')
@@ -144,6 +149,26 @@ local function newFixture(opts)
         f.cancelled = false
         for _, fn in ipairs(handlers['weaponDamageEvent'] or {}) do fn(sender, data) end
         return f.cancelled
+    end
+
+    --- Gives the match TEAMS, the way server/lobby.lua holds them.
+    ---
+    --- mayDamage reads the roster through ArenaLobby.Get, which lives in a
+    --- file this fixture deliberately does not load -- the guard has to work
+    --- on a server where the lobby has not answered yet. Installing a stub
+    --- here is how the team half of the rule gets exercised at all.
+    --- @param matchId string
+    --- @param modeKey string
+    --- @param teams table -- [src] = teamKey
+    function f.teams(matchId, modeKey, teams)
+        local players = {}
+        for src, team in pairs(teams) do players[src] = { team = team } end
+        f.env.ArenaLobby = {
+            Get = function(id)
+                if id ~= matchId then return nil end
+                return { modeKey = modeKey, players = players }
+            end,
+        }
     end
 
     f.handlers = handlers
@@ -471,7 +496,137 @@ t.test('and it ships ON, because the setting is opt-out', function()
 end)
 
 -- ======================================================================
--- 8. IT SAYS WHAT IT DID
+-- 8. FRIENDLY FIRE
+-- ======================================================================
+--
+-- REPORTED FROM THE GAME: "i am still able to shoot my teammates".
+--
+-- Arena.CanDamage has been right and tested since teams went in, and had
+-- exactly one caller -- the kill attribution in server/match.lua, which
+-- decides whether a kill is CREDITED. Nothing ever refused the bullet, so
+-- `friendlyFire = false` meant "shooting your own side does not score"
+-- rather than "you cannot shoot your own side", and a player could empty a
+-- magazine into a teammate, kill them, and simply see no score change.
+--
+-- weaponDamageEvent is the only place a shot can be refused at all, which
+-- makes this the same guard rather than a second one.
+
+t.test('THE REPORT: a fighter cannot shoot their own teammate', function()
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson' })
+
+    t.isTrue(f.shoot(1, { 2 }), 'a fighter shot their own teammate with friendlyFire off')
+    t.isTrue(f.shoot(2, { 1 }), 'the teammate shot back')
+end)
+
+t.test('and can still shoot the other side', function()
+    -- The half that must not break. A guard that refuses everything inside
+    -- a team match is worse than the bug it fixes.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'ash' })
+
+    t.isFalse(f.shoot(1, { 2 }), 'a fighter could not shoot an enemy')
+    t.isFalse(f.shoot(2, { 1 }), 'the enemy could not shoot back')
+end)
+
+t.test('and a free-for-all has no sides, so everybody is fair game', function()
+    -- Same colours in the roster, which a mode without teams never reads.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'ffa', { [1] = 'crimson', [2] = 'crimson' })
+
+    t.isFalse(f.shoot(1, { 2 }), 'a free-for-all refused a shot between two fighters')
+end)
+
+t.test('and with friendlyFire ON a teammate is shootable again', function()
+    -- The setting is what decides it -- not the mode, and not this guard
+    -- having an opinion of its own.
+    local f = newFixture()
+    f.env.Config.Teams.friendlyFire = true
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson' })
+
+    t.isFalse(f.shoot(1, { 2 }), 'friendlyFire was on and a teammate still could not be shot')
+end)
+
+t.test('and a fighter can still hurt themselves on their own side', function()
+    -- Their own grenade, their own fall. Refusing it would make every
+    -- fighter in a team mode immune to the one thing the arena does not
+    -- control -- and a player is not their own teammate.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson' })
+
+    t.isFalse(f.shoot(1, { 1 }), 'a fighter in a team mode was made immune to their own damage')
+end)
+
+t.test('and a lobby that has not answered yet lets the round fight', function()
+    -- FAILING OPEN IS THE RIGHT DIRECTION HERE, and it is a deliberate
+    -- choice rather than an accident of the guard clause.
+    --
+    -- The two players are already known to be in the SAME match -- the
+    -- crossfire half has passed by this point. All that is unknown is which
+    -- side each is on. Failing closed on that would freeze a live round into
+    -- a stalemate nobody can end; failing open costs at most one unrefused
+    -- shot between teammates, which is what shipped for months.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    -- No ArenaLobby at all: the file is not loaded in this fixture.
+    t.isNil(f.env.ArenaLobby, 'the fixture grew a lobby and this test stopped testing anything')
+    t.isFalse(f.shoot(1, { 2 }), 'a round could not fight because the lobby had not answered')
+
+    -- And the same when the lobby is there but knows nothing about the match.
+    f.env.ArenaLobby = { Get = function() return nil end }
+    t.isFalse(f.shoot(1, { 2 }), 'a round could not fight because the lobby had lost the match')
+end)
+
+t.test('and a fighter the roster has no team for is not protected by accident', function()
+    -- A player mid-join, or a roster row that lost its team. Arena.CanDamage
+    -- already answers this -- an unknown side is not the same side -- and
+    -- this pins that the guard does not add an opinion on top of it.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson' })   -- 2 is in the match with no team
+
+    t.isFalse(f.shoot(1, { 2 }), 'a fighter with no team recorded was treated as a teammate')
+    t.isFalse(f.shoot(2, { 1 }), 'a fighter with no team recorded could not shoot')
+end)
+
+t.test('and the switch takes friendly fire with it, on purpose', function()
+    -- THE ONE PLACE THESE TWO RULES ARE NOT SEPARABLE.
+    --
+    -- Section 7 promises that switching crossfireGuard off restores exactly
+    -- what shipped before it existed, and this refusal happens in the same
+    -- handler behind the same gate. An operator who switched the guard off
+    -- asked this resource to stop touching other people's damage events, so
+    -- it stops touching all of them. config.lua says so beside the switch.
+    local f = newFixture({ guard = false })
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson' })
+
+    t.isFalse(f.shoot(1, { 2 }), 'the guard ran with its setting off')
+end)
+
+t.test('and it ships enforced, because friendlyFire ships off', function()
+    -- Both halves have to be true for the report to be fixed on a server
+    -- nobody has configured: the setting says no friendly fire, and the
+    -- guard that enforces it is on.
+    local env = Sandbox.newArenaEnv()
+    t.isFalse(env.Config.Teams.friendlyFire == true, 'friendly fire ships ON')
+    t.isTrue(env.Config.Match.crossfireGuard.enabled ~= false, 'the guard that enforces it ships off')
+end)
+
+-- ======================================================================
+-- 9. IT SAYS WHAT IT DID
 -- ======================================================================
 
 t.test('a refusal is written down, so an operator can see it happening', function()
@@ -484,6 +639,24 @@ t.test('a refusal is written down, so an operator can see it happening', functio
 
     t.isTrue(table.concat(f.debugs, '\n'):find('crossfire', 1, true) ~= nil,
         'a shot was refused and nothing was written down')
+end)
+
+t.test('and it says WHICH rule refused the shot', function()
+    -- The two refusals look identical from the outside -- a shot that did no
+    -- damage -- and they have completely different causes. "Not in the same
+    -- round" sent an operator looking at routing buckets when the answer was
+    -- that friendlyFire is off, which is a setting they can change.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson' })
+    f.shoot(1, { 2 })
+
+    local written = table.concat(f.debugs, '\n')
+    t.isTrue(written:find('same team', 1, true) ~= nil,
+        'a friendly-fire refusal was logged as something else: ' .. written)
+    t.isTrue(written:find('same round', 1, true) == nil,
+        'a friendly-fire refusal blamed the round: ' .. written)
 end)
 
 os.exit(t.summary())

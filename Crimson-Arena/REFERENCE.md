@@ -90,8 +90,9 @@ instancing really happened rather than assuming it did.
 
 ### Weapons, ammunition and inventory
 
-- **96 weapons catalogued, 77 enabled**, in categories, with per-weapon slots for
-  primary, secondary and melee.
+- **96 weapons catalogued, 77 enabled**, in categories. A player carries
+  `Config.Loadouts.slots` of them — guns and melee against one count, so the mix
+  is theirs.
 - **The host or the player picks**, per `Config.Loadouts.chooser`.
 - **You pick an amount of ammunition, not a type.** The correct ammo item for that
   weapon is worked out and handed over automatically: one magazine loaded in the

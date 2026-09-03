@@ -293,84 +293,139 @@ t.test('ResolveLoadout burns one slot for the same weapon asked for twice, not t
     t.equals(loadout.weapons[2].ammo, 120)
 end)
 
-t.test('ResolveLoadout stops at weaponSlots, and names what did not fit', function()
-    t.equals(Config.Loadouts.weaponSlots, 2)
+t.test('ResolveLoadout stops at the shared pool, and names what did not fit', function()
+    t.equals(Config.Loadouts.slots, 4)
 
+    local loadout, rejected = Arena.ResolveLoadout({
+        weapons = {
+            { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' },
+            { key = 'shotgun' }, { key = 'smg' },
+        },
+    })
+
+    t.equals(#loadout.weapons, 4)
+    t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
+
+    -- THE OVERFLOW IS REPORTED, NOT SILENTLY SWALLOWED, and it is now
+    -- reported completely. The two-pool version broke out of the loop once
+    -- both allowances were spent, so only the first thing past the line was
+    -- ever named -- a recorded defect. One pool walks to the end.
+    t.equals(#rejected, 1)
+    t.equals(rejected[1], 'smg')
+end)
+
+t.test('THE REQUEST: a player may spend the whole pool on blades', function()
+    -- "let it choose if they only want to guns or only melee". Four melee
+    -- weapons and not one gun, out of a config that ships four slots.
+    local loadout, rejected = Arena.ResolveLoadout({
+        weapons = { { key = 'machete' }, { key = 'bat' }, { key = 'knife' }, { key = 'crowbar' } },
+    })
+
+    t.equals(#loadout.weapons, 4, 'a melee-only loadout was cut short')
+    t.equals(#rejected, 0)
+    for _, weapon in ipairs(loadout.weapons) do
+        t.isTrue(Arena.IsMeleeWeapon(Arena.GetWeaponByKey(weapon.key)),
+            'a gun got into a melee-only loadout')
+    end
+end)
+
+t.test('and equally on guns', function()
+    -- The other half, which the two-pool model refused just as firmly: it
+    -- capped firearms at two and handed the spare slots to blades nobody
+    -- asked for.
     local loadout, rejected = Arena.ResolveLoadout({
         weapons = { { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' }, { key = 'shotgun' } },
     })
 
-    t.equals(#loadout.weapons, 2)
-    t.equals(loadout.weapons[1].weapon, 'WEAPON_PISTOL')
-    t.equals(loadout.weapons[2].weapon, 'WEAPON_ASSAULTRIFLE')
-
-    -- The overflow is REPORTED, not silently swallowed. This changed when
-    -- melee got an allowance of its own: the loop can no longer stop at the
-    -- first weapon that does not fit, because a blade further down the list is
-    -- still takeable after the firearm slots are gone. Everything it skips is
-    -- named instead, which is strictly more useful -- the panel can tell a
-    -- player which weapon did not make it rather than quietly dropping one.
-    t.equals(#rejected, 2)
-    t.equals(rejected[1], 'sniper')
-    t.equals(rejected[2], 'shotgun')
-end)
-
-t.test('melee has its own allowance and does not compete with firearms', function()
-    -- The BEHAVIOUR, not the shipped number. This used to assert
-    -- meleeSlots == 1 and then lean on it, so raising the operator's melee
-    -- allowance broke a test that is not about the allowance at all.
-    t.isTrue((Arena.ToInt(Config.Loadouts.meleeSlots) or 0) >= 1,
-        'melee is switched off entirely, so there is no allowance to test')
-
-    -- Two guns AND a blade, from a request that would have cost three shared
-    -- slots. The whole point of the separate count.
-    local loadout, rejected = Arena.ResolveLoadout({
-        weapons = { { key = 'pistol' }, { key = 'rifle' }, { key = 'machete' } },
-    })
-
-    local names = {}
-    for _, weapon in ipairs(loadout.weapons) do names[weapon.weapon] = true end
-
-    t.isTrue(names['WEAPON_PISTOL'])
-    t.isTrue(names['WEAPON_ASSAULTRIFLE'])
-    t.isTrue(names['WEAPON_MACHETE'], 'the blade did not cost a gun slot')
+    t.equals(#loadout.weapons, 4, 'a firearms-only loadout was cut short')
     t.equals(#rejected, 0)
 end)
 
-t.test('a blade past the allowance is refused while a firearm slot is still free', function()
-    -- Pinned to ONE melee slot here rather than read from the config: this is
-    -- about what happens when the allowance runs out, so the allowance has to
-    -- be a known number. The operator ships two.
-    local restore = Config.Loadouts.meleeSlots
-    Config.Loadouts.meleeSlots = 1
-
+t.test('and a blade costs exactly what a gun costs -- one slot', function()
+    -- THE RULE, stated as the arithmetic it is. Three guns and a blade fills
+    -- a pool of four; the blade is the fourth thing, not a free extra.
     local loadout, rejected = Arena.ResolveLoadout({
-        weapons = { { key = 'machete' }, { key = 'bat' }, { key = 'pistol' } },
+        weapons = {
+            { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' },
+            { key = 'machete' }, { key = 'bat' },
+        },
     })
-    Config.Loadouts.meleeSlots = restore
 
-    local names = {}
-    for _, weapon in ipairs(loadout.weapons) do names[weapon.weapon] = true end
-
-    t.isTrue(names['WEAPON_MACHETE'])
-    t.isFalse(names['WEAPON_BAT'] == true, 'one melee slot means one blade')
-    t.isTrue(names['WEAPON_PISTOL'], 'and a spent melee allowance does not block a gun behind it')
+    t.equals(#loadout.weapons, 4)
     t.equals(#rejected, 1)
-    t.equals(rejected[1], 'bat')
+    t.equals(rejected[1], 'bat', 'the fifth thing was refused whatever kind it was')
 end)
 
-t.test('meleeSlots = 0 removes melee without touching the firearm allowance', function()
-    local noMelee = tweaked(function(config) config.Loadouts.meleeSlots = 0 end)
-    local loadout = noMelee.ResolveLoadout({
-        weapons = { { key = 'machete' }, { key = 'pistol' }, { key = 'rifle' } },
+t.test('the pool is spent in the order the player sent it', function()
+    -- NOT COSMETIC. The ammo-type cap is spent in this same order, so the
+    -- first weapons keep the round they were given -- and a player who put
+    -- their knife first meant to have their knife.
+    local loadout = Arena.ResolveLoadout({
+        weapons = {
+            { key = 'machete' }, { key = 'bat' }, { key = 'knife' },
+            { key = 'crowbar' }, { key = 'pistol' },
+        },
+    })
+
+    t.equals(#loadout.weapons, 4)
+    t.equals(loadout.weapons[1].weapon, 'WEAPON_MACHETE',
+        'the pool was not filled in the order it was asked for')
+end)
+
+t.test('allowMelee = false removes melee without shrinking the pool', function()
+    local noMelee = tweaked(function(config) config.Loadouts.allowMelee = false end)
+    local loadout, rejected = noMelee.ResolveLoadout({
+        weapons = { { key = 'machete' }, { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' } },
     })
 
     local names = {}
     for _, weapon in ipairs(loadout.weapons) do names[weapon.weapon] = true end
 
     t.isFalse(names['WEAPON_MACHETE'] == true)
-    t.isTrue(names['WEAPON_PISTOL'])
-    t.isTrue(names['WEAPON_ASSAULTRIFLE'])
+    t.equals(#loadout.weapons, 3, 'the refused blade cost a slot it never filled')
+    t.equals(#rejected, 1)
+    t.equals(rejected[1], 'machete', 'the blade was dropped without being named')
+end)
+
+t.test('and allowFirearms = false makes a melee-only arena', function()
+    local noGuns = tweaked(function(config) config.Loadouts.allowFirearms = false end)
+    local loadout, rejected = noGuns.ResolveLoadout({
+        weapons = { { key = 'pistol' }, { key = 'rifle' }, { key = 'machete' }, { key = 'bat' } },
+    })
+
+    local names = {}
+    for _, weapon in ipairs(loadout.weapons) do names[weapon.weapon] = true end
+
+    t.isTrue(names['WEAPON_MACHETE'])
+    t.isTrue(names['WEAPON_BAT'])
+    t.isFalse(names['WEAPON_PISTOL'] == true)
+    t.equals(#rejected, 2)
+end)
+
+t.test('and both switched off hands out nothing at all, without erroring', function()
+    -- A config nobody means to write, but the round still has to start.
+    local nothing = tweaked(function(config)
+        config.Loadouts.allowFirearms = false
+        config.Loadouts.allowMelee = false
+    end)
+    local loadout, rejected = nothing.ResolveLoadout({
+        weapons = { { key = 'pistol' }, { key = 'machete' } },
+    })
+
+    t.equals(#loadout.weapons, 0)
+    t.equals(#rejected, 2)
+end)
+
+t.test('ABSENT IS PERMISSIVE: neither switch written means both kinds are offered', function()
+    -- The recurring shape of this repo's bugs is a new key whose absence
+    -- defaults to the broken behaviour. Here that would be an arena that
+    -- silently issues nothing.
+    local unset = tweaked(function(config)
+        config.Loadouts.allowFirearms = nil
+        config.Loadouts.allowMelee = nil
+    end)
+    local loadout = unset.ResolveLoadout({ weapons = { { key = 'pistol' }, { key = 'machete' } } })
+    t.equals(#loadout.weapons, 2, 'an unwritten switch removed a whole kind of weapon')
 end)
 
 t.test('a melee weapon is offered no ammo types, whatever the shared list says', function()
@@ -385,23 +440,47 @@ t.test('a melee weapon is offered no ammo types, whatever the shared list says',
     end
 end)
 
-t.test('ResolveLoadout honours a smaller weaponSlots, and zero slots', function()
+t.test('ResolveLoadout honours a smaller pool, and reads zero as UNLIMITED', function()
     -- Set INSIDE the callback: tweaked() builds a fresh env from the shipped
     -- config, so mutating the outer one does not reach it.
-    local oneSlot = tweaked(function(config) config.Loadouts.weaponSlots = 1 end)
+    local oneSlot = tweaked(function(config) config.Loadouts.slots = 1 end)
     local single = oneSlot.ResolveLoadout({ weapons = { { key = 'pistol' }, { key = 'rifle' } } })
     t.equals(#single.weapons, 1)
     t.equals(single.weapons[1].weapon, 'WEAPON_PISTOL')
 
-    -- Zero slots is a legal, if joyless, arena: nobody carries a firearm.
-    local noSlots = tweaked(function(config) config.Loadouts.weaponSlots = 0 end)
-    local empty = noSlots.ResolveLoadout({ weapons = { { key = 'pistol' } } })
-    t.equals(#empty.weapons, 0)
+    -- ZERO IS THE OPPOSITE OF WHAT IT USED TO MEAN, and that is the whole
+    -- reason the keys were renamed rather than repurposed. `weaponSlots = 0`
+    -- meant "no firearms"; `slots = 0` means "no limit", which is what zero
+    -- means for ammoTypeSlots, for supplies.totalItems, and everywhere
+    -- config.lua's own header says it does. "Nobody carries a gun" is now
+    -- spelled allowFirearms = false.
+    local unlimited = tweaked(function(config) config.Loadouts.slots = 0 end)
+    local everything = unlimited.ResolveLoadout({
+        weapons = {
+            { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' },
+            { key = 'shotgun' }, { key = 'smg' }, { key = 'machete' },
+        },
+    })
+    t.equals(#everything.weapons, 6, 'zero was read as a cap rather than as no cap')
 
-    -- A negative slot count is floored to zero rather than read as "all".
-    local negative = tweaked(function(config) config.Loadouts.weaponSlots = -5 end)
-    local none = negative.ResolveLoadout({ weapons = { { key = 'pistol' } } })
-    t.equals(#none.weapons, 0)
+    -- JUNK AND NEGATIVE FALL BACK rather than clamping, because clamping now
+    -- lands on "unlimited" and `slots = -5` is a typo, not a request for the
+    -- whole catalogue.
+    for _, junk in ipairs({ -5, 'four', {}, true, 0 / 0 }) do
+        local broken = tweaked(function(config) config.Loadouts.slots = junk end)
+        local some = broken.ResolveLoadout({
+            weapons = { { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' } },
+        })
+        t.equals(#some.weapons, 2,
+            ('slots = %s did not fall back to the default'):format(tostring(junk)))
+    end
+
+    -- And an unwritten key reads as the same default, not as unlimited.
+    local unset = tweaked(function(config) config.Loadouts.slots = nil end)
+    local two = unset.ResolveLoadout({
+        weapons = { { key = 'pistol' }, { key = 'rifle' }, { key = 'sniper' } },
+    })
+    t.equals(#two.weapons, 2)
 end)
 
 t.test('a player carries exactly what they picked and nothing else', function()

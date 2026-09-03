@@ -429,8 +429,15 @@ local function snapshotConfig()
             -- panel that does not know would offer every player a picker
             -- and then reject what they chose with no explanation on screen.
             chooser = Arena.LoadoutChooser(),
-            weaponSlots = math.max(0, Arena.ToInt(Config.Loadouts.weaponSlots) or 1),
-            meleeSlots = math.max(0, Arena.ToInt(Config.Loadouts.meleeSlots) or 1),
+            -- ONE POOL, MIRRORED THE WAY THE RESOLVER READS IT -- including
+            -- that zero means NO LIMIT, and that junk and negative fall back
+            -- rather than clamping to zero. Two readers of one number with
+            -- hand-copied defaults is how a panel comes to disagree with the
+            -- server about what a player may carry, and the panel is the half
+            -- the player believes.
+            slots = Arena.SlotsPerPlayer(),
+            allowFirearms = Config.Loadouts.allowFirearms ~= false,
+            allowMelee = Config.Loadouts.allowMelee ~= false,
             -- Sent because the SERVER enforces it. Arena.ResolveLoadout caps
             -- distinct ammo types and quietly substitutes a weapon's default
             -- past the cap, so a panel that does not know the number offers a

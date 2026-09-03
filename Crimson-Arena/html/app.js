@@ -452,29 +452,45 @@
     }
 
     /* ------------------------------------------------------------------
-       THE THREE ALLOWANCES
+       THE ALLOWANCES
 
-       The server keeps them apart and Arena.ResolveLoadout spends them
-       apart, so the panel reads them apart. Folding melee into the weapon
-       count is the bug this screen was rebuilt to fix: a player fills their
-       guns, reaches for a knife, and is told they are full by a panel the
-       server would have disagreed with.
+       ONE POOL FOR WEAPONS, and the mix is the player's. The server counts
+       guns and blades together against Config.Loadouts.slots and this panel
+       reads it the same way -- if the two ever disagree it is the panel the
+       player believes, and they find out at the moment the round starts.
+
+       This used to be two counts kept apart, so that reaching for a knife
+       did not cost a rifle. The other half of that was a player who wanted
+       a bat and nothing else being made to carry two guns as well.
        ------------------------------------------------------------------ */
 
-    /* Shootable weapons only. */
-    function weaponSlots() {
-        return Math.max(0, int((cfg().loadouts || {}).weaponSlots, 1));
+    /* How many weapons in total, ZERO MEANING NO LIMIT -- the same reading
+       Arena.SlotsPerPlayer takes, including that junk and negative fall back
+       to two rather than clamping to zero, because clamping now means
+       unlimited and `slots = -1` is a typo. */
+    function slotLimit() {
+        var raw = (cfg().loadouts || {}).slots;
+        if (raw === undefined || raw === null) return 2;
+        var value = int(raw, 2);
+        return value < 0 ? 2 : value;
     }
 
-    /* Melee, counted on its own. ABSENT IS ONE, NOT ZERO -- the same
-       reading Arena.ResolveLoadout takes: a field the operator never wrote
-       means they have not thought about it, and silently removing every
-       blade from an arena whose config still lists them is the wrong guess.
-       An explicit 0 is a decision and is honoured. */
-    function meleeSlots() {
-        var raw = (cfg().loadouts || {}).meleeSlots;
-        if (raw === undefined || raw === null) return 1;
-        return Math.max(0, int(raw, 1));
+    /* WHETHER A KIND IS OFFERED AT ALL, which is the half that stayed the
+       operator's. ABSENT IS PERMISSIVE for both, the same reading the
+       resolver takes: a field nobody wrote means nobody has thought about
+       it, and silently removing every blade -- or every gun -- from an
+       arena whose catalogue still lists them is the wrong guess. Only an
+       explicit false switches a kind off. */
+    function allowFirearms() {
+        return (cfg().loadouts || {}).allowFirearms !== false;
+    }
+
+    function allowMelee() {
+        return (cfg().loadouts || {}).allowMelee !== false;
+    }
+
+    function kindAllowed(melee) {
+        return melee ? allowMelee() : allowFirearms();
     }
 
     /* How many DIFFERENT rounds one loadout may carry. 0 -- and a snapshot
@@ -677,25 +693,21 @@
 
         var loadout = player().loadout || {};
         var picks = [];
-        /* Counted per pool, not in total: a stored loadout of two guns and
-           a blade must seed as two guns and a blade, and a shared count
-           would drop the blade on the floor. */
-        var usedGuns = 0;
-        var usedBlades = 0;
+        /* Against the shared pool, and against the kind switches -- the two
+           questions the resolver asks in that order. Seeding past either
+           would open the picker holding more than the server would give
+           back, which is the one state this screen must never show. */
+        var limit = slotLimit();
+        var used = 0;
 
         arrayOf(loadout.weapons).forEach(function (entry) {
             if (!entry) return;
             var weapon = weaponByKey(entry.key);
             if (!weapon) return;
 
-            var melee = isMelee(weapon);
-            if (melee) {
-                if (usedBlades >= meleeSlots()) return;
-                usedBlades += 1;
-            } else {
-                if (usedGuns >= weaponSlots()) return;
-                usedGuns += 1;
-            }
+            if (!kindAllowed(isMelee(weapon))) return;
+            if (limit > 0 && used >= limit) return;
+            used += 1;
 
             picks.push({
                 key: weapon.key,
@@ -750,7 +762,7 @@
                is refused; a blade at that same moment is not, and the server
                would have said the same. */
             var melee = isMelee(weapon);
-            if (draftCount(melee) >= poolLimit(melee)) {
+            if (poolIsFull(melee)) {
                 toast(poolFullMessage(melee), 'warning');
                 return;
             }
@@ -1876,81 +1888,82 @@
     // ------------------------------------------------------------------
     // LOADOUT
     //
-    // TWO POOLS, COUNTED APART, because that is how the server counts them.
-    // `weaponSlots` is shootable weapons and `meleeSlots` is blades, and
-    // Arena.ResolveLoadout spends the two separately -- a player whose guns
-    // are full may still take a knife, and the panel has to be able to say
-    // so. One filtered grid under one counter cannot: it says "you are
-    // carrying 2 weapons" at the exact moment the server would have handed
-    // over a third thing.
+    // ONE POOL, TWO LISTS, and the difference between those two sentences is
+    // the whole design of this screen.
     //
-    // So this is two lists with a heading and a counter each, both on screen
-    // at once, each scrolling inside its own box. An operator with thirty
-    // guns and twenty blades gets two readable lists rather than one long
-    // one, and nothing ever pushes the page.
+    // THE POOL is Config.Loadouts.slots: guns and blades together, spent by
+    // Arena.ResolveLoadout against one count. So there is ONE counter, and it
+    // says the same thing wherever it appears -- 'I am full' is now the true
+    // sentence, which it was not when this screen was last rebuilt.
     //
-    // WHAT THE COUNTERS ARE FOR: 'my guns are full' and 'I am full' are
-    // different sentences, and the second one was never true. Both counters
-    // are on the picker AND in the summary, which is the last thing read
-    // before a round locks the choice in.
+    // THE LISTS are only a way of reading ninety weapons. Merging them into
+    // one filtered grid was tempting and is wrong twice over: an operator
+    // with thirty guns and twenty blades gets one endless list instead of two
+    // readable ones, and the category tabs -- which sit over the firearms
+    // list -- would pick up a 'Melee' tab that duplicates the second list.
+    // Each list scrolls inside its own box and nothing ever pushes the page.
+    //
+    // WHICH KINDS ARE OFFERED is still the operator's, through allowFirearms
+    // and allowMelee. A kind switched off loses its whole section rather than
+    // standing there greyed out, because that is what the operator meant.
     // ------------------------------------------------------------------
 
-    /* The catalogue split the way the server counts it, in config order --
-       an operator who arranged their weapons deliberately keeps that order. */
+    /* The catalogue split by kind for the two lists, in config order -- an
+       operator who arranged their weapons deliberately keeps that order.
+       This is about which LIST a weapon appears in, not what it costs. */
     function weaponCatalogue(melee) {
         return arrayOf((cfg().loadouts || {}).weapons).filter(function (weapon) {
             return weapon && keyOr(weapon.key, null) !== null && isMelee(weapon) === melee;
         });
     }
 
-    /* How many of one pool the draft holds. Counted rather than tracked: a
-       key left over from a weapon an operator has since removed resolves to
-       nothing and must not be charged to a pool it can no longer fill. */
+    /* How many weapons the draft holds, of one kind or of all of them.
+       Counted rather than tracked: a key left over from a weapon an operator
+       has since removed resolves to nothing and must not be charged to a
+       pool it can no longer fill. */
     function draftCount(melee) {
         var used = 0;
         state.draftWeapons.forEach(function (pick) {
             var weapon = weaponByKey(pick.key);
-            if (weapon && isMelee(weapon) === melee) used += 1;
+            if (weapon && (melee === undefined || isMelee(weapon) === melee)) used += 1;
         });
         return used;
     }
 
-    function poolLimit(melee) {
-        return melee ? meleeSlots() : weaponSlots();
+    function draftTotal() {
+        return draftCount(undefined);
     }
 
-    /* 'gun' and 'blade', not 'weapon' and 'melee weapon'. Two counters that
-       both say 'weapon' undo the whole point of there being two of them. */
-    function poolNoun(melee) {
-        return melee ? 'blade' : 'gun';
+    /* Whether another weapon of this kind can be taken. TWO DIFFERENT NOES,
+       and the message below tells them apart: the kind is switched off for
+       the whole server, or the pool is spent. */
+    function poolIsFull(melee) {
+        if (!kindAllowed(melee)) return true;
+        var limit = slotLimit();
+        return limit > 0 && draftTotal() >= limit;
     }
 
-    /* '2 of 2 guns'. Count first, because that is the half that moves. */
-    function poolCounterText(melee) {
-        return String(draftCount(melee)) + ' of ' + plural(poolLimit(melee), poolNoun(melee));
+    /* '3 of 4 weapons', or just '3 weapons' where there is no limit to count
+       against. Count first, because that is the half that moves. */
+    function poolCounterText() {
+        var limit = slotLimit();
+        if (limit <= 0) return plural(draftTotal(), 'weapon');
+        return String(draftTotal()) + ' of ' + plural(limit, 'weapon');
     }
 
-    /* WHICH POOL IS FULL, SAID BY NAME. The old sentence -- 'you are already
-       carrying 2 weapons' -- named a total that does not exist on this
-       server, and a player who believed it dropped a rifle to make room for
-       a knife that never needed the room. */
+    /* WHY THE CLICK DID NOTHING. This is the only explanation a player gets,
+       and it has to name the actual reason: a kind switched off is not the
+       same as a full loadout, and telling someone to drop something when
+       there is nothing to drop reads as the panel being broken. */
     function poolFullMessage(melee) {
-        if (poolLimit(melee) <= 0) {
+        if (!kindAllowed(melee)) {
             return melee
-                ? 'This arena has melee switched off. There is no blade slot to fill.'
-                : 'This arena hands out no firearms. There is no gun slot to fill.';
+                ? 'This arena has melee switched off. Blades are not issued here.'
+                : 'This arena hands out no firearms. Only melee is issued here.';
         }
 
-        var text = (melee ? 'Your melee is full' : 'Your guns are full')
-            + ' — ' + poolCounterText(melee) + '. Drop '
-            + (melee ? 'a blade' : 'a gun') + ' before picking another.';
-
-        /* Only mentioned when the other pool exists to be reassured about. */
-        if (poolLimit(!melee) > 0) {
-            text += ' Your ' + (melee ? 'guns' : 'blades')
-                + ' are counted separately and are not touched by this.';
-        }
-        return text;
+        return 'You are carrying ' + poolCounterText()
+            + '. Guns and melee share one count, so drop something before picking another.';
     }
 
     // ------------------------------------------------------------------
@@ -2067,17 +2080,21 @@
                 + 'yourself included. Anyone who joins after you pick inherits it.'));
         }
 
-        var guns = weaponSlots();
-        var blades = meleeSlots();
+        var limit = slotLimit();
+        var carry = limit > 0 ? plural(limit, 'weapon') : 'as many weapons as you like';
         var text = 'Click a weapon to carry it, and click it again to drop it. ';
-        if (guns > 0 && blades > 0) {
-            /* THE RULE THIS SCREEN EXISTS TO MAKE OBVIOUS. */
-            text += 'Guns and melee are counted separately — ' + plural(guns, 'gun') + ' and '
-                + plural(blades, 'blade') + ' — so filling one does not cost you the other.';
-        } else if (blades > 0) {
-            text += 'This arena is melee only: ' + plural(blades, 'blade') + '.';
-        } else if (guns > 0) {
-            text += 'This arena issues no melee: ' + plural(guns, 'gun') + '.';
+
+        /* THE RULE THIS SCREEN EXISTS TO MAKE OBVIOUS, and it is now the
+           opposite of the one it was rebuilt for. */
+        if (allowFirearms() && allowMelee()) {
+            text += 'You carry ' + carry + ' in total and the mix is yours — '
+                + 'all guns, all melee, or any combination.';
+        } else if (allowMelee()) {
+            text += 'This arena is melee only: ' + carry + '.';
+        } else if (allowFirearms()) {
+            text += 'This arena issues no melee: ' + carry + '.';
+        } else {
+            text += 'This arena issues no weapons at all.';
         }
         host.appendChild(makeEl('div', 'hint', text));
 
@@ -2124,13 +2141,15 @@
         var firearms = choosing ? weaponCatalogue(false) : [];
         var blades = choosing ? weaponCatalogue(true) : [];
 
-        /* meleeSlots = 0 is an operator switching melee off, and the panel
-           should look like that was the intention: the section goes
+        /* allowMelee = false is an operator switching melee off, and the
+           panel should look like that was the intention: the section goes
            altogether rather than standing there empty or greyed out. The
-           same reading applies to firearms -- an arena with no gun slots has
-           no firearms list to show. */
-        var gunsOn = weaponSlots() > 0 && firearms.length > 0;
-        var meleeOn = meleeSlots() > 0 && blades.length > 0;
+           same reading applies to firearms.
+
+           A pool of zero does NOT hide anything now -- zero means no limit,
+           so it is the most generous setting there is, not the meanest. */
+        var gunsOn = allowFirearms() && firearms.length > 0;
+        var meleeOn = allowMelee() && blades.length > 0;
 
         show(byId('loadout-firearms'), gunsOn);
         show(byId('loadout-melee'), meleeOn);
@@ -2157,14 +2176,14 @@
             var cats = firearmCategories(firearms);
             var active = activeCategory(cats);
             renderCategoryChips(cats, active);
-            renderSectionCount('firearms-count', false);
+            renderSectionCount('firearms-count');
             renderWeaponGrid('weapon-grid', firearms.filter(function (weapon) {
                 return inCategory(weapon, active);
             }), plan);
         }
 
         if (meleeOn) {
-            renderSectionCount('melee-count', true);
+            renderSectionCount('melee-count');
             /* NO TABS HERE. Melee is one section already; a filter over one
                short list is a control that costs a click and answers
                nothing. */
@@ -2172,18 +2191,24 @@
         }
     }
 
-    /* '2 of 2 guns' beside the heading, lit when that pool is full so 'no
-       room left in here' reads without anyone doing the sum. */
-    function renderSectionCount(id, melee) {
+    /* THE SAME COUNTER OVER BOTH LISTS, because there is one pool and the
+       lists are only a way of browsing ninety weapons without scrolling
+       past the knives to reach the rifles. Lit when the pool is spent, so
+       'no room left' reads without anyone doing the sum.
+
+       The two headings stay -- 'Firearms' and 'Melee' -- and the counter
+       under each says the same thing on purpose. A player looking at the
+       melee list needs to know how full they are, and the answer is not
+       specific to the list they happen to be looking at. */
+    function renderSectionCount(id) {
         var host = byId(id);
         if (!has(host)) return;
 
-        var limit = poolLimit(melee);
-        host.textContent = poolCounterText(melee);
-        host.classList.toggle('full', limit > 0 && draftCount(melee) >= limit);
-        host.title = melee
-            ? 'Melee has its own allowance. Filling your guns does not use a blade slot.'
-            : 'Firearms have their own allowance. Filling them leaves your melee slots free.';
+        var limit = slotLimit();
+        host.textContent = poolCounterText();
+        host.classList.toggle('full', limit > 0 && draftTotal() >= limit);
+        host.title = 'Guns and melee share one count. '
+            + 'Fill it with whichever you like.';
     }
 
     // ------------------------------------------------------------------
@@ -2297,7 +2322,7 @@
         var picked = index >= 0;
         var melee = isMelee(weapon);
         /* The weapon's own pool, not a total. This is the whole change. */
-        var poolFull = !picked && draftCount(melee) >= poolLimit(melee);
+        var poolFull = !picked && poolIsFull(melee);
 
         var card = makeEl('div', 'weapon-card');
         /* Addressable, so a test can click the control a player clicks
@@ -2474,7 +2499,7 @@
 
         if (poolFull && canChooseLoadout()) {
             card.appendChild(makeEl('div', 'weapon-note',
-                (melee ? 'Melee is full' : 'Guns are full') + ' — ' + poolCounterText(melee)
+                'Full — ' + poolCounterText()
                 + '. Drop one to take this.'));
         }
 
@@ -2505,8 +2530,7 @@
 
         host.appendChild(makeEl('div', 'panel-heading', 'Into The Round'));
 
-        slotGroup(host, false, plan);
-        slotGroup(host, true, plan);
+        slotGroup(host, plan);
 
         /* Only when there is a cap to report against.
 
@@ -2552,27 +2576,39 @@
         }
     }
 
-    /* One pool's worth of the summary: its name, its counter, and one row
-       per slot it has. A pool the operator switched off gets no group at
-       all -- the same silence the picker keeps about it. */
-    function slotGroup(host, melee, plan) {
-        var limit = poolLimit(melee);
-        if (limit <= 0) return;
+    /* THE WHOLE LOADOUT, IN ONE GROUP, because there is one pool and
+       splitting the summary back into 'Firearms' and 'Melee' would be the
+       panel telling the player about a division the server no longer makes.
+
+       IN DRAFT ORDER, which is not cosmetic: Arena.ResolveLoadout walks the
+       request in the order it arrives and the ammo-type plan spends its cap
+       in that same order, so the first rows are the ones that keep the round
+       they were given. Sorting this list would make the summary disagree
+       with the loadout it describes.
+
+       EMPTY ROWS ONLY WHERE THERE IS A LIMIT TO DRAW THEM AGAINST. With no
+       limit there is no such thing as an unfilled slot, so the group is
+       exactly as long as the draft. */
+    function slotGroup(host, plan) {
+        if (!allowFirearms() && !allowMelee()) return;
+
+        var limit = slotLimit();
+        var picks = state.draftWeapons.filter(function (pick) {
+            return weaponByKey(pick.key) !== null;
+        });
 
         var head = makeEl('div', 'slot-group-head');
-        head.appendChild(makeEl('span', 'slot-group-title', melee ? 'Melee' : 'Firearms'));
-        var count = makeEl('span', 'loadout-count', poolCounterText(melee));
-        if (draftCount(melee) >= limit) count.classList.add('full');
+        head.appendChild(makeEl('span', 'slot-group-title', 'Weapons'));
+        var count = makeEl('span', 'loadout-count', poolCounterText());
+        if (limit > 0 && picks.length >= limit) count.classList.add('full');
         head.appendChild(count);
         host.appendChild(head);
 
-        var picks = state.draftWeapons.filter(function (pick) {
-            var weapon = weaponByKey(pick.key);
-            return weapon !== null && isMelee(weapon) === melee;
-        });
-
-        for (var i = 0; i < limit; i++) {
-            host.appendChild(slotRow(picks[i], melee, plan));
+        var rows = limit > 0 ? limit : picks.length;
+        for (var i = 0; i < rows; i++) {
+            var pick = picks[i];
+            var weapon = pick ? weaponByKey(pick.key) : null;
+            host.appendChild(slotRow(pick, weapon !== null && isMelee(weapon), plan));
         }
     }
 
@@ -2580,8 +2616,9 @@
         var slot = makeEl('div', 'slot');
 
         if (!pick) {
+            /* No kind is named: the slot takes either, which is the point. */
             slot.appendChild(makeEl('span', 'muted', canChooseLoadout()
-                ? ('Empty — click ' + (melee ? 'a blade' : 'a gun') + ' to fill it')
+                ? 'Empty — click a weapon to fill it'
                 : 'Empty'));
             return slot;
         }

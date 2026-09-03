@@ -470,13 +470,20 @@ end
 
 --- Whether a weapon is melee, which is the one distinction this resource
 --- draws between kinds of weapon. It decides two things: that the weapon
---- takes no ammunition choice of any sort, and that it is counted against
---- `Config.Loadouts.meleeSlots` rather than `weaponSlots`.
+--- takes no ammunition choice of any sort, and whether it is offered at all
+--- on a server that set `Config.Loadouts.allowMelee = false`.
 ---
 --- EITHER test is enough. `category = 'melee'` is the honest declaration and
 --- what an operator should write, but a weapon whose ammo ceiling is one round
 --- is a bat whatever it was filed under, and treating it as a firearm would
 --- offer a player an ammunition dropdown for a knife.
+---
+--- THE AMMO TEST IS ALSO A TRAP FOR A HALF-WRITTEN ENTRY, and it always has
+--- been: a weapon with no `ammo` block, or one whose block has no `max`, has
+--- an ammo ceiling of zero here and reads as melee. That was survivable while
+--- it only sent the weapon to the other pool. On a server with `allowMelee =
+--- false` it makes the weapon unavailable instead, so the validator says so
+--- out loud rather than leaving an operator to wonder where their gun went.
 --- @param weapon table -- a Config.Loadouts.weapons entry
 --- @return boolean
 function Arena.IsMeleeWeapon(weapon)
@@ -800,6 +807,32 @@ end
 -- LOADOUTS
 -- ======================================================================
 
+--- What `Config.Loadouts.slots` reads as when the operator never wrote it,
+--- or wrote something that is not a whole number.
+---
+--- TWO, because that is what an unwritten config hands out today: the two
+--- keys this replaces each defaulted to one, so a player carried one firearm
+--- and one blade. Deliberately NOT the shipped value -- if it were, changing
+--- what ships would silently change what an operator who deleted the line
+--- gets, and the two questions are different ones.
+local DEFAULT_SLOTS = 2
+
+--- How many weapons one player may carry, guns and blades together.
+---
+--- ONE READER FOR BOTH REALMS, like Arena.LoadoutChooser above it and for the
+--- same reason: the resolver enforces this number and server/lobby.lua mirrors
+--- it to the panel, and if those two coerce, default and clamp it separately
+--- they will eventually disagree -- at which point the panel tells the player
+--- they may take four and the server hands them three.
+---
+--- 0 IS NOT A MISSING ANSWER, it is "no limit", so it survives the fallback.
+--- @return integer slots -- 0 means unlimited
+function Arena.SlotsPerPlayer()
+    local slots = Arena.ToInt((Config.Loadouts or {}).slots)
+    if slots == nil or slots < 0 then return DEFAULT_SLOTS end
+    return slots
+end
+
 --- Validates a whole loadout request and returns the concrete thing to
 --- hand a player -- real GTA weapon names and real ammo counts, nothing
 --- the caller supplied passed through untouched.
@@ -812,7 +845,8 @@ end
 --- of the request is honoured; a request that ends up with no weapons at
 --- all still succeeds, empty-handed. A player who sends rubbish gets a bad
 --- match, not a stuck lobby. The one thing it will not do is exceed
---- `weaponSlots` or hand out a weapon that is not in the enabled catalogue.
+--- `Config.Loadouts.slots`, hand out a kind the operator switched off, or
+--- hand out a weapon that is not in the enabled catalogue.
 --- @param request table? -- { weapons = { { key = string, ammo = any }, ... }, supplies = { { key = string, count = any }, ... } }
 --- @return table loadout -- { weapons = { { weapon = string, ammo = integer, components = table, tint = integer } }, armor = integer, health = integer, supplies = { { key, label, item, count } } }
 --- @return string[] rejected -- keys that were dropped, for logging/telemetry
@@ -821,19 +855,41 @@ function Arena.ResolveLoadout(request)
     local resolved = {}
     local seen = {}
 
-    -- TWO SEPARATE ALLOWANCES, deliberately. With one shared count a player
-    -- who wants a knife spends a rifle slot on it, so nobody ever takes one
-    -- and the whole melee list is decoration. Counting them apart means a
-    -- loadout is "two guns and a blade" rather than "any three things".
-    local slots = Arena.ToInt(Config.Loadouts.weaponSlots) or 1
-    if slots < 0 then slots = 0 end
+    -- ONE POOL, AND THE MIX IS THE PLAYER'S.
+    --
+    -- This was two separate allowances -- so many firearms, so many blades --
+    -- on the reasoning that with one shared count a player who fancies a
+    -- knife spends a rifle slot on it, so nobody ever takes one and the whole
+    -- melee list is decoration. That reasoning is sound and it was not ours
+    -- to apply: it also meant a player who wanted to fight with a bat and
+    -- nothing else was made to carry two guns they did not want, and a player
+    -- who wanted four rifles could not have them. Asked for from the game:
+    -- "let it choose if they only want to guns or only melee".
+    --
+    -- So the COUNT is shared and the SPLIT is chosen. Whether a kind is
+    -- offered at all is still the operator's -- allowFirearms/allowMelee --
+    -- which is the job `weaponSlots = 0` and `meleeSlots = 0` used to do.
+    --
+    -- ZERO MEANS UNLIMITED, the same as `ammoTypeSlots` a few lines down, the
+    -- same as `supplies.totalItems`, and the same as config.lua's own header
+    -- declares of every count in the file. It did NOT mean that for the two
+    -- keys this replaces -- there, zero meant none -- and that contradiction
+    -- inside one config block is the second thing this rename removes.
+    -- "Nobody carries a gun" is now spelled `allowFirearms = false`.
+    --
+    -- JUNK AND NEGATIVE FALL BACK rather than clamping to zero, because
+    -- clamping now means unlimited and `slots = -1` is a typo, not a request
+    -- for every weapon in the catalogue.
+    local slots = Arena.SlotsPerPlayer()
 
-    -- Absent rather than zero means "the operator has not thought about it",
-    -- and one blade is the sane answer -- zero would silently remove every
-    -- melee weapon from an arena whose config still lists them.
-    local meleeSlots = Arena.ToInt(Config.Loadouts.meleeSlots)
-    if meleeSlots == nil then meleeSlots = 1 end
-    if meleeSlots < 0 then meleeSlots = 0 end
+    -- ABSENT IS PERMISSIVE, for both, and only an explicit `false` switches a
+    -- kind off. A field the operator never wrote means they have not thought
+    -- about it, and silently removing every blade -- or every gun -- from an
+    -- arena whose catalogue still lists them is the wrong guess. This is the
+    -- same reading the old `meleeSlots` nil test took, in the shape the rest
+    -- of the resource writes a default-on switch.
+    local allowFirearms = Config.Loadouts.allowFirearms ~= false
+    local allowMelee = Config.Loadouts.allowMelee ~= false
 
     -- 0 means no cap. A player may otherwise take a different round for every
     -- weapon they carry, which on a server with fifteen types is a lot of
@@ -841,18 +897,21 @@ function Arena.ResolveLoadout(request)
     local typeCap = Arena.ToInt(Config.Loadouts.ammoTypeSlots) or 0
     if typeCap < 0 then typeCap = 0 end
 
-    local usedFirearm, usedMelee = 0, 0
+    local used = 0
     local typesTaken, distinctTypes = {}, 0
 
     local source = request
     local wanted = (type(source) == 'table' and type(source.weapons) == 'table') and source.weapons or {}
 
+    -- WALKED TO THE END, NEVER BROKEN OUT OF, and that is a fix rather than
+    -- a transcription. The two-pool version broke once BOTH allowances were
+    -- spent, so everything after that point was dropped without being named
+    -- and `rejected` came back short -- the panel could not say which weapon
+    -- had not made it in. snapshotcontract_spec carried that as a recorded
+    -- DEFECT. With one pool a break would drop everything after the pool
+    -- filled, which is more of the request lost, not less. The request is
+    -- capped at 32 entries long before it reaches here, so walking it is free.
     for _, entry in ipairs(wanted) do
-        -- Not a break: a melee weapon further down the list is still takeable
-        -- once the firearm slots are full, and vice versa. Breaking here would
-        -- make the answer depend on the order the panel happened to send.
-        if usedFirearm >= slots and usedMelee >= meleeSlots then break end
-
         do
             local key = type(entry) == 'table' and entry.key or entry
             local weapon = Arena.GetWeaponByKey(key)
@@ -863,19 +922,19 @@ function Arena.ResolveLoadout(request)
                 -- Asking for the same gun twice would otherwise burn two slots
                 -- for one weapon and silently short-change the player.
                 rejected[#rejected + 1] = weapon.key
-            elseif Arena.IsMeleeWeapon(weapon) and usedMelee >= meleeSlots then
-                -- Their melee allowance is spent. Rejected by name rather
-                -- than dropped silently, so the panel can say which one did
-                -- not make it in.
+            elseif Arena.IsMeleeWeapon(weapon) and not allowMelee then
+                -- The operator switched this kind off for the whole server.
+                -- Rejected by name rather than dropped silently, so the panel
+                -- can say which one did not make it in.
                 rejected[#rejected + 1] = weapon.key
-            elseif not Arena.IsMeleeWeapon(weapon) and usedFirearm >= slots then
+            elseif not Arena.IsMeleeWeapon(weapon) and not allowFirearms then
+                rejected[#rejected + 1] = weapon.key
+            elseif slots > 0 and used >= slots then
+                -- The pool is full. Which KIND it was filled with is the
+                -- player's business and no longer ours.
                 rejected[#rejected + 1] = weapon.key
             else
-                if Arena.IsMeleeWeapon(weapon) then
-                    usedMelee = usedMelee + 1
-                else
-                    usedFirearm = usedFirearm + 1
-                end
+                used = used + 1
 
                 -- KEYED BY CATALOGUE KEY, which is the only spelling a
                 -- request can be resolved under: `key` is what the panel and
@@ -3112,6 +3171,59 @@ function Arena.ValidateConfig()
     if chooser ~= nil and chooser ~= 'host' and chooser ~= 'player' then
         complain(("Config.Loadouts.chooser is \"%s\" -- it must be 'host' or 'player'. Treating it as 'host'.")
             :format(tostring(chooser)))
+    end
+
+    -- THE LOADOUT POOL. Nothing warned about the two keys this replaces at
+    -- any value, which is why `weaponSlots = 'two'` started a server silently
+    -- and handed everybody one gun. The new model has more ways to be wrong,
+    -- not fewer, so it says so.
+    local loadouts = Config.Loadouts or {}
+
+    -- THE MIGRATION, and the only reason this resource has ever warned about
+    -- a key it no longer reads. Left silent, an operator who set
+    -- `weaponSlots = 4, meleeSlots = 0` for a firearms-only arena gets the
+    -- shipped four-of-anything pool with every blade back in the picker, and
+    -- nothing anywhere tells them their setting stopped being read.
+    for _, gone in ipairs({ 'weaponSlots', 'meleeSlots' }) do
+        if loadouts[gone] ~= nil then
+            complain(('Config.Loadouts.%s is no longer read. Guns and melee now share '
+                .. 'ONE count -- Config.Loadouts.slots -- and the player chooses the mix. '
+                .. 'To switch a kind off, use allowFirearms / allowMelee.'):format(gone))
+        end
+    end
+
+    local slots = loadouts.slots
+    local slotsInt = Arena.ToInt(slots)
+    if slots ~= nil and slotsInt == nil then
+        complain(('Config.Loadouts.slots is "%s", which is not a whole number. Treating it as %d.')
+            :format(tostring(slots), DEFAULT_SLOTS))
+    elseif slotsInt ~= nil and slotsInt < 0 then
+        complain(('Config.Loadouts.slots is %d. It cannot be negative; treating it as %d. '
+            .. 'Zero means no limit.'):format(slotsInt, DEFAULT_SLOTS))
+    end
+
+    -- NOBODY GETS A WEAPON, and it is worth a line of its own because the
+    -- arena still runs: players are teleported in, the round starts, and
+    -- everybody stands there unarmed. That looks like a broken resource
+    -- rather than a config nobody meant to write.
+    if loadouts.allowFirearms == false and loadouts.allowMelee == false then
+        complain('Config.Loadouts.allowFirearms and allowMelee are BOTH false, so no player '
+            .. 'can carry anything. Switch one back on.')
+    end
+
+    -- A HALF-WRITTEN CATALOGUE ENTRY READS AS MELEE, because Arena.IsMeleeWeapon
+    -- treats an ammo ceiling of zero as a bat. That was harmless while it only
+    -- picked which pool the weapon came out of; with melee switched off it makes
+    -- the weapon disappear, and the operator's own category says firearm.
+    if loadouts.allowMelee == false then
+        for _, weapon in ipairs(Arena.GetEnabledWeapons()) do
+            if weapon.category ~= 'melee' and Arena.IsMeleeWeapon(weapon) then
+                complain(('Weapon "%s" is filed under "%s" but has no ammo ceiling, so it counts '
+                    .. 'as melee -- and allowMelee is false, so nobody can take it. '
+                    .. 'Give it an ammo.max, or file it under melee.')
+                    :format(tostring(weapon.key), tostring(weapon.category)))
+            end
+        end
     end
 
     local logoStyle = Config.UI.logoStyle

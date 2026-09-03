@@ -533,6 +533,43 @@ t.test('melee is issued with no ammo in its metadata at all', function()
         'a blade was issued carrying a magazine')
 end)
 
+t.test('DEFECT: and a REAL blade, resolved the way the server resolves one', function()
+    -- THE TEST ABOVE WAS VACUOUS AND SAID SO CONFIDENTLY. It hands in
+    -- `ammo = 0` -- a value Arena.ResolveAmmo never produces for a melee
+    -- weapon. Every one of the shipped blades resolves to 1, because
+    -- config.weapons.lua gives them `default = max = 1` so the ammo
+    -- machinery has a number to agree on. So the branch this is about was
+    -- never reached: splitRounds returned 1, and every knife and bat on
+    -- every server was issued carrying `metadata.ammo = 1`, which is
+    -- precisely the "present zero reads as an empty one" mistake the comment
+    -- above warns against -- one worse.
+    --
+    -- The fix reads the CATALOGUE, so the test has to go through the
+    -- catalogue too. Nothing is hand-fed here but the key.
+    local s = newServer({ [1] = OWN })
+
+    local blade = nil
+    for _, entry in ipairs(s.env.Arena.GetEnabledWeapons()) do
+        if s.env.Arena.IsMeleeWeapon(entry) then blade = entry break end
+    end
+    t.isNotNil(blade, 'no melee weapon is enabled, so this proves nothing')
+
+    -- Through the real resolver, so the ammo is whatever the server would
+    -- actually have put on it.
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = blade.key } } })
+    t.equals(#loadout.weapons, 1, 'the blade did not resolve')
+    t.isTrue((loadout.weapons[1].ammo or 0) > 0,
+        'the blade resolved to zero ammo, so this test is back to proving nothing')
+
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local given = s.itemNamed(1, loadout.weapons[1].weapon)
+    t.isNotNil(given, 'the blade was never handed over')
+    t.isNil(given.metadata and given.metadata.ammo,
+        'a real blade was issued carrying a magazine of '
+            .. tostring(given.metadata and given.metadata.ammo))
+end)
+
 t.test('a weapon ox_inventory refuses is named in the console, not swallowed', function()
     -- "No weapon appeared" has two completely different causes: the item was
     -- refused, or it was accepted and something took it back afterwards.

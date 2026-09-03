@@ -70,8 +70,9 @@ function snapshot(who, chooser) {
                 allowChoose: true,
                 chooser: chooser || 'host',
                 allowCustomAmmo: true,
-                weaponSlots: 2,
-                meleeSlots: 2,
+                slots: 4,
+                allowFirearms: true,
+                allowMelee: true,
                 weapons: WEAPONS,
                 categories: [
                     { key: 'sidearm', label: 'Sidearms', order: 1 },

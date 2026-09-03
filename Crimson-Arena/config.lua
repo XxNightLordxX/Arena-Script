@@ -27,9 +27,9 @@
       803   Permissions   Who may open a match, who may force-stop one
       884   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1421   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1837   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1847   Webhook       Optional: a Discord line per finished match
-     1884   Dispatch      Optional: keeping police and EMS out of the arena
+     1850   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1860   Webhook       Optional: a Discord line per finished match
+     1897   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1437,25 +1437,38 @@ Config.Loadouts = {
     -- Anything else is treated as 'host' and a warning is printed at start.
     chooser = 'host',
 
-    -- How many SHOOTABLE weapons one player may take. Raise it for
-    -- loadout-style play, drop it to 1 for a duel server.
-    weaponSlots = 2,
+    -- HOW MANY WEAPONS one player carries into a round -- guns and blades
+    -- TOGETHER, in one count. Four rifles, four bats, three and a knife: the
+    -- mix is the player's to choose, and the picker enforces the total rather
+    -- than the split.
+    --
+    -- This used to be two separate allowances, so many firearms and so many
+    -- blades, so that a player who fancied a knife did not have to give up a
+    -- rifle for it. The cost of that was the other player: somebody who
+    -- wanted to fight with a bat and nothing else was made to carry two guns
+    -- as well, and somebody who wanted four rifles could not have them.
+    --
+    -- Raise it for loadout-style play. Drop it to 1 for a duel server.
+    -- 0 MEANS NO LIMIT, the same as every other count in this file.
+    slots = 4,
 
-    -- How many MELEE weapons, counted separately from the above.
+    -- SWITCH A WHOLE KIND OFF, which is the job `weaponSlots = 0` and
+    -- `meleeSlots = 0` used to do. The weapons stay in config.weapons.lua,
+    -- ready to switch back on, and the picker drops the section altogether
+    -- rather than showing it empty.
     --
-    -- Separate on purpose: with one shared count a player who fancies a knife
-    -- has to give up a rifle for it, so nobody ever does and the whole melee
-    -- list is decoration. Two firearms and one blade is a loadout; "any three
-    -- things" is not.
+    --   allowMelee = false     a firearms-only arena
+    --   allowFirearms = false  a melee-only arena -- bats and knives
     --
-    -- 0 removes melee from the arena entirely while leaving the weapons in
-    -- config.weapons.lua, ready to switch back on.
+    -- Both false means nobody carries anything; the resource says so at
+    -- start rather than running a round full of unarmed players.
     --
-    -- TWO, at the operator's request: a blade and a blunt, or a knife kept
-    -- back for the end of a round. It is still counted apart from the
-    -- firearms above, so this buys a second melee weapon and never a third
-    -- gun.
-    meleeSlots = 2,
+    -- MIND WHAT COUNTS AS MELEE: a weapon with no `ammo.max` in
+    -- config.weapons.lua is treated as melee whatever category it is filed
+    -- under -- an ammo ceiling of one round is a bat. With allowMelee off,
+    -- the resource names any weapon that trips this at start.
+    allowFirearms = true,
+    allowMelee = true,
 
     -- Purely for grouping the picker into tabs. A weapon whose `category`
     -- is not listed here still shows, under 'Other'.

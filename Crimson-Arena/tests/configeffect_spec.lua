@@ -227,12 +227,16 @@ t.test('the settings the panel is built from all reach it', function()
             function(c) c.UI.logoStyle = (c.UI.logoStyle == 'banner') and 'badge' or 'banner' end,
         },
         {
-            'Config.Loadouts.weaponSlots',
-            function(c) c.Loadouts.weaponSlots = 5 end,
+            'Config.Loadouts.slots',
+            function(c) c.Loadouts.slots = 5 end,
         },
         {
-            'Config.Loadouts.meleeSlots',
-            function(c) c.Loadouts.meleeSlots = 4 end,
+            'Config.Loadouts.allowFirearms',
+            function(c) c.Loadouts.allowFirearms = false end,
+        },
+        {
+            'Config.Loadouts.allowMelee',
+            function(c) c.Loadouts.allowMelee = false end,
         },
         {
             'Config.Loadouts.ammoTypeSlots',
@@ -659,8 +663,9 @@ local SETTERS = {
     { 'Match.spawnHeightOffset', function(c, v) c.Match.spawnHeightOffset = v end },
     { 'Match.startCountdownSeconds', function(c, v) c.Match.startCountdownSeconds = v end },
     { 'Match.respawnDelaySeconds', function(c, v) c.Match.respawnDelaySeconds = v end },
-    { 'Loadouts.weaponSlots', function(c, v) c.Loadouts.weaponSlots = v end },
-    { 'Loadouts.meleeSlots', function(c, v) c.Loadouts.meleeSlots = v end },
+    { 'Loadouts.slots', function(c, v) c.Loadouts.slots = v end },
+    { 'Loadouts.allowFirearms', function(c, v) c.Loadouts.allowFirearms = v end },
+    { 'Loadouts.allowMelee', function(c, v) c.Loadouts.allowMelee = v end },
     { 'Loadouts.ammoTypeSlots', function(c, v) c.Loadouts.ammoTypeSlots = v end },
     { 'Betting.entryFee.min', function(c, v) c.Betting.entryFee.min = v end },
     { 'Betting.entryFee.max', function(c, v) c.Betting.entryFee.max = v end },

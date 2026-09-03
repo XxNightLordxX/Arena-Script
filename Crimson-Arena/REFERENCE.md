@@ -419,7 +419,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.Clear(src)` | Clears the flag. |
 | `ArenaDispatch.ClearDownState(src)` | Puts the medical script's down flags back down, at the death rather than at the revive. |
 | `ArenaDispatch.HoldDownState()` | One pass: the flags put back down for everybody currently in a match. |
-| `ArenaDispatch.Revive(src, keepHold)` | Tells whatever handles death on this server that a player is alive again. |
+| `ArenaDispatch.Revive(src)` | Tells whatever handles death on this server that a player is alive again. |
 | `ArenaDispatch.IsPlayerInArena(src)` | Whether the server has this player flagged as being in a match. |
 | `ArenaDispatch.GetPlayerMatchId(src)` | The match a flagged player is in, or nil. |
 | `ArenaDispatch.GetArenaPlayers()` | Every player currently in a match, as a server-id -> match-id map. |

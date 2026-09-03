@@ -38,8 +38,9 @@ function ArenaLog(fmt, ...)
     print(('[crimson_arena] %s'):format(compose(fmt, ...)))
 end
 
---- The chatty half. Config.Debug is off on a live server, so this costs a
---- single comparison at every call site that is not being debugged.
+--- The chatty half, gated on Config.Debug -- which ships ON. Off, this is a
+--- single comparison at every call site; on, it is a line of console per
+--- event, which is what it is there for.
 --- @param fmt string
 --- @param ... any
 function ArenaDebug(fmt, ...)

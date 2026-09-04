@@ -133,6 +133,27 @@ local function newArena(wallets, mutate)
     function server.step() threads.step(); threads.step() end
     function server.log() return table.concat(console, '\n') end
 
+    --- How much has been sent so far, so a test can ask what happened AFTER
+    --- a call rather than at any point in the round. Taking a stake and
+    --- placing a bet both post their own toast on the way in, so a search
+    --- of the whole session finds those instead of the settlement.
+    function server.mark() return #sent end
+
+    --- Every notification sentence one player has been shown since `mark`.
+    --- Rendered by the real server/util.lua off the real locale file, so a
+    --- message whose key does not exist fails here rather than on somebody's
+    --- screen.
+    function server.noticesSince(mark, target)
+        local out = {}
+        for index = (mark or 0) + 1, #sent do
+            local message = sent[index]
+            if message.event == 'crimson_arena:client:notify' and message.target == target then
+                out[#out + 1] = tostring((message.payload or {}).description or '')
+            end
+        end
+        return table.concat(out, '\n')
+    end
+
     --- The snapshot this player would be sent, as the panel receives it.
     function server.state(src) return server.lobby.BuildState(src) end
 
@@ -346,6 +367,150 @@ t.test('but is allowed where the operator switched the rule off', function()
 
     t.isTrue(s.betting.PlaceSpectatorBet(1, matchId, 2, 2000, 'cash'),
         'a server that allows backing any side still refused it')
+end)
+
+--- The same two fighters, plus a watcher (3) with a wallet who is not in
+--- the match and can therefore place an ordinary spectator side-bet.
+local function withWatcher(fee, mutate)
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.spectatorBets.enabled = true
+        config.Betting.entryFee.enabled = fee > 0
+        config.Betting.entryFee.min = 0
+        config.Betting.entryFee.default = fee
+        if mutate then mutate(config) end
+    end)
+    local matchId, err = s.lobby.Create(1, anArena(s), nil, fee, nil, nil, 'cash')
+    t.isNotNil(matchId, 'the match could not be created: ' .. tostring(err))
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'), 'the second fighter could not join')
+    return s, matchId
+end
+
+-- ========================================================================
+-- A BET THAT HAS BEEN HANDED BACK IS NOT A BET THAT IS HELD
+--
+-- returnSideBet MARKS a row rather than deleting it -- `bet.settled = true`
+-- -- and four functions ask "does this player hold a bet on this match".
+-- Two checked the mark and two did not, which is the whole defect.
+-- ========================================================================
+
+t.test('DEFECT: a refunded side-bet locked the bettor out of that match for good', function()
+    -- ArenaLobby.UpdateMatch hands every side-bet back when the host changes
+    -- the mode, and says why in as many words: "They get their money and can
+    -- back the one that replaced it." They could not. PlaceSpectatorBet
+    -- gates on HasSpectatorBet, oneBetPerMatch ships true, and that function
+    -- counted the refunded row -- so every later bet came back "One side-bet
+    -- per match. Yours is down." about a bet the server had already
+    -- returned. For the life of the match.
+    local s, matchId = withWatcher(0)
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'),
+        'the first side-bet was refused, so there is nothing to hand back')
+    t.equals(s.betting.ReturnSideBets(matchId), 1, 'the bet was not handed back')
+
+    local ok, err = s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash')
+    t.isTrue(ok, ('a bettor who had been refunded could not back the match again: %s'):format(tostring(err)))
+end)
+
+t.test('and the snapshot stops claiming they have money on it', function()
+    -- The other half, and the one the player actually reads. GetSideBet fed
+    -- snapshotPlayer, so the panel went on printing "You have $2000 on ..."
+    -- over a stake that was back in their wallet -- and after a mode change,
+    -- on a side the match no longer has, so it printed the raw key.
+    local s, matchId = withWatcher(0)
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'))
+    t.isNotNil(s.betting.GetSideBet(matchId, 3), 'a live bet was not reported at all')
+
+    s.betting.ReturnSideBets(matchId)
+
+    t.isNil(s.betting.GetSideBet(matchId, 3),
+        'the panel is still being told about a bet that was handed back')
+end)
+
+t.test('and a bet that is still LIVE is reported by both, exactly as before', function()
+    -- The control. A guard that answered "no bet" unconditionally would pass
+    -- both tests above and take the feature away.
+    local s, matchId = withWatcher(0)
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'))
+
+    t.isTrue(s.betting.HasSpectatorBet(matchId, 3),
+        'a live bet is not counted as held, so nothing enforces one bet per match')
+    local bet = s.betting.GetSideBet(matchId, 3)
+    t.isNotNil(bet, 'a live bet is not reported to the panel')
+    t.equals(bet.amount, 2000)
+end)
+
+-- ========================================================================
+-- WHAT A FIGHTER IS TOLD WHEN THE POT SETTLES
+--
+-- With betPayout.includeEntryPot on -- the shipped default -- Settle folds
+-- every entry fee into the side-bet pool as a row and returns an EMPTY
+-- payout list, so the pot is paid out of SettleSpectatorBets. Those rows
+-- then took the ordinary side-bet branches, and told fighters about a
+-- "pick" they never made.
+-- ========================================================================
+
+--- Runs the settlement the way ArenaMatch.End does: Settle first, then
+--- SettleSpectatorBets against the winning pick.
+local function settleWith(s, matchId, winnerId)
+    local match = s.lobby.Get(matchId)
+    local context = { teams = false, winners = { winnerId }, contestants = 2, players = {} }
+    for src in pairs(match.players) do
+        context.players[#context.players + 1] = {
+            id = src, team = nil, kills = 0,
+            stake = s.betting.GetStake(matchId, src), placement = nil,
+        }
+    end
+    s.betting.Settle(matchId, context)
+    return s.betting.SettleSpectatorBets(matchId, winnerId)
+end
+
+t.test('DEFECT: the winner was congratulated on a PICK, and never told the pot was theirs', function()
+    local s, matchId = twoFighters(1000)
+    t.isTrue(s.config.Betting.betPayout.includeEntryPot,
+        'includeEntryPot is off, so this test is about the wrong settlement path')
+
+    local mark = s.mark()
+    settleWith(s, matchId, 1)
+
+    local said = s.noticesSince(mark, 1)
+    t.contains(said, 'pot is yours',
+        'the winner was never told they took the pot: ' .. said)
+    t.notContains(said, 'pick came in',
+        'the winner was congratulated on a bet they never placed: ' .. said)
+end)
+
+t.test('and the loser was told their PICK went down, for a bet they never placed', function()
+    local s, matchId = twoFighters(1000)
+
+    local mark = s.mark()
+    settleWith(s, matchId, 1)
+
+    local said = s.noticesSince(mark, 2)
+    t.notContains(said, 'pick went down',
+        'a fighter who placed no bet was told their pick lost: ' .. said)
+    t.contains(said, 'Stake gone',
+        'the loser was not told what happened to their entry fee: ' .. said)
+end)
+
+t.test('but a real side-bet is still settled in the words of a bet', function()
+    -- The control, and the reason the two above are worth having: a change
+    -- that used the pot wording for everything would pass them and start
+    -- telling spectators they had won a pot they were never in.
+    local s, matchId = withWatcher(1000)
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'),
+        'the watcher could not back anybody')
+
+    local mark = s.mark()
+    settleWith(s, matchId, 1)
+
+    local said = s.noticesSince(mark, 3)
+    t.contains(said, 'pick came in',
+        'a spectator who really did back a fighter was not told their pick came in: ' .. said)
+    t.notContains(said, 'pot is yours',
+        'a spectator was told they had taken the pot: ' .. said)
 end)
 
 os.exit(t.summary())

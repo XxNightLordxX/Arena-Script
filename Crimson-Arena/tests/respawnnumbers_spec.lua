@@ -405,4 +405,36 @@ t.test('and a free round says nothing about money at all', function()
         'a player who staked nothing was told they had lost a stake')
 end)
 
+-- ======================================================================
+-- WHAT THE OVERLAY SAYS THE ROUND IS WORTH
+-- ======================================================================
+
+t.test('the HUD shows the PRIZE POOL, not the entry pot alone', function()
+    -- server/lobby.lua's match card was changed to GetPrizePool for a
+    -- written reason: with betPayout.includeEntryPot on -- the shipped
+    -- default -- the side-bets settle in the same pool, so a screen showing
+    -- only the entry half stands still while a player watches their own
+    -- stake go into the part it cannot see. The in-arena HUD was missed, so
+    -- a fighter read one number for a whole round while the lobby card read
+    -- another, and the winner was paid the larger one.
+    local s, matchId = liveRound(500)
+
+    -- A watcher backs somebody. That money is in the prize pool and NOT in
+    -- the entry pot, which is what makes the two figures differ at all.
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 1000, 'cash'),
+        'the side-bet was refused, so both figures would agree and this proves nothing')
+
+    local entryOnly = s.betting.GetPot(matchId)
+    local prize = s.betting.GetPrizePool(matchId)
+    t.isTrue(prize > entryOnly,
+        ('the two figures agree (%d vs %d), so this test cannot tell them apart')
+            :format(prize, entryOnly))
+
+    s.step()
+
+    local hud = s.lastPayload('matchHud', 1)
+    t.isNotNil(hud, 'no scoreboard was pushed at all')
+    t.equals(hud.pot, prize, 'the overlay showed the entry pot rather than what the winner is paid')
+end)
+
 t.summary()

@@ -2039,6 +2039,34 @@ t.test('and it comes down again when they stop watching', function()
     t.equals(#c.world.live(), 0, 'a spectator left the arena standing after they stopped watching')
 end)
 
+t.test('DEFECT: the SECOND watch of an arena built nothing and said it had', function()
+    -- builtArena is deliberately never cleared -- clearArenaScenery's own
+    -- header explains why, the sweep needs it to outlive the round -- while
+    -- arenaProps IS emptied. So the guard, which tested builtArena alone,
+    -- answered "already standing" for an empty world and returned true.
+    --
+    -- Watch a skydome round, stop, watch another: no floor, no container
+    -- wall, fighters hanging in air, and it never recovered for the rest of
+    -- the session.
+    -- Standing where the fighters are, for the reason the first spectator
+    -- test above gives: CreateObject produces nothing outside the streaming
+    -- bubble.
+    local c = newClient({ start = { x = 1500.0, y = 3000.0, z = 1201.0 } })
+
+    t.isTrue(c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0),
+        'the first watch built nothing')
+    local first = #c.world.live()
+    t.isTrue(first > 0, 'the first watch put no scenery up at all')
+
+    c.env.ArenaMatch.DropSpectatorScenery()
+    t.equals(#c.world.live(), 0, 'stopping did not take the scenery down')
+
+    t.isTrue(c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0),
+        'the second watch reported failure')
+    t.equals(#c.world.live(), first,
+        'the second watch of the same arena built nothing -- fighters in empty air')
+end)
+
 t.test('but it REFUSES to take down a fighter\'s arena', function()
     -- An eliminated fighter watching the rest of the round is both things at
     -- once. They are still standing on that floor: dropping it because they

@@ -146,6 +146,25 @@ local function newArena(wallets, mutate)
     --- The snapshot this player would be sent, as the panel receives it.
     function server.state(src) return server.lobby.BuildState(src) end
 
+    --- How much has been sent so far, so a test can ask what happened
+    --- AFTER a call rather than at any point in the lobby's life.
+    function server.mark() return #sent end
+
+    --- Every notification sentence one player has been shown since `mark`.
+    --- Rendered by the real server/util.lua off the real locale file, so a
+    --- message whose key does not exist fails here rather than on somebody's
+    --- screen.
+    function server.noticesSince(mark, target)
+        local out = {}
+        for index = (mark or 0) + 1, #sent do
+            local message = sent[index]
+            if message.event == 'crimson_arena:client:notify' and message.target == target then
+                out[#out + 1] = tostring((message.payload or {}).description or '')
+            end
+        end
+        return table.concat(out, '\n')
+    end
+
     --- How many pushes of one client event have gone out, to anybody.
     --- A broadcast is measured by the fact that it HAPPENED: what it
     --- carries is what every other test in this file already asserts.
@@ -754,6 +773,73 @@ t.test('an entry fee folded into the pool is NOT reported as a bet they placed',
 
     t.equals(s.state(1).player.bet, false,
         'an entry fee folded into the pool was shown to the player as a bet they placed')
+end)
+
+-- ========================================================================
+-- THE ROUND THAT STARTS ON ITS OWN, OR SAYS WHY IT DOES NOT
+-- ========================================================================
+
+--- The key of the first enabled team, for a test that needs to put two
+--- players on the same side by hand.
+local function firstTeamKey(s)
+    local teams = s.env.Arena.GetEnabledTeams()
+    t.isTrue(#teams > 0, 'the config under test enables no teams')
+    return teams[1].key
+end
+
+t.test('DEFECT: a ready TEAM lobby never started, and nothing said why', function()
+    -- Config.Match.autoStartWhenAllReady ships TRUE, and
+    -- Config.Teams.autoAssignIfUnchosen ships TRUE -- the second exists so
+    -- that nobody HAS to touch the team picker. Put them together in a team
+    -- mode and the round never began.
+    --
+    -- SetReady ran Arena.CanStartMatch ITSELF before calling Begin, against
+    -- the raw roster, where a player who skipped the picker still has
+    -- team = nil. CountTeams counts only real keys, so `occupied` was 0 and
+    -- the answer was 'error.need_two_teams'. Begin asks the same question
+    -- but AFTER assignMissingTeams -- so the host pressing Start Match Now
+    -- started the identical lobby instantly, while readying up did nothing
+    -- at all, with no toast, no reason and no clock.
+    local s, matchId = inTeamMode()
+    s.config.Match.autoStartWhenAllReady = true
+    s.config.Teams.autoAssignIfUnchosen = true
+    s.config.Match.minPlayers = 2
+
+    -- Neither of them picks a side, which is exactly what the setting allows.
+    t.isNil(s.lobby.Get(matchId).players[1].team, 'the fixture pre-picked a side for player 1')
+    t.isNil(s.lobby.Get(matchId).players[2].team, 'the fixture pre-picked a side for player 2')
+
+    s.lobby.SetReady(1, true)
+    s.lobby.SetReady(2, true)
+
+    t.equals(s.lobby.Get(matchId).state, 'countdown',
+        'everybody readied up on a server that promises to start on its own, and it did not')
+end)
+
+t.test('and where it genuinely cannot start, the whole room is told', function()
+    -- The other half, and the reason the fix is not simply "call Begin".
+    -- The refusal used to be discarded: `local startable = ...` takes only
+    -- the first return, and the `if` had no else -- so a lobby that could
+    -- not start was left sitting there with nothing on screen about it.
+    --
+    -- Both fighters on ONE side, which requireBothTeamsOccupied refuses.
+    local s, matchId = inTeamMode()
+    s.config.Match.autoStartWhenAllReady = true
+    s.config.Match.minPlayers = 2
+
+    local only = firstTeamKey(s)
+    s.lobby.Get(matchId).players[1].team = only
+    s.lobby.Get(matchId).players[2].team = only
+
+    local mark = s.mark()
+    s.lobby.SetReady(1, true)
+    s.lobby.SetReady(2, true)
+
+    t.equals(s.lobby.Get(matchId).state, 'lobby', 'a round with one empty side started anyway')
+    t.isTrue(#s.noticesSince(mark, 1) > 0,
+        'a lobby that could not start was left with nothing on screen saying so')
+    t.isTrue(#s.noticesSince(mark, 2) > 0,
+        'only one of the two was told')
 end)
 
 os.exit(t.summary())

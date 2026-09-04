@@ -62,7 +62,7 @@ function snapshot(options) {
         config: {
             arenas: [{ key: 'a', label: 'Arena', enabled: true }],
             modes: [{ key: 'tdm', label: 'Team Deathmatch', enabled: true, teams: true }],
-            match: { lives: 3, minPlayers: 2, maxPlayers: 0, onlyHostCanStart: false },
+            match: { lives: 3, minPlayers: 2, maxPlayers: 0, onlyHostCanStart: false, autoStartWhenAllReady: true },
             betting: {
                 enabled: false,
                 entryFee: { enabled: false, min: 0, max: 0, default: 0 },
@@ -211,6 +211,25 @@ test('and a server that assigns for them never asks', () => {
     const panel = opened({ autoAssignIfUnchosen: true, myTeam: null });
     assert.strictEqual(panel.node('btn-ready').disabled, false,
         'a server that assigns sides still demanded one be picked');
+});
+
+test('and the tooltip says what readying up does on THIS server', () => {
+    /* It said "This does not start the round." with no config read at all,
+       while the hint one line below reads autoStartWhenAllReady and says the
+       opposite. The shipped setting makes the tooltip the wrong one. */
+    const on = opened({});
+    on.node('btn-ready').title = on.node('btn-ready').title;   // read as rendered
+    assert.ok(/starts on its own/i.test(String(on.node('btn-ready').title)),
+        'a server that auto-starts still told the player readying up does nothing: '
+        + on.node('btn-ready').title);
+
+    const snap = snapshot({});
+    snap.config.match.autoStartWhenAllReady = false;
+    const off = loadPanel(ROOT);
+    off.send('open', snap);
+    off.send('state', snap);
+    assert.ok(/does not start the round/i.test(String(off.node('btn-ready').title)),
+        'a server that does NOT auto-start promised it would: ' + off.node('btn-ready').title);
 });
 
 test('and taking a ready BACK is never refused for it', () => {

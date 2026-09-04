@@ -1777,21 +1777,42 @@ function ArenaLobby.SetReady(src, ready)
         end
 
         if allReady then
-            local startable = Arena.CanStartMatch({
-                arenaKey = match.arenaKey,
-                modeKey = match.modeKey,
-                players = roster,
-            })
-            if startable then
-                -- ArenaMatch is defined by a file that loads AFTER this one.
-                -- This line runs inside an event handler, long after every
-                -- server file has finished loading, so the global is there --
-                -- fxmanifest.lua's server_scripts note spells out why.
-                --
-                -- No requester: an auto-start is the server's, not a
-                -- player's, so Config.Match.onlyHostCanStart has nothing to
-                -- weigh it against.
-                ArenaMatch.Begin(match.id, nil)
+            -- ASKED ONCE, BY THE THING THAT OWNS THE QUESTION.
+            --
+            -- This used to call Arena.CanStartMatch itself first, and that
+            -- pre-check asked a DIFFERENT question to the one Begin asks.
+            -- Begin runs assignMissingTeams and THEN validates; this ran the
+            -- validator on the raw roster, where anyone who skipped the team
+            -- picker still has `team = nil`. CountTeams counts only real
+            -- keys, so occupied was 0 and CanStartMatch answered
+            -- 'error.need_two_teams'.
+            --
+            -- On a stock server -- autoAssignIfUnchosen ships TRUE, which
+            -- exists precisely so nobody has to touch the picker --
+            -- everybody in a team match readied up, every row showed Ready,
+            -- the panel promised "once everybody is ready the round starts
+            -- on its own", and nothing happened. No toast, no reason, no
+            -- clock. The host then pressed Start Match Now and the identical
+            -- lobby started at once, because that path goes through Begin.
+            --
+            -- The refusal was discarded too: `local startable = ...` takes
+            -- only the first return and the `if` had no else.
+            --
+            -- ArenaMatch is defined by a file that loads AFTER this one.
+            -- This line runs inside an event handler, long after every
+            -- server file has finished loading, so the global is there --
+            -- fxmanifest.lua's server_scripts note spells out why.
+            --
+            -- No requester: an auto-start is the server's, not a player's,
+            -- so Config.Match.onlyHostCanStart has nothing to weigh it
+            -- against.
+            local began, why = ArenaMatch.Begin(match.id, nil)
+            if not began and Arena.IsKey(why) then
+                -- SAID OUT LOUD. A round that will not start is the one
+                -- thing a full, ready lobby cannot work out for itself.
+                for _, entry in ipairs(roster) do
+                    ArenaNotifyKey(entry.src, why, 'warning')
+                end
             end
         end
     end

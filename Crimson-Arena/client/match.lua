@@ -751,16 +751,49 @@ function ArenaMatch.SetKeepOut(zones)
 end
 
 --- The zone a point is inside, or nil.
+---
+--- A SPHERE, NOT A COLUMN, and the difference was a kilometre wide.
+---
+--- server/lobby.lua says of this fence: "The BOUNDARY is the fence,
+--- deliberately -- the same circle the fighters themselves are bled for
+--- leaving. One arena has one edge." The fighters' edge is genuinely
+--- spherical -- startBoundaryThread does `#(GetEntityCoords(ped) - center) >
+--- radius` on a vector3 -- and this took x and y only. The server has always
+--- sent the height; nothing read it.
+---
+--- So while a skydome round was live -- centre (1500, 3000, 1201), radius
+--- 110 -- ANYONE STANDING IN THE GRAND SENORA DESERT A KILOMETRE BELOW IT
+--- was inside the fence: teleported 116 m sideways four times a second and
+--- told "A match is being fought at The Skydome. You have been moved outside
+--- it." Nothing they could see explained it and nothing they could do
+--- stopped it. Over the trailer park the same column pulled anyone flying
+--- across out of the air and put them on the ground at the rim.
+---
+--- The 2D fallback is kept for a zone with no height rather than refusing
+--- one: an older server, or an arena whose boundary centre was written
+--- without a z, should still fence its own ground.
 --- @return table|nil zone
---- @return number|nil distance -- from the zone centre
-local function zoneAt(x, y)
+--- @return number|nil distance -- HORIZONTAL, which is what the push uses
+local function zoneAt(x, y, z)
     for _, zone in ipairs(keepOut) do
         local zx, zy = tonumber(zone.x), tonumber(zone.y)
         local radius = tonumber(zone.radius)
         if zx and zy and radius then
             local dx, dy = x - zx, y - zy
-            local distance = math.sqrt(dx * dx + dy * dy)
-            if distance < radius then return zone, distance end
+            local flat = math.sqrt(dx * dx + dy * dy)
+
+            -- Measured in three dimensions where the zone has a height, and
+            -- the FLAT distance is still what comes back: the push below
+            -- moves a player horizontally out to the rim, and handing it a
+            -- 3D length would aim that push at a point in the air.
+            local zz = tonumber(zone.z)
+            local reach = flat
+            if zz and z then
+                local dz = z - zz
+                reach = math.sqrt(dx * dx + dy * dy + dz * dz)
+            end
+
+            if reach < radius then return zone, flat end
         end
     end
     return nil, nil
@@ -779,7 +812,7 @@ CreateThread(function()
         else
             local ped = PlayerPedId()
             local coords = GetEntityCoords(ped)
-            local zone, distance = zoneAt(coords.x, coords.y)
+            local zone, distance = zoneAt(coords.x, coords.y, coords.z)
 
             if zone then
                 local radius = tonumber(zone.radius) or 0

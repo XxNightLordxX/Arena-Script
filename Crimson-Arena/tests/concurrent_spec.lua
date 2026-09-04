@@ -615,4 +615,65 @@ t.test('and with instancing ON the same arena is shared, as designed', function(
         'the fallback is refusing the very thing routing buckets make safe')
 end)
 
+-- ======================================================================
+-- AND THE FENCE IS THE SIZE THE MATCH IS ACTUALLY FOUGHT AT
+--
+-- server/lobby.lua says the fence IS the fighters' own edge: "One arena has
+-- one edge, and two different ones would be a question with two answers on
+-- the same field." The fighters' edge is SCALED -- boundaryPayload
+-- multiplies by the match's size factor so the floor and the spawn ring,
+-- which also grow, never end up outside it. The fence took the raw config
+-- number, so a big round had a boundary the fence did not reach.
+-- ======================================================================
+
+t.test('DEFECT: a scaled-up round left its outer ring unfenced', function()
+    -- A bystander (9) who is in nothing, so the fence is drawn for them.
+    local server = fourPlayers({ 9 })
+    local matchId = runMatch(server, 'trailerpark', { 1, 2, 3, 4 })
+
+    local match = server.lobby.Get(matchId)
+    t.isNotNil(match, 'the match went away before it could be measured')
+
+    -- Grow the round the way a full lobby does. Written onto the match
+    -- rather than driven through a twenty-player Start, because the subject
+    -- is what the SNAPSHOT reports for a given factor.
+    match.sizeFactor = 1.35
+
+    local fences = fencesFor(server, 9)
+    t.equals(#fences, 1, ('the bystander was handed %d fence(s), not 1'):format(#fences))
+
+    local arena = server.env.Arena.GetArenaByKey('trailerpark')
+    local configured = tonumber(arena.boundary.radius)
+    t.isTrue(configured and configured > 0, 'the trailer park has no boundary to scale')
+
+    t.equals(fences[1].radius, configured * 1.35,
+        ('the fence is %0.1fm while the fighters are bled at %0.1fm -- the ring between them is unfenced')
+            :format(fences[1].radius, configured * 1.35))
+end)
+
+t.test('and an unscaled round is fenced at exactly the configured radius', function()
+    -- The control: a factor of 1 must not move the fence at all.
+    local server = fourPlayers({ 9 })
+    local matchId = runMatch(server, 'trailerpark', { 1, 2 })
+    server.lobby.Get(matchId).sizeFactor = 1.0
+
+    local fences = fencesFor(server, 9)
+    t.equals(#fences, 1)
+    t.equals(fences[1].radius, tonumber(server.env.Arena.GetArenaByKey('trailerpark').boundary.radius))
+end)
+
+t.test('and the fence carries the height the client needs to make it a sphere', function()
+    -- client/match.lua tests a 3D distance now. A zone sent without a z
+    -- falls back to fencing a column, which is what used to shove players
+    -- standing a kilometre under the skydome.
+    local server = fourPlayers({ 9 })
+    runMatch(server, 'skydome', { 1, 2 })
+
+    local fences = fencesFor(server, 9)
+    t.equals(#fences, 1)
+    t.isTrue(type(fences[1].z) == 'number',
+        'the fence has no height, so the client can only fence a column')
+    t.equals(fences[1].z, tonumber(server.env.Arena.GetArenaByKey('skydome').boundary.center.z))
+end)
+
 os.exit(t.summary())

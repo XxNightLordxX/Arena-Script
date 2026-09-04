@@ -893,7 +893,20 @@ local function snapshotKeepOut(src)
             -- edge, and two different ones would be a question with two
             -- answers on the same field.
             if type(boundary) == 'table' and boundary.enabled ~= false and boundary.center then
-                local radius = tonumber(boundary.radius) or 0
+                -- AT THE SIZE THIS MATCH IS ACTUALLY BEING FOUGHT AT.
+                --
+                -- The line above promises the fence IS the fighters' own
+                -- edge, and the fighters' edge is scaled: server/match.lua's
+                -- boundaryPayload multiplies by the match's size factor, so
+                -- that the floor and the spawn ring -- which also grow --
+                -- never end up outside it. This took the raw config number.
+                --
+                -- At the trailer park's twenty-player ceiling that is a
+                -- 135 m boundary behind a 100 m fence: an outsider could
+                -- walk into the outer 35 m of a live round and stand in it,
+                -- which is the exact thing this fence exists to prevent.
+                local factor = math.max(1.0, tonumber(match.sizeFactor) or 1.0)
+                local radius = (tonumber(boundary.radius) or 0) * factor
                 if radius > 0 then
                     zones[#zones + 1] = {
                         x = tonumber(boundary.center.x),

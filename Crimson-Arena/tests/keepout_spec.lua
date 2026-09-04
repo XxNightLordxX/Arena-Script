@@ -107,7 +107,11 @@ local function newClient(mutate)
         env = env,
         moves = moves,
         notes = notes,
-        at = function(x, y) pos = { x = x, y = y, z = 30.0 } end,
+        -- The HEIGHT IS A PARAMETER, defaulting to the zone's own. The
+        -- whole vertical axis used to be nailed to 30.0 here and in `pos`
+        -- above, so a fence that ignored z entirely -- which is what shipped
+        -- -- passed every test in this file.
+        at = function(x, y, z) pos = { x = x, y = y, z = z or 30.0 } end,
         pos = function() return pos end,
         step = runner.step,
         setZones = function(zones) env.ArenaMatch.SetKeepOut(zones) end,
@@ -256,6 +260,102 @@ t.test('and the operator can turn the telling off', function()
 
     t.isTrue(#c.moves > 0, 'the barrier stopped working when the notice was switched off')
     t.equals(#c.notes, 0, 'a notice went out with notify = false')
+end)
+
+-- ========================================================================
+-- THE FENCE IS A SPHERE, NOT A COLUMN
+--
+-- server/lobby.lua says of this fence: "The BOUNDARY is the fence,
+-- deliberately -- the same circle the fighters themselves are bled for
+-- leaving." The fighters' edge is spherical; this one tested x and y alone
+-- and the height the server sends was read by nothing.
+--
+-- On the shipped skydome -- centre (1500, 3000, 1201), radius 110 -- that
+-- made every player standing on the ground a KILOMETRE BELOW IT part of a
+-- live match's keep-out zone: shoved 116 m sideways four times a second and
+-- told a match was being fought where they were standing.
+-- ========================================================================
+
+t.test('DEFECT: somebody a kilometre below the zone was fenced out of it', function()
+    local c = newClient()
+    c.setZones({ ZONE })
+
+    -- Directly under the middle, far enough down to be nowhere near the
+    -- sphere. Horizontally they are dead centre, which is what the old
+    -- 2D test called "as far inside as it is possible to be".
+    c.at(ZONE.x, ZONE.y, ZONE.z - 1000.0)
+    c.step(); c.step()
+
+    t.equals(#c.moves, 0,
+        'a player a kilometre below the arena was teleported out of it')
+    t.equals(#c.notes, 0,
+        'and told a match was being fought where they were standing')
+end)
+
+t.test('and somebody flying high over it is left alone too', function()
+    -- The other direction, which is what pulled aircraft out of the sky
+    -- over the trailer park.
+    local c = newClient()
+    c.setZones({ ZONE })
+
+    c.at(ZONE.x, ZONE.y, ZONE.z + 500.0)
+    c.step(); c.step()
+
+    t.equals(#c.moves, 0, 'a player flying over the arena was yanked out of the air')
+end)
+
+t.test('but somebody INSIDE the sphere is still pushed out', function()
+    -- The control, and the whole point: a fence that refused everything
+    -- would pass both tests above and stop being a fence.
+    local c = newClient()
+    c.setZones({ ZONE })
+
+    c.at(ZONE.x + 10.0, ZONE.y, ZONE.z)
+    c.step(); c.step()
+
+    t.isTrue(#c.moves > 0, 'the barrier stopped working for somebody standing in the arena')
+    t.isTrue(distance(c.pos()) > ZONE.radius,
+        'they were left inside the zone')
+end)
+
+t.test('and height only counts against them within the sphere', function()
+    -- Just under the rim: still inside a 60m sphere centred at z = 30 if you
+    -- are 20m below it and 10m out horizontally (sqrt(10^2 + 20^2) = 22.4).
+    local c = newClient()
+    c.setZones({ ZONE })
+
+    c.at(ZONE.x + 10.0, ZONE.y, ZONE.z - 20.0)
+    -- ONE pass, deliberately. A second tick re-measures from wherever the
+    -- first put them and pushes again, which papers over a push that was
+    -- aimed with the wrong length -- it simply takes two ticks to get them
+    -- out instead of one. The contract is that ONE crossing puts them
+    -- outside.
+    c.step()
+
+    t.isTrue(#c.moves > 0,
+        'somebody genuinely inside the sphere, below its centre, was not moved')
+
+    -- AND THE PUSH IS AIMED WITH THE HORIZONTAL DISTANCE, which is why
+    -- zoneAt returns that rather than the 3D reach it now tests against.
+    -- The push normalises (dx, dy) by the distance it is handed: give it the
+    -- 3D length and the horizontal step shrinks by the ratio between them,
+    -- so this player -- 10 m out and 20 m down -- would be moved to 29 m
+    -- from the middle of a 60 m zone and left standing inside it.
+    t.isTrue(distance(c.pos()) > ZONE.radius,
+        ('pushed only %0.2fm from the middle of a %0.1fm zone -- still inside it')
+            :format(distance(c.pos()), ZONE.radius))
+end)
+
+t.test('and a zone with NO height still fences its own ground', function()
+    -- An older server, or an arena whose boundary centre was written without
+    -- a z. Refusing to fence at all would be worse than fencing a column.
+    local c = newClient()
+    c.setZones({ { x = ZONE.x, y = ZONE.y, radius = ZONE.radius, label = ZONE.label } })
+
+    c.at(ZONE.x + 10.0, ZONE.y, ZONE.z)
+    c.step(); c.step()
+
+    t.isTrue(#c.moves > 0, 'a zone without a height fenced nobody at all')
 end)
 
 os.exit(t.summary())

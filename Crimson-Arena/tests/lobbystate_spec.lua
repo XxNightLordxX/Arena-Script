@@ -842,4 +842,41 @@ t.test('and where it genuinely cannot start, the whole room is told', function()
         'only one of the two was told')
 end)
 
+-- ========================================================================
+-- HOW THE ROUND ENDED, SAID ONCE
+-- ========================================================================
+
+t.test('DEFECT: every match end told the room the same thing twice', function()
+    -- ArenaMatch.End and ArenaMatch.Abort both tell the room how the round
+    -- finished and THEN call ArenaLobby.Destroy to tear it down -- and
+    -- Destroy told them again. On an abort the two are byte-identical:
+    -- "Match called off. Every stake went back." followed by itself.
+    local s, matchId = twoInLobby()
+    s.lobby.SetReady(1, true)
+    s.lobby.SetReady(2, true)
+    t.isTrue(s.match.Start(matchId), 'the round never started')
+    s.step()
+
+    local mark = s.mark()
+    t.isTrue(s.match.Abort(matchId, 'match.aborted'), 'the round could not be aborted')
+
+    local said = s.noticesSince(mark, 1)
+    local _, times = said:gsub('Match called off', '')
+    t.equals(times, 1, ('the room was told the round ended %d times'):format(times))
+end)
+
+t.test('and a lobby CLOSED without a round is still told once', function()
+    -- The control. ArenaLobby.Cancel, the idle sweep and the last-player-out
+    -- path leave the state as 'lobby' and say nothing of their own, so
+    -- Destroy's message is the only one they get -- silencing it there would
+    -- close a lobby under people with no explanation at all.
+    local s, matchId = twoInLobby()
+
+    local mark = s.mark()
+    t.isTrue(s.lobby.Destroy(matchId, 'notify.match_closed'), 'the lobby could not be closed')
+
+    t.isTrue(#s.noticesSince(mark, 2) > 0,
+        'a lobby was closed under a player with nothing on screen saying so')
+end)
+
 os.exit(t.summary())

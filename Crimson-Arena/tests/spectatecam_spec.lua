@@ -208,7 +208,18 @@ local function newCam(opts)
         BeginTextCommandDisplayHelp = function() end,
         EndTextCommandDisplayHelp = function() end,
 
-        ArenaUI = { Notify = function(text) f.notes[#f.notes + 1] = tostring(text) end },
+        -- RECORDED, not swallowed. Stopping the watch takes the match
+        -- overlay down for an onlooker -- nothing else can, since
+        -- client/match.lua's own lowering sits behind a currentMatch guard
+        -- they never pass -- and a stub that dropped the call would let the
+        -- HUD latch on again without a test noticing.
+        ArenaUI = {
+            Notify = function(text) f.notes[#f.notes + 1] = tostring(text) end,
+            UpdateHud = function(data)
+                f.hud = f.hud or {}
+                f.hud[#f.hud + 1] = data
+            end,
+        },
         ArenaDispatch = { IsInArena = function() return f.inArena end },
     })
 

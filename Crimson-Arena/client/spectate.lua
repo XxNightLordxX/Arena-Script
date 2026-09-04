@@ -533,6 +533,24 @@ function ArenaSpectate.Stop()
         ArenaMatch.DropSpectatorScenery()
     end
 
+    -- AND THE OVERLAY COMES DOWN WITH THE CAMERA, for an onlooker.
+    --
+    -- Nothing else could do it for them. client/match.lua lowers the HUD in
+    -- leaveArena, behind `if not currentMatch then return end` -- a guard
+    -- somebody who was never in the round does not pass -- and the per-tick
+    -- matchHud push would have cleared it, except that the server stops
+    -- sending it the moment they are off the spectator list. So the clock,
+    -- the scoreboard and the pot stayed burnt over their screen for the rest
+    -- of the session, for a match they had stopped watching.
+    --
+    -- AN ELIMINATED FIGHTER IS THE EXCEPTION and is why this asks. They are
+    -- still in the round -- still on the results board, still owed a payout
+    -- -- so their overlay is still theirs, and client/match.lua takes it
+    -- down when they actually leave the arena.
+    if Config.UI.showMatchHud and not ArenaDispatch.IsInArena() then
+        ArenaUI.UpdateHud({ visible = false })
+    end
+
     matchId = nil
     targets = {}
     index = 1

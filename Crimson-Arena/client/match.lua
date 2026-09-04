@@ -1866,7 +1866,32 @@ function ArenaMatch.EnsureSpectatorScenery(arenaKey, factor)
     if not Arena.IsKey(arenaKey) then return false end
 
     local wantedFactor = tonumber(factor) or 1.0
-    if builtArena and builtArena.key == arenaKey then return true end
+
+    -- WHAT IS STANDING, NOT WHAT WAS LAST BUILT.
+    --
+    -- This used to be `builtArena and builtArena.key == arenaKey`, and
+    -- builtArena is DELIBERATELY never cleared -- clearArenaScenery's own
+    -- header says so, because the sweep needs it to outlive the round. So
+    -- after any teardown of this arena on this client the props are gone and
+    -- builtArena still names it: the guard answered "already standing" for
+    -- an empty world, and reported it as `standing = true`.
+    --
+    -- Watch a skydome round, stop watching, watch another: no floor and no
+    -- container wall, fighters hanging in empty air, and it never recovered
+    -- for the rest of the session. `arenaProps` is the real record -- it is
+    -- emptied by removeArenaProps and refilled by a build.
+    --
+    -- THE SIZE IS NOT CHECKED HERE, AND THAT IS DELIBERATE. It was tempting:
+    -- wantedFactor is computed and never compared, so a watcher whose client
+    -- last built this arena at a different size keeps the old one. But the
+    -- case this guard exists for is an ELIMINATED FIGHTER watching the rest
+    -- of their own round -- they are standing on that floor, and a rebuild
+    -- takes it away and puts it back under them. On the sky arena that is a
+    -- kilometre. A slightly wrong arena size is worth living with; dropping
+    -- somebody through the floor is not.
+    if builtArena and builtArena.key == arenaKey and #arenaProps > 0 then
+        return true
+    end
 
     local arena = Arena.GetArenaByKey(arenaKey)
     local boundary = type(arena) == 'table' and arena.boundary or nil

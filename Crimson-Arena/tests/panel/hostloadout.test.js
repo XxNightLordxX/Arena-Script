@@ -202,6 +202,82 @@ test('and on a chooser = player server, everybody does', () => {
 });
 
 console.log('');
+console.log('==> and when the picker is not yours to use');
+
+test('THE BUG: the picker stayed live through the lobby countdown', () => {
+    /* ArenaLobby.SetLoadout accepts nothing but a lobby, and the lobby
+       countdown -- ten seconds on a fresh install -- leaves this panel open
+       for the whole of it. Ready Up and the team tiles have both made this
+       check for a while; the loadout tab was the one that was missed. */
+    const snap = snapshot('host');
+    snap.matches[0].state = 'countdown';
+    const panel = loadPanel(ROOT);
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.ok(!panel.built('weapon-card-rifle'),
+        'the weapon cards were built for a match that has already kicked off');
+    assert.ok(/already kicked off/i.test(panel.text('loadout-note')),
+        'the tab did not say why: ' + panel.text('loadout-note'));
+
+    panel.fire('loadout-save', 'click');
+    assert.strictEqual(panel.posted.filter((p) => p.name === 'setLoadout').length, 0,
+        'the panel posted a loadout the server had already decided to refuse');
+});
+
+test('and a player in NO match is not told a host chose for them', () => {
+    /* The note printed the host-picks sentence unconditionally, so somebody
+       standing in the lobby in no match at all was told a host they do not
+       have had already picked, and that an empty preview was "exactly what
+       you will be handed". */
+    const snap = snapshot('host', 'player');
+    snap.player.matchId = null;
+    snap.matches = [];
+    const panel = loadPanel(ROOT);
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    const note = panel.text('loadout-note');
+    assert.ok(!/The host picks one loadout/.test(note),
+        'a player in no match was told a host had chosen for them: ' + note);
+    assert.ok(/not in a match/i.test(note),
+        'the tab did not say what was actually missing: ' + note);
+});
+
+test('and their Save button does not offer a refusal', () => {
+    // setLoadout from a player in no match is error.not_in_match.
+    const snap = snapshot('host', 'player');
+    snap.player.matchId = null;
+    snap.matches = [];
+    const panel = loadPanel(ROOT);
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    panel.fire('weapon-card-pistol', 'click');
+    assert.strictEqual(panel.node('loadout-save').disabled, true,
+        'Save Loadout was offered to a player with nothing to save it to');
+
+    panel.fire('loadout-save', 'click');
+    assert.strictEqual(panel.posted.filter((p) => p.name === 'setLoadout').length, 0,
+        'the panel posted a loadout for a player who is in no match');
+});
+
+test('but the lists are still theirs to browse', () => {
+    /* Deliberately NOT locked. There is nothing to refuse yet and nothing to
+       get wrong by picking early -- taking the screen away would be a
+       feature removed, not a defect fixed. */
+    const snap = snapshot('host', 'player');
+    snap.player.matchId = null;
+    snap.matches = [];
+    const panel = loadPanel(ROOT);
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.ok(panel.built('weapon-card-pistol'),
+        'the picker was taken away from a player who is simply not in a match yet');
+});
+
+console.log('');
 console.log('==> and what the save row claims about a save');
 
 /* Presses one weapon card, so the draft is dirty and Save is live. */

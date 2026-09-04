@@ -790,4 +790,106 @@ t.test('FUZZ: and junk geometry never throws, whatever it is', function()
     t.isNil(broke, broke or '')
 end)
 
+-- ======================================================================
+-- A SUPPLY AMOUNT THE PICKER CANNOT OFFER
+--
+-- The supplies picker draws chips and nothing else -- there is no field to
+-- type a number into -- so `options` is the entire set of amounts a player
+-- can choose, not a row of shortcuts past a free entry box. A `default`
+-- outside that set is therefore not a cosmetic mismatch: the row opens with
+-- nothing lit while the player really is carrying that amount, and the
+-- first chip they touch takes it away for good.
+--
+-- It shipped that way. Bandages defaulted to 2 with a ladder of
+-- 0/5/10/20/30, so every player started with two bandages, no chip lit, and
+-- no way back to two.
+-- ======================================================================
+
+t.test('the shipped supplies ladders all contain their own defaults', function()
+    local output = validate()
+
+    t.isNil(output:find('not one of its own options', 1, true),
+        ('a shipped supply defaults to an amount its picker cannot offer:\n%s'):format(output))
+end)
+
+t.test('a default missing from its ladder is named, with the amount', function()
+    local output = validate(function(config)
+        config.Loadouts.supplies.items[2].default = 2
+        config.Loadouts.supplies.items[2].options = { 0, 5, 10, 20, 30 }
+    end)
+
+    t.contains(output, 'bandage', 'the offending supply was not named')
+    t.contains(output, 'defaults to 2', 'the unreachable amount was not quoted back')
+    t.contains(output, 'chips', 'the operator is not told why the ladder is the whole set')
+end)
+
+t.test('and so is one with NO ladder at all, because the picker still only draws two chips',
+function()
+    -- With `options` missing the panel falls back to None and the maximum.
+    -- A default between them is exactly as unreachable as one left out of a
+    -- written ladder, and reads to an operator as the more innocent mistake.
+    local output = validate(function(config)
+        config.Loadouts.supplies.items[1].default = 3
+        config.Loadouts.supplies.items[1].options = nil
+    end)
+
+    t.contains(output, 'armour', 'a supply with no ladder at all was not checked')
+    t.contains(output, 'defaults to 3')
+end)
+
+t.test('a default at the top of an empty ladder is fine, because max IS a chip', function()
+    local output = validate(function(config)
+        config.Loadouts.supplies.items[1].default = config.Loadouts.supplies.items[1].max
+        config.Loadouts.supplies.items[1].options = nil
+    end)
+
+    t.isNil(output:find('not one of its own options', 1, true),
+        'the maximum was reported unreachable when the picker draws it as a chip')
+end)
+
+t.test('a default ABOVE max is compared as the amount really handed over', function()
+    -- ResolveSupplies clamps the default to `max` before issuing it, so the
+    -- amount the player ends up with is the maximum -- which the ladder
+    -- offers. Comparing the number that was TYPED would warn about a row
+    -- that lights up correctly.
+    local output = validate(function(config)
+        local supply = config.Loadouts.supplies.items[1]
+        supply.default = supply.max + 50
+        supply.options = { 0, supply.max }
+    end)
+
+    t.isNil(output:find('not one of its own options', 1, true),
+        'a default clamped onto an existing chip was reported unreachable')
+end)
+
+t.test('and an OPTION above max is too, because the picker draws it clamped', function()
+    -- The other half of the same rule, and the half that is easy to get
+    -- wrong: renderSuppliesPicker clamps each chip down to `max` before
+    -- drawing it, so an option written above the ceiling really is a chip
+    -- for the ceiling. Reading the typed number here would flag a default
+    -- of `max` as unreachable on a row whose last chip grants exactly that.
+    local output = validate(function(config)
+        local supply = config.Loadouts.supplies.items[1]
+        supply.default = supply.max
+        supply.options = { 0, supply.max + 10 }
+    end)
+
+    t.isNil(output:find('not one of its own options', 1, true),
+        'a chip the picker clamps onto the default was read as a different amount')
+end)
+
+t.test('a supply switched OFF is not warned about', function()
+    -- Nobody can be handed it and no row is drawn for it, so an amount
+    -- nobody can pick is not a fault -- and warning about a disabled entry
+    -- teaches an operator to ignore this whole list.
+    local output = validate(function(config)
+        config.Loadouts.supplies.items[2].enabled = false
+        config.Loadouts.supplies.items[2].default = 2
+        config.Loadouts.supplies.items[2].options = { 0, 5, 10 }
+    end)
+
+    t.isNil(output:find('not one of its own options', 1, true),
+        'a supply nobody can be issued was still warned about')
+end)
+
 os.exit(t.summary())

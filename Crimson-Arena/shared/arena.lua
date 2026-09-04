@@ -2940,6 +2940,48 @@ function Arena.ValidateConfig()
         end
     end
 
+    -- A SUPPLY DEFAULT NOBODY CAN GET BACK TO.
+    --
+    -- The supplies picker is chips and only chips -- there is no box to type
+    -- a number into -- so `options` is not a set of shortcuts past a free
+    -- entry field, it IS the whole reachable set. A `default` outside it
+    -- means the row opens with nothing lit while the player really is
+    -- carrying that amount, and the moment they touch any chip that amount
+    -- is gone for the rest of the session.
+    --
+    -- It shipped that way: two bandages, and no chip for 2.
+    --
+    -- Same shape as the entryFee.default check below and the ammo one above
+    -- -- a number an operator typed that the interface around it cannot
+    -- reach -- and it is a warning, not a refusal: the amount is still
+    -- issued, it just cannot be picked twice.
+    for _, supply in ipairs(Arena.GetEnabledSupplies()) do
+        local maximum = Arena.SupplyMax(supply)
+        local default = Arena.ClampInt(supply.default, 0, maximum) or 0
+
+        -- THE PANEL'S OWN FALLBACK, not a separate rule: with no options at
+        -- all the picker draws None and the maximum, so a default between
+        -- them is just as unreachable as one missing from a written ladder.
+        local options = type(supply.options) == 'table' and supply.options or {}
+        if #options == 0 then options = { 0, maximum } end
+
+        local reachable = false
+        for _, option in ipairs(options) do
+            -- Clamped the way the picker clamps it, so an option written
+            -- above `max` is compared as the amount it would really hand
+            -- over rather than as the number that was typed.
+            if (Arena.ClampInt(option, 0, maximum) or 0) == default then
+                reachable = true
+                break
+            end
+        end
+
+        if not reachable then
+            complain(('Config.Loadouts.supplies.items["%s"] defaults to %d, which is not one of its own options -- the picker offers chips and nothing else, so a player who touches that row can never get back to %d.')
+                :format(tostring(supply.key), default, default))
+        end
+    end
+
     -- Every arena needs somewhere to put people.
     for _, entry in ipairs(Arena.GetEnabledArenas()) do
         local arena = Arena.GetArenaByKey(entry.key)

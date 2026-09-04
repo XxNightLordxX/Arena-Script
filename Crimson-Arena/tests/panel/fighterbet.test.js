@@ -376,5 +376,53 @@ test('a fighter and a spectator can be paid by DIFFERENT rules', () => {
 });
 
 console.log('');
+console.log('==> and what the tab says the money does');
+
+test('THE BUG: with one shared pool it still said a side-bet never touches the pot', () => {
+    /* betPayout.sharedPool makes fighters and spectators settle together and
+       includeEntryPot folds every entry fee in with them -- both shipped on
+       -- so a bystander's stake really is paid to the winner. The panel
+       could not know: includeEntryPot was the one field of the block that
+       never went on the wire. */
+    const panel = opened({
+        who: 'spectator',
+        betPayout: { fighters: 'pool', spectators: 'pool', sharedPool: true, includeEntryPot: true },
+    });
+
+    const note = panel.text('bet-note');
+    assert.ok(!/never changes what the winners take/i.test(note),
+        'the tab still promises a side-bet cannot reach the winner: ' + note);
+    assert.ok(/same pot|share of it/i.test(note),
+        'the tab does not say where the stake actually goes: ' + note);
+});
+
+test('and a server with SEPARATE pools still says so', () => {
+    // The control. Turning includeEntryPot off is a real configuration, and
+    // there the original sentence is the true one.
+    const panel = opened({
+        who: 'spectator',
+        betPayout: { fighters: 'pool', spectators: 'pool', sharedPool: true, includeEntryPot: false },
+    });
+
+    assert.ok(/never changes what the winners take/i.test(panel.text('bet-note')),
+        'a server whose pools really are separate was told they are shared: ' + panel.text('bet-note'));
+});
+
+test('and the payout phrase stops quoting a rule that never runs', () => {
+    /* Config.Betting.payout is read only inside Arena.ComputePayouts, and
+       Settle returns before it whenever the entry pot joins the pool. So
+       "the winner takes the lot" described a settlement that does not
+       happen. */
+    const panel = opened({
+        who: 'spectator',
+        betPayout: { fighters: 'pool', spectators: 'pool', sharedPool: true, includeEntryPot: true },
+    });
+
+    const note = panel.text('bet-note');
+    assert.ok(/proportion to what they staked/i.test(note),
+        'the tab still quotes the unreachable payout rule: ' + note);
+});
+
+console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

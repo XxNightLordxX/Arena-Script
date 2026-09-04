@@ -640,7 +640,25 @@
         return word.charAt(0).toUpperCase() + word.slice(1);
     }
 
+    /* Whether the entry pot and the side-bets settle as ONE pool. When they
+       do, Config.Betting.payout never runs at all: ArenaBetting.Settle folds
+       the entry stakes into the bet pool and returns before
+       Arena.ComputePayouts -- the only thing that reads that setting -- ever
+       sees them. */
+    function poolsAreShared() {
+        var block = betting().betPayout || {};
+        return block.includeEntryPot === true;
+    }
+
     function payoutPhrase() {
+        /* THE RULE THAT ACTUALLY RUNS. This quoted Config.Betting.payout
+           unconditionally -- "the winner takes the lot" -- on a server where
+           that code path is never reached, so the create form, the bet note
+           and the "Pot goes to" line all described a settlement that does
+           not happen. */
+        if (poolsAreShared()) {
+            return 'it is split between everyone who backed the winning side, in proportion to what they staked';
+        }
         return labelFor(PAYOUT_TEXT, betting().payout, 'it is paid out at the end');
     }
 
@@ -3085,7 +3103,15 @@
            the pot, and what the pot then does is the clause above. */
         var text = 'Every fighter pays the entry fee into the pot, and at the end of the round '
             + payoutPhrase() + '. Being eliminated ends your round and your fee stays in the pot.';
-        if (spectator.enabled === true) {
+        if (spectator.enabled === true && poolsAreShared()) {
+            /* ONE POOL, WHICH IS HOW IT SHIPS. betPayout.sharedPool makes
+               fighters and spectators settle together and includeEntryPot
+               folds every entry fee in with them, so a bystander's stake
+               really does reach the winner. The sentence below claimed the
+               exact opposite to every player on every screen. */
+            text += ' A side-bet below goes into that same pot: back the winning side and you take '
+                + 'a share of it, and what you stake is part of what the winners are paid.';
+        } else if (spectator.enabled === true) {
             text += ' A side-bet below is separate from the pot, and it never changes what the '
                 + 'winners take.';
         }

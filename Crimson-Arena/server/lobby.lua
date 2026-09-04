@@ -525,6 +525,15 @@ local function snapshotConfig()
                     fighters = block.fighters == 'odds' and 'odds' or 'pool',
                     spectators = block.spectators == 'odds' and 'odds' or 'pool',
                     sharedPool = block.sharedPool ~= false,
+                    -- WHETHER THE ENTRY POT AND THE SIDE-BETS ARE ONE POOL,
+                    -- which is the single fact the Bets tab was getting
+                    -- wrong. It printed "A side-bet is separate from the
+                    -- pot, and it never changes what the winners take" --
+                    -- and with this on, the shipped default, they are the
+                    -- same pool and a bystander's stake is paid to the
+                    -- winner. The panel could not know: this was the one
+                    -- field of the block that never went on the wire.
+                    includeEntryPot = block.includeEntryPot == true,
                 }
             end)(),
             fighterBets = {

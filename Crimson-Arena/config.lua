@@ -27,9 +27,9 @@
       812   Permissions   Who may open a match, who may force-stop one
       893   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1430   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1873   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1883   Webhook       Optional: a Discord line per finished match
-     1920   Dispatch      Optional: keeping police and EMS out of the arena
+     1883   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1893   Webhook       Optional: a Discord line per finished match
+     1930   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1821,8 +1821,13 @@ Config.Loadouts = {
                 -- than 0 so the feature is visible on a fresh install
                 -- without anybody having to find this block first.
                 default = 1,
-                -- What the picker offers as one-tap amounts. A player may
-                -- still type any number up to `max`.
+                -- WHAT THE PICKER OFFERS, AND ALL IT OFFERS. Chips, and no
+                -- box to type a number into, so this ladder is the whole set
+                -- of amounts a player can pick -- not shortcuts past a free
+                -- entry field. `default` has to be one of them or the row
+                -- opens with nothing lit and that amount is unreachable the
+                -- moment they touch it; Arena.ValidateConfig says so at
+                -- start-up.
                 options = { 0, 1, 5, 10, 25 },
             },
             {
@@ -1831,7 +1836,12 @@ Config.Loadouts = {
                 item = 'bandage',
                 max = 30,
                 default = 2,
-                options = { 0, 5, 10, 20, 30 },
+                -- 2 IS IN THE LADDER because it is the default. Without it
+                -- the row showed nothing lit for the two bandages the player
+                -- was actually carrying, and 2 was gone for good the moment
+                -- they touched a chip. Armour's ladder starts with its own
+                -- default for the same reason.
+                options = { 0, 2, 5, 10, 20, 30 },
             },
         },
     },

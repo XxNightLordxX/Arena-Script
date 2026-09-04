@@ -65,8 +65,17 @@ function snapshot(allowCustom, weaponOverride) {
             teams: { list: [] },
             ui: {},
         },
-        player: {},
-        matches: [],
+        /* IN A LOBBY, which is the only place a save reaches the server:
+           setLoadout is refused with error.not_in_match from a player who is
+           in none, and with error.match_in_progress once it has started. The
+           panel agrees with both now, so a fixture that saved from nowhere
+           was testing a request that could never have been taken. */
+        player: { serverId: 7, matchId: 'm1' },
+        matches: [{
+            id: 'm1', arenaKey: 'a', arenaLabel: 'Arena', modeKey: 'ffa', modeLabel: 'FFA',
+            state: 'lobby', teams: false, playerCount: 1, hostName: 'You',
+            pot: 0, entryFee: 0, teamCounts: {}, players: [],
+        }],
         leaderboard: [],
     };
 }

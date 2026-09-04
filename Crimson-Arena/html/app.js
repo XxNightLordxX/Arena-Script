@@ -512,14 +512,56 @@
         return (cfg().loadouts || {}).chooser !== 'player';
     }
 
-    function canChooseLoadout() {
+    /* WHY THIS PLAYER MAY NOT PICK RIGHT NOW, or null.
+       Every reason here is one server/lobby.lua's SetLoadout already
+       enforces; the panel is agreeing with it rather than deciding it, the
+       way editableMatch() above does for the create form. */
+    function loadoutLockReason() {
         /* In host mode the picker belongs to the host alone. Everyone else
-           gets the hint below instead of the sections -- Into The Round still
-           shows them exactly what they will be handed, which is the part
-           worth seeing when the choice is not theirs. */
-        if (hostPicksLoadout()) return player().isHost === true;
+           gets this instead of the sections -- Into The Round still shows
+           them exactly what they will be handed, which is the part worth
+           seeing when the choice is not theirs. */
+        if (hostPicksLoadout() && player().isHost !== true) {
+            return 'The host picks one loadout and everyone in the match fights with it, so every '
+                + 'player carries the same weapons. Into The Round below is exactly what you will '
+                + 'be handed when the round starts. Host a match yourself to choose it.';
+        }
 
-        return true;
+        /* ONCE THE MATCH HAS KICKED OFF. SetLoadout accepts nothing but a
+           lobby, and the lobby countdown -- ten seconds on a fresh install --
+           leaves this panel open for the whole of it, so every save in that
+           window came back "That match has already kicked off." while the
+           picker went on offering the change. Ready Up and the team tiles
+           beside it have both made this check for a while; this tab was the
+           one that was missed.
+
+           NOT IN A MATCH IS NOT LOCKED. There is nothing to refuse yet and
+           nothing to get wrong by picking early: the lists stay, and it is
+           the note and the Save row below that say what is missing. */
+        var id = playerMatchId();
+        if (id) {
+            var match = matchById(id);
+            if (!match || match.state !== 'lobby') {
+                return 'This match has already kicked off — what you are carrying is locked in.';
+            }
+        }
+
+        return null;
+    }
+
+    /* Whether a save would reach anywhere. The server refuses setLoadout
+       from a player who is in no match (error.not_in_match) exactly as it
+       refuses one whose match has started, so the button must not offer it
+       in either case. */
+    function loadoutIsSaveable() {
+        var id = playerMatchId();
+        if (!id) return false;
+        var match = matchById(id);
+        return !!match && match.state === 'lobby' && canChooseLoadout();
+    }
+
+    function canChooseLoadout() {
+        return loadoutLockReason() === null;
     }
 
     /* What the money in this panel is called -- 'cash', 'bank', whatever the
@@ -2127,14 +2169,25 @@
         if (!has(host)) return;
         clear(host);
 
-        if (!canChooseLoadout()) {
-            /* One reason, and it is never permanent: the host picks, and you
-               are not the host of this match. */
-            host.appendChild(makeEl('div', 'hint',
-                'The host picks one loadout and everyone in the match fights with it, so every '
-                + 'player carries the same weapons. Into The Round below is exactly what you will '
-                + 'be handed when the round starts. Host a match yourself to choose it.'));
+        /* THE REASON, WHICHEVER ONE IT IS. This used to print the
+           host-picks sentence unconditionally, so a player in no match was
+           told a host they did not have had chosen for them. */
+        var locked = loadoutLockReason();
+        if (locked !== null) {
+            host.appendChild(makeEl('div', 'hint', locked));
             return;
+        }
+
+        /* NOT IN A MATCH IS ITS OWN ANSWER. The host-picks sentence above
+           used to be the ONLY thing this branch could say, so somebody
+           standing in the lobby in no match at all was told a host they do
+           not have had already chosen for them -- and that an empty preview
+           was "exactly what you will be handed". The lists stay: picking
+           early costs nothing and takes nothing away. */
+        if (!playerMatchId()) {
+            host.appendChild(makeEl('div', 'hint',
+                'You are not in a match yet, so nothing here is saved. Join or create one on the '
+                + 'Matches tab and this becomes what you carry into it.'));
         }
 
         if (hostPicksLoadout()) {
@@ -2734,6 +2787,12 @@
            a picker nobody may touch explains nothing. */
         show(byId('loadout-save-row'), canChooseLoadout());
 
+        /* A SAVE ONLY REACHES THE SERVER FROM A LOBBY YOU ARE IN.
+           ArenaLobby.SetLoadout refuses a player in no match with
+           error.not_in_match, exactly as it refuses one whose round has
+           started -- so offering the button there was offering a refusal. */
+        var saveable = loadoutIsSaveable();
+
         var save = byId('loadout-save');
         if (has(save)) {
             /* UNSAVED CHANGES WIN OVER AN ANSWER STILL IN FLIGHT. Greying
@@ -2742,12 +2801,14 @@
                restart -- would leave the player unable to save at all, and
                they have edits in front of them that they can see are not
                sent. */
-            save.disabled = !state.loadoutDirty;
-            save.title = state.loadoutDirty
-                ? 'Keep these weapons for your next round.'
-                : (state.loadoutSaving
-                    ? 'Waiting for the server to confirm.'
-                    : 'Nothing has changed since your last save.');
+            save.disabled = !state.loadoutDirty || !saveable;
+            save.title = !saveable
+                ? 'Join a match first — there is nothing to save this to yet.'
+                : (state.loadoutDirty
+                    ? 'Keep these weapons for your next round.'
+                    : (state.loadoutSaving
+                        ? 'Waiting for the server to confirm.'
+                        : 'Nothing has changed since your last save.'));
         }
 
         /* THREE STATES, NOT TWO, and the third is why. This used to flip
@@ -2763,7 +2824,9 @@
            on every snapshot, and a snapshot is what clears `loadoutSaving`. */
         var status = byId('loadout-save-status');
         if (has(status)) {
-            if (state.loadoutDirty) {
+            if (!saveable) {
+                status.textContent = 'Not in a match — pick what you like, but join one before it counts.';
+            } else if (state.loadoutDirty) {
                 status.textContent = 'Unsaved — press Save Loadout or you will fight with what you had before.';
             } else if (state.loadoutSaving) {
                 status.textContent = 'Saving — waiting for the server.';
@@ -2876,7 +2939,7 @@
     }
 
     function saveLoadout() {
-        if (!canChooseLoadout()) return;
+        if (!canChooseLoadout() || !loadoutIsSaveable()) return;
         post('setLoadout', {
             weapons: state.draftWeapons.map(function (pick) {
                 var entry = { key: pick.key, ammo: int(pick.ammo, 0) };

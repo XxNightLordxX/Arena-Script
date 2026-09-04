@@ -1118,6 +1118,12 @@ local function newArena(world)
                 return type(reason) == 'string' and reason:sub(1, 6) == 'refund'
             end,
             GetPot = function() return 0 end,
+            -- The HUD shows the PRIZE POOL, not the entry pot: with
+            -- betPayout.includeEntryPot on the side-bets settle in the same
+            -- pool, so a screen showing only the entry half stands still
+            -- while a player watches their stake go into the part it cannot
+            -- see. A double missing this is a nil call naming it.
+            GetPrizePool = function() return 0 end,
             GetStake = function() return 0 end,
             Settle = function() return {} end,
             -- goLive schedules ONE broadcast at the instant the side-bet

@@ -1133,7 +1133,14 @@ function ArenaBetting.GetSideBet(matchId, src)
     for _, bet in ipairs(sideBets[matchId] or {}) do
         -- The one they CHOSE. An entry fee folded into the pool at settle
         -- time is not a bet they placed and must not be shown as one.
-        if bet.src == id and bet.fromEntryFee ~= true then
+        -- AND NOT ONE THAT HAS ALREADY BEEN SETTLED. returnSideBet does not
+        -- delete a row, it marks it -- `bet.settled = true` -- so a bet that
+        -- has been handed back was still reported here as money on the
+        -- result. ArenaLobby.UpdateMatch returns every side-bet when the host
+        -- changes the mode, and the panel then went on printing "You have
+        -- $500 on crimson." over a stake that was back in the player's
+        -- wallet, backing a side the match no longer has.
+        if bet.src == id and not bet.settled and bet.fromEntryFee ~= true then
             return {
                 amount = bet.amount,
                 pick = bet.pick,
@@ -1200,7 +1207,21 @@ function ArenaBetting.HasSpectatorBet(matchId, src)
     local id = serverId(src)
     if not id then return false end
     for _, bet in ipairs(sideBets[matchId] or {}) do
-        if bet.src == id then return true end
+        -- UNSETTLED, WHICH IS WHAT THE LINE ABOVE HAS ALWAYS PROMISED. This
+        -- loop did not check it, and returnSideBet marks rather than deletes
+        -- -- so a bet the server had HANDED BACK still counted as held.
+        --
+        -- What that cost: ArenaLobby.UpdateMatch returns every side-bet when
+        -- the host changes the mode, saying in as many words "They get their
+        -- money and can back the one that replaced it." They could not.
+        -- PlaceSpectatorBet gates on this function, oneBetPerMatch ships
+        -- true, so every later bet on that lobby came back "One side-bet per
+        -- match. Yours is down." -- about a bet that had been refunded --
+        -- for the life of the match.
+        --
+        -- holdsSideBet and MatchesBackedBy both had the check. This is the
+        -- one of the four that drifted.
+        if bet.src == id and not bet.settled then return true end
     end
     return false
 end
@@ -1585,7 +1606,21 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                 if amount > 0 and credit(bet.src, amount, transaction('sidebet_payout', matchId),
                     bet.citizenid, bet.account) then
                     lines[#lines + 1] = ('%s: %s on "%s"'):format(tostring(bet.name or bet.src), money(amount), bet.pick)
-                    ArenaNotifyKey(bet.src, 'notify.spectator_bet_won', 'success', money(amount))
+                    -- WHICH SENTENCE DEPENDS ON WHETHER THEY CHOSE THIS.
+                    --
+                    -- With betPayout.includeEntryPot on -- the shipped
+                    -- default -- Settle folds every fighter's ENTRY FEE into
+                    -- this pool as a bet row and returns an empty payout
+                    -- list, so the pot is paid out from here and
+                    -- notify.pot_won a few hundred lines up is unreachable.
+                    -- That left the winner of a round being congratulated on
+                    -- a PICK, for a bet they never placed, and the one
+                    -- message written for taking the pot never sent at all.
+                    -- The row already carries the field that tells them
+                    -- apart.
+                    ArenaNotifyKey(bet.src,
+                        bet.fromEntryFee == true and 'notify.pot_won' or 'notify.spectator_bet_won',
+                        'success', money(amount))
                 elseif amount > 0 then
                     ArenaLog('SIDE-BET PAYOUT UNDELIVERED: %d owed to %s (citizenid %s) on match %s.',
                         amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
@@ -1617,7 +1652,16 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                 -- 10,000 pool -- and an operator reading that line has been
                 -- told the arena is skimming when it is not.
                 if bet.mode == 'odds' then kept = kept + bet.amount end
-                ArenaNotifyKey(bet.src, 'notify.spectator_bet_lost', 'error', money(bet.amount))
+                -- The other half of the same distinction. A fighter who paid
+                -- an entry fee and placed no bet was told "Your pick went
+                -- down." -- about a pick they never made -- on every round
+                -- they lost, because their fee is one of these rows. What
+                -- actually happened to them is that their stake stayed in
+                -- the pot and somebody else took it, which is exactly what
+                -- notify.stake_forfeited says.
+                ArenaNotifyKey(bet.src,
+                    bet.fromEntryFee == true and 'notify.stake_forfeited' or 'notify.spectator_bet_lost',
+                    'error', money(bet.amount))
             end
         end
     end

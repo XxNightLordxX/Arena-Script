@@ -490,9 +490,21 @@ local function pushHud(match)
         remaining = remaining,
         total = #players,
         timeLeft = match.endsAt and math.max(0, match.endsAt - os.time()) or nil,
-        pot = ArenaBetting.GetPot(match.id),
+        -- WHAT A WINNER IS ACTUALLY PLAYING FOR, the same figure the lobby
+        -- card shows. This was GetPot -- the entry pot ALONE -- while
+        -- server/lobby.lua:750 uses GetPrizePool and says why: with
+        -- betPayout.includeEntryPot on, the shipped default, the side-bets
+        -- settle in the same pool. The card was fixed for that reason and
+        -- this screen was missed, so a fighter read "Pot $2,000" for a whole
+        -- round while the lobby card read "Pot $9,500" and the winner was
+        -- paid the larger one.
+        --
+        -- Worse on the shipped defaults, where entryFee.default is 0:
+        -- GetPot is then 0 for the entire round, and the panel hides the pot
+        -- line on `amount > 0` -- so a fighter playing for a pool built
+        -- entirely out of bets was shown no prize at all.
+        pot = ArenaBetting.GetPrizePool(match.id),
         scoreboard = scoreboard,
-        teamCounts = Arena.CountTeams(players),
     }
 
     local function hudFor(kills, deaths)
@@ -504,7 +516,10 @@ local function pushHud(match)
             timeLeft = common.timeLeft,
             pot = common.pot,
             scoreboard = common.scoreboard,
-            teamCounts = common.teamCounts,
+            -- `teamCounts` used to ride here too and nothing ever read it.
+            -- The panel's teamCountOf() takes the LOBBY SNAPSHOT's match
+            -- (server/lobby.lua:761), which is a different table on a
+            -- different event; grep for hud.teamCounts finds nothing.
         }
     end
 

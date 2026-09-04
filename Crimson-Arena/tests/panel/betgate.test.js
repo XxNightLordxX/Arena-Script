@@ -58,6 +58,7 @@ function snapshot(options) {
         state: 'lobby',
         betsOpen: undefined,
         backing: undefined,
+        oneBetPerMatch: true,
         who: 'spectator',
     }, options || {});
 
@@ -96,8 +97,8 @@ function snapshot(options) {
                 currencySymbol: '$',
                 payout: 'winner_takes_all',
                 entryFee: { enabled: false, min: 0, max: 0, default: 0 },
-                spectatorBets: { enabled: true, min: 50, max: 1000, oddsMultiplier: 2 },
-                fighterBets: { enabled: true, min: 100, max: 50000, ownSideOnly: true },
+                spectatorBets: { enabled: true, min: 50, max: 1000, oddsMultiplier: 2, oneBetPerMatch: o.oneBetPerMatch },
+                fighterBets: { enabled: true, min: 100, max: 50000, ownSideOnly: true, oneBetPerMatch: o.oneBetPerMatch },
                 betPayout: { fighters: 'pool', spectators: 'pool', sharedPool: true },
             },
             loadouts: { allowChoose: false, chooser: 'player', weapons: [], armor: { allowChoose: false, options: [], default: 100 } },
@@ -212,6 +213,98 @@ test('and a server that sends no list at all refuses nothing either', () => {
     panel.fire('match-join-m1', 'click');
     assert.strictEqual(panel.posted.filter((p) => p.name === 'joinMatch').length, 1,
         'an absent backing list was read as backing everything');
+});
+
+console.log('');
+console.log('==> and a second bet on a match you have already backed');
+
+test('THE BUG: Place Bet stayed lit once the one bet was down', () => {
+    /* PlaceSpectatorBet refuses a second bet while the first is unsettled,
+       and oneBetPerMatch ships true -- so every click after the first came
+       back "One side-bet per match. Yours is down." */
+    const panel = opened({ state: 'lobby', betsOpen: true, backing: ['m1'] });
+
+    assert.strictEqual(tryToBet(panel).length, 0,
+        'the panel posted a second bet the server had already decided to refuse');
+    assert.strictEqual(panel.node('bet-submit').disabled, true,
+        'Place Bet was still lit over a bet that is already down');
+    assert.ok(/already down|one per match/i.test(panel.text('bet-hint')),
+        'the screen did not say why: ' + panel.text('bet-hint'));
+});
+
+test('and a server that allows several still takes them', () => {
+    // oneBetPerMatch = false is a supported setting; the panel must not
+    // enforce a rule the operator has switched off.
+    const panel = opened({ state: 'lobby', betsOpen: true, backing: ['m1'], oneBetPerMatch: false });
+
+    assert.strictEqual(tryToBet(panel).length, 1,
+        'a second bet was refused on a server that allows them: ' + panel.text('bet-hint'));
+});
+
+test('and a match they have NOT backed is unaffected', () => {
+    const panel = opened({ state: 'lobby', betsOpen: true, backing: ['someOtherMatch'] });
+    assert.strictEqual(tryToBet(panel).length, 1,
+        'a first bet was refused: ' + panel.text('bet-hint'));
+});
+
+console.log('');
+console.log('==> and watching a match that has nothing to show yet');
+
+/** The Watch/Stop Watching button on the one match card, or null. */
+function watchButton(panel) {
+    const actions = panel.node('match-list').children[0];
+    if (!actions) return null;
+    const found = [];
+    const walk = (n) => {
+        if (/^(Watch|Stop Watching)$/.test(String(n.textContent || ''))) found.push(n);
+        (n.children || []).forEach(walk);
+    };
+    walk(actions);
+    return found[0] || null;
+}
+
+/* A bystander: in no match and watching nothing, which is who the Watch
+   button is drawn for. The shared snapshot() marks the player as already
+   spectating m1 so the Bets tab has a match to draw, and that turns the
+   button into Stop Watching. */
+function bystanderAt(state) {
+    const snap = snapshot({ state: state, betsOpen: false });
+    snap.player.matchId = null;
+    snap.player.spectating = false;
+    const panel = loadPanel(ROOT);
+    panel.send('open', snap);
+    panel.send('state', snap);
+    return panel;
+}
+
+test('THE BUG: Watch was offered on a lobby, and there is nothing there', () => {
+    /* The camera follows a fighter, and the bucket sweep only instances a
+       watcher once the match is being fought. Watching a lobby teleported
+       the body to the arena, showed twelve seconds of nothing, then said
+       "Nobody left to watch." -- with BACKSPACE unreachable throughout. */
+    const panel = bystanderAt('lobby');
+
+    const watch = watchButton(panel);
+    assert.ok(watch, 'no Watch button was drawn at all');
+    assert.strictEqual(watch.disabled, true, 'Watch was offered on a match nobody is fighting in');
+    assert.ok(/until the round starts/i.test(String(watch.title)),
+        'the button did not say why: ' + watch.title);
+
+    (watch.listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+    assert.strictEqual(panel.posted.filter((p) => p.name === 'spectate').length, 0,
+        'the panel posted a watch of a match with nothing to see');
+});
+
+test('and offered on a live one, which is the whole point', () => {
+    const panel = bystanderAt('live');
+
+    const watch = watchButton(panel);
+    assert.ok(watch, 'no Watch button was drawn at all');
+    assert.notStrictEqual(watch.disabled, true, 'Watch was refused on a live round: ' + watch.title);
+
+    (watch.listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+    assert.strictEqual(panel.posted.filter((p) => p.name === 'spectate').length, 1,
+        'the watch never reached the wire');
 });
 
 console.log('');

@@ -1419,13 +1419,42 @@
            nothing left to watch. */
         if (!playerMatchId() && stateName !== 'ended') {
             var watching = spectatingMatchId() === match.id;
+
+            /* THERE HAS TO BE SOMETHING TO SEE.
+
+               The camera follows a fighter, and server/match.lua's bucket
+               sweep only puts a watcher in a match's instance once that
+               match is being fought. Watching a LOBBY teleported the body to
+               the arena, showed twelve seconds of nothing, and ended with
+               "Nobody left to watch." -- and BACKSPACE is unreachable for
+               the whole of that wait, because every input sits inside the
+               camera's `if ped then`.
+
+               'live' and nothing else, deliberately. The server sends one
+               state name for two different phases -- ArenaMatch.Begin uses
+               'countdown' for the lobby countdown, where nobody has been
+               moved anywhere, and Start reuses it for the frozen one after
+               teleporting the room in -- so the panel cannot tell them
+               apart. Offering it in the second and refusing it in the first
+               is not a distinction this side can make; waiting a few seconds
+               for 'live' is.
+
+               DISABLED, NOT HIDDEN: a button that vanishes explains nothing,
+               and somebody looking at a lobby wants to know they can watch
+               it once it starts. Stop Watching is always live -- whatever
+               state the match reached, they must be able to get out. */
+            var canWatch = watching || stateName === 'live';
             var spectate = makeEl('button', 'btn', watching ? 'Stop Watching' : 'Watch');
             spectate.type = 'button';
+            spectate.disabled = !canWatch;
             spectate.title = watching
                 ? 'Put the camera back on you.'
-                : 'Watch this match from a spectator camera. You are not in the fight.';
+                : (canWatch
+                    ? 'Watch this match from a spectator camera. You are not in the fight.'
+                    : 'Nothing to watch until the round starts.');
             spectate.addEventListener('click', function (event) {
                 event.stopPropagation();
+                if (!canWatch) return;
                 if (watching) post('stopSpectate');
                 else post('spectate', { matchId: match.id });
             });
@@ -3258,6 +3287,20 @@
            should keep offering the bet rather than refuse every one. */
         if (match.betsOpen === false) {
             return 'The book closed shortly after this round started.';
+        }
+
+        /* ONE BET PER MATCH, WHERE THE OPERATOR SAYS SO. PlaceSpectatorBet
+           refuses a second bet while the first is unsettled, and the button
+           stayed lit through every one of those refusals -- "One side-bet
+           per match. Yours is down." The rule ships on.
+
+           `backing` is the same list the Join gate reads, and it counts only
+           UNSETTLED bets: a bet handed back by a mode change drops off it,
+           so the player may back the replacement, which is exactly what
+           ArenaLobby.UpdateMatch promises them. */
+        if (rules.oneBetPerMatch !== false
+            && arrayOf(player().backing).indexOf(match.id) !== -1) {
+            return 'Your bet on this match is already down — one per match.';
         }
 
         if (!state.betPick) return 'Choose who you are backing.';

@@ -136,7 +136,18 @@ local function newFixture(opts)
         BeginTextCommandDisplayHelp = function() end,
         EndTextCommandDisplayHelp = function() end,
 
-        ArenaUI = { Notify = function(text) f.notes[#f.notes + 1] = tostring(text) end },
+        -- RECORDED, not swallowed. Stopping the watch takes the match
+        -- overlay down for an onlooker -- nothing else can, since
+        -- client/match.lua's own lowering sits behind a currentMatch guard
+        -- they never pass -- and a stub that dropped the call would let the
+        -- HUD latch on again without a test noticing.
+        ArenaUI = {
+            Notify = function(text) f.notes[#f.notes + 1] = tostring(text) end,
+            UpdateHud = function(data)
+                f.hud = f.hud or {}
+                f.hud[#f.hud + 1] = data
+            end,
+        },
         ArenaDispatch = { IsInArena = function() return f.inArena end },
     })
 
@@ -482,6 +493,51 @@ t.test('a snapshot for a DIFFERENT match does not repoint the camera', function(
     -- match no longer appears.
     t.isTrue(f.spectate.IsActive() or f.camCount() == 0,
         'the camera latched onto another match')
+end)
+
+-- ========================================================================
+-- AND THE OVERLAY COMES DOWN WITH THE CAMERA
+--
+-- An onlooker -- somebody who was never in the round -- had no way to get
+-- rid of the match HUD. client/match.lua lowers it inside leaveArena,
+-- behind `if not currentMatch then return end`, which they never pass; and
+-- the per-second matchHud push that would have cleared it stops arriving
+-- the moment the server takes them off the spectator list. So the clock,
+-- the scoreboard and the pot stayed burnt over their screen for the rest of
+-- the session.
+-- ========================================================================
+
+--- The last visibility the HUD was told about, or nil.
+local function lastHudVisible(f)
+    local seen
+    for _, data in ipairs(f.hud or {}) do
+        if type(data) == 'table' and data.visible ~= nil then seen = data.visible end
+    end
+    return seen
+end
+
+t.test('DEFECT: an onlooker who stops watching keeps the overlay for ever', function()
+    local f = newFixture()
+    f.spectate.Start('m1')
+    t.isTrue(f.spectate.IsActive(), 'the camera never started')
+
+    f.spectate.Stop()
+
+    t.equals(lastHudVisible(f), false,
+        'the match overlay was left on screen for somebody who has stopped watching')
+end)
+
+t.test('but an eliminated FIGHTER keeps theirs, because they are still in the round', function()
+    -- They are still on the results board and still owed a payout, so the
+    -- overlay is still theirs. client/match.lua takes it down when they
+    -- actually leave the arena, which is the one place that knows.
+    local f = newFixture({ inArena = true })
+    f.spectate.Start('m1')
+
+    f.spectate.Stop()
+
+    t.isTrue(lastHudVisible(f) ~= false,
+        'a fighter who was still in the round had their own overlay taken away')
 end)
 
 os.exit(t.summary())

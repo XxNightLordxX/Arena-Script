@@ -490,6 +490,13 @@ local function snapshotConfig()
                 min = math.max(0, Arena.ToInt(spectator.min) or 0),
                 max = math.max(0, Arena.ToInt(spectator.max) or 0),
                 oddsMultiplier = tonumber(spectator.oddsMultiplier) or 2.0,
+                -- WHETHER A SECOND BET IS EVEN POSSIBLE. PlaceSpectatorBet
+                -- refuses one while the player already holds an unsettled
+                -- bet on this match, and the panel had no way to know -- so
+                -- Place Bet stayed lit once the first was down and every
+                -- click after it came back "One side-bet per match. Yours is
+                -- down." It ships true, which is why it was always wrong.
+                oneBetPerMatch = spectator.oneBetPerMatch ~= false,
             },
             -- A FIGHTER BACKING THEMSELVES. Its own band, because staking
             -- money on a round you are in is a different act to backing one
@@ -544,6 +551,9 @@ local function snapshotConfig()
                 -- it to say WHY a chip is refused, rather than letting the
                 -- server refuse it after the click.
                 ownSideOnly = fighter.ownSideOnly ~= false,
+                -- The fighter band has its own copy of the rule, and
+                -- betRules() on the panel picks the block that applies.
+                oneBetPerMatch = fighter.oneBetPerMatch ~= false,
             },
         },
 
@@ -1377,7 +1387,21 @@ function ArenaLobby.Destroy(matchId, reasonKey)
         end
 
         playerIndex[src] = nil
-        ArenaNotifyKey(src, notice, 'warning')
+
+        -- NOT TWICE. ArenaMatch.End and ArenaMatch.Abort both tell the room
+        -- how the round finished and THEN call Destroy to tear it down, and
+        -- Destroy told them again -- so every match end put the same
+        -- sentence on screen twice, and an abort was byte-identical: "Match
+        -- called off. Every stake went back." followed by itself.
+        --
+        -- `state == 'ended'` is exactly the set that has already spoken:
+        -- End and Abort both set it before they notify. ArenaLobby.Cancel,
+        -- the idle-lobby sweep and the last-player-out path leave the state
+        -- as 'lobby' and say nothing of their own, so this is still their
+        -- only message.
+        if match.state ~= 'ended' then
+            ArenaNotifyKey(src, notice, 'warning')
+        end
     end
     for src in pairs(match.spectators) do
         spectatorIndex[src] = nil

@@ -1923,11 +1923,20 @@
             /* The label says what pressing it makes you, which is the only
                reading that survives being read in a hurry. */
             ready.textContent = isReady ? 'Not Ready' : 'Ready Up';
+            /* WHAT READYING UP ACTUALLY DOES ON THIS SERVER. The last
+               branch used to say "This does not start the round." flatly,
+               with no config read at all -- while lobbyHintText one screen
+               below reads autoStartWhenAllReady and says the opposite.
+               Both sentences were on the same screen, and the shipped
+               setting makes the tooltip the wrong one. */
+            var startsOnReady = (cfg().match || {}).autoStartWhenAllReady === true;
             ready.title = needsSide
                 ? 'Pick a side above first — this server will not put you on one for you.'
                 : (isReady
                     ? 'Take your ready back. Nothing starts without you.'
-                    : 'Tell the others you are set. This does not start the round.');
+                    : (startsOnReady
+                        ? 'Tell the others you are set. Once everybody is ready the round starts on its own.'
+                        : 'Tell the others you are set. This does not start the round.'));
             ready.classList.toggle('btn-primary', !isReady);
             ready.disabled = !inMatch || match.state !== 'lobby' || needsSide;
             ready.onclick = function () {

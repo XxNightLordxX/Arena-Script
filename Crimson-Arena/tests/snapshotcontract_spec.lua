@@ -1215,6 +1215,20 @@ t.test('and the two that were actually lost are named, so a failure says which',
         'the loadout tab cannot tell a player whether their own guns come back')
     t.isNotNil(config.teams.maxTeamSizeDifference,
         'the team picker is back to warning about any difference at all, including ones the server allows')
+
+    -- THE THIRD ONE, and it was the whole Bets tab. betPayout.includeEntryPot
+    -- decides whether the entry pot and the side-bets settle as ONE pool.
+    -- With it on -- the shipped default -- a bystander's stake really is
+    -- paid to the winner, and the tab told every player the exact opposite:
+    -- "A side-bet is separate from the pot, and it never changes what the
+    -- winners take." It also makes Config.Betting.payout unreachable, so the
+    -- create form and the bet note quoted a settlement rule that never runs.
+    --
+    -- Named rather than left to the walk above because the panel reads it
+    -- through a two-step -- `(betting().betPayout || {}).includeEntryPot` --
+    -- which the field extractor does not see.
+    t.isNotNil(config.betting.betPayout.includeEntryPot,
+        'the Bets tab cannot tell whether a side-bet reaches the winner, so it guesses')
 end)
 
 os.exit(t.summary())

@@ -17,19 +17,20 @@
     ------------------------------------------------------------------------------
      line   setting       what it is
     ------------------------------------------------------------------------------
-       83   Lobby         The NPC players walk up to
-      156   Match         Lives, timers, player counts, win condition
-      376   Teams         The sides, and whether they may be uneven
-      523   Modes         Free-for-all and team deathmatch
-      542   DefaultMode   Which of them a new lobby opens on
-      561   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      754   UI            Panel colours, logo and title
-      812   Permissions   Who may open a match, who may force-stop one
-      893   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1430   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1883   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1893   Webhook       Optional: a Discord line per finished match
-     1930   Dispatch      Optional: keeping police and EMS out of the arena
+       84   Lobby         The NPC players walk up to
+      181   Schedule      Opening hours: when the door is actually open
+      219   Match         Lives, timers, player counts, win condition
+      439   Teams         The sides, and whether they may be uneven
+      586   Modes         Free-for-all and team deathmatch
+      605   DefaultMode   Which of them a new lobby opens on
+      624   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      817   UI            Panel colours, logo and title
+      875   Permissions   Who may open a match, who may force-stop one
+      956   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1493   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1946   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1956   Webhook       Optional: a Discord line per finished match
+     1993   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -148,6 +149,68 @@ Config.Lobby = {
     -- ends. Also where they are returned to if the resource restarts while
     -- they are mid-match, so make sure it is somewhere safe to stand.
     returnCoords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
+}
+
+-- ======================================================================
+-- OPENING HOURS -- when the door in Config.Lobby is actually open
+--
+-- SHIPS ON, with four windows: 05:00-07:00, 12:00-14:00, 18:00-20:00 and
+-- 00:00-02:00. Outside them nobody may open a match and nobody may join
+-- one. Set `enabled = false` and the arena is open at every hour, which is
+-- also what a server that pulls this code before its config has gets --
+-- an arena that has silently shut is a worse upgrade than one that has not
+-- noticed the feature yet.
+--
+-- THESE ARE REAL HOURS, NOT THE GAME CLOCK, and that is a decision worth
+-- writing down because the obvious reading is the other one.
+--
+-- A GTA day is 48 real minutes: one city minute passes every two real
+-- seconds. So "05:00-07:00" on the CITY clock is about four real minutes,
+-- and four such windows would leave the arena open sixteen real minutes out
+-- of every forty-eight, in bursts, all day and all night. Worse,
+-- Config.Match.roundTimeSeconds below is 600 REAL seconds -- five CITY
+-- hours -- so no round could finish inside a two-city-hour window at all.
+-- Hours on the city clock are a different feature to the one anybody
+-- pictures when they write them down, so this reads the real clock.
+--
+-- WHICH real clock: the SERVER's, through os.date. Not the player's -- two
+-- players in different countries would otherwise be told different opening
+-- times for the same arena -- and not the game's. Everything a player is
+-- shown comes from the server, so everybody sees one schedule.
+-- ======================================================================
+Config.Schedule = {
+    -- Off, the arena never shuts and nothing below is read.
+    enabled = true,
+
+    -- WHOLE HOURS, 24-hour clock. `from` is the minute the doors open and
+    -- `to` is the minute they shut: 05:00-07:00 is open at 06:59 and shut
+    -- at 07:00. Two windows that touch -- 05:00-07:00 and 07:00-09:00 --
+    -- are read as one opening and shown as "05:00-09:00".
+    --
+    -- A window may run over midnight: { from = 22, to = 2 } is legal and
+    -- shows as "22:00-02:00". `to = 0` and `to = 24` both mean midnight.
+    --
+    -- A window whose hours are out of range, or whose `from` equals its
+    -- `to`, is DROPPED and named in the console -- never clamped, because a
+    -- clamped hour is a window nobody typed. Write { from = 0, to = 24 }
+    -- for all day; delete the entry for no window at all.
+    windows = {
+        { from = 0,  to = 2 },   -- midnight to 2am
+        { from = 5,  to = 7 },   -- 5am to 7am
+        { from = 12, to = 14 },  -- noon to 2pm
+        { from = 18, to = 20 },  -- 6pm to 8pm
+    },
+
+    -- HOURS TO ADD TO THE SERVER'S OWN CLOCK, when the machine is not in
+    -- the same timezone as the people playing on it. Most hosts run their
+    -- boxes on UTC; if yours does and your players are five hours behind
+    -- it, put -5 here and the windows above mean what they say to them.
+    --
+    -- 0 means "the server's clock is already the right one". It is a plain
+    -- offset and claims nothing about daylight saving: when the clocks
+    -- change, this number changes too. `/arenahours` prints what the server
+    -- currently thinks the time is, so checking it takes ten seconds.
+    offsetHours = 0,
 }
 
 -- ======================================================================

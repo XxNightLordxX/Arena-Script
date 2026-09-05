@@ -160,8 +160,8 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **65 spec files** covering the shared, server and client logic, run with `lua5.4`
-  against a fake-native harness, plus **11 panel suites** that load the real
+- **67 spec files** covering the shared, server and client logic, run with `lua5.4`
+  against a fake-native harness, plus **12 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
   rather than chosen answers, which is what found the self-damage hole in the
@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 65 functions
+#### `shared/arena.lua` — 69 functions
 
 | Function | What it does |
 |---|---|
@@ -338,6 +338,10 @@ listed; the source documents them where they are.
 | `Arena.GetModeByKey(key)` | One enabled mode by key, or nil. |
 | `Arena.ModeUsesTeams(modeKey)` | True when this mode puts players on sides. |
 | `Arena.GetAmmoOptions(weapon)` | The ammo values the panel offers for one weapon. |
+| `Arena.ScheduleSpans()` | The opening-hours windows as sorted, disjoint spans of minutes; empty means always open. |
+| `Arena.ScheduleStatus(hour, minute)` | Whether the arena is open at that time, and when it next opens or shuts. |
+| `Arena.ClockText(minutes)` | Minutes since midnight as `HH:MM` -- the one place that formatting lives. |
+| `Arena.ScheduleLine()` | The whole schedule on one line, or nil when the arena keeps no hours. |
 | `Arena.AllowsCustomAmmo(weapon)` | Whether a player may type their own ammunition amount rather than being held to the preset list. |
 | `Arena.ResolveAmmo(weapon, requested)` | Turns whatever a client asked for into an ammo count the server is willing to hand out. |
 | `Arena.IsMeleeWeapon(weapon)` | Whether a weapon is melee, which is the one distinction this resource draws between kinds of weapon. |
@@ -399,7 +403,7 @@ listed; the source documents them where they are.
 | `ArenaCompat.Mute(src, active)` | Calls every detected adapter's mute, if it has one. |
 | `ArenaCompat.Report()` | The startup block, as lines. |
 
-#### `server/util.lua` — 13 functions
+#### `server/util.lua` — 17 functions
 
 | Function | What it does |
 |---|---|
@@ -415,6 +419,10 @@ listed; the source documents them where they are.
 | `ArenaRateLimit(src, bucket, intervalMs)` | Whether this call is inside the interval for that bucket; false throttles it. |
 | `ArenaForgetPlayer(src)` | Drops one player's rate-limit history; main.lua calls it from playerDropped. |
 | `ArenaWebhook(title, description, fields)` | Posts one embed to the configured Discord webhook. |
+| `ArenaHoursNow()` | The hour and minute the schedule is judged against -- the server's own clock, plus `offsetHours`. |
+| `ArenaHoursOpen()` | Whether the doors are open right now. Fails OPEN on every path that cannot produce a schedule. |
+| `ArenaHoursSnapshot()` | The opening-hours block the panel, the NPC and the marker are all drawn from. |
+| `ArenaHoursState()` | The same facts kept apart, for `/arenahours`. |
 | `ArenaNewId()` | A fresh match id, unique for this server run. |
 
 #### `server/dispatch.lua` — 13 functions
@@ -554,7 +562,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ClearDeadState(ped)` | Puts an arena casualty back on their feet in the same instant they went down, held frozen, invisible and untouchable until the server says what happens next. |
 | `ArenaDispatch.ReleaseDeadState(ped)` | Undoes ClearDeadState's holding pattern. |
 
-#### `client/main.lua` — 4 functions
+#### `client/main.lua` — 6 functions
 
 | Function | What it does |
 |---|---|
@@ -562,6 +570,8 @@ listed; the source documents them where they are.
 | `ArenaState.Set(newState)` | Replaces the cache. |
 | `ArenaState.MatchId()` | The match this player belongs to, lobby or live, or nil. |
 | `ArenaState.IsInMatch()` | Whether this player is attached to a match, lobby or live. |
+| `ArenaState.Schedule()` | The opening-hours block the server last sent; always a table. |
+| `ArenaState.DoorsShut()` | True only when the server has explicitly said the arena is shut. |
 
 #### `client/match.lua` — 4 functions
 

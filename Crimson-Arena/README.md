@@ -367,6 +367,36 @@ Component names are only meaningful on MK II weapons. Adding a `component` to a 
 
 **The shipped config now does the opposite of what this section was written to warn about.** Every weapon in the catalogue — MK II or not — carries its own `ammoTypes` list with a real `item` filled in and **no `component` at all**. So editing `defaultAmmoTypes` changes nothing for any of them, not just for twelve; and no MK II weapon arrives with a special magazine attached unless you add one. That is exactly right for a server with no ammo script. A per-weapon list *replaces* the shared one, so editing `Config.Loadouts.defaultAmmoTypes` reaches only a weapon that has no `ammoTypes` of its own — and every shipped weapon has one.
 
+### Opening hours
+
+`Config.Schedule` decides when the arena is open at all. It ships **on**, with four windows:
+
+```lua
+windows = {
+    { from = 0,  to = 2 },   -- midnight to 2am
+    { from = 5,  to = 7 },   -- 5am to 7am
+    { from = 12, to = 14 },  -- noon to 2pm
+    { from = 18, to = 20 },  -- 6pm to 8pm
+},
+```
+
+Outside them nobody can open a match and nobody can join one. Set `enabled = false` and the arena never shuts.
+
+**These are real hours, not the game clock**, and that is worth saying plainly because the obvious reading is the other one. A GTA day is 48 real minutes — one city minute passes every two real seconds — so `05:00-07:00` on the *city* clock is about four real minutes, and four such windows would leave the arena open sixteen real minutes out of every forty-eight, in bursts, day and night. `Config.Match.roundTimeSeconds` ships at 600 real seconds, which is five *city* hours, so no round could finish inside a two-city-hour window at all. Hours on the city clock are a different feature to the one anybody pictures when they write them down.
+
+Which real clock: **the server's**, through `os.date`. Not the player's — two players in different countries would otherwise be told different opening times for the same arena. If your host runs its box on UTC and your players are five hours behind it, put `-5` in `offsetHours` and the windows mean what they say to them. It is a plain offset and claims nothing about daylight saving; when the clocks change, so does that number.
+
+**Type `/arenahours` to check it.** It prints what the machine says, the offset, the time the arena is actually going by, the windows, and whether the doors are open — kept as separate lines, because an operator told "shut" cannot act on it without knowing which of those is wrong.
+
+A few rules worth knowing:
+
+- **A window may run over midnight.** `{ from = 22, to = 2 }` is legal and shows as `22:00-02:00`. `to = 0` and `to = 24` both mean midnight.
+- **The top of a window is exclusive.** `05:00-07:00` is open at 06:59 and shut at 07:00, so `{ from = 5, to = 7 }` and `{ from = 7, to = 9 }` tile into one `05:00-09:00` rather than claiming the seven o'clock hour twice.
+- **A bad window is dropped, never clamped**, and named in the console — a clamped hour is a window nobody typed. A window whose `from` equals its `to` is dropped too: it reads as "no time at all" and as "all day" equally well, so guessing either would be guessing.
+- **It fails open.** No `Config.Schedule`, the switch off, an empty list, every window unusable — all of them mean the arena is open at every hour. An arena wrongly shut is indistinguishable, from every player at once, from a resource that has stopped working.
+
+**A round already being fought is fought to the end.** The doors being shut is about who may come in, not about who is already inside — so nobody loses a win to a clock tick. A **lobby** that has not started when the bell goes is closed and every stake goes back, because a lobby that can never start is worse than one that is cleared away; the panel says so on the create form before the money moves.
+
 ### Turning betting off
 
 ```lua
@@ -961,6 +991,7 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 | `/arenaadmin stop <id>` | server | admins. Aborts one match and refunds everybody. |
 | `/arenaadmin wipe` | server | admins. Aborts every match and refunds everybody. |
 | `/arenadispatch` | server | admins. Re-runs the police/EMS detection and reprints the startup report. See [Layer 3](#layer-3--the-startup-report-so-you-never-have-to-guess). |
+| `/arenahours` | server | admins. Prints what the server thinks the time is, the offset applied to it, the opening hours and whether the doors are open right now. See [Opening hours](#opening-hours). |
 
 "Admins" means the ACE groups in `Config.Permissions.adminGroups`, checked as both `group.<name>` and a bare `<name>` because servers hand admin out both ways. The server console (source 0) always qualifies.
 

@@ -524,6 +524,22 @@ AddEventHandler('onResourceStart', function(resourceName)
 
     Arena.ReportConfigProblems()
     ArenaStats.EnsureSchema()
+
+    -- ONE LINE, UNCONDITIONAL, not gated on Config.Debug -- the same reading
+    -- the client's own `lobby:` line gets. An operator who has just set
+    -- opening hours wants to know, at start, that the server agrees with
+    -- them about what time it is; and an operator who has NOT set any wants
+    -- to know that too, because "the arena is shut" is otherwise the first
+    -- thing they hear about it, from a player.
+    local hours = ArenaHoursState()
+    if hours.line then
+        ArenaLog('hours: %s (server clock %s, offset %+dh -> %s) -- %s',
+            hours.line, hours.serverClock, hours.offsetHours, hours.arenaClock,
+            hours.open and 'OPEN now' or ('SHUT now, opens at ' .. tostring(hours.snapshot.opensAt)))
+    else
+        ArenaLog('hours: not enforced -- the arena is open at every hour.')
+    end
+
     ArenaLog('%s ready', Config.ResourceLabel)
 end)
 
@@ -572,6 +588,35 @@ local function tell(src, message)
         ArenaNotify(src, message, 'info')
     end
 end
+
+--- WHAT THE SERVER THINKS THE TIME IS, and every number that went into it
+--- kept APART.
+---
+--- The same reading ArenaDispatch.IsolationState is written for: an operator
+--- told "shut" cannot act on it without knowing whether the machine's clock
+--- is wrong or the offset is. Printed as four separate facts rather than one
+--- sentence, so the wrong one is obvious.
+RegisterCommand('arenahours', function(src)
+    if not ArenaIsAdmin(src) then
+        return refuse(src, 'error.no_permission')
+    end
+
+    local hours = ArenaHoursState()
+    tell(src, ('arena hours: %s'):format(hours.enabled and 'ON' or 'OFF'))
+    tell(src, ('  this machine says: %s'):format(hours.serverClock))
+    tell(src, ('  offsetHours:       %+d'):format(hours.offsetHours))
+    tell(src, ('  arena is going by: %s'):format(hours.arenaClock))
+    tell(src, ('  windows:           %s'):format(hours.line or '(none -- open at every hour)'))
+    if hours.line then
+        tell(src, ('  right now:         %s'):format(hours.open
+            and ('OPEN, until ' .. tostring(hours.snapshot.closesAt))
+            or ('SHUT, opens at ' .. tostring(hours.snapshot.opensAt))))
+        -- THE ACTIONABLE LINE. An operator whose box is in the wrong
+        -- timezone needs the number to type, not a diagnosis.
+        tell(src, '  if "this machine says" is not your local time, put the difference in '
+            .. 'Config.Schedule.offsetHours.')
+    end
+end, false)
 
 RegisterCommand('arenaadmin', function(src, args)
     if not ArenaIsAdmin(src) then

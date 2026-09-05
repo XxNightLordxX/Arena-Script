@@ -100,6 +100,9 @@ local function newFixture(opts)
 
     Sandbox.loadInto('../config.lua', env)
     Sandbox.enableAllArenas(env)
+    -- And the doors, for the same reason the fixture does it: this spec
+    -- is about routing buckets, not about what time it is.
+    Sandbox.openTheDoors(env)
     if opts.guard ~= nil then
         env.Config.Match.crossfireGuard = { enabled = opts.guard }
     end

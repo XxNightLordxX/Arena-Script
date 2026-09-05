@@ -967,6 +967,11 @@ function ArenaLobby.BuildState(src)
         matches = snapshotMatches(),
         leaderboard = leaderboard,
         keepOut = snapshotKeepOut(src),
+        -- NOT PART OF `config`, though it reads like it belongs there.
+        -- snapshotConfig is memoised on the stated grounds that the config
+        -- third never changes under a running resource -- and this is the
+        -- one field that changes with nobody doing anything at all.
+        schedule = ArenaHoursSnapshot(),
     }
 end
 
@@ -982,6 +987,10 @@ function ArenaLobby.Broadcast()
     local config = snapshotConfig()
     local matchList = snapshotMatches()
     local rows = leaderboard
+    -- Hoisted with the other three: it is the server's clock, so it is the
+    -- same answer for every head. It must be HERE as well as in BuildState
+    -- -- that is the whole lesson of the keepOut comment below.
+    local schedule = ArenaHoursSnapshot()
 
     for src in pairs(recipients()) do
         TriggerClientEvent('crimson_arena:client:state', src, {
@@ -1005,6 +1014,7 @@ function ArenaLobby.Broadcast()
             -- which arenas a player may stand in depends on which matches
             -- that player is in.
             keepOut = snapshotKeepOut(src),
+            schedule = schedule,
         })
     end
 end
@@ -1148,6 +1158,16 @@ function ArenaLobby.Join(src, matchId, teamKey, account)
     -- them refuses their Create as well -- which is right. A match its own
     -- host may not enter is not a match.
     if not ArenaCanJoin(target) then return false, 'error.no_permission' end
+
+    -- OPENING HOURS, AND THIS IS THE ONLY DOOR THEY ARE CHECKED AT on the
+    -- way in. Asked here for the same reason ArenaCanJoin is asked here:
+    -- whether anybody may fight right now does not depend on which lobby
+    -- they picked.
+    --
+    -- ArenaLobby.Create funnels its host through this very call and unwinds
+    -- the half-built match on a refusal, so creating is covered by this one
+    -- line too and the rule has exactly one place to live.
+    if not ArenaHoursOpen() then return false, 'error.arena_shut' end
 
     local match = ArenaLobby.Get(matchId)
     if not match then return false, 'error.match_not_found' end
@@ -1786,6 +1806,14 @@ function ArenaLobby.SetReady(src, ready)
     if not match then return false, 'error.not_in_match' end
     if match.state ~= 'lobby' then return false, 'error.match_in_progress' end
 
+    -- NO OPENING-HOURS CHECK HERE, DELIBERATELY. Readying up is intent
+    -- inside a lobby that is allowed to go on existing while the arena is
+    -- shut, and refusing it would tell a player their own tick box is
+    -- broken. What they are actually blocked from is STARTING, and the
+    -- auto-start branch below already forwards ArenaMatch.Begin's refusal
+    -- key to every player in the roster -- so a full, readied lobby is told
+    -- "the arena is shut" through code that already exists.
+    --
     -- With auto-assignment off an unpicked side blocks the start. This is
     -- the last moment the player is still looking at the team picker, so it
     -- is the kindest place to say so.
@@ -1868,6 +1896,13 @@ function ArenaLobby.AddSpectator(src, matchId)
     local match = ArenaLobby.Get(matchId)
     if not match then return false, 'error.match_not_found' end
 
+    -- NO OPENING-HOURS CHECK HERE EITHER, and this one would do real harm.
+    -- server/match.lua calls this on EVERY elimination to hand a knocked-out
+    -- fighter their camera, so a refusal at the stroke of the hour leaves
+    -- them standing back up -- visible, unfrozen and mortal -- in the middle
+    -- of a round they are out of. A round already being fought is fought to
+    -- the end, and watching one is part of being in it.
+    --
     -- WHAT THIS REFUSES IS A FIGHTER, not merely a row in match.players. An
     -- eliminated player keeps their row -- the results board ranks off it --
     -- and they are exactly who the spectator camera exists for, so reading

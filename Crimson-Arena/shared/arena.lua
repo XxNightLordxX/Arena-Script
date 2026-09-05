@@ -2848,6 +2848,213 @@ function Arena.HasRoom(currentCount)
 end
 
 -- ======================================================================
+-- OPENING HOURS
+--
+-- WHEN THE DOOR IN Config.Lobby IS ACTUALLY OPEN. Pure arithmetic on a
+-- 24-hour clock: the hour is always an ARGUMENT, never read here, so this
+-- section keeps the promise the top of this file makes -- it calls no
+-- native -- and every boundary minute is exercisable under plain lua5.4.
+--
+-- Who reads the clock and hands it in is server/util.lua's business, and it
+-- is the ONLY reader: see the note there about why the client is never
+-- asked what time it is.
+-- ======================================================================
+
+--- Minutes in a day. Named because it appears in the wrap arithmetic four
+--- times and a bare 1440 there reads as a magic number.
+local MINUTES_PER_DAY = 1440
+
+--- The configured windows as sorted, DISJOINT spans of minutes since
+--- midnight, each `{ start = <inclusive>, stop = <exclusive> }`.
+---
+--- EMPTY MEANS ALWAYS OPEN, and that is the upgrade rule: a server that
+--- pulls this code before its config has a `Config.Schedule` keeps an arena
+--- that is open at every hour, rather than one that has silently shut.
+---
+--- A WINDOW THAT WRAPS MIDNIGHT IS SPLIT IN TWO, not carried past 1440.
+--- Everything downstream is then disjoint inside one day: containment is a
+--- single clause with no modulo, and the coverage sum is simply correct.
+---
+--- THE OTHER WAY ROUND IS WRONG AND LOOKS RIGHT. Canonicalising a wrap as
+--- `{ start, stop + 1440 }` and fusing the tail into the head afterwards
+--- passes every case worth writing by hand and fails on
+--- `{0,7} + {18,16} + {10,12}`: the fusion leaves spans overlapping, their
+--- lengths sum past a day, the all-day guard trips, and the arena reports
+--- itself OPEN ALL DAY on a schedule genuinely shut from 16:00 to 18:00.
+--- That was found by checking every minute of thousands of random
+--- schedules against a minute-by-minute union, not by reading -- which is
+--- why tests/schedule_spec.lua still does exactly that.
+--- @return table[] spans
+function Arena.ScheduleSpans()
+    local schedule = Config.Schedule
+    if type(schedule) ~= 'table' or schedule.enabled ~= true then return {} end
+    if type(schedule.windows) ~= 'table' then return {} end
+
+    local raw = {}
+    for _, window in ipairs(schedule.windows) do
+        if type(window) == 'table' then
+            local from = Arena.ToInt(window.from)
+            local to = Arena.ToInt(window.to)
+
+            -- DROPPED, NEVER CLAMPED. A clamped hour is a window nobody
+            -- typed, and an operator reading the console would be told a
+            -- number they did not write is in force.
+            --
+            -- `from == to` is dropped too: it reads as "no time at all" and
+            -- as "the whole day" equally well, so guessing either would be
+            -- guessing. The validator says which to write instead.
+            if from and to and from >= 0 and from <= 23
+                and to >= 0 and to <= 24 and from ~= to
+            then
+                local s, e = from * 60, to * 60
+
+                -- STRICTLY `<`. `e <= s` is an EQUIVALENT MUTANT -- the
+                -- output is byte-identical on every schedule and every
+                -- minute, because `from == to` was already dropped above.
+                -- An `=` no test can reach does not belong in the source.
+                if e < s then
+                    raw[#raw + 1] = { start = s, stop = MINUTES_PER_DAY }
+                    -- ONLY WHEN THERE IS A TAIL. `{ from = 5, to = 0 }`
+                    -- splits into {300,1440} and {0,0}, and that empty span
+                    -- survives the merge and is then picked as the nearest
+                    -- opening -- so the arena answers "opens at 00:00" while
+                    -- being shut at midnight. Found by the same brute force.
+                    if e > 0 then raw[#raw + 1] = { start = 0, stop = e } end
+                else
+                    raw[#raw + 1] = { start = s, stop = e }
+                end
+            end
+        end
+    end
+
+    table.sort(raw, function(a, b) return a.start < b.start end)
+
+    local spans = {}
+    for _, span in ipairs(raw) do
+        local last = spans[#spans]
+        -- `<=`, not `<`: two windows that merely TOUCH -- 05:00-07:00 and
+        -- 07:00-09:00 -- are one opening, and rendering them as two would
+        -- print the seven o'clock hour twice.
+        if last and span.start <= last.stop then
+            if span.stop > last.stop then last.stop = span.stop end
+        else
+            spans[#spans + 1] = { start = span.start, stop = span.stop }
+        end
+    end
+
+    return spans
+end
+
+--- Where the clock stands against the schedule.
+---
+--- Never nil, and never a shape a caller has to nil-check into:
+---   { open = true,  always = true }
+---   { open = true,  always = false, closesAt = <minutes> }
+---   { open = false, always = false, opensAt = <minutes>, opensIn = <minutes> }
+---
+--- HALF-OPEN AT THE TOP: 06:59 is open, 07:00 is shut. It is the only
+--- convention under which two adjacent windows tile into one instead of
+--- claiming the same hour twice, and the minute it costs is one nobody in a
+--- PvP arena will ever notice.
+--- @param hour any
+--- @param minute any
+--- @return table status
+function Arena.ScheduleStatus(hour, minute)
+    local spans = Arena.ScheduleSpans()
+    if #spans == 0 then return { open = true, always = true } end
+
+    -- ALL DAY IS CAUGHT BEFORE ANYTHING IS RENDERED, because a full day
+    -- reduces to 1440 % 1440 and would print as the nonsense "00:00-00:00".
+    local coverage = 0
+    for _, span in ipairs(spans) do coverage = coverage + (span.stop - span.start) end
+    if coverage >= MINUTES_PER_DAY then return { open = true, always = true } end
+
+    local now = ((Arena.ToInt(hour) or 0) % 24) * 60 + ((Arena.ToInt(minute) or 0) % 60)
+
+    for index, span in ipairs(spans) do
+        if now >= span.start and now < span.stop then
+            local stop = span.stop
+            -- THE MIDNIGHT JOIN. A window written 22:00-02:00 arrives here
+            -- as two spans; without this a player at 23:00 is told the
+            -- arena shuts at midnight, when it shuts at 02:00. It also
+            -- makes two SEPARATE windows 00:00-02:00 and 22:00-24:00 read
+            -- as the one overnight opening they are, because they are
+            -- contiguous across the day boundary.
+            if stop == MINUTES_PER_DAY and spans[1].start == 0 then
+                stop = spans[1].stop
+            end
+            return { open = true, always = false, closesAt = stop % MINUTES_PER_DAY, index = index }
+        end
+    end
+
+    -- `%` TAKES THE SIGN OF THE DIVISOR IN LUA, which is exactly what this
+    -- needs. math.fmod returns -1260 where this returns 180, and a negative
+    -- "minutes until open" renders as a time already past.
+    local best
+    for _, span in ipairs(spans) do
+        local wait = (span.start - now) % MINUTES_PER_DAY
+        if not best or wait < best then best = wait end
+    end
+
+    return {
+        open = false,
+        always = false,
+        opensAt = (now + best) % MINUTES_PER_DAY,
+        -- MINUTES, AND DELIBERATELY NOT RENDERED ANYWHERE. It exists so the
+        -- nearest window can be picked. Only absolute times reach a screen.
+        opensIn = best,
+    }
+end
+
+--- Minutes since midnight as 'HH:MM'. The one place that formatting lives,
+--- so the NPC label, the panel line, the refusal and /arenahours cannot
+--- disagree about how a time is written.
+--- @param minutes any
+--- @return string
+function Arena.ClockText(minutes)
+    local total = (Arena.ToInt(minutes) or 0) % MINUTES_PER_DAY
+    return string.format('%02d:%02d', math.floor(total / 60), total % 60)
+end
+
+--- The whole schedule on one line -- '05:00-07:00, 12:00-14:00' -- or nil
+--- when the arena keeps no hours at all.
+---
+--- Ascending, on purpose: if two entries in that line ever touch or overlap,
+--- the merge above is broken and the line says so on sight.
+--- @return string|nil
+function Arena.ScheduleLine()
+    local spans = Arena.ScheduleSpans()
+    if #spans == 0 then return nil end
+
+    local coverage = 0
+    for _, span in ipairs(spans) do coverage = coverage + (span.stop - span.start) end
+    if coverage >= MINUTES_PER_DAY then return nil end
+
+    -- The same join ScheduleStatus makes, for the same reason: a wrap is
+    -- one window to the player who fights in it, so it is written
+    -- "22:00-05:00" and not "00:00-05:00, 22:00-24:00".
+    local first, last = spans[1], spans[#spans]
+    local joined = #spans > 1 and first.start == 0 and last.stop == MINUTES_PER_DAY
+
+    local parts = {}
+    for index, span in ipairs(spans) do
+        -- When the schedule wraps, the span sitting at 00:00 is the TAIL of
+        -- the last window rather than a window of its own, and is rendered
+        -- with it -- so it is skipped here rather than printed twice.
+        if not (joined and index == 1) then
+            if joined and index == #spans then
+                parts[#parts + 1] = Arena.ClockText(span.start) .. '-' .. Arena.ClockText(first.stop)
+            else
+                local stop = span.stop == MINUTES_PER_DAY and '24:00' or Arena.ClockText(span.stop)
+                parts[#parts + 1] = Arena.ClockText(span.start) .. '-' .. stop
+            end
+        end
+    end
+
+    return table.concat(parts, ', ')
+end
+
+-- ======================================================================
 -- CONFIG VALIDATION
 --
 -- Run once at start on BOTH realms. It does not throw: a bad value is
@@ -3307,6 +3514,68 @@ function Arena.ValidateConfig()
     if logoStyle ~= nil and logoStyle ~= 'mark' and logoStyle ~= 'banner' then
         complain(("Config.UI.logoStyle is \"%s\" -- it must be 'mark' or 'banner'. Treating it as 'mark'.")
             :format(tostring(logoStyle)))
+    end
+
+    -- OPENING HOURS. Every fault here is reported and the window DROPPED,
+    -- never clamped: a clamped hour is a window nobody typed, and an
+    -- operator reading the console would be told a number they did not
+    -- write is in force.
+    local schedule = Config.Schedule
+    if type(schedule) == 'table' and schedule.enabled == true then
+        local windows = type(schedule.windows) == 'table' and schedule.windows or {}
+        local usable = 0
+
+        for index, window in ipairs(windows) do
+            if type(window) ~= 'table' then
+                complain(('Config.Schedule.windows[%d] is not a pair of hours -- it needs '
+                    .. '{ from = <hour>, to = <hour> }. Dropped.'):format(index))
+            else
+                local from = Arena.ToInt(window.from)
+                local to = Arena.ToInt(window.to)
+
+                if from == nil or from < 0 or from > 23 then
+                    complain(('Config.Schedule.windows[%d] opens at %s -- an opening hour must be '
+                        .. '0 to 23. Dropped rather than clamped: a clamped hour is a window '
+                        .. 'nobody typed.'):format(index, tostring(window.from)))
+                elseif to == nil or to < 0 or to > 24 then
+                    complain(('Config.Schedule.windows[%d] shuts at %s -- a closing hour must be '
+                        .. '0 to 24, where 0 and 24 both mean midnight. Dropped rather than '
+                        .. 'clamped.'):format(index, tostring(window.to)))
+                elseif from == to then
+                    complain(('Config.Schedule.windows[%d] opens and shuts at the same hour (%d). '
+                        .. 'That reads as "no time at all" and as "all day" equally well, so it '
+                        .. 'is dropped rather than guessed. Delete the entry for no window, or '
+                        .. 'write { from = 0, to = 24 } for all day.'):format(index, from))
+                else
+                    usable = usable + 1
+                    if to < from then
+                        complain(('Config.Schedule.windows[%d] runs %02d:00 to %02d:00, over '
+                            .. 'midnight. That is legal, but it is far more often a from and a to '
+                            .. 'written the wrong way round -- check it is what you meant.')
+                            :format(index, from, to))
+                    end
+                end
+            end
+        end
+
+        if #windows > 0 and usable == 0 then
+            complain(('Config.Schedule.windows has %d entries and not one of them is usable, so '
+                .. 'the arena is OPEN AT EVERY HOUR until one is.'):format(#windows))
+        end
+        if #windows == 0 then
+            complain('Config.Schedule is enabled with no windows at all, so the arena never '
+                .. 'shuts. Add a window, or set enabled = false.')
+        end
+        if usable > 0 and Arena.ScheduleLine() == nil then
+            complain('Config.Schedule.windows covers every hour of the day, so the arena never '
+                .. 'shuts. That is the same as switching hours off, and nothing will be refused.')
+        end
+
+        local offset = schedule.offsetHours
+        if offset ~= nil and (Arena.ToInt(offset) == nil or math.abs(Arena.ToInt(offset)) > 14) then
+            complain(('Config.Schedule.offsetHours is %s -- it must be a whole number of hours '
+                .. 'between -14 and 14. Treating it as 0.'):format(tostring(offset)))
+        end
     end
 
     return problems

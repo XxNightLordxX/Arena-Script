@@ -126,6 +126,11 @@
         player: null,
         matches: [],
         leaderboard: [],
+        /* Opening hours, as the server last sent them. Declared here and not
+           only assigned in applySnapshot: an undeclared key reads as
+           `undefined`, and every guard in this file is written to treat an
+           absent verdict as "offer it and let the server decide". */
+        schedule: null,
 
         tab: 'matches',
 
@@ -395,6 +400,31 @@
 
     function player() {
         return state.player || {};
+    }
+
+    /* OPENING HOURS, as the server last sent them. Its own block and not
+       part of `config`, because the config block is memoised on the server
+       and this is the one thing that changes with nobody doing anything. */
+    function schedule() {
+        return state.schedule || {};
+    }
+
+    /* SHUT ONLY ON AN EXPLICIT `false`, never on `!== true`. A server
+       running an older panel, or a snapshot assembled before this field
+       existed, must go on OFFERING every control and let the server be the
+       one to refuse -- the same rule this file follows for match.betsOpen. */
+    function doorsShut() {
+        return schedule().open === false;
+    }
+
+    /* The one sentence, so the three chains below cannot word it three ways.
+       Capitalised where a sentence is wanted and lowercased by its caller
+       where a fragment is. */
+    function shutSentence() {
+        var opensAt = schedule().opensAt;
+        return typeof opensAt === 'string' && opensAt
+            ? 'The arena is shut. It opens at ' + opensAt + '.'
+            : 'The arena is shut at this hour.';
     }
 
     function playerMatchId() {
@@ -1111,6 +1141,13 @@
         if (snapshot.player) state.player = snapshot.player;
         if (Array.isArray(snapshot.matches)) state.matches = snapshot.matches;
         if (Array.isArray(snapshot.leaderboard)) state.leaderboard = snapshot.leaderboard;
+        /* Copied like the four above it and NOT hoisted into `config`: the
+           server memoises its config block precisely because it never
+           changes under a running resource, and this is the one thing that
+           changes with nobody doing anything at all. A snapshot without it
+           leaves the last one standing, which is right -- an older server
+           that never sends one leaves it null, and null is "no verdict". */
+        if (snapshot.schedule) state.schedule = snapshot.schedule;
 
         var config = cfg();
 
@@ -1258,6 +1295,30 @@
             show(subtitle, !banner);
         }
 
+        /* THE WHOLE SCHEDULE, UNPROMPTED. A player who has just missed a
+           window needs the list to plan around; without it the only way to
+           find out when the arena opens is to keep walking back to the NPC.
+
+           Its own element rather than appended to the subtitle, which is
+           Config.UI.subtitle and belongs to the operator.
+
+           `line` is sent ONLY when the server is genuinely enforcing hours,
+           so the panel can never advertise a schedule nobody is keeping. */
+        var hoursEl = byId('arena-hours');
+        if (has(hoursEl)) {
+            var line = schedule().line;
+            var keeps = typeof line === 'string' && line !== '';
+            if (keeps) {
+                hoursEl.textContent = 'Arena hours: ' + line + '. '
+                    + (doorsShut()
+                        ? shutSentence()
+                        : (typeof schedule().closesAt === 'string'
+                            ? 'Open now, until ' + schedule().closesAt + '.'
+                            : 'Open now.'));
+            }
+            show(hoursEl, keeps);
+        }
+
         var logo = byId('arena-logo');
         if (has(logo)) {
             var src = typeof ui.logo === 'string' && ui.logo !== '' ? ui.logo : 'images/logo.png';
@@ -1309,6 +1370,11 @@
         if (mine) return 'You are already in another match. Leave that one first.';
         if (match.state === 'ended') return 'This match has finished.';
         if (match.state !== 'lobby') return 'This match has already started. Watch it, or start your own.';
+
+        /* Before the full and the entry-fee checks, so a shut arena is named
+           rather than telling somebody they cannot afford a match they could
+           afford perfectly well an hour from now. */
+        if (doorsShut()) return shutSentence();
 
         var max = int((cfg().match || {}).maxPlayers, 0);
         if (max > 0 && int(match.playerCount, 0) >= max) {
@@ -1547,9 +1613,16 @@
         if (has(feeHint)) {
             /* What the money buys, in the words of this server's own payout
                rule rather than an assumed one. */
+            /* AND WHAT HAPPENS TO IT AT CLOSING TIME, said BEFORE the money
+               moves rather than only as a toast afterwards. This is the last
+               screen a host sees before the stake is escrowed. */
+            var hoursNote = typeof schedule().line === 'string' && schedule().line !== ''
+                ? ' A round already being fought finishes. A lobby that has not started when the '
+                    + 'arena shuts is closed and every stake goes back.'
+                : '';
             feeHint.textContent = feeUsed
                 ? 'Every player pays this once to join. It all goes into the pot, and at the end of the round '
-                    + payoutPhrase() + '.'
+                    + payoutPhrase() + '.' + hoursNote
                 : '';
         }
 
@@ -1569,6 +1642,13 @@
         }
         if (!blocked && !state.createArena) blocked = 'This server has no arena switched on.';
         if (!blocked && !state.createMode) blocked = 'This server has no mode switched on.';
+
+        /* OPENING HOURS. After the two config-fault sentences on purpose: a
+           player at 03:00 who was told 'This server has no arena switched
+           on.' would file a bug the operator cannot reproduce at 13:00.
+           Skipped while editing -- the hours refuse a NEW match, and the
+           host of one that already exists is only changing its settings. */
+        if (!blocked && !editing && doorsShut()) blocked = shutSentence();
 
         /* THE CEILING ON ROUNDS AT ONCE. ArenaLobby.Create refuses over it,
            and the panel had no idea, so Create Match stayed lit at the limit
@@ -2005,6 +2085,19 @@
         else if (int(match.playerCount, 0) < minPlayers) {
             blocked = 'the round needs ' + plural(minPlayers, 'player')
                 + ' and has ' + plural(match.playerCount, 'player') + '.';
+        }
+        /* OPENING HOURS, and this chain is the one that is easy to miss. It
+           is hand-written and never calls Arena.CanStartMatch, so it can
+           carry the term safely -- ArenaMatch.Begin refuses the same thing
+           server-side, and without this the host of a full, readied lobby
+           clicks a lit button and gets a toast. Lowercase: the caller runs
+           it through capitalise() for the tooltip and splices it into
+           'Start Match Now is unavailable: ...' for the hint. */
+        else if (doorsShut()) {
+            var opensAtStart = schedule().opensAt;
+            blocked = typeof opensAtStart === 'string' && opensAtStart
+                ? 'the arena is shut -- it opens at ' + opensAtStart + '.'
+                : 'the arena is shut at this hour.';
         }
 
         var start = byId('btn-start');

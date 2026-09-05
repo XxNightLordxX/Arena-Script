@@ -906,6 +906,16 @@ function ArenaMatch.Begin(matchId, requestedBy)
     if not match then return false, 'error.match_not_found' end
     if match.state ~= 'lobby' then return false, 'error.match_already_started' end
 
+    -- OPENING HOURS, before anything is mutated. Begin is reachable without
+    -- a fresh Join -- a lobby that formed while the arena was open and is
+    -- started after the bell -- and it is the one gate the host's Start
+    -- Match Now, an admin start and the auto-start when everybody readies
+    -- all pass through.
+    --
+    -- Placed above assignMissingTeams on purpose: a refusal here must leave
+    -- the roster exactly as it found it.
+    if not ArenaHoursOpen() then return false, 'error.arena_shut' end
+
     if requestedBy ~= nil then
         local requester = Arena.ToInt(requestedBy)
         local isHost = requester ~= nil and requester == match.hostSource
@@ -1769,9 +1779,55 @@ local function syncMatchBuckets()
     end
 end
 
+--- What the opening-hours answer was last tick, so the BELL below fires on
+--- the CHANGE and not once a second forever. nil until the first tick, which
+--- is why the first comparison is against a value and not against `false`.
+local hoursWereOpen = nil
+
 CreateThread(function()
     while true do
         Wait(SWEEP_INTERVAL_MS)
+
+        -- THE BELL. A window opening or shutting is, in goLive's own words,
+        -- a thing that happens to nobody: ArenaLobby.Broadcast fires on a
+        -- join, a ready, a bet, a start and an end, so without this an open
+        -- panel would go on offering Create Match for the rest of the round
+        -- and a shut arena would go on looking open.
+        --
+        -- It rides this sweep rather than starting a thread of its own. The
+        -- idle-lobby sweep in server/lobby.lua cannot be used: that whole
+        -- thread sits inside `if idleTimeout > 0 then` and is simply absent
+        -- on a server that has switched the idle timeout off.
+        local hoursOpen = ArenaHoursOpen()
+        if hoursWereOpen ~= nil and hoursWereOpen ~= hoursOpen then
+            if not hoursOpen then
+                -- ONLY LOBBIES, and only lobbies. A round already being
+                -- fought is fought to the end -- the doors being shut is
+                -- about who may come in, not about who is already inside.
+                -- Widening this to `~= 'ended'` is the mutation that would
+                -- abort live rounds at the stroke of the hour.
+                --
+                -- Ids collected before destroying, the pattern the idle
+                -- sweep already uses, because Destroy removes from the very
+                -- registry All() was read from.
+                local waiting = {}
+                for _, match in ipairs(ArenaLobby.All()) do
+                    if match.state == 'lobby' then waiting[#waiting + 1] = match.id end
+                end
+
+                -- DESTROY, NEVER CANCEL. Cancel is the one way of closing a
+                -- lobby an operator can make cost something, and an operator
+                -- who chose to punish a host for calling their own match off
+                -- has not asked to punish a lobby the SERVER closed. Destroy
+                -- refunds every stake unconditionally.
+                for _, id in ipairs(waiting) do
+                    ArenaLobby.Destroy(id, 'notify.hours_lobby_closed')
+                end
+            end
+
+            ArenaLobby.Broadcast()
+        end
+        hoursWereOpen = hoursOpen
 
         -- Before the win check, not after: a match that ends this tick sends
         -- everybody home through sendExitArena, and reconciling afterwards

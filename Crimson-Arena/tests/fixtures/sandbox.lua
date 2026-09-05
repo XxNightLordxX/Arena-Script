@@ -297,7 +297,33 @@ function Sandbox.newArenaEnv(overrides)
     -- Sandbox.shippedConfig() below, which touches nothing.
     Sandbox.enableAllArenas(env)
 
+    -- AND THE DOORS UNLOCKED, for the same reason and with the same force.
+    --
+    -- Config.Schedule ships ENABLED, with four windows, judged against the
+    -- SERVER'S REAL CLOCK. So the moment opening hours went in, twenty-two
+    -- spec files went red at once -- ammunition, betting, isolation, the
+    -- countdown, money conservation -- every one of them because its setup
+    -- calls ArenaLobby.Create and the suite happened to be running at
+    -- twenty past three.
+    --
+    -- A suite that passes at 13:00 and fails at 15:00 is worse than no
+    -- suite: the next person to see it red has no way to tell a real
+    -- regression from the time of day. So a spec gets an arena that is open,
+    -- and the specs that are actually ABOUT the hours -- schedule_spec and
+    -- hoursgate_spec -- switch them back on and say what time it is.
+    Sandbox.openTheDoors(env)
+
     Sandbox.loadInto('../shared/arena.lua', env)
+    return env
+end
+
+--- Switches opening hours OFF in an env's config, so a spec that is about
+--- something else is not also a spec about what time it is.
+--- @param env table
+--- @return table env
+function Sandbox.openTheDoors(env)
+    local schedule = (env.Config or {}).Schedule
+    if type(schedule) == 'table' then schedule.enabled = false end
     return env
 end
 

@@ -48,11 +48,31 @@ function ArenaState.IsInMatch()
     return ArenaState.MatchId() ~= nil
 end
 
+--- The opening-hours block the server last sent, or an empty table.
+---
+--- ALWAYS A TABLE, never nil, so every caller reads `.open` the same way --
+--- and reads it as "shut only on an explicit false". A snapshot assembled
+--- before this field existed must leave the door looking open and let the
+--- server be the one to refuse.
+--- @return table
+function ArenaState.Schedule()
+    return snapshot and snapshot.schedule or {}
+end
+
+--- @return boolean -- true only when the server has actually said "shut"
+function ArenaState.DoorsShut()
+    return ArenaState.Schedule().open == false
+end
+
 -- ======================================================================
 -- LOBBY FIXTURES
 -- ======================================================================
 
 local TARGET_NAME = 'crimson_arena_lobby'
+
+--- What the NPC's option currently says, so relabelLobbyPed fires on a
+--- CHANGE and not on every state push. nil until the ped is first labelled.
+local pedLabel = nil
 local MODEL_LOAD_TIMEOUT_MS = 10000
 
 local lobbyPed
@@ -157,8 +177,61 @@ local function spawnLobbyPed()
             onSelect = openPanel,
         },
     })
+    -- Recorded so the first state push is not read as a change and does not
+    -- register the NPC a second time.
+    pedLabel = ped.targetLabel
 
     return true
+end
+
+--- Re-label the lobby NPC when the doors open or shut.
+---
+--- THE ONE SURFACE A PLAYER WHO IS GOING TO WALK AWAY EVER READS. Somebody
+--- who finds the arena shut does not open the panel to find out why; they
+--- look at the NPC, get nothing, and leave.
+---
+--- ox_target has no field this repository has read for a label that changes
+--- on its own, so the option is removed and added again -- the same pair
+--- this file already makes, with the same five fields it already passes.
+--- Nothing here is a third-party API this resource has not seen the source
+--- of.
+---
+--- Only on a change, and never during startup: tests/lobbyworld_spec.lua
+--- counts the registrations made by the startup thread.
+local function relabelLobbyPed()
+    if not lobbyPed or not DoesEntityExist(lobbyPed) then return end
+
+    local ped = Config.Lobby.ped
+    local wanted = ped.targetLabel
+    if ArenaState.DoorsShut() then
+        local opensAt = ArenaState.Schedule().opensAt
+        if type(opensAt) == 'string' then
+            wanted = locale('match.hours_shut_label', opensAt)
+        end
+    end
+
+    if wanted == pedLabel then return end
+
+    local target = targeting()
+    if not target then return end
+
+    -- Wrapped for the reason every other target call in this file is: a
+    -- raise here would leave the NPC registered under the old label with no
+    -- line in the console saying why the new one never appeared.
+    local ok = pcall(function()
+        target:removeLocalEntity(lobbyPed, TARGET_NAME)
+        target:addLocalEntity(lobbyPed, {
+            {
+                name = TARGET_NAME,
+                label = wanted,
+                icon = ped.targetIcon,
+                distance = ped.targetDistance,
+                onSelect = openPanel,
+            },
+        })
+    end)
+
+    if ok then pedLabel = wanted end
 end
 
 --- An orphaned mission ped survives a resource restart, so every restart
@@ -204,6 +277,22 @@ local function removeBlip()
     lobbyBlip = nil
 end
 
+--- What the ground marker offers, which is not always "open the panel".
+---
+--- The draw loop captures `Config.Lobby.marker` ONCE, outside the thread, so
+--- it does not pick up a changing schedule for free -- and mutating the
+--- operator's own config table in place to make it would be worse. One call
+--- per frame inside the interact radius, which is the only place a player
+--- is standing still and reading.
+--- @param marker table
+--- @return string
+local function doorHelpText(marker)
+    if not ArenaState.DoorsShut() then return marker.helpText end
+    local opensAt = ArenaState.Schedule().opensAt
+    if type(opensAt) ~= 'string' then return marker.helpText end
+    return locale('match.hours_shut_help', opensAt)
+end
+
 --- The marker path. Draws only inside `drawDistance` and only listens for
 --- the key inside `interactDistance`; outside the draw radius it sleeps a
 --- full second, because a lobby marker is something a player is near for a
@@ -233,7 +322,7 @@ local function startMarkerThread()
 
                 if distance < marker.interactDistance then
                     BeginTextCommandDisplayHelp('STRING')
-                    AddTextComponentSubstringPlayerName(marker.helpText)
+                    AddTextComponentSubstringPlayerName(doorHelpText(marker))
                     EndTextCommandDisplayHelp(0, false, true, -1)
 
                     if IsControlJustReleased(0, marker.key) then
@@ -264,6 +353,9 @@ RegisterNetEvent('crimson_arena:client:state', function(newState)
     if type(ArenaMatch) == 'table' and type(ArenaMatch.SetKeepOut) == 'function' then
         ArenaMatch.SetKeepOut(type(newState) == 'table' and newState.keepOut or nil)
     end
+
+    -- After the cache is set, never before: it reads the schedule out of it.
+    relabelLobbyPed()
 end)
 
 CreateThread(function()

@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<!--
+    crimson_arena/html/index.html
+
+    The arena panel and the in-match overlay, as structure only. Styling
+    lives in style.css, behaviour in app.js; this file names the ids those
+    two build against and nothing else.
+
+    TWO ROOTS, ON PURPOSE. #arena-root is the modal panel and is the only
+    thing that ever holds NUI focus. #arena-hud and #arena-countdown are
+    drawn over live gameplay while the player is shooting, so they are
+    inert at every level -- see the pointer-events note in style.css before
+    adding anything clickable to them.
+
+    Both roots start hidden; app.js toggles the `hidden` class and nothing
+    else. Every list here is empty on purpose: the panel renders from the
+    server's state snapshot, so there is no placeholder markup to go stale.
+
+    THE STATIC COPY IS THE EXCEPTION, and it is here rather than in app.js
+    because it is fixed English chrome: a sentence that is true whatever the
+    snapshot says. Anything whose wording depends on config -- what an entry
+    fee buys, why a button is disabled -- is left as an empty element for
+    app.js to fill, so the panel never states a rule this server does not run.
+-->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Crimson Arena</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="arena-root" class="hidden">
+    <header id="arena-header">
+        <img id="arena-logo" alt="">
+        <h1 id="arena-title"></h1>
+        <span id="arena-subtitle"></span>
+        <span id="arena-hours"></span>
+        <div id="arena-money"></div>
+        <button id="arena-close" type="button">&#10005;</button>
+    </header>
+
+    <nav id="arena-nav">
+        <button class="arena-tab" type="button" data-tab="matches">Matches</button>
+        <button class="arena-tab" type="button" data-tab="lobby">Lobby</button>
+        <button class="arena-tab" type="button" data-tab="loadout">Loadout</button>
+        <button class="arena-tab" type="button" data-tab="bets">Bets</button>
+        <button class="arena-tab" type="button" data-tab="board">Leaderboard</button>
+    </nav>
+
+    <main id="arena-body">
+        <section id="tab-matches" class="arena-panel">
+            <div id="match-list"></div>
+
+            <div id="create-panel">
+                <!-- Named for the button at the bottom of the box, not for
+                     the lobby's Start Match Now: creating a match and
+                     starting a round are different things and must not
+                     borrow each other's verb. -->
+                <h2 class="panel-heading">Create A Match</h2>
+                <p class="hint">Set one up for other players to join.</p>
+
+                <label class="field">
+                    <span class="field-label">Arena</span>
+                    <select id="create-arena"></select>
+                </label>
+
+                <label class="field">
+                    <span class="field-label">Mode</span>
+                    <select id="create-mode"></select>
+                </label>
+
+                <!-- Hidden wholesale when betting is off. A free match has no
+                     fee to set, and a blank input left behind would still read
+                     as one that could be. -->
+                <div id="create-fee-row" class="field">
+                    <span class="field-label">Entry Fee</span>
+                    <input id="create-fee" type="number" min="0" step="1">
+                    <div id="create-fee-presets"></div>
+                    <!-- Which account the entry fee comes out of. Same
+                         control as the one on the Bets tab and the same
+                         choice; this one is read when you create or join. -->
+                    <div id="create-account"></div>
+                    <!-- What the fee actually buys, written from the payout
+                         rule in the snapshot rather than assumed. -->
+                    <p id="create-fee-hint" class="hint"></p>
+                </div>
+
+                <!-- Hidden when the operator has fixed the number: a control
+                     that cannot change anything is worse than no control,
+                     because it invites a host to try. -->
+                <div id="create-lives-row" class="field">
+                    <span class="field-label">Lives Each</span>
+                    <input id="create-lives" type="number" min="1" step="1">
+                    <p id="create-lives-hint" class="hint"></p>
+                </div>
+
+                <!-- THE RADAR, here beside Lives Each rather than in the
+                     lobby, because it is the same kind of thing: a rule of
+                     the match that the host sets once and everybody in it
+                     fights under. It used to be a toggle each player gave
+                     themselves down in the lobby, which made a round only
+                     as dark as its least patient fighter.
+
+                     Sitting in this box is also what makes it host-only,
+                     with no second check to keep in step: the box is only
+                     an editor for a match you are hosting. -->
+                <div id="create-radar-row" class="field">
+                    <span class="field-label">Radar</span>
+                    <button id="btn-radar" class="btn" type="button">Radar Off</button>
+                    <p id="create-radar-hint" class="hint"></p>
+                </div>
+
+                <button id="create-submit" class="btn btn-primary" type="button">Create Match</button>
+                <!-- Says what pressing it does, or why it cannot be pressed.
+                     A greyed-out button with no reason reads as broken. -->
+                <p id="create-hint" class="hint"></p>
+            </div>
+        </section>
+
+        <section id="tab-lobby" class="arena-panel">
+            <div id="lobby-empty"></div>
+
+            <div id="lobby-detail">
+                <h2 id="lobby-title"></h2>
+                <div id="lobby-meta"></div>
+                <div id="team-picker"></div>
+                <div id="roster"></div>
+                <!-- Sits ABOVE the buttons on purpose: it is the sentence that
+                     tells Ready Up from Start Match Now, and pressing the wrong
+                     one during a countdown is the mistake it exists to stop. -->
+                <p id="lobby-hint" class="hint"></p>
+                <div id="lobby-actions">
+                    <button id="btn-ready" class="btn" type="button">Ready Up</button>
+                    <button id="btn-start" class="btn btn-primary" type="button">Start Match Now</button>
+                    <button id="btn-leave" class="btn btn-danger" type="button">Leave Match</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- TWO LISTS, NOT ONE FILTERED GRID.
+
+             The server keeps a separate allowance for shootable weapons and
+             for melee and spends them separately, so this screen shows them
+             separately: two sections, both on screen at once, each with its
+             own heading and its own counter. A player whose guns are full can
+             see at a glance that their blade slot is still free -- which is
+             the one thing a single grid under a single counter could never
+             say, and the reason it said the wrong thing instead.
+
+             Each list scrolls inside its own box: thirty guns and twenty
+             blades is an ordinary config, and neither the page nor the panel
+             body may ever grow a scrollbar over the game. -->
+        <section id="tab-loadout" class="arena-panel">
+            <!-- The sentence that is true of both lists, plus whatever the
+                 ammo-type cap adds to it. Written by app.js: the rule it
+                 states is the operator's, not this file's. -->
+            <div id="loadout-note"></div>
+
+            <!-- Only when both lists below are switched off. -->
+            <div id="loadout-empty" class="hidden"></div>
+
+            <div id="loadout-lists">
+                <section id="loadout-firearms" class="loadout-section">
+                    <div class="loadout-section-head">
+                        <h2 class="panel-heading">Firearms</h2>
+                        <!-- '3 of 4 weapons' -- the SHARED count. Both
+                             sections show it, because there is one pool and
+                             a player reading the melee list still needs to
+                             know how full they are. -->
+                        <span id="firearms-count" class="loadout-count"></span>
+                    </div>
+                    <!-- Category tabs over the FIREARMS list only. app.js
+                         drops them when there is only one group to pick
+                         between; with thirty guns in the list they earn
+                         their place. -->
+                    <div id="loadout-cats"></div>
+                    <div id="weapon-grid" class="weapon-grid"></div>
+                </section>
+
+                <!-- Hidden outright when allowMelee is false. The operator
+                     turned melee off, and an empty or greyed-out section would
+                     read as a fault rather than as a decision. -->
+                <section id="loadout-melee" class="loadout-section">
+                    <div class="loadout-section-head">
+                        <h2 class="panel-heading">Melee</h2>
+                        <!-- The same shared counter as above, on purpose. -->
+                        <span id="melee-count" class="loadout-count"></span>
+                    </div>
+                    <!-- No tabs here: melee is one section already. -->
+                    <div id="melee-grid" class="weapon-grid"></div>
+                </section>
+            </div>
+
+            <!-- The last thing read before a round locks the choice in: the
+                 count, and per weapon the weapon, the amount and the round.
+                 One group, because there is one pool. -->
+            <div id="loadout-slots"></div>
+            <div id="supplies-picker"></div>
+            <!-- The button and the one line that says whether pressing it is
+                 still needed. -->
+            <div id="loadout-save-row">
+                <button id="loadout-save" class="btn btn-primary" type="button">Save Loadout</button>
+                <span id="loadout-save-status" class="hint"></span>
+            </div>
+        </section>
+
+        <section id="tab-bets" class="arena-panel">
+            <!-- Shown alone when betting is off; the controls below it are
+                 hidden in that case. -->
+            <div id="bet-disabled"></div>
+
+            <div id="bet-summary"></div>
+
+            <!-- Every side-bet control in one column, so the layout does not
+                 have to be re-counted each time one of them is hidden. -->
+            <div id="bet-form">
+                <p id="bet-note" class="hint"></p>
+                <div id="bet-pick"></div>
+                <label id="bet-amount-row" class="field">
+                    <span class="field-label">Your Stake</span>
+                    <input id="bet-amount" type="number" min="0" step="1">
+                </label>
+
+                <!-- WHICH POCKET PAYS. Only drawn where the operator allows
+                     more than one account: a server that takes cash and
+                     nothing else has no choice to offer, and a picker with
+                     one option on it is a control that answers nothing. -->
+                <div id="bet-account-row" class="field">
+                    <span class="field-label">Pay From</span>
+                    <div id="bet-account"></div>
+                </div>
+                <p id="bet-hint" class="hint"></p>
+                <button id="bet-submit" class="btn btn-primary" type="button">Place Bet</button>
+            </div>
+
+            <div id="bet-list"></div>
+        </section>
+
+        <section id="tab-board" class="arena-panel">
+            <p id="board-note" class="hint">All-time totals for every match this server has
+                finished. Earnings are what a player has taken out of arena pots.</p>
+
+            <table id="leaderboard">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Player</th>
+                        <th>Wins</th>
+                        <th>Kills</th>
+                        <th>Deaths</th>
+                        <th>Earnings</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboard-body"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <div id="arena-toast"></div>
+</div>
+
+<div id="arena-hud" class="hidden">
+    <div id="hud-timer"></div>
+    <div id="hud-alive"></div>
+    <div id="hud-kills"></div>
+    <div id="hud-pot"></div>
+    <div id="hud-scoreboard"></div>
+</div>
+
+<div id="arena-countdown" class="hidden">
+    <div id="countdown-value"></div>
+    <div id="countdown-label"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1612 @@
+/*
+    crimson_arena/html/style.css
+
+    The look of the arena panel: near-black grounds, charcoal surfaces,
+    crimson accents, hairline borders, square corners. Structure is in
+    index.html, behaviour in app.js.
+
+    EVERY COLOUR COMES FROM A CUSTOM PROPERTY ON :root. The values below are
+    the Config.UI.theme defaults from config.lua, written out literally so
+    the page still looks right before the first state snapshot arrives;
+    app.js then overwrites the same properties from the operator's theme. A
+    colour hard-coded into a rule is a colour the operator cannot recolour,
+    so the only literals past this block are black shadows and full
+    transparency -- neither is a themed colour.
+
+    The page background stays transparent: FiveM composites this over the
+    running game, and an opaque body would black out the world behind the
+    HUD as well as behind the panel.
+*/
+
+:root {
+    --accent: #c81020;
+    --accent-bright: #ff2038;
+    --accent-dim: #7a0a14;
+    --bg: #0a0a0c;
+    --surface: #121216;
+    --surface-raised: #1a1a20;
+    --border: #2a2a32;
+    --text: #f2f2f4;
+    --text-muted: #8e8e98;
+    --danger: #ff3b3b;
+    --success: #37d67a;
+
+    /* A bold condensed face for headings against a plain sans for reading.
+       Both are pure system stacks: NUI has no reliable outbound network, so
+       a webfont link would resolve to nothing on a live server. */
+    --font-display: 'Haettenschweiler', 'Arial Narrow Bold', 'Franklin Gothic Bold', Impact, 'Oswald', sans-serif;
+    --font-body: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* One scale knob for the whole panel. Everything below is in rem, so the
+   layout tracks the player's resolution instead of shrinking to a stamp at
+   4K or overflowing at 1280x720. */
+html {
+    /* Raised from clamp(13px, 0.83vw, 24px). The panel reads at arm's
+       length on a monitor, not on a phone held close, and at 1080p the old
+       floor put body text at about 16px inside a box that had room for
+       more. Everything below is in rem, so this is the one number that
+       makes the whole panel bigger. */
+    font-size: clamp(14px, 0.95vw, 26px);
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    /* The body never scrolls -- long lists scroll inside their own
+       container. A scrollbar on the page would sit over the game. */
+    overflow: hidden;
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 1rem;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* The ONLY visibility toggle in this resource. app.js adds and removes this
+   class and nothing else; a rule that hides an element some other way would
+   fight it silently. */
+.hidden {
+    display: none !important;
+}
+
+/* ======================================================================
+   FOCUS MODEL
+
+   #arena-root is the modal and is the only interactive surface -- NUI focus
+   is held for exactly as long as it is on screen.
+
+   #arena-hud and #arena-countdown are drawn while the player is fighting,
+   with the mouse still driving the camera and NUI focus released. They are
+   pointer-events:none at the root AND at every descendant, so a click goes
+   through them into the game. ANYTHING CLICKABLE ADDED TO THE OVERLAY WILL
+   NOT WORK: it would need focus, and taking focus mid-match takes the
+   player's aim away. Put it in the panel instead.
+   ====================================================================== */
+
+#arena-hud,
+#arena-hud *,
+#arena-countdown,
+#arena-countdown * {
+    pointer-events: none;
+}
+
+/* ======================================================================
+   PANEL SHELL
+   ====================================================================== */
+
+#arena-root {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: grid;
+    grid-template-rows: auto auto 1fr;
+    /* Raised alongside the type scale above: the box is measured in rem,
+       so a bigger base font grows it too, and these caps are what let it
+       use the room rather than stopping short. The vw/vh halves still
+       decide it on a small screen. */
+    width: min(92rem, 96vw);
+    height: min(56rem, 92vh);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    /* Crimson hairline down the left edge, then a black drop so the panel
+       reads as lifted off the game rather than painted onto it. */
+    border-left: 3px solid var(--accent);
+    box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.75);
+    z-index: 10;
+}
+
+/* Dims the game behind the modal without making the page itself opaque. */
+#arena-root::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: -1;
+}
+
+#arena-header {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0.9rem 1.2rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+
+/* 'mark' -- a small square badge beside the title. The default, and what a
+   simple icon wants. */
+#arena-logo {
+    width: 2.6rem;
+    height: 2.6rem;
+    object-fit: contain;
+    flex: none;
+}
+
+/* 'banner' -- the logo IS the header. The title and subtitle are hidden by
+   app.js in this mode, so the whole row is the logo's to use.
+
+   Capped by HEIGHT with the width left free, so the aspect ratio decides the
+   rest: a wide wordmark strip fills the row, a square lockup sits at the
+   left as a large badge, and neither is stretched. contain rather than cover
+   because a logo cropped to fill is a logo with its edges cut off. */
+#arena-header.logo-banner {
+    padding: 0.6rem 1.2rem;
+}
+
+#arena-header.logo-banner #arena-logo {
+    width: auto;
+    height: 4.4rem;
+    max-width: min(28rem, 45%);
+    object-fit: contain;
+    object-position: left center;
+}
+
+#arena-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text);
+}
+
+#arena-subtitle {
+    font-family: var(--font-display);
+    font-size: 1rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent);
+    /* Sits on the title's baseline rather than under it. */
+    align-self: center;
+    padding-top: 0.3rem;
+}
+
+/* Labelled, because an unlabelled number in the corner of a betting panel
+   reads as easily as the pot as it does as the player's own money. */
+#arena-money {
+    margin-left: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    padding: 0.3rem 0.9rem;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--success);
+    line-height: 1.25;
+    white-space: nowrap;
+}
+
+.wallet-label {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+
+.wallet-value {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+#arena-close {
+    flex: none;
+    width: 2.2rem;
+    height: 2.2rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+#arena-close:hover {
+    border-color: var(--accent);
+    color: var(--accent-bright);
+}
+
+/* ---------------------------------------------------------------- tabs */
+
+#arena-nav {
+    display: flex;
+    gap: 1px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+
+.arena-tab {
+    flex: 1 1 0;
+    padding: 0.7rem 0.5rem;
+    background: var(--surface);
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.arena-tab:hover {
+    background: var(--surface-raised);
+    color: var(--text);
+}
+
+/* The one lit element on screen: active tab, active card, primary button.
+   Restraint is the point -- glow everything and nothing reads as selected. */
+.arena-tab.active {
+    background: var(--surface-raised);
+    border-bottom-color: var(--accent);
+    color: var(--text);
+    box-shadow: inset 0 -1.6rem 1.6rem -1.6rem var(--accent-dim);
+}
+
+#arena-body {
+    min-height: 0;
+    overflow: hidden;
+}
+
+.arena-panel {
+    height: 100%;
+    padding: 1.2rem;
+    overflow: hidden;
+}
+
+/* ======================================================================
+   SHARED CONTROLS
+   ====================================================================== */
+
+.btn {
+    padding: 0.55rem 1.3rem;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-display);
+    font-size: 1rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.btn:hover {
+    border-color: var(--accent);
+    color: var(--accent-bright);
+}
+
+.btn:disabled {
+    color: var(--text-muted);
+    border-color: var(--border);
+    cursor: default;
+    opacity: 0.5;
+}
+
+.btn-primary {
+    background: var(--accent);
+    border-color: var(--accent-bright);
+    color: var(--text);
+}
+
+.btn-primary:hover {
+    background: var(--accent-bright);
+    color: var(--text);
+    box-shadow: 0 0 1rem -0.15rem var(--accent-bright);
+}
+
+.btn-primary:disabled {
+    background: var(--accent-dim);
+    border-color: var(--accent-dim);
+    box-shadow: none;
+}
+
+.btn-danger {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.btn-danger:hover {
+    background: var(--danger);
+    color: var(--bg);
+}
+
+/* Smaller square chip used for fee presets, ammo amounts and armour steps.
+   app.js marks the chosen one `.active`. */
+.chip {
+    padding: 0.35rem 0.8rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.chip:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.chip.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.field {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.9rem;
+}
+
+.field-label {
+    flex: none;
+    width: 7rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+select,
+input {
+    flex: 1 1 8rem;
+    min-width: 0;
+    padding: 0.45rem 0.6rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+}
+
+select:focus,
+input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0.6rem -0.1rem var(--accent-dim);
+}
+
+/* Chromium renders option lists with the OS popup, which ignores the page
+   background -- set it here or the list is black text on black. */
+option {
+    background: var(--surface);
+    color: var(--text);
+}
+
+/* Every long list scrolls in its own box. */
+.scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* THE SCROLLBAR HAS TO BE VISIBLE, and it was not.
+   A `--border` thumb on a `--bg` track is two neighbouring shades of the same
+   dark, so a list with more below the fold looked like a list that simply
+   ended. With a long weapon catalogue that is not a cosmetic problem: a player
+   who cannot tell the melee list scrolls concludes half of it is missing. */
+::-webkit-scrollbar {
+    width: 0.65rem;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--text-muted);
+    border: 2px solid var(--bg);
+    border-radius: 0.4rem;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
+}
+
+/* Firefox, which takes neither of the above. */
+.weapon-grid {
+    scrollbar-width: thin;
+    scrollbar-color: var(--text-muted) var(--bg);
+}
+
+.muted {
+    color: var(--text-muted);
+}
+
+/* An explanatory line: why a button is disabled, what a fee buys, what a
+   screen is for. Quiet enough to ignore once you know, close enough to the
+   control it explains to be read the first time. Used on flex and grid
+   parents alike, so it claims a whole line of its own rather than trying to
+   sit beside the control. */
+.hint {
+    flex: 1 1 100%;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+
+/* `flex-basis: 100%` above means a full LINE, which is what it is for in the
+   row-direction boxes hints usually sit in. In a COLUMN the same declaration
+   means a full HEIGHT, so the two column boxes that hold hints say width
+   instead. */
+#bet-form .hint,
+#loadout-slots .hint {
+    flex: none;
+    width: 100%;
+}
+
+/* Names a box that is not a whole screen -- the create form, the loadout
+   summary. Same display face as the tabs, one step down. */
+.panel-heading {
+    margin: 0 0 0.5rem;
+    font-family: var(--font-display);
+    font-size: 1.2rem;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text);
+}
+
+/* ======================================================================
+   MATCHES
+   ====================================================================== */
+
+#tab-matches {
+    display: grid;
+    grid-template-columns: 1fr minmax(18rem, 24rem);
+    gap: 1.2rem;
+    min-height: 0;
+}
+
+#match-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    min-height: 0;
+    padding-right: 0.4rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.match-card {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.3rem 1rem;
+    padding: 0.8rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent-dim);
+}
+
+.match-card:hover {
+    background: var(--surface-raised);
+    border-left-color: var(--accent);
+}
+
+.match-card.active {
+    border-color: var(--accent);
+    border-left-color: var(--accent-bright);
+    box-shadow: 0 0 1.2rem -0.4rem var(--accent);
+}
+
+.match-card-title {
+    font-family: var(--font-display);
+    font-size: 1.25rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.match-card-meta {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+/* Why Join is greyed out on this card. Kept apart from the meta line so it
+   reads as an answer rather than as one more statistic. */
+.match-card-reason {
+    grid-column: 1;
+    padding-left: 0.55rem;
+    border-left: 2px solid var(--accent-dim);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.match-card-actions {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+/* Lobby / countdown / live / ended, set by app.js. */
+.state-badge {
+    padding: 0.1rem 0.5rem;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+.state-badge.live {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.state-badge.lobby {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+#create-panel {
+    align-self: start;
+
+    /* IT SCROLLS RATHER THAN BEING CUT OFF. #arena-body and .arena-panel
+       are both `overflow: hidden`, and this box sat in the grid with no
+       height bound of its own -- so once its content was taller than the
+       row, the bottom of it was simply clipped away. The bottom of it is
+       the Create Match button: switching the radar on adds a field and a
+       hint, and the button a player is looking for goes with them.
+
+       `align-self: start` keeps the box hugging its content, as it should
+       on a tall screen; max-height caps it at the grid row so there is a
+       bound to scroll within. min-height: 0 is what lets a grid item be
+       smaller than its content at all. */
+    min-height: 0;
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+
+    padding: 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--accent);
+}
+
+/* The blurb under the heading, before the first field. */
+#create-panel > .hint {
+    margin-bottom: 0.9rem;
+}
+
+#create-fee-presets,
+#create-fee-hint {
+    /* Drop under the input rather than squeezing it, and line up with it
+       rather than with the label. */
+    flex-basis: 100%;
+    margin-left: 7rem;
+}
+
+#create-fee-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+#create-fee-hint {
+    margin-top: 0.4rem;
+}
+
+#create-submit {
+    width: 100%;
+    margin-top: 0.4rem;
+}
+
+#create-hint {
+    margin-top: 0.5rem;
+}
+
+/* ======================================================================
+   LOBBY
+   ====================================================================== */
+
+#tab-lobby {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+/* Two voices: the headline says what is true, the line under it says what to
+   do about it. An empty screen that only states the fact reads as a fault. */
+#lobby-empty {
+    margin: auto;
+    max-width: 32rem;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.lobby-empty-title {
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+.lobby-empty-sub {
+    margin-top: 0.6rem;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+/* Rows: title, meta, teams, roster (takes the slack), hint, actions. */
+#lobby-detail {
+    display: grid;
+    grid-template-rows: auto auto auto 1fr auto auto;
+    gap: 0.8rem;
+    min-height: 0;
+    height: 100%;
+}
+
+#lobby-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 1.8rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+#lobby-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.2rem;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+#team-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+}
+
+/* Team tiles carry the team's own colour from config as an inline border
+   tint set by app.js; everything else about them is themed here. */
+.team-tile {
+    flex: 1 1 10rem;
+    padding: 0.7rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border);
+    cursor: pointer;
+}
+
+.team-tile:hover {
+    background: var(--surface-raised);
+}
+
+/* A side this player cannot move to: sides assigned by the server, a match
+   that has already kicked off, or a side that is full. Dimmed rather than
+   removed -- the count on it is still worth reading -- and the hover lift
+   is taken away, because a tile that lights up under the cursor and does
+   nothing when clicked is the panel looking broken. */
+.team-tile.locked {
+    opacity: 0.55;
+}
+
+.team-tile.locked:hover {
+    background: var(--surface);
+}
+
+.team-tile.active {
+    background: var(--surface-raised);
+    border-color: var(--accent);
+    box-shadow: 0 0 1.2rem -0.4rem var(--accent);
+}
+
+.team-tile-name {
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.team-tile-count {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+#roster {
+    min-height: 0;
+    padding-right: 0.4rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-top: 1px solid var(--border);
+}
+
+.roster-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.roster-row:nth-child(odd) {
+    background: var(--surface);
+}
+
+.roster-ready {
+    color: var(--success);
+    font-size: 0.8rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.roster-waiting {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.roster-host {
+    color: var(--accent-bright);
+    font-size: 0.8rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+#lobby-actions {
+    display: flex;
+    gap: 0.6rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+}
+
+#btn-leave {
+    margin-left: auto;
+}
+
+/* ======================================================================
+   LOADOUT
+   ====================================================================== */
+
+/* Three rows down the left: the note, the two weapon lists, the save row.
+   The summary column beside them spans the first two. */
+#tab-loadout {
+    display: grid;
+    grid-template-columns: 1fr minmax(16rem, 22rem);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 0.8rem 1.2rem;
+    min-height: 0;
+}
+
+#loadout-note {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+#loadout-empty {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: start;
+}
+
+/* THE TWO LISTS SHARE THE MIDDLE ROW. Melee takes the height its own list
+   asks for, capped at a little over a third; firearms take everything left.
+   That is the shape both ends of the range want: five blades under thirty
+   guns should not be given a third of the screen to sit in, and twenty
+   blades should not be allowed to take the firearms list with them.
+
+   Past the cap each list scrolls inside its own box, which is what keeps the
+   panel body -- and the page under it -- from ever growing a scrollbar over
+   the running game. With one section switched off the other fills the row
+   with no rule needed to say so. */
+#loadout-lists {
+    grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    min-height: 0;
+
+    /* IT SCROLLS RATHER THAN BEING CUT OFF. The melee section below carries
+       a min-height floor on purpose -- a list showing a row and a half
+       reads as one that has been cut in half rather than one that scrolls
+       -- but a floor inside a bounded grid row is exactly what makes the
+       column refuse to shrink: the two sections together stop fitting, the
+       overflow lands on .arena-panel, and .arena-panel is `overflow:
+       hidden`, so the bottom of the weapon list is simply gone. Scrolling
+       here keeps the floor's intent and gives the overflow somewhere to
+       go. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.loadout-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-height: 0;
+}
+
+#loadout-firearms {
+    flex: 1 1 0;
+}
+
+#loadout-melee {
+    flex: 0 1 auto;
+    /* A FLOOR AS WELL AS A CEILING.
+       The cap alone was tuned when ten blades were a long melee list. Against
+       eighteen it left the section showing about a row and a half out of five,
+       which reads as a list that has been cut in half rather than one that
+       scrolls. The floor keeps at least two full rows of cards visible at any
+       panel height, and the raised cap gives a long list a fairer share
+       without ever letting it swallow the firearms above it. */
+    min-height: 12.5rem;
+    max-height: 46%;
+}
+
+/* Name on the left, counter hard against the right edge of the list it
+   counts, on a hairline that ties the two to the list below them. */
+.loadout-section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.8rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--border);
+}
+
+/* The heading already has the hairline under it here. */
+.loadout-section-head .panel-heading {
+    margin: 0;
+}
+
+/* '2 of 2 guns'. Tabular figures so the number does not shuffle the words
+   along as it changes, and the bright accent once that pool is full -- 'no
+   room left in here' has to read without anyone doing the sum. */
+.loadout-count {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.loadout-count.full {
+    color: var(--accent-bright);
+}
+
+#loadout-cats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+/* Both lists, the same grid. Each scrolls itself; the panel body never
+   does. */
+.weapon-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+    align-content: start;
+    gap: 0.6rem;
+    min-height: 0;
+    padding-right: 0.4rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* THE TYPED AMOUNT, sitting in the same row as the preset chips.
+
+   Deliberately narrow: it holds at most a four-digit magazine, and a wide
+   box beside a row of chips reads as the main control rather than the
+   alternative to them. */
+.weapon-ammo-custom {
+    width: 4.5rem;
+    padding: 0.25rem 0.4rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.weapon-ammo-custom:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.weapon-ammo-custom:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.weapon-card {
+    padding: 0.7rem 0.8rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--border);
+    cursor: pointer;
+}
+
+.weapon-card:hover {
+    background: var(--surface-raised);
+    border-top-color: var(--accent-dim);
+}
+
+.weapon-card.active {
+    background: var(--surface-raised);
+    border-color: var(--accent);
+    border-top-color: var(--accent-bright);
+    box-shadow: 0 0 1.2rem -0.4rem var(--accent);
+}
+
+/* The pool THIS weapon would go in is full. Dimmed rather than hidden or
+   disabled: the weapon is still on offer, it is the allowance that is spent,
+   and clicking it says which allowance in words. */
+.weapon-card.blocked {
+    opacity: 0.45;
+}
+
+.weapon-card.blocked:hover {
+    opacity: 0.8;
+}
+
+.weapon-name {
+    font-family: var(--font-display);
+    font-size: 1.15rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.weapon-category {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+/* One row of choices on a weapon card: how many rounds, and -- on the
+   weapons that offer them -- which rounds. A weapon with neither (melee)
+   gets no row at all rather than an empty one; see .weapon-fixed. */
+.weapon-ammo {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+}
+
+/* Names the row above its chips. Full-width so the chips start on the line
+   below it: 'Ammo' and 'Ammo type' are only useful if you can tell which
+   set of chips each one is naming. */
+.weapon-field-label {
+    flex: 1 1 100%;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+/* What a weapon with nothing to choose says instead. */
+.weapon-fixed {
+    margin-top: 0.5rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+/* A sentence on the card about what will ACTUALLY happen -- the pool being
+   full, or the round being swapped for this weapon's default because the
+   loadout has spent its ammo types. Accent rather than muted: it is the one
+   line on the card that contradicts what the card otherwise appears to
+   offer. */
+.weapon-note {
+    margin-top: 0.5rem;
+    color: var(--accent-bright);
+    font-size: 0.75rem;
+    line-height: 1.35;
+}
+
+/* A round this loadout has no type slot left for. Still pressable -- the
+   server takes the weapon either way -- but dashed and dimmed, because being
+   handed the default at the start of a round with no warning is the surprise
+   this whole treatment exists to prevent. */
+.chip.spent {
+    border-style: dashed;
+    border-color: var(--accent-dim);
+}
+
+/* THE TWO BOXES DOWN THE RIGHT-HAND COLUMN share their chrome: the panel
+   surface, the accent rule along the top, and the same inner padding, so
+   "Into The Round" and the supplies below it read as one pair rather than
+   two unrelated widgets. They differ only in which grid rows they take. */
+#loadout-slots,
+#supplies-picker {
+    grid-column: 2;
+    align-self: start;
+    padding: 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--accent);
+}
+
+#loadout-slots {
+    grid-row: 1 / span 2;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    /* Two groups of slots on a server with generous allowances is a tall
+       box. It scrolls itself rather than pushing the armour picker off the
+       bottom of the panel. */
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* Names one pool inside the summary and counts it. THE TWO COUNTERS ARE THE
+   POINT OF THIS BOX: 'my guns are full' and 'I am full' are different
+   sentences, and only the first one is ever true. */
+.slot-group-head,
+.slot-types {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.slot-group-head {
+    margin-top: 0.3rem;
+}
+
+/* How many different rounds the loadout is carrying, against the cap. Ruled
+   off, because it counts across both groups above rather than belonging to
+   either. */
+.slot-types {
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+}
+
+.slot-group-title {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+.slot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.5rem 0.7rem;
+    background: var(--bg);
+    border: 1px dashed var(--border);
+}
+
+.slot.filled {
+    border-style: solid;
+    border-color: var(--accent-dim);
+}
+
+/* Weapon on top, what it is loaded with underneath: this box is the last
+   thing a player reads before a round locks them in, so it spells out the
+   amount and the round type rather than a bare number. */
+.slot-main {
+    min-width: 0;
+}
+
+.slot-name {
+    font-size: 0.95rem;
+}
+
+.slot-meta {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* The round the server will load instead of the one that was clicked. It
+   sits under the line that names the round, so the two are read together. */
+.slot-swap {
+    color: var(--accent-bright);
+    font-size: 0.75rem;
+    line-height: 1.35;
+}
+
+/* THE SLOT #armor-picker USED TO HOLD. The armour picker went when armour
+   became a rule rather than a choice; the supplies picker replaced it in the
+   markup and this rule was never re-pointed, so it had no chrome at all and
+   found row 3 only because grid auto-placement happened to put it there.
+   Stated explicitly now, so a row added above it cannot move it.
+
+   A COLUMN, not a row of chips like its predecessor: this box holds a label
+   and then one line per supply, each with its own amount chips. */
+#supplies-picker {
+    grid-row: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+/* AND NO BOX AT ALL WHEN THERE IS NOTHING IN IT. renderSuppliesPicker clears
+   the host and returns when supplies are switched off or nothing is enabled
+   -- its own comment says an empty box with a heading reads as something
+   broken -- so the chrome above must not draw one. This is the CSS half of
+   that decision; without it, switching supplies off leaves an empty bordered
+   rectangle sitting under the loadout summary. */
+#supplies-picker:empty {
+    display: none;
+}
+
+#loadout-save-row {
+    grid-column: 1;
+    grid-row: 3;
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    min-width: 0;
+}
+
+#loadout-save {
+    flex: none;
+}
+
+/* Beside the button, not under it -- it is about that button. */
+#loadout-save-row .hint {
+    flex: 1 1 auto;
+}
+
+/* ======================================================================
+   BETS
+   ====================================================================== */
+
+/* Two rows only: the summary strip across the top, then the form and the pot
+   beside each other. Every control that can be hidden lives inside
+   #bet-form, so switching one off never leaves a hole in the grid. */
+#tab-bets {
+    display: grid;
+    grid-template-columns: minmax(16rem, 22rem) 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.8rem 1.2rem;
+    min-height: 0;
+}
+
+/* Shown on its own when Config.Betting.enabled is false. */
+#bet-disabled {
+    grid-column: 1 / -1;
+    align-self: start;
+    padding: 2rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    letter-spacing: 0.16em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+/* The second line of that box, in the reading face: a headline alone states
+   a fault, a sentence under it states a decision. */
+.bet-disabled-sub {
+    max-width: 34rem;
+    margin: 0.7rem auto 0;
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    letter-spacing: normal;
+    line-height: 1.5;
+    text-transform: none;
+}
+
+#bet-summary {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    align-self: start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.2rem;
+    padding: 0.9rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+}
+
+.bet-stat {
+    display: flex;
+    flex-direction: column;
+}
+
+.bet-stat-label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+.bet-stat-value {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent-bright);
+}
+
+#bet-form {
+    grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.7rem;
+    min-height: 0;
+    align-self: start;
+}
+
+#bet-pick {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+}
+
+#bet-amount-row {
+    /* .field's own bottom margin would double the column gap. */
+    margin-bottom: 0;
+    width: 100%;
+}
+
+
+#bet-list {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 0;
+    padding-right: 0.4rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-left: 1px solid var(--border);
+}
+
+.bet-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+    padding: 0.45rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.bet-row.won {
+    color: var(--success);
+}
+
+.bet-row.lost {
+    color: var(--text-muted);
+}
+
+/* ======================================================================
+   LEADERBOARD
+   ====================================================================== */
+
+#tab-board {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+#board-note {
+    margin-bottom: 0.8rem;
+}
+
+#leaderboard {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+}
+
+#leaderboard th {
+    position: sticky;
+    top: 0;
+    padding: 0.5rem 0.7rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--accent);
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 0.9rem;
+    font-weight: 400;
+    letter-spacing: 0.16em;
+    text-align: left;
+    text-transform: uppercase;
+}
+
+#leaderboard td {
+    padding: 0.45rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+}
+
+#leaderboard tbody tr:nth-child(odd) {
+    background: var(--surface);
+}
+
+#leaderboard tbody tr:nth-child(-n + 3) td:first-child {
+    color: var(--accent-bright);
+    font-weight: 700;
+}
+
+/* ======================================================================
+   TOASTS
+   ====================================================================== */
+
+#arena-toast {
+    position: absolute;
+    right: 1.2rem;
+    bottom: 1.2rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.5rem;
+    /* Notifications must never swallow a click meant for the panel under
+       them; the individual toasts do not need to be clickable. */
+    pointer-events: none;
+}
+
+.toast {
+    max-width: 24rem;
+    padding: 0.6rem 1rem;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.6);
+}
+
+.toast.success {
+    border-left-color: var(--success);
+}
+
+.toast.error {
+    border-left-color: var(--danger);
+}
+
+.toast.warning {
+    border-left-color: var(--accent-bright);
+}
+
+/* ======================================================================
+   IN-MATCH OVERLAY
+
+   Drawn over live gameplay. Inert -- see the focus-model note above.
+   ====================================================================== */
+
+#arena-hud {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    /* Under the panel: opening the menu mid-match must not leave HUD
+       numbers floating over the modal. */
+    z-index: 5;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0.1rem 0.3rem rgba(0, 0, 0, 0.9);
+}
+
+#hud-timer {
+    position: absolute;
+    top: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 0.3rem 1.2rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--accent);
+    font-family: var(--font-display);
+    font-size: 2.2rem;
+    letter-spacing: 0.08em;
+}
+
+#hud-alive,
+#hud-kills,
+#hud-pot {
+    position: absolute;
+    left: 1.5rem;
+    padding: 0.25rem 0.8rem;
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    font-family: var(--font-display);
+    font-size: 1.2rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+#hud-alive {
+    top: 30%;
+}
+
+#hud-kills {
+    top: calc(30% + 2.4rem);
+}
+
+#hud-pot {
+    top: calc(30% + 4.8rem);
+    border-left-color: var(--success);
+    color: var(--success);
+}
+
+#hud-scoreboard {
+    position: absolute;
+    top: 30%;
+    right: 1.5rem;
+    width: 18rem;
+    /* Capped so a forty-player match cannot run the list off the bottom of
+       the screen; app.js trims it, this is the backstop. */
+    max-height: 40vh;
+    overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--border);
+}
+
+.hud-score-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 0.6rem;
+    padding: 0.2rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.9rem;
+}
+
+.hud-score-row.self {
+    background: var(--accent-dim);
+}
+
+.hud-score-row.dead {
+    color: var(--text-muted);
+}
+
+#arena-countdown {
+    position: fixed;
+    top: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    z-index: 6;
+    text-shadow: 0 0.2rem 0.6rem rgba(0, 0, 0, 0.9);
+}
+
+#countdown-value {
+    font-family: var(--font-display);
+    font-size: 9rem;
+    line-height: 1;
+    letter-spacing: 0.04em;
+    color: var(--accent-bright);
+}
+
+#countdown-label {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    letter-spacing: 0.4em;
+    text-transform: uppercase;
+    color: var(--text);
+}
+
+/* ======================================================================
+   NARROW SCREENS
+
+   1280x720 is the floor. Below roughly that width the two-column screens
+   stack instead of overflowing -- the body must never grow a horizontal
+   scrollbar.
+   ====================================================================== */
+
+@media (max-width: 1100px) {
+    #tab-matches,
+    #tab-loadout,
+    #tab-bets {
+        grid-template-columns: 1fr;
+        grid-template-rows: none;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+
+    #tab-matches > *,
+    #tab-loadout > *,
+    #tab-bets > * {
+        grid-column: 1;
+        grid-row: auto;
+    }
+
+    #match-list,
+    .weapon-grid,
+    #bet-list,
+    #roster {
+        max-height: 40vh;
+    }
+
+    /* Stacked, the two lists have no row to divide between them: they take
+       the height their own grids ask for -- capped just above -- and the tab
+       scrolls past them. A flex basis of 0 here would collapse both. */
+    #loadout-firearms,
+    #loadout-melee {
+        flex: 0 0 auto;
+    }
+
+    /* Nothing definite left to be a percentage of. */
+    #loadout-slots {
+        max-height: none;
+    }
+
+    #create-fee-presets,
+    #create-fee-hint {
+        margin-left: 0;
+    }
+}
+
+/* A short window loses the tallest fixed piece first: the countdown digits. */
+@media (max-height: 620px) {
+    #countdown-value {
+        font-size: 6rem;
+    }
+}
+
+/* ----------------------------------------------------------------------
+   SUPPLIES -- one row per item, its name then its amount chips.
+   Laid out as a row rather than a block so a catalogue of two reads as two
+   choices rather than two sections, and wraps rather than overflowing when
+   an operator adds a third.
+   ---------------------------------------------------------------------- */
+.supply-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0;
+}
+
+.supply-name {
+    min-width: 110px;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.75;
+}
+
+.chip.disabled,
+.chip:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}

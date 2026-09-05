@@ -6,9 +6,16 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Lua build output
+# Lua build output. `luac5.4 -p` writes nothing, but a bare `luac5.4` drops
+# luac.out into whatever directory it was run from.
 *.luac
 luac.out
+
+# luacheck's cache. Absolute paths from one machine, useless on another.
+.luacheckcache
+
+# Console captures from a test server.
+*.log
 
 # Local operator overrides -- never commit a live server's real config
 config.local.lua

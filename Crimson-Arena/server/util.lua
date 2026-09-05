@@ -336,3 +336,114 @@ function ArenaNewId()
     idCounter = idCounter + 1
     return ('m%04x%x'):format(idSalt, idCounter)
 end
+
+-- ======================================================================
+-- OPENING HOURS
+--
+-- THE ONE PLACE THE CLOCK IS READ. Whether the arena is open is a rule, and
+-- rules live in shared/arena.lua -- but reading a clock is not a rule, it is
+-- a source, which is what this file is for.
+--
+-- IT IS THE SERVER'S OWN CLOCK, THROUGH os.date, AND NOTHING ELSE.
+--
+-- The client is never asked what time it is, and that is deliberate twice
+-- over. A player's own clock is their machine's, so two players in
+-- different countries would be told different opening times for the same
+-- arena. And a number a client supplies is a number a client can choose:
+-- everything else in this resource is decided on the server for exactly
+-- that reason, and an opening hour is not the place to start making
+-- exceptions.
+--
+-- The GAME clock is not read either, and config.lua says why at length: a
+-- GTA day is 48 real minutes, so hours written on it are a different
+-- feature to the one anybody pictures when they write them down.
+-- ======================================================================
+
+--- The hour and minute the schedule is judged against.
+---
+--- `offsetHours` is added here rather than inside the rule, so that
+--- shared/arena.lua goes on being handed a plain wall-clock time and stays
+--- exercisable without one.
+--- @return integer hour
+--- @return integer minute
+function ArenaHoursNow()
+    local schedule = Config.Schedule
+    local offset = 0
+    if type(schedule) == 'table' then
+        local wanted = Arena.ToInt(schedule.offsetHours)
+        -- Out of range is treated as 0 and the validator has already said
+        -- so by name. Silently honouring -300 would put the arena's day
+        -- somewhere nobody asked for.
+        if wanted and math.abs(wanted) <= 14 then offset = wanted end
+    end
+
+    local now = os.date('*t')
+    local minutes = (now.hour * 60 + now.min + offset * 60) % 1440
+    return math.floor(minutes / 60), minutes % 60
+end
+
+--- Whether the doors are open right now.
+---
+--- FAILS OPEN, ALWAYS. Every path that cannot produce a schedule -- no
+--- Config.Schedule, the switch off, an empty window list, every window
+--- unusable -- answers TRUE. An arena wrongly shut is indistinguishable,
+--- from every player at once, from a resource that has stopped working;
+--- an arena wrongly open is a round somebody got to fight.
+--- @return boolean
+function ArenaHoursOpen()
+    local status = Arena.ScheduleStatus(ArenaHoursNow())
+
+    -- SHUT ONLY ON AN EXPLICIT `false`, and written that way on purpose.
+    --
+    -- `status.open == true` reads more naturally and is the same thing today,
+    -- because Arena.ScheduleStatus sets `open` on every return path. The
+    -- difference is which way each one fails if that ever stops being true:
+    -- `== true` treats a missing answer as SHUT and takes the arena offline
+    -- for everybody at once, and `~= false` treats it as OPEN. Fail open is
+    -- the whole posture of this feature, so the guard is written in the
+    -- direction that keeps it.
+    return type(status) ~= 'table' or status.open ~= false
+end
+
+--- The block the panel, the NPC and the marker are all drawn from.
+---
+--- Assembled once per push and handed to every recipient: it is the same
+--- for everybody, because it is the server's clock and not theirs.
+---
+--- `line` is present ONLY when hours are genuinely being enforced, so the
+--- panel can never advertise a schedule the server is not keeping.
+--- @return table
+function ArenaHoursSnapshot()
+    local hour, minute = ArenaHoursNow()
+    local status = Arena.ScheduleStatus(hour, minute)
+    local line = Arena.ScheduleLine()
+
+    local block = { open = status.open == true, now = Arena.ClockText(hour * 60 + minute) }
+    if line then block.line = line end
+    if status.opensAt then block.opensAt = Arena.ClockText(status.opensAt) end
+    if status.closesAt then block.closesAt = Arena.ClockText(status.closesAt) end
+    return block
+end
+
+--- The same facts, kept APART, for /arenahours.
+---
+--- Separate fields rather than one sentence for the reason
+--- ArenaDispatch.IsolationState keeps its three apart: an operator reading
+--- "shut" cannot act on it without knowing which clock said so and what
+--- offset was applied to it.
+--- @return table
+function ArenaHoursState()
+    local schedule = Config.Schedule
+    local raw = os.date('*t')
+    local hour, minute = ArenaHoursNow()
+
+    return {
+        enabled = type(schedule) == 'table' and schedule.enabled == true,
+        serverClock = ('%02d:%02d'):format(raw.hour, raw.min),
+        offsetHours = type(schedule) == 'table' and (Arena.ToInt(schedule.offsetHours) or 0) or 0,
+        arenaClock = Arena.ClockText(hour * 60 + minute),
+        line = Arena.ScheduleLine(),
+        open = ArenaHoursOpen(),
+        snapshot = ArenaHoursSnapshot(),
+    }
+end

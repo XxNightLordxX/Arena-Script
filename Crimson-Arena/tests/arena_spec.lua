@@ -1119,6 +1119,9 @@ t.test('and every arena can say where a spectator should look', function()
     -- water saw empty sky: the exact symptom the function was added to fix.
     local env = Sandbox.newArenaEnv()
     Sandbox.enableAllArenas(env)
+    -- And the doors, for the same reason the fixture does it: this spec
+    -- is about routing buckets, not about what time it is.
+    Sandbox.openTheDoors(env)
 
     local checked = 0
     for key in pairs(env.Config.Arenas) do
@@ -1136,6 +1139,9 @@ t.test('every coordinate the shipped config writes is one', function()
     -- actually has in front of them.
     local env = Sandbox.newArenaEnv()
     Sandbox.enableAllArenas(env)
+    -- And the doors, for the same reason the fixture does it: this spec
+    -- is about routing buckets, not about what time it is.
+    Sandbox.openTheDoors(env)
     local rules = env.Arena
 
     local checked = 0

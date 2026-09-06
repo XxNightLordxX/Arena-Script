@@ -1679,6 +1679,28 @@ local function buildArenaProps(arenaKey, factor, boundary)
     local YIELD_EVERY = 32
     local sinceYield = 0
 
+    -- HELD FOR THE WHOLE BUILD, RELEASED ONCE AT THE END, AND THIS IS WHAT
+    -- MAKES THE YIELD ABOVE SAFE RATHER THAN RUINOUS.
+    --
+    -- Every piece loads its model and this loop used to call
+    -- SetModelAsNoLongerNeeded on it immediately afterwards. That was
+    -- harmless only because nothing here yielded: the mark is a REQUEST to
+    -- the streamer, and the streamer cannot act on it until a frame
+    -- boundary, so across a single-frame build the model stayed resident
+    -- from the first piece to the last.
+    --
+    -- Adding the yield handed the streamer exactly the frame boundary it
+    -- needed. It began unloading the container model between batches, and
+    -- the next batch re-requested it and BLOCKED in loadPropModel's
+    -- `while not HasModelLoaded` until it came back -- a dozen times over,
+    -- a kilometre up, with the player frozen and the streamer already busy.
+    -- That is worse than the freeze it replaced, and it is what made a
+    -- client that used to enter the skydome fine crash every time.
+    --
+    -- A model asked for repeatedly is not asked for repeatedly. It is
+    -- requested once, kept, and let go when the last piece is standing.
+    local held = {}
+
     for _, piece in ipairs(wanted) do
         sinceYield = sinceYield + 1
         if sinceYield >= YIELD_EVERY then
@@ -1751,7 +1773,7 @@ local function buildArenaProps(arenaKey, factor, boundary)
                 arenaProps[#arenaProps + 1] = object
                 built = built + 1
             end
-            SetModelAsNoLongerNeeded(hash)
+            held[hash] = true
         else
             -- The whole chain came up empty, so name all of it: "the floor
             -- is missing" is not actionable, and "none of these three exist
@@ -1759,6 +1781,9 @@ local function buildArenaProps(arenaKey, factor, boundary)
             failed[table.concat(piece.models or { piece.model }, ' / ')] = true
         end
     end
+
+    -- NOW, and not one piece earlier. See `held` above.
+    for hash in pairs(held) do SetModelAsNoLongerNeeded(hash) end
 
     for model in pairs(failed) do
         print(('[crimson_arena] arena scenery: the model \'%s\' would not load, so those pieces are missing. Check it exists on this build.')

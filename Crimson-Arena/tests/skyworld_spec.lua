@@ -715,6 +715,52 @@ t.test('DEFECT: the floor does not go up inside a single frame', function()
             :format(worst, total))
 end)
 
+t.test('DEFECT: and it does not let go of a model it is still building with', function()
+    -- THE REGRESSION THE YIELD ABOVE CAUSED, and the reason the two tests
+    -- have to sit together.
+    --
+    -- Every piece loads its model, and this loop used to mark it
+    -- no-longer-needed immediately afterwards. That was harmless only
+    -- because nothing yielded: the mark is a request to the streamer, and
+    -- the streamer cannot act on it until a frame boundary, so across a
+    -- single-frame build the model stayed resident from first piece to last.
+    --
+    -- Adding the yield handed the streamer exactly that boundary. It began
+    -- unloading the container between batches and the next batch blocked
+    -- waiting for it to come back -- a dozen times over, a kilometre up,
+    -- with the player frozen. A client that used to enter the skydome fine
+    -- crashed every time.
+    --
+    -- So the ordering is the invariant, not the count: nothing may be
+    -- released while pieces are still going up.
+    local c = newClient()
+
+    local order = {}
+    local realCreate = c.env.CreateObject
+    c.env.CreateObject = function(...)
+        order[#order + 1] = 'create'
+        return realCreate(...)
+    end
+    c.env.SetModelAsNoLongerNeeded = function() order[#order + 1] = 'release' end
+
+    c.enter('skydome')
+
+    c.env.CreateObject = realCreate
+
+    local lastCreate, firstRelease = 0, nil
+    for index, what in ipairs(order) do
+        if what == 'create' then lastCreate = index
+        elseif what == 'release' and not firstRelease then firstRelease = index end
+    end
+
+    t.isTrue(lastCreate > 0, 'nothing was built, so this test measures nothing')
+    t.isNotNil(firstRelease, 'the build never lets go of its models at all, which is a leak')
+    t.isTrue(firstRelease > lastCreate,
+        ('a model was released at step %d while pieces were still going up until step %d -- '
+            .. 'the streamer is free to unload it and the next batch will block reloading it')
+            :format(firstRelease, lastCreate))
+end)
+
 t.test('and it says the footprint it measured out loud, so F8 settles it', function()
     -- The line is gated on the measurement having happened at all, so its
     -- ABSENCE was the in-game symptom of the defect above -- and its

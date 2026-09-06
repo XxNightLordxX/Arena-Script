@@ -367,6 +367,37 @@ t.test('and wears the haze -- teammates only, never the other side', function()
     t.isNil(f.outlines[1000 + SELF], 'the player was outlined to themselves')
 end)
 
+t.test('DEFECT: another resource turning the haze off does not turn it off for good', function()
+    -- THE OUTLINE FLAG IS ONE FLAG ON THE ENTITY, shared with every other
+    -- resource on the server. A target script or a job script that stops
+    -- highlighting a ped clears it -- and it clears OUR teammate's with it.
+    --
+    -- This file's own bookkeeping used to be treated as the truth: the flag
+    -- was set once, remembered as drawn, and never written again. So a single
+    -- SetEntityDrawOutline(ped, false) from anywhere else on the box took the
+    -- haze off that teammate for the rest of the round, and nothing in this
+    -- resource would ever put it back.
+    --
+    -- That is exactly what "the team deathmatch haze is not working" looks
+    -- like from a seat: fine on a bare server, dead on a full one.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    f.step()
+
+    local mate = 1000 + MATE
+    t.isTrue(f.outlines[mate] == true, 'the teammate was not hazed to begin with')
+
+    -- Somebody else on the box drops it. Not through this resource -- that
+    -- is the whole point -- so our own record still says it is drawn.
+    f.outlines[mate] = nil
+
+    for _ = 1, 10 do f.step() end
+
+    t.isTrue(f.outlines[mate] == true,
+        'the haze was never put back after another resource cleared it')
+end)
+
 t.test('the haze is the team colour, so the edge matches the dot', function()
     local f = newFixture()
     f.enterLive()

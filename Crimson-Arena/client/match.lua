@@ -1075,10 +1075,35 @@ local function refreshOutlines()
                         if ped then
                             streamed = streamed + 1
                             wanted[ped] = true
-                            if not outlined[ped] then
-                                SetEntityDrawOutline(ped, true)
-                                outlined[ped] = true
-                            end
+
+                            -- RE-ASSERTED EVERY PASS, not set once and
+                            -- believed for the rest of the round.
+                            --
+                            -- This used to be guarded on `not outlined[ped]`,
+                            -- which reads as an optimisation and is really an
+                            -- assumption: that nothing else on the box ever
+                            -- turns an outline OFF. Nothing about the native
+                            -- makes that true. It is one flag on the entity,
+                            -- shared by every resource on the server, and a
+                            -- target script or a job script that stops
+                            -- highlighting a ped clears it -- on OUR
+                            -- teammate, for the rest of the match, because
+                            -- our own bookkeeping still said it was drawn and
+                            -- so we never wrote it again.
+                            --
+                            -- From a player's seat that is "the haze does not
+                            -- work", intermittently, on some servers and not
+                            -- others, depending on what else is installed.
+                            -- The colour and the shader two blocks down are
+                            -- already re-asserted every frame for exactly
+                            -- this reason; the flag itself was the one part
+                            -- still being trusted.
+                            --
+                            -- One native call per teammate per pass, twice a
+                            -- second. Setting it on a ped that already has it
+                            -- costs nothing and changes nothing.
+                            SetEntityDrawOutline(ped, true)
+                            outlined[ped] = true
                         end
                     end
                 end

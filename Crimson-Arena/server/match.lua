@@ -811,13 +811,42 @@ local function assignMissingTeams(match)
     if not Arena.ModeUsesTeams(match.modeKey) then return true end
 
     local players = ArenaLobby.PlayerArray(match)
+    local assigned = 0
     for _, player in ipairs(players) do
         if not Arena.GetTeamByKey(player.team) then
             if Config.Teams.autoAssignIfUnchosen == false then return false end
             -- Assigned in place, so the next unchosen player counts this one.
             player.team = Arena.SuggestTeam(players)
+            assigned = assigned + 1
         end
     end
+
+    -- WHO ACTUALLY ENDED UP ON WHICH SIDE, said once, here.
+    --
+    -- The join line reports the team a player CHOSE, and on a server where
+    -- nobody touches the picker that is `nil` for everybody -- so a console
+    -- full of "team nil" is the normal state of a working team round and
+    -- says nothing at all about the sides that were then fought on.
+    --
+    -- That gap is expensive. "The team outline is not working" and "you were
+    -- the odd one out in a 2v1, so you had no teammate to outline" produce
+    -- the same report from a player and looked identical from this log,
+    -- which is a question the server can simply answer.
+    local counts, order = {}, {}
+    for _, player in ipairs(players) do
+        local key = Arena.IsKey(player.team) and player.team or 'none'
+        if counts[key] == nil then order[#order + 1] = key end
+        counts[key] = (counts[key] or 0) + 1
+    end
+    table.sort(order)
+
+    local parts = {}
+    for _, key in ipairs(order) do
+        parts[#parts + 1] = ('%s %d'):format(key, counts[key])
+    end
+    ArenaDebug('teams: match %s starts %s (%d assigned, %d chose their own). Anyone alone on a side has no teammate to outline.',
+        tostring(match.id), table.concat(parts, ' v '), assigned, #players - assigned)
+
     return true
 end
 

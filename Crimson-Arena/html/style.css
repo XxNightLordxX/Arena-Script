@@ -46,8 +46,23 @@ html {
        length on a monitor, not on a phone held close, and at 1080p the old
        floor put body text at about 16px inside a box that had room for
        more. Everything below is in rem, so this is the one number that
-       makes the whole panel bigger. */
-    font-size: clamp(14px, 0.95vw, 26px);
+       makes the whole panel bigger.
+
+       THE SMALLER OF THE TWO AXES, not the width alone.
+
+       This used to be `0.95vw` on its own, and the panel's height budget is
+       the viewport HEIGHT -- so on any screen that is wide relative to its
+       height the scale grew while the room to put it in did not. On a
+       2560x1080 ultrawide the old rule asked for a 24px root font inside
+       1080px of height, which is where content ran out of the box and got
+       clipped.
+
+       `min()` makes the shorter axis win. The two terms are tuned to agree
+       at 16:9, so the common case is unchanged to the decimal: at 1920x1080
+       0.95vw is 18.24px and 1.7vh is 18.36px, and the width still decides.
+       It only bites where it should -- wide and short -- and the clamp still
+       holds the ends. */
+    font-size: clamp(14px, min(0.95vw, 1.7vh), 26px);
 }
 
 *,
@@ -1589,17 +1604,24 @@ option {
    choices rather than two sections, and wraps rather than overflowing when
    an operator adds a third.
    ---------------------------------------------------------------------- */
+/* IN REM LIKE EVERYTHING ELSE. This block was written in px -- the only
+   px sizing left in the file -- and px does not move when the scale knob at
+   the top of this file does. So the supply names stayed 12px next to chips
+   that had grown to full size on a 4K screen, and their 110px column was
+   proportionally too wide at 1280x720, pushing the amount chips onto a line
+   of their own for no reason a player could see. Both read as "this bit
+   looks wrong", and neither is anything but the unit. */
 .supply-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    margin: 4px 0;
+    gap: 0.375rem;
+    margin: 0.25rem 0;
 }
 
 .supply-name {
-    min-width: 110px;
-    font-size: 12px;
+    min-width: 6.875rem;
+    font-size: 0.75rem;
     letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.75;

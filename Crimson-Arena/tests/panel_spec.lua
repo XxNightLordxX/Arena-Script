@@ -1075,6 +1075,51 @@ t.test('and the create panel is bounded, or there is nothing to scroll within', 
         'the create panel scrolls against no bound, so it still grows past the panel')
 end)
 
+t.test('the panel scales off the SHORTER axis, not the width alone', function()
+    -- REPORTED: "it cuts off in some areas or looks weird due to size."
+    --
+    -- Every length in this file is a rem, so the `html` font-size is the one
+    -- number that sizes the whole panel. It was `0.95vw` -- viewport WIDTH
+    -- alone -- while the thing the panel has to fit inside is the viewport
+    -- HEIGHT. On any screen wide relative to its height (an ultrawide, a
+    -- windowed client) the scale grew and the room did not, and content ran
+    -- out of the bottom of boxes that clip.
+    local css = readPanelFile('style.css')
+    local body = ruleBody(css, 'html')
+    t.isNotNil(body, 'the panel lost its one scale knob')
+
+    -- THE DECLARATION, NOT THE RULE. The rule body carries the comment
+    -- explaining all of this, and that comment names both units -- so
+    -- searching the body for "vh" passes against a font-size that has none.
+    -- A test that its own documentation satisfies is not a test.
+    local declaration = body:match('font%-size:%s*([^;]+);')
+    t.isNotNil(declaration, 'the html rule sets no font size at all')
+
+    t.contains(declaration, 'vh',
+        'the panel scale reads the viewport WIDTH only, so a wide short screen '
+            .. 'scales up into a height that did not grow and clips')
+    t.contains(declaration, 'vw', 'the scale stopped tracking the width at all')
+    t.contains(declaration, 'clamp(', 'the scale lost its floor and ceiling')
+end)
+
+t.test('and nothing sizes itself in px behind the scale knob', function()
+    -- A px length does not move when that knob does, so it is the same
+    -- absolute size on a 4K screen as on a 720p one while everything around
+    -- it has changed -- which is what "looks weird" is, every time.
+    --
+    -- Only FONT sizes: a hairline border or a 1px grid gap is meant to be one
+    -- pixel, and scaling those buys nothing.
+    local css = readPanelFile('style.css')
+
+    local found = {}
+    for size in css:gmatch('font%-size:%s*([%d%.]+px)') do
+        found[#found + 1] = size
+    end
+
+    t.equals(#found, 0,
+        ('%d font size(s) written in px rather than rem: %s'):format(#found, table.concat(found, ', ')))
+end)
+
 t.test('the panel body still refuses to scroll as a page', function()
     -- The control for all of the above: the fix must not be "let the page
     -- scroll". A scrollbar there sits over the game.

@@ -1461,6 +1461,16 @@ local COVER_LIFT = 0.05
 --- there is nothing else within a kilometre to spend the budget on.
 local PROP_LOD_DISTANCE = 0xFFFF
 
+--- Above this many FLOOR pieces, this client is tiling out of something far
+--- too small and is carrying an object count nobody else in the round is.
+--- See the warning in buildArenaProps for what that costs and why the answer
+--- is never `maxTiles`.
+---
+--- Not tuned to an arena. The shipped skydome is nine pieces on the prop it
+--- asks for first and 291 on the one it falls back to, and no arena worth
+--- building lands in between by design.
+local FLOOR_PIECES_WORTH_WARNING_ABOUT = 40
+
 --- Handles of everything this client built for the current round.
 local arenaProps = {}
 
@@ -1742,9 +1752,18 @@ local function buildArenaProps(arenaKey, factor, boundary)
     --
     -- IF YOU COME BACK TO THIS: the freeze is real and worth solving. What
     -- is not established is that yielding mid-build is safe on a client
-    -- streaming an arena a kilometre up. Reducing the piece COUNT is the
-    -- other lever and has none of this risk -- config.lua's `maxTiles`, and
-    -- the outer ring it trims is behind the wall and unreachable anyway.
+    -- streaming an arena a kilometre up.
+    --
+    -- AND DO NOT REACH FOR `maxTiles`. It looks like the safe lever and it is
+    -- not: the shipped skydome needs all 291 of its container tiles to reach
+    -- the wall. Trimming to 250 opens a hole in the floor at 43m, and 200
+    -- opens one at 39m -- both well INSIDE a wall at 44.5m, which is a
+    -- fighter dropping a kilometre through ground they were standing on.
+    -- The rim `maxTiles` trims is not the unreachable overshoot; the
+    -- overshoot is what is left after the disc is covered.
+    --
+    -- The count itself is the thing worth attacking, and the way to attack it
+    -- is the PROP, not the cap -- see the fallback warning further down.
 
     -- HELD FOR THE WHOLE BUILD, RELEASED ONCE AT THE END. This loop used to
     -- call SetModelAsNoLongerNeeded on each piece's model the moment that
@@ -1849,6 +1868,42 @@ local function buildArenaProps(arenaKey, factor, boundary)
         if measured then
             print(('[crimson_arena] arena scenery: the floor prop measures %.2f x %.2fm and its surface is at %.2f.')
                 :format(measured.x, measured.y, arenaSurfaceZ or 0.0))
+        end
+
+        -- WHICH PROP THIS CLIENT GOT DECIDES HOW HEAVY THE ARENA IS, AND THE
+        -- TWO ANSWERS ARE NOT CLOSE.
+        --
+        -- Every floor names a CHAIN of models ending in one the base game
+        -- always has, so a build missing a DLC still gets a floor. That makes
+        -- it survivable, and it hides how differently it survives: the
+        -- shipped skydome is NINE pieces tiled out of the stunt block at the
+        -- head of its chain, and TWO HUNDRED AND NINETY-ONE tiled out of the
+        -- shipping container at the end of it. Same arena, same round, one
+        -- client, thirty-two times the objects -- every one of them pinned as
+        -- a mission entity so the engine may not reclaim it under pressure.
+        --
+        -- That is a per-client difference decided by which assets that
+        -- player's build has, which is exactly the shape of "one of the three
+        -- of us crashes going in and the other two are fine". It was already
+        -- printed -- as a piece count, on one line, with nothing to compare
+        -- it against and no reason to look twice.
+        --
+        -- So it is named. The threshold is deliberately not clever: any floor
+        -- that took more than a few dozen pieces came off the small end of a
+        -- chain, whatever the arena.
+        if builtFloor > FLOOR_PIECES_WORTH_WARNING_ABOUT then
+            print(('[crimson_arena] arena scenery: THIS CLIENT BUILT THE FLOOR OUT OF %d PIECES.')
+                :format(builtFloor))
+            print('[crimson_arena]   That is the small-prop end of the model chain -- the large prop at the')
+            print('[crimson_arena]   head of it is missing from this build, and the same arena is a handful')
+            print('[crimson_arena]   of pieces on a client that has it. Every piece is a pinned object, so')
+            print('[crimson_arena]   this client is carrying far more of them than anybody else in the round.')
+            print('[crimson_arena]   If a player crashes entering this arena and others do not, this is the')
+            print('[crimson_arena]   first thing to check. Stream the large prop, or give the arena a floor')
+            print('[crimson_arena]   model every one of your players actually has -- see STREAMING.md.')
+            print('[crimson_arena]   Do NOT answer it by lowering platform.maxTiles: the floor needs every')
+            print('[crimson_arena]   one of these pieces to reach its wall, and trimming them puts a hole')
+            print('[crimson_arena]   in the ground inside it.')
         end
     end
 

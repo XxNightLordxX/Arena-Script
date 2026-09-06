@@ -663,6 +663,50 @@ t.test('DEFECT: the floor prop is MEASURED, and a coordinate\'s type is not \'ta
             :format(guessed, floor))
 end)
 
+t.test('DEFECT: a client that fell back to the small prop is TOLD, not just counted', function()
+    -- ONE OF THREE PLAYERS CRASHED ENTERING THE SKYDOME, EVERY TIME, WHILE
+    -- THE OTHER TWO WERE FINE.
+    --
+    -- Every floor names a chain of models ending in one the base game always
+    -- has, so a build missing a DLC still gets a floor. That is what makes it
+    -- survivable and it hides how differently it survives: this arena is NINE
+    -- pieces tiled out of the stunt block at the head of its chain and 291
+    -- tiled out of the shipping container at the end of it -- thirty-two
+    -- times the objects, every one pinned as a mission entity the engine may
+    -- not reclaim.
+    --
+    -- Which end a client lands on is decided by which assets that player's
+    -- build has, which is exactly the shape of the report. It was already
+    -- printed, as a piece count on one line, with nothing to compare it
+    -- against and no reason to read it twice.
+    -- A BUILD WITHOUT THE STUNT BLOCKS, which is the whole scenario: every
+    -- other model this arena names is still here, so the only thing that
+    -- changes is which end of the floor's chain this client lands on.
+    local models = {}
+    for name, dims in pairs(World.DEFAULT_MODELS) do
+        if not name:find('bblock_huge', 1, true) then models[name] = dims end
+    end
+
+    local c = newClient({ models = models })
+    c.enter('skydome')
+
+    local said = table.concat(c.printed, '\n')
+    t.contains(said, 'BUILT THE FLOOR OUT OF',
+        'a client tiling the floor out of hundreds of pieces was told nothing about it')
+    t.contains(said, 'maxTiles',
+        'the warning does not head off the obvious wrong fix, which puts a hole in the floor')
+end)
+
+t.test('and a client that got the big prop is not nagged about nine pieces', function()
+    -- The control, and it is the whole reason the threshold exists. A warning
+    -- that fires on a healthy arena is one nobody reads on a broken one.
+    local c = newClient()
+    c.enter('skydome')
+
+    t.isTrue(table.concat(c.printed, '\n'):find('BUILT THE FLOOR OUT OF', 1, true) == nil,
+        'the fallback warning fired on a floor that came off the head of the chain')
+end)
+
 t.test('DEFECT: and it does not let go of a model it is still building with', function()
     -- THE REGRESSION THE YIELD ABOVE CAUSED, and the reason the two tests
     -- have to sit together.

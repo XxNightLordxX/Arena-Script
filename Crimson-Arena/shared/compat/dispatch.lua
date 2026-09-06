@@ -471,6 +471,32 @@ function ArenaCompat.WarnLateStartOnce()
     say('  If you cannot change the order, paste this at the top of whatever raises the alert:')
     say('      if Player(src).state.%s then return end        -- server realm', stateKey())
     say('      if LocalPlayer.state.%s then return end        -- client realm', stateKey())
+
+    -- THE OTHER HALF OF THE SAME DECISION, AND IT PULLS THE OPPOSITE WAY.
+    --
+    -- The team outline's colour and shader are ONE setting for the whole
+    -- game, not a property of a ped. Every resource that writes them every
+    -- frame -- a target script highlighting what you look at, a job script
+    -- marking a delivery -- overwrites whatever the last one wrote, and the
+    -- winner is simply whoever ticks LAST, which is start order. So the
+    -- outline wants this resource started last, and the paragraph above
+    -- wants it started first.
+    --
+    -- An operator who takes the advice above and never reads this has a
+    -- working ambulance job and a team outline that is on, drawing, and the
+    -- wrong colour or invisible -- which reads as "the haze does not work",
+    -- with nothing in any log disagreeing, because as far as this resource
+    -- is concerned it drew it.
+    --
+    -- Both are fixable at once and this says how: the snippet above is what
+    -- makes the death fix independent of order, which frees the order to go
+    -- the way the outline needs.
+    say('  NOTE, if you use the team outline: it wants the OPPOSITE order.')
+    say('    The outline colour is one game-wide setting and the last resource to')
+    say('    write it each frame wins, so being started first loses it. If your')
+    say('    teammates are outlined in somebody else\'s colour, or not visibly at')
+    say('    all, use the two lines above instead of the reorder and put')
+    say('    `ensure %s` LAST.', GetCurrentResourceName())
     return true
 end
 

@@ -653,6 +653,16 @@ local function startArenaThread()
             -- starts after us. If that ever turns out to be happening, start
             -- crimson_arena last.
             --
+            -- AND THAT IS THE OPPOSITE OF WHAT THE DEATH HANDLING ASKS FOR.
+            -- shared/compat/dispatch.lua tells an operator whose ambulance
+            -- job is being paged for fighters to start this resource FIRST,
+            -- which is the order that loses this race every frame -- so an
+            -- operator can follow one instruction and break the other, and
+            -- nothing in any log will disagree, because as far as this file
+            -- is concerned it drew the outline. WarnLateStartOnce now says
+            -- so where it gives that advice, and points at the state-flag
+            -- snippet that makes the death fix independent of order.
+            --
             -- Done HERE rather than in a thread of its own: this loop is
             -- already per-frame for the death backstop above, so holding the
             -- outline costs two native calls and no new thread -- and a new

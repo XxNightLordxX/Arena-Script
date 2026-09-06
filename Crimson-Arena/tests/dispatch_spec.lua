@@ -1652,6 +1652,31 @@ t.test('DEFECT: the first death in an arena repeats the start-order warning', fu
     t.contains(said, 'crimsonArena', 'the warning does not offer the state-bag guard as a fallback')
 end)
 
+t.test('and it warns that the outline wants the OPPOSITE order', function()
+    -- REPORTED: an operator followed this warning, got a working ambulance
+    -- job, and then reported that the team outline was not showing up.
+    --
+    -- Both are true at once and they pull opposite ways. The outline colour
+    -- and shader are ONE game-wide setting, and the last resource to write
+    -- them each frame wins -- which is start order. Starting this resource
+    -- FIRST, exactly as the lines above tell an operator to, is the order
+    -- that loses that race every frame.
+    --
+    -- Nothing in any log disagrees when it happens, because as far as
+    -- client/match.lua is concerned it drew the outline: it did, in whatever
+    -- colour and shader the winner left behind. So the only place this can
+    -- be caught is beside the advice that causes it.
+    local env = compatLoadedAfter({ 'sc-ambulance' })
+    env.ArenaCompat.WarnLateStartOnce()
+    local said = env.consoleText()
+
+    t.contains(said, 'OPPOSITE order',
+        'the warning sends an operator to a start order that silently breaks the team outline, '
+            .. 'and never mentions it')
+    t.contains(said, 'LAST',
+        'the warning does not say which order the outline actually needs')
+end)
+
 t.test('and says it ONCE, not on every death for the rest of the session', function()
     -- A warning printed every time a fighter falls is a warning nobody reads
     -- twice, and it would bury the console output the rest of this file

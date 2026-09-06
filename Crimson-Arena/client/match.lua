@@ -147,6 +147,69 @@ local function stripIssuedWeapons(ped)
     end
 end
 
+-- ======================================================================
+-- FRIENDLY FIRE, ENFORCED WHERE THE DAMAGE IS ACTUALLY MADE
+--
+-- server/dispatch.lua refuses a shot at a teammate by cancelling
+-- weaponDamageEvent, and that was the whole of it. It is the right guard
+-- and it is not a complete one: weaponDamageEvent is what a SHOOTER's
+-- client reports, and plenty of damage never produces one the server can
+-- cancel in time -- melee above all, which is most of what an arena
+-- loadout carries.
+--
+-- Reported from a live server, for melee AND gunfire both. The server's own
+-- log agrees: across three team rounds where every loadout carried a bottle,
+-- a crowbar, a hatchet or a candycane, the whole session produced exactly
+-- ONE friendly-fire refusal, and it was a gun.
+--
+-- So the engine is told as well. A player on a network team, with friendly
+-- fire switched off, cannot damage another player on the same number --
+-- decided before any damage exists, which is the one place melee and
+-- gunfire are the same thing. The server guard stays exactly as it is: it
+-- is what stops damage crossing between matches, which this cannot see.
+--
+-- SET ON ENTRY AND CLEARED ON THE WAY OUT, both through the one choke
+-- point every exit already goes through. A team number left behind would
+-- follow the player into the rest of the server, where nothing else set it
+-- and nothing else will clear it.
+-- ======================================================================
+
+--- Whether this client currently has the engine holding its fire, so it is
+--- only ever put back by something that actually changed it.
+local friendlyFireHeld = false
+
+--- @param ped integer
+local function holdFriendlyFire(ped)
+    if not currentMatch then return end
+    -- A free-for-all has no sides, and putting everybody on one would make
+    -- the whole round harmless.
+    if not Arena.ModeUsesTeams(currentMatch.modeKey) then return end
+    -- The operator asked for teammates to be able to hurt each other.
+    if Config.Teams.friendlyFire == true then return end
+
+    local index = Arena.TeamIndex(currentMatch.teamKey)
+    if not index then return end
+
+    SetPlayerTeam(PlayerId(), index)
+    NetworkSetFriendlyFireOption(false)
+    SetCanAttackFriendly(ped, false, false)
+    friendlyFireHeld = true
+end
+
+--- Puts back what holdFriendlyFire changed, and only that.
+--- @param ped integer
+local function releaseFriendlyFire(ped)
+    if not friendlyFireHeld then return end
+    friendlyFireHeld = false
+
+    -- -1 IS "NO TEAM", which is where a player on an ordinary RP server
+    -- starts and what nothing else here ever changes. Restoring to anything
+    -- else would be inventing a state this resource did not find.
+    SetPlayerTeam(PlayerId(), -1)
+    NetworkSetFriendlyFireOption(true)
+    SetCanAttackFriendly(ped, true, true)
+end
+
 --- @param ped integer
 local function restoreOwnLoadout(ped)
     if not carried then return end
@@ -1657,57 +1720,43 @@ local function buildArenaProps(arenaKey, factor, boundary)
     -- for, and how far out the furthest one stands.
     local builtCover, coverReach = 0, 0.0
 
-    -- HOW MANY PIECES GO UP BEFORE THE FRAME IS HANDED BACK.
+    -- NO YIELD IN THIS LOOP, AND THAT IS A DECISION MADE TWICE.
     --
-    -- The skydome's floor is tiled out of shipping containers, and its own
-    -- ceiling is four hundred: a full build is getting on for four hundred
-    -- CreateObject calls, each followed by a heading, a freeze, a collision
-    -- flag, a LOD distance and a mission-entity flag. That whole run used to
-    -- happen inside ONE frame, because nothing in this loop ever yielded.
+    -- The build does up to four hundred CreateObjects, and doing them in one
+    -- frame is a visible freeze. So it was changed to hand the frame back
+    -- every thirty-two pieces -- and a player who had entered the skydome
+    -- without trouble for weeks began crashing on every single entry.
     --
-    -- A frame that does four hundred of those is not a frame. It is a
-    -- multi-second freeze on a modest machine, at the exact moment a player
-    -- has just been teleported a kilometre into the sky and the streamer is
-    -- already busy -- and a client that stops answering for that long is one
-    -- the game is entitled to give up on. Fighters have crashed here.
+    -- The first explanation was that the yield let the streamer act on the
+    -- per-piece SetModelAsNoLongerNeeded between batches, so the models are
+    -- now held for the whole build and released at the end (see `held`
+    -- below). That is a real improvement and it was not enough: the crashes
+    -- carried on.
     --
-    -- Thirty-two spreads a full skydome over a dozen frames or so, which is
-    -- a fifth of a second nobody sees, instead of one frame everybody does.
-    -- The build already yields -- loading a model waits, and the placement
-    -- before it waits 150ms -- so every caller is already written for it:
-    -- see the matchToken re-check on the far side of this function.
-    local YIELD_EVERY = 32
-    local sinceYield = 0
+    -- So the yield is gone. A freeze is a bad frame; a crash is somebody
+    -- unable to play. The freeze was inferred from a hitch warning and never
+    -- confirmed as anybody's actual complaint, while the crash was reported
+    -- by name, twice, and started when this changed. On that evidence the
+    -- one-frame build wins, and it stays until there is a way to spread the
+    -- work that has been shown not to do this.
+    --
+    -- IF YOU COME BACK TO THIS: the freeze is real and worth solving. What
+    -- is not established is that yielding mid-build is safe on a client
+    -- streaming an arena a kilometre up. Reducing the piece COUNT is the
+    -- other lever and has none of this risk -- config.lua's `maxTiles`, and
+    -- the outer ring it trims is behind the wall and unreachable anyway.
 
-    -- HELD FOR THE WHOLE BUILD, RELEASED ONCE AT THE END, AND THIS IS WHAT
-    -- MAKES THE YIELD ABOVE SAFE RATHER THAN RUINOUS.
-    --
-    -- Every piece loads its model and this loop used to call
-    -- SetModelAsNoLongerNeeded on it immediately afterwards. That was
-    -- harmless only because nothing here yielded: the mark is a REQUEST to
-    -- the streamer, and the streamer cannot act on it until a frame
-    -- boundary, so across a single-frame build the model stayed resident
-    -- from the first piece to the last.
-    --
-    -- Adding the yield handed the streamer exactly the frame boundary it
-    -- needed. It began unloading the container model between batches, and
-    -- the next batch re-requested it and BLOCKED in loadPropModel's
-    -- `while not HasModelLoaded` until it came back -- a dozen times over,
-    -- a kilometre up, with the player frozen and the streamer already busy.
-    -- That is worse than the freeze it replaced, and it is what made a
-    -- client that used to enter the skydome fine crash every time.
-    --
-    -- A model asked for repeatedly is not asked for repeatedly. It is
-    -- requested once, kept, and let go when the last piece is standing.
+    -- HELD FOR THE WHOLE BUILD, RELEASED ONCE AT THE END. This loop used to
+    -- call SetModelAsNoLongerNeeded on each piece's model the moment that
+    -- piece was standing, which is a request to the streamer to drop
+    -- something the very next piece asks for again. It survived only because
+    -- the streamer cannot act until a frame boundary and this loop reaches
+    -- none -- so it was correct by accident, and stopped being correct the
+    -- moment a yield was added. Kept even though the yield is gone: relying
+    -- on there being no frame boundary is not something to leave lying
+    -- around for the next person who wants one.
     local held = {}
-
     for _, piece in ipairs(wanted) do
-        sinceYield = sinceYield + 1
-        if sinceYield >= YIELD_EVERY then
-            sinceYield = 0
-            Wait(0)
-        end
-
         local hash = loadPropModel(piece.models or piece.model)
         if hash then
             local placeZ = piece.z
@@ -1888,6 +1937,23 @@ local function leaveArena(returnCoords)
     -- floor inside it.
     clearArenaScenery()
 
+    -- AND THE FRIENDLY-FIRE HOLD, FOR EXACTLY THE REASON ABOVE, UNGUARDED.
+    --
+    -- A network team and a friendly-fire switch are not per match either.
+    -- They are global player state this resource reached out and changed,
+    -- and if they survive this function they survive into the rest of the
+    -- server -- where nothing else set them, nothing else expects them, and
+    -- nothing else will ever put them back. A player who could not be shot
+    -- by half the city, permanently, because a round ended in a way that
+    -- reached leaveArena with currentMatch already nil.
+    --
+    -- Every exit comes through here, onResourceStop included, so this is the
+    -- one place that can promise it. releaseFriendlyFire is a no-op unless
+    -- this client actually changed something, so running it on every exit --
+    -- including exits from matches that never held it -- costs nothing and
+    -- cannot clear a team some other resource set.
+    releaseFriendlyFire(PlayerPedId())
+
     if not currentMatch then return end
 
     currentMatch = nil
@@ -2053,6 +2119,13 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- Before anything can make a noise. The countdown is still inside the
     -- arena, and a shot fired during it is still a shot fired.
     ArenaDispatch.Enter(data.matchId)
+
+    -- AND BEFORE ANY OF IT CAN LAND ON A TEAMMATE. Same reasoning as the
+    -- line above, one step further: a shot fired during the countdown is a
+    -- shot fired, and the engine has to already know which side this player
+    -- is on when it decides what that shot does. A no-op in a free-for-all
+    -- and on a server that wants friendly fire -- see holdFriendlyFire.
+    holdFriendlyFire(ped)
 
     -- Captured into locals first. scatter() returns FOUR values, and a call
     -- in the middle of an argument list is truncated to one -- so passing it

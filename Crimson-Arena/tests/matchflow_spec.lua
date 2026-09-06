@@ -1003,6 +1003,12 @@ local function newClientFixture(mutate)
         GetEntityCoords = function(ped)
             return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
         end,
+        -- The engine's own side, told so friendly fire can be refused
+        -- before any damage exists. Recorded rather than ignored: leaving it
+        -- set is what would follow a player out of the arena.
+        SetPlayerTeam = function(_player, team) f.team = team end,
+        NetworkSetFriendlyFireOption = function(on) f.friendlyFire = on end,
+        SetCanAttackFriendly = function() end,
         SetEntityDrawOutline = function(ped, on)
             f.outlines = f.outlines or {}
             f.outlines[#f.outlines + 1] = { ped = ped, on = on == true }

@@ -307,6 +307,12 @@ files['client/'] = {
         'DisablePlayerFiring',
         'SetEntityDrawOutlineShader',
 
+        -- Friendly fire, told to the engine rather than only refused by the
+        -- server after the fact. See client/match.lua's holdFriendlyFire.
+        'SetPlayerTeam',
+        'NetworkSetFriendlyFireOption',
+        'SetCanAttackFriendly',
+
         -- Per-arena weather and time overrides.
         'ClearOverrideWeather',
         'NetworkClearClockTimeOverride',

@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 69 functions
+#### `shared/arena.lua` — 70 functions
 
 | Function | What it does |
 |---|---|
@@ -331,6 +331,7 @@ listed; the source documents them where they are.
 | `Arena.GetEnabledWeapons()` | Every weapon an operator has left switched on, in config order. |
 | `Arena.GetWeaponByKey(key)` | The one weapon with this key, or nil. |
 | `Arena.GetEnabledTeams()` | Enabled teams, sorted by their `order` then key so every client renders the picker in the same sequence. |
+| `Arena.TeamIndex(teamKey)` | The engine's own team NUMBER for a team key, so friendly fire can be refused before any damage exists. nil off a team. |
 | `Arena.GetTeamByKey(key)` | One enabled team by key, or nil. |
 | `Arena.GetEnabledArenas()` | Every arena an operator has left switched on, in config order. |
 | `Arena.GetArenaByKey(key)` | One enabled arena by key, or nil. |

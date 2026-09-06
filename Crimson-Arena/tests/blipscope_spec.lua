@@ -136,6 +136,9 @@ local function newFixture(mutate)
         AddTextComponentSubstringPlayerName = function() end,
         EndTextCommandSetBlipName = function() end,
 
+        SetPlayerTeam = function(_player, team) f.team = team end,
+        NetworkSetFriendlyFireOption = function(on) f.friendlyFire = on end,
+        SetCanAttackFriendly = function(_ped, on) f.canAttackFriendly = on end,
         SetEntityDrawOutline = function(ped, on)
             f.outlineCalls[#f.outlineCalls + 1] = { ped = ped, on = on }
             if on then f.outlines[ped] = true else f.outlines[ped] = nil end
@@ -1090,6 +1093,74 @@ t.test('and the hold stops when there is nothing outlined', function()
         'the outline colour was held for the whole server with nothing of ours outlined')
     t.equals(perFrame(f.shaderCalls), 0,
         'the outline shader was held for the whole server with nothing of ours outlined')
+end)
+
+-- ======================================================================
+-- FRIENDLY FIRE
+--
+-- REPORTED FROM A LIVE SERVER, for melee AND gunfire both: teammates could
+-- hurt each other in a team round with friendly fire off. server/dispatch.lua
+-- refuses those shots by cancelling weaponDamageEvent, which is the right
+-- guard and not a complete one -- plenty of damage never produces one the
+-- server can cancel in time, melee above all.
+--
+-- The engine is now told as well, and the thing that matters most about
+-- telling it is UNDOING it. A network team left set follows the player out of
+-- the arena and into the rest of the server, where nothing else set it and
+-- nothing else will ever put it back.
+-- ======================================================================
+
+t.test('a team round tells the engine which side this player is on', function()
+    local f = newFixture()
+    f.enterLive()
+
+    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
+        'the engine was never told the side, so it has no reason to refuse a teammate')
+    t.isFalse(f.friendlyFire, 'friendly fire was left switched on for the round')
+    t.isFalse(f.canAttackFriendly, 'the ped was still allowed to attack its own side')
+end)
+
+t.test('a free-for-all tells it nothing, or the whole round is harmless', function()
+    -- Everybody on one team with friendly fire off is a round where nobody
+    -- can hurt anybody. The mode has no sides, so the engine is left alone.
+    local f = newFixture()
+    f.enterLive({ modeKey = 'ffa', teamKey = nil })
+
+    t.isNil(f.team, 'a free-for-all put every fighter on the same side')
+end)
+
+t.test('and a server that WANTS friendly fire is left alone too', function()
+    local f = newFixture(function(config) config.Teams.friendlyFire = true end)
+    f.enterLive()
+
+    t.isNil(f.team, 'the operator asked for teammates to be able to hurt each other')
+end)
+
+t.test('THE ONE THAT MATTERS: it does not follow the player out of the arena', function()
+    local f = newFixture()
+    f.enterLive()
+    t.isFalse(f.friendlyFire, 'the hold never started, so this proves nothing')
+
+    f.fire('crimson_arena:client:exitArena', {})
+
+    t.equals(f.team, -1, 'the player left the arena still on the arena\'s team')
+    t.isTrue(f.friendlyFire,
+        'friendly fire was left switched off for the rest of this player\'s session -- '
+            .. 'half the server cannot hurt them and nothing will ever put it back')
+    t.isTrue(f.canAttackFriendly, 'the ped was left unable to attack its own side')
+end)
+
+t.test('and the resource stopping mid-round puts it back as well', function()
+    -- The exit nobody chooses. A restart with a round in progress reaches
+    -- leaveArena the same way, and this state is exactly the kind that
+    -- outlives the resource that set it.
+    local f = newFixture()
+    f.enterLive()
+
+    f.fire('onResourceStop', 'crimson_arena')
+
+    t.equals(f.team, -1, 'a restart mid-round left the player on the arena\'s team for good')
+    t.isTrue(f.friendlyFire, 'a restart mid-round left friendly fire off for good')
 end)
 
 t.test('and it lets go when the match ends', function()

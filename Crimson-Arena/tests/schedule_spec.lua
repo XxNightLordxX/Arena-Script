@@ -241,7 +241,7 @@ t.test('the shipped windows read back exactly as written', function()
     -- them back on, so it is also the one that has to check what ships.
     local env = Sandbox.newArenaEnv()
     env.Config.Schedule.enabled = true
-    t.equals(env.Arena.ScheduleLine(), '00:00-02:00, 05:00-07:00, 12:00-14:00, 18:00-20:00',
+    t.equals(env.Arena.ScheduleLine(), '00:00-04:00, 05:00-07:00, 12:00-14:00, 18:00-20:00',
         'the shipped Config.Schedule does not render as the four windows it lists')
 end)
 

@@ -747,6 +747,12 @@ local function newMatchFixture()
         -- The team outline, which the blip loop now drives on every pass.
         PlayerId = function() return 0 end,
         DoesEntityExist = function() return true end,
+        -- The engine's own side, told so friendly fire can be refused
+        -- before any damage exists. Recorded rather than ignored: leaving it
+        -- set is what would follow a player out of the arena.
+        SetPlayerTeam = function(_player, team) f.team = team end,
+        NetworkSetFriendlyFireOption = function(on) f.friendlyFire = on end,
+        SetCanAttackFriendly = function() end,
         SetEntityDrawOutline = function() end,
         SetEntityDrawOutlineShader = function() end,
         SetEntityDrawOutlineColor = function() end,

@@ -306,6 +306,33 @@ function Arena.GetEnabledTeams()
     return out
 end
 
+--- The NETWORK TEAM NUMBER for one team key.
+---
+--- GTA has its own notion of a player's team, separate from anything this
+--- resource stores, and it is the only thing the engine itself will consult
+--- before it lets one player's bullet or fist land on another. It takes a
+--- number, not a name, so the arena's keys have to be turned into one.
+---
+--- Read off Arena.GetEnabledTeams, which is sorted by `order` and then by
+--- key -- so the same team is the same number on every client in the round,
+--- which is the entire requirement. An operator who reorders their teams
+--- renumbers them, and that is harmless: the numbers are only ever compared
+--- within one match, and a match assigns them all at once.
+---
+--- `nil` for anything that is not an enabled team, including a mode with no
+--- teams at all. The caller must leave the engine alone in that case rather
+--- than guess a number -- see client/match.lua, where guessing would put
+--- every fighter in a free-for-all on the same side.
+--- @param teamKey any
+--- @return integer|nil
+function Arena.TeamIndex(teamKey)
+    if not Arena.IsKey(teamKey) then return nil end
+    for index, team in ipairs(Arena.GetEnabledTeams()) do
+        if team.key == teamKey then return index end
+    end
+    return nil
+end
+
 --- @param key any
 --- @return table|nil
 function Arena.GetTeamByKey(key)

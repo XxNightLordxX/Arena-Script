@@ -195,7 +195,7 @@ Config.Schedule = {
     -- clamped hour is a window nobody typed. Write { from = 0, to = 24 }
     -- for all day; delete the entry for no window at all.
     windows = {
-        { from = 0,  to = 2 },   -- midnight to 2am
+        { from = 0,  to = 4 },   -- midnight to 4am
         { from = 5,  to = 7 },   -- 5am to 7am
         { from = 12, to = 14 },  -- noon to 2pm
         { from = 18, to = 20 },  -- 6pm to 8pm

@@ -1647,7 +1647,35 @@ local function buildArenaProps(arenaKey, factor, boundary)
     -- for, and how far out the furthest one stands.
     local builtCover, coverReach = 0, 0.0
 
+    -- HOW MANY PIECES GO UP BEFORE THE FRAME IS HANDED BACK.
+    --
+    -- The skydome's floor is tiled out of shipping containers, and its own
+    -- ceiling is four hundred: a full build is getting on for four hundred
+    -- CreateObject calls, each followed by a heading, a freeze, a collision
+    -- flag, a LOD distance and a mission-entity flag. That whole run used to
+    -- happen inside ONE frame, because nothing in this loop ever yielded.
+    --
+    -- A frame that does four hundred of those is not a frame. It is a
+    -- multi-second freeze on a modest machine, at the exact moment a player
+    -- has just been teleported a kilometre into the sky and the streamer is
+    -- already busy -- and a client that stops answering for that long is one
+    -- the game is entitled to give up on. Fighters have crashed here.
+    --
+    -- Thirty-two spreads a full skydome over a dozen frames or so, which is
+    -- a fifth of a second nobody sees, instead of one frame everybody does.
+    -- The build already yields -- loading a model waits, and the placement
+    -- before it waits 150ms -- so every caller is already written for it:
+    -- see the matchToken re-check on the far side of this function.
+    local YIELD_EVERY = 32
+    local sinceYield = 0
+
     for _, piece in ipairs(wanted) do
+        sinceYield = sinceYield + 1
+        if sinceYield >= YIELD_EVERY then
+            sinceYield = 0
+            Wait(0)
+        end
+
         local hash = loadPropModel(piece.models or piece.model)
         if hash then
             local placeZ = piece.z

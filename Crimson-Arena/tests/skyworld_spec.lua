@@ -205,6 +205,29 @@ local function newClient(opts)
             ('the %s handler never finished -- it is stuck in a loop'):format(name))
     end
 
+    --- Runs one call INSIDE A COROUTINE, which is where FiveM runs every
+    --- event handler and every CreateThread body -- so it is where all of
+    --- this code runs in production, and the only place a `Wait` is legal.
+    ---
+    --- The spectator entry points below are called straight out of
+    --- client/spectate.lua's own net-event handlers, so they are always in a
+    --- thread on a real client. Calling them bare from a spec was a shortcut
+    --- that happened to work only while nothing on that path yielded -- and
+    --- buildArenaProps has always been able to, since loading a model waits.
+    --- @param fn fun(): any
+    --- @return any
+    function c.inThread(fn)
+        local result
+        local thread = coroutine.create(function() result = fn() end)
+        for _ = 1, 200 do
+            if coroutine.status(thread) == 'dead' then break end
+            local ok, err = coroutine.resume(thread)
+            if not ok then error(err) end
+        end
+        assert(coroutine.status(thread) == 'dead', 'the call never finished -- it is stuck in a loop')
+        return result
+    end
+
     --- The payload server/match.lua really sends, built from the real
     --- config through the real Arena so it cannot drift from production.
     --- @param arenaKey string
@@ -638,6 +661,58 @@ t.test('DEFECT: the floor prop is MEASURED, and a coordinate\'s type is not \'ta
     t.isTrue(guessed > floor * 4,
         ('the tileSize fallback lays %d pieces and the measurement %d -- too close for this test to mean anything')
             :format(guessed, floor))
+end)
+
+t.test('DEFECT: the floor does not go up inside a single frame', function()
+    -- REPORTED FROM A LIVE SERVER: a fighter crashed a few seconds after
+    -- being dropped into the skydome, with a server-side hitch warning
+    -- logged at the moment the round started.
+    --
+    -- The skydome's floor is tiled out of shipping containers and its own
+    -- ceiling is four hundred pieces. Every one of them is a CreateObject
+    -- followed by a heading, a freeze, a collision flag, a LOD distance and
+    -- a mission-entity flag -- and the loop that does all of that never
+    -- yielded, so the whole run happened in ONE frame. That is not a frame,
+    -- it is a multi-second freeze, at the exact moment the player has been
+    -- teleported a kilometre into the sky and the streamer is already busy.
+    -- A client that stops answering for that long is one the game is
+    -- entitled to give up on.
+    --
+    -- Measured rather than asserted about the source: the claim is about
+    -- what happens between two frames, and only running it can show that.
+    local c = newClient()
+
+    local frame, perFrame = 1, {}
+    local realCreate, realWait = c.env.CreateObject, c.env.Wait
+
+    c.env.CreateObject = function(...)
+        perFrame[frame] = (perFrame[frame] or 0) + 1
+        return realCreate(...)
+    end
+    c.env.Wait = function(ms)
+        frame = frame + 1
+        return realWait(ms)
+    end
+
+    c.enter('skydome')
+
+    c.env.CreateObject, c.env.Wait = realCreate, realWait
+
+    local total, worst = 0, 0
+    for _, n in pairs(perFrame) do
+        total = total + n
+        if n > worst then worst = n end
+    end
+
+    -- The control. A build that made nothing would pass the real assertion
+    -- below trivially, and this arena is the one with hundreds of pieces.
+    t.isTrue(total > 64,
+        ('only %d piece(s) were built at all -- this test measures nothing'):format(total))
+
+    t.isTrue(worst <= 32,
+        ('%d of the %d pieces went up in one frame -- the build never hands the '
+            .. 'frame back, which is a freeze the length of the whole build')
+            :format(worst, total))
 end)
 
 t.test('and it says the footprint it measured out loud, so F8 settles it', function()
@@ -2017,7 +2092,7 @@ t.test('a spectator who never entered still gets the floor and the wall', functi
     -- arena of nothing -- the same failure this resource had when the sky
     -- floor was first written. client/spectate.lua parks the watcher at the
     -- arena and only builds once it has a fighter to follow.
-    local built = c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0)
+    local built = c.inThread(function() return c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0) end)
 
     t.isTrue(built, 'the spectator was told there is no arena to look at')
     t.isTrue(#c.world.live() > 0, 'nothing was built for the spectator at all')
@@ -2031,10 +2106,10 @@ end)
 
 t.test('and it comes down again when they stop watching', function()
     local c = newClient({ start = { x = 1500.0, y = 3000.0, z = 1201.0 } })
-    c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0)
+    c.inThread(function() return c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0) end)
     t.isTrue(#c.world.live() > 0)
 
-    c.env.ArenaMatch.DropSpectatorScenery()
+    c.inThread(function() return c.env.ArenaMatch.DropSpectatorScenery() end)
 
     t.equals(#c.world.live(), 0, 'a spectator left the arena standing after they stopped watching')
 end)
@@ -2053,15 +2128,15 @@ t.test('DEFECT: the SECOND watch of an arena built nothing and said it had', fun
     -- bubble.
     local c = newClient({ start = { x = 1500.0, y = 3000.0, z = 1201.0 } })
 
-    t.isTrue(c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0),
+    t.isTrue(c.inThread(function() return c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0) end),
         'the first watch built nothing')
     local first = #c.world.live()
     t.isTrue(first > 0, 'the first watch put no scenery up at all')
 
-    c.env.ArenaMatch.DropSpectatorScenery()
+    c.inThread(function() return c.env.ArenaMatch.DropSpectatorScenery() end)
     t.equals(#c.world.live(), 0, 'stopping did not take the scenery down')
 
-    t.isTrue(c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0),
+    t.isTrue(c.inThread(function() return c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0) end),
         'the second watch reported failure')
     t.equals(#c.world.live(), first,
         'the second watch of the same arena built nothing -- fighters in empty air')
@@ -2078,10 +2153,10 @@ t.test('but it REFUSES to take down a fighter\'s arena', function()
 
     -- Watching the round they are already in must not rebuild it either --
     -- that would take the floor away and put it back under them.
-    c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0)
+    c.inThread(function() return c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0) end)
     t.equals(#c.world.live(), standing, 'the fighter\'s arena was rebuilt under them')
 
-    c.env.ArenaMatch.DropSpectatorScenery()
+    c.inThread(function() return c.env.ArenaMatch.DropSpectatorScenery() end)
     t.equals(#c.world.live(), standing, 'THE FLOOR WAS PULLED OUT FROM UNDER A LIVE FIGHTER')
 end)
 

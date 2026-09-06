@@ -74,6 +74,57 @@ local outlined = {}
 --- report came back a second time in the word "haze".
 local OUTLINE_SHADER = 0
 
+--- THE TECHNIQUE GROUP THE ENGINE DRAWS THE OUTLINE MASK WITH, AND THE
+--- REASON A PED NEVER LIT UP NO MATTER WHAT ELSE WAS FIXED.
+---
+--- The outline is not a flag the renderer reads off an entity. FiveM keeps a
+--- list, and at the end of the scene it RE-DRAWS every entity on it into a
+--- mask render target -- forcing one technique group while it does so:
+---
+---   GamePrimitives_Outlines.cpp:38   DEFAULT_SHADER_TECHNIQUE_GROUP = "unlit"
+---   GamePrimitives_Outlines.cpp:439  *currentShader = _getTechniqueDrawName(group)
+---
+--- And a ped shader has no technique in that group. Rockstar's own header
+--- gates unlit techniques to four shader families, and peds are not one:
+---
+---   common.fxh  UNLIT_TECHNIQUES_FOR_SHADER = (__GTA_MEGASHADER_FXH__
+---                 || __GTA_TERRAIN_CB_COMMON_FXH__
+---                 || VEHICLE_PAINT_SHADER || VEHICLE_GLASS_SHADER)
+---
+--- (__GTA_PED_COMMON_FXH__ is a fifth, separate family -- common.fxh names it
+--- in the same file, in the shadow-technique list, and not in this one.)
+---
+--- So the forced group resolves to no technique, the mask draw emits no
+--- geometry, the mask stays at its cleared zero, and the Gauss pass blurs
+--- zero and composites zero. That is why props outline and peds never do.
+---
+--- AND WHY NOTHING EVER SAID SO. SET_ENTITY_DRAW_OUTLINE is void: its entire
+--- body is a push_back onto that list. There is no type check, no return
+--- value and no failure signal, so refreshOutlines below can call it on a
+--- real streamed ped, print "drawing 1 teammate(s)", and be telling the exact
+--- truth about a frame in which nothing was drawn. Every earlier fix -- the
+--- flag re-asserted every pass, the colour held every frame, the start-order
+--- race -- was aimed at a layer that was already working.
+---
+--- SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE (a CFX native, ~May 2025) is the
+--- one lever that reaches this. Peds do implement the DEFAULT group, so that
+--- is what we ask for.
+---
+--- ONE GLOBAL FOR THE WHOLE CLIENT, exactly like the colour and the shader --
+--- so it is set only while we are drawing and put back in removeAllOutlines,
+--- or every other resource's outlines on this machine inherit it.
+local OUTLINE_TECHNIQUE = 'default'
+
+--- Asks for that group, if this artifact is new enough to have the native.
+--- UNGUARDED IT WOULD BE FATAL rather than merely useless: one of the two
+--- call sites is inside the per-frame thread that also carries the death
+--- backstop, and a nil call there kills the thread and the backstop with it.
+local function holdOutlineTechnique()
+    if SetEntityDrawOutlineRenderTechnique then
+        SetEntityDrawOutlineRenderTechnique(OUTLINE_TECHNIQUE)
+    end
+end
+
 --- The colour that outline should currently be, or nil when nothing is
 --- outlined. DECLARED UP HERE because the per-frame arena thread reads it to
 --- hold the global outline state, and that thread is defined long before the
@@ -735,6 +786,7 @@ local function startArenaThread()
             if tint and next(outlined) ~= nil then
                 SetEntityDrawOutlineColor(tint.r, tint.g, tint.b, 255)
                 SetEntityDrawOutlineShader(OUTLINE_SHADER)
+                holdOutlineTechnique()
             end
 
             Wait(0)
@@ -1225,6 +1277,7 @@ local function refreshOutlines()
             if streamed > 0 then
                 SetEntityDrawOutlineColor(r, g, b, 255)
                 SetEntityDrawOutlineShader(OUTLINE_SHADER)
+                holdOutlineTechnique()
             end
         end
     end
@@ -1246,6 +1299,15 @@ local function removeAllOutlines()
         if DoesEntityExist(ped) then SetEntityDrawOutline(ped, false) end
     end
     outlined = {}
+
+    -- THE TECHNIQUE GROUP IS CLIENT-WIDE, so leaving it set would hand every
+    -- other resource on this machine our choice for the rest of the session.
+    -- Same rule the colour and the shader follow, and the engine ships the
+    -- undo for exactly this: RESET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE puts
+    -- the group back to "unlit".
+    if ResetEntityDrawOutlineRenderTechnique then
+        ResetEntityDrawOutlineRenderTechnique()
+    end
 end
 
 --- @param includeEnemies boolean|nil -- true only while a radar sweep is lit

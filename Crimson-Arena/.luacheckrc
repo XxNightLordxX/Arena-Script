@@ -309,6 +309,11 @@ files['client/'] = {
 
         -- Friendly fire, told to the engine rather than only refused by the
         -- server after the fact. See client/match.lua's holdFriendlyFire.
+        -- The outline mask is drawn with a forced technique group that ped
+        -- shaders do not implement. These two are the only lever that reaches
+        -- it. See OUTLINE_TECHNIQUE in client/match.lua.
+        'SetEntityDrawOutlineRenderTechnique',
+        'ResetEntityDrawOutlineRenderTechnique',
         'SetPlayerTeam',
         'NetworkSetFriendlyFireOption',
         'SetCanAttackFriendly',

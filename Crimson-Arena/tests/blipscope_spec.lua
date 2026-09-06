@@ -136,6 +136,8 @@ local function newFixture(mutate)
         AddTextComponentSubstringPlayerName = function() end,
         EndTextCommandSetBlipName = function() end,
 
+        SetEntityDrawOutlineRenderTechnique = function(group) f.technique = group end,
+        ResetEntityDrawOutlineRenderTechnique = function() f.technique = nil end,
         SetPlayerTeam = function(_player, team) f.team = team end,
         NetworkSetFriendlyFireOption = function(on) f.friendlyFire = on end,
         SetCanAttackFriendly = function(_ped, on) f.canAttackFriendly = on end,
@@ -1161,6 +1163,76 @@ t.test('and the resource stopping mid-round puts it back as well', function()
 
     t.equals(f.team, -1, 'a restart mid-round left the player on the arena\'s team for good')
     t.isTrue(f.friendlyFire, 'a restart mid-round left friendly fire off for good')
+end)
+
+t.test('THE CAUSE: the outline mask is drawn with a group ped shaders implement', function()
+    -- WHY EVERY EARLIER FIX MISSED. The outline is not a flag the renderer
+    -- reads off an entity: FiveM keeps a list and re-draws each entity on it
+    -- into a mask at scene end, FORCING one technique group while it does --
+    -- GamePrimitives_Outlines.cpp:38 defaults that group to "unlit".
+    --
+    -- Rockstar's own header gates unlit techniques to four shader families:
+    -- megashader, terrain, vehicle paint and vehicle glass (common.fxh,
+    -- UNLIT_TECHNIQUES_FOR_SHADER). Peds are a fifth, separate family. So the
+    -- forced group matches no technique on a ped, the mask draw emits no
+    -- geometry, and the blur pass blurs an empty mask.
+    --
+    -- SET_ENTITY_DRAW_OUTLINE is void -- its whole body is a push_back -- so
+    -- there is no return value, no type check and no failure signal. This
+    -- file could call it on a live streamed ped, print "drawing 1
+    -- teammate(s)", and be telling the exact truth about a frame in which
+    -- nothing was drawn. That is what it did, for weeks.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    for _ = 1, 4 do f.step() end
+
+    t.equals(f.technique, 'default',
+        'the outline mask is still being drawn with the "unlit" group, which no ped shader '
+            .. 'implements -- so nothing is drawn and nothing says so')
+end)
+
+t.test('and an artifact too old to have the native is not killed by it', function()
+    -- SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE landed around May 2025, so on
+    -- an older artifact it is simply nil. One of the two call sites is inside
+    -- the per-frame thread that also carries the death backstop -- an
+    -- unguarded call there does not merely fail to set a group, it kills the
+    -- thread, and a fighter who dies after that is never reported dead.
+    --
+    -- So this is not defensive padding around a native that might be missing.
+    -- It is the difference between an old client losing the haze and an old
+    -- client losing the round.
+    local f = newFixture()
+    f.env.SetEntityDrawOutlineRenderTechnique = nil
+    f.env.ResetEntityDrawOutlineRenderTechnique = nil
+
+    f.enterLive()
+    f.hud()
+    for _ = 1, 6 do f.step() end
+
+    -- The loops are still turning: teammates are still being outlined, which
+    -- is the observable that dies with the thread.
+    t.isTrue(f.outlines[1000 + MATE] == true,
+        'the per-frame thread died on a nil native, taking the outlines -- and the death '
+            .. 'backstop that shares it -- down with it')
+
+    f.fire('crimson_arena:client:exitArena', {})
+end)
+
+t.test('and the group is handed back, because it belongs to the whole client', function()
+    -- Same rule as the colour and the shader. Left set, this resource decides
+    -- how every other script on the machine draws its outlines for the rest
+    -- of the session.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    for _ = 1, 4 do f.step() end
+    t.equals(f.technique, 'default', 'the hold never started, so this proves nothing')
+
+    f.fire('crimson_arena:client:exitArena', {})
+
+    t.isNil(f.technique,
+        'the arena kept the client-wide outline technique group after the match ended')
 end)
 
 t.test('and it lets go when the match ends', function()

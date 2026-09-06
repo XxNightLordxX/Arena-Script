@@ -212,6 +212,63 @@ local function oxDid(label, fn)
     return true
 end
 
+--- Every real item in one ox_inventory items table, in slot order.
+---
+--- WHY THIS IS NOT `ipairs`, AND WHY IT COST PEOPLE THEIR BELONGINGS.
+---
+--- ox_inventory's GetInventoryItems hands back the inventory's own `items`
+--- table, and that table is KEYED BY SLOT rather than packed into an array.
+--- A player carrying things in slots 1, 2 and 5 has NOTHING AT ALL at 3 and
+--- 4 -- which is the ordinary state of any inventory somebody has moved
+--- things around in. `ipairs` stops dead at the first hole, so every slot
+--- past the first gap was invisible to this file.
+---
+--- What that cost, in both directions:
+---
+---   stow()      never put those items in the stash -- and then called
+---               ClearInventory on the inventory they were still sitting in.
+---               They were DESTROYED, on the way in, by the one function
+---               whose whole job is to keep them safe.
+---
+---   handBack()  never handed them back. They stayed in the stash and
+---               nothing counted a failure, because nothing had looked --
+---               so the exit reported a clean return over a stash that
+---               still had items in it.
+---
+--- Both read from a player's seat as "the arena ate some of my stuff", and
+--- both hit only the players whose inventory happens to have a hole in it,
+--- which is why three people can leave the same match and one of them come
+--- out short.
+---
+--- The specs never saw it: the fake ox_inventory in tests/ returns a packed
+--- array, which is the one shape where `ipairs` and this function agree.
+---
+--- Non-tables are skipped rather than trusted. Some builds park `false` in an
+--- empty slot instead of leaving it nil, and `item.name` on a boolean throws
+--- -- which would take the whole stow down rather than one slot.
+--- @param items table
+--- @return table[]
+local function itemsIn(items)
+    local out = {}
+    if type(items) ~= 'table' then return out end
+
+    for slot, item in pairs(items) do
+        if type(item) == 'table' and Arena.IsKey(item.name) then
+            out[#out + 1] = { item = item, slot = tonumber(item.slot) or tonumber(slot) or 0 }
+        end
+    end
+
+    -- SORTED, because `pairs` has no order and two passes over the same
+    -- inventory must agree: stow's rollback undoes what stow did, and a
+    -- partial handBack has to leave the remainder in a state the retry can
+    -- finish. Slot order is the order the player sees.
+    table.sort(out, function(a, b) return a.slot < b.slot end)
+
+    local flat = {}
+    for index, row in ipairs(out) do flat[index] = row.item end
+    return flat
+end
+
 --- Moves everything a player is carrying into their stash.
 ---
 --- RETURNS FALSE IF ANYTHING AT ALL GOES WRONG, and the caller must then leave
@@ -248,7 +305,7 @@ local function stow(src, citizenid)
     local skip, keep = untouchable()
     local stowed = {}
 
-    for _, item in ipairs(items) do
+    for _, item in ipairs(itemsIn(items)) do
         -- Never stashed, so never handed back, so never in the way of money
         -- that arrives while the stash is still holding everything else.
         if not skip[item.name] then
@@ -310,7 +367,7 @@ local function handBack(ox, src, stash)
     end
 
     local failures, returned = 0, 0
-    for _, item in ipairs(items) do
+    for _, item in ipairs(itemsIn(items)) do
         -- PROOF, NOT MERELY THE ABSENCE OF A DENIAL, and this is the one
         -- call in the file that has to be read that way.
         --

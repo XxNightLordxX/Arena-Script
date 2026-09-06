@@ -73,6 +73,11 @@ local function newServer(pockets, mutate, opts)
     -- cost that only a count can hold it to.
     local stashReads = {}
 
+    -- Inventories that answer with a `false` parked in an empty slot, which
+    -- is how some ox_inventory builds spell "nothing here" instead of
+    -- leaving the key absent. Indexing `.name` on a boolean throws.
+    local falseSlots = {}
+
     for src, items in pairs(pockets or {}) do
         connected[src] = true
         inv[src] = {}
@@ -100,10 +105,42 @@ local function newServer(pockets, mutate, opts)
             if fail.read and type(id) == 'number' then error('cannot read') end
             if type(id) == 'string' then stashReads[id] = (stashReads[id] or 0) + 1 end
             if fail.readStash and type(id) == 'string' then error('cannot read stash') end
+
+            -- THE SHAPE REAL ox_inventory ANSWERS IN, when a test asks for
+            -- it. GetInventoryItems hands back the inventory's own `items`
+            -- table, which is KEYED BY SLOT: a player with three things in
+            -- slots 1, 3 and 5 has nothing at all at 2 and 4, and every
+            -- inventory somebody has moved things around in looks like that.
+            --
+            -- The dense array below is the shape this fixture used
+            -- everywhere, and it is the one shape where a reader that stops
+            -- at the first hole and one that does not agree -- which is why
+            -- the hole was invisible to this suite for as long as it was.
+            if opts.slotted then
+                local out = {}
+                for index, item in ipairs(bucket(id)) do
+                    local slot = index * 2 - 1
+                    out[slot] = {
+                        name = item.name,
+                        count = item.count,
+                        metadata = item.metadata,
+                        -- NOT ON EVERY ITEM. ox_inventory stamps `slot` on
+                        -- the entries it hands back, but the KEY is the
+                        -- authority and always there -- so every third one
+                        -- goes without, and a reader that only trusts the
+                        -- field loses track of where it belongs.
+                        slot = (index % 3 ~= 0) and slot or nil,
+                    }
+                end
+                if falseSlots[id] then out[2] = false end
+                return out
+            end
+
             local out = {}
             for _, item in ipairs(bucket(id)) do
                 out[#out + 1] = { name = item.name, count = item.count, metadata = item.metadata }
             end
+            if falseSlots[id] then table.insert(out, 1, false) end
             return out
         end,
         AddItem = function(_self, id, name, count, metadata)
@@ -272,6 +309,19 @@ local function newServer(pockets, mutate, opts)
             local id = 'crimson_arena_' .. citizenid
             stashes[id] = stashes[id] or {}
             stashes[id][#stashes[id] + 1] = { name = name, count = count }
+        end,
+        --- The names a player is holding IN THE ORDER THEY WERE HANDED OVER,
+        --- which `carrying` deliberately destroys by sorting. The order is
+        --- the whole question when a return only partly fits.
+        carryingInOrder = function(src)
+            local names = {}
+            for _, item in ipairs(inv[src] or {}) do names[#names + 1] = item.name end
+            return table.concat(names, ',')
+        end,
+        --- Makes one character's stash answer with a `false` where an empty
+        --- slot would be, the way some ox_inventory builds do.
+        pokeStashSlot = function(citizenid)
+            falseSlots['crimson_arena_' .. citizenid] = true
         end,
         stashReadsOf = function(citizenid)
             return stashReads['crimson_arena_' .. citizenid] or 0
@@ -1537,6 +1587,117 @@ t.test('stopping the resource hands everybody their kit back', function()
 
     t.equals(s.carrying(1), 'phone,water')
     t.equals(s.carrying(2), 'phone,water')
+end)
+
+-- ========================================================================
+-- A HOLE IN SOMEBODY'S INVENTORY
+--
+-- REPORTED FROM A LIVE SERVER: three players finished the same match, two
+-- were handed everything back, and the third came out short. Nothing in the
+-- console said a word about it, which ruled out every failure path this file
+-- already covers -- all of them are loud.
+--
+-- The difference between those three players was not the arena. It was the
+-- shape of their own inventory. ox_inventory's GetInventoryItems answers with
+-- the inventory's `items` table KEYED BY SLOT, so a player with things in
+-- slots 1, 3 and 5 has nothing at all at 2 and 4 -- the ordinary state of any
+-- inventory somebody has rearranged. Both readers in server/ammo.lua walked
+-- that with `ipairs`, which stops at the first hole.
+--
+-- So the player with a tidy inventory was fine and the player with a gap was
+-- robbed, in BOTH directions:
+--
+--   on the way IN   the items past the gap were never stashed, and then
+--                   ClearInventory destroyed them where they sat;
+--   on the way OUT  they were never handed back, and nothing counted a
+--                   failure, because nothing had looked.
+--
+-- The suite could not see it because this fixture answered in a packed array
+-- -- the one shape where a reader that stops at a hole and one that does not
+-- give the same answer. `opts.slotted` is what makes it answer the way the
+-- real thing does.
+-- ========================================================================
+
+t.test('THE BUG: a gap in the inventory is not the end of the inventory', function()
+    local s = newServer({
+        [1] = {
+            { name = 'phone', count = 1 },
+            { name = 'water', count = 2 },
+            { name = 'burger', count = 3 },
+        },
+    }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    -- Under `ipairs` this was 'phone' alone: slot 1 read, slot 2 empty, and
+    -- the water and the burger left in an inventory about to be cleared.
+    t.equals(s.stashContents(1), 'burger,phone,water',
+        'everything they own is in the stash, not just what sat before the first hole')
+    t.equals(s.carrying(1), '', 'and their pockets are empty')
+end)
+
+t.test('and it all comes back out again', function()
+    local s = newServer({
+        [1] = {
+            { name = 'phone', count = 1 },
+            { name = 'water', count = 2 },
+            { name = 'burger', count = 3 },
+        },
+    }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(s.ammo.Reclaim(1, 'match ended') == 1, 'the exit reports a clean return')
+
+    t.equals(s.carrying(1), 'burger,phone,water')
+    t.equals(s.stashContents(1), '', 'and nothing is left behind in the stash')
+end)
+
+t.test('the player with the tidy inventory was never the one at risk', function()
+    -- The other two of the three. Same match, same code, no gap -- which is
+    -- why this looked like it only ever happened to one person.
+    local s = newServer({
+        [1] = { { name = 'phone', count = 1 } },
+        [2] = { { name = 'phone', count = 1 } },
+    }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Issue(2, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Reclaim(1, 'match ended')
+    s.ammo.Reclaim(2, 'match ended')
+
+    t.equals(s.carrying(1), 'phone')
+    t.equals(s.carrying(2), 'phone')
+end)
+
+t.test('and they come back in SLOT order, not in whatever order the table iterates', function()
+    -- `pairs` over a slot-keyed table has no defined order, and the order is
+    -- not cosmetic: when a return only partly fits, WHICH items go back is
+    -- decided by the order they are tried in. Two sweeps over the same stash
+    -- have to make the same choice, or a player watching their pockets sees a
+    -- different random half of their kit on every pass.
+    local kit = {}
+    for _, name in ipairs({ 'aaa', 'bbb', 'ccc', 'ddd', 'eee', 'fff', 'ggg' }) do
+        kit[#kit + 1] = { name = name, count = 1 }
+    end
+
+    local s = newServer({ [1] = kit }, nil, { slotted = true })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.equals(s.carryingInOrder(1), 'aaa,bbb,ccc,ddd,eee,fff,ggg')
+end)
+
+t.test('a slot holding false rather than nothing is skipped, not thrown over', function()
+    -- Some builds park `false` in an empty slot instead of leaving it nil.
+    -- `item.name` on a boolean throws, which would take the whole stow down
+    -- and cost the player everything rather than one slot.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.putInStash('CID1', 'burger', 1)
+    s.pokeStashSlot('CID1')
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.carrying(1), 'burger,phone,water', 'the real items came back')
 end)
 
 t.test('StashOf names where a kit is, for an admin who has to find it', function()

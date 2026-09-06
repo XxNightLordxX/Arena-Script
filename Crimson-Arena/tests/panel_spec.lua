@@ -649,6 +649,21 @@ local function newMatchFixture()
         cleared = 0,
     }
 
+    --- The events of ONE kind, which is what every assertion about death
+    --- reporting below actually means. Counting the whole list couples a
+    --- test about corpses to every other message the client will ever send,
+    --- so a diagnostic line added later fails a test about corpses -- which
+    --- says nothing true about corpses.
+    --- @param name string
+    --- @return table[]
+    function f.eventsNamed(name)
+        local out = {}
+        for _, event in ipairs(f.serverEvents) do
+            if event.name == name then out[#out + 1] = event end
+        end
+        return out
+    end
+
     local env = Sandbox.newArenaEnv({
         CreateThread = runner.CreateThread,
         Wait = runner.Wait,
@@ -825,7 +840,7 @@ t.test('a countdown death is settled on the client, not reported and not held', 
     f.step()
 
     t.equals(#f.resurrects, 1, 'the countdown death was never noticed')
-    t.equals(#f.serverEvents, 0,
+    t.equals(#f.eventsNamed('crimson_arena:server:reportDeath'), 0,
         'a countdown death was reported to a server that refuses it, spending the round\'s one report')
     t.equals(f.cleared, 0,
         'the countdown death went into ClearDeadState\'s hold, which only a respawn releases')
@@ -862,9 +877,9 @@ t.test('a countdown death does not spend the round\'s one report -- the first re
     f.dead = true
     f.step()
 
-    t.equals(#f.serverEvents, 1, 'the death that actually counted was never reported')
-    t.equals(f.serverEvents[1].name, 'crimson_arena:server:reportDeath')
-    t.equals(f.serverEvents[1].payload.killerServerId, 7, 'the killer went unnamed, so nobody was credited')
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the death that actually counted was never reported')
+    t.equals(reports[1].payload.killerServerId, 7, 'the killer went unnamed, so nobody was credited')
 end)
 
 t.test('a death in the live round is still reported once and cleared once', function()
@@ -876,7 +891,8 @@ t.test('a death in the live round is still reported once and cleared once', func
     f.step()
     f.step()    -- the ped is still dead; a second pass must not report it again
 
-    t.equals(#f.serverEvents, 1, 'the live death was reported a number of times that is not once')
+    t.equals(#f.eventsNamed('crimson_arena:server:reportDeath'), 1,
+        'the live death was reported a number of times that is not once')
     t.equals(f.cleared, 1, 'the live death was cleared a number of times that is not once')
     t.equals(#f.resurrects, 0,
         'a live death took the countdown path, which reports nothing and would leave it unscored')
@@ -923,7 +939,8 @@ t.test('leaving the arena ends the watch, countdown or not', function()
     f.step()
     f.step()
 
-    t.equals(#f.serverEvents, 0, 'a death outside the arena was reported as an arena death')
+    t.equals(#f.eventsNamed('crimson_arena:server:reportDeath'), 0,
+        'a death outside the arena was reported as an arena death')
     t.equals(#f.resurrects, 0, 'a loop from a match this player has left is still touching their ped')
 end)
 

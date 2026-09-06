@@ -1028,6 +1028,14 @@ local function outlineReason(reason)
     -- outlined is actually looking.
     if Config.Debug then
         print(('[crimson_arena] [debug] team outline: %s'):format(reason))
+
+        -- AND TO THE SERVER CONSOLE, which is where the person debugging
+        -- this is actually reading. F8 is the right place for a player
+        -- asking about their own screen and the wrong one for an operator
+        -- working through a server log -- and this answer is no use in a
+        -- place nobody looks. Only on a CHANGE, because that is what this
+        -- whole function is: a healthy round sends one line and then stops.
+        TriggerServerEvent('crimson_arena:server:outlineReason', reason)
     end
 end
 

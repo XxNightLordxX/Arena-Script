@@ -1088,6 +1088,21 @@ local function newClientFixture(mutate)
         })
     end
 
+    --- The events of ONE kind, which is what every assertion below actually
+    --- means. Counting the whole list couples a test about death reporting
+    --- to every other message the client will ever send -- and a diagnostic
+    --- line added years later then fails a test about corpses, which says
+    --- nothing true about corpses.
+    --- @param name string
+    --- @return table[]
+    function f.eventsNamed(name)
+        local out = {}
+        for _, event in ipairs(f.serverEvents) do
+            if event.name == name then out[#out + 1] = event end
+        end
+        return out
+    end
+
     return f
 end
 
@@ -1095,8 +1110,8 @@ t.test('the first death is reported and held, so the respawn tests below start w
     local f = newClientFixture()
     f.toFirstDeath()
 
-    t.equals(#f.serverEvents, 1, 'the death nobody reported cannot be the one a respawn answers')
-    t.equals(f.serverEvents[1].name, 'crimson_arena:server:reportDeath')
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the death nobody reported cannot be the one a respawn answers')
     t.equals(f.cleared, 1, 'the body was left lying there instead of going into the hold')
     t.equals(#f.released, 0, 'nothing has released the hold yet -- the respawn has not been sent')
 end)
@@ -1118,14 +1133,14 @@ t.test('a kill landed while the respawn is still streaming the ground in is stil
     f.respawn()
     f.step()
 
-    t.equals(#f.serverEvents, 1,
+    t.equals(#f.eventsNamed('crimson_arena:server:reportDeath'), 1,
         'the respawn re-reported the death it was sent to answer -- the watch was re-armed over a body')
 
     -- Shot where they stand, mid-placement.
     f.dead = true
     f.step()
 
-    t.equals(#f.serverEvents, 2,
+    t.equals(#f.eventsNamed('crimson_arena:server:reportDeath'), 2,
         'a kill during the respawn placement was reported to nobody -- the server never scored it')
     t.equals(f.cleared, 2,
         'and it was never cleared, so the corpse is still there for the medical script to find')
@@ -1184,7 +1199,7 @@ t.test('the next death after a respawn is reported too -- the watch stays armed'
     f.dead = true
     f.step()
 
-    t.equals(#f.serverEvents, 2, 'the fighter the server put back in the round could never die again')
+    t.equals(#f.eventsNamed('crimson_arena:server:reportDeath'), 2, 'the fighter the server put back in the round could never die again')
 end)
 
 t.test('being ELIMINATED releases nothing -- the hold is what keeps them safe', function()

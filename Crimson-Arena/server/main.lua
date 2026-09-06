@@ -47,6 +47,9 @@ local RATE = {
     -- player who stays alive on the scoreboard after dying on screen, so
     -- this only has to catch a flood, not pace anything.
     death = 200,
+    -- A line in the console and nothing else, sent only when what it says
+    -- changes. Tight, because nothing is waiting on it.
+    diag = 1000,
 }
 
 -- ======================================================================
@@ -282,6 +285,32 @@ onClient('crimson_arena:server:requestState', RATE.state, function(src, data)
         ArenaLobby.MarkPanelOpen(src)
     end
     TriggerClientEvent('crimson_arena:client:state', src, ArenaLobby.BuildState(src))
+end)
+
+--- WHY THE TEAM OUTLINE IS OR IS NOT DRAWN, ON THE SERVER'S CONSOLE.
+---
+--- client/match.lua has always worked this out and printed it -- in F8, on
+--- the player's own machine. That is the right place for a player wondering
+--- about their own screen and the wrong one for the person debugging the
+--- server, who is reading a server console and cannot see it. Two rounds of
+--- "the haze is not working" were spent with the answer already computed and
+--- sitting somewhere nobody was looking.
+---
+--- So the client sends it here, and only here: this handler prints and does
+--- nothing else. It changes no state, so a client that lies about it can
+--- only put a wrong line in a debug log.
+---
+--- Sent only when the reason CHANGES, and only with Config.Debug on. A
+--- healthy round says one line at the start and then nothing.
+onClient('crimson_arena:server:outlineReason', RATE.diag, function(src, data)
+    if not Config.Debug then return end
+
+    local reason = type(data) == 'table' and data.reason or data
+    if type(reason) ~= 'string' then return end
+
+    -- Truncated rather than trusted: it is going into a log, and a client
+    -- can send any string it likes.
+    ArenaDebug('outline: %s reports -- %s', tostring(src), reason:sub(1, 200))
 end)
 
 -- ======================================================================

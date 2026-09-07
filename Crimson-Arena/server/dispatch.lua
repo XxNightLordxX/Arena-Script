@@ -479,13 +479,36 @@ RegisterCommand('arenarevive', function(src, args)
 end, false)
 
 function ArenaDispatch.IsPlayerInArena(src)
-    return active[src] ~= nil
+    return ArenaDispatch.GetPlayerMatchId(src) ~= nil
 end
 
---- @param src number
+--- The match a player is in, or nil.
+---
+--- A STRING ID IS A REAL ID. `active` is keyed by number -- Set refuses
+--- anything else -- and in Lua active[5] and active["5"] are two different
+--- keys, so a caller holding '5' got "not in a match" for somebody standing
+--- in the arena.
+---
+--- That caller is the whole point of these two functions. They are exported
+--- for third-party police, medical and dispatch scripts to ask before they
+--- raise an alert, and the ordinary way such a script walks the server is
+--- FiveM's own GetPlayers(), which hands back an array of STRINGS. So an
+--- integrator doing the obvious thing was told every arena fighter was out
+--- in the world, and every shot fired in the arena raised the alert the
+--- export exists to suppress.
+---
+--- Coerced here rather than at the two exports so the internal callers --
+--- the bucket sweep among them -- get the same answer as an outside one.
+---
+--- The nil check is for the reader, not for the engine: indexing a table
+--- with nil is a legal READ in Lua and answers nil, so removing it changes
+--- no behaviour. It is here so that nobody has to know that.
+--- @param src number|string
 --- @return string|nil
 function ArenaDispatch.GetPlayerMatchId(src)
-    return active[src]
+    local id = tonumber(src)
+    if not id then return nil end
+    return active[id]
 end
 
 --- Every player currently in a match, as a server-id -> match-id map. A

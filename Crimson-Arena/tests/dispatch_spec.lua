@@ -261,6 +261,41 @@ t.test('Set flags the player, writes a replicated bag, and announces entry', fun
     t.equals(f.events[1].args[2], 'match-1')
 end)
 
+t.test('DEFECT: a STRING server id is a real one, because GetPlayers hands out strings', function()
+    -- These two are exported for third-party police, medical and dispatch
+    -- scripts to ask before raising an alert, and the ordinary way such a
+    -- script walks the server is FiveM's own GetPlayers(), which returns an
+    -- array of STRINGS. `active` is keyed by number, and in Lua active[7]
+    -- and active["7"] are different keys -- so the integrator doing the
+    -- obvious thing was told every fighter in the arena was out in the
+    -- world, and every shot fired in a match raised the alert the export
+    -- exists to suppress.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+
+    t.isTrue(f.D.IsPlayerInArena('7'),
+        'a player looked up by string id was reported as not in a match')
+    t.equals(f.D.GetPlayerMatchId('7'), 'match-1',
+        'a string id did not find the match the same number id finds')
+end)
+
+t.test('and nonsense is still nobody, rather than an error', function()
+    -- tonumber is the coercion, so anything it cannot read has to fall
+    -- through as "not in a match" rather than indexing the table with it.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+
+    for _, junk in ipairs({ 'seven', '', 'match-1', {}, true }) do
+        local ok, err = pcall(function()
+            t.isFalse(f.D.IsPlayerInArena(junk), 'junk was read as a player in a match')
+            t.isNil(f.D.GetPlayerMatchId(junk), 'junk resolved to a match id')
+        end)
+        t.isTrue(ok, ('%s raised: %s'):format(type(junk), tostring(err)))
+    end
+
+    t.isNil(f.D.GetPlayerMatchId(nil), 'a nil id resolved to a match')
+end)
+
 t.test('Clear unflags, nils the bag, and announces the exit', function()
     local f = newFixture()
     f.D.Set(7, 'match-1')

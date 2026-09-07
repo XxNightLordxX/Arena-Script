@@ -1300,6 +1300,29 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
     -- it, and they must agree: a fighter told somebody walked out is being
     -- told about a round the walker was recorded as losing.
     local liveRound = match.state == 'live'
+
+    -- STILL IN THE FIGHT WHEN THEY WENT, which is not the same as "the round
+    -- was live". An eliminated fighter KEEPS their row on purpose -- the
+    -- results board ranks off it, and with spectateOnElimination off
+    -- server/match.lua has already sent them home -- so they can reach this
+    -- function minutes after they stopped being a contestant.
+    --
+    -- Both rules below turn on it, and each was wrong without it:
+    --
+    --   THE RECORD. Sparing a crash is for somebody whose game died while
+    --   they were still fighting. A player who was already knocked out has
+    --   lost the round either way, so sparing them there let anyone erase
+    --   their loss by closing the game after being eliminated -- exactly the
+    --   hole the quit rule exists to shut, reopened from the other side.
+    --
+    --   THE ANNOUNCEMENT. "walked out of the fight" about somebody who was
+    --   knocked out four minutes ago is just wrong.
+    --
+    -- RemovePlayer sets alive = false before it gets here, so `alive` alone
+    -- cannot answer this; lives is what separates a fighter on the floor
+    -- waiting to respawn from one who is out for good.
+    local wasFighting = liveRound and not Arena.IsEliminated(player)
+
     local started = match.state == 'live' or match.state == 'ended'
     local refund
     if started then
@@ -1366,7 +1389,7 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
     -- HERE rather than in ArenaMatch.RemovePlayer because this is the only
     -- place both exits meet: server/main.lua routes playerDropped straight
     -- through this function, and it never touches RemovePlayer at all.
-    if liveRound and not dropped
+    if liveRound and not (dropped and wasFighting)
         and type(ArenaStats) == 'table' and type(ArenaStats.Record) == 'function'
     then
         ArenaStats.Record({
@@ -1401,7 +1424,7 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
     -- Sent AFTER the row is removed, so the leaver is not told about
     -- themselves, and to the fighters rather than the spectators: it is the
     -- people whose round just changed shape who need it.
-    if liveRound and Arena.IsKey(leftName) then
+    if wasFighting and Arena.IsKey(leftName) then
         local key = dropped and 'notify.fighter_dropped' or 'notify.fighter_left'
         for remaining in pairs(match.players) do
             ArenaNotifyKey(remaining, key, 'warning', leftName)

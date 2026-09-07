@@ -1208,4 +1208,86 @@ t.test('and a LOBBY announces nothing, because the roster churns there anyway', 
         'leaving a lobby put a toast on everybody else\'s screen')
 end)
 
+-- ======================================================================
+-- AND SOMEBODY WHO WAS ALREADY OUT IS NOT STILL FIGHTING
+-- ======================================================================
+--
+-- Found by reading this whole stretch of work as ONE diff rather than one
+-- fix at a time. An eliminated fighter KEEPS their row -- the results board
+-- ranks off it, and with spectateOnElimination off server/match.lua has
+-- already sent them home -- so they reach ArenaLobby.Leave minutes after
+-- they stopped being a contestant, with the round still 'live'.
+--
+-- Both new rules were wrong for them, and no single-commit test could see
+-- it because the interaction is between two different commits.
+
+--- Knocks `src` out of a live round without ending it: no lives left, and
+--- dead. This is the state server/match.lua leaves an eliminated fighter in.
+local function knockOut(server, matchId, src)
+    local row = server.lobby.Get(matchId).players[src]
+    row.alive = false
+    row.lives = 0
+    row.placement = 3
+end
+
+t.test('THE INTERACTION: dropping after being knocked out does NOT erase the loss', function()
+    -- Sparing a crash is for somebody whose game died while they were still
+    -- fighting. Somebody already out has lost the round either way, so
+    -- sparing them let anyone wipe their loss by closing the game after
+    -- being eliminated -- the quit rule shut that door and this reopened it
+    -- from the other side.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    local matchId = liveRound(server)
+    knockOut(server, matchId, 3)
+
+    server.drop(3)
+
+    local rows = server.recorded()
+    t.equals(#rows, 1, ('a fighter who was already out dropped and was recorded %d time(s)')
+        :format(#rows))
+    t.isFalse(rows[1].won, 'the eliminated player was recorded as a winner')
+end)
+
+t.test('and a fighter who was still IN it when they dropped is still spared', function()
+    -- The other side of the same predicate. A fix that recorded every drop
+    -- would pass the test above and undo what was asked for.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    server.drop(3)
+
+    t.equals(#server.recorded(), 0,
+        'a player still in the fight was given a loss for crashing')
+end)
+
+t.test('and a fighter on the floor with lives LEFT counts as still fighting', function()
+    -- alive = false is not elimination on the shipped config: with lives
+    -- above 1 a player waiting out the respawn delay is coming back, and
+    -- RemovePlayer sets alive = false on the way out regardless -- so lives
+    -- is what has to separate them.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    local matchId = liveRound(server)
+    local row = server.lobby.Get(matchId).players[3]
+    row.alive = false
+    row.lives = 2
+
+    server.drop(3)
+
+    t.equals(#server.recorded(), 0,
+        'a player waiting to respawn was treated as already out and given a loss')
+end)
+
+t.test('and nobody is told a knocked-out player "walked out of the fight"', function()
+    -- They stopped being part of the fight when they were eliminated. The
+    -- people still in it were told about it then.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    local matchId = liveRound(server)
+    knockOut(server, matchId, 3)
+
+    server.fire('leaveMatch', 3, {})
+
+    t.notContains(server.told(1), 'the fight',
+        'the fighters were told somebody left a fight they were already out of')
+end)
+
 os.exit(t.summary())

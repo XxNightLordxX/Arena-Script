@@ -1914,8 +1914,17 @@ function ArenaLobby.SetTeam(src, teamKey)
     local team, reason = resolveTeam(match, teamKey, target)
     if reason then return false, reason end
 
+    -- BROADCAST ONLY WHEN THE SIDE ACTUALLY CHANGED, which is the same fix
+    -- SetReady carries and for the same reason. Picking the side you are
+    -- already on is legal -- resolveTeam subtracts you from your own cap --
+    -- and it used to cost a full-server snapshot rebuild every time: the
+    -- leaderboard refreshed, the config block and match list rebuilt, and
+    -- one event per recipient. setTeam shares RATE.choice at 250ms, so one
+    -- client could pay for that four times a second, and on a busy server
+    -- Broadcast is O(recipients x live side-bets).
+    local was = player.team
     player.team = team
-    ArenaLobby.Broadcast()
+    if was ~= team then ArenaLobby.Broadcast() end
     return true, nil
 end
 
@@ -2134,7 +2143,14 @@ function ArenaLobby.AddSpectator(src, matchId)
         return false, 'error.already_in_match'
     end
 
-    ArenaLobby.RemoveSpectator(target)      -- one match at a time
+    -- ALREADY WATCHING THIS ONE? Then nothing below changes anything, and
+    -- the whole body is a remove, a re-add, a bucket exit, a bucket enter
+    -- and TWO broadcasts -- for a request whose answer is "yes, you are".
+    if spectatorIndex[target] == match.id then return true, nil end
+
+    -- QUIET, because this function broadcasts at the end. Left loud it sent
+    -- two full snapshots per call: RemoveSpectator's and this one's.
+    ArenaLobby.RemoveSpectator(target, true)      -- one match at a time
     match.spectators[target] = true
     spectatorIndex[target] = match.id
 
@@ -2161,8 +2177,10 @@ function ArenaLobby.AddSpectator(src, matchId)
 end
 
 --- @param src any
+--- @param quiet boolean? -- skip the broadcast; for a caller that is about
+---        to send one of its own. AddSpectator is the only one.
 --- @return boolean ok -- false when they were not watching anything
-function ArenaLobby.RemoveSpectator(src)
+function ArenaLobby.RemoveSpectator(src, quiet)
     local target = tonumber(src)
     if not target then return false end
 
@@ -2187,7 +2205,7 @@ function ArenaLobby.RemoveSpectator(src)
         ArenaDispatch.ExitBucket(target)
     end
 
-    ArenaLobby.Broadcast()
+    if not quiet then ArenaLobby.Broadcast() end
     return true
 end
 

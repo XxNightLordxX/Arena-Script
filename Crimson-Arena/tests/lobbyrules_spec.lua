@@ -238,6 +238,19 @@ local function newArena(wallets, mutate, jobs)
     --- @return table[]
     function server.recorded() return recorded end
 
+    --- How many heads one Broadcast reaches right now. A test that wants to
+    --- say "one broadcast, not two" has to know what one costs.
+    --- @return integer
+    function server.recipientCount()
+        local mark = #sent
+        server.lobby.Broadcast()
+        local pushes = 0
+        for index = mark + 1, #sent do
+            if sent[index].event == 'crimson_arena:client:state' then pushes = pushes + 1 end
+        end
+        return pushes
+    end
+
     --- What one player was told, in order. Only the toasts: the state
     --- snapshot goes to the same players down the same native.
     ---
@@ -1288,6 +1301,112 @@ t.test('and nobody is told a knocked-out player "walked out of the fight"', func
 
     t.notContains(server.told(1), 'the fight',
         'the fighters were told somebody left a fight they were already out of')
+end)
+
+-- ======================================================================
+-- AN AMPLIFICATION BUDGET: A REQUEST THAT CHANGES NOTHING COSTS NOTHING
+-- ======================================================================
+--
+-- ArenaLobby.Broadcast refreshes the leaderboard, rebuilds the config block
+-- and the whole match list, then builds a per-head snapshot and fires one
+-- event for EVERY recipient on the server. It is O(recipients x live
+-- side-bets). So any handler that broadcasts unconditionally turns one
+-- client event into N -- and every one of these shares RATE.choice or
+-- RATE.spectate, which a client can pay four times a second.
+--
+-- This was found and fixed once by hand on setReady, and the same shape was
+-- still sitting in setTeam and spectateMatch. That is what a per-handler
+-- fix gets you; this table is the general rule instead, so the next handler
+-- with the same shape fails here rather than shipping.
+
+--- Fires `event` twice with the same payload and returns what the SECOND
+--- call cost in snapshots. The first is allowed to cost whatever it likes:
+--- it is the one that changes something.
+local function costOfRepeat(server, event, src, payload)
+    server.fire(event, src, payload)
+    local before = server.snapshots()
+    server.fire(event, src, payload)
+    return server.snapshots() - before
+end
+
+t.test('readying up twice costs one broadcast, not two', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    openLobby(server, 0, { 1, 2 })
+
+    t.equals(costOfRepeat(server, 'setReady', 1, { ready = true }), 0,
+        'a repeated ready rebuilt and pushed the whole snapshot again')
+end)
+
+t.test('THE UNFIXED TWIN: and picking the side you are already on costs nothing', function()
+    -- Legal, and it used to cost a full-server rebuild every time:
+    -- resolveTeam subtracts you from your own cap, so setting your team to
+    -- your team succeeds and broadcast.
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'a team match could not be opened')
+    server.fire('joinMatch', 2, { matchId = match.id })
+
+    t.equals(costOfRepeat(server, 'setTeam', 1, { teamKey = 'crimson' }), 0,
+        'picking the same side again rebuilt and pushed the whole snapshot')
+end)
+
+t.test('and asking to watch the match you are already watching costs nothing', function()
+    -- This one cost TWO snapshots per call, not one: AddSpectator called
+    -- RemoveSpectator, which broadcast, and then broadcast again itself --
+    -- plus a routing-bucket exit and re-entry for a request whose honest
+    -- answer is "yes, you are".
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    local matchId = openLobby(server, 0, { 1, 2 })
+
+    t.equals(costOfRepeat(server, 'spectateMatch', 3, { matchId = matchId }), 0,
+        'watching the same match again rebuilt and pushed the whole snapshot')
+end)
+
+t.test('and SWITCHING which match you watch costs one broadcast, not two', function()
+    -- The repeat above never reaches RemoveSpectator -- the early return
+    -- gets there first -- so it cannot see the second half of this defect.
+    -- A switch does reach it: AddSpectator calls RemoveSpectator, which
+    -- broadcast, and then broadcast again itself. Two full-server snapshots
+    -- for one request, at RATE.spectate.
+    -- Four players: two fighting the first match, one to open a second, and
+    -- one to do the watching. Player 2 cannot open the second -- they are
+    -- already in the first, and Create refuses that.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000, [4] = 5000 })
+    local first = openLobby(server, 0, { 1, 2 })
+
+    server.fire('createMatch', 4, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local second
+    for _, match in ipairs(server.lobby.All()) do
+        if match.id ~= first then second = match.id end
+    end
+    t.isNotNil(second, 'a second match could not be opened to switch to')
+
+    server.fire('spectateMatch', 3, { matchId = first })
+    local before = server.snapshots()
+    server.fire('spectateMatch', 3, { matchId = second })
+    local cost = server.snapshots() - before
+
+    t.isTrue(cost > 0, 'switching match told nobody at all')
+    t.isTrue(cost <= server.recipientCount(),
+        ('switching match cost %d pushes, which is more than one broadcast to %d recipients')
+            :format(cost, server.recipientCount()))
+end)
+
+t.test('but a request that DOES change something still tells everybody', function()
+    -- The other direction, and the reason the three above are not just
+    -- "never broadcast". A guard that swallowed the real change would leave
+    -- every other player reading a roster that is out of date.
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+    local before = server.snapshots()
+    server.fire('setTeam', 1, { teamKey = 'ash' })
+
+    t.isTrue(server.snapshots() > before, 'changing sides told nobody')
 end)
 
 os.exit(t.summary())

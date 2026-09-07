@@ -20,17 +20,17 @@
        84   Lobby         The NPC players walk up to
       181   Schedule      Opening hours: when the door is actually open
       219   Match         Lives, timers, player counts, win condition
-      439   Teams         The sides, and whether they may be uneven
-      586   Modes         Free-for-all and team deathmatch
-      790   DefaultMode   Which of them a new lobby opens on
-      809   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1019  UI            Panel colours, logo and title
-      1077  Permissions   Who may open a match, who may force-stop one
-      1158  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1730   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2188   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2198   Webhook       Optional: a Discord line per finished match
-     2235   Dispatch      Optional: keeping police and EMS out of the arena
+      465   Teams         The sides, and whether they may be uneven
+      612   Modes         Free-for-all and team deathmatch
+      816   DefaultMode   Which of them a new lobby opens on
+      835   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1045  UI            Panel colours, logo and title
+      1103  Permissions   Who may open a match, who may force-stop one
+      1184  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1756   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2214   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2224   Webhook       Optional: a Discord line per finished match
+     2261   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -391,6 +391,32 @@ Config.Match = {
     crossfireGuard = {
         enabled = true,
     },
+
+    -- HOW FAR APART TWO PLAYERS MAY BE FOR ONE TO HAVE KILLED THE OTHER, in
+    -- metres. `0` switches the check off.
+    --
+    -- WHY THERE IS A CHECK AT ALL. The server cannot see a kill happen: a
+    -- dying client reports its own death and names its killer, and until now
+    -- the only questions asked of that name were "is it a real player in
+    -- this match" and "were they allowed to damage me". Nothing else. So one
+    -- accomplice could hand another every kill in the round from anywhere on
+    -- the map, without either of them firing a shot -- which decides a team
+    -- deathmatch, a last-man-standing round and the pot with it.
+    --
+    -- THIS DOES NOT MAKE THE REPORT HONEST. Two players standing together
+    -- can still trade kills that did not happen, and no server-side check
+    -- short of simulating the shot can tell that from a real fight. What it
+    -- does is force them to BE THERE -- which costs them the round they are
+    -- trying to win, and is the difference between a farm that runs itself
+    -- and one that has to be played.
+    --
+    -- 150 IS DELIBERATELY GENEROUS. A sniper across the Trailer Park is
+    -- about 90; the sky arena's diagonal is under 120. It is a ceiling on
+    -- the absurd, not a range limit on a fight -- and the arena boundary
+    -- already bounds the honest case. A refused claim costs the killer the
+    -- credit and nothing else: the death still counts, and the console says
+    -- so once with both distances.
+    maxKillDistance = 150.0,
 
     keepOutBarrier = {
         enabled = true,

@@ -986,7 +986,21 @@ local function reclaimWeapons(ox, src)
         local given = byPlayer[src]
         if given then
             for _, item in ipairs(given) do
-                pcall(function() return ox:RemoveItem(src, item.name, 1, item.metadata) end)
+                -- BY NAME ONLY. ox_inventory treats a metadata argument on a
+                -- removal as a FILTER: it takes back the copy whose metadata
+                -- MATCHES, and the metadata this record holds is what the
+                -- weapon was ISSUED with -- `{ ammo = <a full magazine> }`.
+                -- A player who fires a single round no longer matches it, so
+                -- the removal found nothing and the arena's own gun stayed in
+                -- their pockets. With the door on that never showed, because
+                -- `restore` clears the inventory wholesale; with it off --
+                -- a documented, supported setting -- it was a free firearm
+                -- per player per round.
+                --
+                -- The metadata is still kept on the record, because
+                -- SwapWeapon's rollback re-adds the weapon with it. It is
+                -- only the removal that must not filter on it.
+                pcall(function() return ox:RemoveItem(src, item.name, 1) end)
             end
             byPlayer[src] = nil
         end

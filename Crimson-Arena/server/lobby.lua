@@ -1954,7 +1954,7 @@ function ArenaLobby.SetLoadout(src, request)
     -- THE PANEL GREYS THE SCREEN OUT AND THIS IS THE RULE. The panel is a
     -- suggestion; a crafted request is refused here, not merely undrawn
     -- there.
-    if #Arena.LadderTiersFor(match.modeKey) > 0 then
+    if Arena.PlaysLadder(match.modeKey) then
         ArenaDebug('loadout: %s picked, but %s issues its own loadout -- refused.',
             tostring(target), tostring(match.modeKey))
         return false, 'error.mode_picks_loadout'

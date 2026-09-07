@@ -25,7 +25,7 @@
     a promotion that does not reach a real inventory is a promotion that
     changed nothing a player can hold.
 
-    THIRTY-EIGHT TESTS, on deliberately different parts of it:
+    FORTY-TWO TESTS, on deliberately different parts of it:
 
       THE DRAW         one weapon per tier, melee first, stable all round,
                        different between rounds, and short pools survived.
@@ -165,7 +165,9 @@ end
 ---        DOES NOT MEAN "unseeded": see `nextSeed` below.
 --- @param opts table? -- { noInventory = true } to run the whole server as
 ---        one WITHOUT ox_inventory started, which is the `no-inventory`
----        answer ArenaAmmo.SwapWeapon gives and a path nothing had reached
+---        answer ArenaAmmo.SwapWeapon gives and a path nothing had reached;
+---        { positions = t } to place bodies, so a test can put two players
+---        far enough apart that the kill claim between them is refused
 local function newServer(mutate, seed, opts)
     opts = opts or {}
     local players = {}
@@ -217,6 +219,10 @@ local function newServer(mutate, seed, opts)
         GetPlayers = function() return { '1', '2', '3', '4', '5', '6' } end,
         GetPlayerPed = function(src) return src end,
         GetEntityCoords = function(ped)
+            -- A TEST MAY PLACE THE BODIES. `opts.positions[src] = nil` is a
+            -- ped the server cannot see, which resolveKiller is documented
+            -- to fail OPEN on -- so the absence has to be reachable too.
+            if opts.positions then return opts.positions[tonumber(ped) or -1] end
             return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
         end,
         GetVehiclePedIsIn = function() return 0 end,
@@ -406,6 +412,23 @@ local function newServer(mutate, seed, opts)
         end
         table.sort(out)
         return out
+    end
+
+    --- The end-of-round card one player was sent, or nil.
+    ---
+    --- READ FROM THE WIRE, because by the time a round has ended the match
+    --- record is gone -- ArenaMatch.End finishes with ArenaLobby.Destroy --
+    --- so `server.row` cannot answer anything about placement or earnings.
+    --- The card is what the player actually sees, which is the better thing
+    --- to assert against anyway.
+    function server.resultFor(target)
+        for index = #sent, 1, -1 do
+            local message = sent[index]
+            if message.event == 'crimson_arena:client:results' and message.target == target then
+                return message.payload
+            end
+        end
+        return nil
     end
 
     function server.board()
@@ -644,8 +667,13 @@ t.test('a kill made ON the top tier tops the ladder, and re-issues nothing on th
     for step = 1, top - 1 do s.trade(victims[step], 1) end
 
     t.equals(s.row(1).tier, top, ('%d kills should stand on the top tier'):format(top - 1))
-    t.isTrue(s.row(1).ladderFinished ~= true,
-        'reaching the top tier is not topping the ladder -- the kill made FROM it is')
+
+    -- REACHING THE TOP TIER IS NOT TOPPING THE LADDER -- the kill made FROM
+    -- it is. Asserted through the round rather than through a flag: the
+    -- server keeps no "finished" field any more, because a second copy of
+    -- something the score already answers is a second copy that can drift.
+    s.settle(2)
+    t.equals(s.endedWith(), nil, 'standing on the top tier does not end the round')
 
     -- THE ROOM IS TOLD, once, and not the player themselves.
     t.isTrue(s.told(2):find('top tier', 1, true) ~= nil,
@@ -658,7 +686,6 @@ t.test('a kill made ON the top tier tops the ladder, and re-issues nothing on th
     local before = s.ox.count(1, weaponAt(s, top))
     s.trade(4, 1)
 
-    t.equals(s.row(1).ladderFinished, true, 'the kill made from the top tier tops the ladder')
     t.equals(s.ox.count(1, weaponAt(s, top)), before,
         'a kill from the top tier must not re-issue the weapon they are already holding')
 
@@ -803,7 +830,11 @@ t.test('one victim cannot be farmed for a whole ladder', function()
         end)
         typo.play(5)
         for _ = 1, 5 do typo.trade(2, 1) end
-        t.equals(typo.row(1).tier, 3,
+        -- ASSERTED ON ladderKills, NOT ON tier. The tier CLAMPS to the top of
+        -- the ladder, so on a three-tier ladder a cap of 2 and no cap at all
+        -- both read as tier 3 -- and removing the cap entirely passed this
+        -- test until it was written this way.
+        t.equals(typo.row(1).ladderKills, 2,
             ('maxTiersPerVictim = %s should fall back to the default, not remove the cap')
                 :format(tostring(junk)))
     end
@@ -825,12 +856,25 @@ t.test('the cap never makes the ladder unreachable in a small lobby', function()
 
     for _ = 1, top do s.trade(2, 1) end
 
-    t.equals(s.row(1).ladderKills, top,
-        'in a 1v1 the only opponent there is has to be able to carry the whole climb')
-    t.equals(s.row(1).ladderFinished, true, 'so the ladder can actually be topped')
+    -- ONE OPPONENT IS NOT ENOUGH, and that is deliberate. The floor divides
+    -- by at least two however few opponents there really are, so the ladder
+    -- can never be topped off a single person -- which is exactly the run
+    -- two colluding accounts were using to take the pot in a 1v1.
+    t.equals(s.row(1).ladderKills, math.ceil(top / 2),
+        'a 1v1 gets half the ladder off its one opponent, and no more')
 
     s.settle(2)
-    t.equals(s.endedWith(), 'match.ended_ladder', 'and the round ends on it')
+    t.equals(s.endedWith(), nil, 'so a 1v1 is decided by the clock, not by topping the ladder')
+
+    -- THREE PLAYERS IS WHERE IT BECOMES REACHABLE, which is the lobby the
+    -- raise exists for: two opponents, seven tiers, four apiece.
+    local small = newServer()
+    small.play(3)
+    for round = 1, small.tierCount() do small.trade(2 + (round % 2), 1) end
+    t.equals(small.row(1).ladderKills, small.tierCount(),
+        'spread over two opponents, a three-man lobby can top the ladder')
+    small.settle(2)
+    t.equals(small.endedWith(), 'match.ended_ladder', 'and the round ends on it')
 
     -- AND THE FLOOR IS THE LADDER'S NEED, not a blanket exemption: with five
     -- opponents against seven tiers it works out at the shipped cap of 2, so
@@ -1312,8 +1356,8 @@ t.test('two players topping the ladder in one sweep is a draw, and pays nobody',
     s.trade(3, 2)
     s.trade(4, 2)
 
-    t.equals(s.row(1).ladderFinished, true, 'fighter 1 topped it')
-    t.equals(s.row(2).ladderFinished, true, 'and so did fighter 2, in the same sweep')
+    t.equals(s.row(1).ladderKills, 2, 'fighter 1 topped a two-tier ladder')
+    t.equals(s.row(2).ladderKills, 2, 'and so did fighter 2, in the same sweep')
 
     s.settle(2)
     t.equals(s.endedWith(), 'match.ended_draw',
@@ -1640,7 +1684,6 @@ t.test('a second round clears every number the ladder keeps', function()
     t.equals(s.row(1).tiersLost, nil, 'nor tiers lost')
     t.equals(s.row(1).ladderVictims, nil,
         'nor last round\'s victims, which would count against this round\'s cap')
-    t.equals(s.row(1).ladderFinished, nil, 'nor a finished flag from a ladder they already topped')
 end)
 
 t.test('the ladder beats the clock, the score limit and the last one standing', function()
@@ -1679,7 +1722,7 @@ t.test('the ladder beats the clock, the score limit and the last one standing', 
     racing.play(4)
     racing.trade(2, 1)
     racing.trade(3, 1)
-    t.equals(racing.row(1).ladderFinished, true, 'the ladder is topped')
+    t.equals(racing.row(1).ladderKills, 2, 'the two-tier ladder is topped')
 
     racing.match_().endsAt = os.time() - 1
     racing.settle(2)
@@ -1757,6 +1800,189 @@ t.test('a tier may be written as a bare key, and the catalogue is never edited',
     entry.components[#entry.components + 1] = 'at_scope_max'
     t.equals(#(catalogue.components or {}), before,
         'appending to a resolved entry edited the operator\'s live config')
+end)
+
+-- ======================================================================
+-- 39-42. WHAT THE EIGHTEEN AGENTS FOUND
+-- ======================================================================
+
+t.test('a mode with one playable tier arms its players and spends their lives', function()
+    -- THREE PLACES ASKED THE SAME QUESTION AND TWO ANSWERED IT DIFFERENTLY.
+    -- ladderOf refuses to play a ladder of fewer than two tiers; the loadout
+    -- refusal and the panel's lock asked only whether the mode had ANY
+    -- playable tier. So a gun game with exactly one -- six of seven pools
+    -- mistyped, or a catalogue with most weapons switched off -- had its
+    -- loadout screen shut by one rule and no ladder handed out by the other,
+    -- and the whole lobby walked into the arena EMPTY-HANDED.
+    local s = newServer(function(config)
+        config.Modes.gungame.gunGameTiers = { { 'knife' } }
+    end)
+
+    t.equals(s.arena.PlaysLadder('gungame'), false, 'one tier is not a ladder')
+
+    -- SO THE PICKER IS OPEN, because there is nothing to replace it.
+    s.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'gungame', entryFee = 0, account = 'cash',
+    })
+    local id = s.lobby.All()[1].id
+    s.fire('joinMatch', 2, { matchId = id, account = 'cash' })
+    t.equals(select(1, s.lobby.SetLoadout(1, { weapons = { { key = 'rifle' } } })), true,
+        'a mode that hands out no ladder must let its players pick')
+
+    -- AND THE MODE ADVERTISES NO LADDER, which is what the panel locks on.
+    local modes = {}
+    for _, mode in ipairs(s.arena.GetEnabledModes()) do modes[mode.key] = mode end
+    t.equals(modes.gungame.tiers, nil, 'and says so on the wire')
+
+    for src = 1, 2 do s.fire('setReady', src, { ready = true }) end
+    for _ = 1, 4 do
+        if s.lobby.Get(id).state == 'live' then break end
+        s.settle(1)
+    end
+
+    -- Read off this match's own record: server.row follows the id server.play
+    -- opened, and this test opened its own.
+    local function row(src) return s.lobby.Get(id).players[src] end
+
+    t.isTrue(row(1).loadout.weapons[1] ~= nil,
+        'and nobody walks into the arena empty-handed')
+    t.equals(row(1).loadout.weapons[1].key, 'rifle', 'they carry what they picked')
+
+    -- AND LIVES ARE SPENT, because this is an ordinary round now.
+    local before = row(1).lives
+    s.kill(1, 2)
+    t.equals(row(1).lives, before - 1, 'a death costs a life in a mode with no ladder')
+end)
+
+t.test('a kill claimed from across the map is not credited', function()
+    -- THE SERVER CANNOT SEE A KILL. A dying client names its own killer, and
+    -- until this the only questions asked of that name were "is it a real
+    -- player in this match" and "were they allowed to damage me" -- so one
+    -- accomplice handed another every kill in the round from anywhere on the
+    -- map, without either firing a shot. That decides a team deathmatch, a
+    -- last-man-standing round, and the pot.
+    local places = {}
+    local s = newServer(function(config)
+        config.Match.maxKillDistance = 100.0
+    end, nil, { positions = places })
+    s.play(3)
+
+    -- NOT THE ORIGIN for either of them: positionOf treats 0,0 as "this ped
+    -- has not streamed in" and answers nil, which fails open -- so a test
+    -- that parked a body there would be measuring the fail-open path while
+    -- believing it was measuring the ceiling.
+    places[1] = { x = 1000.0, y = 2000.0, z = 30.0 }
+    places[2] = { x = 1040.0, y = 2000.0, z = 30.0 }
+    s.trade(2, 1)
+    t.equals(s.row(1).kills, 1, 'a kill from 40m is an ordinary kill')
+
+    places[2] = { x = 5000.0, y = 2000.0, z = 30.0 }
+    s.trade(2, 1)
+    t.equals(s.row(1).kills, 1, 'a kill claimed from 4km away is not credited')
+    t.equals(s.row(2).deaths, 2, 'though the death still counted -- only the credit is refused')
+
+    -- HEIGHT COUNTS. The sky arena is a platform above the world, so a flat
+    -- measurement would read a player who has fallen off it as next door.
+    places[2] = { x = 1000.0, y = 2000.0, z = 4030.0 }
+    s.trade(2, 1)
+    t.equals(s.row(1).kills, 1, 'nor one from 4km straight down')
+
+    -- IT FAILS OPEN. A ped the server cannot see has no position, and
+    -- refusing a real kill because one body had not streamed in would take a
+    -- fought kill off an honest player.
+    places[2] = nil
+    s.trade(2, 1)
+    t.equals(s.row(1).kills, 2, 'a position the server cannot read credits the kill')
+
+    -- AND `0` SWITCHES IT OFF.
+    local off = newServer(function(config)
+        config.Match.maxKillDistance = 0
+    end, nil, { positions = places })
+    off.play(2)
+    places[1] = { x = 1000.0, y = 2000.0, z = 30.0 }
+    places[2] = { x = 9000.0, y = 9000.0, z = 30.0 }
+    off.trade(2, 1)
+    t.equals(off.row(1).kills, 1, 'with the ceiling off, distance decides nothing')
+end)
+
+t.test('parking your weapon is not immunity from dying', function()
+    -- THE TWO PATHS WERE ASYMMETRIC IN THE ATTACKER'S FAVOUR. A refused swap
+    -- refunded the DEMOTION and never the promotion -- and ox_inventory
+    -- refuses the removal for a tier weapon sitting in a trunk, and the add
+    -- for a full inventory, both of which the player chooses. A climber who
+    -- arranged either was immune to the only cost this mode has while their
+    -- kills went on counting.
+    local s = newServer()
+    s.play(4)
+
+    for _, victim in ipairs({ 2, 3, 4 }) do s.trade(victim, 1) end
+    t.equals(s.row(1).tier, 4, 'three kills up')
+
+    -- Their pockets refuse everything from here: the demotion cannot move.
+    for tier = 1, s.tierCount() do s.ox.refuseAdd[weaponAt(s, tier)] = true end
+    s.ox.pockets[1] = {}
+
+    local lost = s.row(1).tiersLost or 0
+    s.kill(1, 2)
+    s.revive(1)
+
+    t.equals((s.row(1).tiersLost or 0), lost + 1,
+        'a death costs a tier whether or not the weapon would move')
+    t.equals(s.row(1).kills, 3, 'and the kills they earned are untouched')
+
+    -- THE SCORE IS WHAT THEY EARNED, so the board and the winner follow it
+    -- even while their hands do not.
+    s.settle(1)
+    local board = s.board()
+    local mine
+    for _, row in ipairs(board) do if row.id == 1 then mine = row end end
+    t.isTrue(mine ~= nil, 'the climber is on the board')
+    t.equals(mine.tier, 3, 'showing the tier their score earned, not the one they hold')
+end)
+
+t.test('the results board ranks a gun game on the ladder, not on raw kills', function()
+    -- THE MODE HANDED ITS WINNER A LOSING PLACEMENT. The board sorts on the
+    -- earned tier and decideOnLadder crowns it; assignFinalPlacements ranked
+    -- on raw kills -- so the results card read "You Won" and "Placed #2" at
+    -- the same time, because a player who traded three kills for three
+    -- deaths outranked one who took two for nothing six tiers above them.
+    local s = newServer(function(config)
+        config.Modes.gungame.roundTimeSeconds = 120
+    end)
+    s.play(5)
+
+    -- Fighter 1: two kills, no deaths.
+    s.trade(3, 1)
+    s.trade(4, 1)
+    -- Fighter 2: three kills and three deaths -- ahead on kills, on tier 1.
+    s.trade(3, 2)
+    s.trade(4, 2)
+    s.trade(5, 2)
+    -- FIGHTER 2'S DEATHS HAVE NO KILLER, so nobody else climbs on them --
+    -- charging them to fighter 5 made FIVE the ladder leader, and the first
+    -- draft of this test asserted against a winner it had created itself.
+    for _ = 1, 3 do
+        s.kill(2, nil)
+        s.revive(2)
+    end
+
+    t.isTrue(s.row(2).kills > s.row(1).kills, 'fighter 2 is ahead on kills')
+    t.isTrue(s.row(1).tier > s.row(2).tier, 'and fighter 1 is ahead on the ladder')
+
+    s.match_().endsAt = os.time() - 1
+    s.settle(2)
+
+    t.equals(table.concat(s.winners(), ','), '1', 'the ladder leader wins')
+
+    local won, lost = s.resultFor(1), s.resultFor(2)
+    t.isTrue(won ~= nil and lost ~= nil, 'both fighters were sent a results card')
+    t.equals(won.won, true, 'the ladder leader is told they won')
+    t.equals(won.placement, 1,
+        ('and placed first -- the card used to read "You Won" and "Placed #%s" at once')
+            :format(tostring(won.placement)))
+    t.isTrue(won.placement < lost.placement,
+        ('the winner outranks the kill leader -- got #%s against #%s')
+            :format(tostring(won.placement), tostring(lost.placement)))
 end)
 
 os.exit(t.summary())

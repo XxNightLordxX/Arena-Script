@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 77 functions
+#### `shared/arena.lua` — 78 functions
 
 | Function | What it does |
 |---|---|
@@ -337,6 +337,7 @@ listed; the source documents them where they are.
 | `Arena.GetArenaByKey(key)` | One enabled arena by key, or nil. |
 | `Arena.GetEnabledModes()` | Every mode an operator has left switched on, in config order. |
 | `Arena.GetModeByKey(key)` | One enabled mode by key, or nil. |
+| `Arena.PlaysLadder(modeKey)` | Whether a mode plays a gun-game ladder at all -- the one answer every caller reads. |
 | `Arena.LadderTiersFor(modeKey)` | Every tier of a mode's gun-game ladder that still has a playable weapon in it, in climbing order. |
 | `Arena.RoundSecondsFor(modeKey)` | How long a round of one mode runs: the mode's own clock, falling back to Config.Match's. |
 | `Arena.ModeUsesTeams(modeKey)` | True when this mode puts players on sides. |

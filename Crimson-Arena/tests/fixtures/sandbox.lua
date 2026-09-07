@@ -194,7 +194,30 @@ end
 --- sandbox rather than reaching the real process globals.
 --- @param overrides table<string, any>?
 --- @return table env
+--- The natives every server file may reach for, with answers that decide
+--- nothing.
+---
+--- WHY THESE TWO IN PARTICULAR. server/match.lua asks where two players are
+--- standing before it credits a kill -- a claim from across the map is a
+--- claim nobody fired -- so GetPlayerPed and GetEntityCoords sit on the
+--- ordinary death path now rather than only on the respawn one, and a spec
+--- that had no reason to stub them raised on the first kill of its round.
+---
+--- ONE POSITION FOR EVERYBODY, which is a distance of zero and therefore
+--- inside any ceiling: a default must not change what an existing spec
+--- measures. A spec that is ABOUT position overrides both, as gungame_spec
+--- and the respawn specs do. Not the origin -- both readers in match.lua
+--- treat 0,0,0 as "this ped has not streamed in" and answer nil for it.
+local NATIVE_DEFAULTS = {
+    GetPlayerPed = function(src) return tonumber(src) or 1 end,
+    GetEntityCoords = function() return { x = 1000.0, y = 2000.0, z = 30.0 } end,
+}
+
 function Sandbox.newEnv(overrides)
+    overrides = overrides or {}
+    for name, fn in pairs(NATIVE_DEFAULTS) do
+        if overrides[name] == nil then overrides[name] = fn end
+    end
     local env = {}
     for key, value in pairs(_G) do env[key] = value end
     env._G = env

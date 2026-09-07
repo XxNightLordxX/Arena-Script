@@ -192,7 +192,7 @@ local function ladderOf(match)
         drawn[#drawn + 1] = pool[math.random(#pool)]
     end
 
-    if #drawn < 2 then
+    if not Arena.PlaysLadder(match.modeKey) then
         if #drawn > 0 then
             ArenaDebug('gun game: %s has only %d playable tier(s) -- not a ladder, playing it as ordinary rules.',
                 tostring(match.modeKey), #drawn)
@@ -268,6 +268,28 @@ local function kitFor(match, player)
     if kit ~= nil then return kit end
     return type(player) == 'table' and type(player.loadout) == 'table'
         and player.loadout.supplies or nil
+end
+
+--- Whether this player's score has topped the ladder.
+---
+--- DERIVED, NEVER STORED, and it used to be a field. `player.ladderFinished`
+--- was a second copy of something tierScore already answers, and the two
+--- came apart the moment anything touched one without the other:
+---
+---   A DEMOTION THAT THE INVENTORY REFUSED. The death charged a tier, the
+---   flag was recomputed as false, the swap was refused, and OnDeath rolled
+---   the charge back -- leaving a player whose score had topped the ladder
+---   flagged as not having done so. They could never win on it, and the
+---   round went to whoever topped it next, as a sole win over a tie.
+---
+--- One reader is what makes that impossible rather than merely fixed, and it
+--- is the same lesson as the scoreboard sorting on the held tier while the
+--- winner was picked on the earned one.
+--- @param player table
+--- @param tiers integer -- how tall the drawn ladder is
+--- @return boolean
+local function topped(player, tiers)
+    return select(2, tierForScore(tierScore(player), tiers)) == true
 end
 
 --- What a player holds on one tier: that tier's weapon at its own configured
@@ -405,7 +427,24 @@ local function creditsTier(match, killer, victim)
     if cap > 0 then
         local opponents = math.max(0, Arena.Count(match.players) - 1)
         local height = #ladderOf(match)
-        local needed = opponents > 0 and math.ceil(height / opponents) or height
+
+        -- TWO VICTIMS, ALWAYS. The floor is divided by at least two however
+        -- few opponents there really are, so topping the ladder can never be
+        -- done off one person.
+        --
+        -- WITHOUT THAT DIVISOR THE RAISE WAS THE EXPLOIT. In a two-player
+        -- match it worked out at the whole ladder, so two accounts -- one
+        -- reporting its own death on a loop -- topped it and took the pot,
+        -- which is the exact run the cap exists to stop, handed back by the
+        -- rule that was meant to make small lobbies playable. And the
+        -- attacker chooses the roster the floor is computed from.
+        --
+        -- The cost is honest and small: in a 1v1 the ladder cannot be
+        -- topped. That round still has a winner -- decideOnLadder crowns the
+        -- highest tier when the clock stops -- and a 1v1 gun game was never
+        -- the shape this mode is for.
+        local spread = math.max(2, opponents)
+        local needed = math.ceil(height / spread)
         if needed > cap then cap = needed end
     end
 
@@ -490,8 +529,9 @@ end
 --- over the weapon and telling them. Does nothing when they are already
 --- standing there.
 ---
---- DECIDES NOTHING about the round. The `ladderFinished` flag it sets is
---- read by the sweep a tick later, the same as every other way a round ends.
+--- DECIDES NOTHING about the round. The sweep reads the score a tick later
+--- and works out for itself whether anybody has topped the ladder, the same
+--- as every other way a round ends.
 --- @param match table
 --- @param player table
 --- @param reasonKey string -- what to tell them: promoted, or knocked back
@@ -501,7 +541,7 @@ local function settleTier(match, player, reasonKey)
     local ladder = ladderOf(match)
     if #ladder == 0 then return true end
 
-    local tier, finished = tierForScore(tierScore(player), #ladder)
+    local tier = tierForScore(tierScore(player), #ladder)
 
     -- ALREADY STANDING THERE. The tier is read off the score, so a kill made
     -- FROM the top tier -- and any second pass over a score already granted
@@ -511,17 +551,7 @@ local function settleTier(match, player, reasonKey)
     -- THE FLAG IS STILL SET, and this is the branch that sets it in the case
     -- that matters: reaching the top tier does not finish the ladder, the
     -- kill made FROM it does, and that kill moves nobody.
-    if tier == player.tier then
-        player.ladderFinished = finished
-        return true
-    end
-
-    -- SET BEFORE THE SWAP, because topping the ladder is something the
-    -- SCORE did and the weapon in their hands has no say in it. Setting it
-    -- after meant a refused swap left it unset -- so a player who really had
-    -- climbed out could never win on the ladder, and the round ran to the
-    -- clock with the win condition the mode exists for quietly disabled.
-    player.ladderFinished = finished
+    if tier == player.tier then return true end
 
     local previous = player.tier and ladder[player.tier] or nil
     local moving = tierLoadout(ladder[tier], kitFor(match, player))
@@ -595,7 +625,9 @@ local function settleTier(match, player, reasonKey)
     -- surprise ending; told, the whole room knows who to hunt for the last
     -- thirty seconds, which is the best part of a gun game.
     local mode = Arena.GetModeByKey(match.modeKey) or {}
-    if mode.announceFinalTier ~= false and tier == #ladder and not finished then
+    if mode.announceFinalTier ~= false and tier == #ladder
+        and not topped(player, #ladder)
+    then
         for _, other in pairs(match.players) do
             if other.src ~= player.src then
                 ArenaNotifyKey(other.src, 'notify.gungame_final_tier', 'warning', player.name)
@@ -869,7 +901,7 @@ local function evaluate(match)
     -- same second.
     local climbed = {}
     for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
-        if player.ladderFinished == true and stillIn(player) then
+        if playingLadder and stillIn(player) and topped(player, #ladder) then
             climbed[#climbed + 1] = player.src
         end
     end
@@ -950,7 +982,20 @@ local function assignFinalPlacements(match)
         if not player.placement then unplaced[#unplaced + 1] = player end
     end
 
+    -- RANKED ON THE LADDER WHERE THERE IS ONE, and that is the third reader
+    -- of this question to be pointed at the same two functions. The board
+    -- sorts on the earned tier and decideOnLadder crowns it; this ranked on
+    -- raw kills, so a gun game handed its WINNER a losing placement -- the
+    -- results card read "You Won" and "Placed #2" at the same time, because
+    -- a player who traded three kills for three deaths outranked one who
+    -- took two for nothing and was six tiers below them.
+    local ladder = #ladderOf(match)
+
     table.sort(unplaced, function(a, b)
+        if ladder > 0 then
+            local aTier, bTier = tierScore(a), tierScore(b)
+            if aTier ~= bTier then return aTier > bTier end
+        end
         local aKills, bKills = Arena.ToInt(a.kills) or 0, Arena.ToInt(b.kills) or 0
         if aKills ~= bKills then return aKills > bKills end
         local aDeaths, bDeaths = Arena.ToInt(a.deaths) or 0, Arena.ToInt(b.deaths) or 0
@@ -1324,6 +1369,40 @@ end
 --- @param match table
 --- @param player table -- the one coming back
 --- @return table[] positions
+--- Where one player's body is, or nil when the server cannot see it.
+---
+--- NIL RATHER THAN THE ORIGIN. GetEntityCoords answers a zero vector for a
+--- ped that has not streamed in, and no arena in this resource sits at
+--- 0,0,0 -- the same reading livePositions below takes, and the reason both
+--- of them check it.
+--- @param src any
+--- @return table|nil coords
+local function positionOf(src)
+    local ped = GetPlayerPed(Arena.ToInt(src) or -1)
+    if not ped or ped == 0 then return nil end
+
+    local coords = GetEntityCoords(ped)
+    if type(coords) ~= 'table' and type(coords) ~= 'userdata' then return nil end
+    if (coords.x == 0.0 or coords.x == 0) and (coords.y == 0.0 or coords.y == 0) then return nil end
+    return coords
+end
+
+--- How far apart two positions are, or nil when either is unknown.
+---
+--- IN THREE DIMENSIONS, because the sky arena is a platform above the world
+--- and a flat measurement between a player on it and one who has fallen off
+--- would read as "next to each other".
+--- @param a table|nil
+--- @param b table|nil
+--- @return number|nil metres
+local function metresBetween(a, b)
+    if not a or not b then return nil end
+    local dx = (a.x or 0.0) - (b.x or 0.0)
+    local dy = (a.y or 0.0) - (b.y or 0.0)
+    local dz = (a.z or 0.0) - (b.z or 0.0)
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
 local function livePositions(match, player, sameSideWanted)
     local teams = Arena.ModeUsesTeams(match.modeKey)
     local own = teams and teamOf(match, player) or nil
@@ -1563,6 +1642,32 @@ local function resolveKiller(match, victim, killerSrc)
     local killer = match.players[killerId]
     if not killer then return nil end
     if not Arena.CanDamage(match.modeKey, killer.team, victim.team) then return nil end
+
+    -- AND WERE THEY ANYWHERE NEAR. Everything above this line is a question
+    -- about the ROSTER; none of it asks whether the kill could have happened.
+    -- A dying client names its own killer, so without this one accomplice
+    -- hands another every kill in the round from across the map, and that
+    -- decides a team deathmatch, a last-man-standing round and the pot.
+    --
+    -- IT DOES NOT MAKE THE REPORT HONEST -- two players standing together
+    -- can still trade kills nobody fired -- but it forces them to be there,
+    -- which costs them the round they are trying to win.
+    --
+    -- FAILS OPEN, ON PURPOSE. GetEntityCoords answers a zero vector for a
+    -- ped that has not streamed in, and refusing a real kill because the
+    -- server could not see one of the two bodies would take a fought kill
+    -- off an honest player. A ceiling nobody can reach is worth more than a
+    -- guard that eats real results.
+    local ceiling = math.max(0, tonumber(Config.Match.maxKillDistance) or 0)
+    if ceiling > 0 then
+        local far = metresBetween(positionOf(killer.src), positionOf(victim.src))
+        if far and far > ceiling then
+            ArenaDebug('kill refused on match %s: %s says %s killed them from %.1fm, over the %.1fm ceiling.',
+                tostring(match.id), tostring(victim.src), tostring(killerId), far, ceiling)
+            return nil
+        end
+    end
+
     return killer
 end
 
@@ -1938,13 +2043,13 @@ function ArenaMatch.Start(matchId)
         -- THE LADDER STARTS AT THE BOTTOM, every round, and every number it
         -- keeps goes with it. Rows are reused between rounds, so a player
         -- who topped the ladder last time would otherwise open the next one
-        -- holding the top weapon and already flagged as having won it, with
-        -- last round's victims still counted against this round's cap.
+        -- holding the top weapon and standing on a score that has already
+        -- won, with last round's victims still counted against this round's
+        -- cap.
         player.tier = nil
         player.tiersLost = nil
         player.ladderKills = nil
         player.ladderVictims = nil
-        player.ladderFinished = nil
 
         -- RE-RESOLVED, NOT TRUSTED. What the lobby stored was checked against
         -- the catalogue as it stood when the player picked it, and an
@@ -2055,20 +2160,24 @@ function ArenaMatch.OnDeath(src, killerSrc)
     -- so a brutal round cannot push anyone into debt they can never climb
     -- out of.
     if playingLadder then
-        local charged = tierScore(player) > 0
-        if charged then
+        if tierScore(player) > 0 then
             player.tiersLost = (Arena.ToInt(player.tiersLost) or 0) + 1
         end
 
-        -- AND HANDED BACK IF THE TIER DID NOT ACTUALLY MOVE. A refused swap
-        -- -- the weapon parked in a trunk between the death and the
-        -- demotion -- left the score saying one tier and the player holding
-        -- another, and holding the BETTER one: charged for a fall they did
-        -- not take. The next kill or death re-derived and self-healed, which
-        -- is not the same as being right in between.
-        if charged and not settleTier(match, player, 'notify.gungame_demoted') then
-            player.tiersLost = player.tiersLost - 1
-        end
+        -- AND IT IS NEVER HANDED BACK. A refused swap means the weapon
+        -- would not move, not that the death did not happen -- and refunding
+        -- the tier for it made PARKING YOUR WEAPON A WAY OF NOT DYING.
+        -- ox_inventory refuses the removal for a tier weapon sitting in a
+        -- trunk, and refuses the add for a full inventory; both are things
+        -- the player chooses. A climber who arranged either was immune to
+        -- the only cost this mode has, while their kills went on counting.
+        --
+        -- The promotion was never refunded on the same failure, which is
+        -- what made the pair asymmetric in the attacker's favour. Neither is
+        -- now: the score is what a player EARNED, and what their pockets
+        -- will hold is an inventory problem that settleTier retries on the
+        -- next kill or death.
+        settleTier(match, player, 'notify.gungame_demoted')
     end
 
     -- THE DOWN FLAG COMES BACK DOWN HERE, at the death, not at the revive.

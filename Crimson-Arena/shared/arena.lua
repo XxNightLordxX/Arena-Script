@@ -388,9 +388,12 @@ function Arena.GetEnabledModes()
                 -- does not climb one. A player choosing gun game in the
                 -- lobby can see what they are signing up to; without it the
                 -- height was a surprise delivered by the first promotion.
+                -- THROUGH Arena.PlaysLadder, so the panel shuts the loadout
+                -- screen on exactly the modes the server refuses picks for
+                -- and exactly the modes that really hand a ladder out.
                 tiers = (function()
-                    local height = #Arena.LadderTiersFor(key)
-                    return height > 0 and height or nil
+                    if not Arena.PlaysLadder(key) then return nil end
+                    return #Arena.LadderTiersFor(key)
                 end)(),
                 -- WHAT EVERYBODY IS HANDED, for the panel to say out loud on
                 -- a screen it has just greyed out. Labels and counts only --
@@ -428,6 +431,32 @@ end
 --- ALSO ACCEPTS A BARE KEY IN PLACE OF A POOL, so `{ 'knife', { 'pistol' } }`
 --- reads as two tiers rather than as one malformed one. An operator writing
 --- a ladder with one gun per step should not have to type the braces.
+--- How many tiers a ladder needs before it is one.
+---
+--- A SINGLE TIER IS NOT A LADDER: it would be topped by the first kill of
+--- the round, which is a worse mode than no ladder at all. The number lives
+--- here because THREE places were asking the question and two of them were
+--- asking it differently -- see Arena.PlaysLadder.
+local LADDER_MINIMUM = 2
+
+--- Whether a mode plays a gun-game ladder at all.
+---
+--- ONE ANSWER, AND IT USED TO BE TWO. `ladderOf` in server/match.lua refuses
+--- to play a ladder of fewer than two tiers and falls back to ordinary
+--- rules; ArenaLobby.SetLoadout and the panel's lock both asked only whether
+--- the mode had ANY playable tier. A gun game with exactly one -- six of
+--- seven pools mistyped, or a catalogue with most weapons switched off --
+--- therefore had its loadout screen shut by one rule and no ladder handed
+--- out by the other, and every player walked into the arena EMPTY-HANDED
+--- with a mode that spends lives after all.
+---
+--- Every caller reads this now, so that split cannot come back.
+--- @param modeKey any
+--- @return boolean
+function Arena.PlaysLadder(modeKey)
+    return #Arena.LadderTiersFor(modeKey) >= LADDER_MINIMUM
+end
+
 --- @param modeKey any
 --- @return table[][] tiers -- catalogue entries, never bare keys
 function Arena.LadderTiersFor(modeKey)
@@ -3804,9 +3833,21 @@ function Arena.ValidateConfig()
                 -- wrong, and neither was checked for anything but an unknown
                 -- key -- while `gunGameTiers` three lines up was checked for
                 -- its type. Two fields in one block held to two standards.
+                -- THE SECTION SWITCH FIRST, or every key below is reported
+                -- as unknown. With Config.Loadouts.supplies.enabled off,
+                -- Arena.GetEnabledSupplies answers nothing at all -- which
+                -- is correct -- and the per-key loop then complained that
+                -- four perfectly good keys "are not an enabled entry",
+                -- which is four false alarms on a config that is right.
+                local suppliesOff = ((Config.Loadouts or {}).supplies or {}).enabled ~= true
+                if suppliesOff and (raw.killReward ~= nil or raw.startingKit ~= nil) then
+                    complain(('Config.Modes["%s"] names supplies to hand out, but Config.Loadouts.supplies.enabled is off -- nobody carries any of it, and killReward and startingKit are both inert.')
+                        :format(mode.key))
+                end
+
                 for _, field in ipairs({ 'killReward', 'startingKit' }) do
                     local list = raw[field]
-                    if list ~= nil then
+                    if list ~= nil and not suppliesOff then
                         if type(list) ~= 'table' then
                             complain(('Config.Modes["%s"].%s is a %s. It has to be a list of { key = ..., count = ... } entries naming supplies from Config.Loadouts.supplies.items.')
                                 :format(mode.key, field, type(list)))

@@ -1121,6 +1121,19 @@ t.test('and every align-self: start box is bounded, or there is nothing to scrol
     end
 end)
 
+t.test('and a row of controls wraps rather than running off the panel', function()
+    -- #lobby-actions carries four controls for the host of a paid lobby --
+    -- Ready Up, Start Match Now, Close Lobby, Leave Match. A flex row that
+    -- cannot wrap does not shrink their text; it runs them off the end,
+    -- where .arena-panel's overflow: hidden takes whichever came last. The
+    -- button that goes first is the one furthest right, which is Leave.
+    local body = ruleBody(readPanelFile('style.css'), '#lobby-actions')
+    t.isNotNil(body, '#lobby-actions has no rule at all')
+    t.contains(body, 'display: flex', 'this test is aimed at the wrong layout')
+    t.contains(body, 'flex-wrap: wrap',
+        'the lobby action row cannot wrap, so its last button is cut off on a narrow panel')
+end)
+
 t.test('the panel scales off the SHORTER axis, not the width alone', function()
     -- REPORTED: "it cuts off in some areas or looks weird due to size."
     --

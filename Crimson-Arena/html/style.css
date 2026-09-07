@@ -804,6 +804,14 @@ option {
 
 #lobby-actions {
     display: flex;
+    /* FOUR CONTROLS NOW, not two. Ready Up, Start Match Now, Close Lobby and
+       Leave Match are all on this row at once for the host of a paid lobby,
+       and a flex row that cannot wrap does not shrink text -- it runs the
+       buttons off the end of the panel, where overflow: hidden on
+       .arena-panel eats whichever one came last. Wrapping puts them on a
+       second line instead, which is the behaviour every other multi-control
+       row in this file already has. */
+    flex-wrap: wrap;
     gap: 0.6rem;
     padding-top: 0.6rem;
     border-top: 1px solid var(--border);

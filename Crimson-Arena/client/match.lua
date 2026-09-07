@@ -1302,12 +1302,37 @@ local function removeAllOutlines()
 
     -- THE TECHNIQUE GROUP IS CLIENT-WIDE, so leaving it set would hand every
     -- other resource on this machine our choice for the rest of the session.
-    -- Same rule the colour and the shader follow, and the engine ships the
-    -- undo for exactly this: RESET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE puts
-    -- the group back to "unlit".
+    -- The engine ships the undo for exactly this:
+    -- RESET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE puts the group back.
     if ResetEntityDrawOutlineRenderTechnique then
         ResetEntityDrawOutlineRenderTechnique()
     end
+
+    -- WHAT IS NOT HANDED BACK, SAID PLAINLY, because this used to claim it
+    -- was. The line above read "Same rule the colour and the shader follow",
+    -- and neither of them followed it.
+    --
+    -- THE SHADER does not need to: SetEntityDrawOutlineShader takes an index
+    -- into the three renderers the engine registers, and this file asks for
+    -- 0 -- the first of them. Setting a global to the value it already holds
+    -- costs nobody anything.
+    --
+    -- THE COLOUR IS A REAL GAP, and it is left open deliberately rather than
+    -- papered over. SET_ENTITY_DRAW_OUTLINE_COLOR is one setting for the
+    -- whole client -- neither call site takes an entity -- so from the end of
+    -- the first team round until the game restarts, any other script that
+    -- outlines something without setting its own colour draws in the last
+    -- team's tint. The cost is cosmetic and lands on other resources.
+    --
+    -- There is no reset native for it and no getter to capture the previous
+    -- value with, so putting it back means writing a constant for the
+    -- engine's default -- and that default is not something this file can
+    -- read. Twenty lines up is what guessing at engine internals cost here
+    -- last time: "That was invented, not read", two rounds of "the haze
+    -- still is not working". A wrong constant broadcast into a client-wide
+    -- global is a worse bug than the one it would be fixing, so this stays a
+    -- documented gap until somebody can read the real default out of the
+    -- engine.
 end
 
 --- @param includeEnemies boolean|nil -- true only while a radar sweep is lit

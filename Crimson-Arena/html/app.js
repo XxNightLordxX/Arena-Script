@@ -3299,8 +3299,20 @@
         stat('Entry fee', match ? money(match.entryFee) : money(0));
         /* `winner_takes_all` is how config spells it, not how anybody reads
            it. The whole rule is a sentence in the note below this strip;
-           this is the two words that fit under the heading. */
-        stat('Pot goes to', labelFor(PAYOUT_SHORT, betting().payout, 'The winner'));
+           this is the two words that fit under the heading.
+
+           GATED LIKE ITS TWO SIBLINGS, which it was not. payoutPhrase's own
+           comment names all three lines that quoted Config.Betting.payout on
+           a server where Arena.ComputePayouts is never reached -- and only
+           two of them were converted. So on the shipped default this strip
+           said "Winner takes all" at the exact moment a player was choosing
+           an account and typing a stake, while the sentence two boxes below
+           it correctly said the pot is split between everyone who backed the
+           winning side. In a team win that is the whole winning team plus
+           every spectator who backed it, which is not "the winner". */
+        stat('Pot goes to', poolsAreShared()
+            ? 'Backers of the winner'
+            : labelFor(PAYOUT_SHORT, betting().payout, 'The winner'));
 
         var spectator = betting().spectatorBets || {};
         if (spectator.enabled === true || (betting().fighterBets || {}).enabled === true) {

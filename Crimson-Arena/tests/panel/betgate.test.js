@@ -99,7 +99,13 @@ function snapshot(options) {
                 entryFee: { enabled: false, min: 0, max: 0, default: 0 },
                 spectatorBets: { enabled: true, min: 50, max: 1000, oddsMultiplier: 2, oneBetPerMatch: o.oneBetPerMatch },
                 fighterBets: { enabled: true, min: 100, max: 50000, ownSideOnly: true, oneBetPerMatch: o.oneBetPerMatch },
-                betPayout: { fighters: 'pool', spectators: 'pool', sharedPool: true },
+                /* THE SETTLEMENT THAT ACTUALLY RUNS, and it needs
+                   includeEntryPot -- which this fixture never carried. With
+                   it on, the shipped default, Arena.ComputePayouts is never
+                   reached and `payout` above describes nothing, so the panel
+                   has to read this block instead of that key. */
+                betPayout: o.betPayout
+                    || { fighters: 'pool', spectators: 'pool', sharedPool: true, includeEntryPot: true },
             },
             loadouts: { allowChoose: false, chooser: 'player', weapons: [], armor: { allowChoose: false, options: [], default: 100 } },
             teams: { list: [] },
@@ -356,6 +362,43 @@ test('but one who is merely waiting to respawn still is', () => {
     const labels = panel.node('bet-pick').children.map((c) => c.textContent);
     assert.ok(labels.includes('Rival'),
         'a fighter still in the round lost their chip: ' + labels.join(', '));
+});
+
+/* ------------------------------------------------------------------
+   THE SUMMARY STRIP MUST NOT QUOTE A RULE THAT NEVER RUNS
+
+   payoutPhrase's own comment names three lines that quoted
+   Config.Betting.payout on a server where Arena.ComputePayouts is never
+   reached. Two were converted. "Pot goes to" was not -- so the strip a
+   player reads WHILE choosing an account and typing a stake said "Winner
+   takes all", and the sentence two boxes below it said the pot is split
+   between everyone who backed the winning side.
+   ------------------------------------------------------------------ */
+
+function summaryValue(panel, label) {
+    const box = panel.node('bet-summary').children.find(function (child) {
+        return (child.children[0] || {}).textContent === label;
+    });
+    return box ? (box.children[1] || {}).textContent : null;
+}
+
+test('the pot line names the backers where the pools are shared', () => {
+    const panel = opened({ state: 'lobby' });
+    assert.strictEqual(summaryValue(panel, 'Pot goes to'), 'Backers of the winner',
+        'the strip quoted a payout rule that never runs on the shipped config');
+});
+
+test('and still names the payout rule where it really is the pot on its own', () => {
+    /* The control. An operator who turns includeEntryPot off gets the old
+       settlement back, and the strip has to follow them there -- a line
+       hard-coded to the pool wording would be the same bug pointing the
+       other way. */
+    const panel = opened({
+        state: 'lobby',
+        betPayout: { includeEntryPot: false, sharedPool: false },
+    });
+    assert.strictEqual(summaryValue(panel, 'Pot goes to'), 'Winner takes all',
+        'the strip ignored the payout rule on a server where it is the one that runs');
 });
 
 console.log('');

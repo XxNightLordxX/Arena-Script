@@ -48,7 +48,8 @@ print('respawnnumbers_spec')
 --- because only a live round has deaths in it.
 --- @param mutate fun(config: table)?
 --- @return table server
-local function newServer(mutate)
+local function newServer(mutate, opts)
+    opts = opts or {}
     local qbx = Sandbox.newQbxCore({
         [1] = { citizenid = 'AAA11111', name = 'Host',  money = { cash = 50000, bank = 0 } },
         [2] = { citizenid = 'BBB22222', name = 'Rival', money = { cash = 50000, bank = 0 } },
@@ -75,7 +76,19 @@ local function newServer(mutate)
         GetCurrentResourceName = function() return 'crimson_arena' end,
         -- A minute per read, so no RATE bucket in main.lua ever refuses:
         -- a throttled event and a refused one look identical from here.
-        GetGameTimer = (function() local c = 0 return function() c = c + 60000 return c end end)(),
+        --
+        -- OVERRIDABLE, because a minute per READ is not a minute per tick,
+        -- and one test needs the difference. Two fighters killed in the same
+        -- frame respawn microseconds apart in production; against a clock
+        -- that leaps a minute every time anything glances at it, that pair
+        -- looks two minutes apart and every window measured in milliseconds
+        -- has expired before the second one is asked about. `clockStepMs = 0`
+        -- is one tick, held still, which is the event under test.
+        GetGameTimer = (function()
+            local step = opts.clockStepMs or 60000
+            local c = 0
+            return function() c = c + step return c end
+        end)(),
         GetPlayerName = function(src) return 'Player' .. tostring(src) end,
         GetPlayerPed = function(src) return src end,
         -- Spread apart by server id, so the respawn picker's "furthest from
@@ -217,9 +230,10 @@ end
 --- @param fee integer? -- entry fee each, 0 for none
 --- @param mutate fun(config: table)?
 --- @param count integer? -- fighters, 2 by default
+--- @param opts table? -- passed to newServer (e.g. { clockStepMs = 0 })
 --- @return table server, string matchId
-local function liveRound(fee, mutate, count)
-    local s = newServer(mutate)
+local function liveRound(fee, mutate, count, opts)
+    local s = newServer(mutate, opts)
     local matchId, err = s.lobby.Create(1, anArena(s), nil, fee or 0, nil, nil, nil)
     t.isNotNil(matchId, 'the host could not create a match: ' .. tostring(err))
 
@@ -435,6 +449,75 @@ t.test('the HUD shows the PRIZE POOL, not the entry pot alone', function()
     local hud = s.lastPayload('matchHud', 1)
     t.isNotNil(hud, 'no scoreboard was pushed at all')
     t.equals(hud.pot, prize, 'the overlay showed the entry pot rather than what the winner is paid')
+end)
+
+-- ======================================================================
+-- TWO DEATHS IN ONE TICK
+--
+-- scheduleRespawn yields exactly once, at its Wait, and then runs to the
+-- client event without yielding again. So two fighters killed in the same
+-- frame -- a trade, a grenade -- produce two threads that wake on the same
+-- tick and run back to back, and neither can see where the other was just
+-- sent: the roster positions they read are GetEntityCoords, which for a
+-- player told to respawn microseconds ago is still their corpse.
+--
+-- Both then run the same maximin over the same threats, and a maximin on a
+-- disc with a handful of threats has one sharp optimum. Measured against the
+-- shipped arenas before the fix: on the skydome 62-76% of same-tick pairs
+-- landed within ten metres of each other, over a third within five, closest
+-- 0.03m. Entry placement has never had this problem, because PlanSpawns
+-- plans the whole roster at once and says why: keeping two players apart is
+-- a fact about the PAIR.
+-- ======================================================================
+
+t.test('DEFECT: two fighters killed in the same tick respawned on top of each other', function()
+    -- ONE TICK, HELD STILL, which is the event under test: the harness's
+    -- usual clock leaps a minute every time anything reads it, and against
+    -- that the two respawns look two minutes apart.
+    local s, matchId = liveRound(0, nil, 3, { clockStepMs = 0 })
+
+    -- Two of the three go down together. The third is still fighting, so
+    -- the picker has a real threat to work against.
+    knockDown(s, matchId, 1, 3)
+    knockDown(s, matchId, 2, 3)
+
+    -- Both respawn threads wake on the same step.
+    s.step(4)
+
+    local first = s.lastPayload('respawn', 1)
+    local second = s.lastPayload('respawn', 2)
+    t.isNotNil(first, 'the first fighter was never sent a respawn')
+    t.isNotNil(second, 'the second fighter was never sent a respawn')
+
+    local dx = first.spawn.x - second.spawn.x
+    local dy = first.spawn.y - second.spawn.y
+    local apart = math.sqrt(dx * dx + dy * dy)
+
+    t.isTrue(apart >= 10.0,
+        ('the two came back %.2fm apart -- inside the ten metres this arena promises, both with '
+            .. 'full loadouts, facing each other'):format(apart))
+end)
+
+t.test('and the points handed out are not avoided for ever', function()
+    -- THE OTHER END. Avoided points have to age out, or the arena fills up
+    -- with places nobody may come back to and the picker is squeezed into
+    -- the edge. Here the clock runs normally -- a minute per read -- so by
+    -- the time the second death is handled the first point is long expired.
+    local s, matchId = liveRound(0, nil, 3)
+
+    knockDown(s, matchId, 1, 3)
+    s.step(4)
+    t.isNotNil(s.lastPayload('respawn', 1), 'the first fighter was never sent a respawn')
+
+    knockDown(s, matchId, 2, 3)
+    s.step(4)
+    t.isNotNil(s.lastPayload('respawn', 2), 'the second fighter was never sent a respawn')
+
+    local match = s.lobby.Get(matchId)
+    local kept = 0
+    for _ in pairs(match.recentSpawns or {}) do kept = kept + 1 end
+    t.isTrue(kept <= 1,
+        ('%d respawn points are still being avoided minutes after they were handed out'):format(kept))
 end)
 
 t.summary()

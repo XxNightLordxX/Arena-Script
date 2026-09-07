@@ -1274,8 +1274,36 @@
         }
     }
 
+    /* KEEPING THE CARET WHERE THE PLAYER PUT IT.
+
+       Most controls on this panel live in index.html and are only updated
+       by a render, so the three that take typed numbers guard their value
+       against document.activeElement and that is enough -- the node itself
+       survives, and so does the focus in it.
+
+       The ones the panel BUILDS do not survive. Every render clears their
+       container and makes new elements, so the input a player is typing
+       into is removed from the document -- and a browser drops focus with
+       the element. Renders arrive from the server, not from the typist:
+       ArenaLobby.Broadcast fires on every join, ready, side change and
+       elimination, so in a filling lobby the custom ammo box loses the
+       caret mid-number, repeatedly, for reasons the player cannot see.
+
+       Restoring it is one rule for every rebuilt control rather than a
+       patch on the box that was noticed: focus goes back only to the SAME
+       id it was on, only if the render actually took it away, and only if
+       that id still exists afterwards. Nothing else can be stolen by it.
+
+       The caret POSITION is deliberately not restored. These are
+       type="number" inputs, and reading selectionStart on one throws in
+       Chromium -- which is what the panel runs in. Focusing puts the caret
+       at the end, which is where somebody typing a number already was. */
     function render() {
         if (!state.open) return;
+
+        var wasFocused = document.activeElement;
+        var wasFocusedId = wasFocused && wasFocused.id ? String(wasFocused.id) : null;
+
         guarded(renderHeader);
         guarded(renderTabs);
         guarded(renderMatches);
@@ -1283,6 +1311,13 @@
         guarded(renderLoadout);
         guarded(renderBets);
         guarded(renderBoard);
+
+        if (wasFocusedId && document.activeElement !== wasFocused) {
+            var again = byId(wasFocusedId);
+            if (has(again) && again !== document.activeElement && typeof again.focus === 'function') {
+                again.focus();
+            }
+        }
     }
 
     function renderHeader() {

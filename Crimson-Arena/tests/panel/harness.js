@@ -21,6 +21,13 @@
 const fs = require('fs');
 const path = require('path');
 
+/*
+ * The document the nodes below report their focus to. Assigned once
+ * loadPanel builds the shim; a node needs it to answer focus() and to hand
+ * focus back when it is removed from the tree.
+ */
+let focusOwner = null;
+
 function makeNode(id) {
     return {
         id,
@@ -60,14 +67,36 @@ function makeNode(id) {
         removeChild(child) {
             const at = this.children.indexOf(child);
             if (at >= 0) this.children.splice(at, 1);
+            /*
+             * A BROWSER DROPS FOCUS WITH THE ELEMENT. Removing the node the
+             * caret is in blurs it -- focus falls back to the body -- and
+             * that is the whole of the bug the panel's rebuilt inputs hit:
+             * every render replaces them, so anybody typing into one loses
+             * the caret the moment a snapshot arrives.
+             *
+             * Modelled here rather than asserted around, because a harness
+             * that keeps focus on a detached node cannot reproduce it and
+             * would pass a panel that still had it.
+             */
+            if (focusOwner && contains(child, focusOwner.activeElement)) {
+                focusOwner.activeElement = null;
+            }
             return child;
         },
         appendChild(child) { this.children.push(child); return child; },
         setAttribute(name, value) { this[name] = value; },
         getAttribute(name) { return this[name] === undefined ? null : this[name]; },
         querySelectorAll() { return []; },
-        focus() {},
+        focus() { if (focusOwner) focusOwner.activeElement = this; },
+        blur() { if (focusOwner && focusOwner.activeElement === this) focusOwner.activeElement = null; },
     };
+}
+
+/** Whether `node` is `wanted` or has it somewhere beneath it. */
+function contains(node, wanted) {
+    if (!node || !wanted) return false;
+    if (node === wanted) return true;
+    return (node.children || []).some((kid) => contains(kid, wanted));
 }
 
 /**
@@ -142,6 +171,9 @@ function loadPanel(root) {
         GetParentResourceName: context.GetParentResourceName,
     });
 
+    // Every node built from here reports its focus to this document.
+    focusOwner = context.document;
+
     const vm = require('vm');
     vm.createContext(context);
     vm.runInContext(source, context, { filename: 'app.js' });
@@ -164,6 +196,8 @@ function loadPanel(root) {
          * the moment you look. This asks the real question.
          */
         built(id) { return Object.prototype.hasOwnProperty.call(nodes, id); },
+        /** The node the caret is in, or null -- the document's own answer. */
+        activeElement() { return context.document.activeElement; },
         /**
          * Fires one DOM event on a node, the way a player would.
          *

@@ -271,5 +271,83 @@ test('but a weapon the operator really gave two rounds still gets the picker', (
 });
 
 console.log('');
+console.log('==> and the caret survives a snapshot arriving mid-number');
+
+/* Every render clears the weapon grid and builds new elements, so the input
+   being typed into is REMOVED from the document -- and a browser drops focus
+   with the element. The renders come from the server, not the typist:
+   ArenaLobby.Broadcast fires on every join, ready, side change and
+   elimination, so in a filling lobby this happens repeatedly, mid-number,
+   for reasons the player cannot see. */
+
+test('THE BUG: a state push while typing took the caret out of the box', () => {
+    const snap = snapshot(true);
+    const panel = opened(snap);
+    panel.fire('weapon-card-pistol', 'click');
+
+    const before = panel.node('weapon-ammo-custom-pistol');
+    before.focus();
+    assert.strictEqual(panel.activeElement(), before,
+        'the fixture could not put the caret in the box, so this asserts nothing');
+
+    // Somebody else joins the lobby. The panel re-renders from the push.
+    panel.send('state', snap);
+
+    const after = panel.node('weapon-ammo-custom-pistol');
+    assert.ok(after, 'the box was not rebuilt at all');
+    assert.strictEqual(panel.activeElement(), after,
+        'the caret was lost when a snapshot arrived while the player was typing');
+});
+
+test('and it is the REBUILT box that has it, not the detached one', () => {
+    // The distinction that makes the assertion above mean something: the
+    // node the player was typing in is gone from the document, so leaving
+    // focus on it would satisfy a naive check and still be a dead box.
+    const snap = snapshot(true);
+    const panel = opened(snap);
+    panel.fire('weapon-card-pistol', 'click');
+
+    const before = panel.node('weapon-ammo-custom-pistol');
+    before.focus();
+    panel.send('state', snap);
+
+    assert.notStrictEqual(panel.activeElement(), before,
+        'focus was left on the element the render threw away');
+});
+
+test('and a render with nothing focused does not go hunting for something', () => {
+    // The restore must be a restore. A render that started with no caret
+    // anywhere has nothing to put back, and must not decide for itself.
+    const snap = snapshot(true);
+    const panel = opened(snap);
+    panel.fire('weapon-card-pistol', 'click');
+
+    panel.send('state', snap);
+
+    assert.strictEqual(panel.activeElement(), null,
+        'the panel gave focus to a control the player had not chosen');
+});
+
+test('and typing still reaches the wire across a push', () => {
+    // The whole reason the caret matters. Half a number typed, a snapshot,
+    // the rest typed, and the server is asked for what was actually typed.
+    const snap = snapshot(true);
+    const panel = opened(snap);
+    panel.fire('weapon-card-pistol', 'click');
+
+    panel.node('weapon-ammo-custom-pistol').focus();
+    panel.fire('weapon-ammo-custom-pistol', 'input', { target: { value: '11' } });
+    panel.send('state', snap);
+    panel.fire('weapon-ammo-custom-pistol', 'input', { target: { value: '119' } });
+    panel.fire('loadout-save', 'click');
+
+    const sent = panel.posted.find((p) => p.name === 'setLoadout');
+    assert.ok(sent, 'nothing was posted at all');
+    const entry = (sent.body.weapons || []).find((w) => w.key === 'pistol');
+    assert.ok(entry, 'the pistol was not on the wire');
+    assert.strictEqual(entry.ammo, 119, 'the amount typed across a snapshot was not what was sent');
+});
+
+console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

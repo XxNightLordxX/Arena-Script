@@ -392,6 +392,20 @@ function Arena.GetEnabledModes()
                     local height = #Arena.LadderTiersFor(key)
                     return height > 0 and height or nil
                 end)(),
+                -- WHAT EVERYBODY IS HANDED, for the panel to say out loud on
+                -- a screen it has just greyed out. Labels and counts only --
+                -- the ox_inventory item NAME is deliberately not sent, the
+                -- same rule Arena.ResolveSupplies follows: the key comes off
+                -- the wire, the item name never does.
+                startingKit = (function()
+                    local kit = Arena.StartingKitFor(key)
+                    if kit == nil then return nil end
+                    local issued = {}
+                    for _, supply in ipairs(kit) do
+                        issued[#issued + 1] = { label = supply.label, count = supply.count }
+                    end
+                    return issued
+                end)(),
             }
         end
     end
@@ -451,7 +465,9 @@ end
 --- @return integer seconds
 function Arena.RoundSecondsFor(modeKey)
     local mode = Arena.GetModeByKey(modeKey)
-    local own = mode and Arena.ToInt(mode.roundTimeSeconds) or nil
+    -- No `or nil` tail: `mode and Arena.ToInt(...)` is already nil when
+    -- either half is, and the tail could never change the value.
+    local own = mode and Arena.ToInt(mode.roundTimeSeconds)
     local shared = Arena.ToInt((Config.Match or {}).roundTimeSeconds) or 0
     return math.max(0, own or shared)
 end
@@ -804,9 +820,23 @@ local function suppliesConfig()
 end
 
 --- Every supply an operator has left switched on, in config order.
+---
+--- THE SECTION SWITCH IS READ HERE, AND ONLY HERE.
+--- `Config.Loadouts.supplies.enabled = false` is an operator saying this
+--- server does not do supplies at all, and config.lua says of it: "Off, the
+--- whole section is hidden and nobody carries any." That was true of the
+--- picker and of Arena.ResolveLoadout -- both of which asked the switch
+--- themselves -- and false of everything that came to this function
+--- instead. The gun game's kill reward reached it through Arena.SupplyByKey
+--- and paid bandages on a server that had switched supplies off.
+---
+--- Two readers of one question, which is the failure this file's own
+--- comments keep naming. There is one now, and it is this line.
 --- @return table[]
 function Arena.GetEnabledSupplies()
     local out = {}
+    if suppliesConfig().enabled ~= true then return out end
+
     for _, entry in ipairs(suppliesConfig().items or {}) do
         if type(entry) == 'table' and entry.enabled ~= false and Arena.IsKey(entry.key) then
             out[#out + 1] = entry
@@ -839,6 +869,71 @@ function Arena.SupplyByKey(key)
     return nil
 end
 
+--- The supplies a MODE hands everybody at the start of a round, whatever
+--- they picked -- or nil when this mode has no opinion.
+---
+--- NOT Arena.ResolveSupplies, AND THE DIFFERENCE MATTERS TWICE. That
+--- function judges a request a PLAYER made: it hands back the operator's
+--- defaults when `allowChoose` is off, because a player who may not choose
+--- does not get to. Neither reading is right for a kit nobody chose --
+--- `allowChoose` is a rule about the picker, and this is the mode saying
+--- what it issues. So the list is built here, from the same catalogue and
+--- against the same per-supply `max`.
+---
+--- THE THREE ANSWERS ARE DIFFERENT ON PURPOSE:
+---   nil -- this mode names no kit. The caller falls back to whatever the
+---          rest of the resource would have given the player. A config that
+---          predates the field lands here, which is why it is not `{}`.
+---   {}  -- a kit that is explicitly empty, or a server with
+---          Config.Loadouts.supplies switched off. Nobody carries anything.
+---   a list -- what everybody carries, in config order so two players and
+---          two rounds get the same list in the same order.
+---
+--- THE SERVER-WIDE SWITCH OUTRANKS THE MODE. `supplies.enabled = false` is
+--- an operator saying this server does not do supplies at all, and a mode
+--- talking them back into it would make that switch a suggestion.
+--- @param modeKey any
+--- @return table[]|nil supplies -- { { key, label, item, count }, ... }
+function Arena.StartingKitFor(modeKey)
+    local mode = Arena.GetModeByKey(modeKey)
+    local kit = mode and mode.startingKit
+    if type(kit) ~= 'table' then return nil end
+
+    -- NO SECTION CHECK HERE EITHER: Arena.GetEnabledSupplies is the one
+    -- reader of `supplies.enabled` and answers an empty list when it is off,
+    -- so the walk below produces `{}` -- "nobody carries anything" -- which
+    -- is the answer a server with supplies switched off should give a mode
+    -- that names a kit.
+
+    -- KEYED FIRST, WALKED SECOND. Reading the kit in catalogue order rather
+    -- than in the order it was written is what makes a duplicated key cost
+    -- one entry instead of two, and what keeps the list stable when an
+    -- operator reorders the mode block.
+    local wanted = {}
+    for _, entry in ipairs(kit) do
+        if type(entry) == 'table' and Arena.IsKey(entry.key) then
+            wanted[entry.key] = Arena.ToInt(entry.count)
+        end
+    end
+
+    local out = {}
+    for _, supply in ipairs(Arena.GetEnabledSupplies()) do
+        local asked = wanted[supply.key]
+        if asked ~= nil then
+            local count = Arena.ClampInt(asked, 0, Arena.SupplyMax(supply)) or 0
+            if count > 0 then
+                out[#out + 1] = {
+                    key = supply.key,
+                    label = supply.label or supply.key,
+                    item = supply.item,
+                    count = count,
+                }
+            end
+        end
+    end
+    return out
+end
+
 --- Turns whatever a client asked to carry into a list the server is willing
 --- to hand over.
 ---
@@ -863,7 +958,13 @@ function Arena.ResolveSupplies(requested)
     local out = {}
 
     local config = suppliesConfig()
-    if config.enabled ~= true then return out end
+
+    -- NO SECTION CHECK HERE ANY MORE. Arena.GetEnabledSupplies below is the
+    -- one reader of `supplies.enabled`, and answers nothing at all when it
+    -- is off -- so this loop produces an empty list on its own. A second
+    -- copy of the rule here would be a second copy to keep in step, which is
+    -- exactly how the kill reward came to pay on a server with supplies
+    -- switched off.
 
     -- With choosing switched off for supplies the whole request is ignored
     -- and everybody carries the operator's defaults.
@@ -3605,14 +3706,16 @@ function Arena.ValidateConfig()
         end
     end
 
-    -- A LADDER MODE THAT HAS NO LADDER. Nothing checked this at all, and the
-    -- failure is silent by design at every other layer: a tier naming a
+    -- A LADDER MODE THAT HAS NO LADDER, OR ONE THAT CANNOT BE READ.
+    --
+    -- Every layer below this one fails SOFT by design: a tier naming a
     -- weapon that is not enabled is dropped so one typo cannot disarm a
-    -- lobby, a tier left empty goes with it, and a ladder of fewer than two
-    -- tiers is played as ordinary rules -- so a gun game whose whole config
+    -- lobby, a tier left empty goes with it, a ladder of fewer than two
+    -- tiers is played as ordinary rules, and a number that will not parse
+    -- falls back to something safe. Each of those is the right call in the
+    -- moment and the wrong one over a whole config -- a gun game whose block
     -- was mistyped runs as an unlabelled free-for-all and nobody is told.
-    -- Each of those is the right call in the moment and the wrong one over a
-    -- whole config, which is exactly what a start-up validator is for.
+    -- That gap is what a start-up validator is for.
     for _, mode in ipairs(Arena.GetEnabledModes()) do
         local raw = (Config.Modes or {})[mode.key] or {}
         if raw.gunGameTiers ~= nil then
@@ -3624,28 +3727,121 @@ function Arena.ValidateConfig()
                 if #playable < 2 then
                     complain(('Config.Modes["%s"] is enabled with %d tier(s) of the %d it lists actually playable -- a ladder needs at least two, so this mode will run as an ordinary free-for-all. Check the weapon keys against config.weapons.lua and that they are enabled.')
                         :format(mode.key, #playable, #raw.gunGameTiers))
-                end
+                else
+                    -- ONLY WHEN THERE IS A LADDER TO SAY IT ABOUT. Reported
+                    -- unconditionally, this contradicted the line above it:
+                    -- a one-tier mode was told in one breath that it would
+                    -- run as a free-for-all and in the next that its ladder
+                    -- had no clock.
+                    --
+                    -- Nobody is eliminated in a ladder mode, so with no
+                    -- clock on either the mode or Config.Match the only way
+                    -- the round can end is somebody topping the ladder --
+                    -- which in an even lobby may be a very long wait. It is
+                    -- a choice often enough that this warns rather than
+                    -- refuses.
+                    if Arena.RoundSecondsFor(mode.key) <= 0 then
+                        complain(('Config.Modes["%s"] climbs a ladder with no round clock -- nobody is eliminated in a ladder mode, so the round runs until somebody reaches the top tier however long that takes. Set roundTimeSeconds on the mode.')
+                            :format(mode.key))
+                    end
 
-                -- WHAT A KILL PAYS, checked because a key that names nothing
-                -- is paid silently as nothing. An operator who renamed the
-                -- bandage supply and not this list gets a gun game whose
-                -- kills quietly stop rewarding anything.
-                for _, reward in ipairs(type(raw.killReward) == 'table' and raw.killReward or {}) do
-                    if type(reward) == 'table' and not Arena.SupplyByKey(reward.key) then
-                        complain(('Config.Modes["%s"].killReward names the supply "%s", which is not an enabled entry in Config.Loadouts.supplies.items -- that reward is never paid.')
-                            :format(mode.key, tostring(reward.key)))
+                    -- A WEAPON ON TWO TIERS CAN BE DRAWN ONTO BOTH, and a
+                    -- ladder that hands the same gun out twice is a ladder
+                    -- with a step that is not a step. Checked across pools
+                    -- rather than across the drawn ladder, because the draw
+                    -- is per match and this runs once at start-up.
+                    local seenOn = {}
+                    for index, pool in ipairs(playable) do
+                        for _, weapon in ipairs(pool) do
+                            local first = seenOn[weapon.weapon]
+                            if first ~= nil and first ~= index then
+                                complain(('Config.Modes["%s"] can draw %s onto both tier %d and tier %d. Climbing between two tiers holding the same weapon is a promotion that changes nothing.')
+                                    :format(mode.key, tostring(weapon.key), first, index))
+                            end
+                            seenOn[weapon.weapon] = seenOn[weapon.weapon] or index
+                        end
                     end
                 end
 
-                -- A LADDER WITH NO CLOCK AND NO LIVES TO SPEND. Nobody is
-                -- eliminated in one, so with `roundTimeSeconds = 0` on both
-                -- the mode and Config.Match the only way the round can end
-                -- is somebody topping the ladder -- which in an even lobby
-                -- may be a very long wait, and is a choice rather than a
-                -- typo often enough that this warns instead of refusing.
-                if Arena.RoundSecondsFor(mode.key) <= 0 then
-                    complain(('Config.Modes["%s"] climbs a ladder with no round clock -- nobody is eliminated in a ladder mode, so the round runs until somebody reaches the top tier however long that takes. Set roundTimeSeconds on the mode.')
+                -- SIDES MEAN NOTHING TO A LADDER. It is climbed by one
+                -- player and won by one player, so `evaluate` returns a
+                -- single winner whatever this says -- and a host who set it
+                -- gets a mode that either pays one member of the winning
+                -- side or, with no sides picked, refuses to start at all.
+                if raw.teams == true then
+                    complain(('Config.Modes["%s"] sets teams = true and climbs a ladder. A ladder is climbed and won by one player, so the sides decide nothing and only that one player is paid.')
                         :format(mode.key))
+                end
+
+                -- THE ANTI-COLLUSION CAP, WHICH USED TO SWITCH ITSELF OFF.
+                -- `0` means no cap, and every unreadable value resolved to
+                -- it -- so a typo removed the one rule in the block that
+                -- stops an accomplice buying the whole pot. It now falls
+                -- back to the shipped default instead, and says so here.
+                if raw.maxTiersPerVictim ~= nil then
+                    local cap = Arena.ToInt(raw.maxTiersPerVictim)
+                    if cap == nil then
+                        complain(('Config.Modes["%s"].maxTiersPerVictim is %s, which is not a number -- the cap on how many tiers one killer may take off one opponent has fallen back to its default. 0 is how you remove it deliberately.')
+                            :format(mode.key, type(raw.maxTiersPerVictim)))
+                    elseif cap < 0 then
+                        complain(('Config.Modes["%s"].maxTiersPerVictim is %d. A negative cap is not "no cap" -- write 0 for that -- and it has fallen back to its default.')
+                            :format(mode.key, cap))
+                    end
+                end
+
+                -- THE MODE'S OWN CLOCK, when it cannot be read. It falls
+                -- back to Config.Match's, so the operator's number is
+                -- ignored and the round is a different length than the file
+                -- says it is.
+                if raw.roundTimeSeconds ~= nil and Arena.ToInt(raw.roundTimeSeconds) == nil then
+                    complain(('Config.Modes["%s"].roundTimeSeconds is %s, which is not a number -- the round is running on Config.Match.roundTimeSeconds instead.')
+                        :format(mode.key, type(raw.roundTimeSeconds)))
+                end
+
+                -- WHAT A KILL PAYS, AND WHAT EVERYBODY WALKS IN WITH. Both
+                -- are lists of { key, count } against the supplies
+                -- catalogue, both are paid silently as nothing when they are
+                -- wrong, and neither was checked for anything but an unknown
+                -- key -- while `gunGameTiers` three lines up was checked for
+                -- its type. Two fields in one block held to two standards.
+                for _, field in ipairs({ 'killReward', 'startingKit' }) do
+                    local list = raw[field]
+                    if list ~= nil then
+                        if type(list) ~= 'table' then
+                            complain(('Config.Modes["%s"].%s is a %s. It has to be a list of { key = ..., count = ... } entries naming supplies from Config.Loadouts.supplies.items.')
+                                :format(mode.key, field, type(list)))
+                        else
+                            for index, reward in ipairs(list) do
+                                if type(reward) ~= 'table' then
+                                    complain(('Config.Modes["%s"].%s entry %d is a %s -- it has to be { key = ..., count = ... }, not a bare supply key.')
+                                        :format(mode.key, field, index, type(reward)))
+                                else
+                                    local supply = Arena.SupplyByKey(reward.key)
+                                    if not supply then
+                                        complain(('Config.Modes["%s"].%s names the supply "%s", which is not an enabled entry in Config.Loadouts.supplies.items -- it is never handed over.')
+                                            :format(mode.key, field, tostring(reward.key)))
+                                    else
+                                        local count = Arena.ToInt(reward.count)
+                                        if count == nil or count <= 0 then
+                                            complain(('Config.Modes["%s"].%s gives %s a count of %s -- nothing is handed over. Remove the entry if that is what you meant.')
+                                                :format(mode.key, field, tostring(reward.key), tostring(reward.count)))
+                                        elseif count > Arena.SupplyMax(supply) then
+                                            complain(('Config.Modes["%s"].%s gives %d %s, over that supply\'s own max of %d -- it is clamped to the max.')
+                                                :format(mode.key, field, count, tostring(reward.key), Arena.SupplyMax(supply)))
+                                        end
+                                    end
+
+                                    -- A CHANCE THAT WILL NOT PARSE IS NOT
+                                    -- "no chance named". It used to be read
+                                    -- as one and paid on every single kill.
+                                    if reward.chance ~= nil and Arena.ToInt(reward.chance) == nil then
+                                        complain(('Config.Modes["%s"].%s gives %s a chance of %s, which is not a number -- it is never handed over. `chance` is a percentage; leave it out for every time.')
+                                            :format(mode.key, field, tostring(reward.key), type(reward.chance)))
+                                    end
+                                end
+                            end
+                        end
+                    end
                 end
             end
         end

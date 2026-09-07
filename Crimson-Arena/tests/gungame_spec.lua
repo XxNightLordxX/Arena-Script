@@ -25,7 +25,7 @@
     a promotion that does not reach a real inventory is a promotion that
     changed nothing a player can hold.
 
-    FIFTEEN TESTS, on deliberately different parts of it:
+    TWENTY-THREE TESTS, on deliberately different parts of it:
 
       THE DRAW         one weapon per tier, melee first, stable all round,
                        different between rounds, and short pools survived.
@@ -211,15 +211,33 @@ local function newServer(mutate, seed)
     env.Config.Match.respawnDelaySeconds = 0
     env.Config.Match.lives = 3
     env.Config.Betting.enabled = false
-    -- The door off, so the fake pockets below hold what the arena issued and
+    -- THE DOOR OFF, so the fake pockets below hold what the arena issued and
     -- nothing else -- with it on, `restore` clears the inventory wholesale
     -- and every weapon assertion in this file would read an empty bag.
-    env.Config.Loadouts.stripOnEntry = false
+    --
+    -- THE PATH IS `Loadouts.inventory.stripOnEntry`. This file used to write
+    -- `Loadouts.stripOnEntry`, which nothing reads: the door was ON for
+    -- every test here and the comment above it was false. It passed only
+    -- because these fighters walk in with empty pockets, so the door had
+    -- nothing to take -- which is precisely a fixture agreeing with itself.
+    env.Config.Loadouts.inventory = env.Config.Loadouts.inventory or {}
+    env.Config.Loadouts.inventory.stripOnEntry = false
     if mutate then mutate(env.Config) end
 
     -- ammo.lua FIRST, because match.lua calls into it.
     for _, file in ipairs({ 'util', 'ammo', 'betting', 'lobby', 'match', 'main' }) do
         Sandbox.loadInto('../server/' .. file .. '.lua', env)
+    end
+
+    -- HOW MANY TIMES THE ROUND WAS STARTED, counted rather than assumed --
+    -- see server.play. A double start is invisible in every assertion below
+    -- except this one, because it doubles what it issues instead of
+    -- changing it.
+    local started = 0
+    local realStart = env.ArenaMatch.Start
+    env.ArenaMatch.Start = function(...)
+        started = started + 1
+        return realStart(...)
     end
 
     local server = { env = env, config = env.Config, ox = ox, console = console,
@@ -241,12 +259,31 @@ local function newServer(mutate, seed)
         })
         matchId = server.lobby.All()[1].id
         for src = 2, count do server.fire('joinMatch', src, { matchId = matchId, account = 'cash' }) end
-        for src = 1, count do server.fire('setReady', src, { ready = true }) end
-        -- SEEDED HERE, immediately before Start draws the ladder, so a test
-        -- that names a seed gets the ladder that seed produces.
+        -- SEEDED BEFORE THE ROUND STARTS, so a test that names a seed gets
+        -- the ladder that seed produces.
         if seed then math.randomseed(seed) end
-        server.match.Start(matchId)
-        threads.step()
+
+        -- READYING UP IS WHAT STARTS IT, and that is the only thing that
+        -- does. `autoStartWhenAllReady` ships on, so the last setReady
+        -- queues Begin's countdown thread and that thread calls Start.
+        --
+        -- THIS FILE USED TO CALL Start ITSELF AS WELL. ArenaMatch.Start
+        -- accepts a second call while the state is still 'countdown', so
+        -- every match in this file started TWICE: two ladders drawn, two
+        -- loadouts issued, two sets of supplies, and the first draw's weapon
+        -- orphaned in the bag with the arena's books overwritten. Production
+        -- has one call site and it is Begin's guarded thread. Every
+        -- inventory count below was being read against a doubled kit, which
+        -- would have hidden a weapon the swap failed to take back.
+        for src = 1, count do server.fire('setReady', src, { ready = true }) end
+        for _ = 1, 4 do
+            if server.lobby.Get(matchId).state == 'live' then break end
+            threads.step()
+        end
+
+        assert(server.lobby.Get(matchId).state == 'live',
+            'the fixture failed to start the match through the ready path')
+        assert(started == 1, ('the match started %d times, not once'):format(started))
         return matchId
     end
 
@@ -653,8 +690,13 @@ t.test('one victim cannot be farmed for a whole ladder', function()
     -- topped ladder ending the round outright, that bought the entire pot in
     -- under a minute. The cap is on the PAIR, which is the shape a farm has
     -- and an honest round does not.
+    -- FIVE PLAYERS, and the number is load-bearing. The cap can never be
+    -- tighter than the ladder needs -- see the floor test below -- so with
+    -- seven tiers and four opponents the configured 2 is exactly what binds
+    -- (ceil(7/4) = 2). In a smaller lobby the floor would loosen it and this
+    -- test would be measuring the floor instead, which is a different rule.
     local s = newServer()
-    s.play(3)
+    s.play(5)
     local cap = s.config.Modes.gungame.maxTiersPerVictim
 
     for _ = 1, cap + 4 do s.trade(2, 1) end
@@ -682,6 +724,57 @@ t.test('one victim cannot be farmed for a whole ladder', function()
     uncapped.play(2)
     for _ = 1, 4 do uncapped.trade(2, 1) end
     t.equals(uncapped.row(1).tier, 5, 'with the cap off, every kill climbs')
+
+    -- AND A TYPO DOES NOT. Every unreadable value used to resolve to 0 --
+    -- which is to say, the one setting that stops an accomplice buying the
+    -- whole pot switched itself off silently. It falls back to the shipped
+    -- default now, and Arena.ValidateConfig says so at start-up.
+    for _, junk in ipairs({ 'two', true, -3 }) do
+        local typo = newServer(function(config)
+            config.Modes.gungame.maxTiersPerVictim = junk
+            -- Three tiers against four opponents so the floor is 1 and the
+            -- fallback of 2 is what binds.
+            config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' }, { 'rifle' } }
+        end)
+        typo.play(5)
+        for _ = 1, 5 do typo.trade(2, 1) end
+        t.equals(typo.row(1).tier, 3,
+            ('maxTiersPerVictim = %s should fall back to the default, not remove the cap')
+                :format(tostring(junk)))
+    end
+end)
+
+t.test('the cap never makes the ladder unreachable in a small lobby', function()
+    -- THE CAP IS "SPREAD YOUR KILLS ACROSS THE FIELD", AND A SMALL FIELD HAS
+    -- NOWHERE TO SPREAD. Seven tiers at a cap of 2 needs four different
+    -- victims to top, so the mode's own win condition was unreachable below
+    -- five players while Config.Match.minPlayers ships at 2 -- a four-man
+    -- lobby watched somebody collect "No tier for that one" forever and
+    -- every round went to the clock.
+    --
+    -- It only ever loosens where a farm could not have paid anyway: the
+    -- accomplice in a two-man match is the only other stake in the pot.
+    local s = newServer()
+    s.play(2)
+    local top = s.tierCount()
+
+    for _ = 1, top do s.trade(2, 1) end
+
+    t.equals(s.row(1).ladderKills, top,
+        'in a 1v1 the only opponent there is has to be able to carry the whole climb')
+    t.equals(s.row(1).ladderFinished, true, 'so the ladder can actually be topped')
+
+    s.settle(2)
+    t.equals(s.endedWith(), 'match.ended_ladder', 'and the round ends on it')
+
+    -- AND THE FLOOR IS THE LADDER'S NEED, not a blanket exemption: with five
+    -- opponents against seven tiers it works out at the shipped cap of 2, so
+    -- a full lobby is untouched by it.
+    local wide = newServer()
+    wide.play(6)
+    for _ = 1, 6 do wide.trade(2, 1) end
+    t.equals(wide.row(1).ladderKills, 2,
+        'with five opponents the configured cap is what binds')
 end)
 
 -- ======================================================================
@@ -749,14 +842,19 @@ t.test('an uncredited kill pays nothing at all', function()
     -- climb but keeps paying bandages leaves the accomplice farm intact for
     -- everything except the ladder -- three bandages a report, for ever,
     -- with no lives to spend.
+    -- THREE TIERS AND FIVE PLAYERS so the floor is ceil(3/4) = 1 and the
+    -- configured cap of 1 is what actually binds. On the shipped seven-tier
+    -- ladder in a two-man lobby the floor would raise the cap to 7 and every
+    -- one of these kills would be credited.
     local s = newServer(function(config)
         config.Modes.gungame.maxTiersPerVictim = 1
+        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' }, { 'rifle' } }
         config.Modes.gungame.killReward = {
             { key = 'bandage', count = 3 },
             { key = 'armour', count = 1, chance = 100 },
         }
     end)
-    s.play(2)
+    s.play(5)
 
     s.trade(2, 1)
     local bandages = s.ox.count(1, 'bandage')
@@ -861,6 +959,204 @@ t.test('the clock crowns the highest tier, and the board is ordered by it', func
     t.equals(s.endedWith(), 'match.ended_time_up', 'the clock ends a gun game')
     t.equals(table.concat(s.winners(), ','), '3',
         'and crowns the player standing highest, not the one with the most kills')
+end)
+
+-- ======================================================================
+-- 18-23. THE LOADOUT THE LADDER REPLACES
+-- ======================================================================
+
+t.test('nobody picks a loadout in this mode, and the server says so', function()
+    -- THE LADDER IS THE LOADOUT, so there is nothing for a pick to change.
+    -- The panel greys the whole screen out; this is the rule underneath it,
+    -- because the panel is a suggestion and a crafted request is not.
+    local s = newServer()
+    s.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'gungame', entryFee = 0, account = 'cash',
+    })
+    local id = s.lobby.All()[1].id
+    s.fire('joinMatch', 2, { matchId = id, account = 'cash' })
+
+    local ok, reason = s.lobby.SetLoadout(1, { weapons = { { key = 'rifle' } } })
+    t.equals(ok, false, 'a pick in a ladder mode is refused')
+    t.equals(reason, 'error.mode_picks_loadout', 'and named as the mode\'s doing')
+
+    -- THE HOST TOO, and that is the point of putting it above the
+    -- host-picks rule rather than beside it: in this mode NOBODY picks.
+    local host = s.lobby.Get(id).hostSource
+    t.equals(select(1, s.lobby.SetLoadout(host, { weapons = { { key = 'rifle' } } })), false,
+        'not even the host, on a server where the host normally would')
+
+    -- AND AN ORDINARY MODE IS UNTOUCHED.
+    local ffa = newServer()
+    ffa.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash',
+    })
+    t.equals(select(1, ffa.lobby.SetLoadout(1, { weapons = { { key = 'rifle' } } })), true,
+        'a free-for-all still lets its host pick')
+end)
+
+t.test('everybody is issued the mode\'s kit, and their own pick is ignored', function()
+    local s = newServer()
+    s.play(3)
+
+    -- 1 body armour and 5 bandages, to everybody, as config names them.
+    for _, src in ipairs({ 1, 2, 3 }) do
+        t.equals(s.ox.count(src, 'armour'), 1, ('fighter %d carries one plate'):format(src))
+        t.equals(s.ox.count(src, 'bandage'), 5, ('fighter %d carries five bandages'):format(src))
+    end
+
+    -- ON THE RECORD TOO, which is what the exit reclaims against -- and it
+    -- survives a tier change, because a hand-built loadout that forgets the
+    -- field silently takes the kit away.
+    local carried = {}
+    for _, entry in ipairs(s.row(1).loadout.supplies or {}) do carried[entry.key] = entry.count end
+    t.equals(carried.armour, 1, 'the record says one plate')
+    t.equals(carried.bandage, 5, 'and five bandages')
+
+    s.trade(2, 1)
+    local after = {}
+    for _, entry in ipairs(s.row(1).loadout.supplies or {}) do after[entry.key] = entry.count end
+    t.equals(after.bandage, 5, 'and a promotion does not wipe the kit off the record')
+
+    -- A DIFFERENT KIT IS A DIFFERENT KIT, so this is reading config rather
+    -- than a number written twice.
+    local rich = newServer(function(config)
+        config.Modes.gungame.startingKit = { { key = 'bandage', count = 9 } }
+    end)
+    rich.play(2)
+    t.equals(rich.ox.count(1, 'bandage'), 9, 'the kit is whatever config says it is')
+    t.equals(rich.ox.count(1, 'armour'), 0, 'and nothing it does not name')
+
+    -- CLAMPED TO THE SUPPLY\'S OWN CEILING, exactly as a player\'s pick is.
+    local greedy = newServer(function(config)
+        config.Modes.gungame.startingKit = { { key = 'bandage', count = 99999 } }
+    end)
+    greedy.play(2)
+    local max = 0
+    for _, supply in ipairs(greedy.arena.GetEnabledSupplies()) do
+        if supply.key == 'bandage' then max = greedy.arena.SupplyMax(supply) end
+    end
+    t.isTrue(max > 0, 'the catalogue has a ceiling to clamp against')
+    t.equals(greedy.ox.count(1, 'bandage'), max, 'and the kit is held to it')
+end)
+
+t.test('a tier weapon arrives with the rounds that do not fit in it', function()
+    -- HALF A WEAPON IS NOT A WEAPON. The swap loaded one magazine and threw
+    -- the rest of the pick away, so a climber held 30 of a 60-round pistol
+    -- and owned no ammo ITEM to reload from -- and since tier 1 is melee,
+    -- entry hands them no rounds either. Switching ammo items ON halved what
+    -- the mode carried, which is the opposite of what that setting promises.
+    local s = newServer()
+    s.play(3)
+    s.trade(2, 1)
+
+    local entry = s.row(1).loadout.weapons[1]
+    t.isTrue(s.arena.IsKey(entry.ammoTypeItem),
+        'the tier entry names an ammo item at all -- it used to name none')
+
+    local magazine = s.arena.MagazineFor(s.arena.GetWeaponByKey(entry.key), entry.ammo)
+    local spare = entry.ammo - magazine
+    t.isTrue(spare > 0, ('tier 2 should owe loose rounds: %d of %d'):format(spare, entry.ammo))
+
+    t.equals(s.ox.metaOf(1, entry.weapon).ammo, magazine, 'one magazine in the gun')
+    t.isTrue(s.ox.count(1, entry.ammoTypeItem) > 0,
+        'and the rest as items they can actually reload from')
+
+    -- AND THE ARENA KNOWS IT LENT THEM. Without the ledger write the exit
+    -- reclaims nothing and, with the door off, the rounds simply stay.
+    t.isTrue(s.ammo.OnLoan(s.matchId()) > 0, 'the rounds are on the arena\'s books')
+end)
+
+t.test('two tiers holding the same weapon never hand out two of it', function()
+    -- NOTHING WAS REMOVED AND ONE WAS STILL ADDED, so every crossing of a
+    -- boundary where two tiers name the same gun handed out another -- and
+    -- deaths are free in this mode, so a player could sit on that boundary
+    -- and pump it.
+    local s = newServer(function(config)
+        config.Modes.gungame.gunGameTiers = {
+            { 'knife' }, { 'pistol' }, { 'pistol' }, { 'rifle' },
+        }
+    end)
+    s.play(3)
+
+    local pistol = s.match_().ladder[2].weapon
+    s.trade(2, 1)
+    t.equals(s.ox.count(1, pistol), 1, 'tier 2 hands over one')
+    s.trade(3, 1)
+    t.equals(s.row(1).tier, 3, 'and the climb carries on')
+    t.equals(s.ox.count(1, pistol), 1, 'tier 3 is the same gun, and still only one of it')
+
+    -- Back down and up again, which is the pump.
+    s.kill(1, 2); s.revive(1)
+    t.equals(s.ox.count(1, pistol), 1, 'a demotion onto the same gun leaves one')
+    s.trade(2, 1)
+    t.equals(s.ox.count(1, pistol), 1, 'and climbing back onto it leaves one')
+
+    -- THE VALIDATOR SEES THE CONFIG THAT ALLOWS IT.
+    local complaints = table.concat(s.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(complaints:find('both tier 2 and tier 3', 1, true) ~= nil,
+        'and an operator is told their ladder has a step that is not a step')
+end)
+
+t.test('an inventory that refuses a weapon does not lock the ladder for the round', function()
+    -- THE WORST BUG IN THIS FILE\'S HISTORY. A refused add stripped the
+    -- weapon from the pocket AND from the arena\'s record, the put-back was
+    -- refused too, and every later swap then asked ox_inventory for a
+    -- weapon nobody had -- was refused -- and returned early. The player
+    -- stood disarmed on tier 1 for the rest of the round, their tier frozen,
+    -- long after the inventory had room again.
+    local s = newServer()
+    s.play(3)
+
+    local tier2 = weaponAt(s, 2)
+    s.ox.refuseAdd[tier2] = true
+    s.trade(2, 1)
+
+    t.equals(s.ox.count(1, tier2), 0, 'the refused weapon was not handed over')
+    t.equals(s.row(1).tier, 1, 'and the tier did not move without it')
+
+    -- THE INVENTORY FREES UP.
+    s.ox.refuseAdd[tier2] = nil
+    s.trade(3, 1)
+
+    t.isTrue(s.row(1).tier > 1,
+        ('the ladder has to move again once the inventory frees up -- it is on tier %d')
+            :format(s.row(1).tier))
+    t.equals(s.ox.count(1, weaponAt(s, s.row(1).tier)), 1,
+        'and they are holding the tier they are standing on')
+end)
+
+t.test('the board and the winner read the same number', function()
+    -- ONE NUMBER, TWO READERS, AND THEY USED TO BE DIFFERENT NUMBERS. The
+    -- board sorted on the tier a player was HOLDING and decideOnLadder
+    -- crowned the tier their SCORE had earned -- identical in an ordinary
+    -- round, and permanently apart after any refused swap, so the race was
+    -- ranked backwards and the winner came off the bottom of the board.
+    local s = newServer(function(config)
+        config.Modes.gungame.roundTimeSeconds = 120
+    end)
+    s.play(4)
+
+    -- Fighter 3 climbs, then their next weapon is refused: score says one
+    -- thing, pockets say another.
+    s.trade(1, 3)
+    s.trade(4, 3)
+    -- The weapon of the tier they are about to climb ONTO, not the one they
+    -- are standing on -- refusing what they already hold refuses nothing.
+    s.ox.refuseAdd[weaponAt(s, 4)] = true
+    s.trade(1, 3)
+
+    t.isTrue(s.row(3).tier < 4, 'the held tier is behind the score')
+    s.settle(1)
+
+    local board = s.board()
+    t.equals(board[1].id, 3, 'the climber is top of the board')
+    t.equals(board[1].tier, 4, 'and the board shows the tier their score earned')
+
+    s.match_().endsAt = os.time() - 1
+    s.settle(2)
+    t.equals(table.concat(s.winners(), ','), '3',
+        'and the clock crowns the player the board had at the top')
 end)
 
 os.exit(t.summary())

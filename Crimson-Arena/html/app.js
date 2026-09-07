@@ -556,11 +556,74 @@
         return (cfg().loadouts || {}).chooser !== 'player';
     }
 
+    /* The mode this player's OWN match is playing, or null.
+
+       Their own match and not the selected one: this answers "what am I
+       about to be handed", and the card a player happens to have clicked on
+       the Matches tab has nothing to do with that. */
+    function playerMode() {
+        var id = playerMatchId();
+        if (!id) return null;
+        var match = matchById(id);
+        return match ? modeByKey(match.modeKey) : null;
+    }
+
+    /* Whether a mode hands out its own loadout, leaving nothing to pick.
+       A ladder is the only one that does today; the question is asked of
+       the mode rather than of its key so a second such mode needs no
+       second answer here. */
+    function modeIssuesLoadout(mode) {
+        return !!mode && int(mode.tiers, 0) > 0;
+    }
+
+    /* 'Body Armour and 5 Bandages', or '' when the mode issues no kit.
+
+       BUILT FROM THE WIRE, never spelled out here. The counts and the
+       labels are the operator's -- an operator who renamed 'Body Armour' or
+       changed 1 to 3 gets a panel that says so, and one who did not gets a
+       panel that cannot drift from the server. */
+    function startingKitText(mode) {
+        var parts = arrayOf(mode && mode.startingKit).map(function (entry) {
+            var count = int(entry && entry.count, 0);
+            var label = String((entry && entry.label) || '');
+            if (count <= 0 || label === '') return '';
+            return String(count) + ' ' + label;
+        }).filter(function (text) { return text !== ''; });
+
+        if (parts.length === 0) return '';
+        if (parts.length === 1) return parts[0];
+        return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+    }
+
     /* WHY THIS PLAYER MAY NOT PICK RIGHT NOW, or null.
        Every reason here is one server/lobby.lua's SetLoadout already
        enforces; the panel is agreeing with it rather than deciding it, the
        way editableMatch() above does for the create form. */
     function loadoutLockReason() {
+        /* A MODE THAT ISSUES ITS OWN LOADOUT, FIRST, because it outranks
+           every other reason here: in a ladder mode NOBODY picks -- not the
+           other players, not the host, not on a server where the host
+           normally would. ArenaLobby.SetLoadout refuses the request from
+           anybody for the same reason, and this is the panel agreeing with
+           it rather than deciding it.
+
+           SAYS WHAT THEY GET INSTEAD, in the same breath. A greyed-out
+           screen that does not say what replaced it is the panel taking
+           something away and explaining nothing -- and the two facts a
+           player wants here are exactly the two this can state: the ladder
+           is drawn fresh every round, and everybody starts level. */
+        var mode = playerMode();
+        if (modeIssuesLoadout(mode)) {
+            var text = String(mode.label || 'This mode') + ' hands out its own weapons: a '
+                + int(mode.tiers, 0) + '-tier ladder, drawn fresh every round, so there is '
+                + 'nothing to pick here. Every kill climbs a tier and every death costs you '
+                + 'one, and everybody starts the round on the same rung.';
+
+            var kit = startingKitText(mode);
+            if (kit !== '') text += ' Everyone is issued ' + kit + ' at the start of every round.';
+            return text;
+        }
+
         /* In host mode the picker belongs to the host alone. Everyone else
            gets this instead of the sections -- Into The Round still shows
            them exactly what they will be handed, which is the part worth
@@ -1603,9 +1666,21 @@
 
         /* LIVES, when the operator lets the host pick. `livesChoice` is
            absent when they have fixed it, and the row goes with it -- a
-           control that cannot change anything invites a host to try. */
+           control that cannot change anything invites a host to try.
+
+           AND THE MODE HAS A SAY, for exactly that reason. A ladder mode
+           spends no lives at all: the host set this to 1, watched twelve
+           deaths eliminate nobody, and had no way to tell whether the
+           setting or the mode was broken. The value really did ride all the
+           way through -- validated, stored on the match, echoed back on the
+           wire -- and changed nothing about the round.
+
+           Read off the mode being CREATED, not the one they are in: this is
+           the box where the mode is chosen, so it has to follow the select
+           above it rather than a match that may not exist yet. */
+        var creating = modeByKey(state.createMode);
         var livesChoice = (cfg().match || {}).livesChoice;
-        var livesUsed = !!livesChoice;
+        var livesUsed = !!livesChoice && !modeIssuesLoadout(creating);
         show(byId('create-lives-row'), livesUsed);
 
         var livesInput = byId('create-lives');
@@ -1623,6 +1698,19 @@
                 ? 'How many times each player can die before they are out. '
                   + int(livesChoice.min, 1) + ' to ' + int(livesChoice.max, 1) + '.'
                 : '';
+        }
+
+        /* SAID, NOT JUST HIDDEN. A row that disappears when the mode changes
+           looks like a bug unless the reason goes in its place. */
+        var livesNote = byId('create-lives-note');
+        if (has(livesNote)) {
+            var laddered = modeIssuesLoadout(creating);
+            show(livesNote, laddered);
+            if (laddered) {
+                livesNote.textContent = String(creating.label || 'This mode')
+                    + ' has no lives — everyone respawns until the clock stops, '
+                    + 'and a death costs you a tier instead.';
+            }
         }
 
         var fee = (betting().entryFee) || {};
@@ -2924,6 +3012,31 @@
 
         host.appendChild(makeEl('div', 'panel-heading', 'Into The Round'));
 
+        /* IN A LADDER MODE THE DRAFT IS NOT WHAT THEY WILL BE HANDED, and
+           this heading promises that it is. `state.draftWeapons` is the last
+           thing this player saved on some other mode; the server throws it
+           away and issues the ladder instead. Drawing it here would put the
+           one lie the loadout screen must never tell directly under the
+           sentence that has just explained why the picker is shut.
+
+           The round-type allowance goes with it: the ladder picks each
+           tier's own default round, so there is no allowance being spent. */
+        var ladderMode = playerMode();
+        if (modeIssuesLoadout(ladderMode)) {
+            host.appendChild(makeEl('div', 'hint',
+                'You open on tier 1 of ' + int(ladderMode.tiers, 0) + ', like everybody else. '
+                + 'What each tier is holding is drawn when the round starts, so it is not the '
+                + 'same ladder twice.'));
+
+            var issued = startingKitText(ladderMode);
+            host.appendChild(makeEl('div', 'hint', issued !== ''
+                ? 'You are issued ' + issued + ' with it.'
+                : 'No supplies are issued in this mode.'));
+
+            renderRestoreNote(host);
+            return;
+        }
+
         slotGroup(host, plan);
 
         /* Only when there is a cap to report against.
@@ -2952,14 +3065,22 @@
             }
         }
 
-        /* WHAT HAPPENS TO THE GUNS THEY WALKED IN WITH -- the question every
-           player asks before their first round, and the one thing on this
-           screen the panel must not guess at. `restoreLoadoutOnExit` is an
-           operator switch, and promising a player their own weapons back on
-           a server that does not do that would be a lie told at the worst
-           possible moment. So it is read off the snapshot, and SAYS NOTHING
-           AT ALL when the snapshot does not carry it: silence is the honest
-           third answer. */
+        renderRestoreNote(host);
+    }
+
+    /* WHAT HAPPENS TO THE GUNS THEY WALKED IN WITH -- the question every
+       player asks before their first round, and the one thing on this
+       screen the panel must not guess at. `restoreLoadoutOnExit` is an
+       operator switch, and promising a player their own weapons back on a
+       server that does not do that would be a lie told at the worst possible
+       moment. So it is read off the snapshot, and SAYS NOTHING AT ALL when
+       the snapshot does not carry it: silence is the honest third answer.
+
+       ITS OWN FUNCTION because the ladder branch above returns early and
+       this is true in every mode -- a gun game takes your own weapons off
+       you exactly as a free-for-all does, and that is the last thing a
+       player wants left unsaid. */
+    function renderRestoreNote(host) {
         var restore = (cfg().match || {}).restoreLoadoutOnExit;
         if (restore === true) {
             host.appendChild(makeEl('div', 'hint',
@@ -3818,7 +3939,8 @@
         renderHudScoreboard(arrayOf(hud.scoreboard));
     }
 
-    /* One row, name first. `entry.name` is another player's, so it is a
+    /* One row: the ladder tier where there is one, then the name. `entry.name`
+       is another player's, so it is a
        text node and never markup. Shared with the end-of-match board below:
        the class is styled by a bare `.hud-score-row` rule, not by anything
        scoped to the overlay, so it draws the same in both places. */
@@ -3827,7 +3949,7 @@
         if (int(entry.id, -1) === me) row.classList.add('self');
         if (entry.alive === false) row.classList.add('dead');
 
-        /* THE TIER, FIRST, BECAUSE IN A LADDER IT IS THE STANDING.
+        /* THE TIER, BEFORE THE NAME, BECAUSE IN A LADDER IT IS THE STANDING.
 
            The server has put `tier` and `tiers` on every scoreboard row of a
            gun game for as long as the mode has existed and this file drew

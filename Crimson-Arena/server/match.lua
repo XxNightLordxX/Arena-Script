@@ -154,6 +154,15 @@ end
 -- learnable, the ladder is not.
 -- ======================================================================
 
+--- What `maxTiersPerVictim` falls back to when config gives a value that
+--- cannot be read as a number.
+---
+--- IT MATCHES THE SHIPPED CONFIG DELIBERATELY. Falling back to "no cap"
+--- meant a typo switched the anti-collusion rule off; falling back to 1
+--- would quietly make an operator's mode stricter than they wrote. The
+--- shipped number is the one they had before they mistyped it.
+local DEFAULT_TIERS_PER_VICTIM = 2
+
 --- The ladder this match is climbing: one weapon per tier, in climbing
 --- order, EMPTY when this is ordinary play.
 ---
@@ -237,12 +246,37 @@ local function tierForScore(score, tiers)
     return scored + 1, false
 end
 
+--- The supplies everybody in this match walks in with.
+---
+--- THE MODE'S KIT, OR THE PLAYER'S OWN. `Arena.StartingKitFor` answers nil
+--- for a mode that names no kit, which is not the same as a mode that names
+--- an empty one -- so this cannot be written as `kit or theirs`, and the
+--- distinction is the whole reason it is a function rather than one line at
+--- each call site. A ladder mode with `startingKit` set issues that and only
+--- that; without it, players carry what they picked, exactly as they do in
+--- every other mode.
+---
+--- WHY A LADDER FIXES IT AT ALL. The mode's loadout screen is shut: the
+--- ladder decides the weapon, so there is nothing to choose. Leaving the
+--- SUPPLIES pickable would make it a mode where the guns are equal and the
+--- plates are not, and everybody meets on tier 1 holding a blade.
+--- @param match table
+--- @param player table
+--- @return table[]|nil supplies
+local function kitFor(match, player)
+    local kit = Arena.StartingKitFor(match and match.modeKey)
+    if kit ~= nil then return kit end
+    return type(player) == 'table' and type(player.loadout) == 'table'
+        and player.loadout.supplies or nil
+end
+
 --- What a player holds on one tier: that tier's weapon at its own configured
---- default ammo, and nothing they chose for themselves.
+--- default ammo, the mode's kit, and nothing they chose for themselves.
 --- @param weapon table -- a catalogue entry
---- @param previous table? -- what they were holding, read for its armour only
+--- @param supplies table[]|nil -- kitFor's answer; nil falls back to the
+---        ordinary resolver, which is what a mode with no kit wants
 --- @return table loadout -- the shape Arena.ResolveLoadout returns
-local function tierLoadout(weapon, previous)
+local function tierLoadout(weapon, supplies)
     -- THROUGH Arena.ResolveWeaponEntry, NOT HAND-BUILT, and the difference
     -- was four fields. The hand-built entry had no `ammoType`, no
     -- `ammoTypeLabel` and -- the one that showed -- no `ammoTypeItem`, which
@@ -263,20 +297,33 @@ local function tierLoadout(weapon, previous)
     -- exactly what a tier is worth.
     local tier = Arena.ResolveWeaponEntry(weapon, Arena.ResolveAmmoType(weapon, nil), nil)
 
-    -- Armour, health and supplies still come from the ordinary path so the
-    -- ladder never grows a second copy of those rules.
-    local base = Arena.ResolveLoadout({
-        weapons = {},
-        armor = type(previous) == 'table' and previous.armor or nil,
-        supplies = type(previous) == 'table' and previous.supplies or nil,
-    })
+    -- Armour and health still come from the ordinary path so the ladder
+    -- never grows a second copy of those rules. Arena.StartingVitals is
+    -- behind them and is a rule of the arena, not a choice.
+    local base = Arena.ResolveLoadout({ weapons = {} })
 
-    -- SUPPLIES COME ALONG. A tier change rewrites the loadout in place, and
-    -- a hand-built table that forgets a field silently takes it away -- here,
-    -- the plates and bandages a player carried in, and every bandage the
-    -- ladder has paid them for a kill, would vanish from the record the
-    -- moment they moved a tier.
-    return { weapons = { tier }, armor = base.armor, health = base.health, supplies = base.supplies }
+    -- SUPPLIES ARE CARRIED FORWARD DELIBERATELY. A tier change rewrites the
+    -- loadout in place, and a hand-built table that forgets a field silently
+    -- takes it away -- here, the kit a player walked in with would vanish
+    -- from the record the moment they moved a tier, and the exit would
+    -- reclaim against a record that no longer mentioned it.
+    --
+    -- WHAT IS NOT IN HERE: the bandages a kill has paid. Those go through
+    -- ArenaAmmo.GrantSupply onto the ammo ledger and never enter this
+    -- record -- an earlier version of this comment said they did, which
+    -- would have made the record the thing the exit reclaims against and it
+    -- is not.
+    --
+    -- ARMOUR IS NOT CARRIED FORWARD EITHER, and cannot be: Arena.StartingVitals
+    -- is a rule of the arena, and Arena.ResolveLoadout ignores any `armor`
+    -- in the request it is handed. This used to pass the player's previous
+    -- armour in and read the constant back out.
+    return {
+        weapons = { tier },
+        armor = base.armor,
+        health = base.health,
+        supplies = supplies ~= nil and supplies or base.supplies,
+    }
 end
 
 --- The loadout a player should be holding for this match right now: their
@@ -299,7 +346,7 @@ local function loadoutFor(match, player)
     -- and the ladder rejects nothing -- it never consults the player's own
     -- choice in the first place. Returning one value left `rejected` nil at
     -- the call site and took the round down on the first placement.
-    return tierLoadout(ladder[tier], player.loadout), {}
+    return tierLoadout(ladder[tier], kitFor(match, player)), {}
 end
 
 --- Whether this kill is allowed to move the killer up the ladder, and
@@ -328,7 +375,39 @@ end
 --- @return boolean credited
 local function creditsTier(match, killer, victim)
     local mode = Arena.GetModeByKey(match.modeKey) or {}
-    local cap = math.max(0, Arena.ToInt(mode.maxTiersPerVictim) or 0)
+
+    -- THE TYPO FAILS CLOSED, NOT OPEN. `0` means no cap, and every
+    -- unparseable value used to resolve to it -- nil, -3, 'two', true, a
+    -- table -- so the one setting in the block that exists to stop an
+    -- accomplice buying the whole pot switched ITSELF off on a typo, and
+    -- said nothing. Only a number reaching this now removes the cap;
+    -- anything else falls back to the shipped default, and
+    -- Arena.ValidateConfig says so at start-up.
+    local configured = Arena.ToInt(mode.maxTiersPerVictim)
+    if configured == nil or configured < 0 then configured = DEFAULT_TIERS_PER_VICTIM end
+
+    -- AND IT CAN NEVER BE TIGHTER THAN THE LADDER NEEDS.
+    --
+    -- The cap makes you spread your kills across the field. In a field of
+    -- two there is nothing to spread across: with seven tiers and a cap of
+    -- two, topping the ladder takes four different victims, so the mode's
+    -- own win condition was unreachable below five players while
+    -- Config.Match.minPlayers ships at 2. A four-man lobby watched somebody
+    -- collect "No tier for that one" forever and the round always went to
+    -- the clock.
+    --
+    -- So the floor is what a lone climber would need against everybody else
+    -- in the room. It is the same rule in both directions -- with enough
+    -- opponents this is smaller than the configured cap and changes nothing,
+    -- and it only ever loosens where a farm could not have paid anyway: the
+    -- accomplice in a two-man match is the only other stake in the pot.
+    local cap = configured
+    if cap > 0 then
+        local opponents = math.max(0, Arena.Count(match.players) - 1)
+        local height = #ladderOf(match)
+        local needed = opponents > 0 and math.ceil(height / opponents) or height
+        if needed > cap then cap = needed end
+    end
 
     if type(killer.ladderVictims) ~= 'table' then killer.ladderVictims = {} end
     local taken = math.max(0, Arena.ToInt(killer.ladderVictims[victim.src]) or 0)
@@ -349,8 +428,19 @@ end
 --- @param chance any -- a percentage, or nil
 --- @return boolean
 local function rolled(chance)
+    -- ABSENT MEANS EVERY TIME. That is what makes `chance` an optional field
+    -- rather than one every reward entry has to carry.
+    if chance == nil then return true end
+
+    -- PRESENT AND UNREADABLE MEANS NEVER, which is the opposite of absent
+    -- and has to be: `chance = 'abc'` used to fall into the branch above and
+    -- pay on every single kill -- indistinguishable, in the pockets, from an
+    -- operator who had asked for exactly that. A number they cannot have
+    -- meant should cost them nothing until they fix it, and
+    -- Arena.ValidateConfig names it at start-up.
     local percent = Arena.ToInt(chance)
-    if percent == nil then return true end
+    if percent == nil then return false end
+
     if percent <= 0 then return false end
     if percent >= 100 then return true end
     return math.random(100) <= percent
@@ -379,7 +469,16 @@ local function payKillReward(match, killer)
     for _, entry in ipairs(rewards) do
         if type(entry) == 'table' then
             local supply = Arena.SupplyByKey(entry.key)
-            local count = math.max(0, Arena.ToInt(entry.count) or 0)
+
+            -- CLAMPED TO THE SUPPLY'S OWN `max`, exactly as a player's
+            -- request is by Arena.ResolveSupplies. Without it the picker and
+            -- the kill reward disagreed about how many of a supply a player
+            -- may hold: a reward of 99999 bandages against a configured
+            -- ceiling of 30 handed over 99999.
+            local count = supply
+                and (Arena.ClampInt(entry.count, 0, Arena.SupplyMax(supply)) or 0)
+                or 0
+
             if supply and Arena.IsKey(supply.item) and count > 0 and rolled(entry.chance) then
                 ArenaAmmo.GrantSupply(killer.src, match.id, supply.item, count)
             end
@@ -396,9 +495,11 @@ end
 --- @param match table
 --- @param player table
 --- @param reasonKey string -- what to tell them: promoted, or knocked back
+--- @return boolean settled -- false ONLY when the swap was refused and the
+---         player is therefore standing somewhere their score does not say
 local function settleTier(match, player, reasonKey)
     local ladder = ladderOf(match)
-    if #ladder == 0 then return end
+    if #ladder == 0 then return true end
 
     local tier, finished = tierForScore(tierScore(player), #ladder)
 
@@ -412,13 +513,39 @@ local function settleTier(match, player, reasonKey)
     -- kill made FROM it does, and that kill moves nobody.
     if tier == player.tier then
         player.ladderFinished = finished
-        return
+        return true
     end
 
+    -- SET BEFORE THE SWAP, because topping the ladder is something the
+    -- SCORE did and the weapon in their hands has no say in it. Setting it
+    -- after meant a refused swap left it unset -- so a player who really had
+    -- climbed out could never win on the ladder, and the round ran to the
+    -- clock with the win condition the mode exists for quietly disabled.
+    player.ladderFinished = finished
+
     local previous = player.tier and ladder[player.tier] or nil
-    local moving = tierLoadout(ladder[tier], player.loadout)
+    local moving = tierLoadout(ladder[tier], kitFor(match, player))
     local weapon = moving.weapons[1]
-    local dropped = (previous and previous.weapon ~= weapon.weapon) and previous.weapon or nil
+
+    -- WHATEVER THEY WERE HOLDING COMES OFF, INCLUDING THE SAME GUN AGAIN.
+    --
+    -- This used to skip the removal when the two tiers resolved to the same
+    -- GTA weapon, on the reasoning that taking a gun off to hand the same
+    -- one back is churn. It is not churn, it is the only thing standing
+    -- between a shared weapon and a free copy: nothing was removed and one
+    -- was still added, so every crossing of a boundary where two tiers name
+    -- the same weapon handed out another. Deaths are free in this mode, so a
+    -- player could sit on that boundary and pump it.
+    --
+    -- Two tiers CAN share a weapon without a duplicate key in config -- two
+    -- catalogue entries pointing at one GTA name, or two pools that overlap
+    -- and happen to draw the same one. Arena.ValidateConfig complains about
+    -- the pools it can see; this is what makes the ones it cannot harmless.
+    --
+    -- And re-issuing is the right answer anyway: a tier change re-arms you,
+    -- so crossing onto the same weapon should still come with a full
+    -- magazine rather than the empty one you climbed with.
+    local dropped = previous and previous.weapon or nil
 
     -- THE ITEM IS THE WEAPON on an ox_inventory server, so the swap has to
     -- happen here rather than in the message below: a ped handed a gun it
@@ -437,11 +564,10 @@ local function settleTier(match, player, reasonKey)
     if not swapped and why == 'refused' then
         ArenaDebug('gun game: %s stays on tier %s -- ox_inventory would not take back %s.',
             tostring(player.src), tostring(player.tier), tostring(dropped))
-        return
+        return false
     end
 
     player.tier = tier
-    player.ladderFinished = finished
     player.loadout = moving
 
     -- NO CLIENT EVENT. The old gun game sent one, and the client file never
@@ -476,6 +602,8 @@ local function settleTier(match, player, reasonKey)
             end
         end
     end
+
+    return true
 end
 
 -- ======================================================================
@@ -786,7 +914,19 @@ local function evaluate(match)
     -- a gun game whose lobby walked out is not a race the last player is
     -- still running. Whether a one-man round pays is Config.Betting's
     -- minPlayersToPayOut to answer, not this file's.
-    if not teamMode and total == 1 then return { lastStanding.src }, 'match.ended_abandoned' end
+    --
+    -- `lastStanding` IS CHECKED, and this is why. The line used to sit
+    -- inside the block above, after the `standing == 0` draw had already
+    -- returned -- so the one row left was guaranteed to be a standing one.
+    -- Lifting it out past a guard a ladder skips left it reachable with the
+    -- last row eliminated and `lastStanding` nil, which indexes nil and
+    -- kills the sweep thread. It is unreachable today only because a ladder
+    -- spends no lives, and the comment twelve lines above refuses to lean on
+    -- exactly that kind of "unreachable".
+    if not teamMode and total == 1 then
+        if lastStanding then return { lastStanding.src }, 'match.ended_abandoned' end
+        return {}, 'match.ended_abandoned'
+    end
 
     -- THE CLOCK, which in a gun game is the ordinary ending rather than the
     -- backstop it is everywhere else -- and the ladder is what it reads.
@@ -823,6 +963,11 @@ end
 
 --- The live scoreboard, sorted the way the panel renders it.
 --- @param players table[] -- in join order
+--- @param tiers any -- how tall this match's ladder is, and 0 in every mode
+---        that does not climb one. It decides whether the rows carry a
+---        `tier` column at all, which is how the panel knows not to draw
+---        one -- so it is the parameter the gun game's whole display hangs
+---        off, and it went undocumented when it was added.
 --- @return table[]
 local function scoreboardOf(players, tiers)
     local ladder = math.max(0, Arena.ToInt(tiers) or 0)
@@ -844,7 +989,15 @@ local function scoreboardOf(players, tiers)
             -- server has already swapped the item by the time anybody could
             -- be told, and a second channel saying the same thing is a
             -- second channel that can disagree.
-            tier = ladder > 0 and math.max(1, Arena.ToInt(player.tier) or 1) or nil,
+            -- THE TIER THEIR SCORE HAS EARNED, not the one their pockets
+            -- happen to hold. The two are the same in every ordinary round
+            -- and diverge the moment a swap is refused -- and when they
+            -- diverged, this board sorted on one number while
+            -- `decideOnLadder` crowned the other, so the race was ranked
+            -- backwards for the rest of the round and the winner came off
+            -- the bottom of it. Read through the same two functions the
+            -- winner is read through, and they cannot disagree.
+            tier = ladder > 0 and (tierForScore(tierScore(player), ladder)) or nil,
             tiers = ladder > 0 and ladder or nil,
             -- Two different facts, and the board needs both. `alive` is
             -- literally breathing and is what greys a row out -- a corpse
@@ -1822,8 +1975,9 @@ end
 -- SCORING
 -- ======================================================================
 
---- One player died. Scores it, spends a life, and eliminates them when they
---- have none left.
+--- One player died. Scores it, and spends a life -- eliminating them when
+--- they have none left -- in every mode EXCEPT a ladder, where a death costs
+--- a tier instead and nobody is ever eliminated.
 ---
 --- Deliberately does NOT decide the match: the sweep does that a tick later,
 --- by which point everybody who died in this tick has been counted.
@@ -1901,10 +2055,20 @@ function ArenaMatch.OnDeath(src, killerSrc)
     -- so a brutal round cannot push anyone into debt they can never climb
     -- out of.
     if playingLadder then
-        if tierScore(player) > 0 then
+        local charged = tierScore(player) > 0
+        if charged then
             player.tiersLost = (Arena.ToInt(player.tiersLost) or 0) + 1
         end
-        settleTier(match, player, 'notify.gungame_demoted')
+
+        -- AND HANDED BACK IF THE TIER DID NOT ACTUALLY MOVE. A refused swap
+        -- -- the weapon parked in a trunk between the death and the
+        -- demotion -- left the score saying one tier and the player holding
+        -- another, and holding the BETTER one: charged for a fall they did
+        -- not take. The next kill or death re-derived and self-healed, which
+        -- is not the same as being right in between.
+        if charged and not settleTier(match, player, 'notify.gungame_demoted') then
+            player.tiersLost = player.tiersLost - 1
+        end
     end
 
     -- THE DOWN FLAG COMES BACK DOWN HERE, at the death, not at the revive.

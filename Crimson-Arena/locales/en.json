@@ -35,6 +35,7 @@
         "lives_out_of_range": "That is not a number of lives this server allows.",
         "match_already_started": "That match has already kicked off.",
         "match_full": "That match is full.",
+        "mode_picks_loadout": "This mode issues its own loadout -- there is nothing to pick.",
         "match_in_progress": "That match has already kicked off.",
         "match_not_found": "That match is gone.",
         "mode_has_no_teams": "No sides in this mode. Everyone is a target.",

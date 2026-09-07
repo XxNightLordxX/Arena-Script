@@ -629,6 +629,65 @@ local function weaponMetadata(entry)
     return metadata, loaded
 end
 
+--- The rounds one weapon is owed BEYOND the magazine `weaponMetadata` put
+--- in it, handed over as items and written onto the arena's books.
+---
+--- THE OTHER HALF OF EVERY WEAPON, and for a while the gun game had only
+--- the first. `weaponMetadata` splits one magazine off the pick and
+--- ArenaAmmo.Issue hands the remainder over here; the tier swap called the
+--- first and not the second, so a climber was issued 30 of a 60-round
+--- pistol, 60 of a 150-round rifle -- and, holding no ammo ITEM at all, had
+--- nothing to reload from for the rest of the round. Switching
+--- `ammoItems.enabled` ON halved what the mode carried, which is the exact
+--- opposite of what that setting promises.
+---
+--- SAFE WHEN AMMO ITEMS ARE OFF, with no caller-side check needed:
+--- `splitRounds` answers a spare of zero when ArenaAmmo.IsEnabled() is
+--- false, and the whole pick rides in the magazine instead.
+--- @param ox table -- ox_inventory exports
+--- @param src number
+--- @param matchId string
+--- @param entry table -- one Arena.ResolveLoadout weapon entry
+--- @return boolean ok -- false only when ox_inventory refused the rounds
+--- @return integer count -- items actually handed over
+local function issueSpareRounds(ox, src, matchId, entry)
+    local item = entry.ammoTypeItem
+    -- THE REMAINDER, not the whole pick. The magazine already carries the
+    -- rest of it; issuing the full amount here as well is what doubled
+    -- everybody's ammunition.
+    local _, spare = splitRounds(entry)
+    local count = itemsFor(spare)
+    if not (Arena.IsKey(item) and count > 0) then return true, 0 end
+
+    -- BOTH have to be true. pcall succeeding only means the call did not
+    -- throw; ox_inventory returns false for a full inventory or an item name
+    -- that does not exist.
+    local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
+    if not (ok and granted ~= false) then
+        -- Same two causes as the supplies, and the same order. A player who
+        -- picked the weapon's full ceiling is carrying hundreds of rounds, so
+        -- "no room" is the one to check first.
+        ArenaLog('ammo: %s x%d was refused for %s -- either their inventory has no room for '
+            .. 'it (check the round weight against your ox_inventory player limit) or the '
+            .. 'item does not exist on this server.',
+            item, count, tostring(src))
+        return false, 0
+    end
+
+    -- BY NAME AS WELL AS BY COUNT. A running total says how much was handed
+    -- over; it does not say WHAT, so there is nothing for the exit to
+    -- remove -- and with the door off the rounds simply stayed.
+    issuedAmmo[matchId] = issuedAmmo[matchId] or {}
+    local byName = issuedAmmo[matchId][src] or {}
+    issuedAmmo[matchId][src] = byName
+    byName[item] = (byName[item] or 0) + count
+
+    issued[matchId] = issued[matchId] or {}
+    issued[matchId][src] = (issued[matchId][src] or 0) + count
+
+    return true, count
+end
+
 --- Gives one player the loadout's weapons as ox_inventory items.
 --- @param ox table -- ox_inventory exports
 --- @param src number
@@ -747,16 +806,41 @@ function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)
     -- the metadata it was issued under.
     local taken = nil
     if Arena.IsKey(removeWeapon) then
-        if not oxDid('taking back the tier weapon ' .. removeWeapon,
-            function() return ox:RemoveItem(src, removeWeapon, 1) end)
-        then
-            return false, 'refused'
+        -- ONLY IF THE ARENA'S OWN BOOKS SAY IT IS OURS TO TAKE. A weapon the
+        -- record does not list is not one this match issued -- or is one a
+        -- failed rollback below has already written off -- and there is
+        -- nothing to take back either way.
+        --
+        -- THIS IS WHAT BREAKS A PERMANENT LOCKOUT. When an add is refused
+        -- AND the put-back is refused too, the player ends up holding no
+        -- weapon and the record ends up listing none. Without this check the
+        -- next swap still asked ox_inventory for a weapon nobody had, was
+        -- refused, and returned early -- so the tier never moved again and
+        -- the player stayed disarmed for the rest of the round even after
+        -- their inventory freed up. Measured: four credited kills after the
+        -- one refusal, all of them on tier 1, empty-handed.
+        --
+        -- AND IT DOES NOT REOPEN THE EXPLOIT IT SITS NEXT TO. Parking the
+        -- tier weapon in a trunk leaves it ON the record and off the player,
+        -- which is the case below: the record lists it, ox_inventory refuses
+        -- the removal, and the promotion is refused with it.
+        local listed = false
+        for _, row in ipairs(record) do
+            if row.name == removeWeapon then listed = true break end
         end
 
-        for index = #record, 1, -1 do
-            if record[index].name == removeWeapon then
-                taken = taken or record[index]
-                table.remove(record, index)
+        if listed then
+            if not oxDid('taking back the tier weapon ' .. removeWeapon,
+                function() return ox:RemoveItem(src, removeWeapon, 1) end)
+            then
+                return false, 'refused'
+            end
+
+            for index = #record, 1, -1 do
+                if record[index].name == removeWeapon then
+                    taken = taken or record[index]
+                    table.remove(record, index)
+                end
             end
         end
     end
@@ -785,6 +869,24 @@ function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)
     end
 
     record[#record + 1] = { name = entry.weapon, metadata = metadata }
+
+    -- AND THE ROUNDS THAT DO NOT FIT IN IT. `weaponMetadata` above loaded
+    -- one magazine; the rest of the pick is an inventory item, and without
+    -- this the ladder handed out half a weapon.
+    --
+    -- Measured before this line existed: a 60-round tier pistol arrived with
+    -- 30 in the magazine and no ammo item at all, a 150-round rifle with 60.
+    -- Since tier 1 is melee, ArenaAmmo.Issue hands a climber no rounds on
+    -- the way in either -- so from their first promotion they held one
+    -- magazine and owned nothing to reload from for the rest of the round.
+    -- Switching `ammoItems.enabled` ON halved what the mode carried, which
+    -- is the exact opposite of what that setting promises.
+    --
+    -- A REFUSAL HERE DOES NOT UNDO THE SWAP. They are holding the right
+    -- weapon with a full magazine; the spare rounds would not fit, which is
+    -- the same outcome ArenaAmmo.Issue accepts and logs.
+    issueSpareRounds(ox, src, matchId, entry)
+
     ArenaDebug('weapons: the ladder gave %s x1 to %s (magazine %d).', entry.weapon, tostring(src), loaded)
     return true, nil
 end
@@ -810,6 +912,13 @@ end
 function ArenaAmmo.GrantSupply(src, matchId, item, count)
     local ox = inventory()
     if not ox then return false end
+
+    -- THE SAME GATES EVERY SIBLING IN THIS FILE HAS. Without them a nil
+    -- matchId threw on the ledger write below -- `table index is nil`, out
+    -- of a kill reward, inside the death report -- and a src that is not a
+    -- player was handed a bandage and booked against the match anyway.
+    if not (type(src) == 'number' and src > 0) then return false end
+    if not Arena.IsKey(matchId) then return false end
     if not Arena.IsKey(item) then return false end
 
     local amount = Arena.ToInt(count) or 0
@@ -1112,9 +1221,6 @@ function ArenaAmmo.Issue(src, matchId, loadout)
         return failed
     end
 
-    issued[matchId] = issued[matchId] or {}
-    local given = issued[matchId][src] or 0
-
     -- BY NAME AS WELL AS BY COUNT, and the count alone was a leak.
     --
     -- A running total says how much was handed over; it does not say WHAT, so
@@ -1123,40 +1229,18 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     -- door off -- `stripOnEntry = false` -- the rounds simply stayed: join,
     -- collect sixty, leave, keep them, repeat. The weapons were already
     -- recorded by name for exactly this reason; the ammunition was not.
-    issuedAmmo[matchId] = issuedAmmo[matchId] or {}
-    local record = issuedAmmo[matchId][src] or {}
-    issuedAmmo[matchId][src] = record
-
+    --
+    -- BOTH LEDGERS ARE WRITTEN BY THE ISSUER, not here. This loop used to
+    -- keep its own running total and assign it at the end; with the issuer
+    -- also adding to `issued`, doing both would count every round twice --
+    -- and ArenaAmmo.OnLoan, which is what tells an operator what the arena
+    -- still owes, would have reported double.
     for _, entry in ipairs(loadout.weapons or {}) do
-        local item = entry.ammoTypeItem
-        -- THE REMAINDER, not the whole pick. The magazine already carries the
-        -- rest of it; issuing the full amount here as well is what doubled
-        -- everybody's ammunition.
-        local _, spare = splitRounds(entry)
-        local count = itemsFor(spare)
-
-        if Arena.IsKey(item) and count > 0 then
-            -- BOTH have to be true. pcall succeeding only means the call did
-            -- not throw; ox_inventory returns false for a full inventory or an
-            -- item name that does not exist.
-            local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
-            if ok and granted ~= false then
-                given = given + count
-                record[item] = (record[item] or 0) + count
-            else
-                failed[#failed + 1] = entry.key or entry.weapon
-                -- Same two causes as the supplies above, and the same order.
-                -- A player who picked the weapon's full ceiling is carrying
-                -- hundreds of rounds, so "no room" is the one to check first.
-                ArenaLog('ammo: %s x%d was refused for %s -- either their inventory has no room for '
-                    .. 'it (check the round weight against your ox_inventory player limit) or the '
-                    .. 'item does not exist on this server.',
-                    item, count, tostring(src))
-            end
-        end
+        -- ONE ISSUER, TWO CALLERS. The tier swap hands out the same rounds
+        -- through the same function, so neither can drift from the other.
+        local handed = issueSpareRounds(ox, src, matchId, entry)
+        if not handed then failed[#failed + 1] = entry.key or entry.weapon end
     end
-
-    issued[matchId][src] = given
 
     -- ALLOWWEAPONWITHOUTAMMOITEM, and until now it decided nothing at all.
     --

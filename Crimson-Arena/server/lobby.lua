@@ -1944,6 +1944,22 @@ function ArenaLobby.SetLoadout(src, request)
     -- The panel greys the picker out for everyone but the host, but the
     -- panel is a suggestion and this is the rule: a crafted request from
     -- anyone else is refused here, not merely undrawn there.
+    -- A MODE THAT ISSUES ITS OWN LOADOUT ACCEPTS NO PICK AT ALL, from
+    -- anybody -- the host included, which is what puts this above the
+    -- host-picks rule below rather than beside it. A gun game hands out a
+    -- ladder and a fixed kit; there is nothing here for a request to change,
+    -- and storing one would leave a player looking at a saved loadout the
+    -- round will never hand them.
+    --
+    -- THE PANEL GREYS THE SCREEN OUT AND THIS IS THE RULE. The panel is a
+    -- suggestion; a crafted request is refused here, not merely undrawn
+    -- there.
+    if #Arena.LadderTiersFor(match.modeKey) > 0 then
+        ArenaDebug('loadout: %s picked, but %s issues its own loadout -- refused.',
+            tostring(target), tostring(match.modeKey))
+        return false, 'error.mode_picks_loadout'
+    end
+
     local hostPicks = Arena.LoadoutChooser() == 'host'
     if hostPicks and match.hostSource ~= target then
         -- SAID OUT LOUD, because from the panel this is indistinguishable

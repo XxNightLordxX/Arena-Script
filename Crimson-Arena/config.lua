@@ -22,15 +22,15 @@
       219   Match         Lives, timers, player counts, win condition
       439   Teams         The sides, and whether they may be uneven
       586   Modes         Free-for-all and team deathmatch
-      745   DefaultMode   Which of them a new lobby opens on
-      764   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      974   UI            Panel colours, logo and title
-      1032  Permissions   Who may open a match, who may force-stop one
-      1113  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1685   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2138   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2148   Webhook       Optional: a Discord line per finished match
-     2185   Dispatch      Optional: keeping police and EMS out of the arena
+      790   DefaultMode   Which of them a new lobby opens on
+      809   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1019  UI            Panel colours, logo and title
+      1077  Permissions   Who may open a match, who may force-stop one
+      1158  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1730   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2188   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2198   Webhook       Optional: a Discord line per finished match
+     2235   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -716,6 +716,33 @@ Config.Modes = {
             { key = 'armour', count = 1, chance = 25 },
         },
 
+        -- WHAT EVERYBODY WALKS IN WITH, every round, whatever they picked --
+        -- by supply key from Config.Loadouts.supplies.items, so an operator
+        -- who renamed the bandage item once does not have to rename it here
+        -- as well.
+        --
+        -- THE LOADOUT SCREEN IS SHUT IN THIS MODE and this is the other half
+        -- of that. The ladder decides the weapon, so there is no weapon to
+        -- pick; leaving the SUPPLIES pickable would mean a mode where the
+        -- guns are equal and the plates are not, which is the one asymmetry
+        -- a ladder cannot absorb -- everybody meets on tier 1 with a blade,
+        -- and the player who bought twenty-five plates wins that meeting
+        -- every time. So the kit is the operator's, one kit, everybody.
+        --
+        -- CLAMPED TO EACH SUPPLY'S OWN `max`, exactly as a player's request
+        -- is, and a key naming a supply this server has switched off is
+        -- skipped. With Config.Loadouts.supplies.enabled off, nobody carries
+        -- any of it and this list is ignored -- that switch outranks a mode.
+        --
+        -- AN EMPTY LIST MEANS NOTHING CARRIED; DELETING THE FIELD ENTIRELY
+        -- means "no opinion", and the players fall back to what the rest of
+        -- the resource would have given them. The two are different on
+        -- purpose, the same way `chance` above is.
+        startingKit = {
+            { key = 'armour', count = 1 },
+            { key = 'bandage', count = 5 },
+        },
+
         -- HOW MANY TIERS ONE KILLER MAY TAKE OFF ANY SINGLE PLAYER, per
         -- round. Kills past this still count as kills -- on the scoreboard,
         -- the leaderboard and the payout -- they just stop moving the
@@ -731,8 +758,26 @@ Config.Modes = {
         --
         -- 2 is deliberately generous to honest play -- killing the same
         -- opponent twice in a round is ordinary -- and useless to a farm: a
-        -- seven-tier ladder then needs at least three different victims.
+        -- seven-tier ladder needs seven credited kills to top, so at this
+        -- cap that is four different victims.
+        --
+        -- WHICH IS WHY THE CAP HAS A FLOOR IT RAISES ITSELF TO. Four victims
+        -- means five players, and Config.Match.minPlayers ships at 2 -- so
+        -- taken literally this made the mode's own win condition unreachable
+        -- in a small lobby, and a four-man round always went to the clock
+        -- while somebody collected "no tier for that one" forever. The cap
+        -- is "spread your kills across the field", and a small field has
+        -- nowhere to spread: the server raises it to whatever one climber
+        -- would need against everybody else in the room. In a full lobby
+        -- that works out smaller than this number and changes nothing, and
+        -- it only ever loosens where a farm could not have paid anyway --
+        -- the accomplice in a two-man match is the only other stake there is.
+        --
         -- `0` removes the cap, which is only sensible on a closed server.
+        -- A value that is NOT A NUMBER does not remove it: it falls back to
+        -- this default and Arena.ValidateConfig says so at start-up, because
+        -- a typo silently switching the anti-collusion rule off is the one
+        -- way this setting must not be able to fail.
         maxTiersPerVictim = 2,
 
         -- Tell the room when somebody reaches the top tier, so the last
@@ -1722,6 +1767,11 @@ Config.Loadouts = {
     -- rather than showing it empty.
     --
     --   allowMelee = false     a firearms-only arena
+    --
+    -- BOTH ARE ABOUT WHAT A PLAYER MAY PICK, and a mode that issues its own
+    -- loadout is not picking. A gun game's ladder is the operator's own
+    -- list, so it opens on a blade on a server that does not let anybody
+    -- choose one -- see Config.Modes.gungame.
     --   allowFirearms = false  a melee-only arena -- bats and knives
     --
     -- Both false means nobody carries anything; the resource says so at

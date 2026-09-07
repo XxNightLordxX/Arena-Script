@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 76 functions
+#### `shared/arena.lua` — 77 functions
 
 | Function | What it does |
 |---|---|
@@ -356,6 +356,7 @@ listed; the source documents them where they are.
 | `Arena.GetEnabledSupplies()` | Every extra supply an operator has left switched on, in config order. |
 | `Arena.SupplyMax(supply)` | The most of one supply a player may carry in. |
 | `Arena.SupplyByKey(key)` | One enabled supply by its key, or nil. |
+| `Arena.StartingKitFor(modeKey)` | The supplies a mode hands everybody at the start of a round, whatever they picked -- or nil when it names none. |
 | `Arena.ResolveSupplies(requested)` | Turns whatever a client asked to carry into a list the server will hand over. |
 | `Arena.ResolveWeaponEntry(weapon, ammoType, ammo)` | One weapon of a loadout, built -- policy-free, so the gun-game ladder can use it without being judged as a player request. |
 | `Arena.ResolveLoadout(request)` | Validates a whole loadout request and returns the concrete thing to hand a player -- real GTA weapon names and real ammo counts, nothing the caller supplied passed through untouched. |

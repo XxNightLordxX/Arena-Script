@@ -94,7 +94,14 @@ local function newServer()
             IsEnabled = function() return false end,
             Issue = function() return {} end, Reclaim = function() return 0 end,
             ReclaimAll = function() return 0 end, Clear = function() return true end,
-            OnLoan = function() return 0 end, SwapWeapon = function() return false end,
+            OnLoan = function() return 0 end,
+            -- TWO VALUES, because ArenaAmmo.SwapWeapon answers with a
+            -- reason and the caller acts on it: a bare `false` reads as
+            -- 'no-inventory' -- carry on, there are no items here -- and
+            -- this double means the other one, 'refused'. Neither spec
+            -- runs a ladder, so the stub decided nothing either way; it
+            -- said the opposite of what it was written to say.
+            SwapWeapon = function() return false, 'no-inventory' end,
         },
         -- MODELLED, not stubbed. A bucket left set is the defect this file
         -- exists for, so the fixture has to remember who is in which.

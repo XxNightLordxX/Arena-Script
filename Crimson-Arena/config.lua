@@ -27,10 +27,10 @@
       834   UI            Panel colours, logo and title
       892   Permissions   Who may open a match, who may force-stop one
       973   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1529   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1982   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1992   Webhook       Optional: a Discord line per finished match
-     2029   Dispatch      Optional: keeping police and EMS out of the arena
+     1545   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1998   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2008   Webhook       Optional: a Discord line per finished match
+     2045   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1452,23 +1452,39 @@ Config.Arenas = {
         --
         -- Each number below is what facingCentre returns for that point, so
         -- the fallback list and the planned placement now agree.
+        -- AND THEY STAND IN THE GAPS, not against the containers.
+        --
+        -- These were four points 30m out on the axes -- and the outer cover
+        -- ring puts a DOUBLED container at 28m on each of those same four
+        -- axes. Measured with the resource's own Arena.CoverClearance, each
+        -- spawn sat 2.00m from a cover piece against a 7.00m requirement:
+        -- inside cover by the same test PickRespawn uses to reject a
+        -- candidate. The client then scatters this path by 2.5m, so roughly
+        -- three placements in ten opened the round inside a steel box with
+        -- nowhere to walk to.
+        --
+        -- The ring leaves eight gaps, each about four metres of arc. The
+        -- bearings below sit in the middle of four of them, measured rather
+        -- than eyeballed: every point is 10.28m from the nearest cover
+        -- piece, which clears the 7.00m requirement and the 2.5m scatter
+        -- with 1.28m to spare. Headings are facingCentre's answers.
         spawns = {
-            vector4(1470.00, 3000.00, 1201.00, 270.0),
-            vector4(1530.00, 3000.00, 1201.00, 90.0),
-            vector4(1500.00, 3030.00, 1201.00, 180.0),
-            vector4(1500.00, 2970.00, 1201.00, 0.0),
+            vector4(1531.56, 3009.65, 1201.00, 107.0),
+            vector4(1490.35, 3031.56, 1201.00, 197.0),
+            vector4(1468.44, 2990.35, 1201.00, 287.0),
+            vector4(1509.65, 2968.44, 1201.00, 17.0),
         },
 
+        -- Each side gets two adjacent gaps, and the sides are opposite each
+        -- other across the arena.
         teamSpawns = {
             crimson = {
-                vector4(1470.00, 3000.00, 1201.00, 270.0),
-                -- Off-axis, so the heading is not a right angle: this is
-                -- facingCentre's answer for a point 30m west and 12m north.
-                vector4(1470.00, 3012.00, 1201.00, 248.2),
+                vector4(1515.49, 3029.14, 1201.00, 152.0),
+                vector4(1490.35, 3031.56, 1201.00, 197.0),
             },
             ash = {
-                vector4(1530.00, 3000.00, 1201.00, 90.0),
-                vector4(1530.00, 2988.00, 1201.00, 68.2),
+                vector4(1484.51, 2970.86, 1201.00, 332.0),
+                vector4(1509.65, 2968.44, 1201.00, 17.0),
             },
         },
 

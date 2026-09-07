@@ -849,5 +849,61 @@ t.test('every hand-typed spawn heading faces the arena it is in', function()
     t.isTrue(checked > 0, 'no hand-typed spawn points were checked, so this test proves nothing')
 end)
 
+t.test('and stands clear of the cover, with room for the scatter on top', function()
+    -- THE OTHER HALF OF THE SAME BLIND SPOT. Nothing had checked the typed
+    -- headings; nothing had checked the typed POSITIONS against the cover
+    -- either, and Arena.PlanSpawns -- which does avoid cover -- is not the
+    -- code path these are on.
+    --
+    -- The skydome's four points were 30m out on the axes, and its outer
+    -- cover ring puts a DOUBLED container at 28m on each of those same four
+    -- axes: 2.00m from a cover piece against a 7.00m CoverClearance, which
+    -- is the very test PickRespawn uses to throw a candidate away. The
+    -- client then scatters this path, so a share of placements opened the
+    -- round inside a steel box with nowhere to walk to.
+    local env = Sandbox.newArenaEnv()
+    local Arena = env.Arena
+    local scatter = tonumber(env.Config.Match.spawnScatterRadius) or 0.0
+
+    local checked = 0
+    for _, entry in ipairs(Arena.GetEnabledArenas()) do
+        local arena = Arena.GetArenaByKey(entry.key)
+        local cover = Arena.GetCover(entry.key, 1.0)
+        local clearance = Arena.CoverClearance(entry.key)
+        local area = Arena.GetSpawnArea(entry.key)
+
+        -- Only an arena that carries its own cover has anything to stand in.
+        if area and clearance and clearance > 0 and #cover > 0 then
+            local need = clearance + scatter
+
+            local lists = { { name = 'spawns', points = arena.spawns } }
+            for team, teamList in pairs(arena.teamSpawns or {}) do
+                lists[#lists + 1] = { name = 'teamSpawns.' .. tostring(team), points = teamList }
+            end
+
+            for _, list in ipairs(lists) do
+                for index, point in ipairs(list.points or {}) do
+                    -- Cover is stored as offsets from the arena centre.
+                    local ox, oy = point.x - area.x, point.y - area.y
+                    local nearest = math.huge
+                    for _, piece in ipairs(cover) do
+                        local d = math.sqrt((ox - piece.x) ^ 2 + (oy - piece.y) ^ 2)
+                        if d < nearest then nearest = d end
+                    end
+
+                    checked = checked + 1
+                    t.isTrue(nearest >= need,
+                        ('%s %s #%d is %.2fm from a cover piece -- it needs %.2fm (%.2f clearance '
+                            .. 'plus %.2fm of client scatter), so a fighter placed there starts '
+                            .. 'inside it'):format(entry.key, list.name, index, nearest, need,
+                            clearance, scatter))
+                end
+            end
+        end
+    end
+
+    t.isTrue(checked > 0, 'no hand-typed spawn was measured against cover, so this test proves nothing')
+end)
+
 print('spawnplan_spec')
 os.exit(t.summary())

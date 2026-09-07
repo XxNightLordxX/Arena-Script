@@ -668,6 +668,37 @@ end
 --- Takes back weapon items when the door did not take everything anyway.
 --- @param ox table
 --- @param src number
+--- Takes back up to `count` of one stackable item, never more than the
+--- player is actually holding.
+---
+--- ONE COPY, DELIBERATELY, because there were two and only one of them was
+--- right. Ammunition and supplies are reclaimed by separate loops below, the
+--- supplies loop was taught to clamp against what a player still holds, and
+--- the ammunition loop was not -- so a fighter who fired their weapon kept
+--- every round they had left.
+---
+--- WHY CLAMPING IS THE WHOLE JOB. ox_inventory refuses a removal it cannot
+--- satisfy in full on most builds: it does not take what is there and shrug.
+--- Ask a player holding 120 rounds for the 250 they were issued and the
+--- answer is no, and all 120 leave the arena with them.
+---
+--- A build with no counter at all is asked for the full amount. Taking back
+--- what was issued is the right answer when nothing can tell us otherwise,
+--- and a refusal there costs the arena nothing it had.
+--- @param ox table
+--- @param src number
+--- @param item string
+--- @param count integer -- how much was issued
+local function takeBack(ox, src, item, count)
+    local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
+    local held = ok and (Arena.ToInt(answer) or 0) or count
+
+    local take = math.min(Arena.ToInt(count) or 0, held)
+    if take > 0 then
+        pcall(function() return ox:RemoveItem(src, item, take) end)
+    end
+end
+
 local function reclaimWeapons(ox, src)
     for _, byPlayer in pairs(issuedWeapons) do
         local given = byPlayer[src]
@@ -686,7 +717,16 @@ local function reclaimWeapons(ox, src)
         local given = byPlayer[src]
         if given then
             for item, count in pairs(given) do
-                pcall(function() return ox:RemoveItem(src, item, count) end)
+                -- AGAINST WHAT THEY STILL HOLD, for the same reason the
+                -- supplies loop below does it -- and this loop did not.
+                -- A round is spent even more surely than a bandage: firing
+                -- the weapon is the entire point of being issued any. So a
+                -- fighter handed 250 and down to 120 was asked for 250,
+                -- ox_inventory refused the whole removal, and all 120 walked
+                -- out. The arena took nothing back from precisely the
+                -- players who used it most, which is the farm this record
+                -- exists to close.
+                takeBack(ox, src, item, count)
             end
             byPlayer[src] = nil
         end
@@ -707,20 +747,7 @@ local function reclaimWeapons(ox, src)
         local given = byPlayer[src]
         if given then
             for item, count in pairs(given) do
-                local held = 0
-                local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
-                if ok then held = Arena.ToInt(answer) or 0 end
-
-                -- A build with no counter at all is asked for the full
-                -- amount: taking back what was issued is the right answer
-                -- when nothing can tell us otherwise, and a refusal there
-                -- costs the arena nothing it had.
-                if not ok then held = count end
-
-                local take = math.min(count, held)
-                if take > 0 then
-                    pcall(function() return ox:RemoveItem(src, item, take) end)
-                end
+                takeBack(ox, src, item, count)
             end
             byPlayer[src] = nil
         end

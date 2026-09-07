@@ -175,15 +175,44 @@ local function newServer(pockets, mutate, opts)
             into[#into + 1] = { name = name, count = count, metadata = metadata }
             return true
         end,
+        GetItemCount = function(_self, id, name)
+            local total = 0
+            for _, item in ipairs(bucket(id)) do
+                if item.name == name then total = total + (tonumber(item.count) or 0) end
+            end
+            return total
+        end,
+        --- REFUSED OUTRIGHT WHEN THEY DO NOT HOLD THAT MANY, which is what
+        --- ox_inventory actually does and is the entire subject of takeBack:
+        --- it does not take what is there and shrug. The old stub here
+        --- matched a stack whose count was EXACTLY the number asked for,
+        --- which could express neither a partial removal nor that refusal --
+        --- so the arena asking a player for 250 rounds they no longer had
+        --- looked the same in this suite as asking for the 120 they did.
         RemoveItem = function(_self, id, name, count)
             local from = bucket(id)
+            local want = tonumber(count) or 0
+
+            local total = 0
+            for _, item in ipairs(from) do
+                if item.name == name then total = total + (tonumber(item.count) or 0) end
+            end
+            if total < want then return false end
+
             for index = #from, 1, -1 do
-                if from[index].name == name and from[index].count == count then
-                    table.remove(from, index)
-                    return true
+                if want <= 0 then break end
+                if from[index].name == name then
+                    local have = tonumber(from[index].count) or 0
+                    if have <= want then
+                        want = want - have
+                        table.remove(from, index)
+                    else
+                        from[index].count = have - want
+                        want = 0
+                    end
                 end
             end
-            return false
+            return true
         end,
         ClearInventory = function(_self, id)
             if fail.clear and type(id) == 'number' then error('cannot clear') end
@@ -280,6 +309,27 @@ local function newServer(pockets, mutate, opts)
             end
             table.sort(names)
             return table.concat(names, ',')
+        end,
+        --- Uses some of a stackable item up, the way firing a weapon spends
+        --- rounds through ox_inventory. Not `give` with a negative: a stack
+        --- has to actually shrink, or nothing downstream can tell a fighter
+        --- who reloaded from one who never fired.
+        spend = function(src, name, count)
+            local want = count
+            for index = #(inv[src] or {}), 1, -1 do
+                if want <= 0 then break end
+                local item = inv[src][index]
+                if item.name == name then
+                    local have = item.count or 0
+                    if have <= want then
+                        want = want - have
+                        table.remove(inv[src], index)
+                    else
+                        item.count = have - want
+                        want = 0
+                    end
+                end
+            end
         end,
         give = function(src, name, count)
             inv[src] = inv[src] or {}
@@ -1814,6 +1864,74 @@ t.test('and the real owner is still owed it, so the sweep hands it back on sight
 
     t.equals(s.carrying(7), 'phone,water',
         'the owner reconnected and the sweep never caught up with what it had been told they were owed')
+end)
+
+-- ========================================================================
+-- TAKEN BACK AGAINST WHAT THEY STILL HOLD
+--
+-- ox_inventory refuses a removal it cannot satisfy in full: it does not take
+-- what is there and shrug. So reclaiming BY THE AMOUNT ISSUED takes nothing
+-- at all from anybody who spent any of it -- which is everybody who fired
+-- their weapon.
+--
+-- The supplies loop was taught this and carries the comment explaining it.
+-- The ammunition loop, twenty lines above it, was not. Both now go through
+-- one function, so there is no second copy left to drift.
+-- ========================================================================
+
+t.test('DEFECT: a fighter who fired their weapon kept every round they had left', function()
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        -- The door OFF, which is where reclaimWeapons is the only thing that
+        -- takes the arena's kit back -- there is no wholesale clear.
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 250))
+    t.isTrue(s.carrying(1):find('ammo%-rifle%-ap') ~= nil, 'the rounds were never issued')
+
+    -- They shoot. ox_inventory decrements the ammo item as the weapon
+    -- reloads, so they are down to 120 of the 250 they were handed.
+    s.spend(1, 'ammo-rifle-ap', 130)
+
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.isTrue(s.carrying(1):find('ammo%-rifle%-ap') == nil,
+        ('the arena left %s holding rounds it issued, because it asked for the number it gave '
+            .. 'rather than the number they still had'):format(s.carrying(1)))
+end)
+
+t.test('and it still takes back the full amount from somebody who fired nothing', function()
+    -- The control. A clamp that took nothing would pass the test above.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 250))
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.equals(s.carrying(1), 'phone,water',
+        'the arena did not take back ammunition from a player who had spent none of it')
+end)
+
+t.test('and never reaches past the arena into rounds the player brought themselves', function()
+    -- THE OTHER DIRECTION, and the reason the clamp is a min rather than
+    -- "take whatever they have". A player who walks in with their own
+    -- ammunition -- which is exactly what the door being off means -- must
+    -- not have it confiscated because the arena happened to issue the same
+    -- item.
+    local s = newServer({ [1] = { { name = 'ammo-rifle-ap', count = 400 } } }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 250))
+    s.ammo.Reclaim(1, 'match ended')
+
+    local left = 0
+    for _, item in ipairs({ s.itemNamed(1, 'ammo-rifle-ap') }) do
+        left = left + (item.count or 0)
+    end
+    t.equals(left, 400,
+        'the arena took back more than it issued and ate into the player\'s own rounds')
 end)
 
 os.exit(t.summary())

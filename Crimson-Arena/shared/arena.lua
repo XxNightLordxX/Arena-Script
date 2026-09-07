@@ -2419,6 +2419,35 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor, prefer)
     -- filter is dropped rather than the respawn refused: the best available
     -- point is still the best available point.
     local safe = pool
+
+    -- WHAT THE TEAMMATE RULE BELOW IS ALLOWED TO CHOOSE AMONG, which is not
+    -- the same list as `safe` and is the whole point of this pair.
+    --
+    -- `safe` falls back to the FULL pool when nothing clears the gap, which
+    -- is right for the maximin at the bottom -- the best available point is
+    -- still the best available point. It is catastrophic for the teammate
+    -- rule, which scores on teammate distance and has no threat term at all:
+    -- handed the full pool it returns the candidate NEAREST a teammate, and
+    -- a teammate in a fight is standing next to the enemy.
+    --
+    -- HOW OFTEN THAT HAPPENS IS NOT A CORNER. `wanted` is
+    -- achievableSeparation(R, threats + 1), and with ONE live enemy that is
+    -- 1.0774 * R -- larger than the arena. The furthest any point of the disc
+    -- can be from an enemy standing d from the centre is R + d, so nothing
+    -- can clear it while d < 0.0774 * R. Measured against the shipped
+    -- skydome (R = 35, minSeparation = 10) with the last enemy holding the
+    -- middle: mean respawn gap 6.8m, closest 0.02m, and 66% of respawns
+    -- inside the ten metres this function exists to promise. That is the
+    -- team-deathmatch endgame, and it is the exact complaint the function was
+    -- written to answer -- "coming back inside somebody's crosshair is not a
+    -- respawn, it is a second death with extra steps" -- arriving back
+    -- through the rule meant to put you next to your side.
+    --
+    -- So the teammate rule spends only what is ABOVE the promise. It may
+    -- trade a candidate 30m from the enemy for one 12m away to land beside a
+    -- teammate; it may not go under `minSeparation`. When nothing clears even
+    -- that, there is nothing to spend and safety alone decides.
+    local rejoinable = pool
     if area then
         local wanted = math.max(area.minSeparation,
             achievableSeparation(area.radius, #threats + 1))
@@ -2426,15 +2455,24 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor, prefer)
         for _, candidate in ipairs(pool) do
             if threatGap(candidate) >= wanted * wanted then qualified[#qualified + 1] = candidate end
         end
-        if #qualified > 0 then safe = qualified end
+        if #qualified > 0 then
+            safe = qualified
+            rejoinable = qualified
+        else
+            local floor = area.minSeparation * area.minSeparation
+            rejoinable = {}
+            for _, candidate in ipairs(pool) do
+                if threatGap(candidate) >= floor then rejoinable[#rejoinable + 1] = candidate end
+            end
+        end
     end
 
     -- WITH A SIDE TO REJOIN, the choice among those is the one nearest a
-    -- teammate. Only ever among candidates that already cleared the gap
-    -- above, so this cannot trade away the distance it was chosen for.
-    if #friends > 0 and #safe > 1 then
+    -- teammate -- among candidates that hold the promised gap, never among
+    -- the ones that do not.
+    if #friends > 0 and #rejoinable > 0 then
         local best, bestScore = nil, math.huge
-        for _, candidate in ipairs(safe) do
+        for _, candidate in ipairs(rejoinable) do
             local nearest = math.huge
             for _, friend in ipairs(friends) do
                 local gap = distanceSquared(candidate, friend)

@@ -242,4 +242,90 @@ t.test('vector-shaped and array-shaped positions are both understood', function(
     end
 end)
 
+-- ======================================================================
+-- REJOINING YOUR SIDE MAY NOT COST YOU THE GAP
+--
+-- The teammate preference scores candidates on distance from a TEAMMATE and
+-- has no threat term at all. It was written to run only on candidates that
+-- had already cleared the enemy gap -- its comment said so -- but the filter
+-- that produced them falls back to the FULL pool when nothing clears, and
+-- then the teammate rule ran on that. A teammate in a fight is standing next
+-- to the enemy, so "nearest a teammate" is "nearest the enemy".
+--
+-- AND THE FILTER EMPTIES ROUTINELY. The gap it asks for is
+-- achievableSeparation(R, threats + 1), which with ONE live enemy is
+-- 1.0774 * R -- bigger than the arena. Nothing in the disc can clear it
+-- while that enemy is near the middle, which is the team-deathmatch endgame:
+-- last enemy holding the centre, one of your side engaging them, every
+-- respawn you have left aimed at the pair of them.
+--
+-- Measured against the shipped skydome before the fix: 66% of respawns
+-- inside the promised ten metres, closest 0.02m.
+-- ======================================================================
+
+t.test('DEFECT: rejoining a teammate put the player on top of the enemy', function()
+    local Arena = envWith().Arena
+    -- The endgame. The enemy holds the middle, a teammate is fighting them.
+    local enemy = { x = AREA.x, y = AREA.y, z = AREA.z }
+    local mate  = { x = AREA.x + 3.0, y = AREA.y, z = AREA.z }
+
+    local closest, breaches = math.huge, 0
+    for _ = 1, 400 do
+        local point = Arena.PickRespawn('ring', nil, { enemy }, nil, nil, { mate })
+        t.isNotNil(point, 'no respawn point was produced at all')
+        local distance = gap(point, enemy)
+        if distance < closest then closest = distance end
+        if distance < 12.0 then breaches = breaches + 1 end
+    end
+
+    t.equals(breaches, 0,
+        ('%d of 400 respawns landed inside the 12m this arena promises -- closest %.2fm')
+            :format(breaches, closest))
+end)
+
+t.test('and the preference itself still works, or the fix is just the maximin', function()
+    -- THE CONTROL, and without it the test above is passed by deleting the
+    -- teammate rule outright. Landing beside your own side is the whole
+    -- reason the rule exists; what it may not do is go under the promise.
+    --
+    -- Compared against the SAME call with no teammate, so this measures the
+    -- preference rather than the geometry.
+    local Arena = envWith().Arena
+    local enemy = { x = AREA.x - 80.0, y = AREA.y, z = AREA.z }
+    local mate  = { x = AREA.x + 60.0, y = AREA.y, z = AREA.z }
+
+    local withMate, without = 0, 0
+    for _ = 1, 300 do
+        withMate = withMate + gap(Arena.PickRespawn('ring', nil, { enemy }, nil, nil, { mate }), mate)
+        without  = without  + gap(Arena.PickRespawn('ring', nil, { enemy }), mate)
+    end
+
+    t.isTrue((withMate / 300) < (without / 300),
+        ('naming a teammate made no difference to where the player came back: %.1fm with, %.1fm without')
+            :format(withMate / 300, without / 300))
+end)
+
+t.test('and where nothing can hold the gap at all, safety alone decides', function()
+    -- Nothing left to spend. With the promised separation as large as the
+    -- arena itself no candidate can clear it, so the teammate rule has no
+    -- qualifying list to choose from and must stand down entirely rather
+    -- than fall back to the whole pool.
+    local env = envWith()
+    env.Config.Arenas.ring.spawnArea.minSeparation = 100.0   -- == the radius
+    local Arena = env.Arena
+
+    local enemy = { x = AREA.x, y = AREA.y, z = AREA.z }
+    local mate  = { x = AREA.x + 3.0, y = AREA.y, z = AREA.z }
+
+    local nearMate = 0
+    for _ = 1, 200 do
+        local point = Arena.PickRespawn('ring', nil, { enemy }, nil, nil, { mate })
+        if gap(point, mate) < 50.0 then nearMate = nearMate + 1 end
+    end
+
+    t.equals(nearMate, 0,
+        ('%d of 200 respawns were placed beside the teammate -- and so beside the enemy -- '
+            .. 'though no candidate could hold the gap'):format(nearMate))
+end)
+
 os.exit(t.summary())

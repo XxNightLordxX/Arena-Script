@@ -1464,6 +1464,46 @@ function ArenaBetting.ReturnSideBets(matchId)
     return returned, owed
 end
 
+--- Marks every unsettled bet this player is holding on this match as one
+--- placed by somebody who then walked out of it.
+---
+--- WHAT IT IS FOR, AND IT IS A HOLE THE REFUND BELOW OPENS RATHER THAN ONE
+--- IT FOUND. A fighter backing themselves picks their own server id, so
+--- their bet and a spectator's bet on them name the SAME pick. Returning
+--- everything on that pick when they leave hands the fighter their own wager
+--- back -- and a wager you can cancel once it is going badly is not a wager,
+--- it is free money with an exit. `fighterBets` ships ON, so that is the
+--- default configuration.
+---
+--- The spectator's case is the exact opposite, and is the reason the refund
+--- exists: their pick died through somebody else's act, with nothing they
+--- could have done about it. This is the one line that tells the two apart.
+---
+--- MARKED RATHER THAN SETTLED. The bet is still live and still judged at
+--- settlement the way it always was -- the holder is no longer a fighter, so
+--- `voided` passes it through, and a pick that did not win loses. All this
+--- withholds is the refund.
+---
+--- It also closes the second departure: two players on one side who both
+--- backed it, both leaving, would otherwise see the first one's bet returned
+--- when the second emptied the side.
+--- @param matchId string
+--- @param src any
+--- @return integer marked
+function ArenaBetting.MarkWalkedOut(matchId, src)
+    local id = serverId(src)
+    if not id or not Arena.IsKey(matchId) then return 0 end
+
+    local marked = 0
+    for _, bet in ipairs(sideBets[matchId] or {}) do
+        if bet.src == id and not bet.settled and bet.fromEntryFee ~= true then
+            bet.walkedOut = true
+            marked = marked + 1
+        end
+    end
+    return marked
+end
+
 --- Returns every outstanding side-bet on one pick, because that pick can no
 --- longer win.
 ---
@@ -1512,7 +1552,8 @@ function ArenaBetting.ReturnBetsOn(matchId, pick)
     if not wanted then return 0, 0 end
 
     for _, bet in ipairs(sideBets[matchId] or {}) do
-        if not bet.settled and bet.fromEntryFee ~= true and bet.pick == wanted then
+        if not bet.settled and bet.fromEntryFee ~= true and bet.walkedOut ~= true
+            and bet.pick == wanted then
             if returnSideBet(bet, matchId) then
                 returned = returned + 1
             else

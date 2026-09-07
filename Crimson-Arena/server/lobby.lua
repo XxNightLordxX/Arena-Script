@@ -1336,8 +1336,28 @@ function ArenaLobby.Leave(src, reasonKey)
     -- A TEAM PICK ONLY DIES WITH THE LAST PLAYER ON IT. One of four leaving
     -- a 2v2 leaves crimson perfectly able to win, and returning the bets on
     -- it would be handing money back on a wager that is still live.
+    -- THEIR OWN BETS ARE THEIRS TO LOSE, and this has to run BEFORE the
+    -- return below or it cannot. A fighter backing themselves picks their own
+    -- server id, so their bet names the same pick a spectator's bet on them
+    -- does; without this line, walking out cancels a wager that was going
+    -- badly and hands the money back. fighterBets ships on.
+    ArenaBetting.MarkWalkedOut(match.id, target)
+
     if leftTeam then
-        if (Arena.CountTeams(match.players)[leftTeam] or 0) == 0 then
+        -- THROUGH PlayerArray, LIKE THE OTHER TWO CALLERS, and not because it
+        -- reads better. Arena.CountTeams walks its argument with `ipairs`,
+        -- and `match.players` is keyed by SERVER ID -- so on a live server,
+        -- where the lowest id in a lobby is rarely 1, ipairs stops at the
+        -- first index and counts nothing. Every side would then read as
+        -- empty, and this guard -- the one whose whole job is to keep a live
+        -- team's bets alive -- would hold open for any single departure.
+        --
+        -- It passed its own test because the fixture numbered its players
+        -- 1..5, which is the one roster shape where ipairs over a src-keyed
+        -- map is right. Same trap as the slot-keyed inventory read in
+        -- server/ammo.lua, sprung the same way, one file over.
+        local remaining = Arena.CountTeams(ArenaLobby.PlayerArray(match))
+        if (remaining[leftTeam] or 0) == 0 then
             local returned, owed = ArenaBetting.ReturnBetsOn(match.id, leftTeam)
             if returned > 0 then
                 ArenaLog('betting: the last player on "%s" left match %s, so %d side-bet(s) on that side were returned unjudged.',

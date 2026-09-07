@@ -588,7 +588,14 @@ end)
 t.test('and a TEAM pick only dies with the last player on that side', function()
     -- One of four leaving a 2v2 leaves crimson perfectly able to win.
     -- Returning bets on it would be handing money back on a live wager.
-    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000, [5] = 50000 }, function(config)
+    -- SERVER IDS THAT LOOK LIKE A SERVER'S, and this is not decoration.
+    -- Written 1..5, this test passed against a guard that counted its roster
+    -- with `ipairs` over a table keyed by server id -- because 1..5 is the
+    -- one roster shape where that is accidentally right. A real lobby's
+    -- lowest id is rarely 1, ipairs then stops at the first index, every
+    -- side reads as empty, and the guard holds open for any departure at
+    -- all. The numbers below are the whole reason this test can see that.
+    local s = newArena({ [7] = 50000, [19] = 50000, [23] = 50000, [41] = 50000, [58] = 50000 }, function(config)
         config.Betting.enabled = true
         config.Betting.spectatorBets.enabled = true
         config.Betting.entryFee.enabled = false
@@ -606,28 +613,28 @@ t.test('and a TEAM pick only dies with the last player on that side', function()
     t.isTrue(#teams >= 2, 'the config under test ships fewer than two teams')
     local sideA, sideB = teams[1].key, teams[2].key
 
-    local matchId = s.lobby.Create(1, anArena(s), teamMode, 0, nil, nil, 'cash')
+    local matchId = s.lobby.Create(7, anArena(s), teamMode, 0, nil, nil, 'cash')
     t.isNotNil(matchId, 'the team match could not be created')
-    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'))
-    t.isTrue(s.lobby.Join(3, matchId, nil, 'cash'))
-    t.isTrue(s.lobby.Join(4, matchId, nil, 'cash'))
+    t.isTrue(s.lobby.Join(19, matchId, nil, 'cash'))
+    t.isTrue(s.lobby.Join(23, matchId, nil, 'cash'))
+    t.isTrue(s.lobby.Join(41, matchId, nil, 'cash'))
 
     local match = s.lobby.Get(matchId)
-    match.players[1].team, match.players[2].team = sideA, sideA
-    match.players[3].team, match.players[4].team = sideB, sideB
+    match.players[7].team,  match.players[19].team = sideA, sideA
+    match.players[23].team, match.players[41].team = sideB, sideB
 
     local function cash(id) return s.qbx.players[id].money.cash end
-    t.isTrue(s.betting.PlaceSpectatorBet(5, matchId, sideA, 10000, 'cash'))
-    t.equals(cash(5), 40000)
+    t.isTrue(s.betting.PlaceSpectatorBet(58, matchId, sideA, 10000, 'cash'))
+    t.equals(cash(58), 40000)
 
     -- One of the two on that side goes. The side is still in the fight.
-    s.lobby.Leave(2, 'bet.refund_left')
-    t.equals(cash(5), 40000,
+    s.lobby.Leave(19, 'bet.refund_left')
+    t.equals(cash(58), 40000,
         ('a bet on "%s" was returned while a player was still on that side'):format(sideA))
 
     -- The last one goes. Now it cannot win.
-    s.lobby.Leave(1, 'bet.refund_left')
-    t.equals(cash(5), 50000,
+    s.lobby.Leave(7, 'bet.refund_left')
+    t.equals(cash(58), 50000,
         ('the last player on "%s" left and the bets on it were not returned'):format(sideA))
 end)
 
@@ -651,6 +658,39 @@ t.test('and the pick is normalised the way the bet was written, not by hand', fu
     t.equals(returned, 1, 'a numeric pick matched no bet, though that is how server ids are held')
     t.equals(owed, 0)
     t.equals(cash(3), 50000, 'the stake was not handed back')
+end)
+
+t.test('but a FIGHTER cannot cancel their own losing bet by walking out', function()
+    -- THE HOLE THE DEAD-PICK REFUND OPENS IF IT IS NOT AIMED CAREFULLY.
+    --
+    -- A fighter backing themselves picks their own server id, so their bet
+    -- and a spectator's bet on them name the SAME pick. Returning everything
+    -- on that pick when they leave hands the fighter their own wager back --
+    -- and a wager you can cancel once it is going badly is not a wager. It
+    -- is free money with an exit.
+    --
+    -- The spectator's case is the opposite and is why the refund exists at
+    -- all: their pick died through somebody else's act, with nothing they
+    -- could have done about it.
+    local s, matchId = withWatcher(1000, function(config)
+        config.Betting.fighterBets.enabled = true
+        config.Betting.fighterBets.ownSideOnly = true
+    end)
+    local function cash(id) return s.qbx.players[id].money.cash end
+
+    t.isTrue(s.betting.PlaceSpectatorBet(1, matchId, 1, 5000, 'cash'), 'the fighter could not back themselves')
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 5000, 'cash'), 'the watcher could not back that fighter')
+
+    local fighterAfterStake = cash(1)
+    t.equals(cash(3), 45000, 'the watcher\'s stake was never taken')
+
+    -- Fighter 1 walks out. Their own bet is theirs to lose; the watcher's is
+    -- on a pick that just died.
+    t.isTrue(s.lobby.Leave(1, 'bet.refund_left'), 'the fighter could not leave')
+
+    t.equals(cash(3), 50000, 'the watcher did not get their stake back on a pick that walked out')
+    t.equals(cash(1), fighterAfterStake + 1000,
+        'the fighter got their own bet back by leaving -- only the 1000 entry fee should have returned')
 end)
 
 os.exit(t.summary())

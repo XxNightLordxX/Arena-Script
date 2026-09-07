@@ -54,6 +54,12 @@ local function newServer(wallets, mutate)
     local console, toasts = {}, {}
 
     local env = Sandbox.newArenaEnv({
+        -- THE RETRY SWEEP'S THREAD, WHICH THIS FILE DOES NOT WANT TO RUN.
+        -- server/betting.lua starts one at load to pay refunds it could not
+        -- deliver. A no-op CreateThread means the loop is never entered, so
+        -- these tests keep driving the money paths by hand -- which is the
+        -- point of them.
+        CreateThread = function() end,
         exports = qbx.exports,
         lib = oxlib,
         TriggerClientEvent = function(event, target, payload)
@@ -120,6 +126,28 @@ local function newServer(wallets, mutate)
         qbx.players[id] = nil
     end
 
+    --- A framework that answers with a player object carrying no citizen id.
+    --- Rare, but it is the one state the debt ledger cannot be keyed on --
+    --- and the branch that keeps the old hold-it-on-the-match behaviour.
+    --- @param id integer
+    function server.stripCitizenId(id)
+        if qbx.players[id] then qbx.players[id].citizenid = nil end
+    end
+
+    --- The character who used to hold `oldId` comes back on a NEW server id,
+    --- which is what a reconnect actually is. Their citizen id is the one
+    --- thing that survives, and it is the handle the debt ledger is keyed on.
+    --- @param oldId integer -- the id they had when the money was taken
+    --- @param newId integer -- the id they are on now
+    --- @param cash integer
+    function server.reconnect(oldId, newId, cash)
+        qbx.players[newId] = {
+            citizenid = ('CID%03d'):format(oldId),
+            name = ('Fighter %d'):format(oldId),
+            money = { cash = cash, bank = 0 },
+        }
+    end
+
     return server
 end
 
@@ -184,6 +212,19 @@ end
 -- whatever Clear returns. A side-bet still sitting in the table at that
 -- moment is money nobody can reach again: there is no id left to call Clear
 -- with, and unlike a stranded stake nothing has printed its name.
+--
+-- THE CONTRACT BELOW CHANGED, AND THESE TESTS CHANGED WITH IT. Holding an
+-- undeliverable stake on the match and refusing to Clear was the best answer
+-- available while the money could only be reached through the match id --
+-- and it was not good enough, because ArenaLobby.Destroy drops that id
+-- unconditionally moments later, refusal or no refusal. The money is now
+-- moved off the match onto a ledger keyed by CITIZEN ID, which outlives the
+-- teardown, the reconnect and the recycled id. So the pot really does empty
+-- and Clear really does succeed -- not because the debt was written off, but
+-- because it is somewhere Clear is not the only way back to it.
+--
+-- What has NOT changed, and is asserted just as hard below: nobody is ever
+-- paid somebody else's money, and no debt is silently dropped.
 -- ======================================================================
 
 t.test('Clear returns an unjudged side-bet even while the pot is still held', function()
@@ -199,16 +240,21 @@ t.test('Clear returns an unjudged side-bet even while the pot is still held', fu
 
     local settled = server.betting.RefundAll('m1', 'notify.match_empty')
     t.isFalse(settled, 'the pot cannot be fully refunded, which is the case this test is about')
-    t.equals(server.betting.GetPot('m1'), 1000)
-    t.contains(server.log(), 'REFUND FAILED')
+    t.contains(server.log(), 'REFUND DEFERRED')
+
+    -- MOVED, NOT WRITTEN OFF. The pot empties because the stake is now filed
+    -- against the character instead of the match.
+    t.equals(server.betting.GetPot('m1'), 0, 'the stake is still pinned to a match that is about to vanish')
+    local characters, owedTotal = server.betting.Outstanding()
+    t.equals(characters, 1, 'nobody is recorded as being owed anything')
+    t.equals(owedTotal, 1000, 'the stake was not carried across to the debt ledger intact')
 
     local dropped = server.betting.Clear('m1')
 
-    -- Still refused, and still loud: the stake is real money that has to
-    -- stay reachable.
-    t.isFalse(dropped, 'a match still holding a stake may not be dropped')
-    t.contains(server.log(), 'CLEAR REFUSED')
-    t.equals(server.betting.GetPot('m1'), 1000, 'the held stake was not quietly written off')
+    -- Now allowed, and that is the improvement: the money is reachable by a
+    -- route that does not need this match id, so keeping the id alive buys
+    -- nothing -- and Destroy was going to drop it regardless.
+    t.isTrue(dropped, 'the match could not be dropped even though it holds nothing any more')
 
     -- THE ASSERTION THIS TEST EXISTS FOR. The spectator's money is not the
     -- pot's, and the pot's trouble is not a reason to keep it.
@@ -224,10 +270,10 @@ t.test('a second Clear does not hand the same side-bet back twice', function()
     record.players[1] = nil
     server.disconnect(1)
     server.betting.RefundAll('m1', 'notify.match_empty')
-    t.isFalse(server.betting.Clear('m1'))
+    t.isTrue(server.betting.Clear('m1'))
 
     local before = server.movementCount()
-    t.isFalse(server.betting.Clear('m1'), 'the stake is still held, so the refusal stands')
+    t.isTrue(server.betting.Clear('m1'), 'a match that holds nothing may be dropped again')
 
     -- A returned bet is marked, not deleted, exactly like a settled stake --
     -- so the retry that a still-held pot invites pays nobody a second time.
@@ -364,12 +410,15 @@ t.test('a refund is not paid to whoever now holds the departed player\'s id', fu
     -- settled, and print nothing.
     t.equals(server.cash(5), 250, 'the new holder of that id was not paid somebody else\'s stake')
     t.equals(server.movements(5), 1, 'the original stake going out, and nothing since')
-    t.contains(server.log(), 'REFUND FAILED')
+    t.contains(server.log(), 'REFUND DEFERRED')
 
-    -- Still held, still owed, still reachable -- and the match may not be
-    -- dropped while it is.
-    t.equals(server.betting.GetPot('m1'), 1000)
-    t.isFalse(server.betting.Clear('m1'))
+    -- Still owed, and now reachable by a handle the teardown cannot take
+    -- away: the character, not the match.
+    t.equals(server.betting.GetPot('m1'), 0)
+    local characters, owedTotal = server.betting.Outstanding()
+    t.equals(characters, 1)
+    t.equals(owedTotal, 1000, 'the departed player is no longer recorded as being owed their stake')
+    t.isTrue(server.betting.Clear('m1'))
 
     -- The half that must keep working: the player who is who they were is
     -- refunded exactly once.
@@ -388,11 +437,21 @@ t.test('a side-bet is returned to its owner, not to the id they used to hold', f
 
     t.equals(server.cash(3), 400, 'the new holder of that id was not handed a bet they never placed')
     t.equals(server.movements(3), 1, 'the bet going out, and nothing since')
-    t.contains(server.log(), 'SIDE-BET REFUND FAILED')
+    t.contains(server.log(), 'SIDE-BET REFUND DEFERRED')
 
-    -- Unsettled, so Clear goes on refusing to drop the match and the bet
-    -- stays reachable.
-    t.isFalse(server.betting.Clear('m1'))
+    -- Recorded against the character who placed it, so it survives the match
+    -- being torn down -- which is what happens next on every path here.
+    local characters, owedTotal = server.betting.Outstanding()
+    t.equals(characters, 1)
+    t.equals(owedTotal, 1000, 'the bet was not carried across to the debt ledger')
+
+    -- STILL REFUSED, AND NOT FOR THE BET. Both fighters' entry fees are
+    -- still escrowed against this match -- nothing has refunded them -- so
+    -- the pot is what holds it open. The bet is no longer part of that
+    -- answer, which is the change: it used to be the thing that could not be
+    -- reached, and now it is somewhere Clear is not the way back to it.
+    t.equals(server.betting.GetPot('m1'), 2000, 'the fighters\' stakes went somewhere they should not have')
+    t.isFalse(server.betting.Clear('m1'), 'a match still holding both entry fees may not be dropped')
 end)
 
 t.test('a winning side-bet is not paid to whoever inherited the id', function()
@@ -695,5 +754,113 @@ t.test('money is conserved: the pool pays out exactly what went into it', functi
     t.equals(total, 5000 + 5000 + 5000,
         'the settlement created or destroyed money -- it is only ever allowed to move it')
 end)
+
+-- ======================================================================
+-- A REFUND THAT COULD NOT BE DELIVERED IS STILL OWED
+--
+-- credit() needs a LOADED character, so the commonest reason a refund
+-- cannot be handed over is the commonest reason one is owed: they crashed.
+-- That used to be the end of the money. The stake stayed on the match with
+-- a comment promising "a later RefundAll tries again" -- and there was no
+-- later: ArenaLobby.Leave sees the lobby is empty and calls Destroy in the
+-- same call chain, Destroy calls RefundAll (which fails identically) and
+-- then Clear (which correctly REFUSES) -- and then drops matches[id]
+-- anyway. From that instant no id existed to call anything with, and escrow
+-- is reachable only through the match id.
+--
+-- Destroy's own comment states the invariant it did not enforce: "escrow
+-- against a match nobody can look up is money nobody can get out again."
+-- ======================================================================
+
+t.test('DEFECT: an entry fee taken from a player who crashed is paid on their return', function()
+    local server, record = teamMatch()
+
+    -- The host crashes while the lobby is still open. This is the ordinary
+    -- single-host case, where Destroy fires immediately afterwards.
+    record.players[1] = nil
+    server.disconnect(1)
+
+    server.betting.RefundAll('m1', 'notify.match_empty')
+
+    local characters, owedTotal = server.betting.Outstanding()
+    t.equals(characters, 1, 'nobody was recorded as owed the fee that could not be handed back')
+    t.equals(owedTotal, 1000)
+
+    -- The match is torn down. Every handle to the escrow row goes with it,
+    -- which is exactly why the debt may not live there.
+    t.isTrue(server.betting.Clear('m1'))
+
+    -- They come back, on a different server id, as a reconnect really is.
+    server.reconnect(1, 12, 0)
+    local paid = server.betting.PayOutstanding(12)
+
+    t.equals(paid, 1000, 'the entry fee was never handed back')
+    t.equals(server.cash(12), 1000, 'the money did not reach them')
+
+    local left = select(1, server.betting.Outstanding())
+    t.equals(left, 0, 'they are still recorded as owed money that has already been paid')
+end)
+
+t.test('and it is not paid twice', function()
+    local server, record = teamMatch()
+    record.players[1] = nil
+    server.disconnect(1)
+    server.betting.RefundAll('m1', 'notify.match_empty')
+
+    server.reconnect(1, 12, 0)
+    t.equals(server.betting.PayOutstanding(12), 1000)
+
+    local before = server.movementCount()
+    t.equals(server.betting.PayOutstanding(12), 0, 'the same debt was paid a second time')
+    t.equals(server.movementCount(), before, 'money moved on a debt that was already settled')
+    t.equals(server.cash(12), 1000)
+end)
+
+t.test('and it is never paid to whoever inherited their old server id', function()
+    -- The rule the whole ledger is keyed on. A debt belongs to a CHARACTER;
+    -- a server id is a slot the next person to connect gets handed.
+    local server, record = teamMatch()
+    record.players[1] = nil
+    server.disconnect(1)
+    server.betting.RefundAll('m1', 'notify.match_empty')
+
+    server.reassignId(1, 250)
+    t.equals(server.betting.PayOutstanding(1), 0,
+        'a stranger was paid a refund owed to the player whose id they now hold')
+    t.equals(server.cash(1), 250)
+
+    local characters = select(1, server.betting.Outstanding())
+    t.equals(characters, 1, 'the debt was cleared by handing it to the wrong person')
+end)
+
+t.test('and a debt with no citizen id to file it under stays held on the match', function()
+    -- THE ONE CASE THAT KEEPS THE OLD BEHAVIOUR, and it has to: with nothing
+    -- to key the ledger on there is no handle that outlives the match, so
+    -- refusing to Clear is the only thing still holding the money in place.
+    -- Worse to move a debt somewhere it cannot be found again than to leave
+    -- it where at least the refusal is loud.
+    local server = newServer({ [1] = 5000, [2] = 5000 })
+    local record = {
+        id = 'm1', state = 'lobby', modeKey = 'tdm',
+        players = { [1] = { src = 1, team = 'crimson' }, [2] = { src = 2, team = 'ash' } },
+    }
+    server.env.ArenaLobby = fakeLobby({ ['m1'] = record })
+
+    -- No citizen id at the moment the stake is taken, so the record carries
+    -- none either.
+    server.stripCitizenId(1)
+    server.betting.TakeStake(1, 'm1', 1000)
+
+    record.players[1] = nil
+    server.disconnect(1)
+    server.betting.RefundAll('m1', 'notify.match_empty')
+
+    t.contains(server.log(), 'REFUND FAILED')
+    t.equals(select(1, server.betting.Outstanding()), 0,
+        'a debt was filed under a key that does not identify anybody')
+    t.equals(server.betting.GetPot('m1'), 1000, 'the stake was dropped rather than held')
+    t.isFalse(server.betting.Clear('m1'), 'the match was dropped while still holding money nobody can trace')
+end)
+
 
 os.exit(t.summary())

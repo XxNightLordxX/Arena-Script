@@ -470,7 +470,7 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 26 functions
+#### `server/betting.lua` — 29 functions
 
 | Function | What it does |
 |---|---|
@@ -499,6 +499,9 @@ listed; the source documents them where they are.
 | `ArenaBetting.MarkWalkedOut(matchId, src)` | Marks this player's unsettled bets as placed by somebody who then left, so the dead-pick refund never hands them back. |
 | `ArenaBetting.ReturnBetsOn(matchId, pick)` | Hands back every unsettled side-bet on one pick, because that pick can no longer win. |
 | `ArenaBetting.SettleSpectatorBets(matchId, winningPick)` | Settles every side-bet on a match. |
+| `ArenaBetting.PayOutstanding(src)` | Pays one character everything this resource owes them from a refund that could not be delivered. |
+| `ArenaBetting.SweepUnpaid()` | Pays everybody on the server whatever they are still owed. |
+| `ArenaBetting.Outstanding()` | How much this resource still owes, across how many characters. |
 | `ArenaBetting.Clear(matchId)` | Drops a match's money state. |
 
 #### `server/lobby.lua` — 22 functions

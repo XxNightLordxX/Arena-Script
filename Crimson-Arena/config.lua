@@ -24,13 +24,13 @@
       586   Modes         Free-for-all and team deathmatch
       605   DefaultMode   Which of them a new lobby opens on
       624   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      817   UI            Panel colours, logo and title
-      875   Permissions   Who may open a match, who may force-stop one
-      956   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1493   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1946   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1956   Webhook       Optional: a Discord line per finished match
-     1993   Dispatch      Optional: keeping police and EMS out of the arena
+      834   UI            Panel colours, logo and title
+      892   Permissions   Who may open a match, who may force-stop one
+      973   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1510   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1963   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1973   Webhook       Optional: a Discord line per finished match
+     2010   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -794,6 +794,23 @@ Config.Betting = {
     -- Someone who disconnects mid-match forfeits their stake to the pot.
     -- With this on they get it back instead.
     refundOnDisconnectDuringMatch = false,
+
+    -- HOW OFTEN TO RETRY A REFUND THAT COULD NOT BE DELIVERED.
+    --
+    -- A refund needs the player to be ON the server -- money is credited to
+    -- a loaded character, and there is nobody to credit while they are gone.
+    -- The commonest reason a stake cannot be handed back is therefore the
+    -- commonest reason it is being handed back at all: they crashed.
+    --
+    -- So an undeliverable refund is recorded against the CHARACTER and paid
+    -- the next time this sweep sees them, which survives the reconnect and
+    -- the match being torn down. The alternative is what this replaced: the
+    -- debt was filed against a match id that stopped existing moments later,
+    -- and the money was gone.
+    --
+    -- Zero or below switches the sweep off. Then an undeliverable refund is
+    -- logged and webhooked and waits for an operator to settle it by hand.
+    refundRetrySeconds = 30,
 
     -- SPECTATOR SIDE-BETS: people who are not fighting can back a team (in
     -- team modes) or a specific player (in free-for-all).

@@ -47,6 +47,12 @@ local function newServer(wallets, mutate, opts)
     local console = {}
 
     local env = Sandbox.newArenaEnv({
+        -- THE RETRY SWEEP'S THREAD, WHICH THIS FILE DOES NOT WANT TO RUN.
+        -- server/betting.lua starts one at load to pay refunds it could not
+        -- deliver. A no-op CreateThread means the loop is never entered, so
+        -- these tests keep driving the money paths by hand -- which is the
+        -- point of them.
+        CreateThread = function() end,
         exports = qbx.exports,
         lib = Sandbox.newOxLib(),
         TriggerClientEvent = function() end,

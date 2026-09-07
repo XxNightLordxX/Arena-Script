@@ -47,6 +47,32 @@ ArenaBetting = {}
 --- [matchId] = { [src] = { amount, citizenid, name, takenAt, settled, settledAs, reason } }
 local escrow = {}
 
+--- Money this resource took and could not give back, keyed by CITIZEN ID.
+---
+--- WHY IT CANNOT BE KEYED BY MATCH, which is what it was before and is the
+--- whole defect. Escrow is `escrow[matchId]`, reachable only through
+--- stakesOf(matchId), and nothing anywhere iterates it. A refund that fails
+--- leaves the stake unsettled with a comment promising "a later RefundAll
+--- tries again" -- but there is no later: ArenaLobby.Leave sees the lobby is
+--- empty and calls Destroy in the same call chain, Destroy calls RefundAll
+--- (which fails the same way) and then Clear (which correctly REFUSES,
+--- because the pot is still held) -- and then drops `matches[match.id]`
+--- anyway. From that instant no id exists to call Clear, RefundAll or GetPot
+--- with, and the escrow row sits in memory until the server stops.
+---
+--- Destroy's own comment states the invariant it does not enforce: "escrow
+--- against a match nobody can look up is money nobody can get out again."
+---
+--- And the failure is not exotic. credit() needs a LOADED character, so the
+--- commonest reason a refund cannot be delivered is the commonest reason one
+--- is owed: they crashed. A single-host lobby whose host crashes destroys
+--- the match immediately, and takes the entry fee with it.
+---
+--- Keyed by citizen id, the debt survives the reconnect, the teardown and
+--- the recycled server id -- exactly as server/ammo.lua's `owed` does for
+--- belongings, for exactly the same reason.
+local unpaid = {}
+
 --- Spectator side-bets, an array per match rather than a map by player:
 --- `oneBetPerMatch = false` is a supported setting, so one person may
 --- legitimately hold several at once.
@@ -312,6 +338,40 @@ local function credit(src, amount, reason, citizenid, account)
     return true
 end
 
+--- Records money this resource owes a character and could not deliver.
+---
+--- THE POINT IS THE KEY. A debt filed against a match id dies with the
+--- match, and the match is torn down in the same call chain that failed to
+--- pay. Filed against the citizen id it survives the teardown, the
+--- reconnect, and the recycled server id -- and the sweep at the bottom of
+--- this file pays it the next time that character is seen.
+---
+--- Accumulated rather than overwritten: a player can be owed an entry fee
+--- and a side-bet off the same collapse, and the second must not erase the
+--- first.
+--- @param citizenid any
+--- @param name any -- for the log only
+--- @param amount integer
+--- @param account string|nil -- the account it was taken FROM
+--- @param reason string|nil
+--- @return boolean recorded -- false when there is no citizen id to file under
+local function owe(citizenid, name, amount, account, reason)
+    local id = Arena.IsKey(citizenid) and citizenid or nil
+    local value = math.max(0, Arena.ToInt(amount) or 0)
+    if not id or value <= 0 then return false end
+
+    local row = unpaid[id]
+    if not row then
+        row = { citizenid = id, name = name, total = 0, parts = {} }
+        unpaid[id] = row
+    end
+
+    row.name = name or row.name
+    row.total = row.total + value
+    row.parts[#row.parts + 1] = { amount = value, account = account, reason = reason }
+    return true
+end
+
 --- The transaction note qbx_core stores next to the movement. Operator
 --- facing, in one shape, so a server log can be grepped for one match id.
 local function transaction(kind, matchId)
@@ -510,8 +570,19 @@ local function returnSideBet(bet, matchId)
     -- many words directly above the branch that was never being reached.
     if not credit(bet.src, bet.amount, transaction('sidebet_refund', matchId),
         bet.citizenid, bet.account) then
-        ArenaLog('SIDE-BET REFUND FAILED: %d owed to %s (citizenid %s) on match %s -- the bet stays held.',
-            bet.amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
+        -- Same move as RefundOne's, for the same reason: a debt on a match
+        -- that is about to stop existing is a debt nobody can pay.
+        if owe(bet.citizenid, bet.name or bet.src, bet.amount, bet.account, 'sidebet_refund') then
+            bet.settled = true
+            bet.settledAs = 'owed'
+            ArenaLog('SIDE-BET REFUND DEFERRED: %d owed to %s (citizenid %s) on match %s -- recorded against ' ..
+                'their character and paid when they are next seen.',
+                bet.amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
+        else
+            ArenaLog('SIDE-BET REFUND FAILED: %d owed to %s (citizenid %s) on match %s -- the bet stays held, ' ..
+                'and there is no citizen id to file it against.',
+                bet.amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
+        end
         incidentWebhook('Side-bet not returned',
             'A spectator side-bet could not be handed back and is still owed.', {
                 { name = 'Match', value = tostring(matchId) },
@@ -688,8 +759,23 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
         -- owed, so a later RefundAll tries again and Clear goes on refusing
         -- to drop the match until it lands. Writing it off here would be the
         -- one thing this file must never do.
-        ArenaLog('REFUND FAILED: %d owed to %s (citizenid %s) on match %s -- the stake stays held.',
-            stake.amount, tostring(stake.name or id), tostring(stake.citizenid), tostring(matchId))
+        -- MOVED OFF THE MATCH RATHER THAN LEFT ON IT. The stake is marked
+        -- settled so Clear can drop this match's escrow, and the money is
+        -- filed against the CHARACTER, where the sweep can still find it
+        -- after Destroy has dropped the id. Left on the match it was
+        -- destroyed a few milliseconds later; the log line that used to sit
+        -- here promised a retry that had nowhere to run.
+        if owe(stake.citizenid, stake.name or id, stake.amount, stake.account, reasonKey) then
+            stake.settled = true
+            stake.settledAs = 'owed'
+            ArenaLog('REFUND DEFERRED: %d owed to %s (citizenid %s) could not be delivered on match %s -- ' ..
+                'they are not on the server. It is recorded against their character and will be paid when they are next seen.',
+                stake.amount, tostring(stake.name or id), tostring(stake.citizenid), tostring(matchId))
+        else
+            ArenaLog('REFUND FAILED: %d owed to %s (citizenid %s) on match %s -- the stake stays held, ' ..
+                'and there is no citizen id to file it against.',
+                stake.amount, tostring(stake.name or id), tostring(stake.citizenid), tostring(matchId))
+        end
         incidentWebhook('Stake not refunded', 'An entry fee could not be returned and is still held in escrow.', {
             { name = 'Match', value = tostring(matchId) },
             { name = 'Player', value = ('%s (%s)'):format(tostring(stake.name or id), tostring(stake.citizenid)) },
@@ -1805,6 +1891,117 @@ end
 --- left to call Clear with and, unlike a stranded stake, not one line
 --- printed with its name on it.
 --- @param matchId string
+
+-- ======================================================================
+-- MONEY THIS RESOURCE STILL OWES SOMEBODY
+--
+-- A refund needs a LOADED character to credit, so the commonest reason one
+-- cannot be delivered is the commonest reason it is owed: they crashed. That
+-- used to be the end of it -- the debt was filed against a match id that was
+-- dropped moments later, and the money was unreachable for the life of the
+-- server.
+--
+-- Filed against the citizen id instead, it outlives all of that. This is the
+-- half that pays it.
+-- ======================================================================
+
+--- Pays one character everything they are owed, if they are on the server.
+---
+--- EACH PART SEPARATELY, and the ones that go through are dropped as they
+--- go. A player owed an entry fee from the bank and a side-bet in cash gets
+--- both into the right accounts, and if only one of them lands the other
+--- stays owed rather than being retried as a lump into whichever account
+--- came first.
+--- @param src number
+--- @return integer paid -- money actually delivered on this call
+function ArenaBetting.PayOutstanding(src)
+    local id = serverId(src)
+    if not id then return 0 end
+
+    local player = ArenaGetPlayer(id)
+    local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
+    if not Arena.IsKey(citizenid) then return 0 end
+
+    local row = unpaid[citizenid]
+    if not row then return 0 end
+
+    local paid, left = 0, {}
+    for _, part in ipairs(row.parts) do
+        if credit(id, part.amount, transaction(part.reason or 'refund_owed', 'owed'),
+            citizenid, part.account) then
+            paid = paid + part.amount
+        else
+            left[#left + 1] = part
+        end
+    end
+
+    if paid > 0 then
+        ArenaLog('betting: paid %s of money owed to %s (citizenid %s) that could not be delivered earlier.',
+            money(paid), tostring(row.name or id), tostring(citizenid))
+        ArenaNotifyKey(id, 'notify.stake_refunded', 'info', money(paid))
+    end
+
+    if #left > 0 then
+        row.parts = left
+        row.total = 0
+        for _, part in ipairs(left) do row.total = row.total + part.amount end
+    else
+        unpaid[citizenid] = nil
+    end
+
+    return paid
+end
+
+--- Pays everybody on the server whatever they are owed.
+--- @return integer players paid
+--- @return integer total money delivered
+function ArenaBetting.SweepUnpaid()
+    -- Nothing owed is the ordinary case, and it must cost nothing: no player
+    -- list, no character lookups, no work at all.
+    if next(unpaid) == nil then return 0, 0 end
+
+    local people, total = 0, 0
+    for _, id in ipairs(GetPlayers()) do
+        local src = Arena.ToInt(id)
+        if src then
+            local paid = ArenaBetting.PayOutstanding(src)
+            if paid > 0 then
+                people = people + 1
+                total = total + paid
+            end
+        end
+    end
+    return people, total
+end
+
+--- How much this resource still owes, across how many characters. For the
+--- console and for a test to assert on -- a debt nobody can see is a debt
+--- nobody chases.
+--- @return integer characters
+--- @return integer total
+function ArenaBetting.Outstanding()
+    local characters, total = 0, 0
+    for _, row in pairs(unpaid) do
+        characters = characters + 1
+        total = total + (row.total or 0)
+    end
+    return characters, total
+end
+
+CreateThread(function()
+    local seconds = Arena.ToInt(Config.Betting.refundRetrySeconds)
+    if seconds == nil then seconds = 30 end
+
+    -- ZERO OR BELOW SWITCHES IT OFF, and config.lua says what that costs: an
+    -- undeliverable refund is logged and webhooked and waits for an operator.
+    if seconds <= 0 then return end
+
+    while true do
+        Wait(seconds * 1000)
+        ArenaBetting.SweepUnpaid()
+    end
+end)
+
 --- @return boolean ok -- false when something is still owed; nothing is dropped then
 function ArenaBetting.Clear(matchId)
     local owed = 0

@@ -1045,6 +1045,46 @@ end
 --- ranks off it. So "is on the roster" and "can still win" are different
 --- questions, and only one of them is about the roster.
 --- @param row table|nil -- a match player record
+
+--- The boundary block of an arena, when it is switched on -- nil otherwise.
+---
+--- ONE READING OF `enabled`, because there were two and they disagreed about
+--- the case an operator is most likely to produce: a boundary block copied
+--- from the template with the `enabled = true` line dropped.
+---
+---   server/lobby.lua   `~= false` -- the keep-out fence went UP
+---   server/dispatch.lua `~= false` -- explosions and alerts were SUPPRESSED
+---   server/match.lua    `== true`  -- no boundary was sent to the client,
+---                                     so nobody was warned and nobody bled
+---   shared/arena.lua    `== true`  -- the floor-containment check, whose
+---                                     message ends "standing on it bleeds
+---                                     you", did not run at all
+---
+--- One field, four call sites, two answers. What that produced was the worst
+--- possible split: every non-participant teleported away from a circle four
+--- times a second, and every fighter free to walk out of it and sit outside
+--- until the clock ran down, on an arena whose validator had quietly stopped
+--- checking that its ground was inside its own edge.
+---
+--- MISSING MEANS ON, which is the reading the two outward-facing guards
+--- already had. An operator who writes a boundary with a radius in it has
+--- said what they want; a block that silently does nothing is the worse
+--- surprise, and `enabled = false` is still there to say so out loud. Both
+--- shipped arenas set it explicitly, so nothing changes for them.
+---
+--- The two client-side reads are NOT call sites of this: they check the
+--- payload server/match.lua builds, which sets `enabled = true` on every
+--- boundary it sends and omits the block entirely otherwise.
+--- @param arena table|nil -- a raw Config.Arenas entry
+--- @return table|nil
+function Arena.BoundaryOf(arena)
+    if type(arena) ~= 'table' then return nil end
+    local boundary = arena.boundary
+    if type(boundary) ~= 'table' then return nil end
+    if boundary.enabled == false then return nil end
+    return boundary
+end
+
 --- @return boolean
 function Arena.IsEliminated(row)
     if type(row) ~= 'table' then return false end
@@ -3372,7 +3412,7 @@ function Arena.ValidateConfig()
                 -- right for free: a ceiling that trims the outer ring makes
                 -- the floor genuinely smaller, and a formula would warn about
                 -- ground that is not there.
-                if raw.boundary.enabled == true then
+                if Arena.BoundaryOf(raw) then
                     local tile = math.max(0.0, tonumber(platform.tileSize) or 0)
 
                     -- THE CLOSED FORM FIRST, and it is exact for an untrimmed

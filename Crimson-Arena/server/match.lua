@@ -87,8 +87,11 @@ end
 --- @param arena table -- a raw Config.Arenas entry
 --- @return table|nil boundary -- nil for an open arena
 local function boundaryPayload(arena, factor)
-    local boundary = arena.boundary
-    if type(boundary) ~= 'table' or boundary.enabled ~= true then return nil end
+    -- Through Arena.BoundaryOf: one reading of `enabled` shared with the
+    -- keep-out fence, the explosion guard and the validator, which used to
+    -- disagree with this line about a block that omits the key.
+    local boundary = Arena.BoundaryOf(arena)
+    if not boundary then return nil end
 
     return {
         enabled = true,

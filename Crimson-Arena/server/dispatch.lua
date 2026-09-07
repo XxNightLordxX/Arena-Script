@@ -1201,9 +1201,9 @@ local function insideLiveArena(point)
     for _, matchId in pairs(active) do
         local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(matchId) or nil
         local arena = match and Arena.GetArenaByKey(match.arenaKey) or nil
-        local boundary = arena and arena.boundary or nil
+        local boundary = Arena.BoundaryOf(arena)
 
-        if boundary and boundary.enabled ~= false and boundary.center then
+        if boundary and boundary.center then
             local cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
 
             -- SCALED, LIKE THE FENCE IN server/lobby.lua, and for the reason

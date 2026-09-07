@@ -892,4 +892,78 @@ t.test('a supply switched OFF is not warned about', function()
         'a supply nobody can be issued was still warned about')
 end)
 
+-- ======================================================================
+-- ONE FIELD, ONE ANSWER: boundary.enabled
+--
+-- Four places read it and two of them disagreed, on exactly the value an
+-- operator is most likely to produce -- a boundary block copied from the
+-- template with the `enabled = true` line dropped:
+--
+--   server/lobby.lua    `~= false`  the keep-out fence went UP
+--   server/dispatch.lua `~= false`  explosions and alerts were SUPPRESSED
+--   server/match.lua    `== true`   no boundary reached the client, so
+--                                   nobody was warned and nobody bled
+--   shared/arena.lua    `== true`   the floor-containment check, whose
+--                                   message ends "standing on it bleeds
+--                                   you", did not run at all
+--
+-- Which produced the worst split available: every non-participant teleported
+-- away from a circle four times a second, and every fighter free to walk out
+-- of it and wait out the clock.
+-- ======================================================================
+
+t.test('a boundary block with no `enabled` key at all is ON', function()
+    local env = Sandbox.newArenaEnv()
+    local Arena = env.Arena
+
+    local block = { center = { x = 1.0, y = 2.0, z = 3.0 }, radius = 50.0 }
+    t.isNotNil(Arena.BoundaryOf({ boundary = block }),
+        'an operator who wrote a boundary with a radius in it got one that does nothing')
+end)
+
+t.test('and `enabled = false` really does switch it off', function()
+    local env = Sandbox.newArenaEnv()
+    local Arena = env.Arena
+
+    t.isNil(Arena.BoundaryOf({ boundary = { enabled = false, radius = 50.0 } }),
+        'the one way to say "no boundary here" stopped working')
+    t.isNotNil(Arena.BoundaryOf({ boundary = { enabled = true, radius = 50.0 } }))
+    t.isNil(Arena.BoundaryOf({}), 'an arena with no boundary block was given one')
+    t.isNil(Arena.BoundaryOf(nil))
+end)
+
+t.test('and NOTHING reads the field behind its back', function()
+    -- THE GUARD THAT KEEPS THE ANSWER SINGLE. Agreeing today is worth
+    -- nothing if the next person to need the question writes `~= false`
+    -- again -- which is exactly how the four readings drifted apart. So the
+    -- rule is that Arena.BoundaryOf is the only place in the resource that
+    -- looks at the key.
+    --
+    -- The client is exempt and its two reads are not call sites of this: they
+    -- check the PAYLOAD server/match.lua builds, which stamps
+    -- `enabled = true` on every boundary it sends and omits the block
+    -- entirely otherwise.
+    local files = { 'server/match.lua', 'server/lobby.lua', 'server/dispatch.lua', 'shared/arena.lua' }
+    local offenders = {}
+
+    for _, name in ipairs(files) do
+        local handle = assert(io.open('../' .. name, 'r'), name .. ' is not where this spec expects it')
+        local line = 0
+        for text in handle:lines() do
+            line = line + 1
+            -- The definition itself is the one legal read.
+            local isDefinition = text:find('if boundary.enabled == false then return nil end', 1, true)
+            if not isDefinition and text:find('boundary%.enabled')
+                and not text:find('^%s*%-%-') then
+                offenders[#offenders + 1] = ('%s:%d  %s'):format(name, line, text:gsub('^%s+', ''))
+            end
+        end
+        handle:close()
+    end
+
+    t.equals(#offenders, 0,
+        ('boundary.enabled is read outside Arena.BoundaryOf, which is how the four readings '
+            .. 'drifted apart in the first place:\n  %s'):format(table.concat(offenders, '\n  ')))
+end)
+
 os.exit(t.summary())

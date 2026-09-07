@@ -905,13 +905,13 @@ local function snapshotKeepOut(src)
         -- against twice a tick for no different answer.
         if match.state == 'live' and not mine[match.arenaKey] and not drawn[match.arenaKey] then
             local arena = Arena.GetArenaByKey(match.arenaKey)
-            local boundary = type(arena) == 'table' and arena.boundary or nil
+            local boundary = Arena.BoundaryOf(arena)
 
             -- The BOUNDARY is the fence, deliberately -- the same circle the
             -- fighters themselves are bled for leaving. One arena has one
             -- edge, and two different ones would be a question with two
             -- answers on the same field.
-            if type(boundary) == 'table' and boundary.enabled ~= false and boundary.center then
+            if boundary and boundary.center then
                 -- AT THE SIZE THIS MATCH IS ACTUALLY BEING FOUGHT AT.
                 --
                 -- The line above promises the fence IS the fighters' own

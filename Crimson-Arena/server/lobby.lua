@@ -1269,7 +1269,10 @@ end
 --- @param src any
 --- @param reasonKey string?
 --- @return boolean ok
-function ArenaLobby.Leave(src, reasonKey)
+--- @param dropped boolean? -- their connection went away rather than them
+---        choosing to go. server/main.lua's detach() is the only source of
+---        it, and only from playerDropped.
+function ArenaLobby.Leave(src, reasonKey, dropped)
     local target = tonumber(src)
     if not target then return false end
 
@@ -1292,6 +1295,11 @@ function ArenaLobby.Leave(src, reasonKey)
     -- NOT REFUNDING IS NOT MOVING: the stake stays escrowed against this
     -- match, still counted by ArenaBetting.GetPot, which is what "forfeited
     -- to the pot" means -- whoever is still in the match is playing for it.
+    -- A ROUND BEING FOUGHT, which is a narrower thing than `started` below.
+    -- Both the leaderboard rule and the announcement further down turn on
+    -- it, and they must agree: a fighter told somebody walked out is being
+    -- told about a round the walker was recorded as losing.
+    local liveRound = match.state == 'live'
     local started = match.state == 'live' or match.state == 'ended'
     local refund
     if started then
@@ -1319,6 +1327,9 @@ function ArenaLobby.Leave(src, reasonKey)
     -- below cannot be asked once it has.
     local leftTeam = Arena.IsKey(player.team) and player.team or nil
 
+    -- Read before the row goes, for the announcement below.
+    local leftName = player.name
+
     -- A ROUND WALKED OUT OF IS A ROUND LOST.
     --
     -- The leaderboard only ever saw players who were still on the roster
@@ -1341,10 +1352,21 @@ function ArenaLobby.Leave(src, reasonKey)
     -- nothing at all, which is the same answer its stake gets: handed back,
     -- nothing happened.
     --
+    -- AND NOT A DROP. The money above deliberately does NOT separate a quit
+    -- from a crash, and says why: charging only genuine disconnects would
+    -- take the stake from the player whose game died and hand it back to the
+    -- one who quit on purpose. The leaderboard is the opposite call, and it
+    -- is made deliberately rather than by oversight -- a loss follows you
+    -- for the life of the server, so somebody whose game crashed should not
+    -- wear one. The stake still goes; only the record is spared.
+    --
+    -- The two rules therefore disagree ON PURPOSE, and that is the thing to
+    -- keep in mind before "tidying" either of them into the other.
+    --
     -- HERE rather than in ArenaMatch.RemovePlayer because this is the only
     -- place both exits meet: server/main.lua routes playerDropped straight
     -- through this function, and it never touches RemovePlayer at all.
-    if match.state == 'live'
+    if liveRound and not dropped
         and type(ArenaStats) == 'table' and type(ArenaStats.Record) == 'function'
     then
         ArenaStats.Record({
@@ -1361,6 +1383,30 @@ function ArenaLobby.Leave(src, reasonKey)
     match.players[target] = nil
     playerIndex[target] = nil
     removeFromOrder(match, target)
+
+    -- AND TELL THE PEOPLE STILL FIGHTING.
+    --
+    -- The roster on their scoreboard just got shorter and nothing said why.
+    -- en.json has carried "A fighter dropped out." since before this, on a
+    -- key that is only ever passed around as a REASON IDENTIFIER -- stored
+    -- against the refund, written to the log, rendered for nobody. These are
+    -- separate keys on purpose: the reason keys keep their exact meaning and
+    -- their exact argument count, and Destroy still renders one of them on
+    -- the paths where a match closes under people.
+    --
+    -- MID-ROUND ONLY. In a lobby the roster is visibly churning anyway and
+    -- a toast per person coming and going is noise; in a live round a
+    -- fighter vanishing changes what is left to beat.
+    --
+    -- Sent AFTER the row is removed, so the leaver is not told about
+    -- themselves, and to the fighters rather than the spectators: it is the
+    -- people whose round just changed shape who need it.
+    if liveRound and Arena.IsKey(leftName) then
+        local key = dropped and 'notify.fighter_dropped' or 'notify.fighter_left'
+        for remaining in pairs(match.players) do
+            ArenaNotifyKey(remaining, key, 'warning', leftName)
+        end
+    end
 
     -- ANYBODY WHO BACKED THEM GETS THEIR MONEY BACK.
     --

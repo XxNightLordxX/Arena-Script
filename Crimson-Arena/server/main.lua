@@ -216,7 +216,14 @@ end
 --- here so neither can grow a rule the other is missing.
 --- @param src number
 --- @param reasonKey string
-local function detach(src, reasonKey)
+--- `dropped` says the player's CONNECTION went away rather than them
+--- choosing to leave. Passed explicitly rather than sniffed out of
+--- reasonKey: the leaderboard rule downstream turns on it, and a rule that
+--- read a string would break silently the day somebody reworded a notice.
+--- @param src any
+--- @param reasonKey string?
+--- @param dropped boolean? -- true only from playerDropped
+local function detach(src, reasonKey, dropped)
     -- ArenaMatch.RemovePlayer owns the "are they mid-match" question and
     -- already calls ArenaLobby.Leave itself; it returns false only when the
     -- player was in no match at all.
@@ -233,9 +240,9 @@ local function detach(src, reasonKey)
     -- been the correct one ('live' OR 'countdown'); this was a narrower copy
     -- of it that drifted. Asking the owner rather than re-deriving the answer
     -- is what stops it drifting again.
-    if ArenaMatch.RemovePlayer(src, reasonKey) then return end
+    if ArenaMatch.RemovePlayer(src, reasonKey, dropped) then return end
 
-    ArenaLobby.Leave(src, reasonKey)
+    ArenaLobby.Leave(src, reasonKey, dropped)
 end
 
 -- ======================================================================
@@ -529,7 +536,9 @@ end)
 AddEventHandler('playerDropped', function()
     local src = source
 
-    detach(src, 'notify.player_disconnected')
+    -- THE ONE CALLER THAT PASSES `dropped`. Everything else in this file is
+    -- somebody choosing to go.
+    detach(src, 'notify.player_disconnected', true)
     ArenaLobby.RemoveSpectator(src)
     ArenaLobby.MarkPanelClosed(src)
 

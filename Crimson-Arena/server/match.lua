@@ -1826,7 +1826,8 @@ end
 --- @param src integer
 --- @param reasonKey string?
 --- @return boolean ok
-function ArenaMatch.RemovePlayer(src, reasonKey)
+--- @param dropped boolean? -- their connection went away; see detach()
+function ArenaMatch.RemovePlayer(src, reasonKey, dropped)
     local id = Arena.ToInt(src)
     if not id then return false end
 
@@ -1851,7 +1852,7 @@ function ArenaMatch.RemovePlayer(src, reasonKey)
         })
     end
 
-    ArenaLobby.Leave(id, reasonKey or 'match.left')
+    ArenaLobby.Leave(id, reasonKey or 'match.left', dropped)
 
     -- Leave may already have destroyed the match -- it does when the last
     -- player walks out of a lobby.

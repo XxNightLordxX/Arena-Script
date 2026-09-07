@@ -82,6 +82,8 @@
     },
     "notify": {
         "eliminated": "You are out.",
+        "fighter_dropped": "%s dropped out of the fight.",
+        "fighter_left": "%s walked out of the fight.",
         "hours_lobby_closed": "The arena shut. Lobby closed, stakes back.",
         "kit_held": "Your own gear could not be handed back yet. It is safe in the arena's hands and it keeps trying.",
         "kit_returned": "Your own gear is back.",

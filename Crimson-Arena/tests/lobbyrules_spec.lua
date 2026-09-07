@@ -73,6 +73,7 @@ local function newArena(wallets, mutate, jobs)
     local oxlib = Sandbox.newOxLib()
     local threads = Sandbox.newThreadRunner()
     local console, sent, netEvents, handlers, commands = {}, {}, {}, {}, {}
+    local recorded = {}
     local clock = 0
 
     local env = Sandbox.newArenaEnv({
@@ -124,6 +125,12 @@ local function newArena(wallets, mutate, jobs)
             EnsureSchema = function() end,
             RecordMatch = function() end,
             Flush = function() end,
+            -- RECORDED, not a no-op. server/lobby.lua books a quitter's loss
+            -- through this on the way out and deliberately does NOT book a
+            -- dropped player's. A stub without Record would let the type
+            -- guard there skip the call, and both halves of that rule would
+            -- pass while nothing was recorded either way.
+            Record = function(entry) recorded[#recorded + 1] = entry return true end,
         },
         -- The arena flag, and the routing bucket a round is fought in. Both
         -- ride the same two choke points in server/match.lua, so a stub
@@ -226,6 +233,10 @@ local function newArena(wallets, mutate, jobs)
 
     --- @return string
     function server.log() return table.concat(console, '\n') end
+
+    --- Every entry handed to ArenaStats.Record, in order.
+    --- @return table[]
+    function server.recorded() return recorded end
 
     --- What one player was told, in order. Only the toasts: the state
     --- snapshot goes to the same players down the same native.
@@ -1071,6 +1082,130 @@ t.test('and the roster still says what the last call asked for', function()
     server.fire('setReady', 1, { ready = false })
     server.fire('setReady', 1, { ready = false })
     t.isFalse(server.lobby.Get(matchId).players[1].ready, 'a repeated un-ready set it again')
+end)
+
+-- ======================================================================
+-- QUITTING AND CRASHING ARE NOT THE SAME THING
+-- ======================================================================
+--
+-- The money deliberately does NOT tell them apart, and config.lua says why:
+-- charging only genuine disconnects takes the stake from the player whose
+-- game died and hands it back to the one who quit on purpose.
+--
+-- The LEADERBOARD is the opposite call, made deliberately. A loss follows a
+-- player for the life of the server, so somebody whose game crashed should
+-- not wear one. The stake still goes; only the record is spared. The two
+-- rules disagree on purpose.
+--
+-- `dropped` is threaded explicitly from main.lua's playerDropped handler
+-- rather than sniffed out of the reason key, so rewording a notice cannot
+-- silently change who takes a loss.
+
+--- A live round with three fighters, so one leaving still leaves a fight.
+local function liveRound(server)
+    local matchId = openLobby(server, 0, { 1, 2, 3 })
+    server.lobby.Get(matchId).state = 'live'
+    return matchId
+end
+
+t.test('quitting a live round is still recorded as a loss', function()
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    server.fire('leaveMatch', 3, {})
+
+    local rows = server.recorded()
+    t.equals(#rows, 1, ('a deliberate quit was recorded %d time(s)'):format(#rows))
+    t.isFalse(rows[1].won, 'a quit was recorded as a win')
+end)
+
+t.test('THE CHANGE: but a player whose connection DROPS is spared', function()
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    server.drop(3)
+
+    t.equals(#server.recorded(), 0,
+        'a player whose game crashed was given a loss on the all-time board')
+end)
+
+t.test('and the drop still costs them the stake, which is the money rule', function()
+    -- The half that must NOT follow the record. Both halves shipped as one
+    -- rule; separating them is the whole point of this change, and a fix
+    -- that spared the money too would pass the test above.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.entryFee.enabled = true
+        config.Betting.refundOnDisconnectDuringMatch = false
+    end)
+    local matchId = openLobby(server, 1000, { 1, 2, 3 })
+    server.lobby.Get(matchId).state = 'live'
+
+    local before = server.cash(3)
+    server.drop(3)
+
+    t.equals(server.cash(3), before,
+        'the dropped player got their stake back -- the money rule is supposed to keep it')
+end)
+
+-- ======================================================================
+-- AND THE PEOPLE STILL FIGHTING ARE TOLD
+-- ======================================================================
+--
+-- The roster on their scoreboard just got shorter and nothing said why.
+-- en.json has carried "A fighter dropped out." since before this, on a key
+-- that is only ever passed around as a reason identifier -- stored against
+-- the refund, written to the log, rendered for nobody.
+
+t.test('THE CHANGE: a fighter walking out is announced to the rest, by name', function()
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    server.fire('leaveMatch', 3, {})
+
+    for _, who in ipairs({ 1, 2 }) do
+        local said = server.told(who)
+        t.contains(said, 'walked out',
+            ('fighter %d was not told somebody left: %s'):format(who, said))
+        t.contains(said, 'Fighter 3',
+            ('fighter %d was not told WHO left: %s'):format(who, said))
+    end
+end)
+
+t.test('and a DROP says something different from a walk-out', function()
+    -- Two sentences, because they are two different things to the people
+    -- left in the round: one chose to go, the other lost their game.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    server.drop(3)
+
+    local said = server.told(1)
+    t.contains(said, 'dropped out', 'a crash was announced as a walk-out: ' .. said)
+    t.notContains(said, 'walked out', 'a crash was announced as a walk-out: ' .. said)
+end)
+
+t.test('and the one who left is not told about themselves', function()
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    server.fire('leaveMatch', 3, {})
+
+    t.notContains(server.told(3), 'walked out of the fight',
+        'the player who walked out was told that somebody walked out')
+end)
+
+t.test('and a LOBBY announces nothing, because the roster churns there anyway', function()
+    -- Mid-round only. In a lobby people come and go while it fills, and a
+    -- toast for each of them is noise; in a live round a fighter vanishing
+    -- changes what is left to beat.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    openLobby(server, 0, { 1, 2, 3 })
+
+    server.fire('leaveMatch', 3, {})
+
+    t.notContains(server.told(1), 'walked out of the fight',
+        'leaving a lobby put a toast on everybody else\'s screen')
 end)
 
 os.exit(t.summary())

@@ -1336,8 +1336,32 @@ local sawFiring = {}
 
 --- Job lists already reported, so the line below is once per KIND of alert
 --- rather than once per alert.
+---
+--- BOUNDED, because this is the one table here keyed by text a CLIENT
+--- chooses. RegisterNetEvent makes every cancelEvents entry firable from any
+--- player's machine, and the comment on that registration used to say a
+--- forged call "costs nothing: the handler's only power is CancelEvent()".
+--- That was true of the handler's POWER and false of its bookkeeping: a
+--- distinct `jobs` payload per firing added a permanent key here and printed
+--- an unconditional line, so a loop from one keybind grew this table without
+--- limit and flooded the console and log at wire speed.
 --- @type table<string, boolean>
 local sawJobs = {}
+
+--- How many distinct job lists are worth remembering. This is a diagnostic
+--- that answers "which KINDS of alert reach us", and a real server has a
+--- handful; anything past this is somebody making them up.
+local MAX_JOB_KINDS = 32
+local sawJobCount = 0
+local warnedJobFlood = false
+
+--- Bounds on what jobsNamedIn will read out of another resource's payload.
+--- The names are concatenated into a string that becomes a key above, so
+--- both the COUNT and the resulting LENGTH have to be capped -- one forged
+--- packet carrying 300,000 names is otherwise several megabytes, retained
+--- for the life of the resource.
+local MAX_JOB_NAMES = 12
+local MAX_JOB_TEXT = 200
 
 --- One console line, the first time an entry turns out to be unusable.
 ---
@@ -1386,9 +1410,21 @@ local function jobsNamedIn(...)
             if type(jobs) == 'table' then
                 local names = {}
                 for _, job in ipairs(jobs) do
-                    if type(job) == 'string' then names[#names + 1] = job end
+                    if type(job) == 'string' then
+                        names[#names + 1] = job
+                        -- STOP READING. Nothing downstream needs the
+                        -- hundredth job name, and this list arrives from
+                        -- outside.
+                        if #names >= MAX_JOB_NAMES then break end
+                    end
                 end
-                if #names > 0 then return table.concat(names, ', ') end
+                if #names > 0 then
+                    local text = table.concat(names, ', ')
+                    if #text > MAX_JOB_TEXT then
+                        text = text:sub(1, MAX_JOB_TEXT) .. '...'
+                    end
+                    return text
+                end
             end
         end
     end
@@ -1860,10 +1896,19 @@ local function registerCancelHandler(entry)
     -- reachable, exactly as before.
     --
     -- What it does allow is a client invoking THIS handler with made-up
-    -- arguments. That costs nothing: the handler's only power is
+    -- arguments. That gains them nothing: the handler's only power is
     -- CancelEvent(), which applies to the invocation it is running in --
     -- a forged one that no alert script is listening to. Cancelling a
     -- pretend alert achieves nothing at all.
+    --
+    -- THAT IS ABOUT ITS POWER, NOT ITS COST, and the two were confused
+    -- here. The diagnostics below write down what they see, and what they
+    -- see is a payload the caller chose: an unbounded job list concatenated
+    -- into a permanent table key, with an unconditional log line each time.
+    -- One forged packet carrying 300,000 names retained several megabytes
+    -- for the life of the resource, and a loop of distinct ones filled the
+    -- console and the log file as fast as the wire allowed. Both are
+    -- bounded now, at MAX_JOB_NAMES / MAX_JOB_TEXT / MAX_JOB_KINDS.
     RegisterNetEvent(entry.event)
 
     AddEventHandler(entry.event, function(...)
@@ -1889,9 +1934,21 @@ local function registerCancelHandler(entry)
         -- these constantly, and the question this answers -- WHICH kinds of
         -- alert reach us at all -- is answered by the first of each kind.
         if jobs and not sawJobs[jobs] then
-            sawJobs[jobs] = true
-            ArenaLog('cancelEvents: an alert for [%s] came through "%s". Alerts for jobs never listed here are being raised somewhere this resource cannot see.',
-                jobs, entry.event)
+            if sawJobCount < MAX_JOB_KINDS then
+                sawJobs[jobs] = true
+                sawJobCount = sawJobCount + 1
+                ArenaLog('cancelEvents: an alert for [%s] came through "%s". Alerts for jobs never listed here are being raised somewhere this resource cannot see.',
+                    jobs, entry.event)
+            elseif not warnedJobFlood then
+                -- ONCE, AND THEN SILENCE. Past this many distinct job lists
+                -- the diagnostic has stopped being a diagnostic: a real
+                -- server has a handful, so this is either a very strange
+                -- dispatch script or somebody firing the event by hand.
+                -- Either way the answer is to stop writing them down.
+                warnedJobFlood = true
+                ArenaLog('cancelEvents: more than %d different job lists have come through these events, so no more will be recorded. On a normal server there are a handful; this many means either an unusual dispatch script or a player raising the event by hand.',
+                    MAX_JOB_KINDS)
+            end
         end
 
         -- LOCATION FIRST, because it is the answer for the firings the player

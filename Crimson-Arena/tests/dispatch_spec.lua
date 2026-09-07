@@ -541,6 +541,99 @@ t.test('every cancelEvents entry is registered for the network, not just listene
     t.equals(f.netRegistered[1], 'alerts:raise')
 end)
 
+-- ========================================================================
+-- AND BEING REGISTERED FOR THE NETWORK IS WHAT MAKES IT AN ATTACK SURFACE
+--
+-- RegisterNetEvent means any player can raise these with any payload. The
+-- registration's own comment used to say a forged call "costs nothing: the
+-- handler's only power is CancelEvent()". That is true of its POWER and was
+-- false of its BOOKKEEPING: the diagnostics wrote down what they saw, and
+-- what they saw was a payload the caller chose.
+--
+--   ONE packet carrying 300,000 job names was concatenated into a single
+--   string and kept forever as a table key -- megabytes, retained for the
+--   life of the resource, from one keybind.
+--
+--   A LOOP of packets with a distinct job list each printed an
+--   unconditional log line every time, filling the console and the log file
+--   as fast as the wire allowed.
+--
+-- Neither needed a match, a permission or an account.
+-- ========================================================================
+
+t.test('THE DoS: one enormous job list is not swallowed whole', function()
+    local f = newFixture(locationConfig())
+
+    local names = {}
+    for index = 1, 50000 do names[index] = ('job%d'):format(index) end
+    f.fire('alerts:raise', { jobs = names })
+
+    -- The line it prints is a diagnostic, so it may print -- what it may not
+    -- do is carry 50,000 names into it.
+    local said = table.concat(f.logs, '\n')
+    t.isTrue(#said < 2000,
+        ('a forged payload put %d characters into the log from one call'):format(#said))
+
+    -- TWO SEPARATE BOUNDS, asserted separately, because each one hides the
+    -- other. Cap the names and the text is short anyway; cap the text and
+    -- the name count never shows. Removed one at a time, neither failed
+    -- this test -- so the count is checked here by looking at WHICH names
+    -- survived, not just how many characters did.
+    --
+    -- The count bound is the one that matters for work rather than log
+    -- size: without it a 300,000-name payload is still built into a table
+    -- and concatenated in full before anything gets truncated.
+    t.contains(said, 'job1,', 'the first job name was not reported at all')
+    t.notContains(said, 'job13',
+        'more than MAX_JOB_NAMES names were read out of a forged payload')
+end)
+
+t.test('and THREE enormous ones are not either, which is the other shape', function()
+    -- The name COUNT cap does not help here: three names is a perfectly
+    -- ordinary number. It is the total LENGTH that has to be bounded, and
+    -- until this case existed that bound could be deleted without a single
+    -- red line -- the other cap was hiding it.
+    local f = newFixture(locationConfig())
+
+    local huge = string.rep('X', 100000)
+    f.fire('alerts:raise', { jobs = { huge, huge, huge } })
+
+    local said = table.concat(f.logs, '\n')
+    t.isTrue(#said < 2000,
+        ('three long job names put %d characters into the log'):format(#said))
+end)
+
+t.test('and a flood of DIFFERENT job lists stops being written down', function()
+    -- The retained-memory half. Each distinct list used to become a
+    -- permanent key, so the table grew for as long as somebody kept firing.
+    local f = newFixture(locationConfig())
+
+    for index = 1, 500 do
+        f.fire('alerts:raise', { jobs = { ('kind%d'):format(index) } })
+    end
+
+    -- One line per distinct list would be 500. The bound is 32, plus the
+    -- first-firing line and the one that says it has stopped recording.
+    t.isTrue(#f.logs <= 40,
+        ('500 forged alerts produced %d console lines'):format(#f.logs))
+    t.contains(table.concat(f.logs, '\n'), 'no more will be recorded',
+        'the log never says it stopped recording, so an operator cannot tell why')
+end)
+
+t.test('and a REAL alert is still reported, because that is what it is for', function()
+    -- The other direction, and the reason the bounds are not just "print
+    -- nothing". A handful of job kinds is what a real server has, and each
+    -- of them is the observation this diagnostic exists to make.
+    local f = newFixture(locationConfig())
+
+    f.fire('alerts:raise', { jobs = { 'police' } })
+    f.fire('alerts:raise', { jobs = { 'ambulance' } })
+
+    local said = table.concat(f.logs, '\n')
+    t.contains(said, 'police', 'a real police alert was not reported')
+    t.contains(said, 'ambulance', 'a real EMS alert was not reported')
+end)
+
 t.test('the shipped sc-dispatch entries are the events those resources really raise', function()
     -- The config that actually ships, rather than a fixture's.
     --

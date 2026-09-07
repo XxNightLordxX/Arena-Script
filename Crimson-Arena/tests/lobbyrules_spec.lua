@@ -245,6 +245,17 @@ local function newArena(wallets, mutate, jobs)
         return table.concat(said, '\n')
     end
 
+    --- How many state snapshots have gone out to anybody. Broadcast fires
+    --- one of these per recipient, so this counts the cost of a call.
+    --- @return integer
+    function server.snapshots()
+        local total = 0
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:state' then total = total + 1 end
+        end
+        return total
+    end
+
     return server
 end
 
@@ -1004,6 +1015,62 @@ t.test('a request naming an arena that does not exist changes nothing at all', f
     local match = server.lobby.Get(matchId)
     t.equals(match.arenaKey, 'trailerpark')
     t.equals(match.lives, 3, 'the legal half of an illegal request was applied anyway')
+end)
+
+-- ======================================================================
+-- A READY THAT CHANGES NOTHING COSTS NOTHING
+-- ======================================================================
+--
+-- ArenaLobby.Broadcast refreshes the leaderboard, rebuilds the config block
+-- and the whole match list, then builds a per-head player snapshot and fires
+-- an event for every recipient on the server. SetReady sent one on every
+-- call, whether or not the value moved -- so one client event cost N
+-- snapshots, and setReady shares RATE.choice at 250ms, which is four times a
+-- second per player for a value nobody's screen would change on.
+
+t.test('THE DEFECT: readying up twice broadcasts once', function()
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 0, { 1, 2 })
+
+    server.fire('setReady', 1, { ready = true })
+    local afterFirst = server.snapshots()
+    t.isTrue(afterFirst > 0, 'the first ready broadcast nothing, so this asserts nothing')
+
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 1, { ready = true })
+
+    t.equals(server.snapshots(), afterFirst,
+        'a ready that changed nothing still rebuilt and pushed the whole snapshot')
+    t.isNotNil(server.lobby.Get(matchId), 'the lobby went away')
+end)
+
+t.test('and un-readying, which DOES change something, still broadcasts', function()
+    -- The other direction. A guard that swallowed the real change would
+    -- leave every other player looking at a roster that is out of date.
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    openLobby(server, 0, { 1, 2 })
+
+    server.fire('setReady', 1, { ready = true })
+    local afterReady = server.snapshots()
+
+    server.fire('setReady', 1, { ready = false })
+
+    t.isTrue(server.snapshots() > afterReady,
+        'taking a ready back told nobody')
+end)
+
+t.test('and the roster still says what the last call asked for', function()
+    -- The state has to be right whether or not anything was sent.
+    local server = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = openLobby(server, 0, { 1, 2 })
+
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 1, { ready = true })
+    t.isTrue(server.lobby.Get(matchId).players[1].ready, 'a repeated ready unset it')
+
+    server.fire('setReady', 1, { ready = false })
+    server.fire('setReady', 1, { ready = false })
+    t.isFalse(server.lobby.Get(matchId).players[1].ready, 'a repeated un-ready set it again')
 end)
 
 os.exit(t.summary())

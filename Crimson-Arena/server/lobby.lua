@@ -1959,8 +1959,23 @@ function ArenaLobby.SetReady(src, ready)
         return false, 'error.pick_a_team'
     end
 
+    -- BROADCAST ONLY WHEN SOMETHING CHANGED.
+    --
+    -- Broadcast is not cheap and it is not local: it refreshes the
+    -- leaderboard, rebuilds the config block and the whole match list, then
+    -- builds a per-head player snapshot and fires one event for every
+    -- recipient on the server. Sending it unconditionally made this handler
+    -- an amplifier -- one client event costing N snapshots -- and setReady
+    -- shares RATE.choice, which is 250ms, so a single client could pay four
+    -- times a second for it with a value nobody's screen would change on.
+    --
+    -- The auto-start check below deliberately still runs on a repeat. It is
+    -- cheap, and re-pressing Ready is the only way a full lobby retries a
+    -- start that ArenaMatch.Begin refused for a reason that has since gone
+    -- away -- the arena opening, most of all.
+    local was = player.ready == true
     player.ready = ready == true
-    ArenaLobby.Broadcast()
+    if player.ready ~= was then ArenaLobby.Broadcast() end
 
     if player.ready and Config.Match.autoStartWhenAllReady == true then
         local roster = ArenaLobby.PlayerArray(match)

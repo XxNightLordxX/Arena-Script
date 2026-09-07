@@ -2171,6 +2171,51 @@
             }
         }
 
+        /* CLOSING THE LOBBY YOU OPENED.
+
+           ArenaLobby.Cancel has always existed, is tested, and has a shipped
+           setting of its own -- Config.Betting.refundOnCancel, documented as
+           "a host closing their own lobby". Nothing could reach it. The
+           panel's only cancel was the "Stop The Countdown" button, which
+           posted cancelMatch while promising the lobby survived; repointing
+           that at holdCountdown fixed the lie and left the capability with no
+           way in, so a host who opened a lobby by mistake could only walk out
+           of it or wait out idleLobbyTimeoutSeconds.
+
+           OFFERED ONLY IN 'lobby', which is narrower than the server allows
+           on purpose. Cancel also accepts a lobby countdown but refuses the
+           frozen start countdown, and both are called 'countdown' -- the
+           panel cannot tell them apart from the snapshot, and this is not the
+           button to guess with. During a countdown the host has Stop The
+           Countdown, which puts the match back to 'lobby'; this appears
+           there. Two steps, each labelled honestly. */
+        var close = byId('btn-close');
+        if (has(close)) {
+            /* isHost above is already `inMatch && player().isHost`, so a
+               watcher is excluded by it and a second inMatch term here would
+               be a no-op dressed as a guard. */
+            var mayClose = isHost && String(match.state) === 'lobby';
+            show(close, mayClose);
+            if (mayClose) {
+                var fee = int(match.entryFee, 0);
+                var refunds = (betting() || {}).refundOnCancel !== false;
+                close.disabled = false;
+                close.title = 'Close this lobby and send everybody back. '
+                    + (fee <= 0
+                        ? 'Nothing was staked on it.'
+                        : (refunds
+                            ? 'Every entry fee is handed back.'
+                            : 'Entry fees are NOT handed back on this server.'));
+                close.onclick = function () { post('cancelMatch'); };
+            } else {
+                /* Dropped rather than left behind. A hidden button cannot be
+                   clicked in a browser, but the handler outlives the render
+                   that hid it, and a control that closes the room is not one
+                   to leave armed on the strength of a CSS class. */
+                close.onclick = null;
+            }
+        }
+
         var leave = byId('btn-leave');
         if (has(leave)) {
             leave.textContent = inMatch ? 'Leave Match' : 'Stop Watching';

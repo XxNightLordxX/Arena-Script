@@ -478,6 +478,11 @@ local function snapshotConfig()
             currencySymbol = Config.Betting.currencySymbol,
             account = Config.Betting.account,
             payout = Config.Betting.payout,
+            -- WHAT CLOSING A LOBBY COSTS THE ROOM. Only a host cancelling
+            -- forfeits, and only with this off -- every other close refunds
+            -- in full -- so the Close Lobby button is the one control that
+            -- has to say which server it is on before it is pressed.
+            refundOnCancel = Config.Betting.refundOnCancel ~= false,
             entryFee = {
                 enabled = fee.enabled == true,
                 min = math.max(0, Arena.ToInt(fee.min) or 0),

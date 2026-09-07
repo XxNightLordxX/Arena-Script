@@ -133,6 +133,11 @@
                 <div id="lobby-actions">
                     <button id="btn-ready" class="btn" type="button">Ready Up</button>
                     <button id="btn-start" class="btn btn-primary" type="button">Start Match Now</button>
+                    <!-- Only the host of a lobby that has not started sees this;
+                         renderLobby hides it for everybody else rather than
+                         greying it out, because a control you may never use is
+                         not information. -->
+                    <button id="btn-close" class="btn" type="button">Close Lobby</button>
                     <button id="btn-leave" class="btn btn-danger" type="button">Leave Match</button>
                 </div>
             </div>

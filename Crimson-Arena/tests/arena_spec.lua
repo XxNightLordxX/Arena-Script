@@ -1427,4 +1427,87 @@ t.test('and the shipped config gives every firearm a magazine to fall back on', 
         ('%d firearm(s) have no magazine to read: %s'):format(#blank, table.concat(blank, ', ')))
 end)
 
+-- ======================================================================
+-- HOW MANY LIVES, AND WHO DECIDES
+--
+-- Arena.ResolveLives is handed a number the CLIENT chose:
+-- server/lobby.lua:1090 passes the host's `lives` from createMatch, and
+-- :1721 passes `data.lives` straight off the updateMatch payload. So the
+-- three guards in it are server authority, not tidiness -- and a mutation
+-- sweep removed each of them in turn without one of the 79 spec files
+-- noticing.
+-- ======================================================================
+
+t.test('a server that forbids choosing ignores what the client asked for', function()
+    -- THE ONE THAT MATTERS. `allowChoose = false` is the whole of what stops
+    -- a modded client opening a match with ninety-nine lives on a server that
+    -- fixed it at three. Nothing was proving the server refused; the panel
+    -- not offering the control is not a defence, because the payload does
+    -- not come from the panel.
+    local Arena = tweaked(function(config)
+        config.Match.lives = { allowChoose = false, min = 1, max = 10, default = 3 }
+    end)
+
+    for _, forged in ipairs({ 99, 10, 1, 0, -5, 2.7, '7' }) do
+        local resolved, reason = Arena.ResolveLives(forged)
+        t.equals(resolved, 3,
+            ('a client asked for %s lives on a server that does not offer the choice, and got %s')
+                :format(tostring(forged), tostring(resolved)))
+        t.isNil(reason, 'the server refused rather than quietly using its own default')
+    end
+end)
+
+t.test('and where choosing IS allowed, the band is still the server\'s', function()
+    -- The control: the guard above must not be doing its job by refusing
+    -- everybody. On a server that offers the choice, an in-range number is
+    -- honoured and an out-of-range one is REFUSED rather than clamped --
+    -- server/lobby.lua's comment insists on that distinction, because a host
+    -- silently dropped into a different rule than the one they set is worse
+    -- than being told no.
+    local Arena = tweaked(function(config)
+        config.Match.lives = { allowChoose = true, min = 2, max = 5, default = 3 }
+    end)
+
+    t.equals(Arena.ResolveLives(4), 4, 'an allowed number was not honoured')
+    t.equals(Arena.ResolveLives(nil), 3, 'no request should fall back to the default')
+
+    local tooMany, why = Arena.ResolveLives(6)
+    t.isNil(tooMany, 'a number above the band was accepted')
+    t.equals(why, 'error.lives_out_of_range')
+
+    local tooFew, why2 = Arena.ResolveLives(1)
+    t.isNil(tooFew, 'a number below the band was accepted')
+    t.equals(why2, 'error.lives_out_of_range')
+end)
+
+t.test('and nobody ever fights with fewer than one life, whatever config says', function()
+    -- An operator who writes min = 0 -- or a negative, or a string -- must
+    -- not produce a fighter who is eliminated by their first death having
+    -- never had a life to spend. The floor is in the code, not in the
+    -- config, and it was untested.
+    for _, bad in ipairs({ 0, -3, 'nonsense' }) do
+        local Arena = tweaked(function(config)
+            config.Match.lives = { allowChoose = false, min = bad, max = 10, default = bad }
+        end)
+        local resolved = Arena.ResolveLives(nil)
+        t.isTrue((resolved or 0) >= 1,
+            ('min = %s produced %s lives'):format(tostring(bad), tostring(resolved)))
+    end
+end)
+
+t.test('and a max written below the min does not drag the answer under it', function()
+    -- Arena.ClampInt(3, 3, 1) returns 1 -- below the stated minimum -- so a
+    -- config with max under min used to resolve to a number the operator
+    -- forbade in the same breath. The maximum is held at the minimum
+    -- instead, which is the only reading that honours both lines.
+    local Arena = tweaked(function(config)
+        config.Match.lives = { allowChoose = false, min = 3, max = 1, default = 3 }
+    end)
+
+    local resolved = Arena.ResolveLives(nil)
+    t.isTrue((resolved or 0) >= 3,
+        ('min 3 with max 1 resolved to %s, under the minimum the operator set')
+            :format(tostring(resolved)))
+end)
+
 os.exit(t.summary())

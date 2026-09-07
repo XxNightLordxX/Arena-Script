@@ -153,6 +153,30 @@ local env = Sandbox.newArenaEnv({
         for _ = 1, (times or 1) do threads.step() end
     end
 
+    --- Runs the round clock out. `evaluate` compares match.endsAt against
+    --- os.time(), so putting it in the past is the whole of "time is up" --
+    --- there is no timer thread to step.
+    function server.expire()
+        local live = server.lobby.Get(matchId)
+        if live then live.endsAt = os.time() - 1 end
+    end
+
+    --- One fighter's live record.
+    function server.rowOf(src)
+        local live = server.lobby.Get(matchId)
+        return live and live.players[src]
+    end
+
+    --- The results payload one player was sent.
+    function server.resultOf(src)
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:results' and message.target == src then
+                return message.payload
+            end
+        end
+        return nil
+    end
+
     --- Puts a respawned fighter back on their feet, the way the scheduled
     --- respawn does. Stepping alone will not: the delay thread and the sweep
     --- are separate, and a test that stepped until it happened would also be
@@ -443,6 +467,110 @@ t.test('one side left standing ends it even under score_limit', function()
     t.equals(server.endedWith(), 'match.ended_last_standing',
         'a round with one fighter left waited for a score limit of 99')
     t.equals(listed(server.winners()), '1', 'the survivor did not take it')
+end)
+
+-- ======================================================================
+-- A PLAYER WHO IS OUT CANNOT WIN IT
+-- ======================================================================
+--
+-- Both kill-counted endings -- the clock and the score limit -- used to
+-- score every row in match.players. An eliminated fighter keeps their row
+-- on purpose (the results board ranks off it, the spectator gate reads it),
+-- so the leader on kills took the round whether or not they were still in
+-- it. Nothing in the suite ran the clock at all: `time_up` did not appear
+-- in a single spec file, which is how this shipped.
+
+--- Five fighters, of whom 1 racks up two kills and is then knocked out.
+--- Leaves 4 (one kill) and 5 (none) still standing.
+local function leaderKnockedOut(server)
+    server.play(5)
+    server.kill(2, 1)
+    server.kill(3, 1)
+    server.kill(1, 4)
+    return server
+end
+
+t.test('THE DEFECT: the clock crowned a fighter who was already out', function()
+    local server = leaderKnockedOut(newServer())
+
+    t.isTrue(server.rowOf(1).placement ~= nil,
+        'fighter 1 was not actually eliminated, so this test proves nothing')
+    t.equals(server.rowOf(1).kills, 2, 'fighter 1 did not end up the kill leader')
+
+    server.expire()
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_time_up', 'the clock did not decide the round')
+    t.equals(listed(server.winners()), '4',
+        'the round was handed to the fighter with the most kills rather than the best of those still in it')
+end)
+
+t.test('and the crowned winner is not carrying a losing placement', function()
+    -- The tell that the old winner was wrong: elimination had already
+    -- written them a placement counted up from the bottom, so the results
+    -- board announced a winner and ranked them fourth of five in the same
+    -- payload.
+    local server = leaderKnockedOut(newServer())
+    server.expire()
+    server.settle(3)
+
+    local result = server.resultOf(4)
+    t.isNotNil(result, 'the winner was sent no results at all')
+    t.isTrue(result.won, 'the winner was not told they won')
+    t.equals(result.placement, 1, 'the winner was ranked below somebody')
+end)
+
+t.test('and a tie among those still in is still a draw', function()
+    -- The filter must not turn a draw into a win by removing the other half
+    -- of the tie.
+    local server = newServer()
+    server.play(4)
+    server.kill(3, 1)
+    server.kill(4, 2)   -- 1 and 2 both on one kill, both still standing
+    server.expire()
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_draw',
+        'two level fighters still in the round were not a draw')
+    t.equals(listed(server.winners()), '', 'a tie paid somebody')
+end)
+
+t.test('and the clock still crowns the leader when they ARE still in', function()
+    -- The other direction: a filter that removed everybody would make every
+    -- timed round a draw, and pass the test above for the wrong reason.
+    -- Five, so knocking two out still leaves somebody besides the leader:
+    -- with one fighter left the round ends on last_standing before the
+    -- clock is ever consulted.
+    local server = newServer()
+    server.play(5)
+    server.kill(2, 1)
+    server.kill(3, 1)   -- 1 has two kills and is still standing
+    server.expire()
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_time_up', 'the clock did not decide the round')
+    t.equals(listed(server.winners()), '1', 'the leader still in the round did not take it')
+end)
+
+t.test('and a score limit reached by somebody who is OUT does not end the round', function()
+    -- The same rule on the other caller. Reaching the limit and being
+    -- knocked out before the sweep sees it used to end the round on that
+    -- score -- and then hand it to whoever led among everybody else.
+    local server = newServer(function(config)
+        config.Match.winCondition = 'score_limit'
+        config.Match.scoreLimit = 2
+    end)
+    leaderKnockedOut(server)
+    server.settle(3)
+
+    t.equals(server.endedWith(), nil,
+        'the round ended on a score limit reached by a fighter who was already out')
+    t.equals(listed(server.winners()), '', 'somebody was paid for a round that is still being fought')
+
+    -- And it can still end normally afterwards.
+    server.kill(5, 4)
+    server.settle(3)
+    t.equals(listed(server.winners()), '4', 'the round could no longer be won at all')
 end)
 
 os.exit(t.summary())

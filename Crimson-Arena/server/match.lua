@@ -148,6 +148,35 @@ local function placementFor(match)
     return math.max(1, total - placed)
 end
 
+--- STILL IN THE ROUND, not still breathing.
+---
+--- With Config.Match.lives above 1 -- and the shipped default is 3 -- a
+--- player lying on the floor waiting out respawnDelaySeconds has not lost
+--- anything yet. They are coming back, and every count that decides or
+--- reports how much round is left has to say so.
+---
+--- THE REASON THIS IS ONE FUNCTION AND NOT TWO COPIES: the round-end rule
+--- and the scoreboard header used to answer it differently. `evaluate` had
+--- this predicate; `pushHud` counted `player.alive` alone. So on the shipped
+--- config a 1v1 read "Alive 1 / 2" for five seconds after every single death
+--- while the round carried on, and a player watching the number they are
+--- given to judge the fight by was told it was already over. Two readers of
+--- the same question is what let them drift; one function is what stops it.
+---
+--- And it is the SAME rule as Arena.IsEliminated, which the panel, the
+--- respawn picker and the spectator gate all read -- so this is that
+--- function with the sign flipped, not a third spelling of it. It stays
+--- named because "still in" is what the readers below are asking.
+---
+--- It has to sit ABOVE decideOnKills. Lua closes a local over the scope it
+--- is written in, so a use before this line would compile as a global read
+--- and be nil at run time.
+--- @param player table
+--- @return boolean
+local function stillIn(player)
+    return not Arena.IsEliminated(player)
+end
+
 --- @param match table
 --- @return table<string, integer> kills per team
 local function teamKills(match)
@@ -195,8 +224,25 @@ local function decideOnKills(match, teamMode)
     if teamMode then
         scores = teamKills(match)
     else
+        -- ONLY PLAYERS STILL IN THE ROUND ARE CANDIDATES. An eliminated
+        -- fighter keeps their row on purpose -- the results board ranks off
+        -- it, and the spectator gate reads it -- so scoring every row handed
+        -- the round to somebody who was already out, with the last-place
+        -- placement elimination gave them still on their record.
+        --
+        -- The clock is where that actually bit: rack up kills, get knocked
+        -- out, wait, and the timer crowned you and paid you the pot over the
+        -- people still fighting for it.
+        --
+        -- Teams are deliberately NOT filtered this way. A side is still in
+        -- the round while any member is, and a fallen team-mate's kills were
+        -- won for that side -- evaluate has already ended the round if only
+        -- one side is left standing, so the sides being compared here are
+        -- all still in it.
         for _, player in pairs(match.players) do
-            scores[player.src] = math.max(0, Arena.ToInt(player.kills) or 0)
+            if stillIn(player) then
+                scores[player.src] = math.max(0, Arena.ToInt(player.kills) or 0)
+            end
         end
     end
 
@@ -215,26 +261,6 @@ local function decideOnKills(match, teamMode)
     return leaders
 end
 
---- STILL IN THE ROUND, not still breathing.
----
---- With Config.Match.lives above 1 -- and the shipped default is 3 -- a
---- player lying on the floor waiting out respawnDelaySeconds has not lost
---- anything yet. They are coming back, and every count that decides or
---- reports how much round is left has to say so.
----
---- THE REASON THIS IS ONE FUNCTION AND NOT TWO COPIES: the round-end rule
---- and the scoreboard header used to answer it differently. `evaluate` had
---- this predicate; `pushHud` counted `player.alive` alone. So on the shipped
---- config a 1v1 read "Alive 1 / 2" for five seconds after every single death
---- while the round carried on, and a player watching the number they are
---- given to judge the fight by was told it was already over. Two readers of
---- the same question is what let them drift; one function is what stops it.
---- @param player table
---- @return boolean
-local function stillIn(player)
-    return player.alive == true or (Arena.ToInt(player.lives) or 0) > 0
-end
-
 --- @param match table
 --- @param teamMode boolean
 --- @return boolean
@@ -248,8 +274,11 @@ local function reachedScoreLimit(match, teamMode)
         return false
     end
 
+    -- Same candidates as decideOnKills, for the same reason and so the two
+    -- cannot disagree: a limit reached by a player who is out would end the
+    -- round on their score and then hand it to somebody else's.
     for _, player in pairs(match.players) do
-        if (Arena.ToInt(player.kills) or 0) >= limit then return true end
+        if stillIn(player) and (Arena.ToInt(player.kills) or 0) >= limit then return true end
     end
     return false
 end

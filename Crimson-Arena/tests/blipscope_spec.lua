@@ -1323,4 +1323,55 @@ t.test('and it lets go when the match ends', function()
         'the outline colour was still being held every frame after the match ended')
 end)
 
+-- ======================================================================
+-- A BOUNDARY THE SERVER COULD NOT DESCRIBE TOOK THE BLIPS WITH IT
+--
+-- startBoundaryThread indexed boundary.center directly. The server builds
+-- that field with toPoint, which deliberately answers nil for a centre
+-- missing an x, y or z -- and a plain table of numbers is a shape toPoint's
+-- own header says an operator may write, so one missing `z` is exactly what
+-- it rejects. Nothing handled the rejection, so the line threw.
+--
+-- WHERE IT THREW IS THE COST. The matchLive handler sets matchLive, unfreezes
+-- the ped, calls startBoundaryThread, and THEN calls startBlipThread. So the
+-- round started with no boundary -- nobody warned, nobody bled, fighters free
+-- to walk out and stay out -- and no teammate or enemy blips for anybody, for
+-- every player, every round on that arena. One red line in F8 was the only
+-- symptom.
+-- ======================================================================
+
+t.test('DEFECT: an unreadable boundary centre killed the blips as well', function()
+    local f = newFixture()
+
+    -- Live, but with the boundary the server sends for an arena whose centre
+    -- it could not read: the block is there, the centre is not.
+    -- The boundary the server sends for an arena whose centre it could not
+    -- read: the block is there, the centre is not.
+    f.enterLive({ boundary = { enabled = true, radius = 50.0,
+        warningSeconds = 5, damagePerTick = 20, tickMs = 500 } })
+    f.hud()
+    for _ = 1, 6 do f.step() end
+
+    -- The blip thread is the observable that used to die with it.
+    t.isTrue(f.outlines[1000 + MATE] == true,
+        'the round started with no teammate blips at all, because the boundary threw before '
+            .. 'startBlipThread was ever reached')
+
+    f.fire('crimson_arena:client:exitArena', {})
+end)
+
+t.test('and it says so, rather than failing silently', function()
+    local f = newFixture()
+    -- A centre with x and y and no z, which is the shape toPoint exists to
+    -- reject and an operator can plausibly write.
+    f.enterLive({ boundary = { enabled = true, center = { x = 1.0, y = 2.0 }, radius = 50.0 } })
+    for _ = 1, 3 do f.step() end
+
+    t.isTrue(f.console():find('NO USABLE BOUNDARY CENTRE', 1, true) ~= nil,
+        ('the boundary was dropped without a word:\n%s'):format(f.console()))
+
+    f.fire('crimson_arena:client:exitArena', {})
+end)
+
+
 os.exit(t.summary())

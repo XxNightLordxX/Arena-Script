@@ -93,9 +93,22 @@ local function boundaryPayload(arena, factor)
     local boundary = Arena.BoundaryOf(arena)
     if not boundary then return nil end
 
+    -- NOT SENT AT ALL RATHER THAN SENT BROKEN. toPoint answers nil for a
+    -- centre missing an x, y or z, and this used to put that nil straight
+    -- onto the wire -- where the client indexed it and threw, taking the
+    -- blip thread down with the boundary. An arena the server cannot
+    -- describe is an arena with no boundary, said once, here.
+    local center = toPoint(boundary.center)
+    if not center then
+        ArenaLog('BOUNDARY IGNORED: arena "%s" has a boundary switched on whose centre cannot be read -- ' ..
+            'it needs x, y and z. Nobody will be warned or bled for leaving it.',
+            tostring(arena.label or '?'))
+        return nil
+    end
+
     return {
         enabled = true,
-        center = toPoint(boundary.center),
+        center = center,
         -- GROWN WITH THE REST OF THE ARENA. The floor and the spawn ring
         -- both scale with the roster, and a boundary that did not would put
         -- solid ground -- and spawns -- outside the sphere that bleeds you

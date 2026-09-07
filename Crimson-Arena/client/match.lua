@@ -800,9 +800,34 @@ end
 local function startBoundaryThread(boundary)
     if type(boundary) ~= 'table' or boundary.enabled ~= true then return end
 
+    -- A CENTRE THAT CANNOT BE READ MUST NOT TAKE THE BLIPS WITH IT.
+    --
+    -- This indexed boundary.center directly. The server builds that field
+    -- with toPoint, which deliberately answers nil for a centre missing an
+    -- x, y or z -- and a plain table of numbers is a shape toPoint's own
+    -- header says an operator may write, so one missing `z` is exactly what
+    -- it is written to reject. Nothing downstream handled the rejection, so
+    -- this line threw.
+    --
+    -- WHERE THE THROW LANDED IS THE REAL COST. Its one caller runs
+    -- `matchLive = true`, unfreezes the ped, calls this, and THEN calls
+    -- startBlipThread. Raising here started the round with no boundary --
+    -- nobody warned, nobody bled, fighters free to walk out and stay out --
+    -- and no teammate or enemy blips for anyone, for every player, every
+    -- round on that arena. The only symptom was one red line in F8.
+    local cx = tonumber(boundary.center and boundary.center.x)
+    local cy = tonumber(boundary.center and boundary.center.y)
+    local cz = tonumber(boundary.center and boundary.center.z)
+    if not cx or not cy or not cz then
+        print('[crimson_arena] THIS ARENA HAS NO USABLE BOUNDARY CENTRE, so nobody will be warned or '
+            .. 'bled for leaving it. Check Config.Arenas[...].boundary.center -- it needs x, y and z. '
+            .. 'Everything else about the round is unaffected.')
+        return
+    end
+
     local token = matchToken
-    local center = vector3(boundary.center.x, boundary.center.y, boundary.center.z)
-    local radius = boundary.radius + 0.0
+    local center = vector3(cx, cy, cz)
+    local radius = (tonumber(boundary.radius) or 0.0) + 0.0
     local graceMs = (boundary.warningSeconds or 0) * 1000
     local damage = boundary.damagePerTick or 0
     local tickMs = boundary.tickMs or 1000

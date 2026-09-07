@@ -3386,7 +3386,19 @@ function Arena.ValidateConfig()
             end
 
             if type(raw.boundary) == 'table' then
-                checkHeight('boundary.center.z', raw.boundary.center and raw.boundary.center.z)
+                -- READABLE AT ALL, BEFORE ASKING HOW HIGH IT IS. checkHeight
+                -- returns silently on anything that is not a number, so an
+                -- unusable centre passed this whole block without a word --
+                -- and then cost the round its boundary AND its blips at
+                -- runtime, with one red line in F8 as the only sign.
+                local centre = raw.boundary.center
+                if Arena.BoundaryOf(raw) and not (centre
+                    and tonumber(centre.x) and tonumber(centre.y) and tonumber(centre.z)) then
+                    complain(('Config.Arenas["%s"].boundary is switched on but its centre cannot be read -- it needs x, y and z. Nobody will be warned or bled for leaving this arena.')
+                        :format(entry.key))
+                end
+
+                checkHeight('boundary.center.z', centre and centre.z)
 
                 -- THE BOUNDARY HAS TO CONTAIN THE FLOOR.
                 --

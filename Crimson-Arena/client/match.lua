@@ -2179,6 +2179,31 @@ function ArenaMatch.EnsureSpectatorScenery(arenaKey, factor)
         return false
     end
 
+    -- ASKED AGAIN, BECAUSE THE BUILD YIELDS -- the same guard the fighter
+    -- entry handler carries, for the same window, and this path never had it.
+    --
+    -- `spectatorBuilt` is the ONLY thing DropSpectatorScenery will act on,
+    -- and it is set here, on the far side of the build. buildArenaProps
+    -- clears it on the way in, before the first loadPropModel -- whose
+    -- RequestModel wait is a real yield of up to ten seconds. So for the
+    -- whole build it reads false, and a watch that ends in that window calls
+    -- DropSpectatorScenery against a flag that says there is nothing to
+    -- take down. It returns immediately, the build then finishes and creates
+    -- every piece, and ArenaSpectate.Stop refuses to run twice -- so the
+    -- camera thread that is the only caller of this function never comes
+    -- back.
+    --
+    -- What is left standing: the arena's whole prop set -- 87 pieces with
+    -- the stunt DLC, 369 on the container fallback -- each pinned as a
+    -- mission entity at LOD 0xFFFF, a kilometre above a player who is back
+    -- in the city and not in a round at all. That is the same per-client
+    -- load this file prints a nine-line crash warning about, carried by
+    -- somebody with no warning printed and no reason to expect it.
+    if ArenaSpectate and ArenaSpectate.IsActive and not ArenaSpectate.IsActive() then
+        clearArenaScenery()
+        return false
+    end
+
     spectatorBuilt = true
     return true
 end

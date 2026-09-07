@@ -162,6 +162,17 @@ local function newClient(opts)
         return realRequest(...)
     end
 
+    -- THE SPECTATE MODULE, as far as client/match.lua reaches into it.
+    -- Absent, the build-window guard in EnsureSpectatorScenery is skipped
+    -- entirely -- so a spec that wants to exercise that guard has to supply
+    -- one, and `c.spectateActive` is the switch a test flips mid-build.
+    c.spectateActive = true
+    overrides.ArenaSpectate = {
+        IsActive = function() return c.spectateActive == true end,
+        Stop = function() c.spectateActive = false end,
+        Start = function() c.spectateActive = true end,
+    }
+
     local env = Sandbox.newArenaEnv(overrides)
     if opts.cover then
         for _, key in ipairs(opts.cover) do
@@ -2234,6 +2245,55 @@ t.test('a wall inside the floor edge is named, with both numbers', function()
         'a floor reaching far outside its wall was reported as a healthy build: ' .. said)
     t.isTrue(said:find('fall', 1, true) ~= nil,
         'the consequence is not spelled out')
+end)
+
+-- ======================================================================
+-- A WATCH THAT ENDS INSIDE THE BUILD
+--
+-- The fighter entry handler re-checks its token after buildArenaProps and
+-- clears the scenery if the round has gone, and its comment says why: the
+-- build yields, the exit can run in that window, and pieces created after
+-- the teardown "stand at a thousand metres for the rest of the session".
+--
+-- The spectator entry point had no such check. `spectatorBuilt` -- the only
+-- thing DropSpectatorScenery acts on -- is set on the FAR side of the build
+-- and cleared on the way in, so for the whole build it reads false: a watch
+-- ending there calls Drop against a flag saying there is nothing to take
+-- down, and ArenaSpectate.Stop will not run twice to try again.
+-- ======================================================================
+
+t.test('DEFECT: a watch that ended mid-build left the whole arena standing', function()
+    local c = newClient({ start = { x = 1500.0, y = 3000.0, z = 1201.0 } })
+
+    -- Past the measurement load, so pieces really are being created when the
+    -- watch ends -- which is the window that leaks.
+    c.interruptAfter = 3
+    c.duringBuild = function()
+        -- The panel's stop button, a lobby snapshot that no longer lists
+        -- them: whatever the cause, this is what it does.
+        c.env.ArenaSpectate.Stop()
+        c.inThread(function() return c.env.ArenaMatch.DropSpectatorScenery() end)
+    end
+
+    c.inThread(function() return c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0) end)
+
+    t.equals(#c.world.live(), 0,
+        ('%d prop(s) were left standing a kilometre up by a player who is no longer watching '
+            .. 'anything -- each pinned as a mission entity at full LOD'):format(#c.world.live()))
+end)
+
+t.test('and a watch that runs to the end still gets its arena', function()
+    -- The control. A guard that simply refused to build would pass the test
+    -- above and leave every spectator hanging in empty air.
+    local c = newClient({ start = { x = 1500.0, y = 3000.0, z = 1201.0 } })
+
+    t.isTrue(c.inThread(function() return c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0) end),
+        'a watch that was never interrupted reported failure')
+    t.isTrue(#c.world.live() > 0, 'an uninterrupted watch built no scenery at all')
+
+    -- And it is still Drop-able, which is the flag the defect above turns off.
+    c.inThread(function() return c.env.ArenaMatch.DropSpectatorScenery() end)
+    t.equals(#c.world.live(), 0, 'the scenery an uninterrupted watch built could not be taken down')
 end)
 
 os.exit(t.summary())

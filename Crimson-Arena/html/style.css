@@ -1287,6 +1287,34 @@ option {
     gap: 0.7rem;
     min-height: 0;
     align-self: start;
+
+    /* BOUNDED AND SCROLLABLE, like every other growable box in this file.
+
+       This column is the one that grows without anybody choosing to grow
+       it: renderBetNote writes a three-clause paragraph -- all three fire on
+       the shipped defaults -- renderBetPick wraps to as many chip rows as
+       the match has fighters, and the hint under the stake box is a whole
+       sentence. Its row is `minmax(0, 1fr)` (see #tab-bets above), so the
+       row is hard-bounded by the panel height, and `align-self: start`
+       gives this box its CONTENT height rather than the row's.
+
+       With neither a bound nor an overflow rule, anything past the row
+       simply left the grid area and met the overflow: hidden on
+       .arena-panel. Cut off with no scrollbar and no cue -- and what is at the
+       bottom of this column, in order, is the hint and then Place Bet. On a
+       1080p screen with a busy free-for-all the player read the whole
+       explanation of how betting works and then had no button.
+
+       It looked resolution-dependent because it is: under 1100px the media
+       query at the foot of this file rewrites the whole tab into one
+       scrolling column and the fault disappears.
+
+       #create-panel, #loadout-slots, #loadout-lists and #bet-list all
+       carry this treatment already. This was the one box in the same
+       position that never got it. */
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 #bet-pick {

@@ -1076,7 +1076,17 @@ t.test('every growable box inside the hidden panel can scroll', function()
     -- clips. The create panel grows by a whole field when the radar is
     -- switched on; the loadout column carries a min-height floor on its
     -- melee section that stops it shrinking to fit.
-    for _, selector in ipairs({ '#create-panel', '#loadout-lists', '#match-list' }) do
+    -- #bet-form was NOT on this list, and that is the whole reason the fault
+    -- it describes shipped in the box the list exists to protect. It is the
+    -- one growable, align-self: start column in the file that carried
+    -- neither half of the treatment -- and what fell off the bottom of it
+    -- was the hint and then the Place Bet button.
+    --
+    -- There is no browser here to derive the list from, which the preamble
+    -- above already concedes, so it is maintained by hand. That means adding
+    -- to it is a step somebody has to remember; the next growable box in a
+    -- clipped row belongs here on the same day it is written.
+    for _, selector in ipairs({ '#create-panel', '#loadout-lists', '#match-list', '#bet-form' }) do
         local body = ruleBody(css, selector)
         t.isNotNil(body, ('%s has no rule at all'):format(selector))
         t.contains(body, 'overflow-y: auto',
@@ -1088,14 +1098,27 @@ t.test('every growable box inside the hidden panel can scroll', function()
     end
 end)
 
-t.test('and the create panel is bounded, or there is nothing to scroll within', function()
+t.test('and every align-self: start box is bounded, or there is nothing to scroll within', function()
     -- align-self: start makes a grid item take its content height, which
     -- is right for a box that should hug its content -- and means
-    -- overflow-y has no bound to act against unless one is given.
-    local body = ruleBody(readPanelFile('style.css'), '#create-panel')
+    -- overflow-y has no bound to act against unless one is given. A box with
+    -- overflow-y and no bound does not scroll; it just grows, and the
+    -- clipping ancestor eats the difference.
+    --
+    -- Both boxes, not just the create panel: #bet-form is in the identical
+    -- position -- content height inside a minmax(0, 1fr) row inside
+    -- .arena-panel's overflow: hidden -- and had neither declaration.
+    local css = readPanelFile('style.css')
 
-    t.contains(body, 'max-height',
-        'the create panel scrolls against no bound, so it still grows past the panel')
+    for _, selector in ipairs({ '#create-panel', '#bet-form' }) do
+        local body = ruleBody(css, selector)
+        t.isNotNil(body, ('%s has no rule at all'):format(selector))
+        t.contains(body, 'align-self: start',
+            ('%s no longer takes its content height, so this test is about the wrong box')
+                :format(selector))
+        t.contains(body, 'max-height',
+            ('%s scrolls against no bound, so it still grows past the panel'):format(selector))
+    end
 end)
 
 t.test('the panel scales off the SHORTER axis, not the width alone', function()

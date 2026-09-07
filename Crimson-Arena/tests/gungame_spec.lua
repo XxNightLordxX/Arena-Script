@@ -25,7 +25,7 @@
     a promotion that does not reach a real inventory is a promotion that
     changed nothing a player can hold.
 
-    THIRTY TESTS, on deliberately different parts of it:
+    THIRTY-EIGHT TESTS, on deliberately different parts of it:
 
       THE DRAW         one weapon per tier, melee first, stable all round,
                        different between rounds, and short pools survived.
@@ -341,6 +341,23 @@ local function newServer(mutate, seed, opts)
     --- test that kills the same player twice without this delivers only the
     --- first blow and quietly proves nothing about the second.
     function server.revive(src) server.row(src).alive = true end
+
+    --- Kills somebody and lets the REAL respawn thread put them back up,
+    --- rather than standing them up by hand.
+    ---
+    --- `server.revive` sets `alive = true` directly, and scheduleRespawn's
+    --- body begins `if not entry or entry.alive then return end` -- so every
+    --- test that used revive left the respawn path unexecuted. It was called
+    --- a hundred and sixteen times in one run of this file and its body ran
+    --- zero times, which is why deleting the line that puts a respawning
+    --- climber back on their own tier changed nothing here.
+    function server.dieAndRespawn(victim, killer)
+        server.kill(victim, killer)
+        for _ = 1, 4 do
+            if server.row(victim).alive then break end
+            threads.step()
+        end
+    end
 
     --- One kill, with the victim back up afterwards. The pair is what a real
     --- round does and writing it out every time is where mistakes live.
@@ -1440,6 +1457,306 @@ t.test('an ordinary mode carries no tier on the wire at all', function()
     for _, mode in ipairs(s.arena.GetEnabledModes()) do modes[mode.key] = mode end
     t.equals(modes.ffa.tiers, nil, 'a free-for-all advertises no ladder')
     t.isTrue((modes.gungame.tiers or 0) > 1, 'and a gun game advertises its height')
+end)
+
+-- ======================================================================
+-- 31-37. WHAT THE MUTANTS WALKED THROUGH
+-- ======================================================================
+
+t.test('the real respawn thread puts a climber back on their own tier', function()
+    -- THE PATH THAT WAS NEVER EXECUTED. Deleting the line in scheduleRespawn
+    -- that re-resolves a respawning player's loadout left this file green,
+    -- because `server.revive` stood everybody up before the thread could
+    -- run. The header claims the ladder replaces the loadout "on every
+    -- respawn"; nothing had ever watched one.
+    local s = newServer()
+    s.play(3)
+
+    for _, victim in ipairs({ 2, 3 }) do s.trade(victim, 1) end
+    t.equals(s.row(1).tier, 3, 'two kills up')
+
+    s.dieAndRespawn(1, 2)
+
+    t.equals(s.row(1).alive, true, 'the scheduled respawn really ran')
+    t.equals(s.row(1).tier, 2, 'the death cost a tier')
+    t.equals(s.row(1).loadout.weapons[1].weapon, weaponAt(s, 2),
+        'and they come back holding the tier they are standing on, not the one they lost')
+
+    -- AND THE RESPAWN IS WHAT RE-RESOLVES IT, provably.
+    --
+    -- The assertions above pass whether or not scheduleRespawn re-resolves,
+    -- because settleTier already rewrote the loadout at the DEATH. So this
+    -- corrupts the record on tier 1 -- where a death costs nothing and
+    -- settleTier returns without touching anything -- and the respawn is
+    -- then the only thing left that can put it right. Deleting that line
+    -- makes exactly this assertion fail, which is the check a test earns its
+    -- place with.
+    while s.row(1).tier > 1 do
+        s.kill(1, 2)
+        s.revive(1)
+    end
+    s.row(1).loadout = { weapons = {}, armor = 0, health = 100, supplies = {} }
+
+    s.dieAndRespawn(1, 2)
+
+    t.equals(s.row(1).tier, 1, 'a death on tier 1 costs nothing')
+    t.isTrue(s.row(1).loadout.weapons[1] ~= nil,
+        'and the respawn re-resolves the loadout rather than handing back the record it found')
+    t.equals(s.row(1).loadout.weapons[1].weapon, weaponAt(s, 1),
+        'putting the tier they are standing on back in their hands')
+
+    -- THE CLAMP, on the same path: a ladder redrawn shorter under a player
+    -- leaves them standing on a tier that is not there.
+    s.row(1).tier = 99
+    s.row(1).loadout = { weapons = {}, armor = 0, health = 100, supplies = {} }
+    s.dieAndRespawn(1, 2)
+    t.isTrue(s.row(1).tier <= s.tierCount(),
+        ('a tier past the top of the ladder should be clamped, got %s'):format(tostring(s.row(1).tier)))
+    t.isTrue(s.row(1).loadout.weapons[1] ~= nil, 'and they are armed rather than indexed past the end')
+end)
+
+t.test('the ladder weapon carries its magazine, its attachments and its tint', function()
+    -- weaponMetadata WAS ENTIRELY UNBOUND. It could be reduced to returning
+    -- an empty table and this file passed -- and the three faults the
+    -- builder was unified to fix are exactly these three fields.
+    local s = newServer(function(config)
+        for _, weapon in ipairs(config.Loadouts.weapons) do
+            if weapon.key == 'pistol' then
+                weapon.components = { 'at_pi_flsh' }
+                weapon.tint = 3
+            end
+        end
+        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' } }
+    end)
+    s.play(3)
+
+    -- MELEE CARRIES NO AMMO KEY AT ALL. ox_inventory reads a present one as
+    -- "this is an ammo weapon", which a blade is not -- and the catalogue
+    -- gives every melee entry a default of 1 precisely so the ammo machinery
+    -- has a number to agree on, which was reaching the item.
+    local blade = s.ox.metaOf(1, weaponAt(s, 1))
+    t.isTrue(blade ~= nil, 'the melee tier was issued as an item')
+    t.equals(blade.ammo, nil, 'and a blade must carry no ammo key')
+
+    s.trade(2, 1)
+    local gun = s.ox.metaOf(1, weaponAt(s, 2))
+    t.isTrue(gun ~= nil, 'the promotion issued the next tier')
+
+    local entry = s.row(1).loadout.weapons[1]
+    local magazine = s.arena.MagazineFor(s.arena.GetWeaponByKey(entry.key), entry.ammo)
+    t.equals(gun.ammo, magazine,
+        'ONE magazine rides in the gun, not the whole pick')
+    t.isTrue(type(gun.components) == 'table' and gun.components[1] == 'at_pi_flsh',
+        'the attachment an operator configured has to reach the player through the metadata or not at all')
+    t.equals(gun.tint, 3, 'and so does the tint')
+end)
+
+t.test('a refused promotion puts back the weapon it took', function()
+    -- THE ROLLBACK. The removal has already happened by the time the add is
+    -- refused, so without it the player stands in the arena holding nothing
+    -- -- and the log used to tell them they kept the tier they had.
+    local s = newServer()
+    s.play(3)
+
+    local held = weaponAt(s, 1)
+    t.equals(s.ox.count(1, held), 1, 'they open holding tier 1')
+
+    s.ox.refuseAdd[weaponAt(s, 2)] = true
+    s.trade(2, 1)
+
+    t.equals(s.row(1).tier, 1, 'the tier did not move')
+    t.equals(s.ox.count(1, held), 1, 'and tier 1 is back in their hands, not gone')
+    t.equals(s.ox.count(1, weaponAt(s, 2)), 0, 'with none of the tier that was refused')
+
+    -- AND A PLAYER THE ARENA NO LONGER KITS IS REFUSED OUTRIGHT. A promotion
+    -- landing after the exit used to push a real weapon into the inventory
+    -- the arena had already handed back, which neither Reclaim nor
+    -- ReclaimAll takes away again.
+    s.ammo.Reclaim(3, 'test')
+    local ok, why = s.ammo.SwapWeapon(3, s.matchId(), nil, s.row(3).loadout.weapons[1])
+    t.equals(ok, false, 'a swap for somebody the arena is not arming is refused')
+    t.equals(why, 'refused', 'and named as a refusal, so the caller rolls back')
+end)
+
+t.test('every kill reward is on the arena\'s books, and a refused one is not', function()
+    -- "ON THE BOOKS IS THE POINT" says the doc comment, and deleting the
+    -- line that writes the ledger changed nothing anywhere in the suite. The
+    -- record is what the exit reclaims against: a plate handed over and not
+    -- recorded is a plate the player keeps.
+    local s = newServer(function(config)
+        config.Modes.gungame.killReward = { { key = 'bandage', count = 3 } }
+    end)
+    s.play(4)
+
+    local carriedIn = s.ox.count(1, 'bandage')
+    s.trade(2, 1)
+    s.trade(3, 1)
+    t.equals(s.ox.count(1, 'bandage'), carriedIn + 6, 'two kills paid six bandages')
+
+    s.ammo.Reclaim(1, 'test')
+    t.equals(s.ox.count(1, 'bandage'), 0,
+        'and the exit takes back what the arena issued -- kit and reward alike')
+
+    -- A REFUSED GRANT IS NOT RECORDED, or the exit reclaims something the
+    -- player never got.
+    local other = newServer(function(config)
+        config.Modes.gungame.killReward = { { key = 'bandage', count = 3 } }
+    end)
+    other.play(3)
+    other.ox.refuseAdd['bandage'] = true
+    local before = other.ox.count(1, 'bandage')
+    other.trade(2, 1)
+    t.equals(other.ox.count(1, 'bandage'), before, 'a refused reward is not paid')
+    other.ammo.Reclaim(1, 'test')
+    t.equals(other.ox.count(1, 'bandage') >= 0, true,
+        'and the exit does not go looking for what was never handed over')
+end)
+
+t.test('a second round clears every number the ladder keeps', function()
+    -- Test 4 proves the LADDER is redrawn and nothing more. All five
+    -- per-player reset lines could be deleted one at a time and this file
+    -- stayed green -- including the victims list, which would carry last
+    -- round's farming into this one's cap.
+    local s = newServer()
+    s.play(3)
+
+    s.trade(2, 1)
+    s.trade(3, 1)
+    s.kill(1, 2)
+    s.revive(1)
+
+    t.isTrue((s.row(1).ladderKills or 0) > 0, 'the setup left something to clear')
+    t.isTrue((s.row(1).tiersLost or 0) > 0, 'and a tier lost')
+    t.isTrue(next(s.row(1).ladderVictims or {}) ~= nil, 'and a victims list')
+
+    local id = s.matchId()
+    s.lobby.Get(id).state = 'lobby'
+    for _, src in ipairs({ 1, 2, 3 }) do s.row(src).ready = true end
+    s.match.Start(id)
+    s.settle(1)
+
+    t.equals(s.row(1).tier, 1, 'everybody opens the new round on tier 1')
+    t.equals(s.row(1).ladderKills, nil, 'with no ladder kills carried over')
+    t.equals(s.row(1).tiersLost, nil, 'nor tiers lost')
+    t.equals(s.row(1).ladderVictims, nil,
+        'nor last round\'s victims, which would count against this round\'s cap')
+    t.equals(s.row(1).ladderFinished, nil, 'nor a finished flag from a ladder they already topped')
+end)
+
+t.test('the ladder beats the clock, the score limit and the last one standing', function()
+    -- THE OVERRIDE, and each half of it separately. The score-limit rule
+    -- would settle a ladder on raw kills, which is not the race anybody is
+    -- running; the last-standing rule cannot fire in a mode that eliminates
+    -- nobody; and a ladder topped on the last second of the round was still
+    -- topped.
+    local s = newServer(function(config)
+        config.Match.winCondition = 'score_limit'
+        config.Match.scoreLimit = 2
+        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' }, { 'rifle' } }
+        config.Modes.gungame.roundTimeSeconds = 600
+    end)
+    s.play(4)
+
+    -- Three kills and three deaths: well past the score limit, standing on
+    -- tier 1. An ordinary mode would have ended on the second kill.
+    for _, victim in ipairs({ 2, 3, 4 }) do s.trade(victim, 1) end
+    for _ = 1, 3 do
+        s.kill(1, 2)
+        s.revive(1)
+    end
+    s.settle(2)
+
+    t.isTrue(s.row(1).kills >= 2, 'the setup is past the score limit')
+    t.equals(s.row(1).tier, 1, 'and standing on tier 1 for it')
+    t.equals(s.endedWith(), nil, 'a ladder does not end on a score limit')
+
+    -- AND THE LADDER IS READ BEFORE THE CLOCK. Both conditions true at once,
+    -- and the ladder is the one that decides.
+    local racing = newServer(function(config)
+        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' } }
+        config.Modes.gungame.roundTimeSeconds = 120
+    end)
+    racing.play(4)
+    racing.trade(2, 1)
+    racing.trade(3, 1)
+    t.equals(racing.row(1).ladderFinished, true, 'the ladder is topped')
+
+    racing.match_().endsAt = os.time() - 1
+    racing.settle(2)
+    t.equals(racing.endedWith(), 'match.ended_ladder',
+        'a ladder topped on the last second of the round was still topped')
+end)
+
+t.test('the validator names the thing that is wrong, and stays quiet when nothing is', function()
+    -- A SUBSTRING MATCH ON "gungame" PROVES NOTHING. There are several
+    -- complaints that contain it, so a validator that fired the wrong one
+    -- passed -- and a false alarm on a good config is as bad as silence on a
+    -- broken one.
+    local shipped = newServer()
+    local quiet = {}
+    for _, line in ipairs(shipped.arena.ValidateConfig() or {}) do
+        if tostring(line):find('gungame', 1, true) then quiet[#quiet + 1] = line end
+    end
+    t.equals(#quiet, 0,
+        ('a working gun game should produce no complaints, got: %s'):format(table.concat(quiet, ' | ')))
+
+    --- Every complaint mentioning gun game, as one string.
+    local function complaintsOf(mutate)
+        local server = newServer(mutate)
+        local said = {}
+        for _, line in ipairs(server.arena.ValidateConfig() or {}) do
+            if tostring(line):find('gungame', 1, true) then said[#said + 1] = tostring(line) end
+        end
+        return table.concat(said, '\n')
+    end
+
+    t.isTrue(complaintsOf(function(config)
+        config.Modes.gungame.gunGameTiers = 'knife'
+    end):find('has to be a list of tiers', 1, true) ~= nil, 'a ladder of the wrong type is named as one')
+
+    t.isTrue(complaintsOf(function(config)
+        config.Modes.gungame.gunGameTiers = { { 'knife' } }
+    end):find('a ladder needs at least two', 1, true) ~= nil, 'a one-tier ladder is named as one')
+
+    t.isTrue(complaintsOf(function(config)
+        config.Modes.gungame.roundTimeSeconds = 0
+        config.Match.roundTimeSeconds = 0
+    end):find('no round clock', 1, true) ~= nil, 'a clockless ladder is named as one')
+
+    t.isTrue(complaintsOf(function(config)
+        config.Modes.gungame.killReward = { { key = 'nosuchthing', count = 1 } }
+    end):find('nosuchthing', 1, true) ~= nil, 'a reward naming nothing is named by key')
+
+    t.isTrue(complaintsOf(function(config)
+        config.Modes.gungame.teams = true
+    end):find('climbed and won by one player', 1, true) ~= nil, 'sides on a ladder are named as pointless')
+
+    t.isTrue(complaintsOf(function(config)
+        config.Modes.gungame.maxTiersPerVictim = 'two'
+    end):find('not a number', 1, true) ~= nil, 'a cap that will not parse is named')
+end)
+
+t.test('a tier may be written as a bare key, and the catalogue is never edited', function()
+    -- BOTH DOCUMENTED AT LENGTH AND NEITHER EXERCISED. An operator writing
+    -- one gun per step should not have to type the braces.
+    local s = newServer(function(config)
+        config.Modes.gungame.gunGameTiers = { 'knife', { 'pistol' }, 'rifle' }
+    end)
+    s.play(2)
+
+    t.equals(s.tierCount(), 3, 'a bare key reads as a one-weapon tier')
+    t.equals(s.ladder()[1], 'knife', 'and is the tier it was written as')
+    t.equals(s.ladder()[3], 'rifle', 'in the order it was written in')
+
+    -- THE COMPONENTS LIST IS COPIED, NEVER HELD. It is the operator's own
+    -- table on the live config, and an entry that aliased it would leak one
+    -- player's ammo-type component into every later loadout for everybody.
+    local catalogue = s.arena.GetWeaponByKey('rifle')
+    local before = #(catalogue.components or {})
+    local entry = s.arena.ResolveWeaponEntry(catalogue, s.arena.ResolveAmmoType(catalogue, nil), nil)
+    entry.components[#entry.components + 1] = 'at_scope_max'
+    t.equals(#(catalogue.components or {}), before,
+        'appending to a resolved entry edited the operator\'s live config')
 end)
 
 os.exit(t.summary())

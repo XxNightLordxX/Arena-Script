@@ -106,9 +106,16 @@ failed_files=()
 # could print [FAIL] while this script printed ALL SPEC FILES PASSED, which
 # is the worst thing a test runner can do.
 #
-# So the tally line summary() prints is now required. A file that forgets the
-# exit line fails here instead of passing silently, and nobody has to
-# remember.
+# So the tally line summary() prints is now required, AND IT HAS TO SAY ZERO
+# FAILED. Requiring only that a tally was printed was the same hole one step
+# further along: a file that forgets the exit line still prints its tally, so
+# `15 passed, 1 failed` with an exit code of 0 satisfied the check and this
+# script printed ALL SPEC FILES PASSED over a failing test. Demonstrated,
+# not supposed.
+#
+# A file that DOES call os.exit(t.summary()) can never reach this branch with
+# failures -- it exits non-zero and the check above catches it. So this is
+# exactly the drift case, and it now reads the number rather than the shape.
 for spec in *_spec.lua; do
     [ -e "$spec" ] || continue
     total_files=$((total_files + 1))
@@ -127,6 +134,12 @@ for spec in *_spec.lua; do
         echo "              Without it a failing test cannot fail this run." >&2
         overall_status=1
         failed_files+=("$spec (no tally)")
+    elif ! printf '%s' "$spec_output" | grep -qE '^[0-9]+ passed, 0 failed$'; then
+        echo "tests/run.sh: $spec printed failing tests but exited 0." >&2
+        echo "              Its last line must be: os.exit(t.summary())" >&2
+        echo "              A tally alone is not enough -- this one says tests failed." >&2
+        overall_status=1
+        failed_files+=("$spec (failed tests, exit 0)")
     fi
     echo ""
 done

@@ -1530,6 +1530,31 @@ function ArenaLobby.Destroy(matchId, reasonKey)
         end
     end
 
+    -- AND THE ROUTING BUCKET NUMBER, before the id it is filed under stops
+    -- existing.
+    --
+    -- Only ExitBucket, ArenaMatch.End and ArenaMatch.Abort ever released one,
+    -- and Cancel, the last-player-out branch and the idle sweep all funnel
+    -- through HERE without touching Abort. The per-player ExitBucket in the
+    -- loop above is gated on IsPlayerInArena, which is false for the whole
+    -- lobby countdown by design -- so a lobby destroyed before it started
+    -- released nothing at all, and left a matchBuckets row for a match id
+    -- that no longer exists. /arenaisolation then reports it as a live
+    -- allocation, which is misleading output from the one command written to
+    -- diagnose isolation, and the allocator's "climb until free" walks past
+    -- it for the rest of the server's life.
+    --
+    -- IT MATTERS MORE AS OF THE SWEEP FIX. The leak used to be partly hidden:
+    -- syncMatchBuckets bucketed unplaced lobby members, so its own later
+    -- ExitBucket happened to hand the number back. Now that it only touches
+    -- placed fighters, nothing does -- so this would have gone from a rare
+    -- leak to one on every cancelled or timed-out countdown.
+    --
+    -- A no-op on the End and Abort paths, which have already released it.
+    if type(ArenaDispatch) == 'table' and type(ArenaDispatch.ReleaseBucket) == 'function' then
+        ArenaDispatch.ReleaseBucket(match.id)
+    end
+
     matches[match.id] = nil
     ArenaLog('match %s closed (%s)', match.id, notice)
 

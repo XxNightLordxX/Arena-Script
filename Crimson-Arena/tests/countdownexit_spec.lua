@@ -43,7 +43,7 @@ local function newServer()
     })
     local threads = Sandbox.newThreadRunner()
     local sent, netEvents, handlers = {}, {}, {}
-    local dispatch = { cleared = {}, set = {}, bucketIn = {}, bucketOut = {} }
+    local dispatch = { cleared = {}, set = {}, bucketIn = {}, bucketOut = {}, flags = {} }
 
     local env = Sandbox.newArenaEnv({
         exports = qbx.exports,
@@ -91,13 +91,27 @@ local function newServer()
             OnLoan = function() return 0 end,
         },
         ArenaDispatch = {
-            Set = function(src) dispatch.set[#dispatch.set + 1] = src end,
-            Clear = function(src) dispatch.cleared[#dispatch.cleared + 1] = src end,
+            -- THE FLAG IS TRACKED, not merely counted. It used to answer
+            -- `IsPlayerInArena = false` for everybody while this fixture was
+            -- busy placing people in an arena, which is not a simplification
+            -- -- it is the stub contradicting the thing the test sets up.
+            -- server/match.lua's bucket sweep now asks that question to tell
+            -- the lobby countdown from the frozen one, so a stub that always
+            -- says no makes the sweep skip a match whose fighters really are
+            -- standing in it.
+            Set = function(src, matchId)
+                dispatch.set[#dispatch.set + 1] = src
+                dispatch.flags[src] = matchId or true
+            end,
+            Clear = function(src)
+                dispatch.cleared[#dispatch.cleared + 1] = src
+                dispatch.flags[src] = nil
+            end,
             -- Recorded like the rest: the exit path now tells whatever handles
             -- death that the player is alive again, and a stub missing it is a
             -- nil call rather than a silent no-op.
             Revive = function(src) dispatch.revived = (dispatch.revived or {}); dispatch.revived[#dispatch.revived + 1] = src end,
-            IsPlayerInArena = function() return false end,
+            IsPlayerInArena = function(src) return dispatch.flags[src] ~= nil end,
             ClearDownState = function() return 0 end,
             EnterBucket = function(src) dispatch.bucketIn[#dispatch.bucketIn + 1] = src end,
             ExitBucket = function(src) dispatch.bucketOut[#dispatch.bucketOut + 1] = src end,

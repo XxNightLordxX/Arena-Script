@@ -142,7 +142,8 @@ local function newFixture(mutate)
     -- test so a payout can be described without a second betting stub.
     local money = { pot = 0, stake = 0, payouts = {} }
 
-    local revived = {}       -- every ArenaDispatch.Revive(src), in order
+    local revived = {}
+    local inArena = {}       -- every ArenaDispatch.Revive(src), in order
 
     local env = Sandbox.newEnv({
         CreateThread = runner.CreateThread,
@@ -168,8 +169,15 @@ local function newFixture(mutate)
             OnLoan = function() return 0 end,
         },
         ArenaDispatch = {
-            Set = function() end,
-            Clear = function() end,
+            -- THE FLAG IS TRACKED RATHER THAN SWALLOWED. server/match.lua's
+            -- bucket sweep asks IsPlayerInArena to tell the LOBBY countdown
+            -- from the frozen one -- the two share a state name and nothing
+            -- else separates them -- so a stub without it is a nil call, and
+            -- one that always answered `false` would quietly make the sweep
+            -- skip every match this file starts.
+            Set = function(src, matchId) inArena[src] = matchId or true end,
+            Clear = function(src) inArena[src] = nil end,
+            IsPlayerInArena = function(src) return inArena[src] ~= nil end,
             -- Recorded, not swallowed: the arena telling whatever handles
             -- death that a player is alive again is the whole reason a
             -- player does not walk out of a match still dead, so WHO gets

@@ -676,4 +676,49 @@ t.test('and the fence carries the height the client needs to make it a sphere', 
     t.equals(fences[1].z, tonumber(server.env.Arena.GetArenaByKey('skydome').boundary.center.z))
 end)
 
+t.test('a lobby torn down before it started hands its bucket number back', function()
+    -- WHY THIS LIVES HERE AND NOT IN isolation_spec: that file drives a FAKE
+    -- lobby, so a Destroy assertion there would be checking the fake. This
+    -- one loads the real dispatch, lobby and match together.
+    --
+    -- Only ExitBucket, ArenaMatch.End and ArenaMatch.Abort ever released a
+    -- bucket, and Cancel, the last-player-out branch and the idle sweep all
+    -- funnel through Destroy without touching Abort. Destroy's own per-player
+    -- ExitBucket is gated on IsPlayerInArena, which is false for the whole
+    -- lobby countdown by design -- so a lobby destroyed before it started
+    -- released nothing, and left a matchBuckets row for a match id that no
+    -- longer exists. /arenaisolation then reports it as a live allocation and
+    -- the allocator climbs past it for the life of the server.
+    --
+    -- The leak used to be partly masked: the sweep bucketed unplaced lobby
+    -- members and its own later pass handed the number back. With the sweep
+    -- keyed on placement, nothing masks it.
+    local server = newServer({ [1] = { cash = 50000 }, [2] = { cash = 50000 } })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'no match was created')
+    server.fire('joinMatch', 2, { matchId = match.id })
+
+    t.isTrue((server.match.Begin(match.id)), 'the countdown never started')
+
+    -- ASKED THROUGH THE ALLOCATOR'S OWN BEHAVIOUR, not by reading it back.
+    -- GetBucket ALLOCATES on demand -- it is not a getter -- so calling it to
+    -- check whether a number was returned hands out a fresh one and answers
+    -- its own question. What a released number actually looks like is the
+    -- next match getting it.
+    local first = server.dispatch.GetBucket(match.id)
+    t.isNotNil(first, 'the countdown never allocated a bucket')
+
+    server.lobby.Destroy(match.id, 'notify.match_closed')
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local second = server.lobby.All()[1]
+    t.isNotNil(second, 'no second match was created')
+    t.isTrue(second.id ~= match.id, 'the second lobby is the first one')
+
+    t.equals(server.dispatch.GetBucket(second.id), first,
+        'the destroyed lobby never handed its number back, so the allocator climbed past it -- '
+            .. 'and /arenaisolation still reports it against a match that no longer exists')
+end)
+
 os.exit(t.summary())

@@ -1378,8 +1378,15 @@ t.test('a lobby still counting down is not published as a fight', function()
     -- progress and refuse its host the cancel button.
     --
     -- Only sendEnterArena raises a fighter's flag, and it runs when they are
-    -- actually placed. This says nothing about where the lobby countdown
-    -- leaves their routing bucket; that is a separate question.
+    -- actually placed.
+    --
+    -- AND THE BUCKET GOES WITH THE FLAG, which this test used to say nothing
+    -- about -- in as many words, on the line that was here. It was worth
+    -- asking: the sweep's flag half was guarded and its EnterBucket half was
+    -- not, so for the whole lobby countdown every player in a starting lobby
+    -- was moved into a private, population-disabled instance while standing
+    -- at the ped, in traffic, or in somebody else's job instance -- and was
+    -- simultaneously not flagged, so nothing on the server could say why.
     local f = newArena()
     local match = f.newMatch('m1', { 1, 2 })
 
@@ -1394,7 +1401,32 @@ t.test('a lobby still counting down is not published as a fight', function()
 
     t.isFalse(f.D.IsPlayerInArena(1))
     t.isFalse(f.D.IsPlayerInArena(2))
+
+    t.equals(f.bucketOf(1), 0,
+        'a player waiting for a round to start was instanced away from the world they are standing in')
+    t.equals(f.bucketOf(2), 0,
+        'a player waiting for a round to start was instanced away from the world they are standing in')
 end)
+
+t.test('and the moment they are actually placed, the bucket follows', function()
+    -- THE CONTROL. A sweep that simply stopped bucketing would pass the test
+    -- above and take isolation off the resource entirely.
+    local f = newArena()
+    local match = f.newMatch('m1', { 1, 2 })
+
+    t.isTrue((f.M.Begin(match.id)))
+    f.step()
+    t.equals(f.bucketOf(1), 0, 'bucketed before anybody was placed')
+
+    -- Start is what teleports the room in and raises the flag.
+    t.isTrue((f.M.Start(match.id)))
+    f.step()
+
+    t.isTrue(f.D.IsPlayerInArena(1), 'a placed fighter was never flagged')
+    t.equals(f.bucketOf(1), 4210, 'a placed fighter was left in the open world')
+    t.equals(f.bucketOf(2), 4210)
+end)
+
 
 t.test('a player who leaves by a path that sends no exit is swept back out within a tick', function()
     -- The point of reconciling rather than trusting every departure to

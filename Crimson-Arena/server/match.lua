@@ -1800,6 +1800,22 @@ end
 --- from within a tick.
 --- A stranded player cannot fix this themselves and an operator cannot
 --- easily see it, so it is worth a table walk a second.
+--- Whether any fighter in this match has actually been teleported in.
+---
+--- THE FLAG, NOT THE STATE. 'countdown' names both the lobby countdown --
+--- before anybody has moved -- and the frozen one after placement, and
+--- nothing else tells them apart. server/lobby.lua's playersArePlaced is the
+--- same predicate for the same reason; it is local to that file, so this is
+--- the same question asked where this file can reach it.
+--- @param match table
+--- @return boolean
+local function anyoneIsPlaced(match)
+    for src in pairs(match.players or {}) do
+        if ArenaDispatch.IsPlayerInArena(src) then return true end
+    end
+    return false
+end
+
 local function syncMatchBuckets()
     local wanted = {}
 
@@ -1813,12 +1829,43 @@ local function syncMatchBuckets()
     local fighting = {}
 
     for _, match in ipairs(ArenaLobby.All()) do
-        -- 'countdown' as well as 'live': Start() has already put the
-        -- fighters in the arena by then, so a match in its frozen countdown
-        -- is every bit as instanced as one being fought.
-        if match.state == 'countdown' or match.state == 'live' then
+        -- 'countdown' AS WELL AS 'live', BUT THE STATE IS NOT THE QUESTION.
+        --
+        -- This used to say "Start() has already put the fighters in the arena
+        -- by then", and the comment twenty-five lines below flatly
+        -- contradicts it -- correctly. ArenaMatch.Begin sets 'countdown' for
+        -- the LOBBY countdown before anybody has been teleported anywhere,
+        -- and ArenaMatch.Start reuses the same name for the frozen one after
+        -- placement. Two different events, one word.
+        --
+        -- The flag half already knew: it withholds ArenaDispatch.Set from
+        -- fighters precisely because this loop reaches people standing in the
+        -- middle of town. EnterBucket sat outside every guard and moved them
+        -- anyway -- so for the whole lobby countdown, every player in a
+        -- starting lobby was pushed into a private, population-disabled
+        -- instance while their body was still at the ped, in traffic, in a
+        -- vehicle the move does not take with them, or inside somebody else's
+        -- job instance. They stopped replicating to bystanders and bystanders
+        -- to them, and they were simultaneously NOT flagged as being in an
+        -- arena, so nothing else on the server could say why.
+        --
+        -- It bought nothing. The flag is deliberately false for that exact
+        -- window, so no alert was being suppressed in exchange.
+        --
+        -- PLACEMENT IS THE QUESTION, and the flag is how placement is known:
+        -- sendEnterArena raises it BEFORE it buckets, so a genuinely placed
+        -- fighter is already flagged by the time the next pass sees them.
+        -- server/lobby.lua's playersArePlaced leans on the same predicate for
+        -- the same reason -- the two countdowns cannot be told apart by name.
+        if (match.state == 'countdown' or match.state == 'live')
+            and anyoneIsPlaced(match)
+        then
             for src in pairs(match.players) do
-                wanted[src] = match.id
+                -- Only the ones actually standing in the arena. An unplaced
+                -- fighter is recorded as a fighter -- so the spectator branch
+                -- below cannot claim them and flag them -- and is left in the
+                -- world where they are.
+                if ArenaDispatch.IsPlayerInArena(src) then wanted[src] = match.id end
                 fighting[src] = true
             end
             -- An eliminated fighter who stayed to watch is in both tables and

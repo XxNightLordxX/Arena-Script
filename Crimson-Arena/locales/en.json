@@ -67,6 +67,7 @@
         "ended": "Match over.",
         "ended_abandoned": "Match over. Everyone else walked.",
         "ended_draw": "Match over. Nobody earned it.",
+        "ended_ladder": "Match over. The ladder was climbed.",
         "ended_last_standing": "Match over. Last one breathing takes it.",
         "ended_score_limit": "Match over. Score limit hit.",
         "ended_time_up": "Match over. Clock ran out.",
@@ -83,6 +84,9 @@
     "notify": {
         "eliminated": "You are out.",
         "fighter_dropped": "%s dropped out of the fight.",
+        "gungame_demoted": "Knifed. Back to rung %d -- %s.",
+        "gungame_final_rung": "%s is on the last rung. One kill and it is over.",
+        "gungame_promoted": "Rung %d of %d. %s in your hands.",
         "fighter_left": "%s walked out of the fight.",
         "hours_lobby_closed": "The arena shut. Lobby closed, stakes back.",
         "kit_held": "Your own gear could not be handed back yet. It is safe in the arena's hands and it keeps trying.",

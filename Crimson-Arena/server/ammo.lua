@@ -665,6 +665,57 @@ local function issueWeapons(ox, src, matchId, loadout)
     return failed
 end
 
+--- Swaps one issued weapon item for another, for a gun-game promotion or
+--- demotion.
+---
+--- THE ITEM IS THE WEAPON on an ox_inventory server, so a rung change has to
+--- move items rather than just tell the client: a ped handed a gun it has no
+--- item for is disarmed again within moments.
+---
+--- The removed weapon is forgotten as well as taken, or the exit tries to
+--- reclaim a weapon the ladder already took back.
+---
+--- Answers false when ox_inventory is absent, which is the signal for the
+--- caller's client event to do the work instead.
+--- @param src number
+--- @param matchId string
+--- @param removeWeapon string? -- the rung below, when it differs
+--- @param addWeapon string
+--- @param rounds any
+--- @return boolean swapped
+function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, addWeapon, rounds)
+    local ox = inventory()
+    if not ox then return false end
+    if not Arena.IsKey(addWeapon) then return false end
+
+    local record = issuedWeapons[matchId] and issuedWeapons[matchId][src] or nil
+
+    if Arena.IsKey(removeWeapon) then
+        pcall(function() return ox:RemoveItem(src, removeWeapon, 1) end)
+
+        if record then
+            for index = #record, 1, -1 do
+                if record[index].name == removeWeapon then table.remove(record, index) end
+            end
+        end
+    end
+
+    local metadata = {}
+    local ammo = Arena.ToInt(rounds) or 0
+    if ammo > 0 then metadata.ammo = ammo end
+
+    local ok, accepted = pcall(function() return ox:AddItem(src, addWeapon, 1, metadata) end)
+    if not (ok and accepted ~= false) then
+        ArenaLog('weapons: ox_inventory would not give the ladder weapon %s to %s -- they keep the rung they had.',
+            tostring(addWeapon), tostring(src))
+        return false
+    end
+
+    if record then record[#record + 1] = { name = addWeapon, metadata = metadata } end
+    ArenaDebug('weapons: ladder gave %s x1 to %s (ammo %d).', addWeapon, tostring(src), ammo)
+    return true
+end
+
 --- Takes back weapon items when the door did not take everything anyway.
 --- @param ox table
 --- @param src number

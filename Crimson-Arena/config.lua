@@ -22,15 +22,15 @@
       219   Match         Lives, timers, player counts, win condition
       439   Teams         The sides, and whether they may be uneven
       586   Modes         Free-for-all and team deathmatch
-      605   DefaultMode   Which of them a new lobby opens on
-      624   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      834   UI            Panel colours, logo and title
-      892   Permissions   Who may open a match, who may force-stop one
-      973   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1545   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1998   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2008   Webhook       Optional: a Discord line per finished match
-     2045   Dispatch      Optional: keeping police and EMS out of the arena
+      657   DefaultMode   Which of them a new lobby opens on
+      676   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      886   UI            Panel colours, logo and title
+      944   Permissions   Who may open a match, who may force-stop one
+      1025  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1597   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2050   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2060   Webhook       Optional: a Discord line per finished match
+     2097   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -598,6 +598,58 @@ Config.Modes = {
         enabled = true,
         teams = true,
         icon = 'fas fa-users',
+    },
+
+    -- ==================================================================
+    -- GUN GAME
+    --
+    -- Every kill moves you one rung up a fixed weapon ladder. Finish the
+    -- ladder and you have won the round outright -- gun game IS its own win
+    -- condition, so Config.Match.winCondition does not apply to it.
+    --
+    -- SHIPPED OFF. Nothing about it is broken; turning it on is this one
+    -- word. It is off because a server should choose its modes rather than
+    -- inherit them.
+    -- ==================================================================
+    ['gungame'] = {
+        label = 'Gun Game',
+        description = 'Every kill moves you up the weapon ladder. First to the end wins.',
+        enabled = false,
+        -- A ladder is climbed by one player, so it is won by one player.
+        teams = false,
+        icon = 'fas fa-arrow-up-9-1',
+
+        -- The rungs, in order, as keys from config.weapons.lua. The player's
+        -- own weapon choice is ignored in this mode -- the ladder replaces
+        -- it on the way in, on every promotion and on every respawn.
+        --
+        -- A rung naming a weapon that is not in the ENABLED catalogue is
+        -- dropped and the ladder is that much shorter: promoting somebody
+        -- onto a rung with no weapon on it would put them in the arena
+        -- empty-handed, and refusing to run the mode at all would punish a
+        -- full lobby for one typo.
+        --
+        -- THE LAST RUNG IS THE MELEE ONE ON PURPOSE. Finishing on a knife is
+        -- the shape every gun game has, and it is what makes the last kill
+        -- the hardest rather than the easiest.
+        gunGameLadder = { 'pistol', 'smg', 'shotgun', 'rifle', 'sniper', 'knife' },
+
+        -- LOSING A RUNG TO A MELEE KILL, which is the other half of what
+        -- makes a gun game a gun game.
+        --
+        -- Kill somebody with a melee weapon and they drop one rung. It is
+        -- the comeback mechanic: a player at the top of the ladder is the
+        -- one everybody hunts, and a knife in the back costs them the lead
+        -- rather than merely a life.
+        --
+        -- Nobody is ever knocked below rung 1, and a demotion never takes
+        -- away a kill that was already scored -- the rung is what moves, and
+        -- the score stays honest.
+        demoteOnMelee = true,
+
+        -- Tell the room when somebody reaches the final rung, so the last
+        -- stretch is a race everybody can see rather than a surprise ending.
+        announceFinalRung = true,
     },
 }
 

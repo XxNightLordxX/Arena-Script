@@ -160,7 +160,7 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **69 spec files** covering the shared, server and client logic, run with `lua5.4`
+- **70 spec files** covering the shared, server and client logic, run with `lua5.4`
   against a fake-native harness, plus **14 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
@@ -446,7 +446,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 11 functions
+#### `server/ammo.lua` — 12 functions
 
 | Function | What it does |
 |---|---|
@@ -461,6 +461,7 @@ listed; the source documents them where they are.
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server. |
 | `ArenaAmmo.Owed()` | How many characters this resource still owes belongings to. |
+| `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, addWeapon, rounds)` | Swaps one issued weapon item for another, for a gun-game rung change. |
 
 #### `server/stats.lua` — 5 functions
 

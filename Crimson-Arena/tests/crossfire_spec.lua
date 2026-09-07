@@ -319,6 +319,53 @@ t.test('EXPLOIT: a packet naming thousands of entities is refused, not scanned',
     t.equals(f.walks, walksBefore, 'the guard walked the server for a packet it should have refused outright')
 end)
 
+t.test('EXPLOIT: a packet of unowned ids costs ONE walk of the server, not one each', function()
+    -- The cache is positive-only: a miss WIPED it and rebuilt it over every
+    -- player, two natives each, then returned nil without recording that nil
+    -- -- so the next unowned id took the identical path. MAX_HITS bounds the
+    -- LIST at 32, not the walks, and the gate's own comment says what it is
+    -- refusing to buy: "the scan is what it is trying to buy."
+    --
+    -- 32 DISTINCT ids, which is the shape that matters: a memo keyed on the
+    -- id would bound a packet that repeats one and do nothing at all for
+    -- this. One rebuild answers for every id in the packet, because it
+    -- produces the complete mapping and one engine event cannot yield.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+
+    local junk = {}
+    for index = 1, 32 do junk[index] = 900000 + index end
+
+    local before = f.walks
+    f.raw('1', { hitGlobalIds = junk })
+
+    t.isTrue(f.walks - before <= 1,
+        ('a 32-entity packet naming nobody walked the whole player list %d times')
+            :format(f.walks - before))
+end)
+
+t.test('and the walk still happens when it is the only way to answer', function()
+    -- The control. A change that simply stopped rebuilding would pass the
+    -- test above and stop resolving victims altogether -- which is the
+    -- crossfire and friendly-fire guards going quietly off.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+
+    local before = f.walks
+    t.isFalse(f.raw('1', { hitGlobalIds = { f.netIds[2] } }),
+        'a fighter could not shoot another fighter in their own round')
+    t.isTrue(f.walks >= before, 'the walk counter went backwards')
+
+    -- And an unowned id in a LATER packet is still looked up properly rather
+    -- than answered from a stale negative kept between events.
+    local mid = f.walks
+    f.raw('1', { hitGlobalIds = { 987654 } })
+    t.isTrue(f.walks > mid,
+        'a later packet was answered from a negative cache that outlived its own event')
+end)
+
 t.test('EXPLOIT: a network id nobody owns cannot be used to reach a fighter', function()
     -- Neither direction is a hole: an id that resolves to nobody is not a
     -- player, so there is nothing to protect and nothing to refuse.

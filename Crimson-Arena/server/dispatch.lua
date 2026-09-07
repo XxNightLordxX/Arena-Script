@@ -1440,9 +1440,18 @@ local MAX_HITS = 32
 --- walk of every player on the server.
 --- @param netId integer
 --- @return number|nil src
-local function ownerOfNetId(netId)
+--- @param netId integer
+--- @param packet table? -- per-packet state; one rebuild is allowed per table
+local function ownerOfNetId(netId, packet)
     local cached = netIdOwners[netId]
     if cached and netIdOf(cached) == netId then return cached end
+
+    -- ALREADY REBUILT FOR THIS PACKET, so the table in hand is the complete
+    -- mapping and a miss is a real answer rather than a reason to look again.
+    if packet then
+        if packet.rebuilt then return netIdOwners[netId] end
+        packet.rebuilt = true
+    end
 
     netIdOwners = {}
     for _, id in ipairs(GetPlayers() or {}) do
@@ -1588,9 +1597,34 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- the one the friendly-fire check fixed.
     local allowed, refusal, crossfire = 0, nil, false
 
+    -- AT MOST ONE WALK OF THE PLAYER LIST FOR THE WHOLE PACKET.
+    --
+    -- ownerOfNetId's cache is positive-only: on a miss it WIPES the table and
+    -- rebuilds it over every player on the server, two natives each, then
+    -- returns nil without recording that nil. So the next entry naming an
+    -- unowned id took the identical path, and the one after that. MAX_HITS
+    -- bounds the LIST at 32, not the number of walks -- and the gate above
+    -- says exactly what it is refusing to buy: "the scan is what it is trying
+    -- to buy." A crafted 32-entry packet that passes the gate bought 32
+    -- complete walks, on the main thread, from an engine-raised event with no
+    -- rate limit in front of it, repeatable as fast as a client cares to
+    -- send. It also fires in ordinary play once per bullet whenever a shot's
+    -- hit list names a vehicle, a prop or an NPC.
+    --
+    -- WHY ONE REBUILD IS ENOUGH: it produces the COMPLETE current mapping. An
+    -- id absent from it is owned by nobody, and asking again for the next
+    -- unowned id in the same packet cannot give a different answer -- this is
+    -- one engine event with no yield in it, so nothing can have moved. The
+    -- table is still discarded at the end of the packet, so a net id that
+    -- becomes a player's ped after a respawn or a reconnect is resolved
+    -- normally by the next one; a negative cache kept BETWEEN events would go
+    -- stale and make this loop skip the very victim the crossfire and
+    -- friendly-fire checks exist to protect.
+    local packet = {}
+
     for _, entry in ipairs(hits) do
         local netId = tonumber(entry)
-        local victim = netId and ownerOfNetId(netId) or nil
+        local victim = netId and ownerOfNetId(netId, packet) or nil
         if victim then
             local ok, reason, kind = mayDamage(attacker, victim)
             if ok then

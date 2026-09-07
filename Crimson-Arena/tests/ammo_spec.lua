@@ -293,6 +293,17 @@ local function newServer(pockets, mutate, opts)
         --- Puts a player on the server, so GetPlayers reports them.
         connect = function(src) connected[src] = true end,
         disconnect = function(src) connected[src] = nil end,
+        --- A DIFFERENT CHARACTER arriving on a server id somebody else has
+        --- just vacated, which is what the server does with every freed slot
+        --- and is not the same event as a reconnect below.
+        recycleId = function(src, citizenid, items)
+            identity[src] = citizenid
+            connected[src] = true
+            inv[src] = {}
+            for _, item in ipairs(items or {}) do
+                inv[src][#inv[src] + 1] = { name = item.name, count = item.count }
+            end
+        end,
         --- The same CHARACTER coming back on a different server id, which is
         --- what a reconnect actually is.
         reconnect = function(oldSrc, newSrc)
@@ -1710,4 +1721,99 @@ t.test('StashOf names where a kit is, for an admin who has to find it', function
 end)
 
 print('ammo_spec')
+-- ========================================================================
+-- THE SERVER ID IS NOT THE PERSON
+--
+-- `stashed` is keyed by server id, and a record deliberately OUTLIVES the
+-- player who made it: a failed restore keeps it so the sweep can retry. The
+-- file says so, and reasons about the reconnect -- the same character coming
+-- back on a NEW id. What it never considered is the other half of that: the
+-- OLD id is handed to the next person who connects.
+--
+-- From then on `stashed[src]` names one character and `src` names another,
+-- and restore() opens with an indiscriminate ClearInventory on the reasoning
+-- that everything this player carries belongs to the arena. True of somebody
+-- walking out of a round; false of a stranger who has never been in one.
+-- ========================================================================
+
+t.test('DEFECT: a recycled server id emptied a stranger and robbed the last holder', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'their kit never reached the stash')
+
+    -- They drop, and the hand-back cannot land on somebody who has gone --
+    -- so the record is KEPT, deliberately, for the retry to find.
+    s.breakOn('give')
+    s.disconnect(1)
+    s.ammo.Reclaim(1, 'disconnected')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'the stash should still be holding everything')
+
+    -- The server hands slot 1 to the next person through the door. They have
+    -- never been near the arena.
+    s.fixOn('give')
+    s.recycleId(1, 'CID99', { { name = 'gold-bar', count = 5 }, { name = 'laptop', count = 1 } })
+
+    -- Anything at all that reclaims against this id -- their own disconnect,
+    -- an exit, the sweep.
+    s.ammo.Reclaim(1, 'disconnected')
+
+    t.equals(s.carrying(1), 'gold-bar,laptop',
+        'a player who has never entered the arena had their inventory emptied by somebody else\'s record')
+    t.equals(s.stashOfCid('CID1'), 'phone,water',
+        'the previous holder\'s belongings were taken out of their stash and given to a stranger')
+end)
+
+t.test('and it says so, naming both characters and the stash', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('give')
+    s.disconnect(1)
+    s.ammo.Reclaim(1, 'disconnected')
+    s.fixOn('give')
+    s.recycleId(1, 'CID99', { { name = 'gold-bar', count = 5 } })
+    s.ammo.Reclaim(1, 'disconnected')
+
+    local said = s.log()
+    t.isTrue(said:find('CID99', 1, true) ~= nil and said:find('CID1', 1, true) ~= nil,
+        ('the console does not name who holds the id and who owns the kit:\n%s'):format(said))
+    t.isTrue(said:find('crimson_arena_CID1', 1, true) ~= nil,
+        'the console does not name the stash the belongings are still sitting in')
+end)
+
+t.test('and the real owner is still owed it, so the sweep hands it back on sight', function()
+    -- NOT MERELY REFUSED. The items are real and still theirs, and refusing
+    -- to give them to the wrong person is only half an answer -- the other
+    -- half is that the right person still gets them.
+    --
+    -- WHAT THIS PINS, HONESTLY: the outcome, not the route. Two things can
+    -- deliver here -- the debt the guard files under `owed`, and
+    -- ReturnLeftovers' own settled path, which walks `stashed` by citizen id
+    -- and would find this record anyway. Deleting the `owed` write does not
+    -- fail this test, and I could not construct one where it does. The write
+    -- stays because a refusal that records nothing is relying on a downstream
+    -- sweep's incidental behaviour for a player's belongings, which is not a
+    -- thing to rely on; but it is belt-and-braces, and this comment is here
+    -- so nobody reads the test as proof that it is load-bearing.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.inventory.returnRetrySeconds = 1
+    end, { retry = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('give')
+    s.disconnect(1)
+    s.ammo.Reclaim(1, 'disconnected')
+    s.fixOn('give')
+    s.recycleId(1, 'CID99', {})
+    s.ammo.Reclaim(1, 'disconnected')
+
+    -- The original character comes back on a new id, as they actually would.
+    -- Through recycleId rather than reconnect(): reconnect copies whatever
+    -- identity the OLD id carries now, and that id belongs to CID99.
+    s.recycleId(7, 'CID1', {})
+    for _ = 1, 6 do s.step() end
+
+    t.equals(s.carrying(7), 'phone,water',
+        'the owner reconnected and the sweep never caught up with what it had been told they were owed')
+end)
+
 os.exit(t.summary())

@@ -982,6 +982,54 @@ function ArenaAmmo.Reclaim(src, reasonKey)
 
     local record = stashed[src]
 
+    -- WHOSE RECORD IS THIS, ACTUALLY.
+    --
+    -- `stashed` is keyed by SERVER ID, and a record deliberately OUTLIVES the
+    -- player who made it: a failed restore keeps it so the sweep can retry,
+    -- and the note above ("A DISCONNECT") is written on exactly that. What
+    -- that note did not consider is that the id does not go with them. The
+    -- server hands the freed slot to the NEXT person who connects, and from
+    -- that moment `stashed[src]` names one character while `src` names
+    -- another.
+    --
+    -- WHAT THAT COSTS IF IT IS NOT CHECKED, and it is not a leak, it is a
+    -- deletion. restore() below opens with ClearInventory on the reasoning
+    -- that everything this player is carrying belongs to the arena -- true
+    -- of somebody walking out of a round, and false of a stranger who has
+    -- never been in one. Their entire inventory is destroyed, and then the
+    -- previous holder's stash is emptied into the wreckage: taken OUT of the
+    -- stash, so the person it belongs to loses it for good as well. Two
+    -- players robbed by one disconnect, on any server whose ids recycle,
+    -- which is every server.
+    --
+    -- The record already carries the citizen id. This is the line that reads
+    -- it. A mismatch is not an error to shout about and abandon -- the items
+    -- are real and still owed -- so the stash goes onto `owed`, which is
+    -- keyed by citizen id, survives reconnects and restarts, and is what the
+    -- sweep at the bottom of this file already works from.
+    if record then
+        local holder = ArenaGetPlayer(src)
+        local citizenid = holder and holder.PlayerData and holder.PlayerData.citizenid or nil
+
+        -- Only when we can actually name them. A player mid-disconnect may
+        -- have no record left to read, and refusing there would stop the
+        -- ordinary disconnect reclaim this function exists for.
+        if Arena.IsKey(citizenid) and Arena.IsKey(record.citizenid)
+            and citizenid ~= record.citizenid then
+            ArenaLog('door: server id %s now belongs to %s, but the kit stashed under that id belongs to %s. ' ..
+                'NOTHING was taken from the player holding the id -- %s\'s belongings stay in stash %s and are queued to be returned when they are next seen.',
+                tostring(src), tostring(citizenid), tostring(record.citizenid),
+                tostring(record.citizenid), tostring(record.stash))
+            owed[record.citizenid] = record.stash
+            stashed[src] = nil
+            -- The weapon debt under this id is the previous holder's too, and
+            -- reclaimWeapons removes BY NAME -- so leaving it would confiscate
+            -- this player's own copies of whatever the arena once issued.
+            forgetWeapons(src)
+            return 0
+        end
+    end
+
     -- NO STASH IS NOT NOTHING TO DO. With the door switched off a player
     -- keeps their own inventory and is simply handed the arena's weapons on
     -- top of it -- so there is no wholesale clear on the way out, and the

@@ -180,6 +180,20 @@
         loadoutSaving: false,
 
         betPick: null,
+        /* WHICH MATCH THE PICK WAS MADE FOR. The Bets tab follows the
+           focused match, and the focus moves on its own -- clicking another
+           card, being placed in a match, starting to watch one -- while the
+           pick stayed put. Backing fighter #7 on one match and then looking
+           at another left the chips with nothing highlighted and Place Bet
+           lit anyway, posting a pick that match has never heard of; the
+           server refuses it, so no money moved, but the player was handed a
+           rejection with nothing on screen to explain it. In a team mode the
+           key exists in BOTH matches, so it did not even look wrong -- the
+           carried pick simply became the selection for a match nobody had
+           chosen it for.
+           Paired with the pick rather than reset by the two places that move
+           the focus, because a third does not touch selectedMatchId at all. */
+        betPickMatchId: null,
         betAmount: null,
 
         hud: null,
@@ -3189,6 +3203,12 @@
         return live;
     }
 
+    /* The pick, but only for the match it was actually made on. */
+    function currentPick(match) {
+        if (!match || state.betPickMatchId !== match.id) return null;
+        return state.betPick;
+    }
+
     function betPickOptions(match) {
         if (!match) return [];
         if (match.teams === true) {
@@ -3368,9 +3388,10 @@
             var chip = makeEl('button', 'chip', option.label);
             chip.type = 'button';
             if (option.color) chip.style.borderLeft = '3px solid ' + option.color;
-            if (option.pick === state.betPick) chip.classList.add('active');
+            if (option.pick === currentPick(match)) chip.classList.add('active');
             chip.addEventListener('click', function () {
                 state.betPick = option.pick;
+                state.betPickMatchId = match.id;
                 render();
             });
             host.appendChild(chip);
@@ -3434,13 +3455,13 @@
             return 'Your bet on this match is already down — one per match.';
         }
 
-        if (!state.betPick) return 'Choose who you are backing.';
+        if (!currentPick(match)) return 'Choose who you are backing.';
 
         /* Held to their own side, and told so BEFORE the click rather than
            by a refusal after it. Backing the other side is being paid to
            lose on purpose, which an arena is exactly the place for. */
         var own = ownSide(match);
-        if (own !== null && String(state.betPick) !== own) {
+        if (own !== null && String(currentPick(match)) !== own) {
             return match.teams === true
                 ? 'You are fighting in this match, so you can only back your own team.'
                 : 'You are fighting in this match, so you can only back yourself.';
@@ -3546,7 +3567,7 @@
                 if (!match) return;
                 post('spectatorBet', {
                     matchId: match.id,
-                    pick: state.betPick,
+                    pick: currentPick(match),
                     amount: int(state.betAmount, 0),
                     account: chosenAccount()
                 });

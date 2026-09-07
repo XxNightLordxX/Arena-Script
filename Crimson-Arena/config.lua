@@ -27,10 +27,10 @@
       834   UI            Panel colours, logo and title
       892   Permissions   Who may open a match, who may force-stop one
       973   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1510   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1963   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1973   Webhook       Optional: a Discord line per finished match
-     2010   Dispatch      Optional: keeping police and EMS out of the arena
+     1529   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1982   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1992   Webhook       Optional: a Discord line per finished match
+     2029   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -1041,20 +1041,26 @@ Config.Arenas = {
         -- Used only if spawnArea is switched off. The heading is the one the
         -- operator stood at, pointed back towards the middle from each side.
         spawns = {
-            vector4(2374.4294, 2565.0552, 46.6677, 270.0),
-            vector4(2314.4294, 2565.0552, 46.6677, 90.0),
+            -- Facing the middle of the park, which is what facingCentre
+            -- returns for these two. They were 180 degrees out: a GTA
+            -- heading of 90 is WEST, and both entries read it as east.
+            vector4(2374.4294, 2565.0552, 46.6677, 90.0),
+            vector4(2314.4294, 2565.0552, 46.6677, 270.0),
             vector4(2344.4294, 2595.0552, 46.6677, 180.0),
             vector4(2344.4294, 2535.0552, 46.6677, 0.0),
         },
 
+        -- Same correction as the list above, and I missed these on the
+        -- first pass: spawnplan_spec now walks teamSpawns as well, and it
+        -- was the test that found them rather than a second reading.
         teamSpawns = {
             crimson = {
-                vector4(2374.4294, 2565.0552, 46.6677, 270.0),
-                vector4(2374.4294, 2553.0552, 46.6677, 270.0),
+                vector4(2374.4294, 2565.0552, 46.6677, 90.0),
+                vector4(2374.4294, 2553.0552, 46.6677, 68.2),
             },
             ash = {
-                vector4(2314.4294, 2565.0552, 46.6677, 90.0),
-                vector4(2314.4294, 2577.0552, 46.6677, 90.0),
+                vector4(2314.4294, 2565.0552, 46.6677, 270.0),
+                vector4(2314.4294, 2577.0552, 46.6677, 248.2),
             },
         },
 
@@ -1435,21 +1441,34 @@ Config.Arenas = {
 
         -- The fallback list, used only if spawnArea is switched off. Same
         -- surface height.
+        --
+        -- THE HEADINGS ARE NOT EYEBALLED. A GTA heading is degrees clockwise
+        -- from north, so a ped at h faces (-sin h, cos h): 90 is WEST, not
+        -- east. Every east/west entry here was exactly 180 degrees out --
+        -- the fighter spawned with their back to the arena -- while the
+        -- north/south pair was right, which is the signature of reading 90
+        -- as east. shared/arena.lua's facingCentre already had this fixed in
+        -- code and carries the same explanation; the config never got it.
+        --
+        -- Each number below is what facingCentre returns for that point, so
+        -- the fallback list and the planned placement now agree.
         spawns = {
-            vector4(1470.00, 3000.00, 1201.00, 90.0),
-            vector4(1530.00, 3000.00, 1201.00, 270.0),
+            vector4(1470.00, 3000.00, 1201.00, 270.0),
+            vector4(1530.00, 3000.00, 1201.00, 90.0),
             vector4(1500.00, 3030.00, 1201.00, 180.0),
             vector4(1500.00, 2970.00, 1201.00, 0.0),
         },
 
         teamSpawns = {
             crimson = {
-                vector4(1470.00, 3000.00, 1201.00, 90.0),
-                vector4(1470.00, 3012.00, 1201.00, 90.0),
+                vector4(1470.00, 3000.00, 1201.00, 270.0),
+                -- Off-axis, so the heading is not a right angle: this is
+                -- facingCentre's answer for a point 30m west and 12m north.
+                vector4(1470.00, 3012.00, 1201.00, 248.2),
             },
             ash = {
-                vector4(1530.00, 3000.00, 1201.00, 270.0),
-                vector4(1530.00, 2988.00, 1201.00, 270.0),
+                vector4(1530.00, 3000.00, 1201.00, 90.0),
+                vector4(1530.00, 2988.00, 1201.00, 68.2),
             },
         },
 

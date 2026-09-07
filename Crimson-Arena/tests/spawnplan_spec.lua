@@ -783,5 +783,71 @@ t.test('the spawn area sits inside the boundary, with room to spare', function()
     end
 end)
 
+-- ======================================================================
+-- AND THE HEADINGS TYPED INTO CONFIG, WHICH NOTHING CHECKED
+--
+-- The planned placement computes its heading with facingCentre, and the two
+-- tests above pin it. The fallback lists in config.lua -- `spawns` and
+-- `teamSpawns`, used when an operator switches spawnArea off, and by
+-- Arena.PickSpawn as the last-resort respawn -- are hand-typed numbers that
+-- no spec had ever looked at.
+--
+-- Every east/west entry in both shipped arenas was exactly 180 degrees out:
+-- the fighter spawned with their back to the arena. The north/south pair was
+-- right, which is the signature of reading a GTA heading of 90 as east when
+-- it is west. shared/arena.lua's facingCentre already carried that fix and
+-- the explanation for it; the config never got either.
+-- ======================================================================
+
+t.test('every hand-typed spawn heading faces the arena it is in', function()
+    -- The REAL config, unmodified: this test is about the numbers that
+    -- ship, not about a fixture's idea of them.
+    local Arena = Sandbox.newArenaEnv().Arena
+
+    --- The same dot product the planned-placement tests above use: a
+    --- forward vector of (-sin h, cos h) against the direction to the
+    --- middle. +1 is looking straight at it, -1 is straight away.
+    local function facesCentre(point, cx, cy)
+        local forward = { x = -math.sin(math.rad(point.w or 0.0)), y = math.cos(math.rad(point.w or 0.0)) }
+        local dx, dy = cx - point.x, cy - point.y
+        local length = math.sqrt(dx * dx + dy * dy)
+        if length < 0.001 then return 1.0 end
+        return (forward.x * dx + forward.y * dy) / length
+    end
+
+    local checked = 0
+    for _, entry in ipairs(Arena.GetEnabledArenas()) do
+        local arena = Arena.GetArenaByKey(entry.key)
+        local area = arena and arena.spawnArea or nil
+        local centre = area and (area.center or area.centre) or nil
+        if centre then
+            local lists = { { name = 'spawns', points = arena.spawns } }
+            for team, teamList in pairs(arena.teamSpawns or {}) do
+                lists[#lists + 1] = { name = 'teamSpawns.' .. tostring(team), points = teamList }
+            end
+
+            for _, list in ipairs(lists) do
+                for index, point in ipairs(list.points or {}) do
+                    local dot = facesCentre(point, centre.x, centre.y)
+                    checked = checked + 1
+                    -- Generous: anything better than side-on. The bug this
+                    -- catches is a full reversal, and a tight bound would
+                    -- fail an operator who angled a spawn on purpose.
+                    -- The LIST is named, not just the arena: the first run of
+                    -- this test reported "trailerpark spawn #1" for a point
+                    -- in teamSpawns.crimson, and the fix went to the wrong
+                    -- list because of it.
+                    t.isTrue(dot > 0.0,
+                        ('%s %s #%d at (%.1f, %.1f) has heading %.1f, which faces AWAY from the '
+                            .. 'arena (dot %+0.3f) -- the fighter spawns with their back to the fight')
+                            :format(entry.key, list.name, index, point.x, point.y, point.w or 0.0, dot))
+                end
+            end
+        end
+    end
+
+    t.isTrue(checked > 0, 'no hand-typed spawn points were checked, so this test proves nothing')
+end)
+
 print('spawnplan_spec')
 os.exit(t.summary())

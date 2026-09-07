@@ -379,11 +379,81 @@ function Arena.GetEnabledModes()
                 description = mode.description,
                 teams = mode.teams == true,
                 icon = mode.icon,
+                -- HOW LONG A ROUND OF THIS MODE RUNS. The panel's pre-round
+                -- line used to read Config.Match.roundTimeSeconds and
+                -- nothing else, so a mode carrying its own clock -- gun
+                -- game does -- told every player the wrong number.
+                roundTimeSeconds = Arena.RoundSecondsFor(key),
+                -- HOW TALL THIS MODE'S LADDER IS, absent in every mode that
+                -- does not climb one. A player choosing gun game in the
+                -- lobby can see what they are signing up to; without it the
+                -- height was a surprise delivered by the first promotion.
+                tiers = (function()
+                    local height = #Arena.LadderTiersFor(key)
+                    return height > 0 and height or nil
+                end)(),
             }
         end
     end
     table.sort(out, function(a, b) return a.key < b.key end)
     return out
+end
+
+--- Every tier of a mode's ladder that still has a playable weapon in it, in
+--- climbing order -- an EMPTY result meaning this mode does not climb one.
+---
+--- A TIER IS A POOL and this returns the pools, not a drawn ladder: the draw
+--- is per match and lives in server/match.lua, because two matches running
+--- the same mode at the same time must be able to climb different guns.
+---
+--- A KEY THAT IS NOT AN ENABLED WEAPON IS DROPPED and a tier left with
+--- nothing in it goes with it. Promoting somebody onto a tier with no weapon
+--- on it would put a player in the arena empty-handed, and refusing to run
+--- the mode at all would punish a full lobby for one typo.
+---
+--- ALSO ACCEPTS A BARE KEY IN PLACE OF A POOL, so `{ 'knife', { 'pistol' } }`
+--- reads as two tiers rather than as one malformed one. An operator writing
+--- a ladder with one gun per step should not have to type the braces.
+--- @param modeKey any
+--- @return table[][] tiers -- catalogue entries, never bare keys
+function Arena.LadderTiersFor(modeKey)
+    local mode = Arena.GetModeByKey(modeKey)
+    local configured = mode and mode.gunGameTiers
+    if type(configured) ~= 'table' then return {} end
+
+    local tiers = {}
+    for _, pool in ipairs(configured) do
+        local keys = type(pool) == 'table' and pool or { pool }
+        local playable = {}
+        for _, key in ipairs(keys) do
+            -- GetWeaponByKey answers nil for a disabled weapon exactly as it
+            -- does for an invented one, which is the whole reason the pool
+            -- is read through it rather than trusted.
+            local weapon = Arena.GetWeaponByKey(key)
+            if weapon then playable[#playable + 1] = weapon end
+        end
+        if #playable > 0 then tiers[#tiers + 1] = playable end
+    end
+    return tiers
+end
+
+--- How long a round of one mode runs, in real seconds, with `0` meaning no
+--- clock at all.
+---
+--- A MODE'S OWN NUMBER WINS, and falls back to Config.Match's. Gun game is
+--- the mode this exists for: it is the only one where nobody is ever
+--- eliminated, so the clock is the whole ending rather than a backstop, and
+--- it wants a shorter round than a last-man-standing match does.
+---
+--- `0` ON THE MODE IS A CHOICE, NOT AN ABSENCE, and is honoured -- Lua reads
+--- zero as true, so `mode.roundTimeSeconds or Config...` keeps it.
+--- @param modeKey any
+--- @return integer seconds
+function Arena.RoundSecondsFor(modeKey)
+    local mode = Arena.GetModeByKey(modeKey)
+    local own = mode and Arena.ToInt(mode.roundTimeSeconds) or nil
+    local shared = Arena.ToInt((Config.Match or {}).roundTimeSeconds) or 0
+    return math.max(0, own or shared)
 end
 
 --- @param key any
@@ -753,6 +823,22 @@ function Arena.SupplyMax(supply)
     return math.max(0, Arena.ToInt(supply.max) or 0)
 end
 
+--- One enabled supply by its key, or nil.
+---
+--- THROUGH Arena.GetEnabledSupplies rather than straight off the config
+--- table, so a supply an operator switched off is invisible here for the
+--- same reason it is invisible in the picker: one answer to "which supplies
+--- exist", not two that can disagree.
+--- @param key any
+--- @return table|nil supply -- the config entry, `item` and all
+function Arena.SupplyByKey(key)
+    if not Arena.IsKey(key) then return nil end
+    for _, supply in ipairs(Arena.GetEnabledSupplies()) do
+        if supply.key == key then return supply end
+    end
+    return nil
+end
+
 --- Turns whatever a client asked to carry into a list the server is willing
 --- to hand over.
 ---
@@ -858,6 +944,54 @@ function Arena.SlotsPerPlayer()
     local slots = Arena.ToInt((Config.Loadouts or {}).slots)
     if slots == nil or slots < 0 then return DEFAULT_SLOTS end
     return slots
+end
+
+--- One weapon of a loadout, built.
+---
+--- POLICY-FREE ON PURPOSE, and split out of Arena.ResolveLoadout for it.
+--- Everything that decides WHETHER a player may have this weapon -- the
+--- slots, allowFirearms, allowMelee, the distinct-ammo-type cap, the
+--- duplicate check -- stays in that function, where a player's request is
+--- being judged. This is only the shape of the answer.
+---
+--- WHICH MATTERS BECAUSE THERE IS A SECOND CALLER. The gun game's ladder is
+--- the operator's own list, not a request to be judged: a melee tier must be
+--- handed over on a server that does not let players PICK a blade, because
+--- nobody picked it. It used to hand-build its entry to get past that, and
+--- the hand-built one was missing `ammoTypeItem` -- so every ladder weapon
+--- was issued as though ammo items were switched off, the whole pick sat in
+--- the magazine, no loose rounds were ever handed over and ArenaAmmo.OnLoan
+--- never learned the arena owed them.
+--- @param weapon table -- a catalogue entry
+--- @param ammoType table|nil -- an Arena.ResolveAmmoType result, already chosen
+--- @param ammo any -- rounds asked for, or nil for this weapon's own default
+--- @return table entry
+function Arena.ResolveWeaponEntry(weapon, ammoType, ammo)
+    -- Copied, never appended to in place: `weapon.components` is the
+    -- operator's own table on the live config, and pushing a player's chosen
+    -- clip into it would leak that choice into every later loadout for
+    -- everybody.
+    local components = {}
+    for _, component in ipairs(type(weapon.components) == 'table' and weapon.components or {}) do
+        components[#components + 1] = component
+    end
+    if ammoType and ammoType.component then
+        components[#components + 1] = ammoType.component
+    end
+
+    return {
+        key = weapon.key,
+        weapon = weapon.weapon,
+        label = weapon.label or weapon.key,
+        ammo = Arena.ResolveAmmo(weapon, ammo),
+        -- Carried for the panel's summary and the match log; the component
+        -- itself is already in `components`.
+        ammoType = ammoType and ammoType.key or nil,
+        ammoTypeLabel = ammoType and ammoType.label or nil,
+        ammoTypeItem = ammoType and ammoType.item or nil,
+        components = components,
+        tint = Arena.ToInt(weapon.tint) or 0,
+    }
 end
 
 --- Validates a whole loadout request and returns the concrete thing to
@@ -983,31 +1117,8 @@ function Arena.ResolveLoadout(request)
                     distinctTypes = distinctTypes + 1
                 end
 
-                -- Copied, never appended to in place: `weapon.components` is
-                -- the operator's own table on the live config, and pushing a
-                -- player's chosen clip into it would leak that choice into
-                -- every later loadout for everybody.
-                local components = {}
-                for _, component in ipairs(type(weapon.components) == 'table' and weapon.components or {}) do
-                    components[#components + 1] = component
-                end
-                if ammoType and ammoType.component then
-                    components[#components + 1] = ammoType.component
-                end
-
-                resolved[#resolved + 1] = {
-                    key = weapon.key,
-                    weapon = weapon.weapon,
-                    label = weapon.label or weapon.key,
-                    ammo = Arena.ResolveAmmo(weapon, type(entry) == 'table' and entry.ammo or nil),
-                    -- Carried for the panel's summary and the match log; the
-                    -- component itself is already in `components`.
-                    ammoType = ammoType and ammoType.key or nil,
-                    ammoTypeLabel = ammoType and ammoType.label or nil,
-                    ammoTypeItem = ammoType and ammoType.item or nil,
-                    components = components,
-                    tint = Arena.ToInt(weapon.tint) or 0,
-                }
+                resolved[#resolved + 1] = Arena.ResolveWeaponEntry(weapon, ammoType,
+                    type(entry) == 'table' and entry.ammo or nil)
             end
         end
     end
@@ -3491,6 +3602,52 @@ function Arena.ValidateConfig()
     for _, mode in ipairs(Arena.GetEnabledModes()) do
         if mode.teams and #Arena.GetEnabledTeams() < 2 then
             complain(('Config.Modes["%s"] is a team mode but fewer than two teams are enabled.'):format(mode.key))
+        end
+    end
+
+    -- A LADDER MODE THAT HAS NO LADDER. Nothing checked this at all, and the
+    -- failure is silent by design at every other layer: a tier naming a
+    -- weapon that is not enabled is dropped so one typo cannot disarm a
+    -- lobby, a tier left empty goes with it, and a ladder of fewer than two
+    -- tiers is played as ordinary rules -- so a gun game whose whole config
+    -- was mistyped runs as an unlabelled free-for-all and nobody is told.
+    -- Each of those is the right call in the moment and the wrong one over a
+    -- whole config, which is exactly what a start-up validator is for.
+    for _, mode in ipairs(Arena.GetEnabledModes()) do
+        local raw = (Config.Modes or {})[mode.key] or {}
+        if raw.gunGameTiers ~= nil then
+            if type(raw.gunGameTiers) ~= 'table' then
+                complain(('Config.Modes["%s"].gunGameTiers is a %s. It has to be a list of tiers, weakest first, each one a list of weapon keys.')
+                    :format(mode.key, type(raw.gunGameTiers)))
+            else
+                local playable = Arena.LadderTiersFor(mode.key)
+                if #playable < 2 then
+                    complain(('Config.Modes["%s"] is enabled with %d tier(s) of the %d it lists actually playable -- a ladder needs at least two, so this mode will run as an ordinary free-for-all. Check the weapon keys against config.weapons.lua and that they are enabled.')
+                        :format(mode.key, #playable, #raw.gunGameTiers))
+                end
+
+                -- WHAT A KILL PAYS, checked because a key that names nothing
+                -- is paid silently as nothing. An operator who renamed the
+                -- bandage supply and not this list gets a gun game whose
+                -- kills quietly stop rewarding anything.
+                for _, reward in ipairs(type(raw.killReward) == 'table' and raw.killReward or {}) do
+                    if type(reward) == 'table' and not Arena.SupplyByKey(reward.key) then
+                        complain(('Config.Modes["%s"].killReward names the supply "%s", which is not an enabled entry in Config.Loadouts.supplies.items -- that reward is never paid.')
+                            :format(mode.key, tostring(reward.key)))
+                    end
+                end
+
+                -- A LADDER WITH NO CLOCK AND NO LIVES TO SPEND. Nobody is
+                -- eliminated in one, so with `roundTimeSeconds = 0` on both
+                -- the mode and Config.Match the only way the round can end
+                -- is somebody topping the ladder -- which in an even lobby
+                -- may be a very long wait, and is a choice rather than a
+                -- typo often enough that this warns instead of refusing.
+                if Arena.RoundSecondsFor(mode.key) <= 0 then
+                    complain(('Config.Modes["%s"] climbs a ladder with no round clock -- nobody is eliminated in a ladder mode, so the round runs until somebody reaches the top tier however long that takes. Set roundTimeSeconds on the mode.')
+                        :format(mode.key))
+                end
+            end
         end
     end
 

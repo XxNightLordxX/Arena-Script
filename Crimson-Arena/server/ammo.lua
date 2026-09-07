@@ -585,6 +585,50 @@ local function splitRounds(entry)
     return loaded, total - loaded
 end
 
+--- The ox_inventory metadata one resolved loadout entry becomes: its
+--- magazine, its attachments and its tint.
+---
+--- ONE BUILDER, TWO CALLERS, and it is one because it was two. The gun
+--- game's tier swap hand-built its own metadata next door and got three
+--- things wrong that this had already got right: it put `ammo` on a knife
+--- (ox_inventory reads a present ammo key as "this is an ammo weapon", which
+--- a blade is not), it loaded the WHOLE pick into the magazine instead of one
+--- magazine's worth, and it dropped components and tint on the floor. A
+--- second copy of a rule is a second copy that drifts.
+--- @param entry table -- one Arena.ResolveLoadout weapon entry
+--- @return table metadata
+--- @return integer loaded -- rounds in the magazine, for the log
+local function weaponMetadata(entry)
+    local metadata = {}
+
+    -- ONE MAGAZINE, NOT THE WHOLE PICK. The rest is handed over as items by
+    -- ArenaAmmo.Issue; see splitRounds above for why putting the full amount
+    -- here as well was giving everybody double.
+    local loaded = select(1, splitRounds(entry))
+    if loaded > 0 then metadata.ammo = loaded end
+
+    -- ATTACHMENTS AND TINT RIDE IN THE METADATA TOO. The item IS the weapon,
+    -- so a suppressor or a scope an operator configured reaches the player
+    -- through this table or it does not reach them at all -- nothing
+    -- downstream puts a component on a ped.
+    --
+    -- Only when there is something to carry: ox_inventory reads an empty
+    -- `components` list as a weapon with its attachments explicitly removed,
+    -- which is not the same as one that was never given any.
+    if type(entry.components) == 'table' and #entry.components > 0 then
+        local parts = {}
+        for _, component in ipairs(entry.components) do
+            if Arena.IsKey(component) then parts[#parts + 1] = component end
+        end
+        if #parts > 0 then metadata.components = parts end
+    end
+
+    local tint = Arena.ToInt(entry.tint) or 0
+    if tint > 0 then metadata.tint = tint end
+
+    return metadata, loaded
+end
+
 --- Gives one player the loadout's weapons as ox_inventory items.
 --- @param ox table -- ox_inventory exports
 --- @param src number
@@ -604,33 +648,7 @@ local function issueWeapons(ox, src, matchId, loadout)
             -- at all -- see splitRounds -- because ox_inventory reads a
             -- missing one as "not an ammo weapon" and a present zero as an
             -- empty one.
-            local metadata = {}
-            -- ONE MAGAZINE, NOT THE WHOLE PICK. The rest is handed over as
-            -- items by ArenaAmmo.Issue; see splitRounds above for why putting
-            -- the full amount here as well was giving everybody double.
-            local loaded = select(1, splitRounds(entry))
-            if loaded > 0 then metadata.ammo = loaded end
-
-            -- ATTACHMENTS AND TINT RIDE IN THE METADATA TOO, and they were
-            -- being dropped here. The item IS the weapon, so a suppressor or
-            -- a scope an operator configured reaches the player through this
-            -- table or it does not reach them at all -- nothing downstream
-            -- puts a component on a ped.
-            --
-            -- Only when there is something to carry: ox_inventory reads an
-            -- empty `components` list as a weapon with its attachments
-            -- explicitly removed, which is not the same as one that was never
-            -- given any.
-            if type(entry.components) == 'table' and #entry.components > 0 then
-                local parts = {}
-                for _, component in ipairs(entry.components) do
-                    if Arena.IsKey(component) then parts[#parts + 1] = component end
-                end
-                if #parts > 0 then metadata.components = parts end
-            end
-
-            local tint = Arena.ToInt(entry.tint) or 0
-            if tint > 0 then metadata.tint = tint end
+            local metadata, loaded = weaponMetadata(entry)
 
             -- BOTH have to be true, for the same reason the ammo items below
             -- check both: a pcall that did not throw is not ox_inventory
@@ -665,54 +683,158 @@ local function issueWeapons(ox, src, matchId, loadout)
     return failed
 end
 
---- Swaps one issued weapon item for another, for a gun-game promotion or
+--- Swaps one issued tier weapon for another, for a gun-game promotion or
 --- demotion.
 ---
---- THE ITEM IS THE WEAPON on an ox_inventory server, so a rung change has to
+--- THE ITEM IS THE WEAPON on an ox_inventory server, so a tier change has to
 --- move items rather than just tell the client: a ped handed a gun it has no
 --- item for is disarmed again within moments.
 ---
---- The removed weapon is forgotten as well as taken, or the exit tries to
---- reclaim a weapon the ladder already took back.
+--- TAKES A RESOLVED LOADOUT ENTRY, not a name and a round count, and that is
+--- the whole reason the magazine, the attachments and the tint come out
+--- right: it builds its metadata with `weaponMetadata`, the same builder
+--- ArenaAmmo.Issue uses. Handed a name and a number it had to guess, and
+--- guessed three things wrong -- see that function.
 ---
---- Answers false when ox_inventory is absent, which is the signal for the
---- caller's client event to do the work instead.
+--- IT REFUSES RATHER THAN IMPROVISES, and each refusal has a reason the
+--- caller can act on:
+---
+---   `no-inventory` -- ox_inventory is not started. There are no items to
+---   move and this side's record is the whole truth, so the caller should
+---   carry on: the tier moves, nothing is held back.
+---
+---   `refused` -- something on the ox_inventory side said no, and the player
+---   is NOT holding what the caller is about to record. The caller must roll
+---   back. Three ways to get here, and all three used to advance anyway:
+---     * the player has no issued-weapon record for this match, so they are
+---       not kitted by it -- they left, or were never let in. A promotion
+---       landing after the exit used to push a real weapon into the
+---       inventory the arena had already handed back, and neither Reclaim
+---       nor ReclaimAll takes it away again.
+---     * the weapon being taken back would not come off. ox_inventory
+---       refuses a removal it cannot satisfy in full, which is exactly what
+---       a player parking the old tier in a trunk between the kill and the
+---       promotion produces. Adding the next tier on top arms them with
+---       both and loses the old one off the arena's books.
+---     * the new weapon would not go on. The old one has already come off by
+---       then, so this PUTS IT BACK rather than leaving the player standing
+---       in an arena with empty hands.
 --- @param src number
 --- @param matchId string
---- @param removeWeapon string? -- the rung below, when it differs
---- @param addWeapon string
---- @param rounds any
+--- @param removeWeapon string? -- the tier below, when it differs
+--- @param entry table -- one Arena.ResolveLoadout weapon entry
 --- @return boolean swapped
-function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, addWeapon, rounds)
+--- @return string|nil reason -- 'no-inventory' or 'refused' when it did not
+function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)
     local ox = inventory()
-    if not ox then return false end
-    if not Arena.IsKey(addWeapon) then return false end
+    if not ox then return false, 'no-inventory' end
+    if type(entry) ~= 'table' or not Arena.IsKey(entry.weapon) then return false, 'refused' end
 
+    -- NO RECORD, NO SWAP. `issuedWeapons` is written by ArenaAmmo.Issue when
+    -- a player is kitted and dropped by Reclaim when they are sent home, so
+    -- its absence is this file's answer to "is this player still the arena's
+    -- to arm". Without this check the promotion below happened anyway and
+    -- the `if record then` around the bookkeeping quietly turned a tracked
+    -- loan into a gift.
     local record = issuedWeapons[matchId] and issuedWeapons[matchId][src] or nil
+    if type(record) ~= 'table' then
+        ArenaDebug('weapons: no issued record for %s on match %s -- the tier swap is refused.',
+            tostring(src), tostring(matchId))
+        return false, 'refused'
+    end
 
+    -- KEPT, NOT JUST FORGOTTEN, so the rollback below can hand it back with
+    -- the metadata it was issued under.
+    local taken = nil
     if Arena.IsKey(removeWeapon) then
-        pcall(function() return ox:RemoveItem(src, removeWeapon, 1) end)
+        if not oxDid('taking back the tier weapon ' .. removeWeapon,
+            function() return ox:RemoveItem(src, removeWeapon, 1) end)
+        then
+            return false, 'refused'
+        end
 
-        if record then
-            for index = #record, 1, -1 do
-                if record[index].name == removeWeapon then table.remove(record, index) end
+        for index = #record, 1, -1 do
+            if record[index].name == removeWeapon then
+                taken = taken or record[index]
+                table.remove(record, index)
             end
         end
     end
 
-    local metadata = {}
-    local ammo = Arena.ToInt(rounds) or 0
-    if ammo > 0 then metadata.ammo = ammo end
+    local metadata, loaded = weaponMetadata(entry)
 
-    local ok, accepted = pcall(function() return ox:AddItem(src, addWeapon, 1, metadata) end)
+    local ok, accepted = pcall(function() return ox:AddItem(src, entry.weapon, 1, metadata) end)
     if not (ok and accepted ~= false) then
-        ArenaLog('weapons: ox_inventory would not give the ladder weapon %s to %s -- they keep the rung they had.',
-            tostring(addWeapon), tostring(src))
+        -- PUT BACK WHAT WE TOOK. The removal above already happened, so
+        -- without this the player stands in the arena holding nothing at all
+        -- -- and the log used to tell them "they keep the tier they had",
+        -- which was the one thing that was not true.
+        if taken then
+            local back, gave = pcall(function() return ox:AddItem(src, taken.name, 1, taken.metadata) end)
+            if back and gave ~= false then
+                record[#record + 1] = taken
+            else
+                ArenaLog('weapons: %s was left empty-handed -- ox_inventory would take neither %s back nor %s away.',
+                    tostring(src), tostring(entry.weapon), tostring(taken.name))
+            end
+        end
+
+        ArenaLog('weapons: ox_inventory would not give the tier weapon %s to %s -- they keep the tier they had.',
+            tostring(entry.weapon), tostring(src))
+        return false, 'refused'
+    end
+
+    record[#record + 1] = { name = entry.weapon, metadata = metadata }
+    ArenaDebug('weapons: the ladder gave %s x1 to %s (magazine %d).', entry.weapon, tostring(src), loaded)
+    return true, nil
+end
+
+--- Hands one player one supply mid-round -- the bandages and armour a gun
+--- game pays for a kill -- and puts it on the arena's books.
+---
+--- ON THE BOOKS IS THE POINT. `issuedSupplies` is what the exit reclaims
+--- against: a plate handed over here and not recorded is a plate the player
+--- keeps, and on a server with the door off (`stripOnEntry = false`) the
+--- record is the only thing standing between the arena and a free supply
+--- shop. It is the SAME record ArenaAmmo.Issue writes, so the reclaim loop
+--- needs no second case.
+---
+--- SAYS NO RATHER THAN GUESSING when ox_inventory is absent or refuses:
+--- there is nothing sensible to fall back to for an item, and a caller that
+--- believed a silent failure would tell the player they had been paid.
+--- @param src number
+--- @param matchId string
+--- @param item string -- an ox_inventory item name, never a key off the wire
+--- @param count any
+--- @return boolean granted
+function ArenaAmmo.GrantSupply(src, matchId, item, count)
+    local ox = inventory()
+    if not ox then return false end
+    if not Arena.IsKey(item) then return false end
+
+    local amount = Arena.ToInt(count) or 0
+    if amount <= 0 then return false end
+
+    -- The same proof the loadout supplies use: pcall succeeding only says
+    -- the call did not throw, and ox_inventory answers `false` for a full
+    -- inventory or an item name it does not know.
+    local ok, granted = pcall(function() return ox:AddItem(src, item, amount) end)
+    if not (ok and granted ~= false) then
+        -- NOT ArenaLog. A kill reward that will not fit is an ordinary thing
+        -- that happens to a player carrying twenty-five plates already, and
+        -- a line in the console for every such kill of every round is a log
+        -- an operator stops reading.
+        ArenaDebug('kill reward: %s x%d was refused for %s -- no room, or no such item.',
+            item, amount, tostring(src))
         return false
     end
 
-    if record then record[#record + 1] = { name = addWeapon, metadata = metadata } end
-    ArenaDebug('weapons: ladder gave %s x1 to %s (ammo %d).', addWeapon, tostring(src), ammo)
+    issuedSupplies[matchId] = issuedSupplies[matchId] or {}
+    local supplyRecord = issuedSupplies[matchId][src] or {}
+    issuedSupplies[matchId][src] = supplyRecord
+    supplyRecord[item] = (supplyRecord[item] or 0) + amount
+
+    ArenaDebug('kill reward: gave %s x%d to %s.', item, amount, tostring(src))
     return true
 end
 

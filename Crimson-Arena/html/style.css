@@ -1538,6 +1538,22 @@ option {
     font-size: 0.9rem;
 }
 
+/* THE LADDER COLUMN, and only in a ladder mode: the server sends `tier` and
+   `tiers` as null everywhere else, so scoreRow adds this class only when
+   there is a standing to draw and the grid stays three columns wide in a
+   free-for-all. */
+.hud-score-row.tiered {
+    grid-template-columns: auto 1fr auto auto;
+}
+
+.score-tier {
+    color: var(--accent);
+    font-weight: 600;
+    /* So a two-digit tier does not shove the name column sideways between
+       one scoreboard tick and the next. */
+    font-variant-numeric: tabular-nums;
+}
+
 .hud-score-row.self {
     background: var(--accent-dim);
 }

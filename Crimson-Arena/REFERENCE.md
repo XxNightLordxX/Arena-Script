@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 72 functions
+#### `shared/arena.lua` — 76 functions
 
 | Function | What it does |
 |---|---|
@@ -337,6 +337,8 @@ listed; the source documents them where they are.
 | `Arena.GetArenaByKey(key)` | One enabled arena by key, or nil. |
 | `Arena.GetEnabledModes()` | Every mode an operator has left switched on, in config order. |
 | `Arena.GetModeByKey(key)` | One enabled mode by key, or nil. |
+| `Arena.LadderTiersFor(modeKey)` | Every tier of a mode's gun-game ladder that still has a playable weapon in it, in climbing order. |
+| `Arena.RoundSecondsFor(modeKey)` | How long a round of one mode runs: the mode's own clock, falling back to Config.Match's. |
 | `Arena.ModeUsesTeams(modeKey)` | True when this mode puts players on sides. |
 | `Arena.GetAmmoOptions(weapon)` | The ammo values the panel offers for one weapon. |
 | `Arena.ScheduleSpans()` | The opening-hours windows as sorted, disjoint spans of minutes; empty means always open. |
@@ -353,7 +355,9 @@ listed; the source documents them where they are.
 | `Arena.StartingVitals()` | The health and armour every fighter starts every life on — a rule, not a setting. |
 | `Arena.GetEnabledSupplies()` | Every extra supply an operator has left switched on, in config order. |
 | `Arena.SupplyMax(supply)` | The most of one supply a player may carry in. |
+| `Arena.SupplyByKey(key)` | One enabled supply by its key, or nil. |
 | `Arena.ResolveSupplies(requested)` | Turns whatever a client asked to carry into a list the server will hand over. |
+| `Arena.ResolveWeaponEntry(weapon, ammoType, ammo)` | One weapon of a loadout, built -- policy-free, so the gun-game ladder can use it without being judged as a player request. |
 | `Arena.ResolveLoadout(request)` | Validates a whole loadout request and returns the concrete thing to hand a player -- real GTA weapon names and real ammo counts, nothing the caller supplied passed through untouched. |
 | `Arena.BoundaryOf(arena)` | The arena's boundary block when it is switched on -- the one reading of `enabled`. |
 | `Arena.IsEliminated(row)` | Whether this player row is out of the round for good -- the one copy of that rule. |
@@ -446,7 +450,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 12 functions
+#### `server/ammo.lua` — 13 functions
 
 | Function | What it does |
 |---|---|
@@ -461,7 +465,8 @@ listed; the source documents them where they are.
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server. |
 | `ArenaAmmo.Owed()` | How many characters this resource still owes belongings to. |
-| `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, addWeapon, rounds)` | Swaps one issued weapon item for another, for a gun-game rung change. |
+| `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)` | Swaps one issued tier weapon for another, for a gun-game promotion or demotion. |
+| `ArenaAmmo.GrantSupply(src, matchId, item, count)` | Hands one player one supply mid-round and puts it on the arena's books. |
 
 #### `server/stats.lua` — 5 functions
 

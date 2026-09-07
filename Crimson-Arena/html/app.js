@@ -1790,6 +1790,23 @@
         renderLobbyActions(match);
     }
 
+    /* One enabled mode by key, as the server describes it.
+
+       THE MODE CARRIES FACTS THE MATCH BLOCK DOES NOT. A ladder mode runs on
+       its own clock, never eliminates anybody and is won by topping the
+       ladder rather than by Config.Match.winCondition -- and the card below
+       stated all three off the shared match config, so every one of them was
+       wrong on a gun game. */
+    function modeByKey(key) {
+        var wanted = keyOr(key, null);
+        if (wanted === null) return null;
+        var found = null;
+        arrayOf(cfg().modes).forEach(function (mode) {
+            if (mode && mode.key === wanted) found = mode;
+        });
+        return found;
+    }
+
     function renderLobbyMeta(match) {
         var host = byId('lobby-meta');
         if (!has(host)) return;
@@ -1797,7 +1814,16 @@
 
         var matchCfg = cfg().match || {};
         var max = int(matchCfg.maxPlayers, 0);
-        var roundTime = int(matchCfg.roundTimeSeconds, 0);
+
+        /* THE MODE'S OWN CLOCK FIRST. Gun game runs a shorter round than the
+           server default and says so in its own config; reading only the
+           shared number told every player in a gun-game lobby the wrong
+           length of the round they were about to play. */
+        var mode = modeByKey(match.modeKey);
+        var tiers = mode ? int(mode.tiers, 0) : 0;
+        var roundTime = mode && mode.roundTimeSeconds !== undefined && mode.roundTimeSeconds !== null
+            ? int(mode.roundTimeSeconds, 0)
+            : int(matchCfg.roundTimeSeconds, 0);
 
         /* THE MATCH'S OWN NUMBER FIRST, and the operator default only as a
            fallback for a match that predates the field.
@@ -1825,11 +1851,20 @@
                 : plural(match.playerCount, 'player') + ' in',
             'Starts at ' + plural(int(matchCfg.minPlayers, 1), 'player'),
             'Host: ' + String(match.hostName || ''),
-            lives === 1
-                ? 'One life — first death is elimination'
-                : plural(lives, 'life', 'lives') + ' each',
+            /* A LADDER SPENDS NO LIVES AND IGNORES THE WIN CONDITION, so the
+               card does not quote either at a player about to play one. What
+               it says instead is the two rules that actually decide the
+               round: you respawn until the clock stops, and the ladder is
+               how tall. */
+            tiers > 0
+                ? 'Respawn until the clock stops'
+                : (lives === 1
+                    ? 'One life — first death is elimination'
+                    : plural(lives, 'life', 'lives') + ' each'),
             roundTime > 0 ? 'Round lasts ' + clock(roundTime) : 'No round clock',
-            'Win by ' + labelFor(WIN_CONDITION_TEXT, matchCfg.winCondition, 'the mode rules')
+            tiers > 0
+                ? 'Win by topping the ' + tiers + '-tier ladder — a kill climbs, a death drops'
+                : 'Win by ' + labelFor(WIN_CONDITION_TEXT, matchCfg.winCondition, 'the mode rules')
         ];
         if (bettingOn()) {
             bits.push('Entry ' + money(match.entryFee));
@@ -3791,6 +3826,23 @@
         var row = makeEl('div', 'hud-score-row');
         if (int(entry.id, -1) === me) row.classList.add('self');
         if (entry.alive === false) row.classList.add('dead');
+
+        /* THE TIER, FIRST, BECAUSE IN A LADDER IT IS THE STANDING.
+
+           The server has put `tier` and `tiers` on every scoreboard row of a
+           gun game for as long as the mode has existed and this file drew
+           neither -- a grep for the field across the whole panel returned
+           nothing. So the one number the mode is played for reached the
+           player only as a toast that scrolled away, and a demoted player
+           could not tell a rule from a bug. The server sends both as null in
+           every other mode, which is how this knows not to draw a column. */
+        var tiers = int(entry.tiers, 0);
+        if (tiers > 0) {
+            row.classList.add('tiered');
+            var standing = makeEl('span', 'score-tier', int(entry.tier, 1) + '/' + tiers);
+            standing.title = 'Tier ' + int(entry.tier, 1) + ' of ' + tiers;
+            row.appendChild(standing);
+        }
 
         var team = teamByKey(entry.team);
         var name = makeEl('span', null, entry.name || ('#' + int(entry.id, 0)));

@@ -22,15 +22,15 @@
       219   Match         Lives, timers, player counts, win condition
       439   Teams         The sides, and whether they may be uneven
       586   Modes         Free-for-all and team deathmatch
-      657   DefaultMode   Which of them a new lobby opens on
-      676   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      886   UI            Panel colours, logo and title
-      944   Permissions   Who may open a match, who may force-stop one
-      1025  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1597   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2050   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2060   Webhook       Optional: a Discord line per finished match
-     2097   Dispatch      Optional: keeping police and EMS out of the arena
+      745   DefaultMode   Which of them a new lobby opens on
+      764   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      974   UI            Panel colours, logo and title
+      1032  Permissions   Who may open a match, who may force-stop one
+      1113  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1685   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2138   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2148   Webhook       Optional: a Discord line per finished match
+     2185   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -603,9 +603,21 @@ Config.Modes = {
     -- ==================================================================
     -- GUN GAME
     --
-    -- Every kill moves you one rung up a fixed weapon ladder. Finish the
-    -- ladder and you have won the round outright -- gun game IS its own win
-    -- condition, so Config.Match.winCondition does not apply to it.
+    -- A TIMER, NOT LIVES. Nobody is eliminated in a gun game: you respawn
+    -- for as long as the clock runs, and the clock is the round. That is
+    -- what makes the ladder the thing you are playing for rather than a
+    -- decoration on a last-man-standing match -- and it is why this mode
+    -- carries its own `roundTimeSeconds` a few lines down.
+    --
+    -- CLIMB BY KILLING, FALL BY DYING. Every kill moves you one tier up;
+    -- every death moves you one tier down and takes that tier's weapon with
+    -- it. So your tier is your kills less your deaths, and standing near the
+    -- top means you are winning right now rather than that you once were.
+    --
+    -- THE LADDER IS DRAWN, NOT FIXED. The tiers below are ordered pools --
+    -- melee, then sidearms, then up -- and ONE weapon is drawn from each
+    -- pool when the round starts. The shape of the climb is the same every
+    -- time; the guns on it are not.
     --
     -- SHIPPED OFF. Nothing about it is broken; turning it on is this one
     -- word. It is off because a server should choose its modes rather than
@@ -613,43 +625,119 @@ Config.Modes = {
     -- ==================================================================
     ['gungame'] = {
         label = 'Gun Game',
-        description = 'Every kill moves you up the weapon ladder. First to the end wins.',
+        description = 'Climb the tiers. Every kill is a better weapon, every death costs you one.',
         enabled = false,
         -- A ladder is climbed by one player, so it is won by one player.
         teams = false,
         icon = 'fas fa-arrow-up-9-1',
 
-        -- The rungs, in order, as keys from config.weapons.lua. The player's
-        -- own weapon choice is ignored in this mode -- the ladder replaces
-        -- it on the way in, on every promotion and on every respawn.
+        -- HOW LONG A ROUND OF THIS MODE RUNS, in real seconds, overriding
+        -- Config.Match.roundTimeSeconds for this mode and no other.
         --
-        -- A rung naming a weapon that is not in the ENABLED catalogue is
-        -- dropped and the ladder is that much shorter: promoting somebody
-        -- onto a rung with no weapon on it would put them in the arena
-        -- empty-handed, and refusing to run the mode at all would punish a
-        -- full lobby for one typo.
+        -- THE MODE NEEDS ITS OWN NUMBER because it is the only one where the
+        -- clock is the whole ending. Every other mode stops when one side is
+        -- left standing and treats the timer as a backstop; here nobody is
+        -- ever eliminated, so a round runs exactly this long unless somebody
+        -- tops the ladder first.
         --
-        -- THE LAST RUNG IS THE MELEE ONE ON PURPOSE. Finishing on a knife is
-        -- the shape every gun game has, and it is what makes the last kill
-        -- the hardest rather than the easiest.
-        gunGameLadder = { 'pistol', 'smg', 'shotgun', 'rifle', 'sniper', 'knife' },
+        -- 480 is eight minutes, which on a seven-tier ladder is long enough
+        -- for a good player to get near the top and short enough that a lobby
+        -- plays several. Raise it for a longer, more swingy round; lower it
+        -- for a scramble. `0` removes the clock entirely and the round then
+        -- runs until somebody finishes the ladder -- possible, but it can
+        -- take a while in an even lobby, so it is not the default.
+        roundTimeSeconds = 480,
 
-        -- LOSING A RUNG TO A MELEE KILL, which is the other half of what
-        -- makes a gun game a gun game.
+        -- THE TIERS, WEAKEST FIRST, each one a POOL of weapon keys from
+        -- config.weapons.lua. One weapon is drawn from each pool at the
+        -- start of every round and that is the ladder everybody climbs --
+        -- the same for all of them, different from last round.
         --
-        -- Kill somebody with a melee weapon and they drop one rung. It is
-        -- the comeback mechanic: a player at the top of the ladder is the
-        -- one everybody hunts, and a knife in the back costs them the lead
-        -- rather than merely a life.
+        -- WHY POOLS RATHER THAN ONE FIXED LIST. A fixed ladder is memorised
+        -- after a week: players learn that tier 4 is the SMG and play the
+        -- whole round around it. Drawing keeps the STRUCTURE -- you always
+        -- open on melee and finish on a precision rifle -- while making the
+        -- rung you are standing on something you have to look at.
         --
-        -- Nobody is ever knocked below rung 1, and a demotion never takes
-        -- away a kill that was already scored -- the rung is what moves, and
-        -- the score stays honest.
-        demoteOnMelee = true,
+        -- ORDER IS POWER. These are climbed bottom to top, so a pool must
+        -- only hold weapons that belong at that step. Reorder the tiers and
+        -- you reorder the climb; add a tier and the ladder gets longer.
+        --
+        -- A KEY THAT IS NOT AN ENABLED WEAPON IS SKIPPED, and a tier whose
+        -- whole pool is switched off is dropped -- the ladder is that much
+        -- shorter rather than the mode being broken by one typo. A ladder
+        -- with fewer than two tiers left is not a gun game, and
+        -- Arena.ValidateConfig says so at start-up.
+        --
+        -- SEVEN TIERS IS TUNED TO THE RULE ABOVE. Because a death costs a
+        -- tier, a player's tier is their kills less their deaths -- so
+        -- topping a seven-tier ladder means being six kills up on the field,
+        -- which is a real run rather than a formality. A much longer ladder
+        -- is one nobody finishes and the clock decides every round; a much
+        -- shorter one is finished in the first two minutes.
+        gunGameTiers = {
+            -- 1. FISTS AND BLADES. Everybody opens here, so it is the one
+            -- tier where the whole lobby is on equal terms.
+            { 'knife', 'machete', 'bat', 'hatchet', 'crowbar', 'golfclub', 'nightstick' },
+            -- 2. A first gun, and not much of one.
+            { 'pistol', 'combatpistol', 'snspistol', 'vintagepistol', 'ceramicpistol' },
+            -- 3. Still a sidearm, but one that hurts.
+            { 'heavypistol', 'pistol50', 'revolver', 'navyrevolver', 'doubleaction' },
+            -- 4. Automatic fire, close range.
+            { 'microsmg', 'minismg', 'machinepistol', 'smg', 'assaultsmg' },
+            -- 5. The room-clearer.
+            { 'sawnoffshotgun', 'dbshotgun', 'pumpshotgunmk2', 'shotgun', 'combatshotgun' },
+            -- 6. Range at last.
+            { 'carbine', 'advancedrifle', 'bullpuprifle', 'compactrifle', 'rifle' },
+            -- 7. THE TOP. A kill made from here finishes the ladder and ends
+            -- the round outright, whatever the clock says.
+            { 'marksman', 'precisionrifle', 'sniper' },
+        },
 
-        -- Tell the room when somebody reaches the final rung, so the last
+        -- WHAT A KILL IS WORTH BESIDES THE TIER, by supply key from
+        -- Config.Loadouts.supplies.items -- so an operator who renamed the
+        -- bandage item once does not have to rename it again here.
+        --
+        -- Bandages every time, armour a quarter of the time. The bandages
+        -- are the reason a good player can keep a run going without leaving
+        -- the fight, and the armour is the reason they still have to think
+        -- about it: 25 means one kill in four, on average, and not one in
+        -- four exactly -- it is a roll per kill.
+        --
+        -- `chance` is a percentage. Leave it out and the supply is given on
+        -- every kill; set it to 0 and it is never given at all. An entry
+        -- naming a supply this server has switched off is skipped.
+        --
+        -- THESE ARE ONLY PAID ON A KILL THAT COUNTED FOR THE LADDER, which
+        -- is what stops an accomplice being farmed for bandages after
+        -- `maxTiersPerVictim` below has stopped paying tiers.
+        killReward = {
+            { key = 'bandage', count = 3 },
+            { key = 'armour', count = 1, chance = 25 },
+        },
+
+        -- HOW MANY TIERS ONE KILLER MAY TAKE OFF ANY SINGLE PLAYER, per
+        -- round. Kills past this still count as kills -- on the scoreboard,
+        -- the leaderboard and the payout -- they just stop moving the
+        -- killer up the ladder.
+        --
+        -- THIS IS THE ANTI-COLLUSION RULE, and it is here rather than in the
+        -- shared kill path because this is the mode where it pays. The
+        -- server cannot see a kill happen: it is told who died and who they
+        -- say killed them. In every other mode a friend feeding you kills
+        -- buys you a scoreboard position; here, with no lives to spend and
+        -- the ladder ending the round outright, it would buy the whole pot
+        -- in under a minute.
+        --
+        -- 2 is deliberately generous to honest play -- killing the same
+        -- opponent twice in a round is ordinary -- and useless to a farm: a
+        -- seven-tier ladder then needs at least three different victims.
+        -- `0` removes the cap, which is only sensible on a closed server.
+        maxTiersPerVictim = 2,
+
+        -- Tell the room when somebody reaches the top tier, so the last
         -- stretch is a race everybody can see rather than a surprise ending.
-        announceFinalRung = true,
+        announceFinalTier = true,
     },
 }
 

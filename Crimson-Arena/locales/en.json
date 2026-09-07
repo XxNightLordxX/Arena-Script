@@ -84,9 +84,10 @@
     "notify": {
         "eliminated": "You are out.",
         "fighter_dropped": "%s dropped out of the fight.",
-        "gungame_demoted": "Knifed. Back to rung %d -- %s.",
-        "gungame_final_rung": "%s is on the last rung. One kill and it is over.",
-        "gungame_promoted": "Rung %d of %d. %s in your hands.",
+        "gungame_demoted": "Down to tier %d of %d. %s in your hands.",
+        "gungame_final_tier": "%s is on the top tier. One kill and it is over.",
+        "gungame_no_credit": "No tier for that one -- you have taken all you can off %s this round.",
+        "gungame_promoted": "Tier %d of %d. %s in your hands.",
         "fighter_left": "%s walked out of the fight.",
         "hours_lobby_closed": "The arena shut. Lobby closed, stakes back.",
         "kit_held": "Your own gear could not be handed back yet. It is safe in the arena's hands and it keeps trying.",

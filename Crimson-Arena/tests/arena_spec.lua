@@ -1444,12 +1444,12 @@ t.test('a server that forbids choosing ignores what the client asked for', funct
     -- fixed it at three. Nothing was proving the server refused; the panel
     -- not offering the control is not a defence, because the payload does
     -- not come from the panel.
-    local Arena = tweaked(function(config)
+    local onServer = tweaked(function(config)
         config.Match.lives = { allowChoose = false, min = 1, max = 10, default = 3 }
     end)
 
     for _, forged in ipairs({ 99, 10, 1, 0, -5, 2.7, '7' }) do
-        local resolved, reason = Arena.ResolveLives(forged)
+        local resolved, reason = onServer.ResolveLives(forged)
         t.equals(resolved, 3,
             ('a client asked for %s lives on a server that does not offer the choice, and got %s')
                 :format(tostring(forged), tostring(resolved)))
@@ -1464,18 +1464,18 @@ t.test('and where choosing IS allowed, the band is still the server\'s', functio
     -- server/lobby.lua's comment insists on that distinction, because a host
     -- silently dropped into a different rule than the one they set is worse
     -- than being told no.
-    local Arena = tweaked(function(config)
+    local onServer = tweaked(function(config)
         config.Match.lives = { allowChoose = true, min = 2, max = 5, default = 3 }
     end)
 
-    t.equals(Arena.ResolveLives(4), 4, 'an allowed number was not honoured')
-    t.equals(Arena.ResolveLives(nil), 3, 'no request should fall back to the default')
+    t.equals(onServer.ResolveLives(4), 4, 'an allowed number was not honoured')
+    t.equals(onServer.ResolveLives(nil), 3, 'no request should fall back to the default')
 
-    local tooMany, why = Arena.ResolveLives(6)
+    local tooMany, why = onServer.ResolveLives(6)
     t.isNil(tooMany, 'a number above the band was accepted')
     t.equals(why, 'error.lives_out_of_range')
 
-    local tooFew, why2 = Arena.ResolveLives(1)
+    local tooFew, why2 = onServer.ResolveLives(1)
     t.isNil(tooFew, 'a number below the band was accepted')
     t.equals(why2, 'error.lives_out_of_range')
 end)
@@ -1486,10 +1486,10 @@ t.test('and nobody ever fights with fewer than one life, whatever config says', 
     -- never had a life to spend. The floor is in the code, not in the
     -- config, and it was untested.
     for _, bad in ipairs({ 0, -3, 'nonsense' }) do
-        local Arena = tweaked(function(config)
+        local onServer = tweaked(function(config)
             config.Match.lives = { allowChoose = false, min = bad, max = 10, default = bad }
         end)
-        local resolved = Arena.ResolveLives(nil)
+        local resolved = onServer.ResolveLives(nil)
         t.isTrue((resolved or 0) >= 1,
             ('min = %s produced %s lives'):format(tostring(bad), tostring(resolved)))
     end
@@ -1500,11 +1500,11 @@ t.test('and a max written below the min does not drag the answer under it', func
     -- config with max under min used to resolve to a number the operator
     -- forbade in the same breath. The maximum is held at the minimum
     -- instead, which is the only reading that honours both lines.
-    local Arena = tweaked(function(config)
+    local onServer = tweaked(function(config)
         config.Match.lives = { allowChoose = false, min = 3, max = 1, default = 3 }
     end)
 
-    local resolved = Arena.ResolveLives(nil)
+    local resolved = onServer.ResolveLives(nil)
     t.isTrue((resolved or 0) >= 3,
         ('min 3 with max 1 resolved to %s, under the minimum the operator set')
             :format(tostring(resolved)))

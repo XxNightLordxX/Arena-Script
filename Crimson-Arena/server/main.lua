@@ -505,14 +505,21 @@ onClient('crimson_arena:server:placeSpectatorBet', RATE.bet, function(src, data)
         keyArg(payload.account))
     if not ok then return refuse(src, reason) end
 
-    -- AND TELL THE PANEL. Nothing else did, so a player watched their money
-    -- leave and the screen say nothing at all: the same wallet, the same
-    -- empty bet row, no way to tell a bet that was taken from one that was
-    -- refused. Every other thing that changes a lobby broadcasts; this was
-    -- the one that did not.
-    ArenaLobby.Broadcast()
-
-    ArenaNotifyKey(src, 'notify.bet_placed', 'success')
+    -- NEITHER THE BROADCAST NOR THE TOAST IS HERE ANY MORE, and both used
+    -- to be. ArenaBetting.PlaceSpectatorBet does both itself, a few lines
+    -- after it takes the money: it broadcasts so the bettor's wallet and the
+    -- pot stop reading from before the bet, and it says
+    -- 'notify.spectator_bet_placed', which names the amount.
+    --
+    -- Two fixes wrote the same repair in two places without meeting. The
+    -- cost was one player-visible bug and one invisible one: two toasts for
+    -- one bet -- "$500 on your pick. No takebacks." and then "Bet is down."
+    -- -- and two full snapshot rebuilds, each of which refreshes the
+    -- leaderboard, the config block and the match list and then pushes a
+    -- per-head payload to everybody on the server.
+    --
+    -- The copy that survives is the one beside the money, because it is the
+    -- only one every path into that function reaches.
 end)
 
 -- ======================================================================

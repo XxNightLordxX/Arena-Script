@@ -176,6 +176,21 @@ local function newArena(wallets, mutate)
         return hits
     end
 
+    --- How many pushes of one client event have reached ONE player since
+    --- `mark`. A broadcast fires once per recipient, so counting a single
+    --- head is how a test tells one broadcast from two without knowing how
+    --- many people are on the server.
+    function server.pushesToSince(mark, event, target)
+        local hits = 0
+        for index = (mark or 0) + 1, #sent do
+            local message = sent[index]
+            if message.event == 'crimson_arena:client:' .. event and message.target == target then
+                hits = hits + 1
+            end
+        end
+        return hits
+    end
+
     --- The one match in `matches`, or nil.
     function server.onlyMatch(src)
         local matches = server.state(src).matches or {}
@@ -877,6 +892,59 @@ t.test('and a lobby CLOSED without a round is still told once', function()
 
     t.isTrue(#s.noticesSince(mark, 2) > 0,
         'a lobby was closed under a player with nothing on screen saying so')
+end)
+
+-- ========================================================================
+-- ONE BET, ONE ANSWER
+-- ========================================================================
+--
+-- Two fixes wrote the same repair without meeting. ArenaBetting
+-- .PlaceSpectatorBet broadcasts and says 'notify.spectator_bet_placed' a few
+-- lines after it takes the money; server/main.lua's handler then broadcast
+-- again and said 'notify.bet_placed' on top.
+--
+-- One of those was visible and one was not: two toasts for one bet, and two
+-- full snapshot rebuilds -- each refreshing the leaderboard, the config
+-- block and the match list before pushing a per-head payload to everybody.
+
+t.test('THE DEFECT: placing a side-bet says ONE thing, not two', function()
+    local s, matchId = lobbyWithWatcher()
+
+    local mark = s.mark()
+    s.fire('placeSpectatorBet', 3, { matchId = matchId, pick = 1, amount = 1000, account = 'cash' })
+
+    local said = s.noticesSince(mark, 3)
+    t.isTrue(#said > 0, 'the bettor was told nothing at all, so this asserts nothing')
+
+    local lines = 0
+    for _ in said:gmatch('[^\n]+') do lines = lines + 1 end
+    t.equals(lines, 1, ('the bettor was shown %d toasts for one bet: %s'):format(lines, said))
+
+    -- And it is the one that names the amount, not the bare restatement.
+    t.contains(said, '1000', 'the toast that survived does not say what was staked: ' .. said)
+end)
+
+t.test('and broadcasts ONE snapshot to each head, not two', function()
+    local s, matchId = lobbyWithWatcher()
+
+    local mark = s.mark()
+    s.fire('placeSpectatorBet', 3, { matchId = matchId, pick = 1, amount = 1000, account = 'cash' })
+
+    t.equals(s.pushesToSince(mark, 'state', 3), 1,
+        'one side-bet rebuilt and pushed the whole snapshot twice')
+end)
+
+t.test('and the bet still reaches the panel, which is why the broadcast is there', function()
+    -- The half that must not be lost with the duplicate. The entry pot does
+    -- not move for a side-bet, so without a push the bettor reads a wallet
+    -- and a pot from before their own money left.
+    local s, matchId = lobbyWithWatcher()
+
+    s.fire('placeSpectatorBet', 3, { matchId = matchId, pick = 1, amount = 1000, account = 'cash' })
+
+    local bet = s.state(3).player.bet
+    t.isTrue(bet ~= false and bet ~= nil, 'the bet never reached the panel')
+    t.equals(bet.amount, 1000, 'the stake reached the panel wrong')
 end)
 
 os.exit(t.summary())

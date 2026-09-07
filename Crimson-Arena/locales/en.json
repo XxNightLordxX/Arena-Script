@@ -81,7 +81,6 @@
         "unknown_player": "Unknown"
     },
     "notify": {
-        "bet_placed": "Bet is down.",
         "eliminated": "You are out.",
         "hours_lobby_closed": "The arena shut. Lobby closed, stakes back.",
         "kit_held": "Your own gear could not be handed back yet. It is safe in the arena's hands and it keeps trying.",

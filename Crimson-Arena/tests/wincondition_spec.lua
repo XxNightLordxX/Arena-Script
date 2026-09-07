@@ -45,7 +45,7 @@ local function newServer(mutate)
 
     local qbx = Sandbox.newQbxCore(players)
     local threads = Sandbox.newThreadRunner()
-    local netEvents, console, sent = {}, {}, {}
+    local netEvents, console, sent, posts = {}, {}, {}, {}
     local clock = 0
 
 local env = Sandbox.newArenaEnv({
@@ -71,7 +71,9 @@ local env = Sandbox.newArenaEnv({
         end,
         GetVehiclePedIsIn = function() return 0 end,
         IsPlayerAceAllowed = function() return false end,
-        PerformHttpRequest = function() end,
+        -- CAPTURED, because what the operator's Discord log actually says is
+        -- the subject of the last test in this file.
+        PerformHttpRequest = function(_url, _cb, _method, body) posts[#posts + 1] = body end,
         ArenaStats = {
             GetLeaderboard = function(cb) cb({}) end,
             EnsureSchema = function() end, RecordMatch = function() end, Flush = function() end,
@@ -210,6 +212,9 @@ local env = Sandbox.newArenaEnv({
     end
 
     function server.log() return table.concat(console, '\n') end
+
+    --- Every webhook body posted, as raw JSON.
+    function server.posts() return posts end
 
     return server
 end
@@ -571,6 +576,49 @@ t.test('and a score limit reached by somebody who is OUT does not end the round'
     server.kill(5, 4)
     server.settle(3)
     t.equals(listed(server.winners()), '4', 'the round could no longer be won at all')
+end)
+
+-- ======================================================================
+-- WHAT THE OPERATOR'S DISCORD LOG SAYS
+-- ======================================================================
+
+t.test('THE DEFECT: the match webhook posts the sentence, not the locale key', function()
+    -- Every other webhook this resource sends carries a written line. The
+    -- end-of-match one was handed `endReason`, which is a locale key, so an
+    -- operator's Discord read "match.ended_last_standing".
+    local server = newServer(function(config)
+        config.Webhook.enabled = true
+        config.Webhook.url = 'https://discord.example/webhook'
+        config.Webhook.logResults = true
+    end)
+    server.play(2)
+    server.kill(2, 1)
+    server.settle(3)
+
+    local body = server.posts()[1]
+    t.isNotNil(body, 'no webhook was posted, so this test asserts nothing')
+    t.isTrue(body:find('match.ended_last_standing', 1, true) == nil,
+        'the raw locale key went to Discord: ' .. tostring(body))
+
+    local sentence = Sandbox.locale('match.ended_last_standing')
+    t.isTrue(body:find(sentence, 1, true) ~= nil,
+        ('the webhook never carried the sentence %q: %s'):format(sentence, tostring(body)))
+end)
+
+t.test('and the SERVER log still carries the key, which is what it is for', function()
+    -- The other half. A machine-readable server log wants the key; swapping
+    -- both to the sentence would break grepping a log by reason.
+    local server = newServer(function(config)
+        config.Webhook.enabled = true
+        config.Webhook.url = 'https://discord.example/webhook'
+        config.Webhook.logResults = true
+    end)
+    server.play(2)
+    server.kill(2, 1)
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_last_standing',
+        'the server log stopped naming the reason by key')
 end)
 
 os.exit(t.summary())

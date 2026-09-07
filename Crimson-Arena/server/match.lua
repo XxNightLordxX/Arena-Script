@@ -1737,7 +1737,12 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         for _, row in ipairs(board) do
             lines[#lines + 1] = ('%s -- %d kill(s), %d death(s)'):format(row.name, row.kills, row.deaths)
         end
-        ArenaWebhook(('Match %s finished'):format(tostring(match.id)), endReason, {
+        -- THE SENTENCE, NOT THE KEY, for the same reason the results board
+        -- twenty lines up says so. An operator reading their Discord log got
+        -- "match.ended_time_up" where every other webhook in this resource
+        -- posts a written line -- and the one place the raw key belongs is
+        -- ArenaLog below, which is a machine-readable server log.
+        ArenaWebhook(('Match %s finished'):format(tostring(match.id)), locale(endReason), {
             { name = 'Arena', value = tostring(match.arenaKey) },
             { name = 'Mode', value = tostring(match.modeKey) },
             { name = 'Winners', value = #names > 0 and table.concat(names, ', ') or 'none (draw)' },

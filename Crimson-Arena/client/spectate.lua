@@ -29,6 +29,24 @@ ArenaSpectate = {}
 local active = false
 local camera = nil
 
+--- WHICH CAMERA THREAD IS THE LIVE ONE.
+---
+--- `active` alone cannot answer that. Start() switches matches by calling
+--- Stop() and then starting again, both inside the same frame -- so the
+--- thread Stop() meant to end is still suspended at its Wait when `active`
+--- goes back to true, and it re-enters its loop on the next resume as a
+--- second copy running beside the new one.
+---
+--- That is not merely a leak. Both copies read input in the same frame, and
+--- IsDisabledControlJustPressed answers the same for each: one press of the
+--- cycle key stepped the camera twice, so switching matches made the
+--- spectator skip every other fighter. The quit key is read three lines
+--- further down the same block. Every further switch added another copy.
+---
+--- The thread reads this once on the way in and stops the moment it stops
+--- being the newest, which needs no handshake with Start or Stop.
+local cameraToken = 0
+
 --- Match being watched, and the server ids of the fighters still alive in
 --- it, in a stable order so cycling is predictable.
 local matchId = nil
@@ -206,11 +224,14 @@ local function cycle(step)
 end
 
 --- The camera thread. It owns nothing but the camera: it reads the target
---- list, and exits the moment `active` goes false, so Stop() needs no
---- handshake with it.
+--- list, and exits the moment `active` goes false OR a newer thread takes
+--- the token, so neither Stop() nor Start() needs a handshake with it.
 local function runCameraThread()
+    cameraToken = cameraToken + 1
+    local token = cameraToken
+
     CreateThread(function()
-        while active do
+        while active and cameraToken == token do
             Wait(0)
 
             local ped = currentTargetPed()

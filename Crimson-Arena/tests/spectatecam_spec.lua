@@ -227,6 +227,10 @@ local function newCam(opts)
 
     f.env = env
     f.spectate = env.ArenaSpectate
+    --- How many captured threads are still alive. The camera thread is the
+    --- only one this file starts, so a rise here between two watches is a
+    --- camera thread that outlived the watch that created it.
+    f.aliveThreads = runner.aliveCount
     -- The first arena this config ships enabled, asked for rather than
     -- written down: which ones ship enabled is the operator's choice.
     f.arenaKey = (env.Arena.GetEnabledArenas()[1] or {}).key
@@ -1096,6 +1100,68 @@ t.test('and the camera stays put while nothing is pressed', function()
     f.step()
 
     t.isTrue(f.spectate.IsActive(), 'the watch ended without anybody asking it to')
+end)
+
+-- ========================================================================
+-- ONE CAMERA THREAD, NOT ONE PER MATCH WATCHED
+--
+-- Start() switches matches by calling Stop() and starting again, both in the
+-- same frame. Stop() sets `active` false, Start() sets it true, and the
+-- thread Stop() meant to end is suspended at its Wait the whole time -- so
+-- it re-enters its loop on the next resume, beside the new one.
+--
+-- The leak is the least of it. Both copies read input in the same frame, and
+-- IsDisabledControlJustPressed answers the same for each.
+-- ========================================================================
+
+--- Switches an existing watch to a second match with three fighters.
+local function switchTo(f, matchId)
+    f.spectate.Start(matchId)
+    f.roster(matchId, { A, B, C })
+    f.step()
+    return f
+end
+
+t.test('THE DEFECT: switching matches does not leave the old camera thread running', function()
+    local f = watching()
+    local before = f.aliveThreads()
+
+    switchTo(f, 'match-2')
+
+    t.equals(f.aliveThreads(), before,
+        'the camera thread from the first match is still running beside the second')
+end)
+
+t.test('and a press of the cycle key still moves the camera ONE fighter', function()
+    -- The symptom a player would actually report. Two threads both see the
+    -- key down in the same frame, so the camera steps twice and the
+    -- spectator can never look at every other fighter in the match.
+    local f = watching()
+    switchTo(f, 'match-2')
+
+    t.equals(f.focusEntity, 1000 + A, 'the switched watch did not start on the first fighter')
+
+    -- Read by the thread rather than called directly: the double read is
+    -- the whole subject, and calling Next() once would model one thread.
+    f.pressed[175] = true
+    f.step()                    -- the key is read here
+    f.pressed[175] = false
+    f.step()                    -- and the camera moves on the frame after
+
+    t.equals(f.focusEntity, 1000 + B,
+        'one press of the cycle key skipped a fighter, so more than one thread read it')
+end)
+
+t.test('and switching back and forth many times still runs one thread', function()
+    local f = watching()
+    local before = f.aliveThreads()
+
+    for round = 1, 5 do
+        switchTo(f, ('match-%d'):format(round + 1))
+    end
+
+    t.equals(f.aliveThreads(), before,
+        'five switches left more camera threads running than one watch needs')
 end)
 
 os.exit(t.summary())

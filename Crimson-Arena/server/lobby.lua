@@ -1403,6 +1403,25 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
         })
     end
 
+    -- THEIR KILLS STAY WITH THEIR SIDE.
+    --
+    -- The row is deleted on purpose -- a leaver must not be crowned, and
+    -- every winner-selection path walks `match.players`. But a TEAM's score
+    -- is the sum of its members' kills, so deleting the row took the kills
+    -- out of the team total as well: a fighter who scored six for their side
+    -- and then rage-quit HANDED THE ROUND to the other one, and the pot with
+    -- it. That is a button anybody can press.
+    --
+    -- Banked per side rather than kept on the row, because the row is what
+    -- must not survive. Only in a team mode: in a free-for-all a departed
+    -- player's kills belong to nobody, and there is no side for them to be
+    -- credited to.
+    if liveRound and Arena.ModeUsesTeams(match.modeKey) and Arena.IsKey(player.team) then
+        match.departedKills = match.departedKills or {}
+        match.departedKills[player.team] = (match.departedKills[player.team] or 0)
+            + math.max(0, Arena.ToInt(player.kills) or 0)
+    end
+
     match.players[target] = nil
     playerIndex[target] = nil
     removeFromOrder(match, target)

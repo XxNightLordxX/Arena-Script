@@ -2379,12 +2379,33 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- taken back out instead -- and the server is told, or it keeps a fighter
     -- in a match it can never put anywhere.
     if not buildArenaProps(data.arenaKey, data.sizeFactor, data.boundary) then
-        clearArenaScenery()
-
-        local home = Config.Lobby.returnCoords
-        SetEntityCoordsNoOffset(ped, home.x, home.y, home.z, false, false, false)
-        SetEntityHeading(ped, home.w or 0.0)
-        FreezeEntityPosition(ped, false)
+        -- THROUGH leaveArena, NOT BY HAND.
+        --
+        -- This branch used to clear the scenery, teleport the player home,
+        -- unfreeze them and return -- and leaveArena's own comment says
+        -- "every exit comes through here, onResourceStop included, so this
+        -- is the one place that can promise it". This was the exit that did
+        -- not, and what it therefore never put back is exactly the state
+        -- that is not per match:
+        --
+        --   THE FRIENDLY-FIRE HOLD. holdFriendlyFire ran eleven lines above
+        --   this check, so a team-deathmatch player whose floor failed was
+        --   left standing in the CITY on the arena's network team, with
+        --   NetworkSetFriendlyFireOption(false) and SetCanAttackFriendly off
+        --   -- unable to be shot by half the server, permanently, because
+        --   nothing else on the server sets those and nothing else will ever
+        --   put them back.
+        --
+        --   THE DISPATCH FLAG. ArenaDispatch.Enter ran too, so police and
+        --   EMS went on treating them as being in the arena.
+        --
+        --   The blips, the outlines and the dead-state hold, for the same
+        --   reason.
+        --
+        -- A floor that will not build is rare and it is exactly when the
+        -- exit path matters most, because the player is being put back into
+        -- the world mid-entry. One call, and the promise is true again.
+        leaveArena(Config.Lobby.returnCoords)
         TriggerServerEvent('crimson_arena:server:leaveMatch')
         return
     end

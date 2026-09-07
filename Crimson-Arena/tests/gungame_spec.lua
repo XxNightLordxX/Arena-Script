@@ -25,7 +25,7 @@
     a promotion that does not reach a real inventory is a promotion that
     changed nothing a player can hold.
 
-    FORTY-TWO TESTS, on deliberately different parts of it:
+    FORTY-FOUR TESTS, on deliberately different parts of it:
 
       THE DRAW         one weapon per tier, melee first, stable all round,
                        different between rounds, and short pools survived.
@@ -1983,6 +1983,90 @@ t.test('the results board ranks a gun game on the ladder, not on raw kills', fun
     t.isTrue(won.placement < lost.placement,
         ('the winner outranks the kill leader -- got #%s against #%s')
             :format(tostring(won.placement), tostring(lost.placement)))
+end)
+
+t.test('a fighter who is out of the round cannot be credited with a kill', function()
+    -- ELIMINATED, RANKED LAST, STANDING AT THE LOBBY NPC -- and winning on
+    -- most kills anyway, because resolveKiller asked only whether the named
+    -- killer was a real player who was allowed to damage the victim.
+    --
+    -- Run on an ORDINARY mode, because that is where lives are spent and
+    -- where the hole actually bit. A gun game eliminates nobody.
+    local s = newServer()
+    s.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash',
+    })
+    local id = s.lobby.All()[1].id
+    for src = 2, 3 do s.fire('joinMatch', src, { matchId = id, account = 'cash' }) end
+    for src = 1, 3 do s.fire('setReady', src, { ready = true }) end
+    for _ = 1, 4 do
+        if s.lobby.Get(id).state == 'live' then break end
+        s.settle(1)
+    end
+    local function row(src) return s.lobby.Get(id).players[src] end
+
+    -- A DEAD KILLER IS STILL CREDITED, and must stay that way: two fighters
+    -- who kill each other in the same tick are both corpses when the reports
+    -- arrive, and refusing those would delete half of every trade.
+    row(1).alive = false
+    s.match.OnDeath(2, 1)
+    t.equals(row(1).kills, 1, 'a killer who is merely dead still scored')
+    row(1).alive = true
+    row(2).alive = true
+
+    -- ELIMINATED IS A DIFFERENT FACT: no lives left, the round has finished
+    -- with them.
+    row(1).lives = 0
+    row(1).alive = false
+    t.equals(s.arena.IsEliminated(row(1)), true, 'the setup really eliminated them')
+
+    s.match.OnDeath(3, 1)
+    t.equals(row(1).kills, 1, 'and an eliminated fighter is credited with nothing')
+    t.equals(row(3).deaths, 1, 'though the death still counted')
+
+    -- NOR ONE WHO HAS ALREADY BEEN SENT HOME.
+    row(1).lives = 3
+    row(1).alive = true
+    row(1).leftArena = true
+    row(2).alive = true
+    s.match.OnDeath(2, 1)
+    t.equals(row(1).kills, 1, 'nor a fighter already standing back at the lobby')
+end)
+
+t.test('a tier tie is broken on the capped number, not the uncapped one', function()
+    -- `kills` IS THE ONE NUMBER THE CAP DELIBERATELY LEAVES ALONE -- a kill
+    -- past maxTiersPerVictim still counts as a kill, it just stops buying
+    -- tiers -- so breaking a tier tie on it handed the decider straight back
+    -- to the farm the cap exists to stop.
+    local s = newServer(function(config)
+        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' }, { 'rifle' } }
+        config.Modes.gungame.maxTiersPerVictim = 1
+        config.Modes.gungame.roundTimeSeconds = 120
+    end)
+    s.play(5)
+
+    -- Fighter 1 climbs honestly: two different victims, two credited kills.
+    s.trade(3, 1)
+    s.trade(4, 1)
+
+    -- Fighter 2 reaches the SAME two credited kills -- one off each of two
+    -- victims -- and then farms one of them seven more times. Those seven
+    -- count as kills and buy nothing, which is the whole point of the cap.
+    s.trade(3, 2)
+    s.trade(5, 2)
+    for _ = 1, 7 do s.trade(5, 2) end
+
+    t.isTrue(s.row(2).kills > s.row(1).kills,
+        ('the farmer is ahead on raw kills: %d against %d')
+            :format(s.row(2).kills, s.row(1).kills))
+    t.equals(s.row(1).ladderKills, 2, 'the honest climber has two credited kills')
+    t.equals(s.row(2).ladderKills, 2, 'and the farmer has exactly the same two')
+    t.equals(s.row(1).tier, s.row(2).tier, 'so they are level on tiers')
+
+    s.match_().endsAt = os.time() - 1
+    s.settle(2)
+    t.equals(s.endedWith(), 'match.ended_draw',
+        'level on tiers AND on credited kills is a draw -- raw kills must not break it')
 end)
 
 os.exit(t.summary())

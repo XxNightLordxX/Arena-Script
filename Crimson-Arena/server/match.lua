@@ -699,6 +699,16 @@ end
 --- @return table<string, integer> kills per team
 local function teamKills(match)
     local scores = {}
+
+    -- WHAT THE PEOPLE WHO LEFT SCORED FOR THIS SIDE, first. ArenaLobby.Leave
+    -- deletes a departed fighter's row -- correctly, so nobody can be
+    -- crowned after walking out -- and that used to take their kills out of
+    -- their TEAM's total with them. Six kills for your side and a rage-quit
+    -- handed the round to the other one.
+    for team, banked in pairs(match.departedKills or {}) do
+        if Arena.IsKey(team) then scores[team] = math.max(0, Arena.ToInt(banked) or 0) end
+    end
+
     for _, player in pairs(match.players) do
         if Arena.IsKey(player.team) then
             scores[player.team] = (scores[player.team] or 0) + math.max(0, Arena.ToInt(player.kills) or 0)
@@ -809,7 +819,15 @@ local function decideOnLadder(match)
     for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
         if stillIn(player) then
             local tier = tierScore(player)
-            local kills = math.max(0, Arena.ToInt(player.kills) or 0)
+            -- THE TIE IS BROKEN ON LADDER KILLS, NOT RAW ONES.
+            --
+            -- `kills` is the one number in this mode the anti-collusion cap
+            -- deliberately leaves uncapped -- a kill past the cap still
+            -- counts as a kill, it just stops buying tiers -- so breaking a
+            -- tier tie on it handed the decider straight back to the farm
+            -- the cap exists to stop. `ladderKills` is the capped number and
+            -- is what the tiers were actually climbed on.
+            local kills = math.max(0, Arena.ToInt(player.ladderKills) or 0)
             if tier > bestTier or (tier == bestTier and kills > bestKills) then
                 bestTier, bestKills, leaders = tier, kills, { player.src }
             elseif tier == bestTier and kills == bestKills then
@@ -1643,6 +1661,26 @@ local function resolveKiller(match, victim, killerSrc)
     if not killer then return nil end
     if not Arena.CanDamage(match.modeKey, killer.team, victim.team) then return nil end
 
+    -- AND ARE THEY STILL IN THE FIGHT. A fighter who is out of the round --
+    -- eliminated, or already sent back to the lobby ped -- was being
+    -- credited with kills, and those kills decided the round: they ranked
+    -- last on the board, stood at the NPC with `spectateOnElimination` off,
+    -- and won on most-kills anyway.
+    --
+    -- THIS IS NOT THE "killer is dead" CASE, which stays credited on
+    -- purpose: two fighters who kill each other in the same tick are both
+    -- corpses when the reports arrive, and refusing those would delete half
+    -- of every trade. Elimination is a different fact -- they have no lives
+    -- left and the round has finished with them. The one case this does cost
+    -- is a fighter whose own last life ran out in the same tick as the kill
+    -- they were making, which is rare and errs toward "you were out" rather
+    -- than "you win from the lobby".
+    if killer.leftArena == true or Arena.IsEliminated(killer) then
+        ArenaDebug('kill refused on match %s: %s named %s, who is out of the round.',
+            tostring(match.id), tostring(victim.src), tostring(killerId))
+        return nil
+    end
+
     -- AND WERE THEY ANYWHERE NEAR. Everything above this line is a question
     -- about the ROSTER; none of it asks whether the kill could have happened.
     -- A dying client names its own killer, so without this one accomplice
@@ -1992,6 +2030,9 @@ function ArenaMatch.Start(matchId)
     -- makes THIS one the same climb for the scoreboard, the loadout and the
     -- promotion alike.
     match.ladder = nil
+
+    -- Last round's leavers must not score for this one.
+    match.departedKills = nil
     -- Respawns carry on round-robin from where the initial placement left
     -- off.
     match.spawnCursor = #players

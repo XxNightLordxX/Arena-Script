@@ -159,13 +159,36 @@ done
 NODE_BIN="${NODE_BIN:-node}"
 
 if command -v "$NODE_BIN" >/dev/null 2>&1; then
+    # JUDGED THE SAME WAY THE LUA SPECS ARE, and for the same reason: an
+    # exit code alone trusts the suite to have remembered to set one. Every
+    # panel suite ends with `process.exit(failures.length === 0 ? 0 : 1)`,
+    # and a suite that drifts off that line prints "0 passed, 1 failed" and
+    # exits 0 -- which this branch accepted, exactly as the Lua branch above
+    # accepted a drifted spec until it was made to read the number.
     for suite in panel/*.test.js; do
         [ -e "$suite" ] || continue
         total_files=$((total_files + 1))
         echo "==> $suite"
-        if ! "$NODE_BIN" "$suite"; then
+
+        suite_output=$("$NODE_BIN" "$suite" 2>&1)
+        suite_status=$?
+        printf '%s\n' "$suite_output"
+
+        if [ "$suite_status" -ne 0 ]; then
             overall_status=1
             failed_files+=("$suite")
+        elif ! printf '%s' "$suite_output" | grep -qE '^[0-9]+ passed, [0-9]+ failed$'; then
+            echo "tests/run.sh: $suite exited 0 but printed no 'N passed, M failed' tally." >&2
+            echo "              Its last lines must print the tally and then:" >&2
+            echo "              process.exit(failures.length === 0 ? 0 : 1)" >&2
+            overall_status=1
+            failed_files+=("$suite (no tally)")
+        elif ! printf '%s' "$suite_output" | grep -qE '^[0-9]+ passed, 0 failed$'; then
+            echo "tests/run.sh: $suite printed failing tests but exited 0." >&2
+            echo "              Its last line must be:" >&2
+            echo "              process.exit(failures.length === 0 ? 0 : 1)" >&2
+            overall_status=1
+            failed_files+=("$suite (failed tests, exit 0)")
         fi
         echo ""
     done

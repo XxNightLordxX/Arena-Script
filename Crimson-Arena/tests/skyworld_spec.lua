@@ -126,6 +126,14 @@ local function newClient(opts)
 
         lib = { notify = function(payload) c.notified[#c.notified + 1] = payload end },
         ArenaUI = { UpdateHud = function() end },
+        -- THE GLOBAL PLAYER STATE THE FRIENDLY-FIRE HOLD REACHES OUT AND
+        -- CHANGES. Nothing else on a server sets these, and nothing else
+        -- will ever put them back -- so a path that leaves them set leaves
+        -- them set for the rest of that player's session.
+        SetPlayerTeam = function(_player, team) c.playerTeam = team end,
+        NetworkSetFriendlyFireOption = function(on) c.friendlyFire = on end,
+        SetCanAttackFriendly = function(_ped, can) c.canAttackFriendly = can end,
+
         ArenaDispatch = {
             Enter = function() end,
             Exit = function() end,
@@ -243,14 +251,18 @@ local function newClient(opts)
     --- config through the real Arena so it cannot drift from production.
     --- @param arenaKey string
     --- @param spawn table?
-    function c.enter(arenaKey, spawn, factor)
+    --- @param sides table? -- { modeKey = 'tdm', teamKey = 'crimson' } to
+    ---        enter as a player on a side, which is the only way the
+    ---        friendly-fire hold ever starts
+    function c.enter(arenaKey, spawn, factor, sides)
+        sides = sides or {}
         local arena = env.Config.Arenas[arenaKey]
         spawn = spawn or env.Arena.PickSpawn(arenaKey, nil, 1)
         c.fire('crimson_arena:client:enterArena', {
             matchId = 'match-1',
             arenaKey = arenaKey,
-            modeKey = 'ffa',
-            teamKey = nil,
+            modeKey = sides.modeKey or 'ffa',
+            teamKey = sides.teamKey,
             spawn = { x = spawn.x, y = spawn.y, z = spawn.z, w = spawn.w or 0.0 },
             -- The server sends no extra scatter where it has planned the
             -- spawns itself; a fixed point is what a spec wants anyway,
@@ -2294,6 +2306,51 @@ t.test('and a watch that runs to the end still gets its arena', function()
     -- And it is still Drop-able, which is the flag the defect above turns off.
     c.inThread(function() return c.env.ArenaMatch.DropSpectatorScenery() end)
     t.equals(#c.world.live(), 0, 'the scenery an uninterrupted watch built could not be taken down')
+end)
+
+t.test('a floor that will not build does not send the arena home with the player', function()
+    -- leaveArena's own comment says "every exit comes through here,
+    -- onResourceStop included, so this is the one place that can promise
+    -- it". THIS was the exit that did not: the floor-failure branch cleared
+    -- the scenery, teleported the player home, unfroze them and returned.
+    --
+    -- What it therefore never put back is the state that is not per match --
+    -- global player state this resource reached out and changed, that
+    -- nothing else on the server sets and nothing else will ever restore.
+    -- A team-deathmatch player whose floor failed was left standing in the
+    -- CITY on the arena's network team, with friendly fire off, unable to be
+    -- shot by half the server for the rest of their session.
+    local c = newClient()
+
+    -- The hold only ever starts for a player on a side.
+    local realCreate = c.env.CreateObject
+    c.env.CreateObject = function() return 0 end
+
+    c.enter('skydome', nil, nil, { modeKey = 'tdm', teamKey = 'crimson' })
+
+    c.env.CreateObject = realCreate
+
+    t.equals(c.playerTeam, -1,
+        'the arena network team followed the player back into the city')
+    t.equals(c.friendlyFire, true,
+        'friendly fire was left switched OFF outside the arena -- the one thing this must never do')
+    t.equals(c.canAttackFriendly, true,
+        'and the ped was left unable to attack its own "team", which is now the whole server')
+    t.equals(#c.world.live(), 0, 'nor is any half-built scenery left standing')
+end)
+
+t.test('and the hold really was on, so the test above is not measuring nothing', function()
+    -- THE CONTROL. Every assertion in the test above is "this was put back",
+    -- and every one of them passes trivially if the hold never started --
+    -- which is exactly what would happen on a free-for-all, or on a server
+    -- with friendlyFire on. So this proves the fixture can see it being set.
+    local c = newClient()
+    c.enter('skydome', nil, nil, { modeKey = 'tdm', teamKey = 'crimson' })
+
+    t.isTrue(c.playerTeam ~= nil and c.playerTeam ~= -1,
+        'the hold never put the player on the arena team, so nothing above is being tested')
+    t.equals(c.friendlyFire, false, 'nor switched friendly fire off')
+    t.equals(c.canAttackFriendly, false, 'nor stopped them attacking a teammate')
 end)
 
 os.exit(t.summary())

@@ -295,7 +295,15 @@ function Arena.GetEnabledTeams()
                 label = team.label or key,
                 color = team.color,
                 blipColor = team.blipColor,
-                order = team.order or 999,
+                -- COERCED, NOT TRUSTED. The sort below compares these to each
+                -- other, and Lua raises rather than guesses when asked to
+                -- order a number against a string -- so `order = "1"` in one
+                -- team's block threw out of THIS function, which
+                -- Arena.ValidateConfig calls, which onResourceStart calls.
+                -- One quotation mark in config.lua and the whole resource
+                -- never finished starting, with the validator written to
+                -- catch that typo taken down by it.
+                order = Arena.ToInt(team.order) or 999,
             }
         end
     end
@@ -3725,6 +3733,20 @@ function Arena.ValidateConfig()
                     end
                 end
             end
+        end
+    end
+
+    -- A TEAM'S `order` THAT IS NOT A NUMBER. It is coerced rather than
+    -- trusted now, so the resource starts -- but the operator's intended
+    -- ordering is silently gone, and every team that fell back sorts by key
+    -- instead. Said here because a sides picker in the wrong order is the
+    -- sort of thing nobody notices and everybody works around.
+    for key, team in pairs(Config.Teams.list or {}) do
+        if type(team) == 'table' and team.enabled ~= false
+            and team.order ~= nil and Arena.ToInt(team.order) == nil
+        then
+            complain(('Config.Teams.list["%s"].order is a %s, not a number -- that team has fallen back to the end of the list.')
+                :format(tostring(key), type(team.order)))
         end
     end
 

@@ -520,6 +520,57 @@ local issuedAmmo = {}
 --- @type table<string, table<number, table<string, integer>>>
 local issuedSupplies = {}
 
+--- What each player was ALREADY holding of every item the arena went on to
+--- issue them, per match: `heldBefore[matchId][src][item] = count`.
+---
+--- THE EXIT WAS CHARGING PLAYERS FOR WHAT THEY SPENT, out of their own
+--- identical stock. `takeBack` asks for what was issued and clamps it to
+--- what is still held -- which is right when the two stacks are the arena's
+--- alone, and wrong the moment they are not. With the door off
+--- (`Config.Loadouts.inventory.stripOnEntry = false`, a documented setting)
+--- a player who walked in carrying ten bandages, was issued five, and used
+--- the arena's five, still held ten -- so the exit took five of THEIRS and
+--- they went home with half of what they arrived with.
+---
+--- The arena may only ever reclaim what a player holds ABOVE the line they
+--- walked in on, and this is that line. With the door ON it is always zero,
+--- because the stash has already taken everything.
+local heldBefore = {}
+
+--- What this player was holding of `item` before the arena issued them any.
+--- @param matchId any
+--- @param src number
+--- @param item string
+--- @return integer
+local function floorFor(matchId, src, item)
+    local byMatch = heldBefore[matchId]
+    local mine = byMatch and byMatch[src]
+    return mine and (Arena.ToInt(mine[item]) or 0) or 0
+end
+
+--- Records what a player already holds of one item, once, before the arena
+--- adds to it.
+---
+--- ONCE PER MATCH PER ITEM, and the guard matters: a gun game issues
+--- bandages again on every kill, and a second reading taken after the first
+--- payout would move the line up to include what the arena had just given
+--- them -- which is the same bug in the other direction.
+--- @param ox table
+--- @param src number
+--- @param matchId any
+--- @param item string
+local function rememberHeld(ox, src, matchId, item)
+    if not (Arena.IsKey(matchId) and Arena.IsKey(item)) then return end
+
+    heldBefore[matchId] = heldBefore[matchId] or {}
+    local mine = heldBefore[matchId][src] or {}
+    heldBefore[matchId][src] = mine
+    if mine[item] ~= nil then return end
+
+    local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
+    mine[item] = ok and (Arena.ToInt(answer) or 0) or 0
+end
+
 --- How the rounds a player picked are split between the magazine in the gun
 --- and the loose items in their pocket.
 ---
@@ -662,6 +713,8 @@ local function issueSpareRounds(ox, src, matchId, entry)
     -- BOTH have to be true. pcall succeeding only means the call did not
     -- throw; ox_inventory returns false for a full inventory or an item name
     -- that does not exist.
+    rememberHeld(ox, src, matchId, item)
+
     local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
     if not (ok and granted ~= false) then
         -- Same two causes as the supplies, and the same order. A player who
@@ -927,6 +980,8 @@ function ArenaAmmo.GrantSupply(src, matchId, item, count)
     -- The same proof the loadout supplies use: pcall succeeding only says
     -- the call did not throw, and ox_inventory answers `false` for a full
     -- inventory or an item name it does not know.
+    rememberHeld(ox, src, matchId, item)
+
     local ok, granted = pcall(function() return ox:AddItem(src, item, amount) end)
     if not (ok and granted ~= false) then
         -- NOT ArenaLog. A kill reward that will not fit is an ordinary thing
@@ -971,11 +1026,18 @@ end
 --- @param src number
 --- @param item string
 --- @param count integer -- how much was issued
-local function takeBack(ox, src, item, count)
+local function takeBack(ox, src, item, count, floor)
     local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
     local held = ok and (Arena.ToInt(answer) or 0) or count
 
-    local take = math.min(Arena.ToInt(count) or 0, held)
+    -- NOT ONE BELOW THE LINE THEY WALKED IN ON. `held` is everything in
+    -- their pockets, and with the door off some of it is theirs -- so
+    -- clamping to `held` alone charged a player for every arena consumable
+    -- they SPENT, out of their own identical stock. The arena's claim is
+    -- only ever on what sits above that line.
+    local mine = math.max(0, held - math.max(0, Arena.ToInt(floor) or 0))
+
+    local take = math.min(Arena.ToInt(count) or 0, mine)
     if take > 0 then
         pcall(function() return ox:RemoveItem(src, item, take) end)
     end
@@ -1009,7 +1071,7 @@ local function reclaimWeapons(ox, src)
     -- AND THE ROUNDS. Same path, same reason: with the door off nothing else
     -- takes them, and ammunition left behind is a slower version of the same
     -- weapon shop -- a player farming rounds a match at a time.
-    for _, byPlayer in pairs(issuedAmmo) do
+    for matchId, byPlayer in pairs(issuedAmmo) do
         local given = byPlayer[src]
         if given then
             for item, count in pairs(given) do
@@ -1022,7 +1084,7 @@ local function reclaimWeapons(ox, src)
                 -- out. The arena took nothing back from precisely the
                 -- players who used it most, which is the farm this record
                 -- exists to close.
-                takeBack(ox, src, item, count)
+                takeBack(ox, src, item, count, floorFor(matchId, src, item))
             end
             byPlayer[src] = nil
         end
@@ -1039,11 +1101,11 @@ local function reclaimWeapons(ox, src)
     -- at all from exactly the players who consumed the most, which is the
     -- farm this record exists to close, arriving through the one path nobody
     -- would think to test.
-    for _, byPlayer in pairs(issuedSupplies) do
+    for matchId, byPlayer in pairs(issuedSupplies) do
         local given = byPlayer[src]
         if given then
             for item, count in pairs(given) do
-                takeBack(ox, src, item, count)
+                takeBack(ox, src, item, count, floorFor(matchId, src, item))
             end
             byPlayer[src] = nil
         end
@@ -1210,6 +1272,8 @@ function ArenaAmmo.Issue(src, matchId, loadout)
         local item = entry.item
         local count = Arena.ToInt(entry.count) or 0
         if Arena.IsKey(item) and count > 0 then
+            rememberHeld(ox, src, matchId, item)
+
             -- The same proof the rounds use: pcall succeeding only says the
             -- call did not throw, and ox_inventory answers `false` for a
             -- full inventory or an item name it does not know.
@@ -1470,6 +1534,10 @@ end
 --- @param matchId string
 --- @return boolean cleared
 function ArenaAmmo.Clear(matchId)
+    -- The line each player walked in on goes with the match it was drawn
+    -- for; keeping it would let the next round reclaim against the last
+    -- one's pockets.
+    heldBefore[matchId] = nil
     if not Arena.IsKey(matchId) then return false end
 
     for src, record in pairs(stashed) do

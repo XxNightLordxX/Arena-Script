@@ -451,29 +451,41 @@ local function restore(src, record)
     -- takes the arena's weapons back BY NAME instead -- see ArenaAmmo.Reclaim,
     -- which does that before calling this -- which removes what the arena
     -- issued without touching anything else.
+    -- WHETHER THE WHOLESALE CLEAR ACTUALLY HAPPENED, reported to the caller.
+    --
+    -- This function went on to return plain `true` whatever the clear did,
+    -- so ArenaAmmo.Reclaim took its success branch and called forgetWeapons
+    -- -- dropping the arena's record of every weapon, round and supply it
+    -- had issued, while all of it was still in the player's pockets because
+    -- the clear had just been refused. They left with their own belongings
+    -- AND the whole arena kit, permanently: no later exit could take it
+    -- back, because nothing remembered issuing it.
+    local wiped = true
+
     if not record.cleared then
         local _, keep = untouchable()
         if not oxDid('clearing the arena kit from ' .. tostring(src), function()
             return ox:ClearInventory(src, keep)
         end) then
-            ArenaLog('door: %s LEFT THE ARENA STILL HOLDING THE KIT IT ISSUED -- their own is being returned on top of it.',
+            ArenaLog('door: %s LEFT THE ARENA STILL HOLDING THE KIT IT ISSUED -- their own is being returned on top of it, and the arena kit is being taken back by name instead.',
                 tostring(src))
+            wiped = false
         end
         record.cleared = true
     end
 
     local readable, failures = handBack(ox, src, record.stash)
-    if not readable then return false end
+    if not readable then return false, wiped end
 
     if failures > 0 then
         -- Deliberately NOT cleared. Anything that would not go back is still
         -- sitting in a stash the player can be pointed at.
         ArenaLog('door: %d item(s) of %s\'s could not be returned and are still in stash %s.',
             failures, tostring(src), record.stash)
-        return false
+        return false, wiped
     end
 
-    return true
+    return true, wiped
 end
 
 -- ======================================================================
@@ -1434,7 +1446,11 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         if ox then reclaimWeapons(ox, src) end
     end
 
-    local ok = restore(src, record)
+    -- `wiped` is whether the wholesale clear actually happened, which is NOT
+    -- the same question as `ok`: a refused clear still lets the player's own
+    -- belongings go back, so the restore succeeds and the arena kit is left
+    -- sitting on top of them.
+    local ok, wiped = restore(src, record)
 
     -- THE RECORD IS DROPPED ONLY IF THE KIT ACTUALLY CAME BACK.
     --
@@ -1464,7 +1480,19 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         -- there was no clear at all, so the arena's weapons are still on the
         -- player -- and forgetting them here is what stops any later exit
         -- from taking them back.
-        forgetWeapons(src)
+        --
+        -- AND A RESTORE CAN SUCCEED WITH ITS CLEAR REFUSED, which is that
+        -- same state arriving through a different door: their own kit went
+        -- back and the arena's is still underneath it. Forgetting there gave
+        -- the whole issue away for good -- nothing remembered it, so no
+        -- later exit could take it back. That case takes the weapons back BY
+        -- NAME instead, which is the path restore's own comment points at.
+        if wiped then
+            forgetWeapons(src)
+        else
+            local ox = inventory()
+            if ox then reclaimWeapons(ox, src) end
+        end
     elseif Arena.IsKey(record.citizenid) then
         -- THE HANDLE EVERY RETRY WORKS FROM, and the line that turns "it was
         -- logged and somebody will read the console" into "the server keeps

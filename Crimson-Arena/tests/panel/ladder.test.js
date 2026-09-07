@@ -229,6 +229,23 @@ test('the weapon lists and the Save row go, and the reason takes their place', (
         'the save row should be hidden where nothing can be saved');
 });
 
+test('the Supplies block states the kit the mode issues, not a saved draft', () => {
+    // It used to draw the player's own draft chips under a caption reading
+    // "Set by the server." -- which is a specific claim about the wrong
+    // numbers: the screen said whatever they last saved on some other mode,
+    // and the round handed out the mode's kit.
+    const panel = panelFor('gungame', []);
+    const text = panel.text('supplies-picker');
+
+    assert.ok(/Body Armour/.test(text), 'the kit is missing from the block: ' + text);
+    assert.ok(/Bandage/.test(text), 'and its bandages: ' + text);
+    assert.ok(/\b1\b/.test(text) && /\b5\b/.test(text),
+        'with the counts the mode really issues: ' + text);
+    assert.ok(!/Set by the server/.test(text),
+        'the old caption claimed the draft below it was what the server would hand out: ' + text);
+    assert.ok(/Issued to everyone/.test(text), 'and should say where it comes from: ' + text);
+});
+
 test('and an ordinary mode still lets a player pick', () => {
     const panel = panelFor('ffa', []);
     const note = panel.text('loadout-note');

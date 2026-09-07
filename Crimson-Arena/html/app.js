@@ -3265,6 +3265,32 @@
         if (!has(host)) return;
         clear(host);
 
+        /* A LADDER MODE ISSUES ITS OWN KIT, so the chips below are not what
+           this player will carry -- they are the last thing they saved on
+           some other mode, and the server throws them away. Drawn under a
+           caption reading "Set by the server." that made it a specific claim
+           about the wrong numbers: the screen said 1 plate and 2 bandages
+           and the round handed out 1 and 5.
+
+           Drawn from the mode instead, as plain rows, so the block says the
+           true thing rather than the plausible one. */
+        var issuing = playerMode();
+        if (modeIssuesLoadout(issuing)) {
+            var kit = arrayOf(issuing.startingKit);
+            if (kit.length === 0) return;
+
+            host.appendChild(makeEl('span', 'field-label', 'Supplies'));
+            kit.forEach(function (entry) {
+                var row = makeEl('div', 'supply-row');
+                row.appendChild(makeEl('span', 'supply-name', String(entry.label || '')));
+                row.appendChild(makeEl('span', 'supply-count', String(int(entry.count, 0))));
+                host.appendChild(row);
+            });
+            host.appendChild(makeEl('div', 'hint',
+                'Issued to everyone at the start of every round in this mode. Nothing here is yours to change.'));
+            return;
+        }
+
         var config = supplyConfig();
         var catalogue = supplyCatalogue();
         /* Off, or nothing switched on: the section is not drawn at all

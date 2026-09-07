@@ -1679,6 +1679,14 @@ option {
     opacity: 0.75;
 }
 
+/* THE COUNT A MODE ISSUES, where a mode hands out its own kit and there are
+   no chips to pick from -- the number sits where the chips would be. */
+.supply-count {
+    font-weight: 600;
+    /* So a two-digit count does not shift the row it sits in. */
+    font-variant-numeric: tabular-nums;
+}
+
 .chip.disabled,
 .chip:disabled {
     opacity: 0.35;

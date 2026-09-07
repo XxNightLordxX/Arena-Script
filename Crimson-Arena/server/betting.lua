@@ -1143,7 +1143,27 @@ function ArenaBetting.Settle(matchId, context)
                 -- this cannot be rolled back into escrow without changing
                 -- what they were paid. It is logged for a human instead.
                 undelivered = undelivered + amount
-                ArenaLog('PAYOUT UNDELIVERED: %d owed to %s on match %s -- they are not on the server. Settle by hand.',
+
+                -- ONTO THE LEDGER THIS FILE ALREADY KEEPS, rather than into
+                -- a log line and nowhere else.
+                --
+                -- `owe` / PayOutstanding / SweepUnpaid exist and are used for
+                -- every REFUND that cannot be delivered -- a player who
+                -- dropped before a cancelled match paid them back gets their
+                -- stake on reconnect. A WINNING payout took the other road:
+                -- it printed "settle by hand" and was destroyed. So the
+                -- resource remembered money it owed you for a round that did
+                -- not happen, and forgot money it owed you for one you won.
+                --
+                -- The asymmetry is the whole finding. Nothing else changes:
+                -- the pot has already been divided among everybody else and
+                -- still cannot be rolled back into escrow, the log and the
+                -- webhook still fire, and an operator settling by hand is
+                -- still free to. There is simply a record now.
+                owe(payout.id, payout.name or payout.id, amount,
+                    paidFrom[payout.id], 'pot_payout')
+
+                ArenaLog('PAYOUT UNDELIVERED: %d owed to %s on match %s -- they are not on the server. It is on the unpaid ledger and will be paid when they come back; /arenaadmin can list it.',
                     amount, tostring(payout.id), tostring(matchId))
                 incidentWebhook('Payout not delivered', 'A settled payout could not be paid to its winner.', {
                     { name = 'Match', value = tostring(matchId) },
@@ -1820,7 +1840,14 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                         bet.fromEntryFee == true and 'notify.pot_won' or 'notify.spectator_bet_won',
                         'success', money(amount))
                 elseif amount > 0 then
-                    ArenaLog('SIDE-BET PAYOUT UNDELIVERED: %d owed to %s (citizenid %s) on match %s.',
+                    -- THE SAME LEDGER THE REFUND PATH USES, eleven hundred
+                    -- lines up: a stake that cannot be handed back is owed,
+                    -- and a WINNING side-bet that cannot be paid was thrown
+                    -- away. `bet.account` is the account the stake actually
+                    -- left, which is where the winnings belong.
+                    owe(bet.citizenid, bet.name or bet.src, amount, bet.account, 'sidebet_payout')
+
+                    ArenaLog('SIDE-BET PAYOUT UNDELIVERED: %d owed to %s (citizenid %s) on match %s. It is on the unpaid ledger and will be paid when they come back.',
                         amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
                     incidentWebhook('Side-bet payout not delivered',
                         'A winning spectator side-bet could not be paid.', {

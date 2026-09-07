@@ -273,6 +273,52 @@ t.test('ApplyHouseCut at 99 percent leaves a hundredth to play for', function()
     t.equals(cut, 990)
 end)
 
+-- ======================================================================
+-- WHICH WAY IT ROUNDS, WHICH NOTHING ASKED
+--
+-- Every case above uses a pot of 1000, and 1000 times any whole percent
+-- divides by 100 exactly -- so the rounding rule was invisible to all four
+-- of them by construction. Swapping math.floor for math.ceil in
+-- Arena.ApplyHouseCut passed the entire 79-file suite.
+--
+-- It is not a rounding detail, it is a decision about whose money the odd
+-- unit is. The house cut is taken OFF the players' pot, so rounding it down
+-- leaves the remainder with them. Rounding up would take it, quietly, on
+-- every pot that does not divide evenly -- which is most of them once entry
+-- fees and side-bets are summed.
+-- ======================================================================
+
+t.test('the house cut rounds DOWN, so the odd unit stays with the players', function()
+    -- 999 at 7% is 69.93. Down is 69 and the players keep 930; up would be
+    -- 70 and they would keep 929.
+    local net, cut = arenaWith(function(betting) betting.houseCutPercent = 7 end).ApplyHouseCut(999)
+    t.equals(cut, 69, 'the house rounded its own cut up, taking a unit off the players')
+    t.equals(net, 930)
+
+    -- 101 at 33% is 33.33.
+    local net2, cut2 = arenaWith(function(betting) betting.houseCutPercent = 33 end).ApplyHouseCut(101)
+    t.equals(cut2, 33, 'the house rounded its own cut up')
+    t.equals(net2, 68)
+end)
+
+t.test('and nothing is lost or invented at any pot or percentage', function()
+    -- The conservation half, swept rather than sampled: whatever the
+    -- rounding does, net plus cut is the pot exactly, the cut is never more
+    -- than the exact share, and neither half ever goes negative.
+    for percent = 0, 100 do
+        local Arena = arenaWith(function(betting) betting.houseCutPercent = percent end)
+        for _, pot in ipairs({ 0, 1, 7, 99, 100, 101, 999, 1000, 1001, 12345, 99999 }) do
+            local net, cut = Arena.ApplyHouseCut(pot)
+            t.equals(net + cut, pot,
+                ('%d%% of %d: net %d + cut %d does not add up to the pot'):format(percent, pot, net, cut))
+            t.isTrue(net >= 0 and cut >= 0,
+                ('%d%% of %d produced a negative half'):format(percent, pot))
+            t.isTrue(cut <= (pot * percent) / 100 + 0.0001,
+                ('%d%% of %d took %d, which is more than the exact share'):format(percent, pot, cut))
+        end
+    end
+end)
+
 t.test('ApplyHouseCut at 100 percent leaves nothing to pay out', function()
     local net, cut = arenaWith(function(betting) betting.houseCutPercent = 100 end).ApplyHouseCut(1000)
     t.equals(net, 0)

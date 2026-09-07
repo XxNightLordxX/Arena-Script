@@ -70,6 +70,7 @@ local function newFixture(mutate)
         shaderCalls = {},  -- every SetEntityDrawOutlineShader, likewise
         nextBlip = 1,
         streamed = { [MATE] = true, [FOE] = true, [FOE2] = true },
+        printed = {},      -- every console line, so a silent failure is testable
     }
 
     local env = Sandbox.newArenaEnv({
@@ -90,6 +91,10 @@ local function newFixture(mutate)
 
         RegisterNetEvent = function(name, fn) handlers[name] = fn end,
         AddEventHandler = function(name, fn) handlers[name] = fn end,
+        -- CAPTURED RATHER THAN LET THROUGH. The whole point of the startup
+        -- check below is that it prints; a spec that cannot read the console
+        -- cannot tell a warning that was written from one that was not.
+        print = function(line) f.printed[#f.printed + 1] = tostring(line) end,
         TriggerServerEvent = function() end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         GetResourceState = function() return 'missing' end,
@@ -229,6 +234,8 @@ local function newFixture(mutate)
 
     f.env = env
     f.step = runner.step
+    --- Everything the client has printed, as one string.
+    function f.console() return table.concat(f.printed, '\n') end
     -- THE CLOCK THE THREAD RUNNER WAS ALREADY KEEPING, and never read. Every
     -- guarantee in this file until now is about WHAT is drawn; the cadence
     -- tests below are about HOW OFTEN, and they cannot be written without it.
@@ -1217,6 +1224,70 @@ t.test('and an artifact too old to have the native is not killed by it', functio
             .. 'backstop that shares it -- down with it')
 
     f.fire('crimson_arena:client:exitArena', {})
+end)
+
+-- ======================================================================
+-- AND THE ONE THING AN OLD ARTIFACT WAS NEVER TOLD
+--
+-- The guard above is correct and it is also completely silent. A client
+-- without the native skips the call, SET_ENTITY_DRAW_OUTLINE goes on
+-- returning nothing at all, and refreshOutlines goes on truthfully
+-- reporting that it drew a teammate into a mask that emitted no geometry.
+--
+-- What the operator sees is: teams assigned, outlines "drawn", a clean
+-- console, no haze. There is nothing in that to act on. It is the picture
+-- that sent four fixes at three layers that were already working, over
+-- several days, and none of them could ever have helped.
+--
+-- These two tests are the difference between that and an answer.
+-- ======================================================================
+
+t.test('a build too old for the native SAYS SO, unprompted, and names it', function()
+    local f = newFixture()
+    f.env.SetEntityDrawOutlineRenderTechnique = nil
+    f.env.ResetEntityDrawOutlineRenderTechnique = nil
+
+    -- The startup check waits for the world before it asks anything.
+    for _ = 1, 3 do f.step() end
+
+    local console = f.console()
+    t.isTrue(console:find('TEAM OUTLINE CANNOT WORK ON THIS BUILD', 1, true) ~= nil,
+        ('an artifact that physically cannot draw the haze said nothing about it:\n%s'):format(console))
+    t.isTrue(console:find('SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE', 1, true) ~= nil,
+        'the warning does not name the native, so nobody can check their artifact against it')
+    t.isTrue(console:find('update the server artifact', 1, true) ~= nil,
+        'the warning does not say what to do about it')
+    -- AND THAT THE REST OF TEAMS IS FINE, because an operator reading only
+    -- the first line would otherwise reasonably conclude team modes are
+    -- broken and turn them off.
+    t.isTrue(console:find('friendly fire', 1, true) ~= nil,
+        'the warning does not say that everything else about teams still works')
+end)
+
+t.test('and a build that HAS the native does not nag about it', function()
+    -- The other half, and it is not padding: a warning printed at every
+    -- operator on every start is a warning nobody reads, including the ones
+    -- it is actually about.
+    local f = newFixture()
+    for _ = 1, 3 do f.step() end
+
+    t.isTrue(f.console():find('TEAM OUTLINE CANNOT WORK', 1, true) == nil,
+        'a client that can draw the haze perfectly well was warned that it cannot')
+end)
+
+t.test('and it stays quiet on a server whose modes are all free-for-all', function()
+    -- Nothing to warn about where nothing can reach it. This is the check
+    -- that keeps the line above meaningful rather than ambient.
+    local f = newFixture(function(config)
+        for _, mode in pairs(config.Modes) do mode.teams = false end
+    end)
+    f.env.SetEntityDrawOutlineRenderTechnique = nil
+    f.env.ResetEntityDrawOutlineRenderTechnique = nil
+
+    for _ = 1, 3 do f.step() end
+
+    t.isTrue(f.console():find('TEAM OUTLINE CANNOT WORK', 1, true) == nil,
+        'a server with no team mode at all was warned that its team outline will not draw')
 end)
 
 t.test('and the group is handed back, because it belongs to the whole client', function()

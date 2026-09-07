@@ -2631,3 +2631,51 @@ CreateThread(function()
         for _, line in ipairs(checked) do print('    ' .. line) end
     end
 end)
+
+-- ======================================================================
+-- WHETHER THIS BUILD CAN DRAW THE TEAM OUTLINE AT ALL
+--
+-- The haze is the one feature in this resource that can fail in complete
+-- silence. holdOutlineTechnique is guarded -- it has to be, a nil call in
+-- the per-frame thread would take the death backstop down with it -- and a
+-- guard that skips is indistinguishable, from every log line this file
+-- prints, from a guard that ran. SET_ENTITY_DRAW_OUTLINE is void besides,
+-- so the frame after it reports success whatever happened.
+--
+-- Put together, an operator on an artifact older than the native gets:
+-- teams assigned, outlines "drawn", a clean console, and no haze. There is
+-- nothing in that picture to act on, and it is exactly the picture that
+-- sent four separate fixes at three layers that were already working.
+--
+-- So it is said once, out loud, and NOT behind Config.Debug: a feature that
+-- cannot work on this build is not a debugging detail.
+-- ======================================================================
+
+CreateThread(function()
+    -- Same reason as the thread above: after the world is up, and never
+    -- allowed to raise. A diagnostic may not be the thing that breaks the
+    -- resource.
+    Wait(2000)
+
+    -- Nothing to say on a server whose enabled modes are all free-for-all:
+    -- a feature nobody can reach is not a warning worth printing at them.
+    local teamMode = false
+    for _, mode in ipairs(Arena.GetEnabledModes()) do
+        if mode.teams then teamMode = true break end
+    end
+    if not teamMode then return end
+
+    if SetEntityDrawOutlineRenderTechnique then
+        if Config.Debug then
+            print('[crimson_arena] team outline: this build has SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE, so teammates will be outlined.')
+        end
+        return
+    end
+
+    print('[crimson_arena] TEAM OUTLINE CANNOT WORK ON THIS BUILD. Your FiveM artifact does not have')
+    print('[crimson_arena]   SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE (a CFX native from around May 2025).')
+    print('[crimson_arena] Without it the outline is drawn in the "unlit" technique group, which ped shaders')
+    print('[crimson_arena] do not implement -- so the mask comes out empty and teammates show no colour at all.')
+    print('[crimson_arena] Everything else about teams works: sides, spawns, friendly fire, scoring, payouts.')
+    print('[crimson_arena] The fix is to update the server artifact. Nothing in config.lua can turn this on.')
+end)

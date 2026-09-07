@@ -12,6 +12,10 @@
 # mutated sandbox into the next one. This script aggregates their exit codes
 # and fails if any one of them failed -- the same contract the `Specs` step in
 # .github/workflows/lua-check.yml relies on.
+#
+# It also runs the two gates CI runs BEFORE the specs -- parse and luacheck --
+# so that a green run of this script means a green run of CI. See the block
+# below for why that is worth the few seconds of duplication.
 
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -24,6 +28,66 @@ LUA_BIN="${LUA_BIN:-lua5.4}"
 if ! command -v "$LUA_BIN" >/dev/null 2>&1; then
     echo "tests/run.sh: '$LUA_BIN' not found on PATH -- install Lua 5.4 (the runtime this resource ships against) to run this suite." >&2
     exit 2
+fi
+
+# ----------------------------------------------------------------------
+# THE TWO GATES CI RUNS BEFORE THE SPECS, AND THIS SCRIPT DID NOT.
+#
+# .github/workflows/lua-check.yml has three: every file PARSES, luacheck is
+# clean against this resource's own allow-list, and the specs pass. Only the
+# third was here -- so a green run of this script said nothing about the
+# other two, and a change could be committed and pushed on the strength of it
+# and still go red. That is not hypothetical; it happened, on a set of
+# shadowed locals in a spec file, with the whole suite passing.
+#
+# They run FIRST, in CI's order, because a file that does not parse makes
+# everything after it meaningless.
+#
+# Run twice in CI -- once as its own step, once here -- which costs a couple
+# of seconds and is worth it: the alternative is a switch to turn this off,
+# and a switch to turn a guard off is how the guard stops guarding. CI keeps
+# its separate steps so its errors stay granular and annotate the right file.
+#
+# Both skip with a notice when the tool is absent, exactly as the Node panel
+# tests below do. Neither is a dependency of the resource itself.
+# ----------------------------------------------------------------------
+
+LUAC_BIN="${LUAC_BIN:-luac5.4}"
+LUACHECK_BIN="${LUACHECK_BIN:-luacheck}"
+
+if command -v "$LUAC_BIN" >/dev/null 2>&1; then
+    echo "==> parse (every .lua file)"
+    parse_status=0
+    while IFS= read -r -d '' file; do
+        if ! "$LUAC_BIN" -p "$file"; then
+            echo "tests/run.sh: $file DOES NOT PARSE under lua5.4." >&2
+            parse_status=1
+        fi
+    done < <(find .. -type f -name '*.lua' -print0)
+    if [ "$parse_status" -ne 0 ]; then
+        echo "============================================================"
+        echo "PARSE FAILED -- nothing else was run."
+        exit 1
+    fi
+    echo "    every .lua file parses"
+    echo ""
+else
+    echo "tests/run.sh: '$LUAC_BIN' not found -- SKIPPED the parse gate that CI runs first." >&2
+fi
+
+if command -v "$LUACHECK_BIN" >/dev/null 2>&1; then
+    echo "==> luacheck"
+    # From the resource root, which is where .luacheckrc lives and where CI
+    # runs it from. A warning is a CI failure, so it is one here too.
+    if ! ( cd .. && "$LUACHECK_BIN" . ); then
+        echo "============================================================"
+        echo "LUACHECK FAILED -- the specs were not run. CI treats a warning as a failure."
+        exit 1
+    fi
+    echo ""
+else
+    echo "tests/run.sh: '$LUACHECK_BIN' not found -- SKIPPED the lint gate CI runs. Install it with" >&2
+    echo "              'luarocks install luacheck', or your distribution's lua-check package." >&2
 fi
 
 overall_status=0

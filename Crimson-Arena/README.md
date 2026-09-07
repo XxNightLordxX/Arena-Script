@@ -1217,9 +1217,21 @@ Set `Config.Debug = true` and restart. It is chatty by design — every stake, r
 ## Development
 
 ```sh
-luacheck .          # against .luacheckrc: exact native and global allow-list
-tests/run.sh        # every tests/*_spec.lua under plain lua5.4, then tests/panel/ under node
+tests/run.sh        # all three CI gates: parse, luacheck, then the specs
 ```
+
+That one command is the whole check. It runs the same three gates as CI, in
+the same order — every `.lua` file parses, `luacheck .` is clean against
+`.luacheckrc`, and every `tests/*_spec.lua` passes under plain lua5.4
+followed by `tests/panel/` under node. A green run of it means a green run of
+CI.
+
+It did not always. The parse and lint gates lived only in the workflow, so a
+change could pass the whole suite locally and still go red on a shadowed
+local or a stray global — which is exactly what happened. They are in the
+script now. `luac5.4` and `luacheck` are skipped with a notice where they are
+not installed, like `node` below, since neither is a dependency of the
+resource itself.
 
 `tests/panel/` is the odd one out: it loads the real, unmodified `html/app.js`
 in a DOM shim under Node and asserts what the panel puts **on the wire**, not
@@ -1229,7 +1241,9 @@ never reads reaches the server as `undefined` and silently falls back, with
 both ends looking right. It runs in CI, and `run.sh` skips it with a notice
 where `node` is not installed rather than failing.
 
-Both run on every push and pull request via `.github/workflows/lua-check.yml`, along with `luac5.4 -p` over every `.lua` file.
+All three run on every push and pull request via
+`.github/workflows/lua-check.yml`, which keeps them as separate steps so a
+failure annotates the right file.
 
 `shared/arena.lua` calls no native at all. That is what lets the test suite load the real, unmodified production file under plain Lua and exercise every rule directly.
 

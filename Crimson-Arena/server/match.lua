@@ -498,6 +498,33 @@ local function sendExitArena(src, payload)
     TriggerClientEvent('crimson_arena:client:exitArena', src, payload)
 end
 
+--- Sends one member of the roster home, unless they have already gone.
+---
+--- An eliminated fighter can now leave the arena before the round is over
+--- (see OnDeath), and they keep their row while they do -- the results board
+--- ranks off it and the payout reads it. So every roster walk that ends a
+--- round reaches somebody who is already standing in the lobby, and telling
+--- them to leave a second time teleports them back to the arena's return
+--- point from wherever they had walked to in the minutes since.
+---
+--- Nothing else about a second exit is harmful -- the ammunition is already
+--- reclaimed, the flag already down, and the client's restore nils what it
+--- carried on the first pass -- which is exactly why the teleport was the
+--- only symptom and would have been read as a stray teleport rather than a
+--- double exit.
+---
+--- One helper rather than a check at each of the three round-ending walks,
+--- for the reason sendExitArena gives above itself.
+--- @param player table -- a live roster row
+--- @param payload table
+--- @return boolean sent
+local function sendPlayerHome(player, payload)
+    if player.leftArena then return false end
+    player.leftArena = true
+    sendExitArena(player.src, payload)
+    return true
+end
+
 --- One event to every fighter and every spectator of a match.
 --- @param match table
 --- @param event string
@@ -1275,6 +1302,7 @@ function ArenaMatch.Start(matchId)
         player.alive = true
         player.lives = lives
         player.placement = nil
+        player.leftArena = nil
 
         -- RE-RESOLVED, NOT TRUSTED. What the lobby stored was checked against
         -- the catalogue as it stood when the player picked it, and an
@@ -1372,8 +1400,8 @@ function ArenaMatch.OnDeath(src, killerSrc)
         -- back up -- visible, unfrozen and still holding the arena loadout,
         -- in a round they are out of. Refused registration therefore means
         -- refused camera: the hold stays, which is inert and recoverable.
-        local spectate = Config.Match.spectateOnElimination == true
-            and ArenaLobby.AddSpectator(id, match.id) == true
+        local watching = Config.Match.spectateOnElimination == true
+        local spectate = watching and ArenaLobby.AddSpectator(id, match.id) == true
 
         -- ELIMINATION IS A DEATH THE PLAYER DOES NOT COME BACK FROM, so it
         -- is the one that most needs saying out loud. A respawn revives them
@@ -1393,6 +1421,33 @@ function ArenaMatch.OnDeath(src, killerSrc)
 
         TriggerClientEvent('crimson_arena:client:eliminated', id, { matchId = match.id, spectate = spectate })
         ArenaNotifyKey(id, 'notify.eliminated', 'error')
+
+        -- AND IF THEY ARE NOT WATCHING, THEY GO HOME. config.lua says what
+        -- this setting means -- "Eliminated players watch the rest of the
+        -- match instead of being sent straight back to the lobby" -- and
+        -- switching it off did not send anybody anywhere. It only withheld
+        -- the camera, and the hold above stayed: invisible, frozen,
+        -- collisionless and looking at their own invisible body, with no
+        -- panel, no camera and no way out, until the round happened to end.
+        -- On a ten-minute round that is ten minutes of a black screen for
+        -- dying first.
+        --
+        -- The hold is right to stay while they are WATCHING -- released,
+        -- they would be visible and mortal in a live arena, which is what
+        -- the comment above is about. Going home releases it properly:
+        -- leaveArena stands them up, restores what they walked in with and
+        -- puts them at the return point, which is what the setting says.
+        --
+        -- THE ROW STAYS EITHER WAY. They are still a contestant: the results
+        -- board ranks off this row and the payout reads it, so this is an
+        -- exit from the ARENA, not from the match. ArenaLobby.Leave is what
+        -- would take them off the roster, and it is deliberately not called.
+        --
+        -- Refused registration counts as not watching, for the same reason:
+        -- the camera it was going to open is exactly what will not be there.
+        if not spectate then
+            sendPlayerHome(player, { returnCoords = toPoint(Config.Lobby.returnCoords) })
+        end
     end
 
     ArenaLobby.Broadcast()
@@ -1593,7 +1648,10 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         -- closes the round down on the client -- the HUD, the countdown, the
         -- teleport home. A board drawn ahead of that is cleared by the tidy
         -- up behind it.
-        sendExitArena(player.src, { returnCoords = returnCoords, results = results })
+        -- The board still goes to a fighter who left the arena early: they
+        -- are on the roster, they may have been paid, and the results event
+        -- below is the one the panel actually draws.
+        sendPlayerHome(player, { returnCoords = returnCoords, results = results })
         TriggerClientEvent('crimson_arena:client:results', player.src, results)
     end
 
@@ -1722,7 +1780,7 @@ function ArenaMatch.Abort(matchId, reasonKey)
         ArenaNotifyKey(player.src, reason, 'warning')
     end
     for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
-        sendExitArena(player.src, { returnCoords = returnCoords })
+        sendPlayerHome(player, { returnCoords = returnCoords })
     end
     for src in pairs(match.spectators or {}) do
         -- Same double-send guard pushToMatch applies: an eliminated fighter
@@ -1783,7 +1841,7 @@ function ArenaMatch.RemovePlayer(src, reasonKey)
         -- Placed on the way out so the results board can still rank them
         -- rather than leaving a hole where they were.
         if not player.placement then player.placement = placementFor(match) end
-        sendExitArena(id, {
+        sendPlayerHome(player, {
             returnCoords = toPoint(Config.Lobby.returnCoords),
         })
     end

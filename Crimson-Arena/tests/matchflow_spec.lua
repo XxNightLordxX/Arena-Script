@@ -1942,4 +1942,129 @@ t.test('and a revive OUTSIDE a match re-asserts nothing', function()
     t.equals(f.armour, 0, 'a revive outside the arena handed out arena armour')
 end)
 
+-- ======================================================================
+-- WHAT "NOT WATCHING" ACTUALLY DOES TO AN ELIMINATED FIGHTER
+--
+-- config.lua describes Config.Match.spectateOnElimination as "Eliminated
+-- players watch the rest of the match instead of being sent straight back to
+-- the lobby". Switching it off sent nobody anywhere. It withheld the camera
+-- and left the fighter inside ClearDeadState's hold -- invisible, frozen,
+-- collisionless, no panel, no camera, no way out -- until the round happened
+-- to end on its own.
+--
+-- Going home is what the setting says, and it is also the only safe release:
+-- the hold is deliberately kept while a player is WATCHING, because standing
+-- them up in a live arena makes them visible and mortal in a round they are
+-- out of.
+-- ======================================================================
+
+--- Three fighters, so an elimination leaves a round still being fought.
+local function threeUp(mutate)
+    local f = newFixture(function(config)
+        instantRound(config)
+        if mutate then mutate(config) end
+    end)
+    return f, newMatch(f, 3)
+end
+
+t.test('THE DEFECT: with spectating off, an eliminated fighter is sent home', function()
+    local f, match = threeUp(function(config) config.Match.spectateOnElimination = false end)
+    goLive(f, match)
+
+    t.isTrue(f.M.OnDeath(3, 1), 'the death was not accepted')
+    t.equals(match.state, 'live', 'the round ended, so nobody was left held anywhere')
+
+    t.equals(f.count('crimson_arena:client:exitArena', 3), 1,
+        'the eliminated fighter was left in the dead-state hold for the rest of the round')
+
+    local told = f.lastPayload('crimson_arena:client:eliminated', 3)
+    t.isNotNil(told, 'they were never told they were out')
+    t.isFalse(told.spectate, 'a camera was opened with spectating switched off')
+end)
+
+t.test('and they are still a contestant while they wait', function()
+    -- An exit from the ARENA, not from the match. ArenaLobby.Leave is what
+    -- takes somebody off the roster, and this path deliberately does not
+    -- call it: the results board ranks off this row and the payout reads it.
+    local f, match = threeUp(function(config) config.Match.spectateOnElimination = false end)
+    goLive(f, match)
+    f.M.OnDeath(3, 1)
+
+    t.isNotNil(match.players[3], 'going home took them off the roster')
+    t.isTrue(match.players[3].placement ~= nil, 'they left without a placement to be ranked by')
+end)
+
+t.test('and the round end does not teleport them a second time', function()
+    -- The only symptom of a double exit, and the one that would have read as
+    -- a stray teleport: minutes after walking away from the lobby they would
+    -- be pulled back to the arena return point.
+    local f, match = threeUp(function(config) config.Match.spectateOnElimination = false end)
+    f.money.pot = 3000
+    f.money.payouts = { { id = 1, amount = 2700, reason = 'winner' } }
+    goLive(f, match)
+
+    f.M.OnDeath(3, 1)
+    t.equals(f.count('crimson_arena:client:exitArena', 3), 1, 'the early exit did not happen')
+
+    f.M.OnDeath(2, 1)       -- one left standing: the round ends
+    f.step()
+
+    t.equals(f.count('crimson_arena:client:exitArena', 3), 1,
+        'the fighter who had already gone home was sent home again at the end of the round')
+
+    -- And they still get the board, which is the reason the row was kept.
+    t.isNotNil(f.lastPayload('crimson_arena:client:results', 3),
+        'the fighter who left early was never shown how the round finished')
+
+    -- The other two are unaffected: they leave at the end, once each.
+    t.equals(f.count('crimson_arena:client:exitArena', 1), 1, 'the winner did not go home')
+    t.equals(f.count('crimson_arena:client:exitArena', 2), 1, 'the runner-up did not go home')
+end)
+
+t.test('and with spectating ON they stay, and go home with everybody else', function()
+    -- The other direction. A fix that sent every eliminated fighter home
+    -- would delete the spectator feature and pass the tests above.
+    local f, match = threeUp()
+    t.isTrue(f.Config.Match.spectateOnElimination,
+        'spectating no longer ships on -- this test is aimed at the wrong default')
+    goLive(f, match)
+
+    f.M.OnDeath(3, 1)
+    t.equals(f.count('crimson_arena:client:exitArena', 3), 0,
+        'a fighter who was supposed to watch the rest of the round was sent home')
+
+    local told = f.lastPayload('crimson_arena:client:eliminated', 3)
+    t.isNotNil(told, 'they were never told they were out')
+    t.isTrue(told.spectate, 'they were told to watch nothing')
+
+    f.M.OnDeath(2, 1)
+    f.step()
+    t.equals(f.count('crimson_arena:client:exitArena', 3), 1,
+        'the watching fighter was never sent home at all')
+end)
+
+t.test('and a new round clears the flag, so they can be sent home again', function()
+    -- Rows are reused between rounds -- which is why `placement` is reset on
+    -- the line above this flag rather than assumed nil. Left set, the guard
+    -- that stops the SECOND exit of one round becomes the thing that stops
+    -- the FIRST exit of the next: the player finishes that round still
+    -- standing in the arena while everybody else is sent home.
+    local f, match = threeUp(function(config) config.Match.spectateOnElimination = false end)
+    goLive(f, match)
+    f.M.OnDeath(3, 1)
+    t.isTrue(match.players[3].leftArena, 'the early exit did not happen, so there is no flag to clear')
+
+    match.state = 'lobby'
+    goLive(f, match)
+
+    for src = 1, 3 do
+        t.isNil(match.players[src].leftArena,
+            ('fighter %d started the round already marked as having left it'):format(src))
+    end
+
+    f.M.OnDeath(3, 1)
+    t.equals(f.count('crimson_arena:client:exitArena', 3), 2,
+        'the second round could not send the same fighter home')
+end)
+
 os.exit(t.summary())

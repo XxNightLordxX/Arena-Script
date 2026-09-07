@@ -1374,4 +1374,74 @@ t.test('and it says so, rather than failing silently', function()
 end)
 
 
+t.test('a blip is drawn in its own team\'s colour', function()
+    -- THE DOT AND THE EDGE ARE ONE ANSWER, and only the edge was checked.
+    -- Config.Teams gives each side a blipColor, the fixture records every
+    -- SetBlipColour, and nothing asserted the two ever met -- so every dot on
+    -- the map could be drawn in the wrong team's colour with the whole suite
+    -- green.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    f.step()
+
+    local crimson = f.env.Arena.GetTeamByKey('crimson')
+    local ash = f.env.Arena.GetTeamByKey('ash')
+    t.isNotNil(crimson and crimson.blipColor, 'the crimson team ships with no blip colour to draw')
+    t.isNotNil(ash and ash.blipColor, 'nor does ash')
+    t.isTrue(crimson.blipColor ~= ash.blipColor,
+        'both sides share one blip colour, so a dot says nothing about whose it is')
+
+    local drawn = {}
+    for _, blip in pairs(f.blips) do drawn[blip.ped - 1000] = blip.colour end
+
+    -- WITHOUT THE RADAR only your own side is on the map, which is the whole
+    -- point of the mode -- so this is the one colour there is to check.
+    t.equals(drawn[MATE], crimson.blipColor, 'a teammate is not drawn in the team colour')
+    t.equals(drawn[FOE], nil, 'and an opponent should have no dot at all without the radar')
+
+    -- WITH IT ON everybody is drawn, and each side in its own colour -- so a
+    -- host who switches the radar on must not get one colour for the room.
+    local lit = newFixture()
+    lit.enterLive({ radar = true })
+    lit.hud()
+    lit.step()
+
+    local all = {}
+    for _, blip in pairs(lit.blips) do all[blip.ped - 1000] = blip.colour end
+    t.equals(all[MATE], crimson.blipColor, 'a teammate lost their colour when the radar came on')
+    t.equals(all[FOE], ash.blipColor, 'an opponent is not drawn in their own side\'s colour')
+    t.equals(all[FOE2], ash.blipColor, 'nor is the other one')
+end)
+
+t.test('the haze needs the team on the scoreboard row, and the server sends it', function()
+    -- `team` ON THE MATCHHUD ROW IS THE WHOLE INPUT to who gets hazed. Drop
+    -- it server-side and every player reads as sideless: the haze goes off
+    -- for the entire round, and nothing anywhere noticed. This asserts the
+    -- dependency from the client end, so that the server-side assertion in
+    -- teamsguard_spec has something to be the other half of.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    f.step()
+    t.isTrue(f.outlines[1000 + MATE] == true,
+        'the teammate is not hazed to begin with, so this test proves nothing')
+
+    -- The same round, the same roster, with the one field gone.
+    local sideless = scoreboard()
+    for _, row in ipairs(sideless) do row.team = nil end
+    f.hud(sideless)
+    f.step()
+
+    t.isTrue(f.outlines[1000 + MATE] ~= true,
+        'a roster with no team on it still hazed somebody -- the haze is reading something else')
+    t.equals(f.outlineCount(), 0, 'and nobody at all should be hazed without sides')
+
+    -- AND IT COMES BACK when the field does, so the loss above is the field
+    -- and not the round having moved on.
+    f.hud()
+    f.step()
+    t.isTrue(f.outlines[1000 + MATE] == true, 'the haze did not come back with the team field')
+end)
+
 os.exit(t.summary())

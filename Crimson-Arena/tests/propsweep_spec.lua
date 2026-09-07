@@ -411,3 +411,5 @@ t.test('and the sweep says so in the console rather than tidying up silently', f
     t.isTrue(table.concat(c.printed, '\n'):find('stray', 1, true) ~= nil,
         'a stray piece was swept and nothing was printed about it')
 end)
+
+os.exit(t.summary())

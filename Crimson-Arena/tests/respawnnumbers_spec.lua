@@ -520,4 +520,4 @@ t.test('and the points handed out are not avoided for ever', function()
         ('%d respawn points are still being avoided minutes after they were handed out'):format(kept))
 end)
 
-t.summary()
+os.exit(t.summary())

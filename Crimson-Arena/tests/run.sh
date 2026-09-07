@@ -94,13 +94,39 @@ overall_status=0
 total_files=0
 failed_files=()
 
+# A SPEC IS JUDGED ON TWO THINGS: its exit code, and whether it reported a
+# tally at all.
+#
+# The second half is not belt-and-braces. testkit runs every t.test() body in
+# its own pcall, so a failing assertion fails that one test and nothing else
+# -- the process still ends normally, and the ONLY thing that turns a failed
+# test into a failed process is `os.exit(t.summary())` at the foot of the
+# file. Two spec files had drifted off that: one never called summary at all,
+# the other called it and threw the code away. Between them 20-odd tests
+# could print [FAIL] while this script printed ALL SPEC FILES PASSED, which
+# is the worst thing a test runner can do.
+#
+# So the tally line summary() prints is now required. A file that forgets the
+# exit line fails here instead of passing silently, and nobody has to
+# remember.
 for spec in *_spec.lua; do
     [ -e "$spec" ] || continue
     total_files=$((total_files + 1))
     echo "==> $spec"
-    if ! "$LUA_BIN" "$spec"; then
+
+    spec_output=$("$LUA_BIN" "$spec" 2>&1)
+    spec_status=$?
+    printf '%s\n' "$spec_output"
+
+    if [ "$spec_status" -ne 0 ]; then
         overall_status=1
         failed_files+=("$spec")
+    elif ! printf '%s' "$spec_output" | grep -qE '^[0-9]+ passed, [0-9]+ failed$'; then
+        echo "tests/run.sh: $spec exited 0 but printed no 'N passed, M failed' tally." >&2
+        echo "              Its last line must be: os.exit(t.summary())" >&2
+        echo "              Without it a failing test cannot fail this run." >&2
+        overall_status=1
+        failed_files+=("$spec (no tally)")
     fi
     echo ""
 done

@@ -90,16 +90,29 @@ local function newStats(mutate, overrides)
                     __index = function()
                         return function(_self, sql, params, cb)
                             queries[#queries + 1] = { sql = sql, params = params }
-                            -- NIL, not an empty table. There is no real
-                            -- database behind this fixture, so a SELECT
-                            -- has nothing to answer with -- and nil is
-                            -- what makes GetLeaderboard take its
-                            -- documented fallback to the session rows.
-                            -- An empty TABLE is a valid result meaning
+                            if type(cb) ~= 'function' then return end
+
+                            -- A WRITE and a READ are answered differently,
+                            -- because nil means different things to each.
+                            --
+                            -- To a SELECT, nil is "there is nothing here",
+                            -- and it is what makes GetLeaderboard take its
+                            -- documented fallback to the session rows. An
+                            -- empty TABLE is instead a valid result meaning
                             -- "the board is empty", which would hide every
-                            -- assertion in this file behind a board that
-                            -- is legitimately blank.
-                            if type(cb) == 'function' then cb(nil) end
+                            -- assertion in this file behind a board that is
+                            -- legitimately blank.
+                            --
+                            -- To an UPSERT, nil is "the write FAILED", and
+                            -- Flush now puts a failed row back on the queue
+                            -- rather than dropping it. Answering every query
+                            -- with nil made this fixture claim that a
+                            -- database it is standing in for had refused
+                            -- every write it was ever handed -- which is not
+                            -- what any test in this file is about, and is
+                            -- not what a real oxmysql does: an INSERT that
+                            -- lands comes back with a result.
+                            if sql:find('INSERT', 1, true) then cb({}) else cb(nil) end
                         end
                     end,
                 })

@@ -37,8 +37,20 @@ print('leaderboard_spec')
 --- The real server/stats.lua, with oxmysql modelled rather than stubbed:
 --- every query is recorded, so "the database was not touched" is a fact
 --- this file can check rather than an assumption.
-local function newStats(mutate)
+---
+--- `control` is read on every call rather than at build time, so a test can
+--- take the database away between two flushes on the same instance -- which
+--- is the whole shape of the retry: fail, then come back.
+---   control.oxmysql -- what GetResourceState answers ('started' by default)
+---   control.throw   -- the export raises, the way an unreachable server does
+---   control.fail    -- the query goes out and comes back nil
+---   control.defer   -- the callback is HELD rather than called, so a test can
+---                      run code in the window a real oxmysql leaves open
+---                      between dispatch and answer, then settle it by hand
+local function newStats(mutate, control)
+    control = control or {}
     local queries = {}
+    local held = {}
     local env = Sandbox.newEnv({
         CreateThread = function() end,
         Wait = function() end,
@@ -47,7 +59,7 @@ local function newStats(mutate)
         AddEventHandler = function() end,
         RegisterCommand = function() end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
-        GetResourceState = function() return 'started' end,
+        GetResourceState = function() return control.oxmysql or 'started' end,
         ArenaLog = function() end,
         ArenaDebug = function() end,
         exports = setmetatable({}, {
@@ -56,8 +68,19 @@ local function newStats(mutate)
                 return setmetatable({}, {
                     __index = function()
                         return function(_self, sql, params, cb)
+                            -- Raised BEFORE the query is recorded: a throw out
+                            -- of the export means nothing reached the database.
+                            if control.throw then error('database unreachable', 0) end
                             queries[#queries + 1] = { sql = sql, params = params }
-                            if type(cb) == 'function' then cb({}) end
+                            if type(cb) ~= 'function' then return end
+                            if control.defer then
+                                held[#held + 1] = cb
+                                return
+                            end
+                            -- Spelled out rather than `control.fail and nil or {}`,
+                            -- which is `{}` in both directions: nil cannot be
+                            -- carried through and/or.
+                            if control.fail then cb(nil) else cb({}) end
                         end
                     end,
                 })
@@ -70,7 +93,16 @@ local function newStats(mutate)
     if mutate then mutate(env.Config) end
     Sandbox.loadInto('../server/stats.lua', env)
 
-    return { env = env, S = env.ArenaStats, queries = queries }
+    --- Answers every held callback with `result`, the way oxmysql eventually
+    --- would. nil is a failed write.
+    local function settle(result)
+        local batch = held
+        held = {}
+        for _, cb in ipairs(batch) do cb(result) end
+        return #batch
+    end
+
+    return { env = env, S = env.ArenaStats, queries = queries, settle = settle }
 end
 
 --- Reads the board back as a list of names, in the order the panel gets it.
@@ -191,6 +223,144 @@ t.test('and with it ON, the schema and the flush really go out', function()
 
     record(s, 'A', 'Somebody', 1, 5, 100)
     t.equals(s.S.Flush(), 1, 'Flush wrote nothing with the database on')
+end)
+
+-- ======================================================================
+-- A WRITE THAT FAILED IS NOT A WRITE
+-- ======================================================================
+--
+-- Flush swaps the queue out before the first query goes out, which is what
+-- makes a Record landing mid-flush safe -- and is also what makes a failed
+-- write unrecoverable, because the delta is out of the queue before anybody
+-- knows whether it landed. It used to count every row in the batch as
+-- written, log a successful flush, and return that count, whether or not a
+-- single byte reached the database.
+--
+-- The observable throughout is the NEXT flush: a row that was kept comes
+-- back out as an upsert, carrying its full totals.
+
+--- The upserts sent so far, as { citizenid, wins, kills, earnings }.
+local function upserts(stats, from)
+    local out = {}
+    for index = (from or 0) + 1, #stats.queries do
+        local params = stats.queries[index].params
+        out[#out + 1] = {
+            citizenid = params[1], wins = params[3], kills = params[5], earnings = params[7],
+        }
+    end
+    return out
+end
+
+t.test('DEFECT: a flush with oxmysql gone keeps the rows instead of eating them', function()
+    local control = { oxmysql = 'missing' }
+    local s = newStats(function(config) config.Database.enabled = true end, control)
+    record(s, 'A', 'Somebody', 1, 5, 100)
+
+    t.equals(s.S.Flush(), 0, 'Flush reported a row written with oxmysql not started')
+    t.equals(#s.queries, 0, 'a query went out to a database that is not running')
+
+    -- oxmysql comes up. Nothing else happens -- no new match, no new record.
+    control.oxmysql = 'started'
+    t.equals(s.S.Flush(), 1, 'the row was dropped by the flush that could not send it')
+
+    local sent = upserts(s)
+    t.equals(#sent, 1, 'the recovered flush sent the wrong number of rows')
+    t.equals(sent[1].citizenid, 'A', 'the wrong player came back')
+    t.equals(sent[1].kills, 5, 'the kills did not survive the failed flush')
+    t.equals(sent[1].earnings, 100, 'the earnings did not survive the failed flush')
+end)
+
+t.test('and a query that goes out and comes back nil is kept too', function()
+    -- The other half. dbQuery dispatched, so the row is NOT a sync failure --
+    -- only the callback knows it failed.
+    local control = { fail = true }
+    local s = newStats(function(config) config.Database.enabled = true end, control)
+    record(s, 'A', 'Somebody', 1, 5, 100)
+
+    t.equals(s.S.Flush(), 1, 'the row was never dispatched at all')
+    local afterFirst = #s.queries
+
+    control.fail = false
+    t.equals(s.S.Flush(), 1, 'a query that came back nil was treated as written')
+
+    local sent = upserts(s, afterFirst)
+    t.equals(#sent, 1, 'the failed row was not retried')
+    t.equals(sent[1].kills, 5, 'the retry sent different numbers than the failure did')
+end)
+
+t.test('and an export that raises is kept as well', function()
+    local control = { throw = true }
+    local s = newStats(function(config) config.Database.enabled = true end, control)
+    record(s, 'A', 'Somebody', 1, 5, 100)
+
+    t.equals(s.S.Flush(), 0, 'Flush counted a row the export refused to send')
+    t.equals(#s.queries, 0, 'a query was recorded despite the export raising')
+
+    control.throw = false
+    t.equals(s.S.Flush(), 1, 'the row was lost when the export raised')
+    t.equals(upserts(s)[1].earnings, 100, 'the earnings were lost when the export raised')
+end)
+
+t.test('and a match played during the outage ADDS to what is waiting', function()
+    -- The requeue goes through the same accumulate as a fresh record, so the
+    -- kept row and the new one are one upsert with the totals summed --
+    -- not two rows, and not the newer one overwriting the older.
+    local control = { oxmysql = 'missing' }
+    local s = newStats(function(config) config.Database.enabled = true end, control)
+
+    record(s, 'A', 'Somebody', 1, 5, 100)
+    s.S.Flush()
+    record(s, 'A', 'Somebody', 1, 3, 50)
+
+    control.oxmysql = 'started'
+    s.S.Flush()
+
+    local sent = upserts(s)
+    t.equals(#sent, 1, ('the same player was written as %d separate rows'):format(#sent))
+    t.equals(sent[1].wins, 2, 'a win was lost across the outage')
+    t.equals(sent[1].kills, 8, 'the kills were not summed across the outage')
+    t.equals(sent[1].earnings, 150, 'the earnings were not summed across the outage')
+end)
+
+t.test('and a name recorded DURING the flush survives the kept row', function()
+    -- accumulate takes the delta's name as the newest, which is backwards for
+    -- a requeue: the kept row is older than anything recorded since the flush
+    -- began. That window is real -- oxmysql answers asynchronously, and the
+    -- queue was swapped out before the query went -- so a rename landing in
+    -- it would otherwise be undone by the failure of the older write.
+    local control = { defer = true }
+    local s = newStats(function(config) config.Database.enabled = true end, control)
+
+    record(s, 'A', 'Old Name', 1, 0, 0)
+    s.S.Flush()
+
+    -- Mid-flight: dispatched, not yet answered. This lands in the NEW queue.
+    record(s, 'A', 'New Name', 1, 0, 0)
+    t.equals(s.settle(nil), 1, 'the flush did not leave a write outstanding to settle')
+
+    control.defer = false
+    t.equals(s.S.Flush(), 1, 'the kept row and the fresh one were not written as one')
+
+    local sent = upserts(s, 1)
+    t.equals(sent[1].wins, 2, 'a win was lost in the window between dispatch and answer')
+    t.equals(s.queries[2].params[2], 'New Name',
+        'the requeued row put the stale name back over the one recorded since')
+end)
+
+t.test('and the queue does not grow without a bound while the database is down', function()
+    -- A backstop, not a normal limit. With the setting on and no database
+    -- ever reachable, an unbounded queue holds one entry per player who has
+    -- ever fought, for the life of the server.
+    local control = { oxmysql = 'missing' }
+    local s = newStats(function(config) config.Database.enabled = true end, control)
+
+    for index = 1, 5200 do record(s, ('P%d'):format(index), 'Player', 1, 1, 1) end
+    s.S.Flush()
+
+    control.oxmysql = 'started'
+    local kept = s.S.Flush()
+    t.isTrue(kept > 0, 'the bound threw the whole queue away rather than capping it')
+    t.isTrue(kept <= 5000, ('%d rows were retained past the bound'):format(kept))
 end)
 
 -- ======================================================================

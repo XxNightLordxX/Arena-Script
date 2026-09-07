@@ -113,6 +113,16 @@ local SCHEMA_SQL = [[
     )
 ]]
 
+--- How many distinct players may sit in the write queue while the database
+--- refuses writes. A flush that cannot reach the database puts every row
+--- back, so with the setting on and no database reachable the queue would
+--- otherwise grow for the life of the server -- one entry per player who
+--- has ever fought. This is a backstop for that, not a normal limit: a
+--- reachable database empties the queue every flush interval, and a
+--- database that comes back later writes the whole backlog.
+local MAX_RETAINED = 5000
+local warnedQueueFull = false
+
 --- Adds one delta into a totals table, creating the row on first sight.
 --- @param store table<string, table>
 --- @param citizenid string
@@ -296,7 +306,10 @@ end
 --- is the entire reason it is exported: a server that restarts 59 seconds
 --- into a 60-second flush interval would otherwise throw away every match
 --- played in that minute.
---- @return integer rows -- player rows dispatched
+--- A row the database refused goes back on the queue rather than being
+--- dropped, so the next flush tries it again -- including a flush minutes
+--- later, after oxmysql has been started or the connection has come back.
+--- @return integer rows -- player rows actually sent, not merely attempted
 function ArenaStats.Flush()
     if Config.Database.enabled ~= true then return 0 end
 
@@ -306,13 +319,50 @@ function ArenaStats.Flush()
     local batch = pending
     pending = {}
 
-    local written = 0
+    -- `pending` is empty as of the line above, so the whole allowance is
+    -- free. Recomputed per flush rather than carried, which keeps it exact
+    -- without a counter to drift: a row put back here is taken into `batch`
+    -- by the next flush, and the allowance resets with it.
+    local room = MAX_RETAINED
+
+    --- Puts a row that could not be written back on the queue.
+    local function requeue(row)
+        local existing = pending[row.citizenid]
+        if not existing then
+            if room <= 0 then
+                if not warnedQueueFull then
+                    warnedQueueFull = true
+                    ArenaLog('more than %d players are waiting on a database write that keeps ' ..
+                             'failing, so the oldest are now being dropped. Fix the database ' ..
+                             'connection or set Config.Database.enabled = false.', MAX_RETAINED)
+                end
+                return
+            end
+            room = room - 1
+        end
+
+        -- accumulate treats the delta's name as the newer one, which is
+        -- backwards here: `row` was recorded BEFORE anything queued since
+        -- this flush began, so a rename in that window would be undone.
+        local newerName = existing and existing.name
+        accumulate(pending, row.citizenid, row)
+        if newerName then pending[row.citizenid].name = newerName end
+    end
+
+    local dispatched = 0
     for citizenid, row in pairs(batch) do
-        written = written + 1
-        -- The empty callback is not decoration: without one oxmysql awaits
-        -- the result, and a flush called from the resource-stop handler has
-        -- to dispatch and return rather than block the stop.
-        dbQuery(UPSERT_SQL, {
+        -- The callback is where a lost row is caught. dbQuery hands it nil
+        -- on every failure it knows about -- oxmysql not started, or the
+        -- export throwing -- and oxmysql itself calls back with nil when the
+        -- query fails on the server. Either way the delta is already out of
+        -- `pending`, and without this it is gone for good: the swap above is
+        -- what makes a concurrent Record safe, and it is also what makes a
+        -- failed write unrecoverable unless the row is handed back.
+        --
+        -- A callback is required regardless: without one oxmysql awaits the
+        -- result, and a flush called from the resource-stop handler has to
+        -- dispatch and return rather than block the stop.
+        if dbQuery(UPSERT_SQL, {
             citizenid:sub(1, 64),
             row.name,
             row.wins,
@@ -320,11 +370,18 @@ function ArenaStats.Flush()
             row.kills,
             row.deaths,
             row.earnings,
-        }, function() end)
+        }, function(result)
+            if result == nil then requeue(row) end
+        end) then
+            dispatched = dispatched + 1
+        end
     end
 
-    if written > 0 then ArenaDebug('flushed %d stat row(s)', written) end
-    return written
+    -- Counted from what dbQuery actually sent, not from the size of the
+    -- batch. A server with Config.Database.enabled on and oxmysql missing
+    -- used to report a full flush every minute while writing nothing at all.
+    if dispatched > 0 then ArenaDebug('flushed %d stat row(s)', dispatched) end
+    return dispatched
 end
 
 --- Creates the table if it is not there. Safe on every start, and does

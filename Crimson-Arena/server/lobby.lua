@@ -1314,6 +1314,45 @@ function ArenaLobby.Leave(src, reasonKey)
     -- below cannot be asked once it has.
     local leftTeam = Arena.IsKey(player.team) and player.team or nil
 
+    -- A ROUND WALKED OUT OF IS A ROUND LOST.
+    --
+    -- The leaderboard only ever saw players who were still on the roster
+    -- when the round ENDED -- ArenaStats.RecordMatch walks match.players,
+    -- and the line below is what takes this one out of it. So quitting a
+    -- round you were losing cost you nothing on the board: no loss, and the
+    -- kills and deaths you had already taken vanished with you.
+    --
+    -- That is the one penalty that was missing. The stake is already
+    -- forfeited to the pot on this exact path (refundOnDisconnectDuringMatch
+    -- ships false), and config.lua's reasoning for not separating a quit
+    -- from a crash applies here word for word: a rule that recorded only
+    -- deliberate quits would take a loss from the players whose game crashed
+    -- and clear it for the ones who left on purpose. Applied evenly.
+    --
+    -- 'live' AND NOT `started`, which is the money predicate one branch up
+    -- and covers 'ended' as well. ArenaMatch.End sets 'ended' before it
+    -- calls RecordMatch, so a disconnect arriving in that window would be
+    -- recorded here AND there. A round that has not gone live yet records
+    -- nothing at all, which is the same answer its stake gets: handed back,
+    -- nothing happened.
+    --
+    -- HERE rather than in ArenaMatch.RemovePlayer because this is the only
+    -- place both exits meet: server/main.lua routes playerDropped straight
+    -- through this function, and it never touches RemovePlayer at all.
+    if match.state == 'live'
+        and type(ArenaStats) == 'table' and type(ArenaStats.Record) == 'function'
+    then
+        ArenaStats.Record({
+            citizenid = player.citizenid,
+            name = player.name,
+            won = false,
+            kills = player.kills,
+            deaths = player.deaths,
+            -- Nothing. They forfeited the stake and were paid no share.
+            earnings = 0,
+        })
+    end
+
     match.players[target] = nil
     playerIndex[target] = nil
     removeFromOrder(match, target)

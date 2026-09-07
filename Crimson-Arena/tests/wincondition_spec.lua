@@ -45,7 +45,7 @@ local function newServer(mutate)
 
     local qbx = Sandbox.newQbxCore(players)
     local threads = Sandbox.newThreadRunner()
-    local netEvents, console, sent, posts = {}, {}, {}, {}
+    local netEvents, console, sent, posts, recorded = {}, {}, {}, {}, {}
     local clock = 0
 
 local env = Sandbox.newArenaEnv({
@@ -77,6 +77,11 @@ local env = Sandbox.newArenaEnv({
         ArenaStats = {
             GetLeaderboard = function(cb) cb({}) end,
             EnsureSchema = function() end, RecordMatch = function() end, Flush = function() end,
+            -- RECORDED, not a no-op. server/lobby.lua books a leaver's loss
+            -- through this on the way out, and a stub without it would have
+            -- let the type guard there skip the call and pass the tests at
+            -- the foot of this file without recording anything at all.
+            Record = function(entry) recorded[#recorded + 1] = entry return true end,
         },
         ArenaAmmo = {
             IsEnabled = function() return false end,
@@ -123,6 +128,10 @@ local env = Sandbox.newArenaEnv({
         env.source = src
         handler(data)
     end
+
+    --- One client event, from one player. Exposed so a test can drive a
+    --- path server.play does not cover -- walking out, for one.
+    server.fire = fire
 
     --- Opens a match with `count` fighters and starts it.
     function server.play(count, teams)
@@ -215,6 +224,9 @@ local env = Sandbox.newArenaEnv({
 
     --- Every webhook body posted, as raw JSON.
     function server.posts() return posts end
+
+    --- Every entry handed to ArenaStats.Record, in order.
+    function server.recorded() return recorded end
 
     return server
 end
@@ -619,6 +631,108 @@ t.test('and the SERVER log still carries the key, which is what it is for', func
 
     t.equals(server.endedWith(), 'match.ended_last_standing',
         'the server log stopped naming the reason by key')
+end)
+
+-- ======================================================================
+-- QUITTING A ROUND IS LOSING IT
+-- ======================================================================
+--
+-- ArenaStats.RecordMatch walks match.players at the end of the round, and
+-- ArenaLobby.Leave takes the leaver out of that table. So the leaderboard
+-- only ever saw the people still standing on the roster when the round
+-- finished: quitting a round you were losing cost nothing, and the kills and
+-- deaths already on your record left with you.
+--
+-- The stake is already forfeited on this exact path -- shipped config keeps
+-- a mid-match leaver's entry fee in the pot -- so this is the one half of
+-- the penalty that was missing.
+
+--- One player walking out, through the same event the panel's Leave sends.
+local function walkOut(server, src)
+    server.fire('leaveMatch', src, {})
+end
+
+t.test('THE DEFECT: leaving a live round is recorded as a loss', function()
+    local server = newServer()
+    server.play(3)
+    server.kill(3, 1)       -- fighter 1 has a kill; 3 is out. 1 and 2 remain.
+
+    walkOut(server, 1)
+
+    local rows = server.recorded()
+    t.equals(#rows, 1, ('the leaver was recorded %d time(s)'):format(#rows))
+    t.equals(rows[1].citizenid, 'CID001', 'the wrong player was recorded')
+    t.isFalse(rows[1].won, 'walking out of a live round was recorded as a WIN')
+end)
+
+t.test('and the kills and deaths they had already taken go with it', function()
+    -- Not merely a loss row. Quitting used to erase the whole round for
+    -- them, so a player could farm kills and drop before the result.
+    local server = newServer()
+    server.play(3)
+    server.kill(3, 1)
+
+    walkOut(server, 1)
+
+    local row = server.recorded()[1]
+    t.isNotNil(row, 'nothing was recorded at all')
+    t.equals(row.kills, 1, 'the kill they took before quitting was not recorded')
+    t.equals(row.earnings, 0, 'a leaver was credited with earnings')
+end)
+
+t.test('and a LOBBY is not a round, so leaving one records nothing', function()
+    -- The same answer their stake gets on that path: handed back, nothing
+    -- happened. A fix that recorded every departure would give a loss to
+    -- anybody who looked at a lobby and changed their mind.
+    local server = newServer(function(config)
+        config.Match.lobbyCountdownSeconds = 30       -- keep it in the lobby
+    end)
+    server.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash',
+    })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
+
+    walkOut(server, 2)
+
+    t.equals(#server.recorded(), 0, 'backing out of a lobby was recorded as a loss')
+end)
+
+t.test('and the leaver is recorded ONCE, not again when the round ends', function()
+    -- End sets state to 'ended' before it calls RecordMatch, and the guard
+    -- is 'live' rather than the money predicate for exactly that reason: a
+    -- disconnect arriving in that window would otherwise be booked twice.
+    local server = newServer()
+    server.play(3)
+    walkOut(server, 1)
+    t.equals(#server.recorded(), 1, 'the walk-out was not recorded')
+
+    server.kill(3, 2)       -- 2 is the last one standing: the round ends
+    server.settle(3)
+
+    local mine = 0
+    for _, row in ipairs(server.recorded()) do
+        if row.citizenid == 'CID001' then mine = mine + 1 end
+    end
+    t.equals(mine, 1, ('the leaver was booked %d times across the round'):format(mine))
+end)
+
+t.test("and a drop that lands once the round has ENDED is left to RecordMatch", function()
+    -- The window the 'live' guard exists for, forced directly because
+    -- ArenaMatch.End runs straight through it: End sets 'ended' and only
+    -- then walks match.players into RecordMatch, so a disconnect arriving
+    -- between the two is already going to be booked there. Guarding on the
+    -- money predicate instead -- 'live' OR 'ended' -- books it twice.
+    local server = newServer()
+    server.play(3)
+
+    local live = server.lobby.All()[1]
+    live.state = 'ended'
+
+    walkOut(server, 1)
+
+    t.equals(#server.recorded(), 0,
+        'a drop after the round ended was recorded here as well as by RecordMatch')
 end)
 
 os.exit(t.summary())

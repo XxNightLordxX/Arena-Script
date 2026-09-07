@@ -171,6 +171,15 @@ local function newServer(pockets, mutate, opts)
                 and type(name) == 'string' and name:find('^ammo') then
                 return false
             end
+            -- THE MIRROR OF THE FLAG ABOVE: the WEAPON refused and the
+            -- rounds fine. `give` refuses everything, which cannot tell
+            -- "the arena could not arm them" from "the arena could not load
+            -- them" -- and those two failures are supposed to be handled
+            -- completely differently.
+            if fail.weaponItem and type(id) == 'number'
+                and type(name) == 'string' and name:find('^WEAPON') then
+                return false
+            end
             local into = bucket(id)
             into[#into + 1] = { name = name, count = count, metadata = metadata }
             return true
@@ -1932,6 +1941,56 @@ t.test('and never reaches past the arena into rounds the player brought themselv
     end
     t.equals(left, 400,
         'the arena took back more than it issued and ate into the player\'s own rounds')
+end)
+
+-- ========================================================================
+-- CONFISCATION REACHES ONLY WHAT THE ARENA ISSUED
+--
+-- `allowWeaponWithoutAmmoItem = false` exists for one situation: the weapon
+-- went over, its ammunition did not, and nobody should fight with an empty
+-- gun that looks loaded. So it takes the gun back.
+--
+-- But the list it works from is the FAILURE list, and a weapon lands on that
+-- for the other reason too -- the weapon itself would not go. Then the
+-- player never had it, and "take the gun back" reaches past the arena into
+-- what they walked in carrying.
+-- ========================================================================
+
+t.test('DEFECT: a weapon the arena could not issue was taken off the player anyway', function()
+    local s = newServer({ [1] = { { name = 'WEAPON_TEST', count = 1 } } }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+        -- The door OFF, which is the whole point: with it on the player is
+        -- carrying nothing at this moment and there is nothing of theirs to
+        -- destroy.
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+
+    -- The arena cannot arm them -- a full inventory, a weight limit, an item
+    -- name this server's ox_inventory data does not know.
+    s.breakOn('weaponItem')
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') ~= nil,
+        ('the arena destroyed the player\'s own weapon over one it never managed to give them '
+            .. '-- they are left holding: %s'):format(s.carrying(1)))
+end)
+
+t.test('but a weapon it DID issue is still taken back when the rounds fail', function()
+    -- The control, and the setting's actual purpose. A fix that simply
+    -- stopped confiscating would pass the test above and quietly arm
+    -- everybody with an empty gun on the servers that switched this off.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+    end)
+
+    s.breakOn('ammoItem')
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') == nil,
+        ('a weapon the arena issued and could not load stayed in the fighter\'s hands: %s')
+            :format(s.carrying(1)))
 end)
 
 os.exit(t.summary())

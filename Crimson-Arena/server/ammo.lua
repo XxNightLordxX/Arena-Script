@@ -790,10 +790,30 @@ local function removeWeaponsByKey(ox, src, matchId, keys, loadout)
     -- KEYS and nothing in it ever matches a record's `name`. Forgetting off
     -- `wanted` therefore forgot nothing at all on the shipped config, and
     -- left every confiscated weapon listed as still issued.
+    -- WHAT THE ARENA ACTUALLY HANDED OVER, read BEFORE anything is taken.
+    --
+    -- `keys` is the FAILURE list, and a weapon can be on it for two quite
+    -- different reasons: its ammunition would not go, or the weapon itself
+    -- would not. Only the first is what this function is for -- "do not let
+    -- anyone fight with an empty gun that looks loaded". The second means
+    -- the player never got it, and removing a weapon nobody issued reaches
+    -- straight past the arena into whatever the player brought in
+    -- themselves: with the door off they are carrying their own kit, and if
+    -- they own that weapon, ox_inventory takes THEIR copy and destroys it.
+    --
+    -- So the record of what was issued is the gate. It is read here rather
+    -- than only below, where it was used solely for forgetting.
+    local issuedHere = {}
+    for _, record in ipairs((issuedWeapons[matchId] or {})[src] or {}) do
+        if type(record) == 'table' and Arena.IsKey(record.name) then
+            issuedHere[record.name] = true
+        end
+    end
+
     local takenBack = {}
     for _, entry in ipairs(loadout.weapons or {}) do
         local name = entry.weapon
-        if Arena.IsKey(name) and (wanted[entry.key] or wanted[name]) then
+        if Arena.IsKey(name) and (wanted[entry.key] or wanted[name]) and issuedHere[name] then
             if oxDid('taking back ' .. name, function() return ox:RemoveItem(src, name, 1) end) then
                 removed[#removed + 1] = name
                 takenBack[name] = true

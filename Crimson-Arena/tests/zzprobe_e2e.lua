@@ -1,3 +1,36 @@
+--[[
+    crimson_arena/tests/skyworld_spec.lua
+
+    THE REAL client/match.lua, RUN.
+
+    Every other spec about the arena in the sky asserts arithmetic:
+    shared/arena.lua works out where the pieces go, and it does that without
+    calling a single native, so it can be checked anywhere. This file checks
+    the other half -- the half that is nothing but natives, and that
+    therefore shipped three times broken while every arithmetic test stayed
+    green.
+
+    It loads the production client file into fixtures/world.lua, a model of
+    the game with objects, a streaming bubble, prop dimensions and real
+    terrain underneath, fires the entry event the server really sends, and
+    then asks the question that matters: IS THERE A FLOOR UNDER THIS PLAYER.
+
+    The three defects this would have caught on the day, each pinned below by
+    a test named DEFECT:
+
+      1. The floor was built a kilometre from the player, so the engine built
+         nothing and the round silently never started.
+      2. The surface was derived from the prop instead of set by config, so
+         cover was buried inside the floor.
+      3. Tiles were spaced on the prop's longest side and kept by their
+         centres, so the floor had gaps -- and on a prop wider than the
+         inset, exactly one tile.
+
+    What this file does NOT claim is that the model is GTA. See the header of
+    fixtures/world.lua: its streaming rule is deliberately stricter than the
+    engine, so that passing here does not depend on the engine being
+    generous.
+]]
 
 local t = dofile('testkit.lua')
 local Sandbox = dofile('fixtures/sandbox.lua')
@@ -239,22 +272,101 @@ end
 
 local SKY = { x = 1500.0, y = 3000.0, z = 1201.0 }
 
-print('PROBE3')
+print('PROBE-E2E')
 
-t.test('probe: boundary with no center on the payload', function()
-    local c = newClient()
-    local arena = c.env.Config.Arenas.skydome
-    local spawn = c.Arena.PickSpawn('skydome', nil, 1)
-    c.fire('crimson_arena:client:enterArena', {
-        matchId = 'm', arenaKey = 'skydome', modeKey = 'ffa',
-        spawn = { x = spawn.x, y = spawn.y, z = spawn.z, w = 0.0 },
-        scatterRadius = 0.0, radar = false, loadout = { weapons = {} },
-        -- what server/match.lua's toPoint() produces when center has no z
-        boundary = { enabled = true, center = nil, radius = 110.0,
-                     warningSeconds = 5, damagePerTick = 20, tickMs = 500 },
-        freezeSeconds = 0,
-    })
-    local ok, err = pcall(function() c.goLive() end)
-    print('   goLive ok:', ok, 'err:', tostring(err))
-    print('   threads alive:', c.runner.aliveCount())
+--- vec3 with the arithmetic client/spectate.lua's camera maths performs.
+local function vec3(x, y, z)
+    local mt
+    local function make(a, b, c) return setmetatable({ x = a, y = b, z = c }, mt) end
+    mt = {
+        __add = function(a, b) return make(a.x + b.x, a.y + b.y, a.z + b.z) end,
+        __sub = function(a, b) return make(a.x - b.x, a.y - b.y, a.z - b.z) end,
+        __mul = function(a, b)
+            if type(b) == 'number' then return make(a.x * b, a.y * b, a.z * b) end
+            return make(a.x * b.x, a.y * b.y, a.z * b.z)
+        end,
+    }
+    return make(x, y, z)
+end
+
+--- Bolts the REAL client/spectate.lua into a client that already has the
+--- REAL client/match.lua, so ArenaMatch.EnsureSpectatorScenery is the
+--- production function and ArenaSpectate.Stop is the production caller.
+local function withSpectate(c)
+    local env = c.env
+    local orig = env.GetEntityCoords
+    env.GetEntityCoords = function(entity)
+        local p = orig(entity)
+        return vec3(p.x, p.y, p.z)
+    end
+    env.vector3 = vec3
+    env.CreateCam = function() return 901 end
+    env.SetCamActive = function() end
+    env.SetCamCoord = function() end
+    env.SetCamRot = function() end
+    env.RenderScriptCams = function() end
+    env.DestroyCam = function() end
+    env.ClearFocus = function() end
+    env.SetFocusEntity = function() end
+    env.SetFocusPosAndVel = function() end
+    env.DisableAllControlActions = function() end
+    env.EnableControlAction = function() end
+    env.IsDisabledControlJustPressed = function() return false end
+    env.IsDisabledControlPressed = function() return false end
+    env.GetDisabledControlNormal = function() return 0.0 end
+    env.GetPlayerName = function() return 'Fighter' end
+    env.GetEntityHeading = function() return 0.0 end
+    env.DoesEntityExist = env.DoesEntityExist or function() return true end
+    env.ArenaUI.Notify = function() end
+    env.ArenaDispatch.IsInArena = function() return false end
+    Sandbox.loadInto('../client/spectate.lua', env)
+    return env.ArenaSpectate
+end
+
+--- The state snapshot the server really pushes.
+local function snapshot(spectating)
+    return {
+        player = { spectating = spectating, matchId = nil },
+        matches = { { id = 'match-1', arenaKey = 'skydome', sizeFactor = 1.0,
+                      players = { { id = 11, alive = true }, { id = 12, alive = true } } } },
+    }
+end
+
+t.test('E2E: an onlooker whose watch ends while the arena is still building', function()
+    -- The viewer's body is parked at the arena, which is where
+    -- client/spectate.lua puts it before it builds.
+    local c = newClient({ start = { x = SKY.x, y = SKY.y, z = SKY.z }, streamRange = 100000.0 })
+    local spectate = withSpectate(c)
+
+    t.equals(#c.world.live(), 0, 'the fixture started dirty')
+
+    -- The server says "you are watching match-1".
+    c.fire('crimson_arena:client:state', snapshot('match-1'))
+    t.isTrue(spectate.IsActive(), 'the watch never started')
+
+    -- Part-way through the build -- the same seam skyworld_spec uses for
+    -- the fighter -- the server says the watch is over.
+    c.interruptAfter = 3
+    c.duringBuild = function()
+        c.fire('crimson_arena:client:state', snapshot(false))
+    end
+
+    -- Run the camera thread. Its first pass with a resolved fighter is the
+    -- one that calls EnsureSpectatorScenery.
+    for _ = 1, 40 do c.step() end
+
+    print('   active after the stop:', tostring(spectate.IsActive()))
+    print('   pieces standing:', #c.world.live())
+
+    -- Nothing is watching any more, so nothing calls Stop again, and
+    -- Stop is the only caller of DropSpectatorScenery.
+    c.fire('crimson_arena:client:state', snapshot(false))
+    for _ = 1, 40 do c.step() end
+    print('   pieces standing after further state pushes:', #c.world.live())
+
+    t.equals(#c.world.live(), 0,
+        ('%d pieces were left standing at %0.0fm by a watch that ended mid-build')
+            :format(#c.world.live(), SKY.z))
 end)
+
+os.exit(t.summary())

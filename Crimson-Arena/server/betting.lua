@@ -1464,6 +1464,66 @@ function ArenaBetting.ReturnSideBets(matchId)
     return returned, owed
 end
 
+--- Returns every outstanding side-bet on one pick, because that pick can no
+--- longer win.
+---
+--- THE SAME UNFAIRNESS AS A MODE CHANGE, ARRIVING BY A DIFFERENT DOOR.
+--- ReturnSideBets above exists because changing the mode leaves every bet
+--- naming something that cannot win, and its comment says why that must not
+--- simply lose: "nothing on screen saying so and no way for the bettor to
+--- have seen it coming."
+---
+--- A FIGHTER WALKING OUT does exactly the same thing to the people who
+--- backed them, and nothing was returning those. The bet was not voided and
+--- not refunded -- it fell through every branch of SettleSpectatorBets to
+--- the last `else` and was marked `lost`, and on the shipped config
+--- (sharedPool, includeEntryPot) the pool is contested by the remaining
+--- fighters' own entry fees, so the uncontested-pool refund could not catch
+--- it either. The spectator's whole stake -- up to `spectatorBets.max` --
+--- was handed to whoever backed the winner, and the only thing they were
+--- told was "your pick went down", which is not what happened.
+---
+--- It is also the shape of a scam that runs itself: open a lobby with a
+--- friend, talk the room into backing them, have them walk before the start,
+--- win, collect. Nothing in the resource had to be exploited for that to
+--- work; it was simply how a departed pick settled.
+---
+--- Entry-fee rows are skipped. They are written by Settle at the moment the
+--- round is decided and cannot exist while somebody is still leaving -- but
+--- one is a stake escrowed in the pot rather than a bet anybody placed, and
+--- handing it back here would take money out of a pot the survivors are
+--- fighting for.
+--- @param matchId string
+--- @param pick any -- a team key, or a fighter's server id as a string
+--- @return integer returned
+--- @return integer owed -- money that could not be handed back
+function ArenaBetting.ReturnBetsOn(matchId, pick)
+    local returned, owed = 0, 0
+    if not Arena.IsKey(matchId) or pick == nil then return 0, 0 end
+
+    -- THROUGH THE SAME FUNCTION THE BET WAS WRITTEN BY. PlaceSpectatorBet
+    -- stores `canonicalPick(pick)` -- a free-for-all pick becomes the
+    -- fighter's server id in STRING form -- so a caller holding the number
+    -- would otherwise match nothing and report a clean, wrong zero.
+    --
+    -- Normalising it by hand here would be a second copy of that rule, free
+    -- to drift from the first; this file has already paid for one of those.
+    local wanted = canonicalPick(pick)
+    if not wanted then return 0, 0 end
+
+    for _, bet in ipairs(sideBets[matchId] or {}) do
+        if not bet.settled and bet.fromEntryFee ~= true and bet.pick == wanted then
+            if returnSideBet(bet, matchId) then
+                returned = returned + 1
+            else
+                owed = owed + (Arena.ToInt(bet.amount) or 0)
+            end
+        end
+    end
+
+    return returned, owed
+end
+
 --- Settles every side-bet on a match. Winners are paid
 --- `Arena.ComputeSpectatorPayout` (their stake included in it); losers are
 --- kept by the house.

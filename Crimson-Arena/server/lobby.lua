@@ -1310,9 +1310,55 @@ function ArenaLobby.Leave(src, reasonKey)
         end
     end
 
+    -- The side they were on, read BEFORE the row goes, because the question
+    -- below cannot be asked once it has.
+    local leftTeam = Arena.IsKey(player.team) and player.team or nil
+
     match.players[target] = nil
     playerIndex[target] = nil
     removeFromOrder(match, target)
+
+    -- ANYBODY WHO BACKED THEM GETS THEIR MONEY BACK.
+    --
+    -- A side-bet names a side: a team key in a team mode, this player's
+    -- server id in a free-for-all. Walking out makes that pick unwinnable,
+    -- and an unwinnable pick does not go back on its own -- it falls through
+    -- every branch of SettleSpectatorBets to the last one and is marked
+    -- LOST, paying the spectator's whole stake to whoever backed the winner.
+    -- The uncontested-pool refund cannot catch it either: on the shipped
+    -- config the survivors' own entry fees are in that pool, so it is
+    -- contested by definition.
+    --
+    -- UpdateMatch has done this for a mode change since the day it was
+    -- written, for the identical reason, and says so at length. This is the
+    -- same event arriving by the other door.
+    --
+    -- A TEAM PICK ONLY DIES WITH THE LAST PLAYER ON IT. One of four leaving
+    -- a 2v2 leaves crimson perfectly able to win, and returning the bets on
+    -- it would be handing money back on a wager that is still live.
+    if leftTeam then
+        if (Arena.CountTeams(match.players)[leftTeam] or 0) == 0 then
+            local returned, owed = ArenaBetting.ReturnBetsOn(match.id, leftTeam)
+            if returned > 0 then
+                ArenaLog('betting: the last player on "%s" left match %s, so %d side-bet(s) on that side were returned unjudged.',
+                    tostring(leftTeam), tostring(match.id), returned)
+            end
+            if owed > 0 then
+                ArenaLog('betting: %d of side-bets on "%s" could not be returned on match %s -- they are still held.',
+                    owed, tostring(leftTeam), tostring(match.id))
+            end
+        end
+    else
+        local returned, owed = ArenaBetting.ReturnBetsOn(match.id, tostring(target))
+        if returned > 0 then
+            ArenaLog('betting: %s left match %s, so %d side-bet(s) backing them were returned unjudged.',
+                tostring(target), tostring(match.id), returned)
+        end
+        if owed > 0 then
+            ArenaLog('betting: %d of side-bets backing %s could not be returned on match %s -- they are still held.',
+                owed, tostring(target), tostring(match.id))
+        end
+    end
 
     -- An eliminated fighter sits in match.players AND in match.spectators --
     -- AddSpectator admits them so the camera they were handed survives the

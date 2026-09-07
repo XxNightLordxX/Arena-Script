@@ -470,7 +470,7 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 24 functions
+#### `server/betting.lua` — 25 functions
 
 | Function | What it does |
 |---|---|
@@ -496,6 +496,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.HasSpectatorBet(matchId, src)` | Whether this player holds any side-bet on this match, settled or not. |
 | `ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)` | Takes a spectator's side-bet on a team or a fighter. |
 | `ArenaBetting.ReturnSideBets(matchId)` | Hands every unsettled side-bet on a match back, unjudged. |
+| `ArenaBetting.ReturnBetsOn(matchId, pick)` | Hands back every unsettled side-bet on one pick, because that pick can no longer win. |
 | `ArenaBetting.SettleSpectatorBets(matchId, winningPick)` | Settles every side-bet on a match. |
 | `ArenaBetting.Clear(matchId)` | Drops a match's money state. |
 

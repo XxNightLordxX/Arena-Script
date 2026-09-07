@@ -513,4 +513,144 @@ t.test('but a real side-bet is still settled in the words of a bet', function()
         'a spectator was told they had taken the pot: ' .. said)
 end)
 
+-- ========================================================================
+-- A PICK THAT WALKED OUT IS NOT A PICK THAT LOST
+--
+-- ArenaLobby.UpdateMatch has returned every side-bet on a mode change since
+-- the day it was written, and its comment says exactly why: a bet naming
+-- something that can no longer win does not go back on its own, it LOSES --
+-- "with nothing on screen saying so and no way for the bettor to have seen
+-- it coming."
+--
+-- A fighter walking out does the identical thing to the people who backed
+-- them, by the other door, and nothing was returning those. The bet is not
+-- voided (its holder never fought), there IS a winner so it is not the
+-- no-result refund, and on the shipped config -- sharedPool with
+-- includeEntryPot -- the survivors' own entry fees make the pool contested,
+-- so the uncontested-pool refund cannot reach it either. It falls to the
+-- last `else` in SettleSpectatorBets and is marked `lost`.
+--
+-- Which is also a scam that runs itself: open a lobby with a friend, let the
+-- room back them, have them walk before the start, win, collect. Nothing has
+-- to be exploited. It was simply how a departed pick settled.
+-- ========================================================================
+
+t.test('DEFECT: backing a fighter who then walked out cost the whole stake', function()
+    local s, matchId = withWatcher(1000)
+    local function cash(id) return s.qbx.players[id].money.cash end
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 2, 25000, 'cash'),
+        'the watcher could not back the fighter who is about to leave')
+    t.equals(cash(3), 25000, 'the stake was never taken, so this proves nothing')
+
+    -- Out of the lobby before the round starts -- the ordinary case, and the
+    -- one the shipped refund rule treats most gently for the leaver.
+    t.isTrue(s.lobby.Leave(2, 'bet.refund_left'), 'the fighter could not leave')
+
+    -- Back already, unjudged, the moment the pick died. Not at settlement:
+    -- by then the pool has been divided and it is too late to be fair.
+    t.equals(cash(3), 50000,
+        'the spectator did not get their stake back when the fighter they backed walked out')
+
+    settleWith(s, matchId, 1)
+
+    -- AND NOT TWICE. returnSideBet marks rather than deletes, which is the
+    -- whole reason this can be asserted at all.
+    t.equals(cash(3), 50000, 'the returned stake was paid out a second time at settlement')
+end)
+
+t.test('and the console says which bets went back and why', function()
+    local s, matchId = withWatcher(1000)
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 2, 5000, 'cash'))
+    s.lobby.Leave(2, 'bet.refund_left')
+
+    t.contains(s.log(), 'side-bet(s) backing them were returned unjudged',
+        'a spectator was quietly handed their money back with nothing in the console about it')
+end)
+
+t.test('a bet on the fighter who STAYED is untouched by somebody else leaving', function()
+    -- The control. A change that returned every bet on any leave would pass
+    -- the test above and quietly refund the whole book on every walk-out.
+    local s, matchId = withWatcher(1000)
+    local function cash(id) return s.qbx.players[id].money.cash end
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 25000, 'cash'))
+    t.equals(cash(3), 25000)
+
+    s.lobby.Leave(2, 'bet.refund_left')
+
+    t.equals(cash(3), 25000,
+        'a live bet on a fighter who is still in the match was handed back')
+    t.isNotNil(s.betting.GetSideBet(matchId, 3),
+        'the bet was settled off the record even though its pick is still fighting')
+end)
+
+t.test('and a TEAM pick only dies with the last player on that side', function()
+    -- One of four leaving a 2v2 leaves crimson perfectly able to win.
+    -- Returning bets on it would be handing money back on a live wager.
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000, [5] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.spectatorBets.enabled = true
+        config.Betting.entryFee.enabled = false
+        config.Betting.entryFee.min = 0
+        config.Betting.entryFee.default = 0
+    end)
+
+    local teamMode
+    for _, mode in ipairs(s.env.Arena.GetEnabledModes()) do
+        if mode.teams then teamMode = mode.key break end
+    end
+    t.isNotNil(teamMode, 'the config under test ships no team mode')
+
+    local teams = s.env.Arena.GetEnabledTeams()
+    t.isTrue(#teams >= 2, 'the config under test ships fewer than two teams')
+    local sideA, sideB = teams[1].key, teams[2].key
+
+    local matchId = s.lobby.Create(1, anArena(s), teamMode, 0, nil, nil, 'cash')
+    t.isNotNil(matchId, 'the team match could not be created')
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'))
+    t.isTrue(s.lobby.Join(3, matchId, nil, 'cash'))
+    t.isTrue(s.lobby.Join(4, matchId, nil, 'cash'))
+
+    local match = s.lobby.Get(matchId)
+    match.players[1].team, match.players[2].team = sideA, sideA
+    match.players[3].team, match.players[4].team = sideB, sideB
+
+    local function cash(id) return s.qbx.players[id].money.cash end
+    t.isTrue(s.betting.PlaceSpectatorBet(5, matchId, sideA, 10000, 'cash'))
+    t.equals(cash(5), 40000)
+
+    -- One of the two on that side goes. The side is still in the fight.
+    s.lobby.Leave(2, 'bet.refund_left')
+    t.equals(cash(5), 40000,
+        ('a bet on "%s" was returned while a player was still on that side'):format(sideA))
+
+    -- The last one goes. Now it cannot win.
+    s.lobby.Leave(1, 'bet.refund_left')
+    t.equals(cash(5), 50000,
+        ('the last player on "%s" left and the bets on it were not returned'):format(sideA))
+end)
+
+t.test('and the pick is normalised the way the bet was written, not by hand', function()
+    -- PlaceSpectatorBet stores a free-for-all pick through `canonicalPick`,
+    -- which turns a server id into a STRING. A caller holding the number --
+    -- which is what every id is everywhere else in the server -- must match
+    -- the same rows, or ReturnBetsOn quietly returns nothing and reports a
+    -- clean zero.
+    --
+    -- Written against the number on purpose: normalising by hand here would
+    -- be a second copy of a rule that already exists once, and the whole
+    -- reason this test is worth having is that the two are free to drift.
+    local s, matchId = withWatcher(1000)
+    local function cash(id) return s.qbx.players[id].money.cash end
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 2, 4000, 'cash'))
+    t.equals(cash(3), 46000)
+
+    local returned, owed = s.betting.ReturnBetsOn(matchId, 2)
+    t.equals(returned, 1, 'a numeric pick matched no bet, though that is how server ids are held')
+    t.equals(owed, 0)
+    t.equals(cash(3), 50000, 'the stake was not handed back')
+end)
+
 os.exit(t.summary())

@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 70 functions
+#### `shared/arena.lua` — 71 functions
 
 | Function | What it does |
 |---|---|
@@ -355,6 +355,7 @@ listed; the source documents them where they are.
 | `Arena.SupplyMax(supply)` | The most of one supply a player may carry in. |
 | `Arena.ResolveSupplies(requested)` | Turns whatever a client asked to carry into a list the server will hand over. |
 | `Arena.ResolveLoadout(request)` | Validates a whole loadout request and returns the concrete thing to hand a player -- real GTA weapon names and real ammo counts, nothing the caller supplied passed through untouched. |
+| `Arena.IsEliminated(row)` | Whether this player row is out of the round for good -- the one copy of that rule. |
 | `Arena.CountTeams(players)` | Head count per team, from a list of players. |
 | `Arena.SuggestTeam(players)` | The team a newly joining player should land on when they did not pick one: the smallest enabled team WITH ROOM IN IT, ties broken by config order so the choice is deterministic rather than dependent on pairs() ordering. |
 | `Arena.TeamsAreStartable(players)` | Whether a team match may start with these sides. |

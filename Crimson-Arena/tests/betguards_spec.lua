@@ -693,4 +693,95 @@ t.test('but a FIGHTER cannot cancel their own losing bet by walking out', functi
         'the fighter got their own bet back by leaving -- only the 1000 entry fee should have returned')
 end)
 
+-- ========================================================================
+-- A PICK THAT IS ALREADY OUT IS NOT A PICK
+--
+-- The book stays open for spectatorBets.closeAfterStartSeconds -- 30 on the
+-- shipped config -- AFTER the round goes live. pickExists asked only whether
+-- the id was on the roster, and an eliminated fighter deliberately KEEPS
+-- their row, because the results board ranks off it. So inside that window a
+-- spectator could be sold a bet, by the panel's own chip, on somebody who
+-- was already out.
+--
+-- It is not voided at settlement either: `voided` only fires for a holder
+-- who FOUGHT, and a spectator did not. It falls through to lost, and their
+-- whole stake -- up to 25,000 -- goes to whoever backed the winner.
+-- ========================================================================
+
+t.test('DEFECT: a bet was taken on a fighter who was already eliminated', function()
+    local s, matchId = withWatcher(0, function(config)
+        config.Betting.spectatorBets.closeAfterStartSeconds = 30
+    end)
+    local match = s.lobby.Get(matchId)
+    match.state = 'live'
+    match.startsAt = os.time()
+
+    -- Fighter 2 is out: no lives left and not alive, which is exactly what
+    -- server/match.lua leaves behind on a final death.
+    match.players[2].alive = false
+    match.players[2].lives = 0
+
+    local ok, why = s.betting.PlaceSpectatorBet(3, matchId, 2, 5000, 'cash')
+    t.isFalse(ok, 'the arena sold a bet on a fighter who could not win it')
+    t.equals(why, 'error.bet_invalid_pick')
+    t.equals(s.qbx.players[3].money.cash, 50000, 'the stake was taken for a bet that was refused')
+end)
+
+t.test('and a fighter who is merely DOWN with lives left can still be backed', function()
+    -- The control, and the distinction that matters: dead-this-second is not
+    -- eliminated. A fighter waiting on a respawn is still in the round and
+    -- still the favourite, and refusing bets on them would be a different
+    -- bug wearing this fix as a disguise.
+    local s, matchId = withWatcher(0, function(config)
+        config.Betting.spectatorBets.closeAfterStartSeconds = 30
+    end)
+    local match = s.lobby.Get(matchId)
+    match.state = 'live'
+    match.startsAt = os.time()
+
+    match.players[2].alive = false
+    match.players[2].lives = 2
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 2, 5000, 'cash'),
+        'a fighter waiting to respawn could not be backed, though they are still in the round')
+end)
+
+t.test('and a team is unbackable once its last player is out', function()
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000, [5] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.spectatorBets.enabled = true
+        config.Betting.spectatorBets.closeAfterStartSeconds = 30
+        config.Betting.entryFee.enabled = false
+        config.Betting.entryFee.min = 0
+        config.Betting.entryFee.default = 0
+    end)
+
+    local teamMode
+    for _, mode in ipairs(s.env.Arena.GetEnabledModes()) do
+        if mode.teams then teamMode = mode.key break end
+    end
+    local teams = s.env.Arena.GetEnabledTeams()
+    local sideA, sideB = teams[1].key, teams[2].key
+
+    local matchId = s.lobby.Create(1, anArena(s), teamMode, 0, nil, nil, 'cash')
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'))
+    t.isTrue(s.lobby.Join(3, matchId, nil, 'cash'))
+
+    local match = s.lobby.Get(matchId)
+    match.players[1].team, match.players[2].team = sideA, sideA
+    match.players[3].team = sideB
+    match.state = 'live'
+    match.startsAt = os.time()
+
+    -- One of the two on sideA is out. The side is still in the fight.
+    match.players[1].alive, match.players[1].lives = false, 0
+    t.isTrue(s.betting.PlaceSpectatorBet(4, matchId, sideA, 1000, 'cash'),
+        ('"%s" could not be backed while it still had a player standing'):format(sideA))
+
+    -- Now the last one goes.
+    match.players[2].alive, match.players[2].lives = false, 0
+    local ok = s.betting.PlaceSpectatorBet(5, matchId, sideA, 1000, 'cash')
+    t.isFalse(ok, ('a bet was sold on "%s" after every player on it was eliminated'):format(sideA))
+end)
+
 os.exit(t.summary())

@@ -525,16 +525,27 @@ end
 local function pickExists(match, pick)
     local players = type(match.players) == 'table' and match.players or {}
 
+    -- ELIMINATED IS NOT ON THE ROSTER, for this question.
+    --
+    -- An eliminated fighter deliberately KEEPS their row -- the results board
+    -- ranks off it -- so "is in match.players" and "can still win" are two
+    -- different questions and this only ever asked the first. The book stays
+    -- open for spectatorBets.closeAfterStartSeconds (30 on the shipped
+    -- config) AFTER the round goes live, so inside that window a spectator
+    -- could be sold a bet, by the panel's own chip, on somebody who was
+    -- already out. It is not voided at settlement either -- the holder never
+    -- fought -- so it falls through to lost and their whole stake, up to
+    -- 25,000, goes to whoever backed the winner.
     if Arena.ModeUsesTeams(match.modeKey) then
         if not Arena.GetTeamByKey(pick) then return false end
         for _, player in pairs(players) do
-            if player.team == pick then return true end
+            if player.team == pick and not Arena.IsEliminated(player) then return true end
         end
         return false
     end
 
-    for id in pairs(players) do
-        if canonicalPick(id) == pick then return true end
+    for id, player in pairs(players) do
+        if canonicalPick(id) == pick and not Arena.IsEliminated(player) then return true end
     end
     return false
 end

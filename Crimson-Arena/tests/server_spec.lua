@@ -166,8 +166,12 @@ local function teamMatch(spectators, mutate)
             state = 'lobby',
             modeKey = 'tdm',
             players = {
-                [1] = { src = 1, team = 'crimson' },
-                [2] = { src = 2, team = 'ash' },
+                -- `alive` and `lives` are what a real ArenaLobby.Join
+                -- stamps, and pickExists reads them through
+                -- Arena.IsEliminated to decide whether a pick can still win.
+                -- A row without them is a shape no join ever produces.
+                [1] = { src = 1, team = 'crimson', alive = true, lives = 3 },
+                [2] = { src = 2, team = 'ash', alive = true, lives = 3 },
             },
         },
     })

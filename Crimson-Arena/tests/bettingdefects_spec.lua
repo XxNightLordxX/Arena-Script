@@ -184,6 +184,21 @@ local function oddsPayout(config)
     config.Betting.betPayout = { fighters = 'odds', spectators = 'odds', sharedPool = true }
 end
 
+--- A player row shaped like the one ArenaLobby.Join really writes.
+---
+--- `alive` and `lives` ARE NOT OPTIONAL, and leaving them off is not a
+--- simplification. A real join stamps `alive = true` and `lives >= 1`, and
+--- server/betting.lua's pickExists now asks Arena.IsEliminated whether a
+--- pick can still win -- which reads a row carrying neither as somebody
+--- already out of the round. Rows built by hand here have to look like rows
+--- the server builds, or this file tests a shape that never occurs.
+--- @param src integer
+--- @param team string|nil
+--- @return table
+local function seat(src, team)
+    return { src = src, team = team, alive = true, lives = 3, kills = 0, deaths = 0 }
+end
+
 local function teamMatch(spectators, mutate)
     local wallets = { [1] = 5000, [2] = 5000 }
     for id, cash in pairs(spectators or {}) do wallets[id] = cash end
@@ -194,8 +209,8 @@ local function teamMatch(spectators, mutate)
         state = 'lobby',
         modeKey = 'tdm',
         players = {
-            [1] = { src = 1, team = 'crimson' },
-            [2] = { src = 2, team = 'ash' },
+            [1] = seat(1, 'crimson'),
+            [2] = seat(2, 'ash'),
         },
     }
     server.env.ArenaLobby = fakeLobby({ ['m1'] = record })
@@ -333,7 +348,7 @@ t.test('a bet whose holder ends the match as a fighter is void and goes back unp
     t.isTrue(server.betting.PlaceSpectatorBet(4, 'm1', 'crimson', 25000))
 
     -- 3 joins the side they backed, without a stake in the way.
-    record.players[3] = { src = 3, team = 'crimson' }
+    record.players[3] = seat(3, 'crimson')
 
     local paid, total = server.betting.SettleSpectatorBets('m1', 'crimson')
 
@@ -359,7 +374,7 @@ t.test('a fighter\'s side-bet is void whichever way it would have gone', functio
     -- about to fight against.
     local server, record = teamMatch({ [3] = 30000 })
     t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'ash', 25000))
-    record.players[3] = { src = 3, team = 'crimson' }
+    record.players[3] = seat(3, 'crimson')
 
     local paid, total = server.betting.SettleSpectatorBets('m1', 'crimson')
 
@@ -574,7 +589,7 @@ end)
 
 t.test('a fighter backing themselves is paid out of the same pool', function()
     local server, record = teamMatch({ [3] = 10000 })
-    record.players[1] = { src = 1, team = 'crimson' }
+    record.players[1] = seat(1, 'crimson')
 
     t.isTrue(server.betting.PlaceSpectatorBet(1, 'm1', 'crimson', 1000),
         'a fighter was refused a bet on their own side')
@@ -588,7 +603,7 @@ end)
 
 t.test('and may NOT back the other side, which is being paid to lose', function()
     local server, record = teamMatch({})
-    record.players[1] = { src = 1, team = 'crimson' }
+    record.players[1] = seat(1, 'crimson')
 
     local ok, reason = server.betting.PlaceSpectatorBet(1, 'm1', 'ash', 1000)
     t.isFalse(ok, 'a fighter was allowed to back the team they are fighting against')
@@ -603,7 +618,7 @@ t.test('and cannot get round it by betting first and joining afterwards', functi
     t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'ash', 5000))
 
     -- Now they join the OTHER side.
-    record.players[3] = { src = 3, team = 'crimson' }
+    record.players[3] = seat(3, 'crimson')
 
     server.betting.SettleSpectatorBets('m1', 'ash')
 
@@ -632,7 +647,7 @@ t.test('somebody who places no bet is paid nothing, and loses nothing', function
     -- Betting is voluntary. Not taking part must cost nothing and earn
     -- nothing -- it must not be a silent entry into the pool either way.
     local server, record = teamMatch({ [3] = 5000 })
-    record.players[1] = { src = 1, team = 'crimson' }
+    record.players[1] = seat(1, 'crimson')
     t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 1000))
 
     -- Measured ACROSS the settlement rather than against a starting figure:
@@ -661,8 +676,8 @@ end)
 
 t.test('the entry fee becomes a bet, and the winner takes the losers fees', function()
     local server, record = teamMatch({})
-    record.players[1] = { src = 1, team = 'crimson' }
-    record.players[2] = { src = 2, team = 'ash' }
+    record.players[1] = seat(1, 'crimson')
+    record.players[2] = seat(2, 'ash')
 
     -- teamMatch already took 1000 from each fighter -- that IS the entry
     -- fee this arrangement turns into a bet.
@@ -692,8 +707,8 @@ end)
 
 t.test('a fighter who also bets is in the pool once for each, not once in total', function()
     local server, record = teamMatch({})
-    record.players[1] = { src = 1, team = 'crimson' }
-    record.players[2] = { src = 2, team = 'ash' }
+    record.players[1] = seat(1, 'crimson')
+    record.players[2] = seat(2, 'ash')
 
     t.isTrue(server.betting.PlaceSpectatorBet(1, 'm1', 'crimson', 500))
 
@@ -717,8 +732,8 @@ t.test('and the winner ALWAYS profits, because the pool holds the losers fees', 
     -- can break even -- if everybody backed the same side there is nothing
     -- to win. With the fees in, every loser has put money up.
     local server, record = teamMatch({})
-    record.players[1] = { src = 1, team = 'crimson' }
-    record.players[2] = { src = 2, team = 'ash' }
+    record.players[1] = seat(1, 'crimson')
+    record.players[2] = seat(2, 'ash')
 
     local before = server.cash(1)
     server.betting.Settle('m1', {
@@ -736,8 +751,8 @@ end)
 
 t.test('money is conserved: the pool pays out exactly what went into it', function()
     local server, record = teamMatch({ [3] = 5000 })
-    record.players[1] = { src = 1, team = 'crimson' }
-    record.players[2] = { src = 2, team = 'ash' }
+    record.players[1] = seat(1, 'crimson')
+    record.players[2] = seat(2, 'ash')
 
     server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 750)
 

@@ -3170,16 +3170,42 @@
         return mode === 'odds' ? 'odds' : 'pool';
     }
 
+    /* How many players a side still has who can WIN it.
+
+       Not teamCountOf: that reads match.teamCounts, which counts every row
+       on the side because an eliminated fighter deliberately keeps theirs --
+       the results board ranks off it. For the join picker and the capacity
+       check that is the right number; for "is there anything here to back"
+       it is not.
+
+       `alive` on the wire already carries exactly this: server/lobby.lua
+       sends `not isEliminated(...)`, so a fighter waiting out a respawn is
+       still true and only somebody out of lives is false. */
+    function liveTeamCountOf(match, key) {
+        var live = 0;
+        arrayOf(match.players).forEach(function (entry) {
+            if (entry.team === key && entry.alive !== false) live += 1;
+        });
+        return live;
+    }
+
     function betPickOptions(match) {
         if (!match) return [];
         if (match.teams === true) {
             return arrayOf((cfg().teams || {}).list)
-                .filter(function (team) { return teamCountOf(match, team.key) > 0; })
+                .filter(function (team) { return liveTeamCountOf(match, team.key) > 0; })
                 .map(function (team) {
                     return { pick: team.key, label: team.label || team.key, color: teamColor(team) };
                 });
         }
-        return arrayOf(match.players).map(function (entry) {
+        /* THE SERVER REFUSES THESE, so the panel must not offer them. The
+           book stays open for 30 seconds after the round goes live, and
+           inside that window this list used to include fighters who were
+           already out -- a chip that took the player's money and then lost
+           it to whoever backed the winner. */
+        return arrayOf(match.players).filter(function (entry) {
+            return entry.alive !== false;
+        }).map(function (entry) {
             return { pick: String(int(entry.id, 0)), label: entry.name || ('#' + int(entry.id, 0)), color: null };
         });
     }

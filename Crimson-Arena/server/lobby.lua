@@ -205,9 +205,9 @@ end
 --- @param src number
 --- @return boolean
 local function isEliminated(match, src)
-    local player = match.players[src]
-    if not player then return false end
-    return player.alive ~= true and (Arena.ToInt(player.lives) or 0) <= 0
+    -- Through Arena.IsEliminated, which is the same rule shared with
+    -- server/betting.lua's pickExists rather than copied into it.
+    return Arena.IsEliminated(match.players[src])
 end
 
 --- Whether ArenaMatch.Start has already put this match's fighters in the

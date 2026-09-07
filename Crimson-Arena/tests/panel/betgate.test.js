@@ -67,7 +67,7 @@ function snapshot(options) {
         modeKey: 'ffa', modeLabel: 'Mode', state: o.state,
         teams: false, playerCount: 2, hostName: 'Host', pot: 0, entryFee: 0,
         teamCounts: {},
-        players: [
+        players: o.players || [
             { id: RIVAL, name: 'Rival', team: null, alive: true },
             { id: 11, name: 'Other', team: null, alive: true },
         ],
@@ -305,6 +305,57 @@ test('and offered on a live one, which is the whole point', () => {
     (watch.listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
     assert.strictEqual(panel.posted.filter((p) => p.name === 'spectate').length, 1,
         'the watch never reached the wire');
+});
+
+/* ------------------------------------------------------------------
+   A CHIP FOR SOMEBODY WHO IS ALREADY OUT
+
+   The book stays open for 30 seconds after the round goes live, and an
+   eliminated fighter deliberately keeps their row -- the results board
+   ranks off it. So the Bets tab went on drawing a chip for them and the
+   server took the bet. It is not voided at settlement, because the holder
+   never fought, so it fell through to lost and the whole stake went to
+   whoever backed the winner.
+
+   `alive` on the wire is already the right predicate: server/lobby.lua
+   sends `not isEliminated(...)`, so a fighter waiting out a respawn is
+   still true and only somebody out of lives is false.
+   ------------------------------------------------------------------ */
+
+test('an eliminated fighter is not offered as something to back', () => {
+    const panel = opened({
+        state: 'live',
+        betsOpen: true,
+        players: [
+            { id: RIVAL, name: 'Rival', team: null, alive: false },
+            { id: 11, name: 'Other', team: null, alive: true },
+        ],
+    });
+
+    const labels = panel.node('bet-pick').children.map((c) => c.textContent);
+    assert.ok(!labels.includes('Rival'),
+        'the panel offered a chip for a fighter who is out of the round: ' + labels.join(', '));
+    assert.ok(labels.includes('Other'),
+        'the panel dropped a fighter who is still in it: ' + labels.join(', '));
+});
+
+test('but one who is merely waiting to respawn still is', () => {
+    /* The control. `alive` is "not eliminated" rather than "breathing", so
+       a fighter down for five seconds keeps their chip -- dropping it would
+       be this fix overshooting into the very bug that field was changed to
+       stop. */
+    const panel = opened({
+        state: 'live',
+        betsOpen: true,
+        players: [
+            { id: RIVAL, name: 'Rival', team: null, alive: true },
+            { id: 11, name: 'Other', team: null, alive: true },
+        ],
+    });
+
+    const labels = panel.node('bet-pick').children.map((c) => c.textContent);
+    assert.ok(labels.includes('Rival'),
+        'a fighter still in the round lost their chip: ' + labels.join(', '));
 });
 
 console.log('');

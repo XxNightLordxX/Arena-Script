@@ -1031,6 +1031,26 @@ end
 
 --- Head count per team, from a list of players.
 --- @param players table[] -- entries carrying a `.team` field
+
+--- Whether this player row is out of the round for good.
+---
+--- ONE COPY, because there were two answers to this question and only one of
+--- them was being asked. server/lobby.lua had the rule and used it for the
+--- `alive` field it ships in every snapshot; server/betting.lua's pickExists
+--- -- the check that a bet names something that CAN still win -- never asked
+--- it at all, and its own comment two lines above says "Backing an empty team
+--- is not a bet, it is a donation."
+---
+--- An eliminated fighter deliberately KEEPS their row: the results board
+--- ranks off it. So "is on the roster" and "can still win" are different
+--- questions, and only one of them is about the roster.
+--- @param row table|nil -- a match player record
+--- @return boolean
+function Arena.IsEliminated(row)
+    if type(row) ~= 'table' then return false end
+    return row.alive ~= true and (Arena.ToInt(row.lives) or 0) <= 0
+end
+
 --- @return table<string, integer> counts -- only teams with at least one player
 function Arena.CountTeams(players)
     local counts = {}

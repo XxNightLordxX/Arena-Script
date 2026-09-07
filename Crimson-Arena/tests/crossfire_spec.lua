@@ -454,6 +454,43 @@ t.test('and an explosion nowhere near an arena is nobody\'s business', function(
         'an explosion on the far side of the map was cancelled')
 end)
 
+t.test('DEFECT: the outer ring of a GROWN round was not guarded at all', function()
+    -- The fighters' edge is not the config number. server/match.lua's
+    -- boundaryPayload multiplies the radius by the match's size factor, so
+    -- the floor and the spawn ring -- which also grow -- never end up outside
+    -- it. This check took the raw number, so everything past it was treated
+    -- as not-arena.
+    --
+    -- The trailer park is 100 m in config and 135 m at its twenty-player
+    -- ceiling, which leaves a 35 m ring of live round that an outsider could
+    -- drop a grenade into and the fighters standing there would take it.
+    -- The keep-out fence in server/lobby.lua has scaled since the day it was
+    -- written, and says why in a comment naming this exact number.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.env.ArenaLobby = { Get = function()
+        return { arenaKey = 'trailerpark', sizeFactor = 1.35 }
+    end }
+
+    -- 120 m out: inside the grown boundary, outside the config one.
+    t.isTrue(f.explode(9, PARK.x + 120.0, PARK.y, PARK.z),
+        'an outsider\'s explosion landed in the outer ring of a grown round')
+end)
+
+t.test('and an UNGROWN round is still only as big as it says it is', function()
+    -- The control. Scaling by a factor nobody set would fence off ground
+    -- that is not the arena's, and the fence is what stops the rest of the
+    -- city being treated as a round in progress.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.env.ArenaLobby = { Get = function()
+        return { arenaKey = 'trailerpark', sizeFactor = 1.0 }
+    end }
+
+    t.isFalse(f.explode(9, PARK.x + 120.0, PARK.y, PARK.z),
+        'a six-player round claimed ground twenty metres past its own boundary')
+end)
+
 t.test('and the arena in the sky is guarded the same way', function()
     -- Worth stating separately: its boundary is a sphere a kilometre up, and
     -- the check is on x/y only. A grenade thrown at the trailer park's

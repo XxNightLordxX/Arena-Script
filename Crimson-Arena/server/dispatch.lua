@@ -1205,7 +1205,23 @@ local function insideLiveArena(point)
 
         if boundary and boundary.enabled ~= false and boundary.center then
             local cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
-            local radius = tonumber(boundary.radius)
+
+            -- SCALED, LIKE THE FENCE IN server/lobby.lua, and for the reason
+            -- its comment already spells out. The fighters' edge is not the
+            -- config number: server/match.lua's boundaryPayload multiplies it
+            -- by the match's size factor so the floor and the spawn ring --
+            -- which also grow -- never end up outside it. This copy took the
+            -- raw number, so everything outside it was treated as not-arena.
+            --
+            -- What that leaves unguarded is the OUTER RING of a grown round:
+            -- 35 m at the trailer park's twenty-player ceiling (100 m radius,
+            -- 1.35 growth), up to 70 m at the skydome. An outsider's
+            -- explosion landing in that ring was not cancelled and the
+            -- fighters standing there took it -- the one thing this handler
+            -- exists to stop -- and a location-pinned alert raised there was
+            -- not suppressed either.
+            local factor = math.max(1.0, tonumber(match.sizeFactor) or 1.0)
+            local radius = (tonumber(boundary.radius) or 0) * factor
 
             if cx and cy and radius and radius > 0 then
                 local dx, dy = px - cx, py - cy

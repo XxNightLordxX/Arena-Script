@@ -25,7 +25,7 @@
     a promotion that does not reach a real inventory is a promotion that
     changed nothing a player can hold.
 
-    TWENTY-THREE TESTS, on deliberately different parts of it:
+    THIRTY TESTS, on deliberately different parts of it:
 
       THE DRAW         one weapon per tier, melee first, stable all round,
                        different between rounds, and short pools survived.
@@ -46,6 +46,34 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 print('gungame_spec')
 
 local IDS = { 1, 2, 3, 4, 5, 6 }
+
+--- The seed the next server that does not name one will use.
+---
+--- EVERY SERVER IS SEEDED, AND THAT IS THE POINT. `math.randomseed` is
+--- global: two tests here name a seed of their own, and every test that ran
+--- AFTER one of them was quietly climbing whatever stream that seed had left
+--- behind. Seventy ladders were drawn in a run of this file and exactly one
+--- of them -- the first -- varied between processes; the other sixty-nine
+--- were hard-wired, for ever, by a number written in a different test.
+---
+--- The file was green because of it rather than in spite of it. Changing one
+--- loop bound in a test that shares no state with any other -- 12 rounds to
+--- 11, or to 13 -- turned the file red, because it moved the stream every
+--- later test was standing in.
+---
+--- So the coupling is removed rather than tuned around: a test that names a
+--- seed gets that seed, and a test that does not gets its own from this
+--- counter. No test's ladder can depend on which tests ran before it, and
+--- every failure is still reproducible by re-running the file.
+local nextSeed = 90000
+
+--- Sweeps many ladders rather than trusting one draw, for the properties
+--- that have to hold for EVERY ladder the config can produce.
+--- @param count integer
+--- @param body fun(seed: integer)
+local function overManyLadders(count, body)
+    for index = 1, count do body(70000 + index * 13) end
+end
 
 --- A fake ox_inventory with real pockets.
 ---
@@ -133,8 +161,13 @@ end
 --- A server with gun game switched ON, which no shipped config does.
 --- @param mutate fun(config: table)?
 --- @param seed integer? -- what math.randomseed is set to before the ladder
----        is drawn, so a test can name the ladder it wants
-local function newServer(mutate, seed)
+---        is drawn, so a test can name the ladder it wants. LEAVING IT OUT
+---        DOES NOT MEAN "unseeded": see `nextSeed` below.
+--- @param opts table? -- { noInventory = true } to run the whole server as
+---        one WITHOUT ox_inventory started, which is the `no-inventory`
+---        answer ArenaAmmo.SwapWeapon gives and a path nothing had reached
+local function newServer(mutate, seed, opts)
+    opts = opts or {}
     local players = {}
     for _, id in ipairs(IDS) do
         players[id] = {
@@ -164,7 +197,7 @@ local function newServer(mutate, seed)
         Wait = threads.Wait,
         SetTimeout = threads.SetTimeout,
         GetResourceState = function(name)
-            if name == 'ox_inventory' then return 'started' end
+            if name == 'ox_inventory' and not opts.noInventory then return 'started' end
             return 'missing'
         end,
         print = function(line) console[#console + 1] = line end,
@@ -259,9 +292,11 @@ local function newServer(mutate, seed)
         })
         matchId = server.lobby.All()[1].id
         for src = 2, count do server.fire('joinMatch', src, { matchId = matchId, account = 'cash' }) end
-        -- SEEDED BEFORE THE ROUND STARTS, so a test that names a seed gets
-        -- the ladder that seed produces.
-        if seed then math.randomseed(seed) end
+        -- SEEDED BEFORE THE ROUND STARTS, ALWAYS. A test that names a seed
+        -- gets that ladder; one that does not gets its own rather than
+        -- inheriting whatever an earlier test left in the global stream.
+        nextSeed = nextSeed + 7
+        math.randomseed(seed or nextSeed)
 
         -- READYING UP IS WHAT STARTS IT, and that is the only thing that
         -- does. `autoStartWhenAllReady` ships on, so the last setReady
@@ -411,7 +446,7 @@ t.test('the first tier is melee and the last one is not', function()
     -- RUN OVER MANY DRAWS. One draw proves one draw; the pools have up to
     -- seven entries and a rule that holds for the first weapon out of each
     -- has to hold for all of them.
-    for attempt = 1, 40 do
+    overManyLadders(40, function(attempt)
         local s = newServer(nil, attempt)
         s.play(2)
         local ladder = s.match_().ladder
@@ -419,7 +454,20 @@ t.test('the first tier is melee and the last one is not', function()
             ('draw %d opened on %s, which is not melee'):format(attempt, tostring(ladder[1].key)))
         t.isTrue(s.arena.IsMeleeWeapon(ladder[#ladder]) ~= true,
             ('draw %d finished on %s, which is melee'):format(attempt, tostring(ladder[#ladder].key)))
-    end
+
+        -- AND EVERY TIER IN BETWEEN CAME OUT OF ITS OWN POOL. Test 1 checks
+        -- that on one draw; over forty draws it is the claim that the ladder
+        -- is structured rather than merely ordered, and tiers 2 to 6 were
+        -- drawn forty times and asserted on never.
+        for index, weapon in ipairs(ladder) do
+            local inPool = false
+            for _, key in ipairs(s.config.Modes.gungame.gunGameTiers[index]) do
+                if key == weapon.key then inPool = true end
+            end
+            t.isTrue(inPool, ('draw %d put %s on tier %d, which is not in that pool')
+                :format(attempt, tostring(weapon.key), index))
+        end
+    end)
 end)
 
 t.test('the drawn ladder does not change under the players mid-round', function()
@@ -1157,6 +1205,241 @@ t.test('the board and the winner read the same number', function()
     s.settle(2)
     t.equals(table.concat(s.winners(), ','), '3',
         'and the clock crowns the player the board had at the top')
+end)
+
+-- ======================================================================
+-- 24-29. THE PATHS NOTHING REACHED
+-- ======================================================================
+
+t.test('the mode still ships OFF, and its ladder is a real one', function()
+    -- THE GUARD THAT WAS DELETED. Every test in this file runs a config
+    -- nobody has -- gun game switched on -- and that is only defensible
+    -- while the shipped config really does ship it off. Without this,
+    -- flipping one word in config.lua turns the mode on for every operator
+    -- and all 86 spec files pass.
+    local shipped = Sandbox.shippedConfig()
+    t.equals(shipped.Modes.gungame.enabled, false,
+        'gun game now ships ON -- every other test in this file runs a config nobody has')
+
+    -- AND WHAT SHIPS IS PLAYABLE. A mode that is off and broken is a mode
+    -- that breaks the first time an operator turns it on, which is the whole
+    -- reason this file exists.
+    t.isTrue(type(shipped.Modes.gungame.gunGameTiers) == 'table'
+        and #shipped.Modes.gungame.gunGameTiers > 1,
+        'the shipped ladder needs more than one tier')
+    t.isTrue(type(shipped.Modes.gungame.startingKit) == 'table',
+        'and a starting kit')
+
+    -- EVERY TIER OF THE SHIPPED LADDER RESOLVES. A pool of keys that are all
+    -- switched off is dropped silently, so "it ships with seven tiers" and
+    -- "it ships with seven PLAYABLE tiers" are different claims and this is
+    -- the second one.
+    for index, pool in ipairs(shipped.Modes.gungame.gunGameTiers) do
+        local playable = 0
+        for _, key in ipairs(pool) do
+            for _, weapon in ipairs(shipped.Loadouts.weapons) do
+                if weapon.key == key and weapon.enabled ~= false then playable = playable + 1 end
+            end
+        end
+        t.isTrue(playable > 0, ('shipped tier %d has nothing playable in it'):format(index))
+    end
+
+    -- AND THE KIT NAMES SUPPLIES THAT EXIST.
+    for _, entry in ipairs(shipped.Modes.gungame.startingKit) do
+        local found = false
+        for _, supply in ipairs(shipped.Loadouts.supplies.items) do
+            if supply.key == entry.key and supply.enabled ~= false then found = true end
+        end
+        t.isTrue(found, ('the shipped kit names "%s", which is not an enabled supply')
+            :format(tostring(entry.key)))
+    end
+end)
+
+t.test('a server with no ox_inventory still climbs the ladder', function()
+    -- THE `no-inventory` ANSWER, which nothing had ever executed. It is not
+    -- a refusal: there are no items to move, this side's record is the whole
+    -- truth, and the tier has to move anyway or the mode does not run at all
+    -- on a server without ox_inventory started.
+    local s = newServer(nil, nil, { noInventory = true })
+    s.play(3)
+
+    t.equals(s.row(1).tier, 1, 'everybody still opens on tier 1')
+    s.trade(2, 1)
+    t.equals(s.row(1).tier, 2, 'and a kill still climbs')
+    t.equals(s.row(1).loadout.weapons[1].weapon, weaponAt(s, 2),
+        'with the record naming the right weapon')
+
+    -- The swap itself says which answer it gave, so this is reading the
+    -- branch rather than inferring it from the outcome.
+    local ok, why = s.ammo.SwapWeapon(1, s.matchId(), nil,
+        { weapon = 'WEAPON_PISTOL', key = 'pistol', ammo = 10 })
+    t.equals(ok, false, 'the swap reports it did nothing')
+    t.equals(why, 'no-inventory', 'and says why, so the caller does not roll back')
+end)
+
+t.test('two players topping the ladder in one sweep is a draw, and pays nobody', function()
+    -- THE TIE THIS MODE IS THE ONLY NON-TEAM ONE THAT CAN PRODUCE, and
+    -- nothing had ever reached it. `winningPick` collapses a free-for-all
+    -- result to winners[1], so two finishers meant the second was told they
+    -- had won, recorded as a winner, and paid nothing -- while their own
+    -- stake was judged a loser against the first.
+    local s = newServer(function(config)
+        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' } }
+    end)
+    s.play(4)
+
+    -- Two tiers, so two credited kills tops it. Both climbers finish inside
+    -- the same sweep because nothing steps in between.
+    s.trade(3, 1)
+    s.trade(4, 1)
+    s.trade(3, 2)
+    s.trade(4, 2)
+
+    t.equals(s.row(1).ladderFinished, true, 'fighter 1 topped it')
+    t.equals(s.row(2).ladderFinished, true, 'and so did fighter 2, in the same sweep')
+
+    s.settle(2)
+    t.equals(s.endedWith(), 'match.ended_draw',
+        'two finishers at once is a draw, not a win for whichever reported first')
+    t.equals(table.concat(s.winners(), ','), '', 'and nobody is told they won')
+end)
+
+t.test('the clock draws when nobody climbed, and when two are level', function()
+    -- decideOnLadder's OTHER TWO ANSWERS. Only its single-winner branch had
+    -- ever run, so "a tie is a draw" and "nobody climbed is a draw" were
+    -- claims rather than behaviour.
+    local quiet = newServer(function(config)
+        config.Modes.gungame.roundTimeSeconds = 120
+    end)
+    quiet.play(3)
+    quiet.match_().endsAt = os.time() - 1
+    quiet.settle(2)
+    t.equals(quiet.endedWith(), 'match.ended_draw', 'a round nobody climbed is a draw')
+
+    local level = newServer(function(config)
+        config.Modes.gungame.roundTimeSeconds = 120
+    end)
+    level.play(4)
+    -- Two climbers, one kill each, on different victims: level on tier AND
+    -- level on the kills that break a tier tie.
+    level.trade(3, 1)
+    level.trade(4, 2)
+    t.equals(level.row(1).kills, level.row(2).kills, 'the setup needs them level on kills')
+
+    level.match_().endsAt = os.time() - 1
+    level.settle(2)
+    t.equals(level.endedWith(), 'match.ended_draw', 'level on both is a draw')
+    t.equals(table.concat(level.winners(), ','), '', 'and pays nobody')
+
+    -- AND KILLS REALLY DO BREAK A TIER TIE, which is the third branch.
+    local broken = newServer(function(config)
+        config.Modes.gungame.roundTimeSeconds = 120
+    end)
+    broken.play(5)
+    broken.trade(3, 1)
+    broken.trade(4, 2)
+    -- Fighter 2 takes a second kill and a death: same tier, more kills.
+    broken.trade(5, 2)
+    broken.kill(2, nil)
+    broken.revive(2)
+
+    t.equals(broken.row(1).tier, broken.row(2).tier, 'level on tiers')
+    t.isTrue(broken.row(2).kills > broken.row(1).kills, 'and fighter 2 fought more to get there')
+
+    broken.match_().endsAt = os.time() - 1
+    broken.settle(2)
+    t.equals(table.concat(broken.winners(), ','), '2', 'so the kills break the tie')
+end)
+
+t.test('the room can be told nothing, and the climber is never told about themselves', function()
+    -- announceFinalTier = false was never once set by a test, so the switch
+    -- decided nothing that anybody had checked.
+    local quiet = newServer(function(config)
+        config.Modes.gungame.announceFinalTier = false
+    end)
+    quiet.play(6)
+    local top = quiet.tierCount()
+    local victims = { 2, 3, 4, 5, 6, 2, 3 }
+    for step = 1, top - 1 do quiet.trade(victims[step], 1) end
+
+    t.equals(quiet.row(1).tier, top, 'somebody is on the top tier')
+    t.isTrue(quiet.told(2):find('top tier', 1, true) == nil,
+        'and with the announcement off, the room is not told')
+
+    -- ON, the room is told ONCE EACH and the climber is not told at all --
+    -- both halves of the prose, neither of which was asserted.
+    local loud = newServer()
+    loud.play(6)
+    for step = 1, top - 1 do loud.trade(victims[step], 1) end
+
+    t.isTrue(loud.told(1):find('top tier', 1, true) == nil,
+        'the climber is not told about themselves')
+    for _, other in ipairs({ 2, 3, 4, 5, 6 }) do
+        local said = loud.told(other)
+        local first, count = said:find('top tier', 1, true), 0
+        while first do
+            count = count + 1
+            first = said:find('top tier', first + 1, true)
+        end
+        t.equals(count, 1, ('fighter %d should be told exactly once'):format(other))
+    end
+end)
+
+t.test('a promotion and a demotion each say the tier, the height and the weapon', function()
+    -- THE TWO NOTIFICATIONS THE MODE ACTUALLY SENDS, and nothing checked
+    -- either was delivered or carried the right numbers. locale_spec checks
+    -- their placeholder arity statically; that is a different question from
+    -- whether the right values reach the player.
+    local s = newServer()
+    s.play(3)
+    local height = s.tierCount()
+
+    s.trade(2, 1)
+    local up = s.told(1)
+    t.isTrue(up:find('Tier 2 of ' .. height, 1, true) ~= nil,
+        ('the promotion should name tier 2 of %d -- got: %s'):format(height, up))
+    t.isTrue(up:find(s.match_().ladder[2].label, 1, true) ~= nil,
+        'and the weapon they are now holding')
+
+    s.trade(1, 2)
+    local down = s.told(1)
+    t.isTrue(down:find('Down to tier 1 of ' .. height, 1, true) ~= nil,
+        ('the demotion should name tier 1 of %d -- got: %s'):format(height, down))
+    t.isTrue(down:find(s.match_().ladder[1].label, 1, true) ~= nil,
+        'and the weapon it put back in their hands')
+end)
+
+t.test('an ordinary mode carries no tier on the wire at all', function()
+    -- THE OTHER HALF OF scoreboardOf's CONTRACT. Everything here asserts the
+    -- tier is PRESENT in a gun game; nothing asserted it is ABSENT
+    -- everywhere else, which is the whole mechanism by which the panel knows
+    -- not to draw a column.
+    local s = newServer()
+    s.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash',
+    })
+    local id = s.lobby.All()[1].id
+    s.fire('joinMatch', 2, { matchId = id, account = 'cash' })
+    for src = 1, 2 do s.fire('setReady', src, { ready = true }) end
+    for _ = 1, 4 do
+        if s.lobby.Get(id).state == 'live' then break end
+        s.settle(1)
+    end
+    s.settle(1)
+
+    local board = s.board()
+    t.isTrue(type(board) == 'table' and #board > 0, 'a free-for-all has a scoreboard')
+    for _, row in ipairs(board) do
+        t.equals(row.tier, nil, 'and no row carries a tier')
+        t.equals(row.tiers, nil, 'nor a ladder height')
+    end
+
+    -- AND THE MODE LIST SAYS SO TOO, which is what the panel reads to decide
+    -- whether the loadout screen is shut.
+    local modes = {}
+    for _, mode in ipairs(s.arena.GetEnabledModes()) do modes[mode.key] = mode end
+    t.equals(modes.ffa.tiers, nil, 'a free-for-all advertises no ladder')
+    t.isTrue((modes.gungame.tiers or 0) > 1, 'and a gun game advertises its height')
 end)
 
 os.exit(t.summary())

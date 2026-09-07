@@ -587,7 +587,10 @@
             var count = int(entry && entry.count, 0);
             var label = String((entry && entry.label) || '');
             if (count <= 0 || label === '') return '';
-            return String(count) + ' ' + label;
+            /* PLURALISED, because the label is the operator's singular noun
+               and five of them is not "5 Bandage". `plural` leaves a count
+               of one alone, which is what "1 Body Armour" needs. */
+            return plural(count, label);
         }).filter(function (text) { return text !== ''; });
 
         if (parts.length === 0) return '';

@@ -1601,6 +1601,29 @@ local function mayDamage(attacker, victim)
         return false, 'one of them is watching rather than fighting', 'crossfire'
     end
 
+    -- AND BEING OUT OF THE ROUND IS WATCHING, WHATEVER THE ROSTER SAYS.
+    --
+    -- An eliminated fighter KEEPS their row on purpose -- the results board
+    -- ranks off it, and with spectateOnElimination on they stay in the
+    -- match's routing bucket to watch. Both tests above therefore pass for
+    -- them, and their shots at the people still fighting were never
+    -- cancelled: a player who is out for the round could spend the rest of
+    -- it deleting whoever was about to win.
+    --
+    -- Nothing was gained by it on the board -- resolveKiller refuses to
+    -- credit a kill to somebody eliminated -- which is exactly what made it
+    -- pure griefing, and free.
+    --
+    -- Their own client holds them invisible and collisionless while the
+    -- camera runs; that is a hold their own client owns, and this is the
+    -- half the server owns.
+    if Arena.IsEliminated(shooter) then
+        return false, 'the shooter is out of the round', 'crossfire'
+    end
+    if Arena.IsEliminated(target) then
+        return false, 'the target is out of the round', 'crossfire'
+    end
+
     if Arena.CanDamage(match.modeKey, shooter.team, target.team) then
         return true
     end

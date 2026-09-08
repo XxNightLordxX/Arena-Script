@@ -467,10 +467,28 @@ end
 --- open, because a window that cannot be timed cannot be closed, and an
 --- uncloseable window is free money for anyone watching the scoreboard.
 --- @return boolean
-local function betsAreOpen(match)
+--- @param match table
+--- @param isFighter boolean|nil -- the bettor is on this match's roster
+local function betsAreOpen(match, isFighter)
     local state = match.state
     if state == 'lobby' or state == 'countdown' then return true end
     if state ~= 'live' then return false end
+
+    -- A FIGHTER'S BOOK SHUTS THE MOMENT THE ROUND DOES NOT.
+    --
+    -- The grace window below is for WATCHERS: somebody who was not paying
+    -- attention when the lobby filled gets half a minute to back a side.
+    -- A fighter is not in that position. They are IN the round, and half a
+    -- minute of it is everything -- who came armed with what, who is
+    -- shooting well, who is already down.
+    --
+    -- And the stake makes it worse rather than better: a fighter betting on
+    -- themselves draws the fighter band, which ships at twice the spectator
+    -- ceiling. Measured: take two kills, then back yourself for 50,000 and
+    -- come out ahead of the person who backed you blind in the lobby and
+    -- lost 25,000. Anybody betting before the round is handing thirty
+    -- seconds of free information to anybody who waits.
+    if isFighter then return false end
 
     local spectator = Config.Betting.spectatorBets or {}
     local grace = math.max(0, Arena.ToInt(spectator.closeAfterStartSeconds) or 0)
@@ -1589,7 +1607,7 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     end
     if not stake then return false, reason or 'error.bet_invalid' end
 
-    if not betsAreOpen(match) then return false, 'error.bets_closed' end
+    if not betsAreOpen(match, isFighter) then return false, 'error.bets_closed' end
 
     local wanted = canonicalPick(pick)
     if not wanted or not pickExists(match, wanted) then return false, 'error.bet_invalid_pick' end

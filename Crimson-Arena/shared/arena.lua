@@ -757,8 +757,20 @@ function Arena.KillCeilingFor(arenaKey, factor)
     local radius = boundary and tonumber(boundary.radius) or nil
     if not radius or radius <= 0 then return configured end
 
+    -- THE ARENA'S OWN DIAMETER, AND NOT A METRE MORE.
+    --
+    -- This was `max(configured, grown * 2.25)`, which on the Trailer Park is
+    -- 225 metres against a fence 200 across -- so a kill could be credited
+    -- between two people who were both 25 metres OUTSIDE the boundary, in
+    -- opposite directions. A ceiling wider than the ground it guards is not
+    -- a ceiling.
+    --
+    -- Diameter rather than radius because the two furthest points in a
+    -- circle are a diameter apart, and a shot across the middle of the arena
+    -- is the longest legitimate one there is. The operator's own number is
+    -- still the floor: somebody who wrote 150 asked for at least 150.
     local grown = radius * math.max(1.0, tonumber(factor) or 1.0)
-    return math.max(configured, grown * 2.25)
+    return math.max(configured, grown * 2.0)
 end
 
 --- Every win condition this resource knows, in the order the picker shows

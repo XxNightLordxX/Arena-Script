@@ -118,7 +118,15 @@ local function round(seed)
             s.D.Set(src, id)
             matchOf[src] = id
             teamOf[src] = ({ 'crimson', 'ash' })[math.random(2)]
-            if id == 'm1' then roster[src] = { team = teamOf[src] } end
+            -- ALIVE AND WITH LIVES LEFT, which is what the server writes
+            -- for a fighter in a live round. A row carrying only a team is
+            -- not a shape it ever produces, and once the damage guard began
+            -- refusing shots from anybody OUT of the round, a row with
+            -- neither field read as eliminated -- so every generated world
+            -- had a roster of corpses in it.
+            if id == 'm1' then
+                roster[src] = { src = src, team = teamOf[src], alive = true, lives = 3 }
+            end
         elseif roll < 0.7 then
             s.D.Set(src, 'm1')
             matchOf[src] = 'm1'
@@ -267,7 +275,7 @@ t.test('and nothing a hostile client can put in a packet makes it throw', functi
     local s = newServer(false)
     s.netIds[1] = 5001
     s.D.Set(1, 'm1')
-    s.env.ArenaLobby = { Get = function() return { modeKey = 'tdm', players = { [1] = { team = 'crimson' } } } end }
+    s.env.ArenaLobby = { Get = function() return { modeKey = 'tdm', players = { [1] = { src = 1, team = 'crimson', alive = true, lives = 3 } } } end }
 
     local pieces = { 0, -1, 1 / 0, -1 / 0, 0 / 0, '', 'x', true, false, {}, 5001, 2 ^ 60 }
 

@@ -1548,6 +1548,21 @@ t.test('the kill ceiling is the span of the arena the fight is in, not a flat nu
             t.isTrue(Arena.KillCeilingFor(key, 1.0) >= across,
                 ('%s is %.0fm across and its ceiling is %.0fm -- a kill from one edge to the other is refused')
                     :format(key, across, Arena.KillCeilingFor(key, 1.0)))
+
+            -- AND NOT A METRE WIDER, which is the other half and was missing.
+            -- The ceiling was `radius * 2.25`, so on the Trailer Park it
+            -- stood at 225 metres against a fence 200 across: a kill could
+            -- be credited between two people who were BOTH twenty-five
+            -- metres outside the boundary, in opposite directions. A ceiling
+            -- wider than the ground it guards is not a ceiling, and two
+            -- accomplices never had to stand together to use it.
+            --
+            -- The operator's own maxKillDistance is still the floor, so a
+            -- server that wrote a bigger number gets the bigger number.
+            local floor = math.max(across, tonumber(Config.Match.maxKillDistance) or 0)
+            t.isTrue(Arena.KillCeilingFor(key, 1.0) <= floor,
+                ('%s is %.0fm across and its ceiling is %.0fm -- kills are credited outside the fence')
+                    :format(key, across, Arena.KillCeilingFor(key, 1.0)))
         end
     end
 end)

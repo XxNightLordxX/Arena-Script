@@ -449,4 +449,82 @@ t.test('and one placed before the rule was switched off is handed back, not kept
     t.contains(server.log(), 'SIDE-BET VOID', 'the bet was judged instead of voided')
 end)
 
+-- ======================================================================
+-- AND A FIGHTER'S BOOK SHUTS AT THE BELL
+-- ======================================================================
+--
+-- spectatorBets.closeAfterStartSeconds keeps the book open for half a
+-- minute into a live round, and that grace is for WATCHERS: somebody who
+-- was not paying attention while the lobby filled gets a moment to back a
+-- side.
+--
+-- A fighter is not in that position. They are IN the round, and thirty
+-- seconds of it is everything -- who came armed with what, who is shooting
+-- well, who is already on the floor. The stake made it worse rather than
+-- better: a fighter draws the FIGHTER band, twice the spectator ceiling.
+-- Measured: take two kills, then back yourself for the fighter maximum and
+-- come out ahead of the person who backed you blind in the lobby.
+
+--- A three-hand table with the round already being fought, and the book
+--- still inside the operator's grace window.
+--- @return table server, string matchId
+local function liveBook()
+    local server = newServer({
+        [1] = { cash = 100000, bank = 100000 },
+        [2] = { cash = 100000, bank = 100000 },
+        [3] = { cash = 100000, bank = 100000 },
+    })
+    local matchId = server.openMatch()
+
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.match.Start(matchId)
+    server.step(8)
+
+    local match = server.lobby.Get(matchId)
+    t.equals(match.state, 'live', 'the round never went live, so the book never shut on anybody')
+
+    return server, matchId
+end
+
+--- The same table before a shot is fired.
+local function lobbyBook()
+    local server = newServer({
+        [1] = { cash = 100000, bank = 100000 },
+        [2] = { cash = 100000, bank = 100000 },
+        [3] = { cash = 100000, bank = 100000 },
+    })
+    local matchId = server.openMatch()
+    t.equals(server.lobby.Get(matchId).state, 'lobby', 'the round already started')
+    return server, matchId
+end
+
+t.test('THE FREE LOOK: a fighter cannot back themselves once the round is live',
+    function()
+        local s, matchId = liveBook()
+
+        local ok, reason = s.betting.PlaceSpectatorBet(1, matchId, 1, 5000, 'cash')
+        t.isFalse(ok == true,
+            'a fighter placed a bet after watching the round start')
+        t.equals(reason, 'error.bets_closed', 'and was not told the book had shut')
+    end)
+
+t.test('and a WATCHER still gets the grace the setting is for', function()
+    -- The control, and the whole reason the window exists. Closing it for
+    -- everybody would be a different change from the one this is.
+    local s, matchId = liveBook()
+
+    t.isTrue((s.betting.PlaceSpectatorBet(3, matchId, 1, 5000, 'cash')),
+        'a watcher was refused inside the grace window the operator set')
+end)
+
+t.test('and a fighter betting in the LOBBY is untouched', function()
+    -- Where a fighter is supposed to back themselves: before a shot is
+    -- fired, on the same information everybody else has.
+    local s, matchId = lobbyBook()
+
+    t.isTrue((s.betting.PlaceSpectatorBet(1, matchId, 1, 5000, 'cash')),
+        'a fighter could not back themselves in the lobby')
+end)
+
 os.exit(t.summary())

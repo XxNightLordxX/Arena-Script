@@ -165,13 +165,24 @@ local function newFixture(opts)
     --- @param teams table -- [src] = teamKey
     function f.teams(matchId, modeKey, teams)
         local players = {}
-        for src, team in pairs(teams) do players[src] = { team = team } end
+        -- ALIVE AND WITH A LIFE IN HAND, which is what a fighter in a live
+        -- round is. The rows used to carry only a team, and that is not a
+        -- shape the server ever produces: `alive` and `lives` are both set
+        -- when the round starts. It mattered once the damage guard began
+        -- refusing shots from somebody who is OUT of the round -- a row with
+        -- neither field reads as eliminated, so every fighter here did.
+        for src, team in pairs(teams) do
+            players[src] = { src = src, team = team, alive = true, lives = 3 }
+        end
         f.env.ArenaLobby = {
             Get = function(id)
                 if id ~= matchId then return nil end
                 return { modeKey = modeKey, players = players }
             end,
         }
+        -- HANDED BACK, so a test can knock somebody out of the round the way
+        -- the server does: alive false, no lives left.
+        return players
     end
 
     f.handlers = handlers
@@ -861,6 +872,72 @@ t.test('and it says WHICH rule refused the shot', function()
         'a friendly-fire refusal was logged as something else: ' .. written)
     t.isTrue(written:find('same round', 1, true) == nil,
         'a friendly-fire refusal blamed the round: ' .. written)
+end)
+
+-- ======================================================================
+-- BEING OUT OF THE ROUND IS WATCHING IT
+-- ======================================================================
+--
+-- An eliminated fighter KEEPS their roster row on purpose -- the results
+-- board ranks off it -- and with spectateOnElimination on, which is the
+-- shipped setting, they stay in the match's routing bucket to watch. So
+-- both of the guard's earlier tests pass for them: they are in the match,
+-- and they are on the roster.
+--
+-- Which left them armed. Nothing on the board came of it -- resolveKiller
+-- refuses to credit a kill to somebody eliminated -- and that is exactly
+-- what made it free: a player who was out for the round could spend the
+-- rest of it deleting whoever was about to win, and gain nothing except
+-- the ruining of it.
+
+t.test('THE GRIEF: a fighter who is OUT cannot shoot the ones still in', function()
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    local roster = f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'ash' })
+
+    t.isFalse(f.shoot(1, { 2 }), 'the two could not shoot each other to begin with')
+
+    -- Knocked out: on the floor with no lives left, which is what the server
+    -- writes when somebody is eliminated.
+    roster[1].alive = false
+    roster[1].lives = 0
+
+    t.isTrue(f.shoot(1, { 2 }),
+        'a fighter who is out of the round could still shoot the ones still in it')
+end)
+
+t.test('and cannot be shot either, which is the same rule from the other end',
+    function()
+        -- A corpse is not a target. Left shootable, a decided round goes on
+        -- being fought over somebody who cannot fight back and has nothing
+        -- left to lose.
+        local f = newFixture()
+        f.enter(1, 'm1')
+        f.enter(2, 'm1')
+        local roster = f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'ash' })
+
+        roster[2].alive = false
+        roster[2].lives = 0
+
+        t.isTrue(f.shoot(1, { 2 }), 'a fighter still in the round could shoot one who is out')
+    end)
+
+t.test('and somebody merely WAITING TO RESPAWN is still in it', function()
+    -- The distinction the guard turns on, and the one that would break the
+    -- game if it were got wrong: a fighter on the floor with lives left is
+    -- back in five seconds. Refusing shots at them would turn the respawn
+    -- delay into a shield.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    local roster = f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'ash' })
+
+    roster[2].alive = false
+    roster[2].lives = 2
+
+    t.isFalse(f.shoot(1, { 2 }),
+        'a fighter waiting to respawn was treated as out of the round')
 end)
 
 os.exit(t.summary())

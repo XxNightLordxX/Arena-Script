@@ -515,6 +515,14 @@ t.test('a fighter who DROPS keeps only what a watcher may hold', function()
         [3] = { cash = 200000, bank = 0 },
     }, function(config)
         config.Betting.fighterBets.enabled = true
+        -- THE SHIPPED CONFIG LEVELS THE TWO BANDS ON PURPOSE, because a
+        -- fighter ceiling above the watcher ceiling is exactly the free
+        -- insurance this test describes. Levelling them makes the exploit
+        -- unreachable on the shipped numbers -- it does not delete the trim,
+        -- and an operator who raises the fighter band is back in range of
+        -- it. So the fixture widens the band itself: the code under test is
+        -- covered whatever the shipped ceiling happens to be.
+        config.Betting.fighterBets.max = config.Betting.spectatorBets.max * 2
     end)
     server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
     local matchId = server.lobby.All()[1].id
@@ -525,7 +533,7 @@ t.test('a fighter who DROPS keeps only what a watcher may hold', function()
     local fighterMax = server.config.Betting.fighterBets.max
     local watcherMax = server.config.Betting.spectatorBets.max
     t.isTrue(fighterMax > watcherMax,
-        'the two bands are equal on this config, so this test measures nothing')
+        'the fixture did not widen the fighter band, so this test measures nothing')
 
     -- 3 is a FIGHTER, so the fighter band is what they are held to.
     server.fire('placeSpectatorBet', 3, {

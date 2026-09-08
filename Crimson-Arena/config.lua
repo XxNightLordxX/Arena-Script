@@ -17,20 +17,20 @@
     ------------------------------------------------------------------------------
      line   setting       what it is
     ------------------------------------------------------------------------------
-       84   Lobby         The NPC players walk up to
-      181   Schedule      Opening hours: when the door is actually open
-      227   Match         Lives, timers, player counts, win condition
-      592   Teams         The sides, and whether they may be uneven
-      747   Modes         Free-for-all and team deathmatch
-      1121  DefaultMode   Which of them a new lobby opens on
-      1140  Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1358  UI            Panel colours, logo and title
-      1416  Permissions   Who may open a match, who may force-stop one
-      1497  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2069   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2598   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2608   Webhook       Optional: a Discord line per finished match
-     2645   Dispatch      Optional: keeping police and EMS out of the arena
+       81   Lobby         The NPC players walk up to
+      151   Schedule      Opening hours: when the door is actually open
+      187   Match         Lives, timers, player counts, win condition
+      466   Teams         The sides, and whether they may be uneven
+      579   Modes         Free-for-all, team deathmatch and gun game
+      883   DefaultMode   Which of them a new lobby opens on
+      898   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1061  UI            Panel colours, logo and title
+      1111  Permissions   Who may open a match, who may force-stop one
+      1189  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1623   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1953   Database      Optional: all-time leaderboard. Off, no SQL to import
+     1963   Webhook       Optional: a Discord line per finished match
+     1995   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -66,13 +66,10 @@ Config = {}
 --- Printed in the console and used as the notification title.
 Config.ResourceLabel = 'Crimson Arena'
 
---- Extra console logging for anyone debugging a match that went wrong.
+--- Extra console logging, for working out why a round went the way it did.
 ---
---- SHIPS ON, DELIBERATELY. This resource is still being run in against a live
---- server, and the debug channel is how a round that went wrong gets explained
---- afterwards rather than guessed at. It costs one comparison per call site
---- when off and a line of console per event when on, and nothing here reaches
---- a player either way.
+--- SHIPS ON, DELIBERATELY. Nothing here reaches a player, and the console is
+--- how a strange round gets explained rather than guessed at.
 Config.Debug = true
 
 --- ox_lib notification title for every message this resource sends.
@@ -82,32 +79,22 @@ Config.NotifyTitle = 'CRIMSON ARENA'
 -- LOBBY -- the entry point players walk up to.
 -- ======================================================================
 Config.Lobby = {
-    -- HOW PLAYERS OPEN THE ARENA PANEL.
-    --   'ped'    -- an NPC stands at `ped.coords`; players use ox_target on
-    --              them. This is the default. ox_target is the only target
-    --              script wired up, and with it stopped or absent NO NPC is
-    --              spawned and nothing goes up in its place -- the console
-    --              says so. Use 'both' if you want the marker as a safety
-    --              net; the arena will not quietly pick a setting for you.
-    --   'marker' -- a glowing marker on the ground; players stand in it and
-    --              press the key in `marker.key`. No NPC is spawned.
-    --   'both'   -- spawn the NPC AND draw the marker. Either one opens the
-    --              same panel.
-    -- Anything else is treated as 'ped' and a warning is printed at start.
+    -- HOW PLAYERS OPEN THE ARENA PANEL. Write one of:
+    --   'ped'    -- an NPC they walk up to (needs ox_target)
+    --   'marker' -- a glowing spot they stand in and press `marker.key`
+    --   'both'   -- the NPC and the marker, either one opens the panel
+    --
+    -- On 'ped' with ox_target missing there is NO fallback marker: no NPC is
+    -- spawned and the console says so. Use 'both' if you want the safety net.
     interaction = 'ped',
 
     ped = {
         model = 'g_m_m_armboss_01',
-        -- x, y, z, heading. z should be the GROUND z -- the resource drops
-        -- the ped by one unit itself so it does not float.
-        -- IN THE CITY, at the operator's own coordinates. Deliberately not
-        -- inside a building: an interior puts the NPC behind a door players
-        -- have to find, and interiors are their own can of worms once a match
-        -- teleports people out of one.
+        -- x, y, z, heading. Use the GROUND z -- the resource drops the ped
+        -- by one unit itself so it does not float. Keep it outdoors.
         --
-        -- The NPC and the ARENAS are separate settings. This is only where
-        -- players come to join; the fights still happen wherever each entry
-        -- in Config.Arenas puts them.
+        -- This is only where players come to JOIN. The fighting happens
+        -- wherever Config.Arenas puts it.
         coords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
         -- An idle animation so the NPC is not a statue. Set to nil for none.
         scenario = 'WORLD_HUMAN_GUARD_STAND',
@@ -122,11 +109,10 @@ Config.Lobby = {
 
     marker = {
         type = 27,
-        -- The same spot as the NPC above, so 'both' puts the two fixtures
-        -- in one doorway rather than sending players to two places.
+        -- The same spot as the NPC, so 'both' does not send players to two
+        -- different places.
         coords = vector3(-282.0125, -2030.4575, 30.1457),
         size = vector3(1.6, 1.6, 0.6),
-        -- Crimson, to match the panel.
         color = { r = 200, g = 16, b = 32, a = 140 },
         bobUpAndDown = false,
         rotate = true,
@@ -146,62 +132,38 @@ Config.Lobby = {
     },
 
     -- Where a player is put back when they leave, die out, or the match
-    -- ends. Also where they are returned to if the resource restarts while
-    -- they are mid-match, so make sure it is somewhere safe to stand.
+    -- ends -- and where they land if the resource restarts mid-match. It
+    -- must be somewhere safe to stand.
     returnCoords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
 }
 
 -- ======================================================================
 -- OPENING HOURS -- when the door in Config.Lobby is actually open
 --
--- SHIPS ON, with four windows: 05:00-07:00, 12:00-14:00, 18:00-20:00 and
--- 00:00-02:00. Outside them nobody may open a match and nobody may join
--- one. Set `enabled = false` and the arena is open at every hour, which is
--- also what a server that pulls this code before its config has gets --
--- an arena that has silently shut is a worse upgrade than one that has not
--- noticed the feature yet.
+-- Ships on, with four windows. Outside them nobody may open a match and
+-- nobody may join one.
 --
--- THESE ARE REAL HOURS, NOT THE GAME CLOCK, and that is a decision worth
--- writing down because the obvious reading is the other one.
---
--- A GTA day is 48 real minutes: one city minute passes every two real
--- seconds. So "05:00-07:00" on the CITY clock is about four real minutes,
--- and four such windows would leave the arena open sixteen real minutes out
--- of every forty-eight, in bursts, all day and all night. Worse,
--- Config.Match.roundTimeSeconds below is 600 REAL seconds -- five CITY
--- hours -- so no round could finish inside a two-city-hour window at all.
--- Hours on the city clock are a different feature to the one anybody
--- pictures when they write them down, so this reads the real clock.
---
--- WHICH real clock: the SERVER's, through os.date. Not the player's -- two
--- players in different countries would otherwise be told different opening
--- times for the same arena -- and not the game's. Everything a player is
--- shown comes from the server, so everybody sees one schedule.
+-- THESE ARE REAL HOURS ON THE SERVER'S OWN CLOCK -- not the city clock, and
+-- not the player's. A GTA day is 48 real minutes, so city hours would open
+-- the arena in four-minute bursts around the clock and no round could
+-- finish inside one. Everybody sees the same schedule wherever they are.
 -- ======================================================================
 Config.Schedule = {
     -- Off, the arena never shuts and nothing below is read.
     --
-    -- ON, AND THERE IS NOW A WAY ROUND IT WITHOUT EDITING THIS FILE.
-    -- /arenaadmin holds the doors open past the schedule, or closes them
-    -- inside it, for as long as the server is up -- so testing a mode whose
-    -- round is longer than the window it would have to start in no longer
-    -- means switching the whole feature off and remembering to switch it
-    -- back. That override is deliberately not stored anywhere: a restart
-    -- hands the hours below their say again.
+    -- You do not have to edit this file to make an exception: /arenaadmin
+    -- holds the doors open past the schedule, or shuts them inside it, until
+    -- the server restarts.
     enabled = true,
 
-    -- WHOLE HOURS, 24-hour clock. `from` is the minute the doors open and
-    -- `to` is the minute they shut: 05:00-07:00 is open at 06:59 and shut
-    -- at 07:00. Two windows that touch -- 05:00-07:00 and 07:00-09:00 --
-    -- are read as one opening and shown as "05:00-09:00".
+    -- WHOLE HOURS, 24-hour clock. Open at `from`, shut at `to`: 5 to 7 is
+    -- open at 06:59 and shut at 07:00. Windows that touch are shown as one.
+    -- A window may cross midnight -- { from = 22, to = 2 } is fine, and
+    -- `to = 0` and `to = 24` both mean midnight.
     --
-    -- A window may run over midnight: { from = 22, to = 2 } is legal and
-    -- shows as "22:00-02:00". `to = 0` and `to = 24` both mean midnight.
-    --
-    -- A window whose hours are out of range, or whose `from` equals its
-    -- `to`, is DROPPED and named in the console -- never clamped, because a
-    -- clamped hour is a window nobody typed. Write { from = 0, to = 24 }
-    -- for all day; delete the entry for no window at all.
+    -- A window with hours out of range, or with `from` equal to `to`, is
+    -- DROPPED and named in the console rather than corrected. Write
+    -- { from = 0, to = 24 } for all day.
     windows = {
         { from = 0,  to = 4 },   -- midnight to 4am
         { from = 5,  to = 7 },   -- 5am to 7am
@@ -209,15 +171,13 @@ Config.Schedule = {
         { from = 18, to = 20 },  -- 6pm to 8pm
     },
 
-    -- HOURS TO ADD TO THE SERVER'S OWN CLOCK, when the machine is not in
-    -- the same timezone as the people playing on it. Most hosts run their
-    -- boxes on UTC; if yours does and your players are five hours behind
-    -- it, put -5 here and the windows above mean what they say to them.
+    -- HOURS TO ADD TO THE SERVER'S CLOCK, when the machine is not in your
+    -- players' timezone. Most hosts run on UTC: if your players are five
+    -- hours behind it, put -5 here.
     --
-    -- 0 means "the server's clock is already the right one". It is a plain
-    -- offset and claims nothing about daylight saving: when the clocks
-    -- change, this number changes too. `/arenahours` prints what the server
-    -- currently thinks the time is, so checking it takes ten seconds.
+    -- 0 means the server's clock is already right. It knows nothing about
+    -- daylight saving -- when the clocks change, change this too.
+    -- `/arenahours` prints what the server currently thinks the time is.
     offsetHours = 0,
 }
 
@@ -250,25 +210,16 @@ Config.Match = {
     -- go live.
     startCountdownSeconds = 5,
 
-    -- 0 = no time limit. When the clock runs out the win condition is
-    -- decided on kills.
-    -- HOW LONG A ROUND RUNS, and who gets to decide.
+    -- HOW LONG A ROUND RUNS, in real seconds. 0 = no time limit.
     --
-    -- TWO SHAPES, exactly like `lives` above. A plain number fixes the
-    -- length for every match on this server. A table opens it to the HOST,
-    -- who picks it in Create Match the same way they pick lives -- which is
-    -- what makes a gun game's clock adjustable without editing this file,
-    -- and a gun game's clock is not a backstop but the thing that ends the
-    -- round.
+    -- TWO SHAPES. Write a plain number -- `roundTimeSeconds = 600` -- to fix
+    -- it for every match. Write the block below and the HOST picks it when
+    -- they create the match, opening on `default`.
     --
-    -- A MODE'S OWN `roundTimeSeconds` STILL WINS OVER THE DEFAULT and still
-    -- loses to the host. The order is: what the host set for this match,
-    -- then the mode's own number, then `default` here. So gun game runs its
-    -- designed 480 seconds unless somebody says otherwise, and a host who
-    -- says otherwise gets what they asked for.
+    -- WHICHEVER IS SET LOWEST DOWN THIS LIST WINS: what the host chose, then
+    -- the mode's own `roundTimeSeconds` (gun game has one), then `default`.
     --
-    -- `allowChoose = false`, or writing a plain number here instead, takes
-    -- the control off the create screen entirely.
+    -- `allowChoose = false` takes the control off the create screen.
     roundTimeSeconds = {
         allowChoose = true,
         min = 60,
@@ -276,24 +227,18 @@ Config.Match = {
         default = 600,
     },
 
-    -- LIVES PER PLAYER. 1 = eliminated on the first death. Above that, a
-    -- player who dies is put back at a fresh spawn point with a full
-    -- loadout, and is only out once their last life is spent.
+    -- LIVES PER PLAYER. 1 = out on the first death. Above that, a player
+    -- who dies comes back at a fresh spawn with a full loadout, and is only
+    -- out once the last one is spent.
     --
-    -- Three changes how a round feels more than any other number here: a
-    -- single unlucky opening exchange no longer ends somebody's match, and
-    -- the round lasts long enough for position and ammunition to matter.
-    -- Watch roundTimeSeconds alongside it -- three lives each across a full
-    -- lobby is a much longer fight than one.
+    -- Three lives makes a much longer round than one, so set
+    -- roundTimeSeconds with it in mind.
     --
-    -- ONLY 'last_standing' SPENDS THEM. Both of the other win conditions end
-    -- on a COUNT -- most kills when the clock stops, or first to the kill
-    -- limit -- and a round that eliminates people ends on the survivor
-    -- before the count is ever read. So this number is set, stored and
-    -- echoed back under all three, and read under one; the panel takes the
-    -- box away under the other two and says why. See `winCondition` below.
-    -- Set a plain number here instead -- `lives = 3` -- to fix it for every
-    -- match and take the choice away.
+    -- ONLY 'last_standing' SPENDS LIVES. The other two win conditions end on
+    -- a count, so nobody is ever eliminated under them and this number is not
+    -- read -- the panel takes the box away and says why. See `winCondition`.
+    --
+    -- Write a plain number -- `lives = 3` -- to fix it for every match.
     lives = {
         allowChoose = true,
         min = 1,
@@ -305,39 +250,23 @@ Config.Match = {
     -- feel like a death, short enough not to be a punishment on its own.
     respawnDelaySeconds = 5,
 
-    -- HOW A MATCH IS WON.
+    -- HOW A MATCH IS WON. Three, and only these three:
     --   'last_standing' -- everyone else eliminated
     --   'most_kills'    -- highest kill count when the clock runs out
     --   'score_limit'   -- first to `scoreLimit` kills
     --
-    -- TWO SHAPES, exactly like `lives` above and `roundTimeSeconds` below.
-    -- Write a plain string -- `winCondition = 'last_standing'` -- to fix it
-    -- for every match on this server and take the choice away. Write the
-    -- block below and the host picks it from a dropdown when they create the
-    -- match, falling back to `default` if they leave it alone.
+    -- TWO SHAPES. Write a plain string -- `winCondition = 'last_standing'` --
+    -- to fix it for every match. Write the block below and the host picks it
+    -- from a dropdown, opening on `default`. There is no list to write: each
+    -- name has code behind it, so a fourth one invented here would be a round
+    -- that never ends, and a `default` this file does not know is named in
+    -- the console at start-up.
     --
-    -- THE LIST IS THE CODE'S, NOT CONFIG'S. Each of the three names has an
-    -- evaluator behind it in server/match.lua; a fourth name invented here
-    -- would be a match no condition ever fires for, which from a seat reads
-    -- as "the round never ends". So there is no `options` line to write --
-    -- allowChoose offers all three -- and Arena.ValidateConfig names a
-    -- `default` it does not recognise at start-up.
+    -- 'most_kills' NEEDS A CLOCK -- nothing about the roster can end it -- so
+    -- a host who picks it on a mode with no time limit is refused.
     --
-    -- TWO OF THE THREE SPEND NO LIVES, and it is arithmetic rather than
-    -- taste. Both 'most_kills' and 'score_limit' are decided by a COUNT, and
-    -- a roster that can be eliminated runs out of players before the count
-    -- decides anything: `lives` above is simply not read under either, and
-    -- the panel takes its box away and says so.
-    --
-    -- AND 'most_kills' NEEDS A CLOCK. Nothing about the roster can end it,
-    -- so on a mode whose `roundTimeSeconds` resolves to 0 the round would
-    -- run until the last player walked out. A host who picks it without one
-    -- is refused at creation rather than dropped into a match that never
-    -- finishes.
-    --
-    -- A LADDER MODE IGNORES ALL OF IT. A gun game is won by topping the
-    -- ladder or by its own clock, whatever is set here; see Config.Modes
-    -- .gungame.
+    -- GUN GAME IGNORES THIS ENTIRELY: it is won by topping the ladder or by
+    -- its own clock. See Config.Modes.gungame.
     winCondition = {
         allowChoose = true,
         default = 'last_standing',
@@ -345,18 +274,11 @@ Config.Match = {
 
     -- FIRST TO THIS MANY KILLS, under 'score_limit' and ignored otherwise.
     --
-    -- TWO SHAPES, like `lives` and `winCondition` above it. A plain number --
-    -- `scoreLimit = 25` -- fixes it for every match on this server; the block
-    -- below puts a box in the match-creation menu, shown only when the host
-    -- has actually chosen a kill limit, and `default` is what it opens on.
+    -- TWO SHAPES, as above: a plain number fixes it, the block puts a box on
+    -- the create screen when the host picks that win condition.
     --
-    -- LIVES ARE NOT SPENT UNDER A SCORE LIMIT, and that is arithmetic rather
-    -- than taste: the round is meant to end when somebody reaches this
-    -- number, and a roster that can be eliminated runs out of players first
-    -- on any limit worth setting. Three lives and a limit of 25 means the
-    -- round is decided by last-man-standing every single time and this number
-    -- was decorative. So a score-limit round respawns for ever, exactly as a
-    -- gun game does, and `lives` above is not read.
+    -- NOBODY IS ELIMINATED UNDER A SCORE LIMIT -- players respawn until
+    -- somebody reaches the number, so `lives` is not read.
     scoreLimit = {
         allowChoose = true,
         min = 1,
@@ -368,130 +290,56 @@ Config.Match = {
     -- more players than spawn points never stack inside each other.
     spawnScatterRadius = 2.5,
 
-    -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS PUT DOWN, in metres.
+    -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS HELD, in metres, while the
+    -- world streams in around them.
     --
-    -- The player is held motionless this far above the spawn point while the
-    -- world streams in, and is then put down on whatever surface the game
-    -- reports underneath -- so they never fall, and never stand where there
-    -- is nothing yet.
-    --
-    -- KEEP IT SMALL. Being frozen is what stops the fall through an unloaded
-    -- world; height has nothing to do with it. A big number would hang every
-    -- player in the air where the whole arena can see them, which broadcasts
-    -- exactly where the spawn points are.
-    --
-    -- Finding the real ground is a separate job and is handled by searching
-    -- down from well overhead -- a maths query nobody is ever at, and the
-    -- part that actually fixes a spawn Z written below the surface.
-    --
-    -- A METRE, AND THAT IS THE WHOLE OF IT. IN A PLAYER'S WORDS: "ensure
-    -- that in the skydome and in the trailer park you dont spawn to low in
-    -- props or to high". A metre is a step off a kerb: enough to keep a
-    -- ped's origin out of the prop it is standing on, which is the failure
-    -- this exists for, and not enough to be a fall. This shipped at three
-    -- for a while, and three is a drop somebody takes at the exact moment
-    -- the countdown ends -- as well as a flare, visible across the arena,
-    -- saying where a spawn point is.
-    --
-    -- This is the height a player is HELD at, and nothing else. It is NOT
-    -- the height the ground is searched from: those are three fixed heights
-    -- in client/match.lua, none of them this one. They used to begin with
-    -- this setting, which quietly turned a decision about how far somebody
-    -- drops into a decision about which storey the ground search finds
-    -- first -- see GROUND_PROBE_LOW where the probe happens.
-    --
-    -- ON A GROUND ARENA NOBODY EVER SEES IT: the probe answers, and the
-    -- player is put on the answer. On an arena that builds its own floor
-    -- there is no probe to answer, so this is where they are really left and
-    -- they fall it when the freeze drops -- at the end of the countdown on
-    -- entry, and at once on a respawn. tests/skyworld_spec.lua holds it
-    -- above zero and at or under a metre and a half, which is the band
-    -- between "inside the floor" and "a drop".
+    -- KEEP IT SMALL -- a metre is a step off a kerb. It is enough to keep a
+    -- ped out of the prop it is standing on, which is the whole job. Being
+    -- frozen is what stops a fall through an unloaded world, not height, and
+    -- a big number hangs every player in the air where the entire arena can
+    -- see exactly where the spawn points are.
     spawnHeightOffset = 1.0,
 
-    -- THE RADAR, which replaced permanent blips.
+    -- THE RADAR. A match setting, not a personal one: the host decides once
+    -- when they create the match and everybody fights under it.
     --
-    -- A MATCH SETTING, NOT A PERSONAL ONE. The host decides once, when they
-    -- create the match, and everybody in that round fights under it -- there
-    -- is no per-player toggle.
+    -- IT SWEEPS RATHER THAN TRACKS. Every `intervalMs` the fighters' dots
+    -- appear for `visibleMs` and go dark again, so what a player gets is
+    -- where everyone WAS a moment ago.
     --
-    -- And it is not a live feed even when it is on: it SWEEPS. Every
-    -- `intervalMs` the fighters' positions appear for `visibleMs` and then go
-    -- dark again, so what a player gets is where everybody WAS a moment ago,
-    -- not where they are now. Long enough to plan, stale enough to be wrong
-    -- about.
-    --
-    -- Config.Teams.showEnemyBlips below overrides this: a server that wants
-    -- permanent enemy dots turns it on and the radar never runs. showTeamBlips
-    -- has no effect on it either way.
+    -- Config.Teams.showEnemyBlips overrides this: turn that on for permanent
+    -- enemy dots and the radar never runs.
     radar = {
-        -- Whether the host is offered the choice at all. Off, the control is
-        -- not drawn -- rather than drawn and dead -- and every match uses
-        -- `defaultOn` below.
+        -- Off, the host is not offered the choice and every match uses
+        -- `defaultOn`.
         allowChoose = true,
 
-        -- Where the host's toggle starts before they touch it, and the value
-        -- used outright when `allowChoose` is off.
+        -- Where the host's toggle starts.
         defaultOn = false,
 
-        -- How long between sweeps, and how long a sweep is visible for.
         -- 30 seconds dark, most of a second lit.
         intervalMs = 30000,
         visibleMs = 800,
     },
 
-    -- KEEPING EVERYONE ELSE OUT OF A LIVE ARENA.
+    -- NOBODY SHOOTS ACROSS THE LINE, IN EITHER DIRECTION. Somebody outside a
+    -- round cannot hurt anyone in it, and a fighter cannot hurt anyone
+    -- outside. Refused on the SERVER, from the damage packet, so it holds
+    -- whatever an edited client believes.
     --
-    -- A live match is already fought in its own routing bucket, so an
-    -- outsider cannot see the fighters, cannot shoot them and cannot be shot
-    -- -- that half is settled and this adds nothing to it.
+    -- A live match already runs in its own instance, which covers the
+    -- ordinary case. This covers the three it does not: a SPECTATOR, who is
+    -- deliberately put in the match's instance so they can watch; a server
+    -- with instancing switched off; and two rounds sharing one arena, who
+    -- are as separate from each other as a fighter and a passer-by.
     --
-    -- What this adds is the physical half: somebody who is not in the round
-    -- is pushed back out of the arena's boundary circle and held there for as
-    -- long as it is being fought in. Without it they can stand in the middle
-    -- of a firefight nobody can see them in -- and on a server that has
-    -- turned isolation off, in one they can be shot in.
+    -- Hurting YOURSELF is never refused -- a fall or your own grenade is not
+    -- crossfire.
     --
-    -- The fence is the arena's own `boundary`, deliberately: the same circle
-    -- the fighters are bled for leaving. One field, one edge.
-    -- NOBODY SHOOTS ACROSS THE LINE, IN EITHER DIRECTION.
-    --
-    -- A player outside a round cannot hurt anyone in it, and a fighter
-    -- cannot hurt anyone outside. Refused on the SERVER, from the damage
-    -- packet itself, so it holds whatever the client believes.
-    --
-    -- The routing bucket already covers the ordinary case -- somebody
-    -- outside the match is in another instance and cannot see or hit anyone
-    -- in it. This is for the three cases it does not cover: a SPECTATOR,
-    -- who is deliberately put in the match's own instance so they can watch
-    -- and whose body is handed back the moment the camera stops; a server
-    -- where isolation is not in force (buckets need OneSync, and an
-    -- operator can switch them off); and the general principle that "nobody
-    -- can shoot across this line" should not be a side effect of a
-    -- networking setting.
-    --
-    -- Two people in DIFFERENT matches are as separate as a fighter and a
-    -- passer-by, which is what makes one arena safe to run two rounds in.
-    -- A player hurting THEMSELVES is never refused: a fall or your own
-    -- grenade is not crossfire.
-    --
-    -- AND IT CARRIES THE SERVER-SIDE HALF of Config.Teams.friendlyFire. The
-    -- damage packet is the one place the server can refuse a shot outright,
-    -- and this is the guard that reads it -- so the same switch that keeps
-    -- the arena and the city apart is what authoritatively keeps you from
-    -- shooting your own side.
-    --
-    -- IT DOES NOT CARRY THE OTHER TWO, and this used to say it did. Turning
-    -- this off does NOT turn friendly fire on: server/match.lua still
-    -- refuses to credit a teammate kill, and the client still puts your
-    -- whole side on one engine team with friendly fire switched off there,
-    -- which is a real refusal and not merely a scoring rule. What you lose
-    -- by switching this off is the authoritative server-side refusal -- the
-    -- one an edited client cannot talk its way past. To let teammates fight
-    -- each other, set Config.Teams.friendlyFire = true; that is the switch
-    -- all three sites read.
-    --
-    -- Off is the old behaviour: the bucket alone.
+    -- IT ALSO CARRIES THE SERVER-SIDE HALF OF FRIENDLY FIRE. Switching this
+    -- off does NOT let teammates shoot each other: two other places still
+    -- refuse it. What you lose is the refusal an edited client cannot talk
+    -- its way past. The switch to move is Config.Teams.friendlyFire.
     crossfireGuard = {
         enabled = true,
     },
@@ -499,68 +347,95 @@ Config.Match = {
     -- HOW FAR APART TWO PLAYERS MAY BE FOR ONE TO HAVE KILLED THE OTHER, in
     -- metres. `0` switches the check off.
     --
-    -- WHY THERE IS A CHECK AT ALL. The server cannot see a kill happen: a
-    -- dying client reports its own death and names its killer, and until now
-    -- the only questions asked of that name were "is it a real player in
-    -- this match" and "were they allowed to damage me". Nothing else. So one
-    -- accomplice could hand another every kill in the round from anywhere on
-    -- the map, without either of them firing a shot -- which decides a team
-    -- deathmatch, a last-man-standing round and the pot with it.
+    -- WHY IT EXISTS. The server cannot watch a kill happen -- the dying
+    -- player's own game reports it and names the killer. Without this, two
+    -- accomplices could hand each other every kill in the round from opposite
+    -- ends of the map without firing a shot, and take the pot with it. This
+    -- does not make the report honest; it forces them to BE THERE, which
+    -- costs them the round they are trying to win.
     --
-    -- THIS DOES NOT MAKE THE REPORT HONEST. Two players standing together
-    -- can still trade kills that did not happen, and no server-side check
-    -- short of simulating the shot can tell that from a real fight. What it
-    -- does is force them to BE THERE -- which costs them the round they are
-    -- trying to win, and is the difference between a farm that runs itself
-    -- and one that has to be played.
+    -- A FLOOR, NOT A CEILING. The arena's own boundary raises it whenever
+    -- that is bigger, so a fair shot across a large arena is never refused.
+    -- This number is what an arena with no boundary falls back to.
     --
-    -- A FLOOR UNDER THE CEILING, NOT THE CEILING ITSELF, and that
-    -- distinction is the fix for a bug that cost people real kills.
-    --
-    -- This was read as a flat ceiling, and 150 was chosen against a comment
-    -- claiming "a sniper across the Trailer Park is about 90; the sky arena's
-    -- diagonal is under 120". Both numbers were wrong, and not by a little:
-    -- the Trailer Park's boundary is a hundred-metre RADIUS -- two hundred
-    -- across, and 270 at the twenty-player size it grows to -- and the sky
-    -- arena's is 110, so 220. Two fighters standing at opposite edges of the
-    -- arena they were put in were over the ceiling by fifty metres or more.
-    --
-    -- What that looked like from a seat: you land the shot, they die, and you
-    -- are given nothing. No kill on the scoreboard, no tier on the ladder,
-    -- nothing towards the pot -- and it hit long shots hardest, which means
-    -- it took the best kills in the round and left the point-blank ones. The
-    -- console said so on every one, and only with Config.Debug on.
-    --
-    -- So the arena's own span raises this: Arena.KillCeilingFor takes the
-    -- greater of this number and the boundary the fight is actually being
-    -- held inside, grown with the roster exactly as the fence and the floor
-    -- are. This number is what an arena with NO boundary falls back to.
-    --
-    -- `0` still switches the check off entirely.
-    --
-    -- WHY THERE IS A CHECK AT ALL is above, and none of it changes: the
-    -- ceiling exists to stop two accomplices trading kills from across the
-    -- map, and being inside the same arena is still the thing it demands.
-    -- A refused claim costs the killer the credit and nothing else: the
-    -- death still counts, and the console says so once with both distances.
+    -- A refused claim costs the killer the credit and nothing else -- the
+    -- death still counts, and the console says so with both distances.
     maxKillDistance = 150.0,
 
+    -- PUSHING NON-FIGHTERS BACK OUT of an arena that is being fought in.
+    -- The fence is the arena's own `boundary` -- the same circle a fighter is
+    -- bled for leaving.
     keepOutBarrier = {
         enabled = true,
 
-        -- How far OUTSIDE the boundary somebody is put when they cross it.
-        -- Far enough that they are not immediately pushed again by the next
-        -- tick, close enough that it reads as a wall and not a teleport.
+        -- How far outside the line they are put. Far enough not to be pushed
+        -- again next tick, close enough to read as a wall and not a teleport.
         pushBackMetres = 6.0,
 
-        -- How often the fence is checked, in milliseconds. A quarter second
-        -- catches a sprint; every frame would be a loop running on every
-        -- player on the server for the length of every round.
+        -- How often the fence is checked. A quarter second catches a sprint.
         tickMs = 250,
 
-        -- Tell them why they were moved, once per crossing rather than once
-        -- per tick.
+        -- Tell them why they were moved, once per crossing.
         notify = true,
+    },
+
+    -- ==================================================================
+    -- WHAT THE SERVER CHECKS FOR ITSELF
+    --
+    -- Two facts about a round come from the player's own game and nowhere
+    -- else: where they are standing, and whether they just died. Everything
+    -- else on this page is decided on the server, and those two were not --
+    -- which is a hole big enough to win a round through.
+    --
+    --   PARKED OUTSIDE. The fence in each arena's `boundary` block is drawn
+    --   and enforced by the player's own game, so a client that simply does
+    --   not run it cannot be pushed back. Measured: a fighter sat 140 km
+    --   from the arena while the others killed each other, and took the
+    --   round and the pot.
+    --
+    --   NEVER DYING. A death is reported by the dying player's own game, and
+    --   that report is the only thing that spends a life -- so a client that
+    --   never sends one cannot be eliminated. Measured: a fighter killed
+    --   nobody, was shot repeatedly, and won on last-man-standing.
+    --
+    -- SO THE SERVER LOOKS FOR ITSELF, once a second, and acts only on
+    -- something it has seen several times running. That patience is the
+    -- whole design: a player whose game is still loading the world, or who
+    -- has just been teleported, reads for a moment exactly like a cheat, and
+    -- throwing an honest player out of a paid round is worse than the thing
+    -- this is here to stop.
+    --
+    -- IT FAILS OPEN, ALWAYS. A body the server cannot see -- mid-stream, not
+    -- yet created -- counts as nothing at all rather than as a strike.
+    -- ==================================================================
+    serverChecks = {
+        -- Off, both checks below stop entirely and the round is exactly as
+        -- trusting as it was before they existed.
+        enabled = true,
+
+        -- HOW FAR PAST THE ARENA'S OWN FENCE counts as outside, in metres.
+        -- Generous on purpose: the fence itself already bleeds anybody who
+        -- crosses it, so this is not a second boundary -- it is the distance
+        -- at which "they are not in this fight at all" stops being arguable.
+        outsideMetres = 60.0,
+
+        -- HOW MANY ONE-SECOND CHECKS IN A ROW they must be out there before
+        -- the server removes them from the round. Their stake is forfeit,
+        -- the same as a disconnect, because that is what walking out of a
+        -- live round costs.
+        --
+        -- One sighting is not enough and never will be. Set it low and a
+        -- fighter whose game hitched at the wrong moment loses their round.
+        outsideTicks = 8,
+
+        -- HOW MANY ONE-SECOND CHECKS IN A ROW a fighter's body must read as
+        -- dead, with no death reported, before the server books the death
+        -- itself. Nobody is credited with the kill -- the server did not see
+        -- one -- so this costs a life and nothing else, which is exactly the
+        -- half a silent client was skipping.
+        --
+        -- 0 switches this half off and leaves the fence.
+        deadTicks = 4,
     },
 
     -- Eliminated players watch the rest of the match instead of being sent
@@ -584,10 +459,9 @@ Config.Match = {
 -- ======================================================================
 -- TEAMS
 --
--- UNEVEN TEAMS ARE ALLOWED BY DEFAULT -- `allowUnequal = true` below. Nine
--- players against one is a legal match. Set it to false only if you want
--- the server to refuse a start while the sides differ by more than
--- `maxTeamSizeDifference`.
+-- UNEVEN TEAMS ARE ALLOWED BY DEFAULT. Nine against one is a legal match.
+-- Set `allowUnequal = false` to have the server refuse to start while the
+-- sides differ by more than `maxTeamSizeDifference`.
 -- ======================================================================
 Config.Teams = {
     -- Players pick their own side from the panel. With this off, everyone
@@ -609,102 +483,61 @@ Config.Teams = {
     -- 0 = unlimited players per team.
     maxTeamSize = 0,
 
-    -- Someone who joins a team match without picking a side is dropped onto
-    -- the SMALLEST team when the match starts -- and where the sides are
-    -- already level, onto one of them at random. Evening up always wins: the
-    -- draw only happens when the choice cannot make the teams any more even
-    -- than they are, so a lobby of players who all skipped the picker still
-    -- comes out level.
+    -- Someone who never picked a side is put on the SMALLEST team when the
+    -- match starts -- at random only when the sides are already level, so a
+    -- lobby where nobody picked still comes out even.
     --
-    -- Applied at START, not at join, so "smallest" means smallest when the
-    -- fighting begins rather than when the first player wandered in.
-    --
-    -- With this off they are asked to pick and the start is refused until
-    -- they do.
+    -- Off, they are asked to pick and the start waits for them.
     autoAssignIfUnchosen = true,
 
-    -- Can teammates hurt each other? Off means the SHOT is refused, not
-    -- merely that the kill goes uncredited.
+    -- CAN TEAMMATES HURT EACH OTHER? Off means the SHOT is refused, not
+    -- merely that the kill is not counted. This is the one switch to move --
+    -- three separate places read it.
     --
-    -- THREE PLACES ENFORCE IT and only one of them is
-    -- Config.Match.crossfireGuard: that guard refuses the damage packet on
-    -- the SERVER, which is the authoritative one. The other two hold with
-    -- the guard switched off -- a teammate kill is still never credited,
-    -- and the client still puts your side on one engine team with friendly
-    -- fire off there, so the bullets really are refused. Switching the
-    -- guard off therefore weakens this setting; it does not undo it. This
-    -- line is the switch to move.
+    -- WHAT "REFUSED" COVERS, since the engine decides the shape of this:
     --
-    -- WHAT "REFUSED" COVERS, exactly, because the engine decides the shape
-    -- of this and not us:
-    --
-    --   Bullets and melee are refused on the server, from the damage packet.
+    --   Bullets and melee are refused on the server.
     --
     --   Nothing stops the TRIGGER. Aiming at your own side still fires,
-    --   still spends the round, and still plays the flinch on the shooter's
-    --   own screen -- their client draws that before the server has seen
-    --   anything. Judge it by your teammate's health bar, not by the feel.
+    --   still spends the round, and still plays the flinch on your own
+    --   screen. Judge it by your teammate's health bar, not by the feel.
     --
-    --   A SPREAD THAT CATCHES A TEAMMATE ON ITS WAY TO AN ENEMY GOES
-    --   THROUGH, teammate included. One shotgun blast is one damage packet
-    --   naming everybody it touched, and the engine allows the packet or
-    --   refuses it whole -- there is no per-ped answer. Refusing it would
-    --   mean standing next to a teammate made you immune to every spread
-    --   weapon in the arena, which is worse than the splash. The kill is
-    --   still not credited.
+    --   A SPREAD THAT CATCHES A TEAMMATE on its way to an enemy goes
+    --   through, teammate included: one shotgun blast is one packet naming
+    --   everybody it touched, and it is allowed or refused whole. The kill
+    --   is still not counted.
     --
-    --   Explosions are NOT refused. No explosive ships enabled; if you turn
-    --   one on in config.weapons.lua, teammates can blow each other up
-    --   whatever this says.
+    --   EXPLOSIONS ARE NOT REFUSED. No explosive ships enabled; turn one on
+    --   in config.weapons.lua and teammates can blow each other up whatever
+    --   this says.
     friendlyFire = false,
 
-    -- Team blips on the map during a match.
-    --
-    -- A PERMANENT DOT ON EVERY ENEMY turns a round into a map to be read
-    -- rather than a place to be searched -- nobody flanks anybody when
-    -- everybody's position is drawn continuously. Config.Match.radar above is
-    -- the replacement: a sweep the host switches on for the whole match,
-    -- showing where everyone was for a moment before going dark again.
-    -- Switching `showEnemyBlips` on restores the old permanent behaviour and
-    -- stops the radar running at all.
-    -- YOUR OWN SIDE, ALWAYS. Knowing where your team is is not intelligence
-    -- -- it is the difference between a team mode and four people in the
-    -- same field -- so teammates stay on the map for the whole round.
+    -- YOUR OWN SIDE ON THE MAP, all round. Knowing where your team is is the
+    -- difference between a team mode and four people in the same field.
     showTeamBlips = true,
 
-    -- THE OTHER SIDE, NEVER. A permanent dot on every enemy turns a round
+    -- THE OTHER SIDE, NEVER -- a permanent dot on every enemy turns a round
     -- into a map to be read rather than a place to be searched.
-    -- Config.Match.radar above is how an enemy position is learned instead:
-    -- set once by the host for the whole match, and a sweep that goes dark
-    -- again. Turn this on for a server that wants the old permanent
-    -- behaviour, and the radar stops running.
+    -- Config.Match.radar is how an enemy position is learned instead. Turn
+    -- this on for permanent enemy dots, and the radar stops running.
     showEnemyBlips = false,
 
-    -- A COLOURED EDGE ROUND YOUR TEAMMATES, in that team's own colour --
-    -- the same value the panel is tinted with and the same team the map
-    -- blip belongs to, so the outline and the dot match by construction
-    -- rather than by keeping two settings in step.
+    -- A COLOURED EDGE ROUND YOUR TEAMMATES, in that team's own colour.
     --
     -- Teammates only, and it cannot be turned on for enemies: an outline
-    -- draws THROUGH walls, which is the point of it for finding a friend
-    -- and exactly the problem with it for finding a target.
+    -- draws THROUGH walls, which is the point of it for finding a friend and
+    -- exactly the problem with it for finding a target.
     showTeamOutline = true,
 
-    -- COLOURS ARE PICKED TO BE TOLD APART AT A GLANCE, not to be tasteful.
+    -- PICK COLOURS TO BE TOLD APART AT A GLANCE, not to be tasteful.
     --
-    -- `color` is the panel accent AND the tint of the team outline drawn on
-    -- your own side; `blipColor` is the dot on the map. They are two different
-    -- systems -- a hex string and one of GTA's numbered blip colours -- so
-    -- they have to be chosen to MATCH, or the edge round your teammate is one
-    -- colour and their dot on the map is another.
-    --
-    -- Ash used to be #4a4a52 with blip colour 40, which is GTA's DARK GREY:
-    -- a grey dot on a grey minimap and a grey edge on a grey ped. Both are
-    -- now a blue nobody can mistake for the red side.
+    -- `color` is a hex string: the panel accent and the outline on your own
+    -- side. `blipColor` is one of GTA's numbered map colours. They are two
+    -- different systems, so choose them to MATCH -- otherwise the edge round
+    -- your teammate is one colour and their dot on the map is another.
     list = {
         ['crimson'] = {
             label = 'Crimson',
-            -- Panel accent for this team, and the tint used on its blips.
             color = '#ff2233',
             blipColor = 1,      -- red
             enabled = true,
@@ -718,9 +551,8 @@ Config.Teams = {
             order = 2,
         },
         -- A third and fourth side ship disabled. Turn one on and every team
-        -- mode immediately offers it -- no code change needed. Give it
-        -- spawn points in each arena's `teamSpawns` or it falls back to the
-        -- shared `spawns` list.
+        -- mode offers it at once. Give it spawn points in each arena's
+        -- `teamSpawns` or it falls back to the shared `spawns` list.
         ['bone'] = {
             label = 'Bone',
             color = '#ffd34d',
@@ -745,51 +577,26 @@ Config.Teams = {
 -- team picker is not shown at all. `teams = true` shows the team picker.
 -- ======================================================================
 Config.Modes = {
-    -- WHAT A KILL PAYS IN AMMUNITION, in these two modes.
+    -- WHAT A KILL PAYS IN AMMUNITION, in free-for-all and team deathmatch.
     --
     -- ROUNDS PER KILL, PER WEAPON YOU ARE CARRYING. Land a kill and every
     -- firearm in your loadout is handed this many rounds of its own calibre.
-    -- Two weapons taking the same round are two payments, because the number
-    -- is per WEAPON: what you are carrying is what you are paid for.
+    -- Melee is paid nothing -- a blade names no ammunition. Only kills the
+    -- server verified pay at all. `0` switches it off.
     --
-    -- WHY THE ARENA PAYS IT RATHER THAN THE BODY. A dead fighter's inventory
-    -- lands on the floor as its own container, and for a while that WAS how
-    -- people were re-arming: walk over the body, take the whole kit its owner
-    -- had just been issued. That is now refused
-    -- (`Config.Loadouts.inventory.blockDropsInArena`), because a round fought
-    -- out of other people's pockets is not the round anybody picked a loadout
-    -- for -- so the resupply is paid openly, in a fixed amount, to the person
-    -- who earned it.
+    -- The arena pays this rather than letting people loot the body, which is
+    -- refused (`Config.Loadouts.inventory.blockDropsInArena`).
     --
-    -- ONLY ON A KILL THE SERVER VERIFIED. The same check the scoreboard uses:
-    -- a real, damageable opponent in this match, close enough to have done
-    -- it. A claim that fails it pays nothing.
+    -- A NOTE ON FARMING. Two players who agree to trade deaths can pump
+    -- ammunition between them, and what stops it is the win condition:
+    -- 'last_standing' spends a life each time, so it runs out; the other two
+    -- never eliminate anybody, so the kill limit or the clock is the only
+    -- bound.
     --
-    -- MELEE IS PAID NOTHING, and needs no rule of its own: a blade names no
-    -- ammunition item, so there is nothing to hand over.
-    --
-    -- 0, or deleting the line, switches it off and a kill pays no rounds.
-    --
-    -- A NOTE ON FARMING. There is no per-victim cap on this the way the gun
-    -- game has one on its tiers, so two players who agree to trade deaths can
-    -- pump ammunition between them.
-    --
-    -- WHAT BOUNDS THE TRADE IS THE WIN CONDITION, and it is worth knowing
-    -- which one you are running. Under 'last_standing' a death costs a LIFE,
-    -- so the trade runs out on its own after `Config.Match.lives` of them.
-    -- Under 'score_limit' and 'most_kills' nobody is eliminated -- that is
-    -- the point of both rules -- so what ends it is the kill limit or the
-    -- round clock instead, and a long clock is a long trade. This used to
-    -- say a death always costs a life; that stopped being true of
-    -- 'score_limit' when it was added and of 'most_kills' when its lives
-    -- were taken off, and the note was left standing over both.
-    --
-    -- ON THE SHIPPED SETTINGS THE ROUNDS GO NOWHERE. `stripOnEntry` empties
-    -- the arena kit at the door and `blockDropsInArena` refuses to let a
-    -- fighter move anything out of their own inventory mid-match, so
-    -- whatever they pump between them dies with the round. Turn either of
-    -- those off and the trade becomes a real item farm: set this lower, or
-    -- to 0, on a server running either that way.
+    -- ON THE SHIPPED SETTINGS THE ROUNDS GO NOWHERE -- `stripOnEntry` empties
+    -- the arena kit at the door and `blockDropsInArena` stops anything moving
+    -- out mid-match, so it dies with the round. Turn either of those off and
+    -- this becomes a real item farm: lower it, or set it to 0.
     ['ffa'] = {
         label = 'Free For All',
         description = 'Every player for themselves. Last one breathing takes the pot.',
@@ -811,27 +618,17 @@ Config.Modes = {
     -- ==================================================================
     -- GUN GAME
     --
-    -- A TIMER, NOT LIVES. Nobody is eliminated in a gun game: you respawn
-    -- for as long as the clock runs, and the clock is the round. That is
-    -- what makes the ladder the thing you are playing for rather than a
-    -- decoration on a last-man-standing match -- and it is why this mode
-    -- carries its own `roundTimeSeconds` a few lines down.
+    -- A TIMER, NOT LIVES. Nobody is eliminated: you respawn for as long as
+    -- the clock runs, and the clock is the round. That is why this mode
+    -- carries its own `roundTimeSeconds` below.
     --
     -- CLIMB BY KILLING, FALL BY DYING. Every kill moves you one tier up;
-    -- every death moves you one tier down and takes that tier's weapon with
-    -- it. So your tier is your kills less your deaths, and standing near the
-    -- top means you are winning right now rather than that you once were.
+    -- every death moves you one down and takes that tier's weapon with it.
     --
-    -- THE LADDER IS DRAWN, NOT FIXED. The tiers below are ordered pools --
-    -- melee, then sidearms, then up -- and ONE weapon is drawn from each
-    -- pool when the round starts. The shape of the climb is the same every
-    -- time; the guns on it are not.
-    --
-    -- SHIPPED ON, at the operator's own instruction. It ran switched off for
-    -- a long time -- a server should choose its modes rather than inherit
-    -- them -- and everything below was built and tested against that. The
-    -- one word is here; setting it back to false is the whole of turning it
-    -- off again.
+    -- THE LADDER IS DRAWN, NOT FIXED. The tiers are ordered pools -- melee,
+    -- then sidearms, then up -- and one weapon is drawn from each pool at the
+    -- start of the round. The shape of the climb is the same every time; the
+    -- guns on it are not.
     -- ==================================================================
     ['gungame'] = {
         label = 'Gun Game',
@@ -841,43 +638,29 @@ Config.Modes = {
         teams = false,
         icon = 'fas fa-arrow-up-9-1',
 
-        -- HOW LONG A ROUND OF THIS MODE RUNS, in real seconds, overriding
-        -- Config.Match.roundTimeSeconds for this mode and no other.
+        -- HOW LONG A ROUND OF THIS MODE RUNS, in real seconds. Overrides
+        -- Config.Match.roundTimeSeconds for gun game and nothing else, and a
+        -- host who sets their own still beats it.
         --
-        -- THE MODE NEEDS ITS OWN NUMBER because it is the only one where the
-        -- clock is the whole ending. Every other mode stops when one side is
-        -- left standing and treats the timer as a backstop; here nobody is
-        -- ever eliminated, so a round runs exactly this long unless somebody
-        -- tops the ladder first.
-        --
-        -- 480 is eight minutes, which on a seven-tier ladder is long enough
-        -- for a good player to get near the top and short enough that a lobby
-        -- plays several. Raise it for a longer, more swingy round; lower it
-        -- for a scramble. `0` removes the clock entirely and the round then
-        -- runs until somebody finishes the ladder -- possible, but it can
-        -- take a while in an even lobby, so it is not the default.
+        -- Eight minutes is long enough to get near the top of a seven-tier
+        -- ladder and short enough to play several. `0` removes the clock and
+        -- the round then runs until somebody finishes the ladder, which in an
+        -- even lobby can take a while.
         roundTimeSeconds = 480,
 
         -- THE TIERS, WEAKEST FIRST, each one a POOL of weapon keys from
-        -- config.weapons.lua. One weapon is drawn from each pool at the
-        -- start of every round and that is the ladder everybody climbs --
-        -- the same for all of them, different from last round.
+        -- config.weapons.lua. One weapon is drawn from each pool at the start
+        -- of every round: everybody climbs the same ladder, and it is a
+        -- different ladder next round.
         --
-        -- WHY POOLS RATHER THAN ONE FIXED LIST. A fixed ladder is memorised
-        -- after a week: players learn that tier 4 is the SMG and play the
-        -- whole round around it. Drawing keeps the STRUCTURE -- you always
-        -- open on melee and finish on a precision rifle -- while making the
-        -- rung you are standing on something you have to look at.
-        --
-        -- ORDER IS POWER. These are climbed bottom to top, so a pool must
-        -- only hold weapons that belong at that step. Reorder the tiers and
-        -- you reorder the climb; add a tier and the ladder gets longer.
+        -- ORDER IS POWER. These are climbed bottom to top, so put only
+        -- weapons that belong at that step in a pool. Reorder the tiers and
+        -- you reorder the climb; add one and the ladder gets longer.
         --
         -- A KEY THAT IS NOT AN ENABLED WEAPON IS SKIPPED, and a tier whose
-        -- whole pool is switched off is dropped -- the ladder is that much
-        -- shorter rather than the mode being broken by one typo. A ladder
-        -- with fewer than two tiers left is not a gun game, and
-        -- Arena.ValidateConfig says so at start-up.
+        -- whole pool is off is dropped -- one typo shortens the ladder rather
+        -- than breaking the mode. Under two tiers is not a gun game, and the
+        -- console says so at start-up.
         --
         -- SEVEN TIERS IS TUNED TO THE RULE ABOVE. Because a death costs a
         -- tier, a player's tier is their kills less their deaths -- so
@@ -1068,47 +851,26 @@ Config.Modes = {
         },
 
         -- HOW MANY TIERS ONE KILLER MAY TAKE OFF ANY SINGLE PLAYER, per
-        -- round. Kills past this still count as kills -- on the scoreboard,
-        -- the leaderboard and the payout -- they just stop moving the
-        -- killer up the ladder.
+        -- round. Kills past this still count everywhere else -- scoreboard,
+        -- leaderboard, payout -- they just stop moving the killer up.
         --
-        -- THIS IS THE ANTI-COLLUSION RULE, and it is here rather than in the
-        -- shared kill path because this is the mode where it pays. The
-        -- server cannot see a kill happen: it is told who died and who they
-        -- say killed them. In every other mode a friend feeding you kills
-        -- buys you a scoreboard position; here, with no lives to spend and
-        -- the ladder ending the round outright, it would buy the whole pot
-        -- in under a minute.
+        -- THIS IS THE ANTI-COLLUSION RULE. The server cannot see a kill
+        -- happen; it is told who died and who they say killed them. With no
+        -- lives to spend and the ladder ending the round outright, two
+        -- players trading kills can top it in under a minute and take the pot.
         --
-        -- OFF ON THIS SERVER, AND THE REASON IS THE 1v1.
+        -- IT IS OFF HERE, ON PURPOSE, SO A 1v1 CAN BE PLAYED. The cap means
+        -- "spread your kills across the field", and a field of one has
+        -- nowhere to spread. Off is off: on an open server with money on the
+        -- round, put it back.
         --
-        -- The cap means "spread your kills across the field", and a field of
-        -- one has nowhere to spread. The server does raise it automatically
-        -- for small lobbies -- to whatever one climber would need against
-        -- everybody else in the room -- but that floor is deliberately
-        -- divided by at least two, so a straight 1v1 still could not top the
-        -- ladder however well anybody played. Somebody who wants to settle a
-        -- gun game head to head should be able to.
+        -- PUT IT BACK by writing a number. `2` is generous to honest play --
+        -- killing the same opponent twice in a round is ordinary -- and a
+        -- seven-tier ladder then needs four different victims to top.
         --
-        -- WHAT IT COSTS, PLAINLY. This is the anti-collusion rule, and off is
-        -- off: with an entry fee or bets running, two players can trade kills
-        -- and one of them tops the ladder in under a minute, which ends the
-        -- round and takes the pot. The server cannot see a kill happen -- it
-        -- is told who died and who they say killed them -- so nothing else in
-        -- this resource catches that. On a server where the people playing
-        -- are known to each other that is a fair trade; on an open one with
-        -- real money on the round it is not.
-        --
-        -- PUT IT BACK by writing a number here. `2` was the shipped value and
-        -- is generous to honest play -- killing the same opponent twice in a
-        -- round is ordinary -- while a seven-tier ladder at that cap needs
-        -- four different victims to top.
-        --
-        -- A value that is NOT A NUMBER does not mean off: it falls back to
-        -- the built-in default and Arena.ValidateConfig says so at start-up,
-        -- because a typo silently switching the anti-collusion rule off is
-        -- the one way this setting must not be able to fail. Only a real `0`
-        -- removes it, which is what this is.
+        -- Anything that is not a number falls back to the built-in default
+        -- and is named in the console. Only a real `0` switches it off, so a
+        -- typo cannot disable this quietly.
         maxTiersPerVictim = 0,
 
         -- Tell the room when somebody reaches the top tier, so the last
@@ -1124,18 +886,14 @@ Config.DefaultMode = 'ffa'
 -- BETTING
 --
 -- ONE SWITCH TURNS ALL OF IT OFF: `Config.Betting.enabled = false` hides
--- every bet control in the panel and makes the server reject any bet that
--- arrives anyway. Nothing else needs changing.
+-- every bet control and makes the server refuse any bet that arrives anyway.
 --
--- HOW THE MONEY MOVES: a player's entry fee leaves their account the moment
--- they lock in, and is held by the match. It is paid out to the winner(s)
--- when the match ends, or refunded in full if the match fails to start, is
--- closed by the server, or ends with nobody eligible to be paid.
---
--- The two exceptions are both settings, both default to refunding, and both
--- are spelled out where they live below: `refundOnCancel` (a host closing
--- their own lobby) and `refundOnDisconnectBeforeStart` (leaving one). Turn
--- either off and that stake stops coming back.
+-- HOW THE MONEY MOVES: an entry fee leaves the player's account the moment
+-- they lock in and is held by the match. It is paid to the winners at the
+-- end, or refunded in full if the match never starts, is closed by the
+-- server, or ends with nobody eligible to be paid. Two settings below --
+-- `refundOnCancel` and `refundOnDisconnectBeforeStart` -- can stop a stake
+-- coming back; both refund by default.
 -- ======================================================================
 Config.Betting = {
     enabled = true,
@@ -1143,82 +901,48 @@ Config.Betting = {
     -- 'cash' or 'bank'.
     account = 'cash',
 
-    -- WHERE A STAKE IS TAKEN FROM, in the order tried.
+    -- WHERE A STAKE IS TAKEN FROM, in the order tried. Each account is tried
+    -- for the WHOLE amount -- a stake is never split across two, so nobody
+    -- ends up half-charged for a bet that was refused.
     --
-    -- One account was 'cash' and nothing else, so a player with the price in
-    -- the bank and an empty pocket was told they could not afford it. Each is
-    -- tried in turn for the WHOLE amount; a stake is never split across two.
-    --
-    -- Splitting has a failure mode nothing else here does: half the money
-    -- leaves, the second half is refused, and the player is out of pocket for
-    -- a stake that was never taken. Refunding a split is also two movements
-    -- that can each fail on their own. One account or none is the honest
-    -- trade, and it keeps a refund a single reversible movement.
-    --
-    -- Money always goes back where it came from. Refunding bank money as
-    -- cash is a way to launder through the arena, and refunding cash into the
-    -- bank is a surprise for somebody carrying it on purpose.
+    -- Money always goes back where it came from.
     accounts = { 'cash', 'bank' },
 
-    -- FIGHTERS BACKING THEMSELVES.
+    -- HOW A WINNING BET IS PAID -- fighters backing themselves, and
+    -- spectators backing anybody. Write one of:
     --
-    -- Separate from the entry fee, which is one fixed price everybody pays.
-    -- This is a real bet at whatever size the player chooses, on themselves
-    -- in a free-for-all or on their own team in a team mode.
+    --   'pool' -- every bet goes into one pool and the winners split it in
+    --             proportion to what they staked. Winners are paid with the
+    --             losers' money and the server creates nothing, so a big pool
+    --             with one winner pays enormously and a small one split four
+    --             ways pays little.
     --
-    -- HOW A WINNING BET IS PAID, and it is the same question for both kinds.
+    --   'odds' -- the stake is multiplied by `spectatorBets.oddsMultiplier`
+    --             and paid BY THE SERVER. Predictable, and it costs the
+    --             server money on every win.
     --
-    --   'pool' -- PARIMUTUEL. Every bet on the match goes into a pool and the
-    --             winners split it in PROPORTION TO WHAT THEY STAKED. A
-    --             winner is paid with the losers' money, the sum handed out
-    --             equals the pool exactly, and the server creates nothing. So
-    --             what you win depends on how much you put in AND on how many
-    --             people bet -- a big pool with one winner pays enormously, a
-    --             small pool split four ways pays little.
+    -- BOTH SHIP AS 'pool'. 'odds' on a bet placed by somebody who can decide
+    -- the result is a money printer: a fighter backs themselves to win a
+    -- round they were going to win anyway and the server pays for it.
     --
-    --   'odds'  -- FIXED PRICE. The stake is multiplied by
-    --             spectatorBets.oddsMultiplier below and paid by the server.
-    --             Predictable, and it costs the server money on every win.
-    --
-    -- BOTH DEFAULT TO 'pool', because 'odds' on a bet placed by somebody who
-    -- can influence the result is a money printer: a fighter backs themselves
-    -- to win a round they were going to win anyway and the server pays for
-    -- it. With 'pool' that same bet can only ever take money other bettors
-    -- put up.
-    -- NAMED betPayout, NOT `payout`. `Config.Betting.payout` already exists
-    -- further down and is a different question entirely -- how the POT is
-    -- split between the winners of the round. Calling this one `payout` too
-    -- meant the second assignment silently replaced the first, so this whole
-    -- block did nothing and every bet quietly fell back to the default. It
-    -- was luacheck that noticed, not a test.
+    -- THIS IS NOT `Config.Betting.payout`, which is further down and answers
+    -- a different question: how the POT is split between the winners.
     betPayout = {
         fighters = 'pool',
         spectators = 'pool',
 
-        -- ONE POOL FOR BOTH, or one each.
-        --
-        -- Shared, a spectator's stake can be won by a fighter and the other
-        -- way round, which makes a small arena's pool worth betting into.
-        -- Separate keeps the two crowds' money apart, which is fairer when
-        -- fighters can see things spectators cannot.
-        --
-        -- Only ever pools bets that are actually on 'pool' -- an 'odds' bet
-        -- is server-funded and never enters, or it would be paying itself
-        -- out of other people's stakes as well.
+        -- ONE POOL FOR FIGHTERS AND SPECTATORS, or one each. Shared makes a
+        -- small arena's pool worth betting into; separate keeps the two
+        -- crowds' money apart, which is fairer when fighters know things
+        -- spectators do not. Only 'pool' bets ever enter it.
         sharedPool = true,
 
-        -- THE ENTRY FEES JOIN THE POOL TOO.
+        -- THE ENTRY FEES JOIN THE POOL TOO. On, a fighter's entry fee IS a
+        -- bet on their own side, there is one prize, and a fighter who wins
+        -- always profits because the pool holds every loser's fee.
         --
-        -- On, a fighter's entry fee IS their bet: it is added to the pool as
-        -- a stake on their own side, so paying to enter puts you in rather
-        -- than funding other people's bets for nothing. The pot is no longer
-        -- paid out separately -- there is one pot and one set of winners.
-        --
-        -- What that guarantees: a fighter who wins always profits, because
-        -- the pool holds every loser's fee as well as their own. Off, the
-        -- entry pot is paid to the match winners by Config.Betting.payout
-        -- below and the bets settle on their own, which is two prizes for
-        -- two different things.
+        -- Off, the entry pot is paid separately by Config.Betting.payout and
+        -- the bets settle on their own -- two prizes for two different things.
         includeEntryPot = true,
     },
 
@@ -1226,12 +950,17 @@ Config.Betting = {
         enabled = true,
 
         -- The band one fighter may stake. Nothing to do with the entry fee.
+        --
+        -- KEEP `max` LEVEL WITH `spectatorBets.max`. A fighter who leaves a
+        -- live round has their stake trimmed to the watcher ceiling and the
+        -- difference handed back, so anything above that line is a stake they
+        -- can take off the table by walking out. Level, there is nothing to
+        -- trim and nothing to gain by leaving.
         min = 100,
-        max = 50000,
+        max = 25000,
 
-        -- A fighter may only back THEMSELVES, or their own team in a team
-        -- mode. Off, they may back any side -- which on most servers is a
-        -- way to throw a round for money, so it ships on.
+        -- A fighter may only back THEMSELVES, or their own side. Off, they
+        -- may back anybody, which is a way to throw a round for money.
         ownSideOnly = true,
 
         -- One bet each. Off, a fighter may keep adding to their position
@@ -1247,19 +976,8 @@ Config.Betting = {
         enabled = true,
         min = 0,
         max = 50000,
-        -- WHAT THE BOX STARTS ON, and therefore what a host who never
-        -- touches it opens the round at.
-        --
-        -- This was 0 -- "free unless the host asks for a fee" -- and read
-        -- from a seat that is indistinguishable from the fee being broken:
-        -- you join, nothing leaves your wallet, and there is no pot at the
-        -- end. It is the commonest way to open a lobby, so it was also the
-        -- commonest thing to see.
-        --
-        -- A round with money on it is what the escrow, the pot and the payout
-        -- are all for, so the box starts on the first preset instead. A host
-        -- who wants a free round types 0, which `min` still allows, and every
-        -- other amount between min and max is still theirs to type.
+        -- WHAT THE BOX STARTS ON -- what a host who never touches it opens
+        -- the round at. A host who wants a free round types 0.
         default = 500,
         -- Quick-pick buttons in the panel. Any value between min and max is
         -- still accepted if the player types it.
@@ -1268,12 +986,10 @@ Config.Betting = {
 
     -- Taken off the top of the pot before it is paid out. 0 = no cut.
     --
-    -- ONLY WHEN THE POT SETTLES ON ITS OWN. `betPayout.includeEntryPot`
-    -- below ships ON, which hands the entry fees to the bet pool instead --
-    -- and a pool is the bettors' money, so nothing is raked off it. Set a
-    -- cut with that switch on and none is taken; Arena.ValidateConfig says
-    -- so on startup rather than leaving you to work it out from the
-    -- payouts. Turn includeEntryPot off to rake the pot the old way.
+    -- ONLY WHEN THE POT SETTLES ON ITS OWN. `betPayout.includeEntryPot` ships
+    -- ON, which hands the entry fees to the bet pool -- and a pool is the
+    -- bettors' money, so nothing is raked off it. Set a cut with that switch
+    -- on and none is taken; the console says so at start-up.
     houseCutPercent = 0,
 
     -- HOW THE POT IS SPLIT.
@@ -1288,31 +1004,24 @@ Config.Betting = {
     -- 0 = no ceiling on the total pot.
     maxPot = 0,
 
-    -- A HOST CLOSING THEIR OWN LOBBY. With this on -- the default -- every
-    -- stake goes straight back. With it off they are FORFEITED, and the
-    -- money goes nowhere at all: it is kept the way the house cut and a
-    -- losing side-bet are kept, because this resource has no house account
-    -- to credit and handing the pot to somebody would only move the abuse to
-    -- whoever received it. That is the point of the setting -- it deters a
-    -- host who fills a lobby, takes everyone's stake and closes it. Every
-    -- forfeit is logged and webhooked whatever `logPayouts` says, because an
-    -- operator running a house account by hand is the only person who can
-    -- put that money anywhere.
+    -- A HOST CLOSING THEIR OWN LOBBY. On, every stake goes straight back.
+    -- Off, they are FORFEITED and the money goes nowhere -- there is no house
+    -- account, and handing the pot to somebody would only move the abuse to
+    -- them. That is the point: it deters a host who fills a lobby, takes
+    -- everyone's stake and closes it. Every forfeit is logged and webhooked
+    -- whatever `logPayouts` says.
     --
-    -- ONLY a host cancelling forfeits. An idle-timeout close, an admin
-    -- force-stop, the last player walking out and a resource restart all
-    -- still refund in full: punishing a host who calls their own match off
-    -- is not the same as punishing a lobby the server itself closed.
+    -- ONLY a host cancelling forfeits. An idle close, an admin force-stop,
+    -- the last player leaving and a resource restart all refund in full.
     refundOnCancel = true,
 
     -- LEAVING A LOBBY THAT HAS NOT STARTED. On, the stake comes back. Off,
-    -- it stays in the pot and is won by whoever takes the match.
+    -- it stays in the pot for whoever wins.
     --
-    -- Like its mid-match sibling below, this does NOT distinguish a
-    -- deliberate quit from a crash, and deliberately so: a rule that charged
-    -- only genuine disconnects would take money from players whose game
-    -- crashed and hand it back to the ones who left on purpose, which is
-    -- worse than either answer applied evenly.
+    -- Neither this nor the one below can tell a deliberate quit from a crash,
+    -- and does not try: a rule that charged only real disconnects would take
+    -- money from players whose game crashed and spare the ones who left on
+    -- purpose.
     refundOnDisconnectBeforeStart = true,
 
     -- Someone who disconnects mid-match forfeits their stake to the pot.
@@ -1321,19 +1030,13 @@ Config.Betting = {
 
     -- HOW OFTEN TO RETRY A REFUND THAT COULD NOT BE DELIVERED.
     --
-    -- A refund needs the player to be ON the server -- money is credited to
-    -- a loaded character, and there is nobody to credit while they are gone.
-    -- The commonest reason a stake cannot be handed back is therefore the
-    -- commonest reason it is being handed back at all: they crashed.
+    -- A refund needs the player to be ON the server, and the commonest reason
+    -- a stake is being handed back is the commonest reason it cannot be: they
+    -- crashed. So the debt is recorded against the CHARACTER and paid the
+    -- next time this sweep sees them, which survives a reconnect.
     --
-    -- So an undeliverable refund is recorded against the CHARACTER and paid
-    -- the next time this sweep sees them, which survives the reconnect and
-    -- the match being torn down. The alternative is what this replaced: the
-    -- debt was filed against a match id that stopped existing moments later,
-    -- and the money was gone.
-    --
-    -- Zero or below switches the sweep off. Then an undeliverable refund is
-    -- logged and webhooked and waits for an operator to settle it by hand.
+    -- Zero or below switches the sweep off, and an undeliverable refund is
+    -- then logged and webhooked for an operator to settle by hand.
     refundRetrySeconds = 30,
 
     -- SPECTATOR SIDE-BETS: people who are not fighting can back a team (in
@@ -1359,31 +1062,23 @@ Config.UI = {
     title = 'CRIMSON',
     subtitle = 'ROLEPLAY ARENA',
 
-    -- HOW THE LOGO IS USED. Two shapes of logo exist and they want opposite
-    -- treatment, so this picks which one you have:
+    -- WHICH SHAPE OF LOGO YOU HAVE. Write one of:
     --
-    --   'mark'   -- a small square badge sitting to the LEFT of the title
-    --               above. Right for a simple icon: a skull, a monogram, a
-    --               shield. It is drawn small, so anything with words in it
-    --               is unreadable.
+    --   'mark'   -- a small square badge left of the title. Right for a
+    --               simple icon; it is drawn small, so anything with words in
+    --               it is unreadable.
     --
-    --   'banner' -- the logo spans the top of the panel and `title` and
-    --               `subtitle` are NOT drawn. Right for a finished lockup
-    --               that already contains your server name, because in
-    --               'mark' mode that name is printed twice: once as text,
-    --               once as pixels too small to read.
+    --   'banner' -- the logo spans the top and `title` and `subtitle` are NOT
+    --               drawn. Right for a finished lockup that already has your
+    --               server name in it.
     --
-    -- A full-scene artwork -- skyline, vehicles, effects -- will still be
-    -- small at panel size whichever you choose. It reads far better cropped
-    -- down to the part that identifies you: the badge alone for 'mark', the
-    -- wordmark strip for 'banner'.
-    --
-    -- Anything else is treated as 'mark' and a warning is printed at start.
+    -- A full-scene artwork will be small at panel size either way -- crop it
+    -- down to the part that identifies you.
     logoStyle = 'mark',
 
-    -- Drop your own logo in html/images/logo.png and it appears in the
-    -- panel header. If you change the FILENAME you must also add the new
-    -- file to fxmanifest.lua's `files` block, or it silently will not load.
+    -- Drop your own logo in html/images/logo.png and it appears in the panel
+    -- header. Change the FILENAME and you must add the new file to
+    -- fxmanifest.lua's `files` block, or it silently will not load.
     logo = 'images/logo.png',
 
     theme = {
@@ -1425,19 +1120,16 @@ Config.Permissions = {
 -- ======================================================================
 -- ARENAS -- the grounds people actually fight on.
 --
--- ADD AS MANY AS YOU LIKE. This is an ordinary list: paste another block in,
--- give it a key nothing else uses, and it appears in the panel at the next
--- restart. Nothing else needs editing -- no code, no second list, no
--- registration step. Delete a block and it is gone; set `enabled = false` and
--- it is hidden without losing the coordinates you spent time collecting.
+-- ADD AS MANY AS YOU LIKE. Paste another block in, give it a key nothing else
+-- uses, and it appears in the panel at the next restart. No code, no second
+-- list, no registration step. Delete a block and it is gone; set
+-- `enabled = false` to hide it without losing the coordinates.
 --
--- THE TWO SHIPPED ARENAS ARE DELIBERATELY DIFFERENT ANIMALS -- one a real
--- place on the map with its own cover, one built out of props a kilometre
--- up with nothing under it -- and their coordinates are a starting point
--- rather than gospel. Stand where you
--- want a spawn point, take the coordinates with whatever command your server has for it,
--- and paste them in. The heading is the last number -- the direction the
--- player faces when they land.
+-- THE TWO SHIPPED ARENAS ARE DIFFERENT ANIMALS -- one a real place on the map
+-- with its own cover, one built out of props a kilometre up with nothing
+-- under it. Their coordinates are a starting point, not gospel: stand where
+-- you want a spawn point, take the coordinates, paste them in. The heading is
+-- the last number -- the way the player faces when they land.
 --
 -- COPY THIS TO ADD ONE:
 --
@@ -1500,27 +1192,19 @@ Config.Arenas = {
         description = 'Close ground between the vans. Corners everywhere, nothing to see across.',
         enabled = true,
 
-        -- ON REAL GROUND, unlike the skydome. There is already a map under
-        -- this one, so there is no `platform` block and no `exactSpawnZ`:
-        -- the client asks the game where the ground is and puts people on
-        -- it, which is what every arena did before the sky one existed.
+        -- ON REAL GROUND, unlike the skydome: there is a map under this one,
+        -- so there is no `platform` block and no `exactSpawnZ` -- the game is
+        -- asked where the ground is and players are put on it.
 
-        -- OFF, BECAUSE THIS ONE IS A REAL PLACE. The trailer park is on the
-        -- map and already has trailers, fences and vehicles to fight around
-        -- -- that is the reason to hold a match here. Dropping shipping
-        -- containers on top of it at fixed offsets does not add cover, it
-        -- puts a container through somebody's caravan: these coordinates are
-        -- relative to the middle of the arena and know nothing about what is
-        -- already standing there.
+        -- COVER PROPS ARE OFF HERE, because the trailer park already has
+        -- trailers, fences and vehicles to fight around. These offsets know
+        -- nothing about what is already standing there, so switching them on
+        -- can put a container through a caravan.
         --
-        -- The skydome needs this because it is built over open air and has
-        -- nothing of its own. This does not.
-        --
-        -- IT IS LEFT HERE, LAID OUT AND READY, for the one case it is worth
-        -- having: turn `enabled` on, fly out, and nudge the pieces that
-        -- landed somewhere silly. Offsets are from the spawn-area centre
-        -- below, so `z = 0` is ground level in the middle of the arena and a
-        -- piece on a slope is moved with its own `z`. Nobody is ever placed
+        -- The layout is left ready for the one case it is worth having: turn
+        -- `enabled` on, fly out, and nudge whatever landed somewhere silly.
+        -- Offsets are from the spawn-area centre below, so `z = 0` is ground
+        -- level in the middle of the arena. Nobody is ever placed
         -- ONTO these, so a piece sitting slightly proud is untidy rather
         -- than a fall.
         cover = {
@@ -1562,21 +1246,17 @@ Config.Arenas = {
             teamRadius = 18.0,
         },
 
-        -- Used only if spawnArea is switched off. The heading is the one the
-        -- operator stood at, pointed back towards the middle from each side.
+        -- Used only if spawnArea is switched off. Each heading points back
+        -- towards the middle of the park. Note that a GTA heading of 90 is
+        -- WEST, not east -- the commonest way to get these backwards.
         spawns = {
-            -- Facing the middle of the park, which is what facingCentre
-            -- returns for these two. They were 180 degrees out: a GTA
-            -- heading of 90 is WEST, and both entries read it as east.
             vector4(2374.4294, 2565.0552, 46.6677, 90.0),
             vector4(2314.4294, 2565.0552, 46.6677, 270.0),
             vector4(2344.4294, 2595.0552, 46.6677, 180.0),
             vector4(2344.4294, 2535.0552, 46.6677, 0.0),
         },
 
-        -- Same correction as the list above, and I missed these on the
-        -- first pass: spawnplan_spec now walks teamSpawns as well, and it
-        -- was the test that found them rather than a second reading.
+        -- One list per side. A team with no list here falls back to `spawns`.
         teamSpawns = {
             crimson = {
                 vector4(2374.4294, 2565.0552, 46.6677, 90.0),
@@ -1591,16 +1271,9 @@ Config.Arenas = {
         boundary = {
             enabled = true,
             center = vector3(2344.4294, 2565.0552, 46.6677),
-            -- BIG ENOUGH FOR THE WHOLE PARK, which is the point of holding a
-            -- match in a real place. Sixty metres reached the spawn ring and
-            -- very little else: the vans on the far rows, the track in and
-            -- the fence line were all outside it, so chasing somebody around
-            -- the place you came here to fight in started the bleed. A
-            -- hundred covers the lot end to end with room to back off, and
-            -- still stops well short of the highway.
-            --
-            -- Grows with the roster like everything else below: at the
-            -- twenty-player ceiling this is 135m.
+            -- BIG ENOUGH FOR THE WHOLE PARK. A hundred metres covers it end
+            -- to end with room to back off, and stops short of the highway.
+            -- Grows with the roster: 135m at the twenty-player ceiling.
             radius = 100.0,
             warningSeconds = 5,
             damagePerTick = 20,
@@ -1609,12 +1282,10 @@ Config.Arenas = {
 
         -- ROOM FOR TWENTY, on ground that already exists.
         --
-        -- Only the spawn ring and the boundary move here -- there is no floor
-        -- to grow and the cover is switched off -- so this is purely "spread
-        -- people further apart and give them more of the park to use". The
-        -- ceiling is deliberately lower than the skydome's: that one builds
-        -- its own world and can be any size, and this one has a fence around
-        -- it and a highway past it.
+        -- Only the spawn ring and the boundary grow here -- there is no
+        -- floor to build and the cover is off -- so this just spreads people
+        -- further apart and gives them more of the park. The ceiling is lower
+        -- than the skydome's, which has no fence or highway to run into.
         scale = {
             enabled = true,
             baseline = 6,
@@ -1629,44 +1300,28 @@ Config.Arenas = {
     ['skydome'] = {
         label = 'The Skydome',
         description = 'A walled platform in the clouds, with nothing under it and nothing over it.',
-        -- ON, and one of the two arenas that ship. Both are enabled.
+        -- THE PROP MODELS BELOW ARE THE ONE THING HERE YOU CANNOT CHECK FROM
+        -- OUTSIDE THE GAME. If a model is missing from your build the floor
+        -- does not appear -- so the client REFUSES to put anybody into an
+        -- arena whose floor did not build and says so in the console. Nobody
+        -- falls; the match simply will not start.
         --
-        -- THE PROP MODELS BELOW ARE THE ONE THING HERE THAT CANNOT BE CHECKED
-        -- FROM OUTSIDE THE GAME. If a model is not on your build the floor
-        -- does not appear -- so the client REFUSES to place anybody into an
-        -- arena whose floor did not build, and says so in the console, rather
-        -- than dropping the round into a kilometre of air. Nobody falls; the
-        -- match simply will not start, which is the failure you want.
-        --
-        -- Fly up to the coordinates below once and look at it. What you are
-        -- checking is that the floor is solid and that `spawnArea.center.z`
-        -- is standing height on it.
+        -- Fly up to the coordinates below once and look. You are checking
+        -- that the floor is solid and that `spawnArea.center.z` is standing
+        -- height on it.
         enabled = true,
 
         -- THE FLOOR.
         platform = {
             enabled = true,
 
-            -- A Cunning Stunts building block: a big solid slab with a flat
-            -- top, which is what people build sky platforms out of.
+            -- TRIED IN ORDER: the first model this build actually has is
+            -- used, and the console says which if it was not the first.
             --
-            -- CHECKED AGAINST THE GAME'S OWN OBJECT LIST, not remembered.
-            -- The first model written here was invented and does not exist,
-            -- which would have meant no floor at all -- tests/skyarena_spec
-            -- now pins every model named in this file against a dump of all
-            -- 21,629 real ones.
-            -- TRIED IN ORDER; the first one this build actually has is used,
-            -- and the console says which if it was not the first. A name
-            -- being real is not the same as it being on YOUR server: a build
-            -- without the Cunning Stunts DLC has none of the first two, and
-            -- the shipping container is base game and always there.
-            --
-            -- FIVE DEEP, and the first four are the same shape from four
-            -- different DLCs -- Cunning Stunts, Bikers, Import/Export and
-            -- Arena War. A server missing all four has been stripped hard.
-            -- The fifth is a base-game shipping container, which every build
-            -- has and which tiles into a floor perfectly well; it just takes
-            -- a few hundred pieces to do it, which is what `maxTiles` is for.
+            -- The first four are the same big flat slab from four different
+            -- DLCs. The fifth is a base-game shipping container, which every
+            -- build has -- it tiles into a floor perfectly well, it just
+            -- takes a few hundred pieces, which is what `maxTiles` is for.
             models = {
                 'stt_prop_stunt_bblock_huge_01',
                 'bkr_prop_biker_bblock_huge_01',
@@ -1675,103 +1330,66 @@ Config.Arenas = {
                 'prop_container_01a',
             },
 
-            -- A FALLBACK, not the answer. The client asks the game for the
-            -- model's real footprint with GetModelDimensions and lays the
-            -- floor out on that, so this is only used if the model will not
-            -- load -- and a model that will not load has no floor to space.
-            --
-            -- It matters because nobody can get it right by hand: too big
-            -- leaves seams to fall through, too small stacks the pieces into
-            -- a flickering mess, and from the ground you cannot tell which.
+            -- A FALLBACK ONLY. The client measures the model's real
+            -- footprint and lays the floor out on that; this is used only if
+            -- the model will not load at all.
             tileSize = 10.0,
 
-            -- How far the floor reaches. Inside the boundary below, so the
-            -- edge of the world is the edge of the floor rather than a
-            -- stretch of open air you can stand in while bleeding.
+            -- How far the floor reaches. Keep it inside the boundary, so the
+            -- edge of the world is the edge of the floor rather than open air
+            -- you can stand in while bleeding.
             --
-            -- IT HAS TO CARRY THE WALL, and that is why it is 48 and not 45.
-            -- The wall stands at 44.5, a container is 2.44m across, and a
-            -- tile is only kept when part of it falls inside this radius --
-            -- so at 45 the outermost pieces had a corner hanging over a
-            -- notch in the rim. Three metres of margin puts whole tiles
-            -- under every corner of every piece at every size the arena
-            -- grows to, which tests/propfit_spec.lua checks rather than
-            -- takes on trust.
+            -- IT HAS TO CARRY THE WALL, which is why it is 48 and not 45: the
+            -- wall stands at 44.5 and a container is 2.44m across, so the
+            -- extra margin puts whole tiles under every corner of it at every
+            -- size the arena grows to.
             radius = 48.0,
 
-            -- THE SURFACE PEOPLE STAND ON. Not where the pieces are
-            -- created -- the client measures the prop and lowers it by its
-            -- own height so that its TOP lands exactly here, whichever model
-            -- out of the chain above this build turned out to have.
+            -- THE SURFACE PEOPLE STAND ON -- not where the pieces are
+            -- created. The client measures the prop and lowers it by its own
+            -- height so the TOP lands exactly here, whichever model this
+            -- build turned out to have.
             --
-            -- So this is the one number that has to agree with `spawnArea`
-            -- and `cover` below, and they are all 1201. It used to be the
-            -- other way round: the pieces were created at this Z and the
-            -- surface came out at "1201 plus however tall that prop is",
-            -- which left the cover buried inside the floor and the spawn
-            -- height wrong by the height of a prop nobody had measured.
+            -- This has to agree with `spawnArea` and `cover` below; all three
+            -- are 1201.
             z = 1201.0,
 
-            -- A CEILING ON THE PIECE COUNT, and it only ever bites on the
-            -- container fallback: a big block tiles this arena in nine
-            -- pieces, a container needs a few hundred. The middle is kept
-            -- and the outer rim is dropped, so what a capped floor loses is
-            -- edge nobody spawns on rather than a hole under somebody.
-            -- 0 means no ceiling.
+            -- A CEILING ON THE PIECE COUNT. It only bites on the container
+            -- fallback -- a big slab tiles this arena in nine pieces. The
+            -- middle is kept and the rim is dropped, so a capped floor loses
+            -- edge nobody spawns on rather than opening a hole. 0 = no ceiling.
             maxTiles = 400,
         },
 
-        -- SOMETHING TO GET BEHIND, AND SOMETHING TO STOP AT.
+        -- SOMETHING TO GET BEHIND, AND SOMETHING TO STOP AT. Without cover a
+        -- flat disc is a staring contest; without a wall it is a
+        -- thousand-metre drop.
         --
-        -- Without cover a flat disc is a staring contest: everybody sees
-        -- everybody from the first second and the round is decided by who
-        -- aimed first. Without a WALL the same disc is a thousand-metre drop
-        -- with nothing at all between a fighter and the edge of it.
+        -- Positions are OFFSETS from the spawn-area centre, so `z = 0` is
+        -- standing on the floor. Add, delete and move these freely.
         --
-        -- Positions are OFFSETS from the spawn-area centre below, so `z = 0`
-        -- is standing on the floor and a piece can be nudged a metre without
-        -- working out a world coordinate. Add, delete and move these freely
-        -- -- it is a list, and nothing else reads it.
+        -- `z` IS THE ONE OFFSET THAT DOES NOT SCALE with the arena, because a
+        -- container is 2.6m tall whatever size the floor is. That is what
+        -- makes a stack a stack: a piece at `z = 2.6` stands on the roof of
+        -- the one at `z = 0` at every roster size.
         --
-        -- `z` IS THE ONE OFFSET THAT DOES NOT SCALE WITH THE ARENA, because
-        -- it is measured in prop rather than in arena: a container is 2.6m
-        -- tall whatever size the floor is. That is what makes a stack a
-        -- stack -- a second piece at `z = 2.6` stands on the roof of the one
-        -- at `z = 0` at every roster size, rather than drifting into the air
-        -- as the arena grows.
-        --
-        -- `align = 'tangent'` TURNS A PIECE SIDE-ON TO THE MIDDLE, and it
-        -- overrides the heading written beside it. The client measures the
-        -- model and works out which heading actually does that, because which
-        -- way round a prop is built -- long side along its own X or its own Y
-        -- -- is not something config can know. The heading is still written
-        -- down as the fallback for a model this build cannot measure. See
-        -- Arena.TangentHeading in shared/arena.lua.
-        --
-        -- The models here are the second thing to check in game, after the
-        -- floor. Any solid prop works; these are ordinary base-game ones.
+        -- `align = 'tangent'` TURNS A PIECE SIDE-ON TO THE MIDDLE and
+        -- overrides the heading beside it -- the client measures the model to
+        -- work out which heading really does that. The written heading is the
+        -- fallback for a model it cannot measure.
         cover = {
             enabled = true,
             pieces = {
-                -- THE WALL. Twenty-two containers end to end around the rim,
-                -- every one of them doubled: 5.2m of steel, which is not
-                -- climbable and not something anybody walks off by accident.
-                -- NOTHING GOES OVER THE TOP -- the sky stays open, and this is
-                -- a wall rather than a box.
+                -- THE WALL. Twenty-two containers around the rim, every one
+                -- doubled: 5.2m of steel, not climbable and not something
+                -- anybody walks off by accident. Nothing goes over the top --
+                -- the sky stays open.
                 --
-                -- WHY TWENTY-TWO, AND WHY 44.5m. A container is 12.19m long, so
-                -- the ring has to be a twenty-two sided polygon whose edge is a
-                -- little longer than one: shorter and the inside corners drive
-                -- through each other, longer and gaps open up. At this radius
-                -- adjacent pieces come within 0.19m of touching on the inside
-                -- face. Nothing gets between them, and no two pieces share a
-                -- millimetre of volume.
-                --
-                -- IT COSTS THE SPAWN PLACEMENT NOTHING, which is what lets it
-                -- be this big. Cover is excluded from placement at 7m and the
-                -- spawn circle reaches 35m, so a wall at 44.5 is 9.5m clear of
-                -- the furthest point anybody can be put -- at every size the
-                -- arena grows to, because both numbers scale together.
+                -- THE COUNT AND THE RADIUS GO TOGETHER. A container is 12.19m
+                -- long, so twenty-two of them make a ring whose edges are a
+                -- little longer than one piece: fewer and the inside corners
+                -- drive through each other, more and gaps open up. Change one
+                -- of these two numbers and you have to change the other.
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 44.5, y = 0.0, z = 0.0, heading = 90.0, align = 'tangent' },
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 44.5, y = 0.0, z = 2.6, heading = 90.0, align = 'tangent' },
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 42.7, y = 12.5, z = 0.0, heading = 106.3, align = 'tangent' },
@@ -1842,16 +1460,10 @@ Config.Arenas = {
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 0.0, y = -28.0, z = 2.6, heading = 0.0, align = 'tangent' },
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 19.8, y = -19.8, z = 0.0, heading = 45.0, align = 'tangent' },
 
-                -- THE MID BAND: eight more between the corner pockets and the
-                -- outer ring, sat in the outer ring's GAPS rather than lined up
-                -- behind it. Staggered, a gap in the outer ring does not also
-                -- look through the middle and out the far side; lined up, every
-                -- gap is a firing lane down the whole diameter.
-                --
-                -- SKEWED 20 DEGREES off side-on, so the arena does not read as a
-                -- set of concentric circles, and a fighter behind one of these
-                -- is covered from a different direction than one behind the ring
-                -- outside it.
+                -- THE MID BAND: eight more, sat in the outer ring's GAPS
+                -- rather than lined up behind it -- lined up, every gap is a
+                -- firing lane down the whole diameter. Skewed 20 degrees off
+                -- side-on so the arena does not read as concentric circles.
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 20.8, y = 12.0, z = 0.0, heading = 220.0 },
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 6.2, y = 23.2, z = 0.0, heading = 175.0 },
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = -12.0, y = 20.8, z = 0.0, heading = 130.0 },
@@ -1873,30 +1485,20 @@ Config.Arenas = {
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 11.3, y = -11.3, z = 0.0, heading = 335.0 },
                 { models = { 'prop_mp_barrier_02b', 'prop_barrier_work05', 'prop_conc_blocks01a' }, x = 15.9, y = -6.7, z = 0.0, heading = 15.0 },
 
-                -- THE MIDDLE: four containers in a pinwheel where four short
-                -- barriers used to stand -- spread from 6.5m out to 9m, turned
-                -- 30 degrees off side-on, and two of them doubled. The centre
-                -- can still be crossed, but it is never open ground and never a
-                -- straight run.
+                -- THE MIDDLE: four containers in a pinwheel, turned 30
+                -- degrees off side-on and two of them doubled. The centre can
+                -- be crossed but is never open ground and never a straight run.
                 --
-                -- WHAT ADDING TO THIS COSTS, and it is why there are four and
-                -- not eight. Every FOOTPRINT here is excluded from spawn
-                -- placement at 7m and that exclusion is never relaxed, so a
-                -- piece in the middle is room taken away from the placement --
-                -- while a piece STACKED on one already there costs nothing at
-                -- all. That is the whole reason this arena can be walled in and
-                -- doubled up and still place eight fighters ten metres apart:
-                -- 78 pieces stand in 50 footprints, and only 28 of those are
-                -- inside the circle anybody is placed in -- the same 28 the
-                -- arena had before any of this.
+                -- BE CAREFUL ADDING PIECES HERE. Every FOOTPRINT is kept 7m
+                -- clear of every spawn, so a new piece in the middle is room
+                -- taken away from placing fighters -- while a piece STACKED on
+                -- one already there costs nothing. That is why this arena can
+                -- be walled in and doubled up and still place eight fighters
+                -- ten metres apart.
                 --
-                -- A DENSER LAYOUT WAS TRIED AND MEASURED AND TAKEN BACK OUT.
-                -- Twelve more, in two bands, passed everything a seeded sampler
-                -- and the grown arena could see -- and then failed
-                -- skyarena_spec, which uses real randomness with growth off and
-                -- found what the sampler had not: six fighters landing 6.23m
-                -- apart against a stated 10. Adding footprints here is cheap to
-                -- write and expensive to verify. Run the suite.
+                -- A DENSER LAYOUT WAS TRIED AND TAKEN BACK OUT: it looked fine
+                -- and then put six fighters 6.23m apart against a stated 10.
+                -- Adding footprints is cheap to write and expensive to check.
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 8.3, y = 3.4, z = 0.0, heading = 277.7 },
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = 8.3, y = 3.4, z = 2.6, heading = 277.7 },
                 { models = { 'prop_container_01a', 'prop_container_01b' }, x = -3.4, y = 8.3, z = 0.0, heading = 187.7 },
@@ -1906,23 +1508,17 @@ Config.Arenas = {
             },
         },
 
-        -- THE ARENA GROWS WITH THE MATCH.
+        -- THE ARENA GROWS WITH THE MATCH. The radii below are written for a
+        -- small round; twenty fighters in the same circle would open the game
+        -- already in each other's sights.
         --
-        -- The radii below describe an arena sized for a small round. Twenty
-        -- fighters in the same circle is a different game: `minSeparation`
-        -- stops being satisfiable, the placement quietly settles for less,
-        -- and everybody opens the round already in somebody's sights.
+        -- ONE NUMBER SCALES ALL OF IT -- spawn area, floor, boundary and
+        -- where the cover sits -- so the relationships between them, which
+        -- are what stop people spawning off the floor or out of bounds, stay
+        -- intact.
         --
-        -- So one number scales all of it -- the spawn area, the floor, the
-        -- boundary and where the cover sits -- which keeps the relationships
-        -- between them intact. Those relationships are what stop people
-        -- spawning off the floor or out of bounds, so they are not something
-        -- to let a growth setting quietly break.
-        --
-        -- WORTH KNOWING: the floor is TILED, so a bigger arena is more
-        -- pieces. `maxTiles` above grows with it (by the square, because a
-        -- disc does), and the ceiling only ever bites on the container
-        -- fallback.
+        -- The floor is tiled, so a bigger arena is more pieces and `maxTiles`
+        -- above grows with it.
         scale = {
             enabled = true,
 
@@ -1931,13 +1527,8 @@ Config.Arenas = {
             baseline = 6,
 
             -- Metres of spawn radius added per fighter above the baseline.
-            -- Written in metres rather than as a multiplier because metres
-            -- are what you can picture; it is converted against this
-            -- arena's own size, so the same number means the same thing on
-            -- a small arena and a large one.
-            --
-            -- At 1.6: six players fight in the 35m circle below, twenty
-            -- fight in a 57m one, and the floor and boundary grow with it.
+            -- At 1.6: six players fight in the 35m circle below, twenty fight
+            -- in a 57m one, and the floor and boundary grow with it.
             perPlayer = 1.6,
 
             -- However many turn up, it never grows past this multiple of
@@ -1946,52 +1537,28 @@ Config.Arenas = {
         },
 
         -- THE SPAWN Z IS EXACT HERE. Without this the client asks the game
-        -- where the ground is, the game answers with the real terrain a
-        -- kilometre below, and every fighter is teleported out of the sky
-        -- the moment the round starts.
+        -- where the ground is, gets the real terrain a kilometre below, and
+        -- every fighter drops out of the sky when the round starts.
         exactSpawnZ = true,
 
         spawnArea = {
             enabled = true,
             -- A floor for the client to raise fighters to. It measures the
-            -- real surface from the prop and uses that when it is higher, so
-            -- this only has to be at or below standing height -- it cannot
-            -- put anybody underneath the platform.
+            -- real surface off the prop and uses that when it is higher, so
+            -- this only has to be at or below standing height.
             center = vector3(1500.00, 3000.00, 1201.00),
             radius = 35.0,
             minSeparation = 10.0,
             teamRadius = 16.0,
         },
 
-        -- The fallback list, used only if spawnArea is switched off. Same
-        -- surface height.
+        -- The fallback list, used only if spawnArea is switched off.
         --
-        -- THE HEADINGS ARE NOT EYEBALLED. A GTA heading is degrees clockwise
-        -- from north, so a ped at h faces (-sin h, cos h): 90 is WEST, not
-        -- east. Every east/west entry here was exactly 180 degrees out --
-        -- the fighter spawned with their back to the arena -- while the
-        -- north/south pair was right, which is the signature of reading 90
-        -- as east. shared/arena.lua's facingCentre already had this fixed in
-        -- code and carries the same explanation; the config never got it.
-        --
-        -- Each number below is what facingCentre returns for that point, so
-        -- the fallback list and the planned placement now agree.
-        -- AND THEY STAND IN THE GAPS, not against the containers.
-        --
-        -- These were four points 30m out on the axes -- and the outer cover
-        -- ring puts a DOUBLED container at 28m on each of those same four
-        -- axes. Measured with the resource's own Arena.CoverClearance, each
-        -- spawn sat 2.00m from a cover piece against a 7.00m requirement:
-        -- inside cover by the same test PickRespawn uses to reject a
-        -- candidate. The client then scatters this path by 2.5m, so roughly
-        -- three placements in ten opened the round inside a steel box with
-        -- nowhere to walk to.
-        --
-        -- The ring leaves eight gaps, each about four metres of arc. The
-        -- bearings below sit in the middle of four of them, measured rather
-        -- than eyeballed: every point is 10.28m from the nearest cover
-        -- piece, which clears the 7.00m requirement and the 2.5m scatter
-        -- with 1.28m to spare. Headings are facingCentre's answers.
+        -- TWO THINGS TO GET RIGHT IF YOU MOVE THESE. A GTA heading is degrees
+        -- clockwise from north, so 90 is WEST -- reading it as east puts a
+        -- fighter's back to the arena. And each point must stand in a GAP in
+        -- the cover ring, not against it: these four are 10.28m from the
+        -- nearest piece, which clears the 7m requirement and the 2.5m scatter.
         spawns = {
             vector4(1531.56, 3009.65, 1201.00, 107.0),
             vector4(1490.35, 3031.56, 1201.00, 197.0),
@@ -2012,23 +1579,15 @@ Config.Arenas = {
             },
         },
 
-        -- A SPHERE, which is what makes the drop lethal without a single
-        -- line of falling code: step off the floor and you leave the
-        -- boundary from underneath within a second, and it bleeds you the
-        -- same way walking out of any other arena does.
+        -- A SPHERE, which is what makes the drop lethal without a line of
+        -- falling code: step off the floor and you are outside the boundary
+        -- from underneath within a second.
         --
-        -- IT HAS TO CONTAIN THE WHOLE FLOOR, and this was 60 while the floor
-        -- reached 77. The last seventeen metres of solid platform were
-        -- outside the arena: you walked to the edge, still on the floor, and
-        -- started bleeding for it. Nothing about that reads as a boundary --
-        -- it reads as the arena being broken.
-        --
-        -- The floor is TILED, so it reaches further than `platform.radius`:
-        -- a tile is kept whenever any part of it falls inside that radius,
-        -- so the last ring sticks out by up to half a tile, and on the
-        -- corners by half a diagonal. 110 covers the shipped prop with room
-        -- to spare, and Arena.ValidateConfig now complains if a boundary is
-        -- ever smaller than the floor it is drawn around.
+        -- IT HAS TO CONTAIN THE WHOLE FLOOR, or players bleed while still
+        -- standing on solid platform. The floor is TILED, so it reaches
+        -- further than `platform.radius` -- a tile is kept whenever any part
+        -- of it falls inside. The console complains at start-up if a boundary
+        -- is smaller than the floor drawn inside it.
         boundary = {
             enabled = true,
             center = vector3(1500.00, 3000.00, 1201.00),
@@ -2046,80 +1605,56 @@ Config.Arenas = {
 -- ======================================================================
 -- LOADOUTS -- THE RULES THE WEAPON PICKER IS BUILT UNDER.
 --
--- THE WEAPONS THEMSELVES ARE IN config.weapons.lua, loaded straight after
--- this file. Delete an entry there, or set `enabled = false` on one, and
--- that weapon is gone from the arena for everyone -- the server refuses it
--- even if a modified client asks for it by name. What is in THIS block is
--- how many a player may take, what ammunition they arrive with, and the
--- spare kit they carry in.
+-- THE WEAPONS THEMSELVES ARE IN config.weapons.lua. Delete an entry there,
+-- or set `enabled = false` on one, and that weapon is gone from the arena
+-- for everyone -- the server refuses it even if a modified client asks for it
+-- by name. What is in THIS block is how many a player may take, what
+-- ammunition they arrive with, and the spare kit they carry in.
 --
 -- AMMO: each weapon carries its own `ammo` block. `options` is what the
 -- player may pick from in the panel; `max` is the hard ceiling the server
--- clamps to no matter what arrives on the wire, and an off-list request is
--- refused back to `default` rather than rounded.
+-- clamps to whatever arrives on the wire.
 --
--- A weapon with `ammo.options = nil` has no picker: the panel offers no ammo
--- choice for it, so an honest client sends nothing but `ammo.default` and
--- that is what the player is handed. It is FREE-FORM on the wire, though --
--- with no list to check a request against, the only limit left is `max`, so
--- a modified client asking for a number in between is given it. Set
--- `max = default`, the way every melee entry in config.weapons.lua does,
--- for a weapon whose count is meant to be fixed.
+-- A WEAPON WITH NO `ammo.options` HAS NO PICKER, and its count is then only
+-- bounded by `max` -- with no list to check against, a modified client asking
+-- for a number below the ceiling is given it. Set `max = default`, the way
+-- every melee entry does, for a weapon whose count is meant to be fixed.
 -- ======================================================================
 Config.Loadouts = {
-    -- WHO PICKS, and this is a rule about the match rather than a menu
-    -- option -- it decides whether an arena round is a test of skill or a
-    -- test of who picked the better gun.
+    -- WHO PICKS THE WEAPONS. This decides whether a round is a test of skill
+    -- or a test of who picked the better gun. Write one of:
     --
-    --   'host'   -- the host picks ONCE and every player in that match
-    --               fights with it. Everyone carries the same weapons, so
-    --               the only variable left is the players. This is the
-    --               default. The picker is read-only for everyone else, and
-    --               the server refuses their request as well as the panel
-    --               hiding it. Somebody who joins after the host has picked
-    --               inherits it rather than starting on the default.
+    --   'host'   -- the host picks once and everybody fights with it, so the
+    --               only variable left is the players. The picker is
+    --               read-only for everyone else and the server refuses their
+    --               request as well. A late joiner inherits the choice.
     --
-    --   'player' -- everybody picks their own from the weapon catalogue in
-    --               config.weapons.lua.
-    --
-    -- Anything else is treated as 'host' and a warning is printed at start.
+    --   'player' -- everybody picks their own.
     chooser = 'host',
 
-    -- HOW MANY WEAPONS one player carries into a round -- guns and blades
-    -- TOGETHER, in one count. Four rifles, four bats, three and a knife: the
-    -- mix is the player's to choose, and the picker enforces the total rather
-    -- than the split.
-    --
-    -- This used to be two separate allowances, so many firearms and so many
-    -- blades, so that a player who fancied a knife did not have to give up a
-    -- rifle for it. The cost of that was the other player: somebody who
-    -- wanted to fight with a bat and nothing else was made to carry two guns
-    -- as well, and somebody who wanted four rifles could not have them.
+    -- HOW MANY WEAPONS one player carries -- guns and blades TOGETHER, in
+    -- one count. Four rifles, four bats, three and a knife: the mix is the
+    -- player's, and only the total is enforced.
     --
     -- Raise it for loadout-style play. Drop it to 1 for a duel server.
     -- 0 MEANS NO LIMIT, the same as every other count in this file.
     slots = 4,
 
-    -- SWITCH A WHOLE KIND OFF, which is the job `weaponSlots = 0` and
-    -- `meleeSlots = 0` used to do. The weapons stay in config.weapons.lua,
-    -- ready to switch back on, and the picker drops the section altogether
-    -- rather than showing it empty.
+    -- SWITCH A WHOLE KIND OFF. The weapons stay in config.weapons.lua ready
+    -- to switch back on, and the picker drops the section rather than showing
+    -- it empty.
     --
+    --   allowFirearms = false  a melee-only arena -- bats and knives
     --   allowMelee = false     a firearms-only arena
     --
-    -- BOTH ARE ABOUT WHAT A PLAYER MAY PICK, and a mode that issues its own
-    -- loadout is not picking. A gun game's ladder is the operator's own
-    -- list, so it opens on a blade on a server that does not let anybody
-    -- choose one -- see Config.Modes.gungame.
-    --   allowFirearms = false  a melee-only arena -- bats and knives
+    -- Both false means nobody carries anything, and the console says so at
+    -- start rather than running a round of unarmed players.
     --
-    -- Both false means nobody carries anything; the resource says so at
-    -- start rather than running a round full of unarmed players.
+    -- THESE ARE ABOUT WHAT A PLAYER MAY PICK. A mode that issues its own kit
+    -- is not picking, so a gun game still opens on a blade.
     --
-    -- MIND WHAT COUNTS AS MELEE: a weapon with no `ammo.max` in
-    -- config.weapons.lua is treated as melee whatever category it is filed
-    -- under -- an ammo ceiling of one round is a bat. With allowMelee off,
-    -- the resource names any weapon that trips this at start.
+    -- MIND WHAT COUNTS AS MELEE: a weapon with no `ammo.max` is treated as
+    -- melee whatever category it is filed under.
     allowFirearms = true,
     allowMelee = true,
 
@@ -2135,37 +1670,27 @@ Config.Loadouts = {
     },
 
     -- THE WEAPON LIST IS IN ITS OWN FILE: config.weapons.lua, loaded straight
-    -- after this one and writing `Config.Loadouts.weapons`.
-    --
-    -- It is ninety-odd blocks that anybody editing a timer, a payout or a
-    -- spawn has to scroll past, and it changes on a different day to
-    -- everything else in here. Everything about an entry -- what the keys
-    -- mean, what to copy to add one, what `enabled = false` does -- is
-    -- documented at the top of that file.
+    -- after this one. How to add, remove or disable a weapon is documented at
+    -- the top of it.
 
 
     -- ==================================================================
     -- THE DOOR -- what a player may bring in, and what leaves with them.
     --
     -- NOBODY BRINGS THEIR OWN KIT INTO THE ARENA. On the way in a player's
-    -- whole inventory is put into a private stash and they are given only
-    -- what the arena issued. On the way out everything they are carrying is
-    -- destroyed -- issued, looted off a body, picked up off the floor -- and
-    -- their own inventory is handed straight back.
+    -- whole inventory goes into a private stash and they carry only what the
+    -- arena issued. On the way out everything on them is destroyed -- issued,
+    -- looted, picked up off the floor -- and their own is handed back. So no
+    -- amount of dying, looting or hoarding changes what anybody walks out
+    -- with.
     --
-    -- That makes a round even: two players in an arena have exactly what the
-    -- loadout screen gave them and nothing else, and no amount of dying,
-    -- looting or hoarding changes what anybody walks out with.
+    -- WHERE IT ACTUALLY GOES: an ox_inventory STASH, one per character, which
+    -- ox_inventory persists itself. Not a table in this resource's memory,
+    -- which a crash would take with it.
     --
-    -- WHERE YOUR STUFF ACTUALLY GOES, because this is the part worth being
-    -- sure about: an ox_inventory STASH, one per character, which ox_inventory
-    -- persists itself. Not a Lua table in this resource's memory -- a server
-    -- that crashed mid-round would take that with it, and losing a player's
-    -- inventory is not a bug you get to apologise for.
-    --
-    -- AND IF ANYTHING GOES WRONG PUTTING IT AWAY, the arena does NOT strip
-    -- them. They walk in carrying their own gear, which is a worse match and
-    -- a fixable one. It never risks the alternative.
+    -- IF ANYTHING GOES WRONG PUTTING IT AWAY the arena does NOT strip them --
+    -- they fight carrying their own gear, which is a worse match and a
+    -- fixable one.
     -- ==================================================================
     inventory = {
         -- Take the player's own inventory at the door and give it back after.
@@ -2178,177 +1703,94 @@ Config.Loadouts = {
         -- something you already use.
         stashPrefix = 'crimson_arena_',
 
-        -- WHAT STAYS IN A PLAYER'S POCKETS ON THE WAY IN, rather than
-        -- going into the stash with everything else.
+        -- WHAT STAYS IN A PLAYER'S POCKETS ON THE WAY IN, instead of going
+        -- into the stash. Empty, and it should stay that way.
         --
-        -- EMPTY, AND THAT IS THE POINT. The arena's one promise is that a
-        -- match cannot cost anybody anything, and the way it keeps that
-        -- promise is by holding their belongings somewhere the round cannot
-        -- reach. Anything named here is something the round CAN reach: it can
-        -- be dropped, it lands on the floor as loot when its owner dies --
-        -- ox_inventory drops a dead player's inventory whatever this
-        -- resource thinks -- and if it is still in their pockets at the exit
-        -- it meets the wholesale clear.
+        -- DO NOT PUT ANYTHING VALUABLE HERE. An item named here is carried
+        -- through the whole round, and ox_inventory empties a dead player's
+        -- pockets onto the floor. They will die, it will drop, and the arena
+        -- refuses to let anybody pick things up mid-round -- including its
+        -- owner -- so it stays there and the round ends around it.
         --
-        -- CASH USED TO BE ON THIS LIST, on the reasoning that it "cannot be
-        -- spent in an arena and cannot be looted off a body here". The second
-        -- half was never true, and the first half is not the question: a
-        -- fighter was walking into a live round carrying every note they own
-        -- and dropping the lot the first time somebody shot them.
-        --
-        -- It is still protected at the OTHER end -- see `neverDestroy` below,
-        -- which is the list that keeps a payout from being destroyed on the
-        -- way out. Those are two different questions and they were one
-        -- setting, which is how cash ended up answered wrongly on both.
-        --
-        -- DO NOT PUT ANYTHING VALUABLE HERE. Read the paragraph above once
-        -- more if you are about to: an item named here stays in a fighter's
-        -- POCKETS for the whole round, and ox_inventory empties a dead
-        -- player's pockets onto the floor. They will die. It will drop. The
-        -- arena refuses to let anybody pick things up mid-round -- including
-        -- them, including their own -- so it stays there, and the round ends
-        -- around it.
-        --
-        -- A phone, a radio, a key: leave them OFF this list. Off it, they go
-        -- into the stash on the way in and come back at the exit, which is
-        -- the only place in a round that anything is actually safe.
-        --
-        -- What IS reasonable here is something the round may as well destroy
-        -- and nobody will miss -- and even then, the stash costs nothing.
-        --
-        -- Anything named here is at least spared the wholesale clear at the
-        -- exit, if it somehow survived to reach it. That is the one thing
-        -- this list protects against, and it is the smaller of the two ways
-        -- an item is lost.
+        -- A phone, a radio, a key, cash: leave them OFF this list. Off it
+        -- they go into the stash and come back at the exit, which is the only
+        -- place in a round anything is actually safe. Cash is protected at
+        -- the other end by `neverDestroy` below, which is a different
+        -- question with a different answer.
         --
         -- ARENA ITEMS ARE IGNORED HERE. Name a weapon, an ammunition item or
-        -- a supply and the arena will not honour it -- it is stashed and
-        -- returned like anything else, and a line is written to the server
-        -- console saying so. Honouring it would let fighters walk out with
-        -- the kit they were issued, every round, for ever.
+        -- a supply and it is stashed and returned like anything else, with a
+        -- line in the console saying so -- otherwise fighters would walk out
+        -- with the kit they were issued, every round, for ever.
         neverStash = {},
 
         -- WHAT THE EXIT'S CLEAR MUST NOT DESTROY.
         --
-        -- The exit wipes whatever a player is carrying, on the reasoning that
-        -- at that moment everything in their pockets belongs to the arena --
-        -- their own is in the stash. That reasoning has exactly one hole in
-        -- it, and it is this one:
+        -- The exit wipes whatever a player is carrying, because at that
+        -- moment it all belongs to the arena -- their own is in the stash.
+        -- The one hole in that is the PAYOUT: the pot is settled before
+        -- anybody is sent home, so a cash win would be credited and then
+        -- destroyed a few lines later.
         --
-        -- A PAYOUT LANDS INSIDE THAT WINDOW. The pot and the side-bets are
-        -- settled in server/match.lua BEFORE anybody is sent home, so a
-        -- winner's cash was credited, turned into a money item, and then
-        -- destroyed by the clear a few lines later. Their own cash came back
-        -- from the stash and their winnings did not. Bank payouts were never
-        -- affected, because bank is player data rather than an item -- which
-        -- is exactly why it looked like "cash bets do not pay out".
-        --
-        -- Add any other item your server treats as currency or as an
-        -- account. Names are ox_inventory item names.
+        -- Add any other item your server treats as currency. Names are
+        -- ox_inventory item names.
         neverDestroy = { 'money', 'black_money' },
 
-        -- Refuse to let players move anything in or out of their pockets
-        -- while they are in a match.
+        -- REFUSE TO LET PLAYERS MOVE ANYTHING IN OR OUT OF THEIR POCKETS
+        -- during a match -- a round is fought with what the round issued.
         --
-        -- OUT, because a dropped item becomes its own inventory in the world
-        -- and finding every one of them again afterwards is guesswork. Not
-        -- dropping in the first place is not.
+        -- OUT, because a dropped item becomes its own container in the world
+        -- and finding them all again afterwards is guesswork.
         --
-        -- AND IN, WHICH IS THE HALF THAT MATTERS MOST IN A ROUND WITH
-        -- RESPAWNS. ox_inventory drops a dead player's inventory on the floor
-        -- as its own container, so without this a fighter walking over a body
-        -- could take the whole arena kit its owner had just been issued --
-        -- their weapons and every round that came with them, per kill, for as
-        -- long as bodies kept falling. It read from a seat as "killing
-        -- somebody gives you a hundred rounds per weapon", which is not a
-        -- reward this resource has ever paid. The same rule covers a stash, a
-        -- vehicle boot and another player's inventory: a round is fought with
-        -- what the round issued.
+        -- AND IN, WHICH MATTERS MOST IN A ROUND WITH RESPAWNS: ox_inventory
+        -- drops a dead player's inventory on the floor, so without this a
+        -- fighter could loot the whole arena kit off every body. The same
+        -- rule covers a stash, a vehicle boot and another player's inventory.
         --
-        -- Nothing the ARENA hands over is affected. Every issue, top-up, kill
-        -- reward and stash return is a server-side write and raises no hook.
-        --
-        -- Off, both directions are allowed and the exit is the only thing
-        -- standing between the arena and what people carried in or out of it.
+        -- Nothing the ARENA hands over is affected -- every issue, top-up,
+        -- kill reward and stash return is a server-side write.
         blockDropsInArena = true,
 
         -- How often, in seconds, the server checks for belongings it still
         -- owes somebody and hands them over.
         --
-        -- WHAT IT IS FOR. Giving a player their inventory back can fail for
-        -- ordinary reasons -- their pockets are full, they are over the
-        -- weight limit, they disconnected mid-round -- and when it does,
-        -- their things stay safely in the stash rather than being destroyed.
-        -- This is what empties that stash afterwards, on its own, the moment
-        -- the reason goes away. It survives a reconnect and a server restart,
-        -- because the stash is named from the character and not from a server
-        -- id, and it never gives anything to somebody who is in a round.
+        -- Giving an inventory back can fail for ordinary reasons -- full
+        -- pockets, over the weight limit, disconnected mid-round -- and when
+        -- it does, the things stay safely in the stash. This empties it on
+        -- its own once the reason goes away, and survives a reconnect and a
+        -- restart.
         --
-        -- 0 switches it off, and the cost of that is exactly what it was
-        -- before this existed: anything that would not go back sits in the
-        -- stash until an operator opens it by hand.
+        -- 0 switches it off, and anything that would not go back then waits
+        -- for an operator to open the stash by hand.
         returnRetrySeconds = 30,
     },
 
     -- ==================================================================
-    -- AMMO TYPES -- your ammo script's ITEMS.
+    -- AMMO ITEMS -- real ox_inventory items, one per round.
     --
-    -- SHIPS ON, because every weapon in config.weapons.lua already names the
-    -- real ammo item it fires, read out of that weapon's own `ammoname` in
-    -- ox_inventory. The player is never asked to choose a type: they pick an
-    -- amount, and the server gives them that many of the item their weapon
-    -- takes when the round starts.
+    -- Every weapon in config.weapons.lua already names the ammo item it
+    -- fires, read out of that weapon's own `ammoname` in ox_inventory. A
+    -- player never chooses a TYPE: they pick an AMOUNT, and the server hands
+    -- them that many of the round their weapon takes. Asking for a different
+    -- round is ignored rather than refused -- a pistol asking for .50 BMG
+    -- gets 9mm.
     --
-    -- An item name that does not exist on your server is a silent nothing at
-    -- run time, which is why none of these was guessed.
-    --
-    -- GETTING IT BACK IS NOT THIS BLOCK'S JOB, and there is no switch for it
-    -- here. The door above already guarantees it: a player's own inventory is
-    -- stashed on the way in and everything they are carrying is destroyed on
-    -- the way out, so arena ammunition cannot leave the arena any more than
-    -- anything else can. There is nothing to reclaim separately, and no way to
-    -- turn the reclaim off without turning the door off -- which is
-    -- `Config.Loadouts.inventory.stripOnEntry`, and is the honest place for
-    -- that decision to live.
+    -- GETTING IT BACK IS NOT THIS BLOCK'S JOB. The door above already covers
+    -- it: everything a player carries is destroyed at the exit, so arena
+    -- ammunition cannot leave the arena.
     -- ==================================================================
     ammoItems = {
-        -- ON, because this server has real per-round ammo items and the
-        -- catalogue in config.weapons.lua names the right one for every
-        -- single weapon, read out of that weapon's own `ammoname` in
-        -- ox_inventory.
+        -- THE AMOUNT A PLAYER PICKS IS A TOTAL: one magazine loaded in the
+        -- gun and the remainder as items they can see and reload from.
         --
-        -- WHAT A PLAYER GETS. They pick a weapon, they pick an amount from
-        -- that weapon's own list, and they are handed exactly that many
-        -- rounds of exactly the round that weapon takes -- one magazine
-        -- loaded in the gun and the remainder as real inventory items they
-        -- can see and reload from.
+        -- WHERE THE SPLIT FALLS is the weapon's own `magazine`, or failing
+        -- that the smallest number in its `ammo.options`. A pistol offering
+        -- 30/60/120 picked at 60 arrives with 30 loaded and 30 spare; picked
+        -- at 30 it arrives with 30 loaded and nothing spare.
         --
-        -- THE AMOUNT IS A TOTAL, AND IT USED TO BE ISSUED TWICE. The magazine
-        -- was filled with the whole pick and the same amount was handed over
-        -- again as items: sixty rounds chosen, sixty in the gun, sixty in the
-        -- pocket, a hundred and twenty carried. Every weapon, every round.
-        -- Two loops each doing their own job correctly, neither aware the
-        -- other had already issued the lot.
-        --
-        -- WHERE THE SPLIT FALLS is the weapon's own `magazine` if it has one,
-        -- otherwise the SMALLEST amount that weapon's own `ammo.options`
-        -- offers -- which is the operator's own idea of a small quantity of
-        -- this round, already written next to the weapon. Every firearm in
-        -- config.weapons.lua has one, so nothing needs adding. A pistol offering
-        -- 30/60/120 and picked at 60 arrives with 30 loaded and 30 in the
-        -- pocket; picked at 30 it arrives with 30 loaded and nothing spare,
-        -- because thirty rounds is thirty rounds.
-        --
-        -- AND NOTHING ELSE. The round is not something they choose: it comes
-        -- from the weapon. Asking for a different one does not fail, it is
-        -- simply ignored and the weapon's own round is issued -- a pistol
-        -- asking for .50 BMG gets 9mm. There is a spec for exactly that,
-        -- because "refuses the request" and "ignores the request" look the
-        -- same from the panel and are very different at the door.
-        --
-        -- Turning this OFF does not remove the ammunition: rounds then travel
-        -- in the weapon's own metadata instead, which is how ox_inventory
-        -- carries them when there is no separate item. It removes the items.
+        -- OFF does not remove the ammunition -- rounds then travel in the
+        -- weapon's own metadata, the way ox_inventory carries them when there
+        -- is no separate item. It removes the ITEMS.
         enabled = true,
 
 
@@ -2358,127 +1800,73 @@ Config.Loadouts = {
         -- here and they get 2.
         roundsPerItem = 1,
 
-        -- What a weapon starts loaded with when it names no `magazine` of its
-        -- own AND its `ammo.options` list is empty. Every firearm in
-        -- config.weapons.lua has an options list, so this is only reached by
-        -- a weapon an
-        -- operator adds without one.
-        --
-        -- Never more than the player picked: it is a ceiling on the magazine,
-        -- not an amount handed out.
+        -- What a weapon starts loaded with when it names no `magazine` AND
+        -- has no `ammo.options` -- so only a weapon added without either.
+        -- Never more than the player picked: it is a ceiling, not a handout.
         defaultMagazine = 30,
 
-        -- Give the weapon even when its ammo item could not be handed over --
-        -- a full inventory, or an item name this server does not have.
+        -- Give the weapon even when its spare rounds could not be handed
+        -- over -- a full inventory, or an item name this server lacks.
         --
-        -- ON  (default): they fight with the magazine and no reloads rather
-        --     than being refused the weapon. Friendlier, and the failure is
-        --     in the console for the operator either way.
-        -- OFF: that WEAPON is taken back off them. They keep their place in
-        --     the round and everything else they picked -- what goes is the
-        --     one gun they cannot reload.
+        -- ON:  they fight with the magazine and no reloads rather than being
+        --      refused the weapon. The failure is in the console either way.
+        -- OFF: that one WEAPON is taken back. They keep their place in the
+        --      round and everything else they picked.
         --
-        -- NOTE WHAT THE SPLIT ABOVE DID TO THIS. A weapon picked at or under
-        -- one magazine has no spare rounds to issue, so there is no item to
-        -- refuse and neither branch is reached -- which is right: that gun is
-        -- carrying every round the player asked for.
-        --
-        -- The old wording here said `off` made the match refuse to start the
-        -- player. It never did: nothing read this setting at all, and both
-        -- values behaved as `on`. Ejecting somebody mid-placement would mean
-        -- unwinding a dispatch flag, a routing bucket and a stash already set
-        -- for them, so taking the gun is what it does instead -- which is
-        -- what the setting is FOR, without inventing a new way to strand a
-        -- player.
+        -- A weapon picked at or under one magazine has no spare rounds to
+        -- issue, so neither branch is reached -- that gun is already carrying
+        -- every round the player asked for.
         allowWeaponWithoutAmmoItem = true,
     },
 
-    -- LETTING A PLAYER TYPE THEIR OWN AMOUNT.
+    -- LETTING A PLAYER TYPE THEIR OWN AMOUNT. On, the ammo row gets a box
+    -- next to the presets and a player may ask for any number up to that
+    -- weapon's `max`, which the server still enforces -- this widens what
+    -- may be ASKED for and moves no limit.
     --
-    -- On, the ammo row gets a box next to the presets and a player may ask
-    -- for any number up to that weapon's `max`. The preset buttons stay --
-    -- they are what most people will click -- and become suggestions rather
-    -- than the only legal values.
+    -- Off, an off-list request falls back to that weapon's default rather
+    -- than being rounded up.
     --
-    -- WHAT THIS DOES NOT CHANGE: the ceiling. `max` is still enforced by the
-    -- server on every request, so this widens what a player may ASK for and
-    -- moves the limit not at all. With it OFF an off-list request falls back
-    -- to that weapon's default rather than being rounded up to the nearest
-    -- preset, which is what stops a modified client walking a value past a
-    -- preset by asking for one just above it.
-    --
-    -- Per weapon too: give any weapon in the list its own
-    -- `allowCustomAmmo = false` to pin that one to its presets while the
-    -- rest stay free.
+    -- Per weapon too: give one its own `allowCustomAmmo = false` to pin it to
+    -- its presets while the rest stay free.
     allowCustomAmmo = true,
 
     -- Which type a player gets when they express no preference.
     defaultAmmoType = 'standard',
 
     -- How many DIFFERENT ammo types one player may carry across their whole
-    -- loadout. 0 is no limit, which means a different round for every weapon.
-    --
-    -- A player over the limit is not refused the weapon -- losing a gun
-    -- because of an ammunition preference is a surprising way to be told
-    -- about a limit -- they simply get that weapon's default round instead.
+    -- loadout. 0 is no limit. Somebody over it is not refused the weapon --
+    -- they get that weapon's default round instead.
     ammoTypeSlots = 0,
 
-    -- THE TYPES, offered for every weapon that takes ammunition. Melee never
-    -- gets them -- a bat has nothing to load.
+    -- THE FALLBACK AMMO TYPE, used only by a weapon added without an
+    -- `ammoTypes` list of its own. Every weapon that ships names its own
+    -- item, so nothing in the shipped catalogue reaches this.
     --
-    -- Override for one weapon by giving that weapon its own `ammoTypes` list
-    -- (do this when your item names differ per weapon, e.g. a pistol round and
-    -- a rifle round are separate items). Switch them off for one weapon with
-    -- `ammoTypes = false`.
-    --
-    --   key       -- what the panel and the wire use. Must be unique in a list.
+    -- The keys of an entry are:
+    --   key       -- what the panel and the wire use; unique within a list.
     --   label     -- what the player reads.
-    --   item      -- YOUR item name. This is the one you must edit.
-    --   component -- optional, and only meaningful on MK II weapons: GTA's own
-    --                special magazines are weapon components rather than items,
-    --                so a type can carry both and get both effects.
+    --   item      -- YOUR ox_inventory item name. This is the one to edit.
+    --   component -- optional, and only meaningful on MK II weapons, whose
+    --                special magazines are components rather than items.
     --   enabled   -- false hides it without deleting it.
-    -- THE FALLBACK, and on this server almost nothing reaches it.
     --
-    -- Every weapon in config.weapons.lua carries its own `ammoTypes` naming
-    -- the exact item its ox_inventory entry declares, so this is only consulted
-    -- for a weapon added later without one.
-    --
-    -- ONE ENTRY, AND IT NAMES AN ITEM THIS SERVER REALLY HAS. Offering a
-    -- player a round the inventory cannot produce is the quietest kind of
-    -- broken, and this file's own rule is that a name which merely sounds
-    -- right is worse than no name.
-    --
-    -- ammo-rifle is the fallback because a weapon added without an
-    -- `ammoTypes` of its own is most likely a rifle. Every weapon that ships
-    -- names its own item -- 14 take ammo-9 and 12 take ammo-rifle -- so
-    -- nothing in the shipped catalogue reaches this line at all.
+    -- IT MUST NAME AN ITEM THIS SERVER REALLY HAS. Offering a round the
+    -- inventory cannot produce is the quietest kind of broken.
     defaultAmmoTypes = {
         { key = 'standard', label = '5.56x45', item = 'ammo-rifle' },
     },
 
     -- ==================================================================
-    -- EXTRA SUPPLIES -- what a player carries IN, on top of the kit
+    -- EXTRA SUPPLIES -- what a player carries IN, on top of the kit.
     --
-    -- NOT THE STARTING ARMOUR. There used to be an `armor` block here with
-    -- its own allowChoose / options / default / max, four keys deciding
-    -- something that should never have been decidable: a round where one
-    -- fighter opens on a full plate and another on none, because of a picker
-    -- or because a default was lowered once and forgotten, is not a fair
-    -- round. Every player now starts every life on full health and a full
-    -- plate, always, and no setting here reaches that -- see
-    -- Arena.StartingVitals in shared/arena.lua.
+    -- NOT THE STARTING ARMOUR. Every player starts every life on full health
+    -- and a full plate, always, and nothing here reaches that.
     --
-    -- What this block is for is the SPARE. A second plate to put on when the
-    -- first one is gone, a bandage to patch up behind cover. They are real
-    -- ox_inventory items, handed over at the start of the round and taken
-    -- back on the way out with everything else the arena issued -- a player
-    -- cannot walk out of a match holding free plates.
-    --
-    -- Shaped like the weapon catalogue on purpose, down to the key / label /
-    -- item triple and the `enabled` switch: an operator who has already
-    -- edited that list should not have to learn a second grammar for this
-    -- one.
+    -- This is the SPARE: a second plate for when the first is gone, a bandage
+    -- to patch up behind cover. Real ox_inventory items, issued at the start
+    -- of the round and taken back at the exit, so nobody walks out of a match
+    -- holding free plates.
     -- ==================================================================
     supplies = {
         -- Off, the whole section is hidden and nobody carries any. Players
@@ -2492,39 +1880,22 @@ Config.Loadouts = {
         allowChoose = true,
 
         -- A ceiling across ALL supplies together, not per entry. `0` means
-        -- no ceiling. Without it a server with six supplies lets one player
-        -- carry every entry's own maximum at once, which is a different
-        -- match to the one the per-item numbers describe.
+        -- no ceiling, so the per-item numbers below are the only limit --
+        -- which is what ships, so adding a third supply is bounded by its own
+        -- `max` rather than being squeezed by a total nobody remembered.
         --
-        -- THREE THINGS ARE BOUND BY IT, and it reads as one: what a player
-        -- picks in the loadout screen, what a mode hands everybody with
-        -- `startingKit`, and what ONE KILL pays through `killReward`. The
-        -- last of those is per payment rather than per round -- a gun game
-        -- with a ceiling of 4 pays at most four items for each kill, not
-        -- four for the whole round -- because the alternative is a reward
-        -- that quietly stops arriving halfway through a match with nothing
-        -- to tell the player why.
+        -- Set it, and it binds three things at once: what a player picks,
+        -- what a mode's `startingKit` hands out, and what ONE KILL pays
+        -- through `killReward` (per payment, not per round).
         --
-        -- OFF, so the per-item numbers below are the ONLY limit.
-        --
-        -- It used to be 8, which meant a player carried eight things in total
-        -- however generous the per-item maximums were -- the 25 armour below
-        -- would have been fiction. It was raised to 55 (25 + 30) so both
-        -- could be maxed at once, and then to 0 so it stops being a second
-        -- number to keep in step: add a third supply and it is limited by its
-        -- own `max`, not silently squeezed by a total nobody remembered.
-        --
-        -- The real ceiling now is ox_inventory's, not this one. A fighter
-        -- carrying every maximum is 55 items plus up to 2000 rounds, and
-        -- ox_inventory refuses what will not fit -- server/ammo.lua says so
-        -- in the console, naming weight first.
+        -- The real ceiling is then ox_inventory's own weight limit, which
+        -- refuses what will not fit and says so in the console.
         totalItems = 0,
 
-        -- THE ITEM NAMES ARE THE ONLY PART THAT MATTERS TO ox_inventory, and
-        -- they must exist in YOUR ox_inventory data. `armour` and `bandage`
-        -- are the QB/ox defaults and are what ships. A name that does not
-        -- exist is refused by ox_inventory, and the arena says so once in
-        -- the console naming the item -- it does not fail the round.
+        -- THE ITEM NAMES MUST EXIST IN YOUR ox_inventory DATA. `armour` and
+        -- `bandage` are the QB/ox defaults. A name that does not exist is
+        -- refused by ox_inventory and named once in the console; it does not
+        -- fail the round.
         items = {
             {
                 key = 'armour',
@@ -2532,17 +1903,13 @@ Config.Loadouts = {
                 item = 'armour',
                 -- The most one player may carry in.
                 max = 25,
-                -- What somebody who picks nothing carries. Kept at 1 rather
-                -- than 0 so the feature is visible on a fresh install
-                -- without anybody having to find this block first.
+                -- What somebody who picks nothing carries.
                 default = 1,
-                -- WHAT THE PICKER OFFERS, AND ALL IT OFFERS. Chips, and no
-                -- box to type a number into, so this ladder is the whole set
-                -- of amounts a player can pick -- not shortcuts past a free
-                -- entry field. `default` has to be one of them or the row
-                -- opens with nothing lit and that amount is unreachable the
-                -- moment they touch it; Arena.ValidateConfig says so at
-                -- start-up.
+                -- WHAT THE PICKER OFFERS, AND ALL IT OFFERS -- buttons, with
+                -- no box to type a number into. `default` MUST be one of
+                -- them, or the row opens with nothing lit and that amount is
+                -- unreachable the moment the player touches it. The console
+                -- says so at start-up.
                 options = { 0, 1, 5, 10, 25 },
             },
             {
@@ -2551,11 +1918,8 @@ Config.Loadouts = {
                 item = 'bandage',
                 max = 30,
                 default = 2,
-                -- 2 IS IN THE LADDER because it is the default. Without it
-                -- the row showed nothing lit for the two bandages the player
-                -- was actually carrying, and 2 was gone for good the moment
-                -- they touched a chip. Armour's ladder starts with its own
-                -- default for the same reason.
+                -- 2 is in the list because it is the default, per the rule
+                -- above.
                 options = { 0, 2, 5, 10, 20, 30 },
             },
         },
@@ -2568,32 +1932,23 @@ Config.Loadouts = {
 }
 
 -- ======================================================================
--- DATABASE -- the leaderboard only. OFF, so this resource is drag and drop.
+-- DATABASE -- the all-time leaderboard, and nothing else.
 --
--- SHIPPED OFF ON PURPOSE. With it off there is no SQL to import, no table to
--- create, no database user to grant anything to, and nothing to go wrong on
--- first start. Drop the folder in, ensure it, play. That is the whole install.
+-- SHIPPED OFF, so the install is drag and drop: no SQL to import, no table
+-- to create, no database user to grant anything to.
 --
--- WHAT YOU LOSE, and it is only this one thing: the leaderboard resets when
--- the server restarts. Wins, kills and earnings are still counted and still
--- shown during a session -- they simply are not written down anywhere, so a
--- restart starts the table fresh.
+-- WHAT YOU LOSE IS ONE THING: the leaderboard resets when the server
+-- restarts. Wins, kills and earnings are still counted and shown during a
+-- session; they are simply not written down. Matches, teams, weapons,
+-- betting, escrow, payouts and refunds never touch the database.
 --
--- WHAT YOU DO NOT LOSE: matches, teams, weapon and ammo choice, the whole
--- betting system including escrow, payouts and refunds, the panel, dispatch
--- suppression. None of it touches the database. Every money guarantee this
--- resource makes holds exactly the same with this off.
+-- TURNING IT ON is one word here and a restart. The table creates itself;
+-- sql/install.sql is only for a database user not allowed to do that.
 --
--- TURNING IT ON LATER is one word here and a restart. The table creates
--- itself on first start; sql/install.sql is there only for servers whose
--- database user is not allowed to create tables at runtime.
---
--- OFF MEANS OFF, INCLUDING THE DEPENDENCY. oxmysql is not named in
--- fxmanifest.lua and the MySQL library is not included there either, so with
--- this switched off the resource starts on a server that has no database
--- resource at all. Switch it on without oxmysql running and the console says
--- so once, the leaderboard falls back to this server run, and nothing else
--- changes.
+-- OFF MEANS OFF, INCLUDING THE DEPENDENCY -- oxmysql is not required, so the
+-- resource starts on a server with no database at all. Switch this on
+-- without oxmysql running and the console says so once and falls back to
+-- counting this server run.
 -- ======================================================================
 Config.Database = {
     enabled = false,
@@ -2623,91 +1978,65 @@ Config.Webhook = {
 -- a person down, and your emergency services spend the evening driving to a
 -- fight nobody wants them at.
 --
--- THIS BLOCK IS BUILT FOR A CUSTOM DISPATCH SCRIPT, and for nothing else.
--- A serious RP server has GTA's own five-star wanted system switched off
--- entirely and runs its own alerts, which is the case treated as normal
--- here: `Config.Dispatch.custom` below is the whole integration, and the
+-- THIS BLOCK IS BUILT FOR A CUSTOM DISPATCH SCRIPT and nothing else. The
 -- arena touches no game native on the way into a match or out of one.
 --
--- THE ONE THING NO RESOURCE CAN DO. Your dispatch script decides to send an
--- alert inside its own event handlers. Nothing in FiveM can reach into
--- another resource and cancel that -- not this script, not any script that
--- claims otherwise. So the job here is to hand your dispatch script the
--- facts it needs to decline, in whichever of the three forms suits how it is
--- written. All three are live at once; use whichever is least work.
+-- THE ONE THING NO RESOURCE CAN DO: your dispatch script decides to send an
+-- alert inside its own event handlers, and nothing in FiveM can reach into
+-- another resource and cancel that. So the job here is to hand it the facts
+-- it needs to decline, in whichever of three forms suits how it is written.
+-- All three are live at once; use whichever is least work.
 --
--- WHICH IS WHY THE STRONGEST SETTING IN THIS BLOCK IS `isolation` BELOW, and
--- why it is first. It does not ask anybody to decline anything: it puts the
--- match in its own network instance, where every OTHER player's client --
--- and therefore every dispatch and ambulance script running on one -- has
--- nothing to see in the first place. Read that block before any of the rest.
+-- THE STRONGEST SETTING HERE IS `isolation`, which is why it is first. It
+-- asks nobody to decline anything -- it puts the match in its own network
+-- instance where other players' clients have nothing to see. Read that block
+-- before the rest.
 -- ======================================================================
 Config.Dispatch = {
-    -- EVERY SWITCH IN HERE SITS WITH THE THING IT CONTROLS, and there is no
-    -- master one at the top of the block. `clearDeadStateImmediately` at the
-    -- bottom is the medical switch. `custom` below is the dispatch one, and
-    -- each of its forms is governed by whether you filled that form's own
-    -- list in -- an empty list does nothing whatever a switch says, which is
-    -- why `custom` has no master switch either. `cancelEvents` explains in
-    -- its own comment why it is deliberately not tied to a police-or-medical
-    -- switch at all: an event name does not say which of the two it is.
+    -- THERE IS NO MASTER SWITCH AT THE TOP OF THIS BLOCK. Every switch sits
+    -- with the thing it controls, and each form of `custom` is governed by
+    -- whether you filled that form's own list in -- an empty list does
+    -- nothing whatever any switch says.
 
     -- ==================================================================
     -- ROUTING BUCKET ISOLATION -- the layer that needs nothing from anybody
     --
-    -- A routing bucket is a separate network instance. Entities and events
-    -- inside one do not replicate to players outside it. Put a match in its
-    -- own bucket and no OTHER player's client can see arena gunfire, arena
-    -- bodies or arena entities at all.
+    -- A routing bucket is a separate network instance: what happens inside
+    -- one does not reach players outside it. So no OTHER player's client sees
+    -- arena gunfire, arena bodies or arena entities, and a dispatch script
+    -- running on a bystander's machine has nothing to report.
     --
-    -- WHAT THAT IS WORTH AGAINST A DISPATCH SCRIPT, stated honestly, because
-    -- this block used to claim more. It is worth a great deal against a
-    -- script that watches OTHER people: a bystander's client with a
-    -- dispatch resource on it is shown nothing, so it reports nothing.
+    -- WHAT IT CANNOT DO, stated plainly: a bucket cannot hide a client from
+    -- ITSELF. A dispatch script that polls the shooter's own machine, or an
+    -- ambulance script whose death handler runs on the victim's own machine,
+    -- is inside the bucket -- it is the fighter's own client -- and the alert
+    -- it sends travels by ordinary event RPC, which buckets do not filter.
+    -- The state bag, the events and the exports further down are what is left
+    -- for that case.
     --
-    -- It is worth NOTHING against the family of scripts this server runs.
-    -- sc-dispatch polls IsPedShooting on the SHOOTER'S OWN machine, and
-    -- sc-ambulance's death handler runs on the VICTIM'S OWN machine -- both
-    -- are inside the bucket, because they are the fighter's own client, and
-    -- a bucket cannot hide a client from itself. The alert then travels
-    -- client to server and server to the on-duty police by ordinary event
-    -- RPC, which routing buckets do not filter in either direction. A
-    -- bucket does not delay that call by a millisecond.
-    --
-    -- It is still worth having, and on a server with no dispatch script at
-    -- all it is the best thing in this block: it stops passers-by wandering
-    -- into a live round, keeps arena gunfire from being heard across the
-    -- map, keeps NPCs out, and is what lets two matches share one arena.
-    --
-    -- THE HONEST LIMIT, and it is the same one everything else in this block
-    -- is here for: a bucket cannot hide an arena player's gunfire from THEIR
-    -- OWN client. A dispatch script polling IsPedShooting on the shooter's
-    -- machine still sees the shooter shooting. Nothing inside another
-    -- resource can stop that loop. The state bag, the events and the exports
-    -- further down are what is left for that case, and they still matter.
+    -- It is worth having regardless: it keeps passers-by out of a live round,
+    -- keeps arena gunfire from being heard across the map, keeps NPCs out,
+    -- and is what lets two matches share one arena.
     -- ==================================================================
     isolation = {
         -- Off means every match is fought in the ordinary world, in front of
-        -- everybody, exactly as it was before this setting existed.
+        -- everybody.
         enabled = true,
 
-        -- ONE BUCKET PER MATCH, so two matches running at once cannot see
-        -- each other either. With this off every match shares `firstBucket`:
-        -- still hidden from the rest of the server, but two simultaneous
-        -- arenas would be standing in one room hearing each other.
+        -- ONE BUCKET PER MATCH, so two rounds running at once cannot see
+        -- each other. Off, every match shares `firstBucket` -- still hidden
+        -- from the rest of the server, but two arenas in one room.
         perMatch = true,
 
         -- The number allocated from, counting upwards. Bucket numbers are
         -- server-wide and shared with every other resource on the box, so
-        -- this is deliberately high and unlikely to collide -- change it if
-        -- something you run already lives in this range. Bucket 0 is the
-        -- default world and is never allocated.
+        -- change this if something you run already lives in this range.
+        -- Bucket 0 is the ordinary world and is never allocated.
         firstBucket = 4210,
 
-        -- Ambient NPCs and traffic inside an arena bucket. Off, so a round
-        -- is fought in an empty world: an NPC that does not exist cannot
-        -- witness a firefight, panic in front of one, or be run over into
-        -- somebody's incident report.
+        -- Ambient NPCs and traffic inside an arena bucket. Off, so a round is
+        -- fought in an empty world -- an NPC that does not exist cannot
+        -- witness a firefight or be run over into somebody's report.
         populationEnabled = false,
 
         -- HOW STRICT THE BUCKET IS ABOUT ENTITIES CLIENTS CREATE.
@@ -2717,59 +2046,44 @@ Config.Dispatch = {
         --   'strict'   -- clients may not create entities at all.
         --
         -- 'strict' isolates hardest and is NOT the default on purpose:
-        -- weapons and props handed out during a match are created BY the
-        -- receiving client, and a strict bucket refuses them -- the player
-        -- arrives in the arena empty-handed with nothing on screen saying
-        -- why. Only set this to 'strict' if you have tested that loadouts
-        -- still arrive on your build.
+        -- weapons and props handed out mid-match are created BY the receiving
+        -- client, and a strict bucket refuses them -- the player arrives
+        -- empty-handed with nothing on screen saying why. Only use 'strict'
+        -- if you have tested that loadouts still arrive on your build.
         lockdownMode = 'relaxed',
     },
 
     -- ==================================================================
-    -- THE DOWN FLAG, AND WHY IT IS THE ONLY LAYER HERE THAT ACTS AT THE
-    -- MOMENT IT MATTERS
+    -- THE DOWN FLAG -- the one layer here that acts at the moment it matters
     --
-    -- The QB-family scripts -- sc-ambulance and qbx_ambulancejob among them
-    -- -- keep "this player is down" as PLAYER METADATA on the framework
-    -- object rather than in a table of their own. That is qbx_core's data,
-    -- so this resource can write it.
+    -- The QB-family medical scripts keep "this player is down" as PLAYER
+    -- METADATA on the framework object, which is qbx_core's data, so this
+    -- resource can write it. A dispatch script polling that metadata raises
+    -- its own down and dead alerts the moment it goes up -- no keypress and
+    -- nothing anybody has to agree to -- so the arena puts it back down
+    -- before the next poll. That is a write against a wall clock, not a race
+    -- against another handler, so resource start order does not matter.
     --
-    -- WHY IT IS WORTH WRITING. sc-dispatch's client polls that metadata
-    -- every 500ms (client/main.lua:2801-2846) and raises its own PlayerDown
-    -- and PlayerDead alerts the moment it goes up -- no keypress, no
-    -- request, nothing anybody has to agree to. Put the flag back down
-    -- before the next poll and there is nothing for it to see. That is not a
-    -- race against another handler; it is a write against a wall clock, and
-    -- it does not care what order anything started in.
+    -- IT IS DONE AT THE DEATH, NOT AT THE REVIVE, because the revive is
+    -- seven seconds later -- fourteen windows of a 500ms poll.
     --
-    -- WHY IT IS DONE AT THE DEATH AND NOT AT THE REVIVE: the revive runs
-    -- `Config.Match.respawnDelaySeconds` (5s) plus `afterRespawnDelayMs`
-    -- (2000ms) after a death, on the path a fighter takes most. Seven
-    -- seconds, against a 500ms poll, is fourteen windows in which those two
-    -- alerts are not merely possible but certain.
-    --
-    -- WHAT IT STILL CANNOT DO, and this is not a limit that more code fixes:
-    -- sc-ambulance sends its own EMSDownAlert from the VICTIM'S CLIENT,
-    -- back-to-back with the flag it reads, so no server-side write can land
-    -- between the two. This closes PlayerDown and PlayerDead. It does not
-    -- close EMSDownAlert.
+    -- WHAT IT CANNOT DO: a medical script that sends its own alert from the
+    -- VICTIM'S CLIENT, back to back with the flag it reads, leaves no gap for
+    -- a server-side write to land in.
     -- ==================================================================
     downState = {
-        -- The keys your medical script keeps the down state in. Empty this
-        -- list to switch the whole thing off. A name no script reads is
-        -- harmless -- it writes a field nobody looks at -- but a name that is
-        -- WRONG for a script that does read it is not, which is why these two
-        -- are the only ones shipped and both were read off sc-ambulance.
+        -- The keys your medical script keeps the down state in. Empty the
+        -- list to switch the whole thing off. A name nothing reads is
+        -- harmless; a name that is WRONG for a script that does read it is
+        -- not, so add one only if you have checked it.
         keys = { 'inlaststand', 'isdead' },
 
-        -- How often the flags are put back down for everyone in a match,
-        -- in ms. `0` clears at the moment of death and never re-asserts.
+        -- How often the flags are put back down for everyone in a match, in
+        -- ms. `0` clears once at the death and never again.
         --
-        -- CLEARING ONCE IS NOT KEEPING CLEAR. A medical script sets its flag
-        -- from the victim's own client and several of them re-assert it --
-        -- on a respawn, on a poll of their own, on a restart. Half the
-        -- pollster's own interval means the arena always writes again inside
-        -- the window it is being read in.
+        -- CLEARING ONCE IS NOT KEEPING CLEAR: medical scripts re-assert the
+        -- flag on a respawn, on their own poll, on a restart. Keep this at
+        -- about half the polling interval you are up against.
         holdIntervalMs = 250,
     },
 
@@ -2777,12 +2091,11 @@ Config.Dispatch = {
     -- YOUR DISPATCH SCRIPT
     --
     -- FIVE FORMS. Three hand your script the same fact so it can decline the
-    -- alert itself; a fourth tries to decline on its behalf and works only
-    -- sometimes; and a fifth withdraws the call after it has been filed.
+    -- alert itself; a fourth tries to decline on its behalf; a fifth
+    -- withdraws a call that was already filed.
     --
-    -- ON THIS SERVER FORM 5 IS THE ONE THAT ACTUALLY REMOVES A CALL, and it
-    -- is reached only through Form 4 -- so those two are a pair rather than
-    -- alternatives. Of the first three, pick one; the others cost nothing.
+    -- FORMS 4 AND 5 ARE A PAIR -- 5 is reached only from inside 4. Of the
+    -- first three, pick one; the others cost nothing.
     -- ==================================================================
     custom = {
         -- ---- FORM 1: this resource tells you -----------------------------
@@ -2797,9 +2110,9 @@ Config.Dispatch = {
         --         MyDispatch.Ignore[src] = nil
         --     end)
         --
-        -- Both are SERVER events -- they are not sent to any client, because
-        -- "who is allowed to be ignored" is not a decision a client gets to
-        -- take part in. Set either to nil to fire nothing.
+        -- Both are SERVER events, never sent to a client -- who is allowed to
+        -- be ignored is not a decision a client takes part in. Set either to
+        -- nil to fire nothing.
         enterEvent = 'crimson_arena:dispatch:enter',
         exitEvent = 'crimson_arena:dispatch:exit',
 
@@ -2814,8 +2127,7 @@ Config.Dispatch = {
         -- is truthy in a match and nil otherwise. Rename the key if it
         -- collides with something you already use.
         --
-        -- IT IS WRITTEN BY THE SERVER, NEVER THE CLIENT, and that is a
-        -- security decision rather than a tidy one: a replicated bag set from
+        -- WRITTEN BY THE SERVER, NEVER THE CLIENT. A replicated bag set from
         -- a client can be set by ANY client, so a player who has never been
         -- near the arena could pin the flag on themselves and have your
         -- dispatch script politely ignore them robbing a bank.
@@ -2830,40 +2142,28 @@ Config.Dispatch = {
         --         { resource = 'my_dispatch', export = 'SetIgnoredPlayer' },
         --     },
         --
-        -- Nothing ships enabled, because calling an export that means
-        -- something different on your build is worse than not calling it. An
-        -- entry naming a resource that is not running, or an export that does
-        -- not exist, is skipped with one console warning -- it will not error
-        -- and it will not stop a match starting.
-        -- NO `enabled` SWITCH HERE, deliberately. There used to be one and
-        -- nothing read it -- every path in this block is driven by whether
-        -- its own list has anything in it, which is the honest signal: an
-        -- empty list does nothing whether a switch says on or off. A key
-        -- that looks like a master switch and controls nothing is worse
-        -- than no key, because it is the first thing an operator toggles
-        -- when something does not work.
+        -- Nothing ships here, because calling an export that means something
+        -- different on your build is worse than not calling it. An entry
+        -- naming a resource that is not running, or an export that does not
+        -- exist, is skipped with one console warning -- it will not error and
+        -- it will not stop a match starting.
+        --
+        -- The empty list IS the off switch; there is no separate `enabled`.
         disableExports = {},
 
         -- ---- FORM 4: THE LIST OF ALERTS THIS SERVER RAISES -----------------
         --
-        -- IT IS NOT A SUPPRESSION LAYER AND THIS BLOCK NO LONGER CALLS IT
-        -- ONE. It was labelled "best effort" for a long time, which was
-        -- generous: on THIS server it suppresses nothing at all, and the
-        -- startup report now says so rather than counting it alongside the
-        -- things that do work.
+        -- IT IS NOT A SUPPRESSION LAYER. Listing an event here does not
+        -- cancel it, and the startup report says as much. It earns its place
+        -- for two other jobs:
         --
-        -- What it still earns its place for is two jobs that are not
-        -- suppression:
-        --
-        --   IT IS THE ONLY WAY IN TO FORM 5. retract -- the one mechanism
-        --   here that touches a real sc-dispatch call -- is reached from
-        --   inside these handlers and nowhere else. An event missing from
-        --   this list is an alert that is not cancelled, not withdrawn, and
-        --   not even logged.
+        --   IT IS THE ONLY WAY IN TO FORM 5. `retract` is reached from inside
+        --   these handlers and nowhere else, so an event missing from this
+        --   list is never withdrawn and never even logged.
         --
         --   IT IS THE ONLY THING THAT REPORTS. Each name prints once, the
-        --   first time it fires, so an operator can tell an alert nobody is
-        --   watching from one that is watched and declines.
+        --   first time it fires, so you can tell an alert nobody is watching
+        --   from one that is watched and declines.
         --
         -- Name the events your dispatch or ambulance script raises in order to
         -- send an alert. This resource registers a handler on each one and
@@ -2881,111 +2181,67 @@ Config.Dispatch = {
         --         { event = 'dispatch:server:personDown', playerArg = 1 },
         --     },
         --
-        -- WHY IT IS ONLY BEST EFFORT, and there is no way to make it more.
-        -- CancelEvent() raises a flag. It stops nothing by itself. The alert
-        -- still goes out unless the code that raised the event checks
-        -- WasEventCanceled() afterwards and decides to drop it -- AND MANY
-        -- SCRIPTS NEVER CHECK. Worse, a script that does check inside its own
-        -- handler only sees the flag if this resource registered first, which
-        -- comes down to the order resources start in your server.cfg and is
-        -- not something any resource can guarantee about another.
+        -- WHY IT IS ONLY BEST EFFORT. CancelEvent() raises a flag and stops
+        -- nothing by itself: the alert still goes out unless the script that
+        -- raised the event checks WasEventCanceled() afterwards, and many
+        -- never do. A script that does check only sees the flag if this
+        -- resource registered its handler first, which is decided by resource
+        -- start order and is not something any resource can guarantee.
         --
-        -- So: treat a cancelled alert as a bonus, never as the thing keeping
-        -- your dispatch quiet. If this is the only form on this list you have
-        -- filled in, assume the alerts are still being sent. `stateBagKey`
-        -- above is one line pasted into the sending script and it always
-        -- works; this exists for the case where you cannot edit that script
-        -- at all.
+        -- So treat a cancelled alert as a bonus, never as the thing keeping
+        -- your dispatch quiet. `stateBagKey` above is one line pasted into
+        -- the sending script and it always works.
         --
-        -- WHAT IT WILL NOT DO IS GUESS. An event that arrives with no usable
-        -- `source` and no `playerArg` is left alone, and its name is printed
-        -- once so you know to add one. Cancelling a shots-fired call about
-        -- somebody on the other side of the map is a far worse outcome than
-        -- failing to cancel one about a fighter, so anything doubtful is
-        -- passed straight through.
+        -- IT WILL NOT GUESS. An event that arrives with no usable `source`
+        -- and no `playerArg` is left alone and its name printed once, because
+        -- cancelling a call about somebody on the other side of the map is
+        -- far worse than failing to cancel one about a fighter.
         --
-        -- Not tied to any police-or-medical switch: an event name does not
-        -- say which of the two it is. Empty this list to switch it off.
+        -- Empty the list to switch it off.
         cancelEvents = {
-            -- ---- sc-dispatch / sc-ambulance, READ OFF THEIR OWN SOURCE ----
-            -- These four are the events those two resources ACTUALLY raise on
-            -- this box.
-            --
-            -- AddNotification is an EXPORT, not an event:
-            -- `exports['sc-dispatch']:AddNotification(data)`. Nothing can
-            -- register a handler on an export call, which is why `retract`
-            -- below exists, and why these are the events one step UPSTREAM of
-            -- it -- the ones a client actually triggers.
+            -- THESE SIX ARE THE EVENTS sc-dispatch AND sc-ambulance REALLY
+            -- RAISE, read out of those two resources rather than guessed. If
+            -- you run something else, replace the list.
 
-            -- Gunfire. sc-dispatch's client polls IsPedShooting on the
-            -- SHOOTER's own machine and sends this, so FXServer stamps
-            -- `source` with the fighter and the arena can pin it exactly.
+            -- Gunfire, sent from the shooter's own machine.
             'sc-dispatch:server:ShotsFired',
 
-            -- "10-52 Person Down". Raised by sc-ambulance when a downed
-            -- player asks for EMS, and again `source` is that player.
+            -- "10-52 Person Down", when a downed player asks for EMS.
             'hospital:server:EMSDownAlert',
 
-            -- The default QBCore ambulance alert. sc-ambulance only raises
-            -- this while its own Config.MDTIntegration.DisableDefaultAlerts
-            -- is off, so on this box it is usually quiet -- listed because it
-            -- costs nothing and turning that key back on must not silently
-            -- reopen the hole.
-            --
-            -- NO TEMPLATE BELOW, AND THERE CANNOT BE ONE. This is not a
-            -- dispatch call: sc-ambulance/server/main.lua:258-268 broadcasts
-            -- straight to on-duty ambulance players and never touches
-            -- AddNotification, so there is no id and nothing to withdraw.
-            -- Do not give it one -- it would be a name for a record that
-            -- does not exist.
+            -- The default QBCore ambulance alert. Usually quiet on this box,
+            -- and listed so that turning it back on cannot silently reopen
+            -- the hole. It gets NO id template below and cannot have one --
+            -- it broadcasts straight to on-duty medics and files no call, so
+            -- there is nothing to withdraw.
             'hospital:server:ambulanceAlert',
 
-            -- sc-dispatch's second EMS entry point.
+            -- The second EMS entry point.
             'mydispatch:requestEMS',
 
-            -- ---- THE TWO THAT WERE MISSING, and they are the commonest ---
-            --
-            -- sc-dispatch does not only react to a player ASKING for help.
-            -- Its own client polls the QB metadata every 500ms
-            -- (client/main.lua:2801-2846) and raises these two by itself the
-            -- moment `inlaststand` or `isdead` goes up -- no keypress, no
-            -- request. So a fighter who never touches G still files a call.
-            --
-            -- Leaving them out did more than miss a cancel: retraction is
-            -- only reachable from inside a cancelEvents handler, so these
-            -- two were not cancelled, not withdrawn, and not even LOGGED --
-            -- they simply stood on the dispatch board for the full
-            -- AutoClearTime with nothing anywhere reporting them.
+            -- THE TWO THAT MATTER MOST, because nobody has to ask for them:
+            -- sc-dispatch's own client polls the down metadata and raises
+            -- these by itself the moment it goes up. A fighter who never
+            -- presses a key still files a call.
             'sc-dispatch:server:PlayerDown',
             'sc-dispatch:server:PlayerDead',
         },
 
         -- ---- FORM 5: this resource WITHDRAWS the alert -------------------
-        -- WHAT TO USE WHEN FORM 4 CANNOT WORK, AND FOR sc-dispatch IT CANNOT.
+        -- WHAT TO USE WHEN FORM 4 CANNOT WORK -- and against sc-dispatch, it
+        -- cannot: it never checks the cancelled flag, so every name in the
+        -- list above still creates its call.
         --
-        -- CancelEvent() raises a flag and stops nothing: by Cfx's own
-        -- documentation it does not prevent another resource's handler from
-        -- running, and sc-dispatch never calls WasEventCanceled(). So every
-        -- name in the list above WILL still create its call. Form 4 is kept
-        -- because it is free, and because its console lines are how you tell
-        -- a hook that never fires from one that fires and declines -- but on
-        -- this server it is diagnostics, not suppression.
+        -- Most dispatch scripts expose a "clear this call" export and build
+        -- the call's id out of facts this resource can see. Name the export
+        -- and the id shape, and an arena alert is withdrawn the moment it is
+        -- created: the blip goes, the MDT row is marked inactive, and the
+        -- call stops being dispatchable.
         --
-        -- This form is the one that actually removes the call. Most dispatch
-        -- scripts, sc-dispatch included, expose a "clear this call" export
-        -- and build the call's id out of facts this resource can see. Name
-        -- the export and the id shape and an arena alert is withdrawn the
-        -- moment it is created: the map blip goes, the MDT row is marked
-        -- inactive, and the call stops being dispatchable.
-        --
-        -- THE HONEST LIMIT, and it is why this is not called a fix. The alert
-        -- is created before it is withdrawn. An officer on duty in that
-        -- moment still hears the notification sound and may see the entry
-        -- blink in and out. What this stops is the call PERSISTING -- units
-        -- driving to an arena, a blip sitting on the map for the length of
-        -- AutoClearTime, a round's worth of 10-71s stacking up in the MDT.
-        -- Stopping the sound too takes one line inside the sending resource,
-        -- which is what `stateBagKey` above is for.
+        -- THE HONEST LIMIT: the alert is CREATED before it is withdrawn, so
+        -- an officer on duty at that moment still hears the sound. What this
+        -- stops is the call PERSISTING -- units driving out, a blip sitting
+        -- on the map, a round's worth of calls stacking up in the MDT.
         --
         -- Set `resource` to nil to switch the whole form off.
         retract = {
@@ -2997,49 +2253,35 @@ Config.Dispatch = {
             -- How long to wait before withdrawing, in milliseconds.
             --
             -- NOT ZERO, AND THIS IS THE ONE NUMBER WORTH UNDERSTANDING. Both
-            -- handlers -- sc-dispatch's and this one -- hang off the same
-            -- event, and nothing decides which runs first. Withdrawing a call
-            -- that has not been created yet clears nothing at all, so this
-            -- waits long enough for the other handler to have finished its
-            -- database insert. Raise it if calls still linger; every
-            -- millisecond here is time the alert is live on an officer's
-            -- screen, so do not raise it further than you have to.
+            -- handlers hang off the same event and nothing decides which runs
+            -- first, so withdrawing a call before it exists clears nothing.
+            -- This waits for the other handler to finish writing it. Raise it
+            -- if calls still linger -- but every millisecond here is time the
+            -- alert is live on an officer's screen.
             delayMs = 250,
 
-            -- Seconds either side of the current clock to also withdraw.
-            --
-            -- sc-dispatch files a call under '<kind>_<serverId>_<os.time()>'.
-            -- This resource rebuilds that string from the same two facts,
-            -- which agrees unless the two handlers straddle a one-second
-            -- boundary. Clearing one second either way closes that gap, and
-            -- it cannot reach anybody else's call: the server id in the
-            -- middle is the arena player's own.
+            -- Seconds either side of the current clock to also withdraw. The
+            -- id has a timestamp in it, so the two handlers can straddle a
+            -- one-second boundary; this closes that gap. It cannot reach
+            -- anybody else's call -- the server id in the middle is the arena
+            -- player's own.
             clockSlack = 1,
 
-            -- The id shape each event's call is filed under, keyed by the
-            -- event that leads to it. The first '%d' is the player's server
-            -- id and the second is the unix timestamp -- the order both
-            -- sc-dispatch and sc-ambulance build them in.
+            -- The id shape each event's call is filed under. The first '%d'
+            -- is the player's server id, the second the unix timestamp.
             --
-            -- An event with no entry here is cancelled (Form 4) and not
-            -- withdrawn, which is the safe direction: an id shape that is
-            -- close but wrong clears nothing rather than clearing the wrong
-            -- call.
+            -- An event with no entry here is cancelled (Form 4) but not
+            -- withdrawn, which is the safe direction.
             --
-            -- SO EVERY SHAPE BELOW WAS READ OUT OF THE SCRIPT THAT BUILDS
-            -- IT, and the line it came from is beside it. Not one is a
-            -- guess, and a shape nobody has checked does not go in here.
+            -- EVERY SHAPE BELOW WAS READ OUT OF THE SCRIPT THAT BUILDS IT.
+            -- Do not add one you have not checked: a shape that is close but
+            -- wrong clears nothing.
             idTemplates = {
-                -- sc-dispatch/server/main.lua, each built as
-                -- '<kind>_' .. src .. '_' .. os.time():
                 ['sc-dispatch:server:ShotsFired'] = 'shots_%d_%d',      -- :2544
                 ['sc-dispatch:server:PlayerDown'] = 'playerdown_%d_%d', -- :2618
                 ['sc-dispatch:server:PlayerDead'] = 'playerdead_%d_%d', -- :2645
                 ['mydispatch:requestEMS'] = 'emshelp_%d_%d',            -- :2576
 
-                -- sc-ambulance/server/main.lua:297, which files its own call
-                -- through exports['sc-dispatch']:AddNotification with
-                -- unique_id = 'emsdown_' .. src .. '_' .. os.time().
                 ['hospital:server:EMSDownAlert'] = 'emsdown_%d_%d',
             },
         },
@@ -3054,76 +2296,57 @@ Config.Dispatch = {
     -- they do not enforce.
 
     -- ==================================================================
-    -- ---- TELLING YOUR AMBULANCE SCRIPT THEY ARE ALIVE ----------------
-    -- TWO TIMINGS, AND NOTHING ELSE. There is no switch here and nothing to
-    -- name: a player who is "still dead" after a match means their medical
-    -- script is not in the catalogue in shared/compat/dispatch.lua, which is
-    -- where that is fixed rather than here.
+    -- TELLING YOUR AMBULANCE SCRIPT THEY ARE ALIVE -- two timings, and
+    -- nothing else.
     --
-    -- The arena stands its own players back up itself, and for the
-    -- character model that is the whole job. It is not the whole job for
-    -- your server: an ambulance or medical script keeps its OWN record of
-    -- who is dead -- player metadata, a table, a state bag -- and nothing
-    -- about standing a body up tells it anything. So a player who died in
-    -- a match walks back to the lobby on their feet while that script
-    -- still has them down, and they stay stuck until somebody revives
-    -- them properly.
+    -- The arena stands its own players up, which is the whole job for the
+    -- character model and none of it for your medical script -- that keeps
+    -- its own record of who is dead, and nothing about standing a body up
+    -- tells it anything. So a fighter would walk back to the lobby while
+    -- that script still has them down.
     --
-    -- YOU DO NOT NAME IT. THIS BLOCK HAS NO NAMES IN IT AT ALL.
+    -- YOU DO NOT NAME THAT SCRIPT HERE. The catalogue in
+    -- shared/compat/dispatch.lua already knows which revive event each one
+    -- listens for and fires it for whichever this box is running. A player
+    -- who is still "dead" after a match means their script is missing from
+    -- that catalogue, which is where to fix it.
     --
-    -- The catalogue in shared/compat/dispatch.lua already knows which revive
-    -- event each medical script listens for, read out of that script's own
-    -- source, and fires it for whichever of them this box is really running.
-    -- Add a script to that catalogue and it is told; there is nothing to
-    -- configure here. It happens on each mid-match respawn and again on the
-    -- way out -- both, because a death inside the arena is a death as far as
-    -- your medical script is concerned, and a player who is only revived at
-    -- the end fights the rest of the round as a casualty.
-    --
-    -- WHAT THIS BLOCK IS, THEN, IS TIMING. Both numbers below are
-    -- load-bearing.
+    -- It happens on every mid-match respawn as well as at the exit -- a
+    -- player revived only at the end fights the rest of the round as a
+    -- casualty.
     revive = {
         -- HOW LONG AFTER A RESPAWN THE MEDICAL SCRIPT IS TOLD, in ms.
         --
-        -- The client needs a moment to be placed and standing before there
-        -- is a living player for anybody's revive to be about. Two seconds
-        -- covers the teleport and the collision wait.
+        -- The client needs a moment to be placed and standing before there is
+        -- a living player for a revive to be about. Two seconds covers the
+        -- teleport and the collision wait.
         --
-        -- IT IS NOT WHAT KEEPS THE DISPATCH QUIET ANY MORE, and that is the
-        -- correction worth reading. The down flags used to be cleared by
-        -- this same handoff, seven seconds after a death, against a poll
-        -- running twice a second -- so raising or lowering this number moved
-        -- a guarantee that was never being kept. Config.Dispatch.downState
-        -- clears them at the death itself now and holds them down; this is
-        -- only about telling another script.
+        -- IT IS NOT WHAT KEEPS THE DISPATCH QUIET -- `downState` above does
+        -- that, at the death itself. This only tells another script.
         afterRespawnDelayMs = 2000,
 
         -- A SECOND, BLANKET PASS over everybody who played, this many ms
         -- after the match ends. `0` switches it off.
         --
-        -- The belt to the exit path's braces: every exit tells the medical
-        -- script already, and this is what covers the exit nobody has
-        -- written yet. Run once, when everybody is home.
+        -- Every exit path tells the medical script already; this covers the
+        -- exit nobody has written yet. Runs once, when everybody is home.
         sweepAfterMatchMs = 5000,
     },
 
     -- ==================================================================
-    -- THE "PERSON DOWN" ALERT, STOPPED AT SOURCE
+    -- THE "PERSON DOWN" ALERT, STOPPED AT SOURCE -- needs nothing from
+    -- anybody.
     --
-    -- This one needs nothing from anybody. Most medical scripts spot a
-    -- casualty by watching whether a player is dead, on a loop that runs
-    -- somewhere between twice a second and once a second. With this on, an
-    -- arena death is reported to the server and the body is put back on its
-    -- feet in the same instant -- frozen, invisible and untouchable until
-    -- the server says whether they respawn or are out -- so that loop never
-    -- sees a dead player to report.
-    --
-    -- It also makes respawning feel sharper, which is why it is on even for
-    -- servers with no medical script at all.
+    -- Most medical scripts spot a casualty by watching whether a player is
+    -- dead, once or twice a second. With this on, an arena death is reported
+    -- and the body put back on its feet in the same instant -- frozen,
+    -- invisible and untouchable until the server says whether they respawn or
+    -- are out -- so that loop never sees a dead player. It also makes
+    -- respawning feel sharper.
     --
     -- THE HONEST LIMIT: a script that hooks the death EVENT rather than
-    -- polling the death STATE still fires, because the player really did
-    -- die. For those, use `custom` above. This is not a substitute for it.
+    -- polling the death STATE still fires, because the player really did die.
+    -- Use `custom` above for those.
     -- ==================================================================
     clearDeadStateImmediately = true,
 }

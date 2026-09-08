@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 82 functions
+#### `shared/arena.lua` — 84 functions
 
 | Function | What it does |
 |---|---|
@@ -340,6 +340,8 @@ listed; the source documents them where they are.
 | `Arena.PlaysLadder(modeKey)` | Whether a mode plays a gun-game ladder at all -- the one answer every caller reads. |
 | `Arena.LadderTiersFor(modeKey)` | Every tier of a mode's gun-game ladder that still has a playable weapon in it, in climbing order. |
 | `Arena.RoundSecondsFor(modeKey, chosen)` | How long a round of one mode runs: the mode's own clock, falling back to Config.Match's. |
+| `Arena.TierAmmoFor(modeKey)` | How many rounds a gun-game tier weapon is handed, or nil for the weapon's own default. |
+| `Arena.KillCeilingFor(arenaKey, factor)` | How far apart two players may be for one to have killed the other, in this arena. |
 | `Arena.RoundTimeDefault()` | The server-wide round length, out of a setting that takes a number or a range. |
 | `Arena.RoundTimeChoice()` | The range a host may set a round length within, or nil when the choice is not offered. |
 | `Arena.ResolveRoundTime(requested)` | How long a host may make a round, refused rather than clamped; 0 means they did not choose. |
@@ -456,12 +458,13 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 13 functions
+#### `server/ammo.lua` — 14 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaAmmo.IsEnabled()` | Whether ammunition ITEMS are being handed out. |
 | `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
+| `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies. |
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.ReclaimAll(matchId, reasonKey)` | Reclaims the kit of every player in one match. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |

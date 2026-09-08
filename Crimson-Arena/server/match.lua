@@ -292,13 +292,15 @@ local function topped(player, tiers)
     return select(2, tierForScore(tierScore(player), tiers)) == true
 end
 
---- What a player holds on one tier: that tier's weapon at its own configured
---- default ammo, the mode's kit, and nothing they chose for themselves.
+--- What a player holds on one tier: that tier's weapon at the mode's tier
+--- ammunition, the mode's kit, and nothing they chose for themselves.
 --- @param weapon table -- a catalogue entry
 --- @param supplies table[]|nil -- kitFor's answer; nil falls back to the
 ---        ordinary resolver, which is what a mode with no kit wants
+--- @param rounds integer|nil -- Arena.TierAmmoFor; nil means "this weapon's
+---        own default", which is what a mode that sets no tierAmmo wants
 --- @return table loadout -- the shape Arena.ResolveLoadout returns
-local function tierLoadout(weapon, supplies)
+local function tierLoadout(weapon, supplies, rounds)
     -- THROUGH Arena.ResolveWeaponEntry, NOT HAND-BUILT, and the difference
     -- was four fields. The hand-built entry had no `ammoType`, no
     -- `ammoTypeLabel` and -- the one that showed -- no `ammoTypeItem`, which
@@ -314,10 +316,16 @@ local function tierLoadout(weapon, supplies)
     -- ladder is the operator's own list and nobody requested it -- a server
     -- that does not let players PICK a blade still opens its gun game on one.
     --
-    -- Nothing requested for the ammo: with no ask to resolve, ResolveAmmo
-    -- hands back this weapon's own default clamped to its own max, which is
-    -- exactly what a tier is worth.
-    local tier = Arena.ResolveWeaponEntry(weapon, Arena.ResolveAmmoType(weapon, nil), nil)
+    -- THE MODE'S TIER AMMUNITION, not the weapon's own default, and the
+    -- difference is what a climber has to fight a tier with. A promotion
+    -- sweeps the previous rung's rounds away along with its gun, so whatever
+    -- lands here is the whole supply for that tier -- and the per-weapon
+    -- default is 60 for a sidearm, which is a magazine and a half.
+    --
+    -- nil falls straight back to that default: with no ask to resolve,
+    -- ResolveAmmo hands back the weapon's own number clamped to its own max.
+    -- So a mode that sets no `tierAmmo` behaves exactly as it did.
+    local tier = Arena.ResolveWeaponEntry(weapon, Arena.ResolveAmmoType(weapon, nil), rounds)
 
     -- Armour and health still come from the ordinary path so the ladder
     -- never grows a second copy of those rules. Arena.StartingVitals is
@@ -368,7 +376,7 @@ local function loadoutFor(match, player)
     -- and the ladder rejects nothing -- it never consults the player's own
     -- choice in the first place. Returning one value left `rejected` nil at
     -- the call site and took the round down on the first placement.
-    return tierLoadout(ladder[tier], kitFor(match, player)), {}
+    return tierLoadout(ladder[tier], kitFor(match, player), Arena.TierAmmoFor(match.modeKey)), {}
 end
 
 --- Whether this kill is allowed to move the killer up the ladder, and
@@ -600,7 +608,7 @@ local function settleTier(match, player, reasonKey)
     if tier == player.tier then return true end
 
     local previous = player.tier and ladder[player.tier] or nil
-    local moving = tierLoadout(ladder[tier], kitFor(match, player))
+    local moving = tierLoadout(ladder[tier], kitFor(match, player), Arena.TierAmmoFor(match.modeKey))
     local weapon = moving.weapons[1]
 
     -- WHATEVER THEY WERE HOLDING COMES OFF, INCLUDING THE SAME GUN AGAIN.
@@ -623,6 +631,25 @@ local function settleTier(match, player, reasonKey)
     -- magazine rather than the empty one you climbed with.
     local dropped = previous and previous.weapon or nil
 
+    -- AND EVERY OTHER RUNG THEY MIGHT STILL BE CARRYING.
+    --
+    -- `dropped` is the tier below and nothing else, which is right for a
+    -- single step and wrong for every other way a player gets here: two
+    -- kills in one tick move two tiers at once, a demotion followed by a
+    -- promotion walks past a rung without ever taking it back, and a removal
+    -- ox_inventory refused leaves the old gun in the bag while the score
+    -- moves on regardless. Each of those left a climber holding weapons from
+    -- tiers they are no longer standing on -- which is the ladder gone.
+    --
+    -- The WHOLE ladder is handed over rather than a remembered handful, so it
+    -- does not matter how they got here: SwapWeapon takes back every rung
+    -- they hold except the one they are moving onto, and the rounds it issued
+    -- for them with it.
+    local rungs = {}
+    for _, rung in ipairs(ladder) do
+        if Arena.IsKey(rung.weapon) then rungs[#rungs + 1] = rung.weapon end
+    end
+
     -- THE ITEM IS THE WEAPON on an ox_inventory server, so the swap has to
     -- happen here rather than in the message below: a ped handed a gun it
     -- has no item for is disarmed again within moments.
@@ -636,7 +663,7 @@ local function settleTier(match, player, reasonKey)
     -- `no-inventory` is not that: it is a server without ox_inventory
     -- started, where there are no items to move and the record on this side
     -- is the whole truth. The tier moves.
-    local swapped, why = ArenaAmmo.SwapWeapon(player.src, match.id, dropped, weapon)
+    local swapped, why = ArenaAmmo.SwapWeapon(player.src, match.id, dropped, weapon, rungs)
     if not swapped and why == 'refused' then
         ArenaDebug('gun game: %s stays on tier %s -- ox_inventory would not take back %s.',
             tostring(player.src), tostring(player.tier), tostring(dropped))
@@ -1648,6 +1675,27 @@ local function scheduleRespawn(match, player)
         entry.loadout = loadout
         entry.alive = true
 
+        -- AND THEY STAND BACK UP WITH IT IN FULL.
+        --
+        -- The line above rewrites the RECORD of what this fighter should be
+        -- holding; on an ox_inventory server it moves nothing at all. The
+        -- item is the weapon, weapons survive a death, and the magazine rides
+        -- in the item's metadata -- so a fighter came back holding the same
+        -- gun with the same empty magazine, the rounds they had fired gone,
+        -- and the plate they had taken gone with it. Every life started worse
+        -- than the one before it, and the fighter who was losing was the one
+        -- least able to come back. Nothing said so; the round simply got
+        -- quieter.
+        --
+        -- NOT IN A LADDER MODE. A gun-game death costs a TIER, and settleTier
+        -- below owns what that player is holding -- refreshing on top of it
+        -- would hand back the weapon the demotion had just taken away. The
+        -- ladder does its own re-arming on every tier change, which is the
+        -- same promise made by a different rule.
+        if #ladderOf(current) == 0 then
+            ArenaAmmo.Refresh(src, current.id, loadout)
+        end
+
         -- SOMEWHERE RANDOM, AND AWAY FROM WHOEVER IS STILL ALIVE TO SHOOT.
         --
         -- This used to be Arena.PickSpawn with the cursor above, which walks
@@ -1790,7 +1838,14 @@ local function resolveKiller(match, victim, killerSrc)
     -- server could not see one of the two bodies would take a fought kill
     -- off an honest player. A ceiling nobody can reach is worth more than a
     -- guard that eats real results.
-    local ceiling = math.max(0, tonumber(Config.Match.maxKillDistance) or 0)
+    --
+    -- MEASURED AGAINST THIS ARENA, NOT A FLAT NUMBER. Config.Match
+    -- .maxKillDistance is a floor; Arena.KillCeilingFor raises it to the span
+    -- of the boundary the fight is being held inside, grown with the roster.
+    -- Read flat it was SMALLER than both shipped arenas, so two fighters at
+    -- opposite edges of the arena they were put in had their kills refused --
+    -- the long shots, which is to say the good ones.
+    local ceiling = Arena.KillCeilingFor(match.arenaKey, match.sizeFactor)
     if ceiling > 0 then
         local far = metresBetween(positionOf(killer.src), positionOf(victim.src))
         if far and far > ceiling then

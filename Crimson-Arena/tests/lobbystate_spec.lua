@@ -97,6 +97,10 @@ local function newArena(wallets, mutate)
         },
         ArenaAmmo = {
             IsEnabled = function() return false end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
             Issue = function() return {} end,
             Reclaim = function() return 0 end,
             ReclaimAll = function() return 0 end,
@@ -388,6 +392,13 @@ t.test('DEFECT: somebody backing a FREE match cannot take a seat in it', functio
     -- been walking this route for a while under the name "THE BET-THEN-JOIN
     -- HOLE", to reach a settlement path that only the hole could produce.
     local s, matchId = lobbyWithWatcher()
+
+    -- FORCED FREE, rather than relying on the shipped default being 0 -- it
+    -- is not any more, and this test is about the guard that only runs on a
+    -- FREE match. Reading the default meant the day it changed this test
+    -- silently started exercising the paid path, where TakeStake's own
+    -- refusal covers the hole and the guard under test never runs.
+    s.lobby.Get(matchId).entryFee = 0
     t.equals(s.lobby.Get(matchId).entryFee, 0, 'this match is not free, so it tests the wrong thing')
 
     t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 1000, 'cash') == true,

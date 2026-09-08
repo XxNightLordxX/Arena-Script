@@ -1510,4 +1510,97 @@ t.test('and a max written below the min does not drag the answer under it', func
             :format(tostring(resolved)))
 end)
 
+-- ======================================================================
+-- HOW FAR APART A KILL MAY BE MADE
+-- ======================================================================
+
+t.test('the kill ceiling is the span of the arena the fight is in, not a flat number', function()
+    -- THE BUG, IN A PLAYER'S WORDS: "free for all, when killing someone --
+    -- possibly with headshots -- it does not give the person that killed them
+    -- points".
+    --
+    -- Config.Match.maxKillDistance was read flat, at 150, against a comment
+    -- claiming the shipped arenas were smaller than that. They are not: the
+    -- Trailer Park's boundary is a hundred-metre RADIUS, so two hundred
+    -- across, and the skydome's is 110. Two fighters at opposite edges of the
+    -- arena they had been PUT IN were over the ceiling by fifty metres, and
+    -- every kill between them was refused -- no score, no tier, nothing
+    -- towards the pot. It took the long shots and left the point-blank ones.
+    for key, arena in pairs(Config.Arenas) do
+        local boundary = Arena.BoundaryOf(arena)
+        if boundary and (tonumber(boundary.radius) or 0) > 0 then
+            local across = boundary.radius * 2
+            t.isTrue(Arena.KillCeilingFor(key, 1.0) >= across,
+                ('%s is %.0fm across and its ceiling is %.0fm -- a kill from one edge to the other is refused')
+                    :format(key, across, Arena.KillCeilingFor(key, 1.0)))
+        end
+    end
+end)
+
+t.test('and it grows with the roster, exactly as the boundary does', function()
+    -- The fence and the floor both scale, so a ceiling that did not would
+    -- start refusing kills again the moment an arena grew for a full lobby.
+    local small = Arena.KillCeilingFor('skydome', 1.0)
+    local big = Arena.KillCeilingFor('skydome', 2.0)
+    t.isTrue(big > small,
+        ('a grown arena must raise the ceiling: %.0f then %.0f'):format(small, big))
+end)
+
+t.test('the operator number is a floor, never a lowering', function()
+    -- An operator who wants a bigger allowance than the fence still gets it.
+    local arena = tweaked(function(config) config.Match.maxKillDistance = 5000.0 end)
+    t.equals(arena.KillCeilingFor('skydome', 1.0), 5000.0,
+        'the arena span quietly overrode a number the operator raised on purpose')
+
+    -- And an arena with no boundary at all falls back to it whole.
+    local open = tweaked(function(config)
+        config.Match.maxKillDistance = 150.0
+        config.Arenas.skydome.boundary = nil
+    end)
+    t.equals(open.KillCeilingFor('skydome', 1.0), 150.0,
+        'an arena with no boundary lost the operator\'s own number')
+end)
+
+t.test('and zero still switches the check off, whatever the arena is', function()
+    -- The one answer the arena cannot override: an operator turning a guard
+    -- off has said so.
+    local off = tweaked(function(config) config.Match.maxKillDistance = 0 end)
+    t.equals(off.KillCeilingFor('skydome', 1.0), 0.0,
+        'the arena raised a ceiling the operator had switched off')
+    t.equals(off.KillCeilingFor('nosucharena', 1.0), 0.0, 'and for an arena that does not exist')
+end)
+
+-- ======================================================================
+-- WHAT A TIER WEAPON IS HANDED
+-- ======================================================================
+
+t.test('a mode can say how many rounds its tier weapons carry', function()
+    local arena, config = tweaked(function(cfg) cfg.Modes.gungame.tierAmmo = 200 end)
+    t.equals(arena.TierAmmoFor('gungame'), 200, 'the mode\'s tier ammunition was not read')
+    t.isNil(arena.TierAmmoFor('ffa'), 'a mode with no tier ammunition must have no opinion')
+    t.isTrue(config.Modes.gungame.tierAmmo > 0, 'the fixture set nothing')
+end)
+
+t.test('and no opinion is the answer for every shape that is not a positive number', function()
+    -- NIL RATHER THAN ZERO, because zero is what Arena.ResolveAmmo would hand
+    -- out: a tier weapon with no rounds in it at all. "Unreadable" has to
+    -- mean "fall back to the weapon's own default", not "issue nothing".
+    for _, junk in ipairs({ 0, -5, 'two', true, {} }) do
+        local arena = tweaked(function(cfg) cfg.Modes.gungame.tierAmmo = junk end)
+        t.isNil(arena.TierAmmoFor('gungame'),
+            ('tierAmmo = %s should be no opinion, not an amount'):format(tostring(junk)))
+    end
+
+    local gone = tweaked(function(cfg) cfg.Modes.gungame.tierAmmo = nil end)
+    t.isNil(gone.TierAmmoFor('gungame'), 'a mode that never set it must have no opinion')
+    t.isNil(gone.TierAmmoFor(nil), 'and neither must a mode that does not exist')
+end)
+
+t.test('the shipped gun game hands its tiers two hundred rounds', function()
+    -- The number the operator asked for, asserted where an edit to config
+    -- would be seen rather than left to the reader.
+    t.equals(Arena.TierAmmoFor('gungame'), 200,
+        'the shipped tier ammunition is no longer 200')
+end)
+
 os.exit(t.summary())

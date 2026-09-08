@@ -832,14 +832,26 @@ t.test('ResolveEntryFee falls back to the default for a non-numeric request', fu
     t.equals((Arena.ResolveEntryFee(0 / 0)), fallback)
 
     -- And the fallback is not vacuously whatever came back: it is the
-    -- operator's configured default, which now ships at 0.
-    t.equals(fallback, 0, 'the shipped entry fee is no longer free by default')
+    -- operator's configured default, which ships at the first preset.
+    --
+    -- IT USED TO SHIP AT 0, and this line asserted that. A free match is
+    -- indistinguishable from a broken fee from a player's seat -- you join,
+    -- nothing leaves your wallet, and there is no pot at the end -- and 0 was
+    -- what every host who never touched the box opened, which is most of
+    -- them. The band still allows 0; it is simply no longer the default.
+    t.equals(fallback, 500, 'the shipped entry fee is no longer the first preset')
 end)
 
 t.test('ResolveEntryFee falls back to the default when nothing was requested', function()
     local amount, reason = arenaWith().ResolveEntryFee(nil)
-    t.equals(amount, 0, 'a host who never touches the fee field should open a free match')
+    t.equals(amount, 500, 'a host who never touches the fee field should open the shipped default')
     t.isNil(reason)
+
+    -- AND 0 IS STILL A LEGAL ASK, because `min` is 0: a host who wants a free
+    -- round types one. Only the STARTING value moved.
+    local free, why = arenaWith().ResolveEntryFee(0)
+    t.equals(free, 0, 'a host asking for a free round was refused one')
+    t.isNil(why)
 end)
 
 t.test('ResolveEntryFee clamps a default that sits outside its own band', function()

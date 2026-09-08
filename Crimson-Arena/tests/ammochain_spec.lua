@@ -79,6 +79,10 @@ local function newServer(mutate)
             -- tests/ammo_spec.lua; what this file is about is what reaches it,
             -- so the loadout handed over is kept rather than dropped.
             IsEnabled = function() return false end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
             Issue = function(src, _matchId, loadout)
                 issued[#issued + 1] = { src = src, loadout = loadout }
                 return {}

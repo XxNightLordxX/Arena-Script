@@ -49,6 +49,9 @@ local function newServer(pockets, mutate, opts)
     -- fixture has and what the late-start test counts against.
     local waits = 0
     local stashes = {}
+    --- How many slots each stash was registered with, so the number the
+    --- production code passes is load-bearing rather than decorative.
+    local stashSlots = {}
     -- Which operation to break, and HOW. The distinction is the whole point
     -- of half the tests below: a call that THROWS is caught by pcall, and a
     -- call that RETURNS FALSE is ox_inventory politely refusing -- which for
@@ -96,9 +99,18 @@ local function newServer(pockets, mutate, opts)
     end
 
     local ox = {
-        RegisterStash = function(_self, id)
+        RegisterStash = function(_self, id, _label, slots)
             if fail.register then error('no stash for you') end
             stashes[id] = stashes[id] or {}
+            -- THE SLOT COUNT IS RECORDED, AND HONOURED BELOW.
+            --
+            -- It used to be ignored, which made the number in the production
+            -- call decorative: a stash registered with ONE slot would have
+            -- swallowed a whole inventory here and every test would have gone
+            -- on passing. The one promise this resource makes is that a match
+            -- cannot cost anyone anything, and the size of the pen their
+            -- belongings are held in is part of that promise.
+            stashSlots[id] = tonumber(slots) or math.huge
             return true
         end,
         GetInventoryItems = function(_self, id)
@@ -145,6 +157,15 @@ local function newServer(pockets, mutate, opts)
         end,
         AddItem = function(_self, id, name, count, metadata)
             if fail.stash and type(id) == 'string' then error('stash is full') end
+
+            -- OUT OF SLOTS. Real ox_inventory refuses rather than throwing,
+            -- and refuses the whole add rather than taking part of it -- which
+            -- is exactly the branch stow() rolls back from.
+            if type(id) == 'string' and stashes[id] then
+                local used = 0
+                for _ in pairs(stashes[id]) do used = used + 1 end
+                if used >= (stashSlots[id] or math.huge) then return false end
+            end
             -- REFUSED, not thrown. This is what a full stash, or an item the
             -- operator's ox_inventory data does not know, actually does.
             if fail.stashRefuse and type(id) == 'string' then return false end
@@ -294,6 +315,18 @@ local function newServer(pockets, mutate, opts)
     return {
         env = env,
         ammo = env.ArenaAmmo,
+        --- Shrinks every stash to `slots`, whatever it was registered with.
+        ---
+        --- Applied to the LIMIT TABLE rather than through RegisterStash, so a
+        --- test can lower the ceiling under a stash the production code will
+        --- register again with its own number a moment later -- which is
+        --- exactly what stow() does.
+        stashCeiling = function(slots)
+            setmetatable(stashSlots, { __newindex = function(tbl, key)
+                rawset(tbl, key, slots)
+            end })
+            for id in pairs(stashSlots) do stashSlots[id] = slots end
+        end,
         --- Every item name a player is holding, sorted, as a comparable string.
         carrying = function(src)
             local names = {}
@@ -2072,6 +2105,72 @@ t.test('and the farm the shortfall exists to close is still closed', function()
     t.equals(table.concat(seen, ','), '30,30,30,30',
         ('four promotions onto the same weapon handed out %s loose rounds')
             :format(table.concat(seen, ',')))
+end)
+
+-- ======================================================================
+-- HOWEVER MUCH THEY ARE CARRYING
+-- ======================================================================
+
+t.test('a very full inventory goes into the stash and all of it comes back', function()
+    -- "ensure nothing gets lost no matter how much is in the inventory".
+    --
+    -- The stash is a holding pen the size of one person's pockets, and every
+    -- slot short of that is somebody's belongings the arena will not accept.
+    -- It used to be registered at 100 -- comfortably over ox_inventory's own
+    -- default of 50, but NOT over a server that has raised it, and metadata
+    -- items do not stack, so a player carrying forty weapons is holding forty
+    -- slots on their own.
+    local owned, expected = {}, {}
+    for index = 1, 200 do
+        local name = ('thing%03d'):format(index)
+        owned[#owned + 1] = { name = name, count = index }
+        expected[#expected + 1] = name
+    end
+    table.sort(expected)
+    local wanted = table.concat(expected, ',')
+
+    local s = newServer({ [1] = owned }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.stashContents(1), wanted, 'a big inventory did not all reach the stash')
+    t.equals(s.carrying(1), '', 'and their pockets were not emptied')
+
+    t.equals(s.ammo.Reclaim(1, 'match ended'), 1, 'the exit did not report a clean return')
+    t.equals(s.carrying(1), wanted, 'and not all of it came back')
+    t.equals(s.stashContents(1), '', 'and something was left stranded in the stash')
+end)
+
+t.test('and a stash too small to hold it costs them nothing at all', function()
+    -- THE SAFE DIRECTION, asserted rather than assumed. stow() verifies every
+    -- item into the stash BEFORE it clears anything and puts back what it
+    -- moved the moment one is refused -- so a stash that cannot hold a
+    -- player's kit means "they fight with their own gear", never "they lost
+    -- something". This is the test that keeps that true if the ceiling is
+    -- ever lowered.
+    local owned = {}
+    for index = 1, 6 do owned[#owned + 1] = { name = ('thing%d'):format(index), count = 1 } end
+
+    local s = newServer({ [1] = owned }, nil, { slotted = true })
+    s.stashCeiling(3)
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'thing1,thing2,thing3,thing4,thing5,thing6',
+        'the door emptied pockets it could not empty safely')
+    t.equals(s.stashContents(1), '', 'and left half their kit in a stash it had given up on')
+end)
+
+t.test('and an empty-handed player is still stripped and restored cleanly', function()
+    -- "no matter how little". Nothing to put away is a SUCCESS, not a
+    -- failure: a player who owns nothing must still walk the same path, or
+    -- the door quietly stops applying to the people it is cheapest to break.
+    local s = newServer({ [1] = {} }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.stashContents(1), '', 'an empty inventory put something in the stash')
+
+    t.equals(s.ammo.Reclaim(1, 'match ended'), 1, 'an empty-handed exit was not reported clean')
+    t.equals(s.carrying(1), '', 'and they were handed something that was never theirs')
 end)
 
 os.exit(t.summary())

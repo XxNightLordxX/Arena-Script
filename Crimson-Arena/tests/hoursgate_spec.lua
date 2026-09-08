@@ -148,6 +148,10 @@ local function newArena(wallets, mutate, jobs)
             -- tests/ammo_spec.lua; here it only has to exist, because
             -- server/match.lua calls it at both arena choke points.
             IsEnabled = function() return false end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
             Issue = function() return {} end,
             Reclaim = function() return 0 end,
             ReclaimAll = function() return 0 end,

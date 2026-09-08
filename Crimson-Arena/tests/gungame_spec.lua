@@ -168,6 +168,28 @@ end
 ---        answer ArenaAmmo.SwapWeapon gives and a path nothing had reached;
 ---        { positions = t } to place bodies, so a test can put two players
 ---        far enough apart that the kill claim between them is refused
+--- A seven-tier ladder, pinned.
+---
+--- THE SHIPPED LADDER IS THIRTY TIERS, and a great many tests below are not
+--- about its height at all: they are about what happens at the TOP of a
+--- ladder, or about the arithmetic of the per-victim cap, and both need one
+--- short enough for a six-player lobby to climb. They used to get that by
+--- accident -- the shipped ladder happened to be seven -- so raising it to
+--- thirty broke six tests that had nothing to do with the change.
+---
+--- Pinned here instead, so an operator's tier list (and it IS an operator's
+--- call; it has been changed once already) cannot silently rewrite what
+--- these tests measure. The tests that ARE about the shipped ladder read
+--- `tierCount()` and say so.
+local SEVEN_TIERS = {
+    { 'knife' }, { 'pistol' }, { 'combatpistol' }, { 'heavypistol' },
+    { 'pistol50' }, { 'revolver' }, { 'appistol' },
+}
+
+local function sevenTiers(config)
+    config.Modes.gungame.gunGameTiers = SEVEN_TIERS
+end
+
 local function newServer(mutate, seed, opts)
     opts = opts or {}
     local players = {}
@@ -292,9 +314,18 @@ local function newServer(mutate, seed, opts)
     end
 
     --- Opens and starts a gun game with `count` fighters.
-    function server.play(count)
+    --- @param count integer -- how many fighters take a seat
+    --- @param modeKey string? -- 'gungame' unless a test says otherwise. The
+    ---        ladder machinery is what this file is about, but a few tests
+    ---        below are about what a NON-ladder mode does differently, and
+    ---        they need the same real ox_inventory behind them.
+    --- @param before fun()? -- run with everybody seated and the lobby still
+    ---        open, which is the only moment a loadout may be picked:
+    ---        ArenaLobby.SetLoadout refuses one on a live match, so a test
+    ---        that picks after `play` returns is silently picking nothing.
+    function server.play(count, modeKey, before)
         server.fire('createMatch', 1, {
-            arenaKey = 'trailerpark', modeKey = 'gungame', entryFee = 0, account = 'cash',
+            arenaKey = 'trailerpark', modeKey = modeKey or 'gungame', entryFee = 0, account = 'cash',
         })
         matchId = server.lobby.All()[1].id
         for src = 2, count do server.fire('joinMatch', src, { matchId = matchId, account = 'cash' }) end
@@ -316,6 +347,8 @@ local function newServer(mutate, seed, opts)
         -- has one call site and it is Begin's guarded thread. Every
         -- inventory count below was being read against a doubled kit, which
         -- would have hidden a weapon the swap failed to take back.
+        if before then before() end
+
         for src = 1, count do server.fire('setReady', src, { ready = true }) end
         for _ = 1, 4 do
             if server.lobby.Get(matchId).state == 'live' then break end
@@ -326,6 +359,11 @@ local function newServer(mutate, seed, opts)
             'the fixture failed to start the match through the ready path')
         assert(started == 1, ('the match started %d times, not once'):format(started))
         return matchId
+    end
+
+    --- Runs the pending CreateThread bodies -- the respawn thread, chiefly.
+    function server.step(times)
+        for _ = 1, (times or 4) do threads.step() end
     end
 
     function server.row(src) return server.lobby.Get(matchId).players[src] end
@@ -657,7 +695,9 @@ t.test('the tier is derived from the score, so two kills in one tick move two ti
 end)
 
 t.test('a kill made ON the top tier tops the ladder, and re-issues nothing on the way', function()
-    local s = newServer()
+    -- SEVEN TIERS, PINNED. The `victims` list below is as long as the climb,
+    -- and the shipped thirty-tier ladder would walk off the end of it.
+    local s = newServer(sevenTiers)
     s.play(6)
     local top = s.tierCount()
 
@@ -782,12 +822,14 @@ t.test('one victim cannot be farmed for a whole ladder', function()
     -- topped ladder ending the round outright, that bought the entire pot in
     -- under a minute. The cap is on the PAIR, which is the shape a farm has
     -- and an honest round does not.
-    -- FIVE PLAYERS, and the number is load-bearing. The cap can never be
-    -- tighter than the ladder needs -- see the floor test below -- so with
-    -- seven tiers and four opponents the configured 2 is exactly what binds
-    -- (ceil(7/4) = 2). In a smaller lobby the floor would loosen it and this
-    -- test would be measuring the floor instead, which is a different rule.
-    local s = newServer()
+    -- FIVE PLAYERS AND SEVEN TIERS, and both numbers are load-bearing. The
+    -- cap can never be tighter than the ladder needs -- see the floor test
+    -- below -- so with seven tiers and four opponents the configured 2 is
+    -- exactly what binds (ceil(7/4) = 2). In a smaller lobby, or against a
+    -- taller ladder, the floor would loosen it and this test would be
+    -- measuring the floor instead, which is a different rule. The shipped
+    -- ladder is thirty tiers, so it has to be pinned rather than assumed.
+    local s = newServer(sevenTiers)
     s.play(5)
     local cap = s.config.Modes.gungame.maxTiersPerVictim
 
@@ -850,7 +892,7 @@ t.test('the cap never makes the ladder unreachable in a small lobby', function()
     --
     -- It only ever loosens where a farm could not have paid anyway: the
     -- accomplice in a two-man match is the only other stake in the pot.
-    local s = newServer()
+    local s = newServer(sevenTiers)
     s.play(2)
     local top = s.tierCount()
 
@@ -868,7 +910,7 @@ t.test('the cap never makes the ladder unreachable in a small lobby', function()
 
     -- THREE PLAYERS IS WHERE IT BECOMES REACHABLE, which is the lobby the
     -- raise exists for: two opponents, seven tiers, four apiece.
-    local small = newServer()
+    local small = newServer(sevenTiers)
     small.play(3)
     for round = 1, small.tierCount() do small.trade(2 + (round % 2), 1) end
     t.equals(small.row(1).ladderKills, small.tierCount(),
@@ -879,11 +921,38 @@ t.test('the cap never makes the ladder unreachable in a small lobby', function()
     -- AND THE FLOOR IS THE LADDER'S NEED, not a blanket exemption: with five
     -- opponents against seven tiers it works out at the shipped cap of 2, so
     -- a full lobby is untouched by it.
-    local wide = newServer()
+    local wide = newServer(sevenTiers)
     wide.play(6)
     for _ = 1, 6 do wide.trade(2, 1) end
     t.equals(wide.row(1).ladderKills, 2,
         'with five opponents the configured cap is what binds')
+end)
+
+t.test('and on the SHIPPED ladder it is the floor that binds, not the cap', function()
+    -- THE COMPLAINT THIS ANSWERS, in a player's own words: "it is not going
+    -- up tiers for better weapons, it says it took all you can off my name".
+    --
+    -- The shipped cap is 2, and against the seven-tier ladder it used to be
+    -- the thing that bound in any lobby of five or more: two credits per
+    -- victim, four different victims to top a seven-tier climb. In an
+    -- ordinary three- or four-man round that meant a climber hit "No tier for
+    -- that one" within a couple of minutes and then stopped moving for the
+    -- rest of it, whoever they killed.
+    --
+    -- Thirty tiers changes the arithmetic rather than the rule: the floor is
+    -- what a lone climber would need against everybody else in the room --
+    -- ceil(30/5) = 6 with a full lobby -- so the cap only starts binding
+    -- again in a room big enough for spreading kills to be possible. The rule
+    -- is untouched; there is simply somewhere to spread to now.
+    local s = newServer()
+    s.play(6)
+    t.equals(s.tierCount(), 30, 'the shipped ladder is thirty tiers')
+
+    for _ = 1, 8 do s.trade(2, 1) end
+    t.equals(s.row(1).ladderKills, 6,
+        'ceil(30 tiers / 5 opponents) is what one victim is worth, not the shipped cap of 2')
+    t.isTrue(s.row(1).ladderKills > s.config.Modes.gungame.maxTiersPerVictim,
+        'and that is looser than the configured cap, which is the whole point')
 end)
 
 -- ======================================================================
@@ -1155,7 +1224,11 @@ t.test('a tier weapon arrives with the rounds that do not fit in it', function()
     -- and owned no ammo ITEM to reload from -- and since tier 1 is melee,
     -- entry hands them no rounds either. Switching ammo items ON halved what
     -- the mode carried, which is the opposite of what that setting promises.
-    local s = newServer()
+    -- PINNED, because tier 2 has to be a FIREARM for there to be loose
+    -- rounds to argue about. The shipped ladder opens on five melee pools,
+    -- and a blade is issued no ammo item at all -- deliberately, since
+    -- ox_inventory reads a present ammo key as "this is an ammo weapon".
+    local s = newServer(sevenTiers)
     s.play(3)
     s.trade(2, 1)
 
@@ -1420,6 +1493,7 @@ t.test('the room can be told nothing, and the climber is never told about themse
     -- announceFinalTier = false was never once set by a test, so the switch
     -- decided nothing that anybody had checked.
     local quiet = newServer(function(config)
+        sevenTiers(config)
         config.Modes.gungame.announceFinalTier = false
     end)
     quiet.play(6)
@@ -1433,7 +1507,7 @@ t.test('the room can be told nothing, and the climber is never told about themse
 
     -- ON, the room is told ONCE EACH and the climber is not told at all --
     -- both halves of the prose, neither of which was asserted.
-    local loud = newServer()
+    local loud = newServer(sevenTiers)
     loud.play(6)
     for step = 1, top - 1 do loud.trade(victims[step], 1) end
 
@@ -2091,10 +2165,10 @@ t.test('accomplices walking out does not raise the per-victim cap', function()
     -- short of the top. Two accomplices leave: four on the roster, three
     -- opponents, ceil(7/3) = 3, and one more kill on an already-farmed
     -- victim tops the ladder.
-    local s = newServer()
+    local s = newServer(sevenTiers)
     s.play(6)
     local top = s.tierCount()
-    t.equals(top, 7, 'the shipped ladder is seven tiers, which is what this arithmetic assumes')
+    t.equals(top, 7, 'the pinned ladder is seven tiers, which is what this arithmetic assumes')
 
     for _, victim in ipairs({ 2, 3, 4 }) do
         for _ = 1, 5 do s.trade(victim, 1) end
@@ -2558,6 +2632,292 @@ t.test('and the mode\'s clock still beats the server default', function()
     end)
     t.equals(s.arena.RoundSecondsFor('gungame'), 480, 'the mode lost its own clock')
     t.equals(s.arena.RoundSecondsFor('ffa'), 600, 'and an ordinary mode lost the server default')
+end)
+
+-- ======================================================================
+-- 50+. WHAT A TIER CHANGE TAKES AWAY, AND WHAT IT HANDS OVER
+-- ======================================================================
+
+t.test('a swap leaves the climber holding this tier\'s weapon and no other rung\'s', function()
+    -- THE GUARANTEE, ASSERTED AT THE API RATHER THAN THROUGH A CONTRIVED
+    -- ROUND. The swap used to take back exactly ONE weapon: the tier the
+    -- player was standing on. That is right for a single step and wrong for
+    -- every other way a rung can end up in somebody's pockets -- a removal
+    -- ox_inventory refused while the score moved on, a second issue, an
+    -- operator's pools drawing a gun twice. Each of those left a climber
+    -- carrying a weapon from a tier they are not on, and a climber who has
+    -- collected the best gun on the ladder is a climber for whom the ladder
+    -- has stopped mattering.
+    --
+    -- Driven through ArenaAmmo directly because the ladder's own paths cannot
+    -- currently produce that state -- which is the point: this is the check
+    -- that says so, so that the day some path can, it is caught here rather
+    -- than in a round.
+    local s = newServer(sevenTiers)
+    s.play(3)
+    local matchId = s.matchId()
+
+    local two = s.arena.ResolveLoadout({ weapons = { { key = 'pistol' } } })
+    local three = s.arena.ResolveLoadout({ weapons = { { key = 'combatpistol' } } })
+    local four = s.arena.ResolveLoadout({ weapons = { { key = 'heavypistol' } } })
+
+    -- ON THE ARENA'S OWN BOOKS, which is the only thing the sweep will touch:
+    -- a weapon the record does not list is not one this match issued, and
+    -- reaching past the books into a player's own property is the bug the
+    -- record exists to prevent.
+    s.ammo.Issue(1, matchId, {
+        weapons = { two.weapons[1], three.weapons[1] },
+        supplies = {},
+    })
+    t.equals(s.ox.count(1, two.weapons[1].weapon), 1, 'the fixture issued nothing')
+    t.equals(s.ox.count(1, three.weapons[1].weapon), 1, 'the fixture issued only one of the two')
+
+    local ladder = { two.weapons[1].weapon, three.weapons[1].weapon, four.weapons[1].weapon }
+    local swapped = s.ammo.SwapWeapon(1, matchId, ladder[1], four.weapons[1], ladder)
+    t.isTrue(swapped, 'the swap was refused outright')
+
+    t.equals(s.ox.count(1, ladder[3]), 1, 'they should hold the tier they moved onto')
+    t.equals(s.ox.count(1, ladder[1]), 0, 'the rung below was left in their pockets')
+    t.equals(s.ox.count(1, ladder[2]), 0,
+        'a rung that was NOT the one below was left in their pockets -- the whole defect')
+end)
+
+t.test('and a rung it cannot take back does not halt the ladder', function()
+    -- THE ANTI-PARKING RULE IS ON THE RUNG BELOW, AND ONLY THERE. Refusing
+    -- the whole swap because a gun from four tiers ago will not come off
+    -- would freeze a player on a tier for the rest of a round over something
+    -- they did minutes earlier -- and ox_inventory refuses a removal it
+    -- cannot satisfy for reasons a player does not always choose.
+    local s = newServer(sevenTiers)
+    s.play(3)
+    local matchId = s.matchId()
+
+    local two = s.arena.ResolveLoadout({ weapons = { { key = 'pistol' } } })
+    local three = s.arena.ResolveLoadout({ weapons = { { key = 'combatpistol' } } })
+    local four = s.arena.ResolveLoadout({ weapons = { { key = 'heavypistol' } } })
+
+    s.ammo.Issue(1, matchId, {
+        weapons = { two.weapons[1], three.weapons[1] },
+        supplies = {},
+    })
+
+    -- PARKED. The record still lists it; the player no longer holds it, so
+    -- ox_inventory refuses the removal -- exactly a weapon in a trunk.
+    s.ox:RemoveItem(1, three.weapons[1].weapon, 1)
+
+    local ladder = { two.weapons[1].weapon, three.weapons[1].weapon, four.weapons[1].weapon }
+    local swapped, why = s.ammo.SwapWeapon(1, matchId, ladder[1], four.weapons[1], ladder)
+    t.isTrue(swapped, ('an unreachable older rung refused the whole climb: %s'):format(tostring(why)))
+    t.equals(s.ox.count(1, ladder[3]), 1, 'and they are holding the tier they earned')
+
+    -- AND THE RUNG BELOW STILL REFUSES IT, which is the rule that stops a
+    -- player parking the tier weapon between the kill and the promotion and
+    -- ending up armed with both.
+    local parked = newServer(sevenTiers)
+    parked.play(3)
+    local other = parked.matchId()
+    local low = parked.arena.ResolveLoadout({ weapons = { { key = 'pistol' } } })
+    local high = parked.arena.ResolveLoadout({ weapons = { { key = 'heavypistol' } } })
+
+    parked.ammo.Issue(1, other, { weapons = { low.weapons[1] }, supplies = {} })
+    parked.ox:RemoveItem(1, low.weapons[1].weapon, 1)
+
+    local moved, reason = parked.ammo.SwapWeapon(1, other, low.weapons[1].weapon, high.weapons[1],
+        { low.weapons[1].weapon, high.weapons[1].weapon })
+    t.isFalse(moved, 'parking the tier weapon bought a free promotion')
+    t.equals(reason, 'refused', 'and the caller must be told why, so the tier does not move')
+    t.equals(parked.ox.count(1, high.weapons[1].weapon), 0, 'and nothing was handed over')
+end)
+
+t.test('and the rounds those rungs were issued go back with them', function()
+    -- ONE-WAY AMMUNITION DISPENSER. Nothing took loose rounds back on a tier
+    -- change, so every rung a climber had ever stood on left its ammunition
+    -- in their pockets for the rest of the round -- ten tiers in, a player was
+    -- carrying ten calibres and could reload a gun they no longer had. And
+    -- because deaths cost no lives in this mode, walking a tier boundary was
+    -- a free batch each way.
+    local s = newServer(function(config)
+        -- TWO CALIBRES, deliberately: the tier being left behind fires
+        -- something the tier being climbed onto does not, so "took the wrong
+        -- one back" and "took none back" are different results.
+        config.Modes.gungame.gunGameTiers = {
+            { 'knife' }, { 'pistol' }, { 'pistol50' },
+        }
+    end)
+    s.play(3)
+
+    s.trade(2, 1)
+    local second = s.row(1).loadout.weapons[1]
+    t.isTrue(s.arena.IsKey(second.ammoTypeItem), 'tier 2 names no ammo item, so this proves nothing')
+    t.isTrue(s.ox.count(1, second.ammoTypeItem) > 0, 'tier 2 was issued no loose rounds at all')
+
+    s.trade(3, 1)
+    local third = s.row(1).loadout.weapons[1]
+    t.isTrue(third.ammoTypeItem ~= second.ammoTypeItem,
+        'the two tiers share a calibre, so this test cannot tell the cases apart')
+
+    t.equals(s.ox.count(1, second.ammoTypeItem), 0,
+        'the rounds for the tier they left are still in their pockets')
+    t.isTrue(s.ox.count(1, third.ammoTypeItem) > 0,
+        'and the tier they climbed onto was issued none')
+end)
+
+t.test('a demotion takes back what the tier above handed out', function()
+    -- THE OTHER DIRECTION, and it is the one that made the ladder a pump:
+    -- climb, step off a roof, climb again, and collect another batch each
+    -- way. In the player's words: "when going down tiers it removes all that
+    -- stuff it gave you".
+    local s = newServer(function(config)
+        config.Modes.gungame.gunGameTiers = {
+            { 'knife' }, { 'pistol' }, { 'pistol50' },
+        }
+    end)
+    s.play(3)
+
+    s.trade(2, 1)
+    s.trade(3, 1)
+    local third = s.row(1).loadout.weapons[1]
+    local thirdWeapon = third.weapon
+
+    s.kill(1, 2)
+    s.revive(1)
+
+    t.equals(s.row(1).tier, 2, 'the death did not cost a tier')
+    t.equals(s.ox.count(1, thirdWeapon), 0, 'the demotion left the higher tier\'s weapon on them')
+    t.equals(s.ox.count(1, third.ammoTypeItem), 0,
+        'and it left the higher tier\'s ammunition on them, which is the pump')
+end)
+
+t.test('a tier weapon carries the mode\'s tier ammunition, not the weapon\'s own default', function()
+    -- "when going up tiers it should give 200 ammo for the weapons".
+    --
+    -- A promotion sweeps the previous rung's rounds away with its gun, so
+    -- whatever lands here is the WHOLE supply for that tier -- and the
+    -- per-weapon default is 60 for a sidearm, which is a magazine and a half
+    -- to fight a rung with.
+    local s = newServer(sevenTiers)
+    s.play(3)
+    s.trade(2, 1)
+
+    local entry = s.row(1).loadout.weapons[1]
+    t.equals(entry.ammo, 200, 'the tier weapon did not carry the mode\'s tier ammunition')
+
+    -- AND ALL OF IT REACHES THEM: one magazine in the gun, the rest as items.
+    local magazine = s.arena.MagazineFor(s.arena.GetWeaponByKey(entry.key), entry.ammo)
+    t.equals(s.ox.metaOf(1, entry.weapon).ammo, magazine, 'one magazine in the gun')
+    t.equals(s.ox.count(1, entry.ammoTypeItem), entry.ammo - magazine,
+        'and the remainder as loose rounds')
+end)
+
+t.test('and a mode that names none falls back to the weapon\'s own default', function()
+    -- DELETING THE LINE HAS TO STILL WORK, which is what config.lua promises
+    -- of it -- otherwise the setting is not optional, it is load-bearing.
+    local s = newServer(function(config)
+        sevenTiers(config)
+        config.Modes.gungame.tierAmmo = nil
+    end)
+    s.play(3)
+    s.trade(2, 1)
+
+    local entry = s.row(1).loadout.weapons[1]
+    local catalogue = s.arena.GetWeaponByKey(entry.key)
+    t.equals(entry.ammo, catalogue.ammo.default,
+        'a mode with no tier ammunition should hand out the weapon\'s own default')
+    t.isTrue(entry.ammo > 0, 'and that default is not zero, so this test is not vacuous')
+end)
+
+-- ======================================================================
+-- 56+. WHAT A RESPAWN HANDS BACK, IN THE MODES THAT HAVE ONE
+-- ======================================================================
+
+t.test('a respawn puts a free-for-all fighter back on a full loadout', function()
+    -- IN THE PLAYER'S WORDS: "upon a death it should refresh your inventory
+    -- to be full just like at a start of a match with standard shit -- for
+    -- team deathmatch and free for all".
+    --
+    -- WHY IT DID NOT. ox_inventory carries weapons through a death and the
+    -- magazine rides in the item's metadata, so a fighter stood back up
+    -- holding the same gun with the same empty magazine, the rounds they had
+    -- fired gone, and the plate they had taken gone with it. Each life
+    -- started worse than the one before it, which means the fighter who is
+    -- losing is the one least able to come back. Nothing said so; the round
+    -- simply got quieter.
+    local s = newServer()
+    s.play(3, 'ffa', function()
+        s.fire('setLoadout', 1, {
+            weapons = { { key = 'pistol', ammo = 120 } },
+            supplies = { { key = 'bandage', count = 3 } },
+        })
+    end)
+
+    local loadout = s.row(1).loadout
+    local gun = loadout.weapons[1]
+    t.isTrue(s.arena.IsKey(gun.ammoTypeItem), 'the picked weapon names no ammo item')
+
+    -- A LIFE SPENT. Fired most of the loose rounds, used the bandages, and
+    -- the magazine in the gun is not full any more.
+    local rounds = s.ox.count(1, gun.ammoTypeItem)
+    t.isTrue(rounds > 0, 'the fixture issued no loose rounds, so there is nothing to spend')
+    s.ox:RemoveItem(1, gun.ammoTypeItem, rounds)
+    s.ox:RemoveItem(1, 'bandage', s.ox.count(1, 'bandage'))
+    t.equals(s.ox.count(1, gun.ammoTypeItem), 0, 'the fixture did not really spend the rounds')
+
+    s.kill(1, 2)
+    s.step(6)
+
+    t.isTrue(s.row(1).alive, 'the respawn thread did not run')
+    t.equals(s.ox.count(1, gun.weapon), 1, 'they should stand up holding one of their weapon')
+
+    local magazine = s.arena.MagazineFor(s.arena.GetWeaponByKey(gun.key), gun.ammo)
+    t.equals(s.ox.metaOf(1, gun.weapon).ammo, magazine, 'and with a full magazine in it')
+    t.equals(s.ox.count(1, gun.ammoTypeItem), gun.ammo - magazine,
+        'and the loose rounds back at what they paid for')
+    t.equals(s.ox.count(1, 'bandage'), 3, 'and the supplies they picked back at their count')
+end)
+
+t.test('and it is a top-up, not a second issue', function()
+    -- A REFRESH THAT DOUBLED THE KIT WOULD BE WORSE THAN NONE: dying would be
+    -- the way to get rich, and in a mode with respawns that is the whole
+    -- round. Somebody who spent nothing must be handed nothing.
+    local s = newServer()
+    s.play(3, 'ffa', function()
+        s.fire('setLoadout', 1, {
+            weapons = { { key = 'pistol', ammo = 120 } },
+            supplies = { { key = 'bandage', count = 3 } },
+        })
+    end)
+
+    local gun = s.row(1).loadout.weapons[1]
+    local roundsBefore = s.ox.count(1, gun.ammoTypeItem)
+    local bandagesBefore = s.ox.count(1, 'bandage')
+
+    s.kill(1, 2)
+    s.step(6)
+
+    t.equals(s.ox.count(1, gun.weapon), 1, 'a second copy of the weapon was handed over')
+    t.equals(s.ox.count(1, gun.ammoTypeItem), roundsBefore,
+        'a fighter who fired nothing was given another batch of rounds')
+    t.equals(s.ox.count(1, 'bandage'), bandagesBefore,
+        'a fighter who used no bandages was given more')
+end)
+
+t.test('and a gun game respawn is left to the ladder', function()
+    -- A LADDER DEATH COSTS A TIER, and settleTier owns what that player is
+    -- holding. Refreshing on top of it would hand back the weapon the
+    -- demotion had just taken away, which is the mode's only cost undone.
+    local s = newServer(sevenTiers)
+    s.play(3)
+
+    s.trade(2, 1)
+    local second = weaponAt(s, 2)
+    t.equals(s.ox.count(1, second), 1, 'the climb did not reach tier 2')
+
+    s.kill(1, 2)
+    s.step(6)
+
+    t.equals(s.row(1).tier, 1, 'the death did not cost a tier')
+    t.equals(s.ox.count(1, second), 0,
+        'the respawn handed back the weapon the demotion had just taken away')
 end)
 
 os.exit(t.summary())

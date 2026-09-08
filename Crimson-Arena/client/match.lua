@@ -244,6 +244,16 @@ local priorTeam = nil
 --- can tell "still the body that holds it" from "a new one that does not".
 local heldPed = nil
 
+--- The network team index this client was last put on, so the per-frame loop
+--- can tell that some OTHER resource has moved it since.
+---
+--- THE ONLY HALF OF THE HOLD THE ENGINE WILL READ BACK, and that is why it
+--- is the one the loop watches. GET_PLAYER_TEAM exists; there is no getter
+--- for NETWORK_SET_FRIENDLY_FIRE_OPTION or SET_CAN_ATTACK_FRIENDLY, so a
+--- team that has drifted is taken as proof all three have and all three are
+--- written again.
+local heldTeam = nil
+
 --- Forward-declared so holdFriendlyFire's bails below can call it.
 ---
 --- A LOCAL, NOT `function releaseFriendlyFire`. A top-level `function Name(`
@@ -290,6 +300,7 @@ local function holdFriendlyFire(ped)
     SetCanAttackFriendly(ped, false, false)
     friendlyFireHeld = true
     heldPed = ped
+    heldTeam = index
 end
 
 --- Puts back what holdFriendlyFire changed, and only that.
@@ -297,6 +308,7 @@ end
 releaseFriendlyFire = function(ped)
     if not friendlyFireHeld then return end
     friendlyFireHeld = false
+    heldTeam = nil
     -- TIDINESS, NOT BEHAVIOUR, and nothing below asserts on it because
     -- nothing can: the per-frame re-hold is gated on `friendlyFireHeld`,
     -- which is now false, and the next hold overwrites this anyway. It is
@@ -829,8 +841,29 @@ local function startArenaThread()
             -- Costs a PlayerPedId() per frame in a loop that already calls
             -- it, and nothing at all in a free-for-all or on a server that
             -- wants friendly fire, where the hold never starts.
+            -- AND THE PLAYER-LEVEL HALVES, WHICH ARE NOT THE ARENA'S ALONE.
+            --
+            -- SetPlayerTeam and NetworkSetFriendlyFireOption are settings on
+            -- the PLAYER, not the ped, and every other resource on the box
+            -- can write them: a gang script, a job script, a spectator or
+            -- freecam resource putting you on a team of its own. The arena
+            -- wrote them once at entry and never looked again, so the first
+            -- resource to touch either one turned friendly fire back on for
+            -- the rest of the round -- teammates shooting each other in a
+            -- mode whose whole rule is that they cannot, with nothing said
+            -- at either end.
+            --
+            -- The team is the half the engine will read back, so a team that
+            -- has drifted is taken as proof all three have, and holdFriendly
+            -- Fire writes all three again. Nothing is written while the
+            -- reading still matches, so on an untouched server this is one
+            -- native call a frame in a loop that already makes several.
             local current = PlayerPedId()
-            if friendlyFireHeld and current ~= heldPed then holdFriendlyFire(current) end
+            if friendlyFireHeld
+                and (current ~= heldPed or GetPlayerTeam(PlayerId()) ~= heldTeam)
+            then
+                holdFriendlyFire(current)
+            end
 
             handleDeath(current)
 

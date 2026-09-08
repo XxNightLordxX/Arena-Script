@@ -86,6 +86,10 @@ local env = Sandbox.newArenaEnv({
         ArenaAmmo = {
             IsEnabled = function() return false end,
             Issue = function() return {} end, Reclaim = function() return 0 end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
             ReclaimAll = function() return 0 end, Clear = function() return true end,
             OnLoan = function() return 0 end,
         },

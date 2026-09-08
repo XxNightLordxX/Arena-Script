@@ -20,17 +20,17 @@
        84   Lobby         The NPC players walk up to
       181   Schedule      Opening hours: when the door is actually open
       219   Match         Lives, timers, player counts, win condition
-      498   Teams         The sides, and whether they may be uneven
-      653   Modes         Free-for-all and team deathmatch
-      859   DefaultMode   Which of them a new lobby opens on
-      878   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1088  UI            Panel colours, logo and title
-      1146  Permissions   Who may open a match, who may force-stop one
-      1227  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1799   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2266   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2276   Webhook       Optional: a Discord line per finished match
-     2313   Dispatch      Optional: keeping police and EMS out of the arena
+      521   Teams         The sides, and whether they may be uneven
+      676   Modes         Free-for-all and team deathmatch
+      917   DefaultMode   Which of them a new lobby opens on
+      936   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1154  UI            Panel colours, logo and title
+      1212  Permissions   Who may open a match, who may force-stop one
+      1293  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1865   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2332   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2342   Webhook       Optional: a Discord line per finished match
+     2379   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -443,12 +443,35 @@ Config.Match = {
     -- trying to win, and is the difference between a farm that runs itself
     -- and one that has to be played.
     --
-    -- 150 IS DELIBERATELY GENEROUS. A sniper across the Trailer Park is
-    -- about 90; the sky arena's diagonal is under 120. It is a ceiling on
-    -- the absurd, not a range limit on a fight -- and the arena boundary
-    -- already bounds the honest case. A refused claim costs the killer the
-    -- credit and nothing else: the death still counts, and the console says
-    -- so once with both distances.
+    -- A FLOOR UNDER THE CEILING, NOT THE CEILING ITSELF, and that
+    -- distinction is the fix for a bug that cost people real kills.
+    --
+    -- This was read as a flat ceiling, and 150 was chosen against a comment
+    -- claiming "a sniper across the Trailer Park is about 90; the sky arena's
+    -- diagonal is under 120". Both numbers were wrong, and not by a little:
+    -- the Trailer Park's boundary is a hundred-metre RADIUS -- two hundred
+    -- across, and 270 at the twenty-player size it grows to -- and the sky
+    -- arena's is 110, so 220. Two fighters standing at opposite edges of the
+    -- arena they were put in were over the ceiling by fifty metres or more.
+    --
+    -- What that looked like from a seat: you land the shot, they die, and you
+    -- are given nothing. No kill on the scoreboard, no tier on the ladder,
+    -- nothing towards the pot -- and it hit long shots hardest, which means
+    -- it took the best kills in the round and left the point-blank ones. The
+    -- console said so on every one, and only with Config.Debug on.
+    --
+    -- So the arena's own span raises this: Arena.KillCeilingFor takes the
+    -- greater of this number and the boundary the fight is actually being
+    -- held inside, grown with the roster exactly as the fence and the floor
+    -- are. This number is what an arena with NO boundary falls back to.
+    --
+    -- `0` still switches the check off entirely.
+    --
+    -- WHY THERE IS A CHECK AT ALL is above, and none of it changes: the
+    -- ceiling exists to stop two accomplices trading kills from across the
+    -- map, and being inside the same arena is still the thing it demands.
+    -- A refused claim costs the killer the credit and nothing else: the
+    -- death still counts, and the console says so once with both distances.
     maxKillDistance = 150.0,
 
     keepOutBarrier = {
@@ -745,22 +768,36 @@ Config.Modes = {
         -- is one nobody finishes and the clock decides every round; a much
         -- shorter one is finished in the first two minutes.
         gunGameTiers = {
-            -- 1. FISTS AND BLADES. Everybody opens here, so it is the one
-            -- tier where the whole lobby is on equal terms.
-            { 'knife', 'machete', 'bat', 'hatchet', 'crowbar', 'golfclub', 'nightstick' },
-            -- 2. A first gun, and not much of one.
-            { 'pistol', 'combatpistol', 'snspistol', 'vintagepistol', 'ceramicpistol' },
-            -- 3. Still a sidearm, but one that hurts.
-            { 'heavypistol', 'pistol50', 'revolver', 'navyrevolver', 'doubleaction' },
-            -- 4. Automatic fire, close range.
-            { 'microsmg', 'minismg', 'machinepistol', 'smg', 'assaultsmg' },
-            -- 5. The room-clearer.
-            { 'sawnoffshotgun', 'dbshotgun', 'pumpshotgunmk2', 'shotgun', 'combatshotgun' },
-            -- 6. Range at last.
-            { 'carbine', 'advancedrifle', 'bullpuprifle', 'compactrifle', 'rifle' },
-            -- 7. THE TOP. A kill made from here finishes the ladder and ends
-            -- the round outright, whatever the clock says.
-            { 'marksman', 'precisionrifle', 'sniper' },
+            { 'bat', 'hammer', 'nightstick', 'stonehatchet' },
+            { 'bottle', 'hatchet', 'poolcue', 'candycane' },
+            { 'crowbar', 'knife', 'switchblade', 'flashlight' },
+            { 'dagger', 'knuckles', 'wrench' },
+            { 'golfclub', 'machete', 'battleaxe' },   -- 5
+            { 'appistol', 'navyrevolver', 'snspistol' },
+            { 'ceramicpistol', 'gadgetpistol', 'snspistolmk2' },
+            { 'combatpistol', 'pistol', 'tecpistol' },
+            { 'doubleaction', 'pistol50', 'vintagepistol' },
+            { 'heavypistol', 'pistolmk2', 'pistolxm3' },   -- 10
+            { 'machinepistol', 'revolver' },
+            { 'marksmanpistol', 'revolvermk2' },
+            { 'assaultshotgun', 'heavyshotgun', 'autoshotgun' },
+            { 'bullpupshotgun', 'shotgun' },
+            { 'combatshotgun', 'pumpshotgunmk2' },   -- 15
+            { 'dbshotgun', 'sawnoffshotgun' },
+            { 'advancedrifle', 'combatpdw', 'specialcarbinemk2' },
+            { 'rifle', 'compactrifle', 'tacticalrifle' },
+            { 'riflemk2', 'gusenberg' },
+            { 'assaultsmg', 'heavyrifle' },   -- 20
+            { 'battlerifle', 'mg' },
+            { 'bullpuprifle', 'microsmg' },
+            { 'bullpupriflemk2', 'militaryrifle' },
+            { 'carbine', 'minismg' },
+            { 'carbineriflemk2', 'smg' },   -- 25
+            { 'combatmg', 'smgmk2' },
+            { 'combatmgmk2', 'specialcarbine' },
+            { 'heavysniper', 'marksmanriflemk2', 'sniper' },
+            { 'snipermk2', 'musket' },
+            { 'marksman', 'precisionrifle' },   -- 30
         },
 
         -- WHAT A KILL IS WORTH BESIDES THE TIER, by supply key from
@@ -780,6 +817,27 @@ Config.Modes = {
         -- THESE ARE ONLY PAID ON A KILL THAT COUNTED FOR THE LADDER, which
         -- is what stops an accomplice being farmed for bandages after
         -- `maxTiersPerVictim` below has stopped paying tiers.
+        -- HOW MANY ROUNDS A TIER WEAPON IS HANDED.
+        --
+        -- A LADDER RE-ARMS YOU, AND THAT IS THE POINT OF THE MODE. Without a
+        -- number here each tier arrived on the weapon's own `ammo.default`
+        -- from config.weapons.lua -- 60 for a sidearm, 150 for a rifle -- and
+        -- because a promotion sweeps the previous tier's rounds away along
+        -- with its gun, that one number was the whole supply for the tier.
+        -- Sixty rounds is a magazine and a half to fight a whole rung with,
+        -- and running dry should be a mistake you made rather than the shape
+        -- of the mode.
+        --
+        -- CLAMPED PER WEAPON, NOT HANDED OUT FLAT. Each weapon's own
+        -- `ammo.max` still holds -- a number bigger than a weapon allows
+        -- becomes that weapon's ceiling rather than being refused -- and
+        -- melee is given none at all, because a blade is not an ammo weapon
+        -- and ox_inventory reads a present ammo key as saying it is.
+        --
+        -- DELETE THIS LINE, or set it to 0, and every tier falls back to its
+        -- weapon's own default exactly as it did before.
+        tierAmmo = 200,
+
         killReward = {
             { key = 'bandage', count = 3 },
             { key = 'armour', count = 1, chance = 25 },
@@ -985,12 +1043,20 @@ Config.Betting = {
         enabled = true,
         min = 0,
         max = 50000,
-        -- FREE UNLESS THE HOST ASKS FOR A FEE. Creating a match should not
-        -- quietly put a price on it: a host who never touches the field
-        -- opens a free round, and anybody who wants money on the outcome
-        -- backs themselves with a fighter bet instead, which is voluntary,
-        -- their own size, and paid out of the pool rather than by the server.
-        default = 0,
+        -- WHAT THE BOX STARTS ON, and therefore what a host who never
+        -- touches it opens the round at.
+        --
+        -- This was 0 -- "free unless the host asks for a fee" -- and read
+        -- from a seat that is indistinguishable from the fee being broken:
+        -- you join, nothing leaves your wallet, and there is no pot at the
+        -- end. It is the commonest way to open a lobby, so it was also the
+        -- commonest thing to see.
+        --
+        -- A round with money on it is what the escrow, the pot and the payout
+        -- are all for, so the box starts on the first preset instead. A host
+        -- who wants a free round types 0, which `min` still allows, and every
+        -- other amount between min and max is still theirs to type.
+        default = 500,
         -- Quick-pick buttons in the panel. Any value between min and max is
         -- still accepted if the player types it.
         presets = { 500, 1000, 5000, 25000 },

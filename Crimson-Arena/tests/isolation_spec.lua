@@ -1107,6 +1107,10 @@ local function newArena(world)
             -- server/match.lua now calls the ammo ledger at both arena
             -- choke points. tests/ammo_spec.lua covers the real thing.
             IsEnabled = function() return false end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
             Issue = function() return {} end,
             Reclaim = function() return 0 end,
             ReclaimAll = function() return 0 end,

@@ -163,6 +163,32 @@ local function untouchable()
     return map, list
 end
 
+--- HOW BIG THE BELONGINGS STASH IS, in slots and in weight.
+---
+--- ONE COPY, because there were two: stow() registers this stash on the way
+--- in and ArenaAmmo.ReturnLeftovers registers it again when it comes back
+--- for a return that did not go through, and both had the numbers written
+--- into the call. A second copy of a rule is a second copy that drifts, and
+--- these two drifting apart means a stash that accepts a player's kit on the
+--- way in and refuses to be re-registered the same size on the way out.
+---
+--- DELIBERATELY MUCH BIGGER THAN ANY PLAYER INVENTORY. The stash is not
+--- storage an operator sizes; it is a holding pen the size of one person's
+--- pockets, and every slot short of that is somebody's belongings the arena
+--- will not accept. It was 100, which is comfortably over ox_inventory's own
+--- default of 50 but NOT over a server that has raised it -- and metadata
+--- items do not stack, so a player carrying forty weapons is holding forty
+--- slots on their own. Overshooting costs nothing: a slot count is a ceiling,
+--- not an allocation.
+---
+--- FAILING IS STILL SAFE, and that is why this is a ceiling and not a check:
+--- stow() verifies every single item into the stash before it clears
+--- anything, and puts back what it moved the moment one is refused. A stash
+--- too small has always meant "this player keeps their own kit and fights
+--- with it", never "this player lost something".
+local STASH_SLOTS = 500
+local STASH_WEIGHT = 10000000
+
 --- The stash that holds one character's real inventory. Keyed by citizen id
 --- rather than server id, so a reconnect finds the same stash and a recycled
 --- server id can never open somebody else's.
@@ -287,7 +313,7 @@ local function stow(src, citizenid)
     -- Registered every time rather than once: ox_inventory forgets stashes on
     -- its own restart, and a stash it does not know about accepts nothing.
     local registered = oxDid('registering stash ' .. stash, function()
-        return ox:RegisterStash(stash, 'Arena Belongings', 100, 1000000, citizenid)
+        return ox:RegisterStash(stash, 'Arena Belongings', STASH_SLOTS, STASH_WEIGHT, citizenid)
     end)
     if not registered then
         ArenaLog('door: could not register the stash for %s -- they keep their own kit.', tostring(src))
@@ -796,6 +822,14 @@ local function issueSpareRounds(ox, src, matchId, entry, pass)
     issued[matchId] = issued[matchId] or {}
     issued[matchId][src] = (issued[matchId][src] or 0) + count
 
+    -- SAID OUT LOUD, for the same reason the supplies line is: rounds
+    -- appearing in a player's pockets mid-round is the arena's fault until
+    -- proved otherwise, and only this file can supply the proof. Every batch
+    -- the arena hands over is named here with its item, its size and who got
+    -- it; a console that says nothing while ammunition appears is an
+    -- ammunition script, an inventory drop, or another resource -- not this.
+    ArenaDebug('ammo: gave %s x%d to %s.', item, count, tostring(src))
+
     return true, count
 end
 
@@ -853,6 +887,156 @@ local function issueWeapons(ox, src, matchId, loadout)
     return failed
 end
 
+--- Takes back up to `count` of one stackable item, never more than the
+--- player is actually holding.
+---
+--- ONE COPY, DELIBERATELY, because there were two and only one of them was
+--- right. Ammunition and supplies are reclaimed by separate loops below, the
+--- supplies loop was taught to clamp against what a player still holds, and
+--- the ammunition loop was not -- so a fighter who fired their weapon kept
+--- every round they had left.
+---
+--- WHY CLAMPING IS THE WHOLE JOB. ox_inventory refuses a removal it cannot
+--- satisfy in full on most builds: it does not take what is there and shrug.
+--- Ask a player holding 120 rounds for the 250 they were issued and the
+--- answer is no, and all 120 leave the arena with them.
+---
+--- A build with no counter at all is asked for the full amount. Taking back
+--- what was issued is the right answer when nothing can tell us otherwise,
+--- and a refusal there costs the arena nothing it had.
+--- @param ox table
+--- @param src number
+--- @param item string
+--- @param count integer -- how much was issued
+local function takeBack(ox, src, item, count, floor)
+    local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
+    local held = ok and (Arena.ToInt(answer) or 0) or count
+
+    -- NOT ONE BELOW THE LINE THEY WALKED IN ON. `held` is everything in
+    -- their pockets, and with the door off some of it is theirs -- so
+    -- clamping to `held` alone charged a player for every arena consumable
+    -- they SPENT, out of their own identical stock. The arena's claim is
+    -- only ever on what sits above that line.
+    local mine = math.max(0, held - math.max(0, Arena.ToInt(floor) or 0))
+
+    local take = math.min(Arena.ToInt(count) or 0, mine)
+    if take > 0 then
+        pcall(function() return ox:RemoveItem(src, item, take) end)
+    end
+end
+
+--- Takes ONE ladder rung's weapon back off a player, and off the arena's
+--- books with it.
+---
+--- ONLY IF THE ARENA'S OWN BOOKS SAY IT IS OURS TO TAKE. A weapon the record
+--- does not list is not one this match issued -- or is one a failed rollback
+--- has already written off -- and there is nothing to take back either way.
+---
+--- THIS IS WHAT BREAKS A PERMANENT LOCKOUT. When an add is refused AND the
+--- put-back is refused too, the player ends up holding no weapon and the
+--- record ends up listing none. Without the record check the next swap still
+--- asked ox_inventory for a weapon nobody had, was refused, and returned
+--- early -- so the tier never moved again and the player stayed disarmed for
+--- the rest of the round even after their inventory freed up. Measured: four
+--- credited kills after the one refusal, all of them on tier 1, empty-handed.
+---
+--- AND IT DOES NOT REOPEN THE EXPLOIT IT SITS NEXT TO. Parking the tier
+--- weapon in a trunk leaves it ON the record and off the player, which is the
+--- `refused` answer below: the record lists it, ox_inventory refuses the
+--- removal, and the caller decides what that costs.
+--- @param ox table
+--- @param src number
+--- @param record table -- this player's issued-weapon rows for the match
+--- @param name string
+--- @return table|nil taken -- the row removed, for a rollback
+--- @return boolean refused -- true only when the books listed it and it would not come off
+local function takeRungBack(ox, src, record, name)
+    if not Arena.IsKey(name) then return nil, false end
+
+    local listed = false
+    for _, row in ipairs(record) do
+        if row.name == name then listed = true break end
+    end
+    if not listed then return nil, false end
+
+    if not oxDid('taking back the tier weapon ' .. name,
+        function() return ox:RemoveItem(src, name, 1) end)
+    then
+        return nil, true
+    end
+
+    local taken = nil
+    for index = #record, 1, -1 do
+        if record[index].name == name then
+            taken = taken or record[index]
+            table.remove(record, index)
+        end
+    end
+
+    return taken, false
+end
+
+--- Puts rungs this swap took back, back -- for the rollback when the new
+--- tier's weapon will not go on.
+---
+--- Without it the player stands in the arena holding NOTHING at all: the
+--- removals above have already happened, and the log used to tell them "they
+--- keep the tier they had", which was the one thing that was not true.
+--- @param ox table
+--- @param src number
+--- @param record table
+--- @param rows table[] -- what takeRungBack handed back, in the order taken
+--- @param context string -- the weapon we were trying to give, for the log
+local function putRungsBack(ox, src, record, rows, context)
+    for _, row in ipairs(rows) do
+        local back, gave = pcall(function() return ox:AddItem(src, row.name, 1, row.metadata) end)
+        if back and gave ~= false then
+            record[#record + 1] = row
+        else
+            ArenaLog('weapons: %s was left empty-handed -- ox_inventory would take neither %s back nor %s away.',
+                tostring(src), tostring(context), tostring(row.name))
+        end
+    end
+end
+
+--- Takes back every round the arena has issued this player EXCEPT the ones
+--- the tier they are moving onto fires.
+---
+--- THIS IS THE OTHER HALF OF THE SWEEP ABOVE, and without it a ladder was a
+--- one-way ammunition dispenser. A climber who walked a boundary collected
+--- another batch of loose rounds each way -- deaths cost no lives in this
+--- mode, so the loop was free -- and every rung they had ever stood on left
+--- its ammunition in their pockets for the rest of the round. Ten tiers in,
+--- a player was carrying ten calibres and could reload a gun they no longer
+--- had.
+---
+--- WHAT THEY WALKED IN WITH IS NEVER TOUCHED. `floorFor` is the line a
+--- player was already holding before the arena added to it, and the arena's
+--- claim is only ever on what sits above it -- so with the door off
+--- (`stripOnEntry = false`) a fighter's own ammunition is theirs throughout.
+---
+--- AND THE LEDGER IS CLEARED WITH IT, so the exit does not ask for the same
+--- rounds a second time -- which on a name that collides with something of
+--- the player's own takes theirs.
+--- @param ox table
+--- @param src number
+--- @param matchId string
+--- @param keep string|nil -- the incoming tier's ammo item, left alone
+local function dropRungRounds(ox, src, matchId, keep)
+    local byPlayer = issuedAmmo[matchId]
+    local given = byPlayer and byPlayer[src] or nil
+    if type(given) ~= 'table' then return end
+
+    for item, count in pairs(given) do
+        if item ~= keep then
+            takeBack(ox, src, item, count, floorFor(matchId, src, item))
+            given[item] = nil
+            ArenaDebug('weapons: took %s back off %s -- it belongs to a tier they have left.',
+                tostring(item), tostring(src))
+        end
+    end
+end
+
 --- Swaps one issued tier weapon for another, for a gun-game promotion or
 --- demotion.
 ---
@@ -891,11 +1075,15 @@ end
 ---       in an arena with empty hands.
 --- @param src number
 --- @param matchId string
---- @param removeWeapon string? -- the tier below, when it differs
+--- @param removeWeapon string? -- the tier below, when it differs. THE ONLY
+---        one whose refusal refuses the swap; see the anti-parking rule.
 --- @param entry table -- one Arena.ResolveLoadout weapon entry
+--- @param alsoClear string[]? -- every weapon on the ladder. Each one the
+---        player is still holding comes off, so a climber ends the call
+---        carrying this tier's gun and no other rung's, however they got here.
 --- @return boolean swapped
 --- @return string|nil reason -- 'no-inventory' or 'refused' when it did not
-function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)
+function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear)
     local ox = inventory()
     if not ox then return false, 'no-inventory' end
     if type(entry) ~= 'table' or not Arena.IsKey(entry.weapon) then return false, 'refused' end
@@ -913,66 +1101,89 @@ function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)
         return false, 'refused'
     end
 
-    -- KEPT, NOT JUST FORGOTTEN, so the rollback below can hand it back with
-    -- the metadata it was issued under.
-    local taken = nil
+    -- EVERY RUNG BUT THIS ONE, not just the rung below.
+    --
+    -- The swap used to take back exactly one weapon: the tier the player was
+    -- standing on. That is right for a single step and wrong for everything
+    -- else -- two kills in one tick move two tiers, a refused removal leaves
+    -- the old gun in the bag, and a demotion followed by a promotion can walk
+    -- past a rung without ever taking it back. Every one of those left a
+    -- climber holding weapons from tiers they are no longer on, which is the
+    -- whole point of a ladder gone.
+    --
+    -- Swept against the LADDER rather than against a remembered handful, so
+    -- it does not matter how the player got here: after this call they hold
+    -- this tier's weapon and no other rung's.
+    local sweep = {}
+    for _, name in ipairs(type(alsoClear) == 'table' and alsoClear or {}) do
+        if Arena.IsKey(name) then sweep[name] = true end
+    end
+
+    -- INCLUDING THE ONE THEY ARE MOVING ONTO, and that is not churn.
+    --
+    -- Two tiers CAN name the same GTA weapon without a duplicate key in
+    -- config -- two catalogue entries pointing at one name, or two pools
+    -- that overlap and happen to draw the same gun. Leaving that one alone
+    -- on the reasoning that taking a gun off to hand the same one back is
+    -- pointless is what handed out a second copy: nothing was removed and
+    -- one was still added, so every crossing of such a boundary armed the
+    -- player again. Deaths are free in this mode, so a climber could sit on
+    -- that boundary and pump it.
+    --
+    -- Re-issuing is the right answer anyway: a tier change re-arms you, so
+    -- crossing onto the same weapon should come with a full magazine rather
+    -- than the empty one you climbed with. The add below puts exactly one
+    -- back, and the rollback puts back everything this took if it will not.
+
+    -- THE RUNG THEY WERE STANDING ON IS THE ONE THAT CAN REFUSE THE SWAP.
+    --
+    -- It is taken first and on its own because a refusal there means
+    -- something specific: the player parked that weapon somewhere
+    -- ox_inventory cannot reach it -- a trunk, between the kill and the
+    -- promotion -- and advancing anyway would arm them with both tiers and
+    -- lose the lower one off the arena's books. That is the anti-parking
+    -- rule, and it is unchanged.
+    --
+    -- EVERY OTHER RUNG IS BEST EFFORT, and deliberately cannot refuse. A
+    -- weapon from four tiers ago that will not come off is not something the
+    -- climber is doing right now, and letting it halt the ladder would freeze
+    -- a player on a tier for the rest of a round over a gun they parked
+    -- minutes ago. It is logged and left; the next tier change tries again.
+    local taken = {}
     if Arena.IsKey(removeWeapon) then
-        -- ONLY IF THE ARENA'S OWN BOOKS SAY IT IS OURS TO TAKE. A weapon the
-        -- record does not list is not one this match issued -- or is one a
-        -- failed rollback below has already written off -- and there is
-        -- nothing to take back either way.
-        --
-        -- THIS IS WHAT BREAKS A PERMANENT LOCKOUT. When an add is refused
-        -- AND the put-back is refused too, the player ends up holding no
-        -- weapon and the record ends up listing none. Without this check the
-        -- next swap still asked ox_inventory for a weapon nobody had, was
-        -- refused, and returned early -- so the tier never moved again and
-        -- the player stayed disarmed for the rest of the round even after
-        -- their inventory freed up. Measured: four credited kills after the
-        -- one refusal, all of them on tier 1, empty-handed.
-        --
-        -- AND IT DOES NOT REOPEN THE EXPLOIT IT SITS NEXT TO. Parking the
-        -- tier weapon in a trunk leaves it ON the record and off the player,
-        -- which is the case below: the record lists it, ox_inventory refuses
-        -- the removal, and the promotion is refused with it.
-        local listed = false
-        for _, row in ipairs(record) do
-            if row.name == removeWeapon then listed = true break end
-        end
+        sweep[removeWeapon] = nil
+        local row, refused = takeRungBack(ox, src, record, removeWeapon)
+        if refused then return false, 'refused' end
+        if row then taken[#taken + 1] = row end
+    end
 
-        if listed then
-            if not oxDid('taking back the tier weapon ' .. removeWeapon,
-                function() return ox:RemoveItem(src, removeWeapon, 1) end)
-            then
-                return false, 'refused'
-            end
-
-            for index = #record, 1, -1 do
-                if record[index].name == removeWeapon then
-                    taken = taken or record[index]
-                    table.remove(record, index)
-                end
-            end
+    for name in pairs(sweep) do
+        local row, refused = takeRungBack(ox, src, record, name)
+        if row then taken[#taken + 1] = row end
+        if refused then
+            ArenaDebug('weapons: %s is still holding the tier weapon %s -- ox_inventory would not take it back.',
+                tostring(src), tostring(name))
         end
     end
+
+    -- AND THE ROUNDS EVERY TIER BUT THIS ONE WAS ISSUED. Taken before the
+    -- new weapon is handed over rather than after, so `issueSpareRounds`
+    -- below measures a shortfall against pockets that no longer hold a
+    -- previous tier's stock of the same calibre -- which is what makes a
+    -- promotion arm a climber in full rather than top them up to whatever
+    -- the last rung happened to leave behind.
+    dropRungRounds(ox, src, matchId, entry.ammoTypeItem)
 
     local metadata, loaded = weaponMetadata(entry)
 
     local ok, accepted = pcall(function() return ox:AddItem(src, entry.weapon, 1, metadata) end)
     if not (ok and accepted ~= false) then
-        -- PUT BACK WHAT WE TOOK. The removal above already happened, so
-        -- without this the player stands in the arena holding nothing at all
-        -- -- and the log used to tell them "they keep the tier they had",
-        -- which was the one thing that was not true.
-        if taken then
-            local back, gave = pcall(function() return ox:AddItem(src, taken.name, 1, taken.metadata) end)
-            if back and gave ~= false then
-                record[#record + 1] = taken
-            else
-                ArenaLog('weapons: %s was left empty-handed -- ox_inventory would take neither %s back nor %s away.',
-                    tostring(src), tostring(entry.weapon), tostring(taken.name))
-            end
-        end
+        -- PUT BACK EVERY RUNG WE TOOK, not just the one below. The removals
+        -- above have already happened, so without this the player stands in
+        -- the arena holding nothing at all -- and the log used to tell them
+        -- "they keep the tier they had", which was the one thing that was not
+        -- true.
+        putRungsBack(ox, src, record, taken, entry.weapon)
 
         ArenaLog('weapons: ox_inventory would not give the tier weapon %s to %s -- they keep the tier they had.',
             tostring(entry.weapon), tostring(src))
@@ -1000,6 +1211,133 @@ function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)
 
     ArenaDebug('weapons: the ladder gave %s x1 to %s (magazine %d).', entry.weapon, tostring(src), loaded)
     return true, nil
+end
+
+--- Puts one player back on the loadout they walked in with: every weapon
+--- they picked, with a full magazine, the loose rounds topped back up to the
+--- amount they paid for, and the supplies back at their picked counts.
+---
+--- WHAT A RESPAWN IS FOR. Dying used to cost a fighter everything they had
+--- spent in the life before it and hand back nothing: ox_inventory carries
+--- weapons through a death, so they stood back up holding the same gun with
+--- the same empty magazine, the rounds they had fired gone, and the plate
+--- they had taken gone with it. In a mode with lives that is a spiral -- each
+--- life starts worse than the one before it, and the fighter who is losing is
+--- the one least able to come back. Nothing said so; it simply got quieter.
+---
+--- NOT FOR A LADDER MODE, and the caller is what enforces that: a gun game
+--- death costs a TIER, and the tier machinery owns what that player holds.
+--- Refreshing on top of it would hand back the weapon the demotion had just
+--- taken away.
+---
+--- A TOP-UP, NOT A SECOND ISSUE, and the difference is the whole safety of
+--- it. Each weapon comes off and goes back on ONE copy at a time, and only
+--- when the arena's own books say it lent that weapon -- so a second copy the
+--- player owns is never touched, and neither is a weapon this match never
+--- issued. The rounds and the supplies are shortfalls measured against what
+--- the player is holding above the line they walked in on, which is the same
+--- arithmetic ArenaAmmo.Issue uses and the same line the exit reclaims to.
+---
+--- ARMOUR AND HEALTH ARE NOT IN HERE. Those are the ped's, they are a rule of
+--- the arena rather than a loadout choice, and the client already re-applies
+--- both from Arena.StartingVitals on every respawn.
+--- @param src number
+--- @param matchId string
+--- @param loadout table -- Arena.ResolveLoadout output
+--- @return boolean refreshed -- false when there was nothing this could act on
+function ArenaAmmo.Refresh(src, matchId, loadout)
+    if type(src) ~= 'number' or src <= 0 or not Arena.IsKey(matchId) then return false end
+    if type(loadout) ~= 'table' then return false end
+
+    local ox = inventory()
+    if not ox then return false end
+
+    -- NO RECORD, NO REFRESH, for the same reason SwapWeapon refuses without
+    -- one: `issuedWeapons` is this file's answer to "is this player still the
+    -- arena's to arm", and a respawn thread can land after the round has let
+    -- them go.
+    local record = issuedWeapons[matchId] and issuedWeapons[matchId][src] or nil
+    if type(record) ~= 'table' then return false end
+
+    -- ONE PASS TABLE FOR THE WHOLE REFRESH, exactly as ArenaAmmo.Issue keeps
+    -- one for the whole loadout. Two weapons sharing a calibre would
+    -- otherwise have the second read the first one's fresh rounds as rounds
+    -- the player already had, and the second weapon would be topped up to
+    -- nothing.
+    local pass = {}
+
+    for _, entry in ipairs(loadout.weapons or {}) do
+        local name = entry.weapon
+        if Arena.IsKey(name) then
+            local metadata = weaponMetadata(entry)
+
+            -- OFF AND ON AGAIN, ONE COPY. There is no way to refill a
+            -- magazine that already exists -- the rounds ride in the item's
+            -- metadata and ox_inventory owns that -- so the only honest full
+            -- magazine is a fresh item. takeRungBack is what keeps it to the
+            -- arena's own copy: it refuses to touch a weapon the record does
+            -- not list, and it removes exactly one.
+            local taken = takeRungBack(ox, src, record, name)
+
+            -- A WEAPON THEY NO LONGER HOLD IS STILL RE-ISSUED. Losing the gun
+            -- itself is the case this exists for as much as an empty
+            -- magazine is: a death under an ox_inventory configured to drop
+            -- on death leaves the fighter unarmed, and standing them back up
+            -- empty-handed in a live round is not a respawn.
+            local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
+            if ok and accepted ~= false then
+                record[#record + 1] = { name = name, metadata = metadata }
+            else
+                -- PUT BACK WHAT WE TOOK, so a refusal costs them a full
+                -- magazine rather than the weapon.
+                if taken then putRungsBack(ox, src, record, { taken }, name) end
+                ArenaLog('weapons: could not refresh %s for %s -- ox_inventory refused it. They keep what they had.',
+                    tostring(name), tostring(src))
+            end
+
+            issueSpareRounds(ox, src, matchId, entry, pass)
+        end
+    end
+
+    -- AND THE SUPPLIES, BACK TO WHAT THEY PICKED. Bandages and plates are the
+    -- things a fighter MEANS to spend, so this is always a shortfall and
+    -- never a re-issue: somebody who used none gets none, and somebody who
+    -- used both gets both back.
+    issuedSupplies[matchId] = issuedSupplies[matchId] or {}
+    local supplyRecord = issuedSupplies[matchId][src] or {}
+    issuedSupplies[matchId][src] = supplyRecord
+
+    for _, entry in ipairs(loadout.supplies or {}) do
+        local item = entry.item
+        local wanted = Arena.ToInt(entry.count) or 0
+        if Arena.IsKey(item) and wanted > 0 then
+            rememberHeld(ox, src, matchId, item)
+
+            -- ABOVE THE LINE THEY WALKED IN ON, not everything in their
+            -- pockets. With the door off (`stripOnEntry = false`) some of a
+            -- player's bandages are their own, and counting those as the
+            -- arena's would refuse to replace anything the arena had given.
+            local counted, answer = pcall(function() return ox:GetItemCount(src, item) end)
+            local held = counted and math.max(0, Arena.ToInt(answer) or 0) or 0
+            local mine = math.max(0, held - floorFor(matchId, src, item))
+
+            local short = wanted - mine
+            if short > 0 then
+                local ok, granted = pcall(function() return ox:AddItem(src, item, short) end)
+                if ok and granted ~= false then
+                    supplyRecord[item] = (supplyRecord[item] or 0) + short
+                    ArenaDebug('supplies: refreshed %s x%d for %s.', item, short, tostring(src))
+                else
+                    ArenaLog('supplies: %s x%d was refused for %s on a respawn -- either their inventory has '
+                        .. 'no room for it or the item does not exist on this server.',
+                        item, short, tostring(src))
+                end
+            end
+        end
+    end
+
+    ArenaDebug('weapons: refreshed the loadout for %s on match %s.', tostring(src), tostring(matchId))
+    return true
 end
 
 --- Hands one player one supply mid-round -- the bandages and armour a gun
@@ -1063,44 +1401,6 @@ end
 --- Takes back weapon items when the door did not take everything anyway.
 --- @param ox table
 --- @param src number
---- Takes back up to `count` of one stackable item, never more than the
---- player is actually holding.
----
---- ONE COPY, DELIBERATELY, because there were two and only one of them was
---- right. Ammunition and supplies are reclaimed by separate loops below, the
---- supplies loop was taught to clamp against what a player still holds, and
---- the ammunition loop was not -- so a fighter who fired their weapon kept
---- every round they had left.
----
---- WHY CLAMPING IS THE WHOLE JOB. ox_inventory refuses a removal it cannot
---- satisfy in full on most builds: it does not take what is there and shrug.
---- Ask a player holding 120 rounds for the 250 they were issued and the
---- answer is no, and all 120 leave the arena with them.
----
---- A build with no counter at all is asked for the full amount. Taking back
---- what was issued is the right answer when nothing can tell us otherwise,
---- and a refusal there costs the arena nothing it had.
---- @param ox table
---- @param src number
---- @param item string
---- @param count integer -- how much was issued
-local function takeBack(ox, src, item, count, floor)
-    local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
-    local held = ok and (Arena.ToInt(answer) or 0) or count
-
-    -- NOT ONE BELOW THE LINE THEY WALKED IN ON. `held` is everything in
-    -- their pockets, and with the door off some of it is theirs -- so
-    -- clamping to `held` alone charged a player for every arena consumable
-    -- they SPENT, out of their own identical stock. The arena's claim is
-    -- only ever on what sits above that line.
-    local mine = math.max(0, held - math.max(0, Arena.ToInt(floor) or 0))
-
-    local take = math.min(Arena.ToInt(count) or 0, mine)
-    if take > 0 then
-        pcall(function() return ox:RemoveItem(src, item, take) end)
-    end
-end
-
 local function reclaimWeapons(ox, src)
     for _, byPlayer in pairs(issuedWeapons) do
         local given = byPlayer[src]
@@ -1338,6 +1638,13 @@ function ArenaAmmo.Issue(src, matchId, loadout)
             local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
             if ok and granted ~= false then
                 supplyRecord[item] = (supplyRecord[item] or 0) + count
+                -- SAID OUT LOUD, because "where did this come from" is a
+                -- question an operator cannot answer from the inside. Every
+                -- other resource on the box can put items in a player's
+                -- pockets, and the arena is the obvious thing to blame for
+                -- anything that appears during a round. A line here means a
+                -- silent console is proof this file did NOT do it.
+                ArenaDebug('supplies: gave %s x%d to %s.', item, count, tostring(src))
             else
                 -- BOTH CAUSES, and the weight one first because it is the
                 -- likelier of the two on a server with generous supply caps.
@@ -1792,7 +2099,7 @@ function ArenaAmmo.ReturnLeftovers(src)
     -- ox_inventory forgets every stash it was told about when it restarts,
     -- and a stash it does not know about is not one it will read.
     if not oxDid('registering stash ' .. stash, function()
-        return ox:RegisterStash(stash, 'Arena Belongings', 100, 1000000, citizenid)
+        return ox:RegisterStash(stash, 'Arena Belongings', STASH_SLOTS, STASH_WEIGHT, citizenid)
     end) then
         return false, 0, false
     end

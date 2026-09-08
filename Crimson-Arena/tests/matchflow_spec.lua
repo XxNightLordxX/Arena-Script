@@ -170,6 +170,10 @@ local function newFixture(mutate)
             -- tests/ammo_spec.lua; here it only has to exist, because
             -- server/match.lua calls it at both arena choke points.
             IsEnabled = function() return false end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
             Issue = function() return {} end,
             Reclaim = function() return 0 end,
             ReclaimAll = function() return 0 end,
@@ -1023,6 +1027,12 @@ local function newClientFixture(mutate)
         -- before any damage exists. Recorded rather than ignored: leaving it
         -- set is what would follow a player out of the arena.
         SetPlayerTeam = function(_player, team) f.team = team end,
+        -- READ BACK, rather than answering -1 for ever. The sandbox's default
+        -- says "no team" whatever has been written, and the per-frame hold
+        -- compares what it wrote against what the engine reports -- so
+        -- against a stub that never agrees with SetPlayerTeam, "the arena put
+        -- its team back" and "the arena never noticed" look identical.
+        GetPlayerTeam = function() return f.team or -1 end,
         NetworkSetFriendlyFireOption = function(on) f.friendlyFire = on end,
         SetCanAttackFriendly = function() end,
         SetEntityDrawOutline = function(ped, on)
@@ -2073,6 +2083,60 @@ t.test('and a new round clears the flag, so they can be sent home again', functi
     f.M.OnDeath(3, 1)
     t.equals(f.count('crimson_arena:client:exitArena', 3), 2,
         'the second round could not send the same fighter home')
+end)
+
+-- ======================================================================
+-- THE FRIENDLY-FIRE HOLD, AGAINST THE REST OF THE SERVER
+-- ======================================================================
+
+t.test('a team match puts the player on their side and turns friendly fire off', function()
+    local f = outlinedTeamMatch()
+    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
+        'the engine was never told which side this fighter is on')
+    t.isFalse(f.friendlyFire, 'and friendly fire was left on in a mode whose rule is that it is off')
+end)
+
+t.test('and another resource moving the player off it does not switch friendly fire back on', function()
+    -- IN A PLAYER'S WORDS: "when switching teams on team deathmatch, when you
+    -- try to start it with the same team then switch again, it keeps friendly
+    -- fire".
+    --
+    -- SetPlayerTeam and NetworkSetFriendlyFireOption are settings on the
+    -- PLAYER, not the ped, and every other resource on the box can write
+    -- them: a gang script, a job script, a spectator or freecam resource
+    -- putting you on a side of its own. The arena wrote them once at entry
+    -- and never looked again -- so the first resource to touch either one
+    -- turned friendly fire back on for the rest of the round, teammates
+    -- shooting each other in a mode whose whole rule is that they cannot,
+    -- with nothing said at either end.
+    local f = outlinedTeamMatch()
+    local ours = f.team
+
+    -- SOMEBODY ELSE'S RESOURCE, mid-round.
+    f.team = 7
+    f.friendlyFire = true
+
+    f.step()
+
+    t.equals(f.team, ours, 'the arena never put its own side back')
+    t.isFalse(f.friendlyFire, 'and friendly fire stayed on for the rest of the round')
+end)
+
+t.test('and the hold is not re-written every frame while nothing has touched it', function()
+    -- A GUARD THAT ALWAYS FIRES IS NOT A GUARD. The re-hold is meant to cost
+    -- one native read a frame on an untouched server; a comparison that never
+    -- matches would have it writing three natives a frame for every fighter
+    -- in every team round, for ever.
+    local f = outlinedTeamMatch()
+    local writes = 0
+    local realSet = f.env.SetPlayerTeam
+    f.env.SetPlayerTeam = function(...) writes = writes + 1 return realSet(...) end
+
+    f.step()
+    f.step()
+
+    t.equals(writes, 0, 'the hold rewrote itself on a frame where nothing had drifted')
+    f.env.SetPlayerTeam = realSet
 end)
 
 os.exit(t.summary())

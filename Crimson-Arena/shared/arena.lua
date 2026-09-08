@@ -523,6 +523,85 @@ function Arena.RoundSecondsFor(modeKey, chosen)
     return math.max(0, own or Arena.RoundTimeDefault())
 end
 
+--- How far apart two players may be for one to have killed the other, in
+--- the arena the fight is actually being held in.
+---
+--- THE SPAN OF THE ARENA, NOT A FLAT NUMBER, and the flat number is what
+--- made this a bug rather than a guard. Config.Match.maxKillDistance ships
+--- at 150 against a comment claiming the shipped arenas were smaller than
+--- that; they are not. The Trailer Park's boundary is a hundred-metre
+--- RADIUS -- two hundred across, and 270 at the size it grows to for twenty
+--- players -- and the skydome's is 110. Two fighters at opposite edges of
+--- the arena they were put in were fifty metres or more over the ceiling, so
+--- their kills were refused: no credit on the scoreboard, no tier on the
+--- ladder, nothing towards the pot. It took the LONG shots, which is to say
+--- the best ones, and left the point-blank kills alone.
+---
+--- SO THE ARENA RAISES IT AND NEVER LOWERS IT. The operator's number is a
+--- floor -- an operator who wants a bigger allowance than the fence still
+--- gets it, and an arena with no boundary at all falls back to it whole.
+---
+--- GROWN WITH THE ROSTER, like the fence and the floor, out of the same
+--- Arena.SizeFactor the boundary payload uses. A ceiling that did not grow
+--- would start refusing kills again the moment an arena did.
+---
+--- PLUS A QUARTER OF THE RADIUS, and that margin is not decoration. The
+--- keep-out fence pushes people OUTSIDE the boundary and holds them there;
+--- the boundary bleeds rather than blocks, so a fighter can be past it and
+--- alive; and the skydome is a platform, so somebody who stepped off it is
+--- below the floor while the measurement is taken in three dimensions. All
+--- three put a legitimate opponent outside a bare diameter.
+---
+--- 0 SWITCHES THE CHECK OFF, exactly as the config says, and that is the one
+--- answer the arena cannot override -- an operator turning a guard off has
+--- said so.
+--- @param arenaKey any
+--- @param factor number|nil -- Arena.SizeFactor for this match's roster
+--- @return number metres -- 0 when the check is off
+function Arena.KillCeilingFor(arenaKey, factor)
+    local configured = math.max(0.0, tonumber((Config.Match or {}).maxKillDistance) or 0.0)
+    if configured <= 0 then return 0.0 end
+
+    local boundary = Arena.BoundaryOf(Arena.GetArenaByKey(arenaKey))
+    local radius = boundary and tonumber(boundary.radius) or nil
+    if not radius or radius <= 0 then return configured end
+
+    local grown = radius * math.max(1.0, tonumber(factor) or 1.0)
+    return math.max(configured, grown * 2.25)
+end
+
+--- How many rounds a gun-game tier weapon is handed, or nil for "whatever
+--- that weapon's own default is".
+---
+--- A LADDER RE-ARMS YOU, AND THAT IS THE POINT OF THE MODE. Without this the
+--- tier weapon arrived on Arena.ResolveAmmo's no-ask branch -- the weapon's
+--- own `ammo.default`, which is 60 for a sidearm and 150 for a rifle -- and
+--- since a promotion sweeps the previous tier's rounds away with its gun, a
+--- climber's whole supply for a tier was whatever that one number said. Sixty
+--- rounds is a magazine and a half of a pistol you have to fight a whole tier
+--- with, and running dry is meant to be a mistake you made rather than the
+--- shape of the mode.
+---
+--- CLAMPED PER WEAPON, NOT HANDED OUT FLAT. Arena.ResolveAmmo holds the
+--- request under each weapon's own `ammo.max`, so a number bigger than a
+--- weapon allows quietly becomes that weapon's ceiling rather than being
+--- refused -- and melee is given none at all, because splitRounds reads the
+--- catalogue and answers zero for a blade.
+---
+--- NIL FOR "NO OPINION". A mode that does not set it, or sets it to zero or
+--- to something unreadable, falls through to the per-weapon defaults exactly
+--- as before -- which is what makes this safe to leave out of a mode block.
+--- @param modeKey any
+--- @return integer|nil rounds
+function Arena.TierAmmoFor(modeKey)
+    local mode = Arena.GetModeByKey(modeKey)
+    if type(mode) ~= 'table' then return nil end
+
+    local wanted = Arena.ToInt(mode.tierAmmo)
+    if not wanted or wanted <= 0 then return nil end
+    return wanted
+end
+
 --- The server-wide round length, out of a setting that takes two shapes.
 ---
 --- Config.Match.roundTimeSeconds is a plain NUMBER on a server that fixes

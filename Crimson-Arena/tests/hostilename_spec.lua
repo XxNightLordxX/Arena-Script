@@ -79,7 +79,10 @@ local function serverNamed(name)
         PerformHttpRequest = function(_, _, _, payload) captured.webhook = payload end,
         ArenaStats = { GetLeaderboard = function(cb) cb({}) end, EnsureSchema = function() end,
                        RecordMatch = function() end, Flush = function() end },
+        -- Refresh is in here because a stub missing it does not fail a test,
+        -- it THROWS inside the respawn thread.
         ArenaAmmo = { IsEnabled = function() return false end, Issue = function() return {} end,
+                      Refresh = function() return true end,
                       Reclaim = function() return 0 end, ReclaimAll = function() return 0 end,
                       Clear = function() return true end, OnLoan = function() return 0 end },
         ArenaDispatch = { Set = function() end, Clear = function() end, Revive = function() end,

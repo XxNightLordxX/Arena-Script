@@ -403,6 +403,27 @@ local function run(plan)
         table.sort(sitting)
         for _, src in ipairs(sitting) do server.lobby.Leave(src, 'match.left') end
         took['the lobby emptied out'] = true
+
+        -- ...EXCEPT THE ONES WHO MAY NOT GO, and that is a rule now rather
+        -- than an accident. ArenaLobby.Leave refuses a voluntary exit from a
+        -- lobby the player holds a side-bet on -- a bet its holder can cancel
+        -- by standing up is a bet with no risk in it -- so a generated plan
+        -- where a FIGHTER backed the match leaves that fighter sitting in it
+        -- after everybody else has gone.
+        --
+        -- Which is a live lobby holding real escrow, not an empty one, and
+        -- this file would have called that missing money: the audit below
+        -- reads wallets, and a stake still held by a match that never ended
+        -- is not in anybody's wallet. So the room is closed the way a server
+        -- closes one nobody is going to start -- the same Destroy the idle
+        -- sweep and the host's own Close Lobby reach -- and the audit then
+        -- asks its real question, which is whether that teardown handed
+        -- everything back.
+        local left = server.lobby.Get(id)
+        if left and next(left.players) ~= nil then
+            server.lobby.Destroy(id, 'notify.lobby_timed_out')
+        end
+
         server.step(6)
         return { server = server, id = id, placed = placed, took = took }
     end

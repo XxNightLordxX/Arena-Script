@@ -2850,7 +2850,12 @@ end
 --- round they were in.
 --- @param src integer
 --- @param reasonKey string?
---- @return boolean ok
+--- @return boolean ok -- true when this player was in a match at all, whether
+---         or not they were let out of it
+--- @return string|nil refusal -- the locale key ArenaLobby.Leave refused with,
+---         carried up unchanged. It is the ONLY thing that tells detach() the
+---         difference between "taken out" and "told no", and without it the
+---         panel's Leave button answered a refusal with silence.
 --- @param dropped boolean? -- their connection went away; see detach()
 function ArenaMatch.RemovePlayer(src, reasonKey, dropped)
     local id = Arena.ToInt(src)
@@ -2867,6 +2872,20 @@ function ArenaMatch.RemovePlayer(src, reasonKey, dropped)
     local inProgress = match.state == 'live' or match.state == 'countdown'
     local player = match.players[id]
 
+    -- ASKED BEFORE ANYTHING IS DONE TO THEM, and that ordering is the whole
+    -- reason it is asked here at all rather than left to ArenaLobby.Leave
+    -- below. A player who may not leave a COUNTDOWN has already been
+    -- teleported into the arena by ArenaMatch.Start, so `inProgress` is true
+    -- and the block underneath would send them home, mark them not-alive and
+    -- stamp a placement on them -- and then Leave would refuse and put none
+    -- of it back. Half-removed is worse than either answer.
+    --
+    -- ArenaLobby.MayLeave, not a copy of its rule: Leave enforces the same
+    -- predicate a few lines later, so a direct caller is still guarded, and
+    -- there is exactly one place that decides.
+    local may, refusal = ArenaLobby.MayLeave(id, dropped)
+    if not may then return true, refusal end
+
     if player and inProgress then
         player.alive = false
         -- Placed on the way out so the results board can still rank them
@@ -2877,7 +2896,15 @@ function ArenaMatch.RemovePlayer(src, reasonKey, dropped)
         })
     end
 
-    ArenaLobby.Leave(id, reasonKey or 'match.left', dropped)
+    -- REFUSED IS A REAL ANSWER, and it has to come back up the stack.
+    -- ArenaLobby.Leave turns away a voluntary exit from a LOBBY the player
+    -- has a side-bet on, which is a state `inProgress` above is false in --
+    -- so nothing has been done to this player yet when it happens and there
+    -- is nothing to unwind. Returned rather than swallowed so the net event
+    -- that asked can say why; swallowing it is how a refusal becomes a dead
+    -- button.
+    local left, refused = ArenaLobby.Leave(id, reasonKey or 'match.left', dropped)
+    if not left and refused then return true, refused end
 
     -- Leave may already have destroyed the match -- it does when the last
     -- player walks out of a lobby.

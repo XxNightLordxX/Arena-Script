@@ -77,6 +77,20 @@ local function newServer(wallets, mutate, opts)
             return total
         end,
         log = function() return table.concat(console, '\n') end,
+        --- Takes a character off the roster, which is what a crash or a
+        --- logout looks like from this file: ArenaGetPlayer stops answering
+        --- and every payment to them starts failing.
+        crash = function(id) qbx.players[id] = nil end,
+        --- ...and back, on a fresh server id, because that is what a
+        --- reconnect really gives you. The character is the same one.
+        reconnect = function(oldId, newId, cash)
+            qbx.players[newId] = {
+                citizenid = ('CID%05d'):format(oldId),
+                name = 'Player' .. oldId,
+                money = { cash = cash, bank = 0 },
+            }
+        end,
+        cashOf = function(id) return qbx.players[id].money.cash end,
     }
 end
 
@@ -391,6 +405,101 @@ t.test('an empty pot says so rather than returning in silence', function()
     t.contains(console, 'entry fee', 'the likely cause is not named')
     t.contains(console, 'Side-bets', 'the thing that DID pay is not distinguished')
     t.equals(server.cash(1), 5000, 'money moved from an empty pot')
+end)
+
+-- ========================================================================
+-- A WON POT THAT COULD NOT BE HANDED OVER IS REMEMBERED
+--
+-- THE DEFECT. server/betting.lua keeps an unpaid ledger for money it owes
+-- and could not deliver, keyed by CITIZEN ID -- the only identity that
+-- survives the match being torn down and the server id being recycled. Four
+-- paths file into it. Three of them pass a citizen id captured while the
+-- player was still connected (`stake.citizenid`, `bet.citizenid`). The
+-- fourth, the pot payout, passed `payout.id` -- and that is a SERVER id, a
+-- number, copied out of the winners list server/match.lua builds from
+-- `player.src`.
+--
+-- `owe` rejects anything Arena.IsKey says is not a non-empty string, and a
+-- number is not one, so it returned false and wrote nothing. The console
+-- said "It is on the unpaid ledger and will be paid when they come back"
+-- underneath, unconditionally. The sentence was false and the pot was gone:
+-- taken out of both players' pockets by TakeStake and never put back into
+-- anybody's.
+--
+-- Only reachable with betPayout.includeEntryPot OFF -- with it on, the
+-- shipped default, the entry fees become pool bets and the side-bet path
+-- pays them, which is the path that was already correct. That is exactly why
+-- it survived: the one arrangement where the pot settles on its own is the
+-- one arrangement nobody had crashed a winner under.
+-- ========================================================================
+
+t.test('a pot owed to a winner who has gone is filed against their character', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+
+    -- Between the last kill and the settlement, the winner crashed.
+    server.crash(1)
+
+    server.betting.Settle('m1', {
+        players = { { id = 1, stake = 1000, kills = 1 }, { id = 2, stake = 1000, kills = 0 } },
+        winners = { 1 },
+        teams = false,
+        contestants = 2,
+    })
+
+    t.contains(server.log(), 'PAYOUT UNDELIVERED', 'the failure was not even reported')
+
+    local characters, owed = server.betting.Outstanding()
+    t.equals(characters, 1, 'the winner is owed nothing -- the ledger write was dropped')
+    t.equals(owed, 2000, 'the whole pot is what they are owed')
+end)
+
+t.test('and the console does not promise a ledger entry that was not written', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+    server.crash(1)
+
+    server.betting.Settle('m1', {
+        players = { { id = 1, stake = 1000, kills = 1 }, { id = 2, stake = 1000, kills = 0 } },
+        winners = { 1 },
+        teams = false,
+        contestants = 2,
+    })
+
+    local _, owed = server.betting.Outstanding()
+    if owed > 0 then
+        t.contains(server.log(), 'unpaid ledger')
+    else
+        t.contains(server.log(), 'PAYOUT LOST',
+            'nothing was filed, and the console said it had been')
+    end
+end)
+
+t.test('the pot reaches the winner when they come back on a new id', function()
+    local server = newServer({ [1] = 5000, [2] = 5000 }, separatePot)
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+    server.crash(1)
+
+    server.betting.Settle('m1', {
+        players = { { id = 1, stake = 1000, kills = 1 }, { id = 2, stake = 1000, kills = 0 } },
+        winners = { 1 },
+        teams = false,
+        contestants = 2,
+    })
+
+    -- Escrow is dropped in the same call chain that failed to pay -- the
+    -- debt has to outlive it, which is the whole reason it is filed against
+    -- the character rather than the match.
+    t.isTrue(server.betting.Clear('m1'))
+
+    -- They reconnect on server id 9 with the 4000 they were left holding.
+    server.reconnect(1, 9, 4000)
+    t.equals(server.betting.PayOutstanding(9), 2000, 'the pot never arrived')
+    t.equals(server.cashOf(9), 6000, '5000, less the 1000 staked, plus the 2000 pot')
+    t.equals(server.ledgerTotal(), 0, 'money was destroyed')
 end)
 
 print('payoutchain_spec')

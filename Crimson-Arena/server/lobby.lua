@@ -803,6 +803,15 @@ local function snapshotMatches()
             -- rather than only quoting a total.
             entryPot = ArenaBetting.GetPot(match.id),
             betPool = ArenaBetting.GetSideBetPool(match.id),
+            -- HOW MANY BETS, not how much money, and the difference is the
+            -- whole reason this is here rather than the panel reading
+            -- `betPool` above. That figure is the POOL, and an 'odds' bet is
+            -- funded by the server and never enters it -- so on a server
+            -- running odds side-bets the pool reads zero with the book full.
+            -- The panel greys the mode picker off this, and it has to grey it
+            -- off the same question ArenaLobby.UpdateMatch refuses on, or it
+            -- offers a change that comes back rejected.
+            bets = ArenaBetting.CountSideBets(match.id),
             playerCount = #roster,
             teamCounts = Arena.CountTeams(roster),
             startsAt = match.startsAt,
@@ -1301,12 +1310,91 @@ function ArenaLobby.Join(src, matchId, teamKey, account)
     return true, nil
 end
 
+--- Whether this player may take themselves out of the match they are in.
+---
+--- YOU DO NOT TAKE YOUR OWN MONEY OFF THE TABLE BY STANDING UP.
+---
+--- The mirror of the 'error.bet_then_join' rule ArenaLobby.Join enforces a
+--- hundred lines up, for the reason that one states: a bet its holder can
+--- cancel at a moment of their choosing is a bet with no risk in it. Joining
+--- a match you have backed was already refused; LEAVING one you have backed
+--- was not, and it is the same trade run backwards.
+---
+--- WHAT IT COST. fighterBets.max ships at twice spectatorBets.max, so a
+--- fighter took a 50,000 position on their own side, walked out for nothing
+--- -- the shipped entry fee is zero -- and settled it against a field nobody
+--- watching could put more than 25,000 into. Their side won without them and
+--- they collected the honest spectator's whole stake.
+---
+--- HoldsSideBet, not a check for a FIGHTER bet specifically, and the two are
+--- the same set: Join refuses a seat to anybody already holding a bet on this
+--- match, so a bet held by somebody on the roster can only have been placed
+--- from inside it. Asking the narrower question would be a second copy of
+--- Join's rule, worded differently, for no gain.
+---
+--- TWO NARROWINGS, BOTH LOAD-BEARING, NEITHER OF THEM TIMIDITY:
+---
+---   A DISCONNECT CANNOT BE REFUSED. The player is already gone; holding
+---   their row would leave a ghost on the roster, a routing bucket set, a
+---   dispatch flag suppressing their police and medical alerts for the rest
+---   of the session, and a stake nobody can reach. So a drop always goes
+---   through, and the money side of it is closed where it still can be:
+---   ArenaBetting.MarkWalkedOut trims the stake down to what a non-fighter
+---   may hold and hands the difference back. That leaves ONE thing a
+---   determined player can still buy by pulling their own connection --
+---   getting the over-band part of a losing bet returned -- and it is worth
+---   exactly `fighterBets.max` minus `spectatorBets.max`. An operator who
+---   wants it to be worth nothing sets those two equal.
+---
+---   A FIGHT IS NOT A ROOM ANYBODY MAY BE LOCKED IN. There is no
+---   cancel-a-bet path anywhere in this resource, so this refusal has no
+---   release valve; applied to a live round it would mean a player standing
+---   in an arena being shot at, clicking Leave, and being told no. That is a
+---   worse defect than the one being fixed.
+---
+--- SO IT COVERS THE LOBBY AND THE COUNTDOWN, and the countdown is not
+--- padding: without it the whole rule is worth fifteen seconds of patience.
+--- Bet, wait for the host to press Start, and leave during the ten-second
+--- lobby countdown or the five-second frozen one -- the stake comes back
+--- before start either way and the trim hands over the difference. A
+--- countdown is also the one window where being held is no hardship: it ends
+--- in the round they backed, by itself, in seconds.
+---
+--- WHAT THE HELD PLAYER CAN DO, because a refusal that names no action is
+--- worse than none: sit the round out, or have the lobby closed. Every way a
+--- lobby ends -- the host's own Close Lobby, the idle sweep at
+--- idleLobbyTimeoutSeconds, an admin stop -- runs ArenaLobby.Destroy, whose
+--- Clear hands back every unsettled side-bet whatever refundOnCancel says.
+--- Nobody is held for longer than the lobby lives.
+--- @param src any
+--- @param dropped boolean? -- their connection went away; never refused
+--- @return boolean may
+--- @return string|nil reasonKey
+function ArenaLobby.MayLeave(src, dropped)
+    local target = tonumber(src)
+    if not target or dropped == true then return true end
+
+    local match = findPlayer(target)
+    if not match then return true end
+    if match.state ~= 'lobby' and match.state ~= 'countdown' then return true end
+
+    if ArenaBetting.IsEnabled() and ArenaBetting.HoldsSideBet(match.id, target) then
+        return false, 'error.bet_then_leave'
+    end
+
+    return true
+end
+
 --- Takes a player out of whatever they are attached to: a match if they are
 --- in one, otherwise the match they were watching. main.lua routes
 --- playerDropped through here for exactly that reason.
 --- @param src any
 --- @param reasonKey string?
 --- @return boolean ok
+--- @return string|nil refusal -- a locale key when the leave was REFUSED, so
+---        server/main.lua can put it on the screen of the player who clicked
+---        the button. Absent on every ordinary exit, including the ones that
+---        answer false for having nothing to leave.
 --- @param dropped boolean? -- their connection went away rather than them
 ---        choosing to go. server/main.lua's detach() is the only source of
 ---        it, and only from playerDropped.
@@ -1321,6 +1409,13 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
         playerIndex[target] = nil
         return ArenaLobby.RemoveSpectator(target)
     end
+
+    -- ASKED, NOT RE-DERIVED. ArenaMatch.RemovePlayer asks the same question
+    -- before it teleports anybody, so the rule lives in one function with two
+    -- callers rather than in two copies free to drift -- the way Join asks
+    -- ArenaCanJoin and Arena.HasRoom rather than reading the settings itself.
+    local may, refusal = ArenaLobby.MayLeave(target, dropped)
+    if not may then return false, refusal end
 
     -- WHAT LEAVING COSTS. One switch per state, and the state is the only
     -- thing that picks between them: refundOnDisconnectBeforeStart while the
@@ -1854,6 +1949,13 @@ end
 ---   re-taking makes that honest. A host who wants a different fee opens a
 ---   different lobby.
 ---
+---   The MODE, once anybody has money on the match. A mode change makes
+---   every outstanding pick unwinnable, and the host is a fighter with a
+---   wager of their own -- so a free, repeatable mode flip was a button that
+---   voided the whole book on demand. Everything else about the lobby stays
+---   editable, and a lobby nobody has backed is as free to change as it ever
+---   was. See the refusal itself, further down.
+---
 ---   Anything at all once the round has STARTED. A match being fought is not
 ---   a form.
 --- @param src any
@@ -1910,7 +2012,7 @@ function ArenaLobby.UpdateMatch(src, data)
     -- CanStartMatch already refuses to start a team match with nobody sorted.
     local teamsChanged = modeKey ~= match.modeKey
 
-    -- EVERY OUTSTANDING SIDE-BET GOES BACK when the mode changes.
+    -- THE MODE LOCKS THE MOMENT MONEY IS DOWN ON IT.
     --
     -- A side-bet names a side: a team key in a team mode, a fighter's server
     -- id in a free-for-all. Change the mode and every bet already placed is
@@ -1919,18 +2021,32 @@ function ArenaLobby.UpdateMatch(src, data)
     -- refunded: lost, with nothing on screen saying so and no way for the
     -- bettor to have seen it coming.
     --
-    -- They backed a match that no longer exists in the shape they backed it
-    -- in. They get their money and can back the one that replaced it.
-    if teamsChanged then
-        local returned, owed = ArenaBetting.ReturnSideBets(match.id)
-        if returned > 0 then
-            ArenaLog('betting: match %s changed mode, so %d side-bet(s) were returned unjudged.',
-                tostring(match.id), returned)
-        end
-        if owed > 0 then
-            ArenaLog('betting: match %s changed mode and %d of side-bets could not be returned -- they are still held.',
-                tostring(match.id), owed)
-        end
+    -- THIS USED TO HAND THE WHOLE BOOK BACK instead, and that was the wrong
+    -- half of the answer. Returning the bets is fair to the bettors and it is
+    -- exactly what makes the button worth pressing: the host is a FIGHTER
+    -- with money on the outcome, changing the mode costs nothing, and it can
+    -- be done again a second later. So the host held a "cancel everyone's
+    -- bets" lever -- their own losing wager included -- pullable the instant
+    -- the book turned against them, as often as they liked. Nothing had to be
+    -- exploited for that; it was simply what the setting did.
+    --
+    -- Refused instead, BEFORE anything is written, the way every other
+    -- refusal in this function is: a request that is half legal must not
+    -- leave the match half changed.
+    --
+    -- THE HONEST HOST IS UNTOUCHED. They opened a lobby, nobody has backed
+    -- it, and this asks about the book rather than about the lobby -- so a
+    -- match with players in it and no bets on it is as editable as it ever
+    -- was, and the arena, the lives and the radar stay editable even when
+    -- there IS a book, because none of those makes a pick unwinnable.
+    --
+    -- Their way out when somebody HAS backed it is the one they already have:
+    -- close the lobby. ArenaLobby.Destroy's Clear returns every unsettled
+    -- side-bet whatever refundOnCancel says, so nobody is left holding a bet
+    -- on a match that stopped existing -- it just costs the host the room
+    -- rather than costing them nothing.
+    if teamsChanged and ArenaBetting.IsEnabled() and ArenaBetting.CountSideBets(match.id) > 0 then
+        return false, 'error.mode_locked_by_bets'
     end
 
     match.arenaKey = arenaKey

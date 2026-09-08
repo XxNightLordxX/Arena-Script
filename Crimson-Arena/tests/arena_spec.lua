@@ -792,10 +792,7 @@ t.test('CanDamage treats an unknown or disabled mode as a free-for-all', functio
     t.isTrue(Arena.CanDamage('nosuchmode', 'crimson', 'crimson'))
     t.isTrue(Arena.CanDamage(nil, 'crimson', 'crimson'))
     t.isTrue(Arena.CanDamage({}, 'crimson', 'crimson'))
-    -- gungame is a real, enabled mode that simply has no sides -- a ladder
-    -- is climbed by one player -- so it answers the same as an unknown one
-    -- here for a different reason. It used to ship disabled, and this line
-    -- used to say so.
+    -- gungame ships disabled, so it resolves to no mode at all.
     t.isFalse(Arena.ModeUsesTeams('gungame'))
     t.isTrue(Arena.CanDamage('gungame', 'crimson', 'crimson'))
 end)

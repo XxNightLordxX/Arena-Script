@@ -1124,8 +1124,17 @@ function ArenaBetting.Settle(matchId, context)
     -- as cash, which is the same surprise (and the same laundering route)
     -- returnSideBet spells out. Unknown here only for a winner escrow never
     -- held, and credit() falls back to the configured account for those.
-    local paidFrom = {}
-    for id, stake in pairs(stakesOf(matchId)) do paidFrom[id] = stake.account end
+    --
+    -- AND THE CITIZEN ID OFF THE SAME ROW, for the reason below. It is
+    -- captured at TakeStake while the player is still connected, which is
+    -- the only moment it can be had -- by the time a payout fails they are
+    -- gone and there is nothing left to ask.
+    local paidFrom, citizenOf, nameOf = {}, {}, {}
+    for id, stake in pairs(stakesOf(matchId)) do
+        paidFrom[id] = stake.account
+        citizenOf[id] = stake.citizenid
+        nameOf[id] = stake.name
+    end
 
     local lines, undelivered = {}, 0
     for _, payout in ipairs(payouts) do
@@ -1160,11 +1169,33 @@ function ArenaBetting.Settle(matchId, context)
                 -- still cannot be rolled back into escrow, the log and the
                 -- webhook still fire, and an operator settling by hand is
                 -- still free to. There is simply a record now.
-                owe(payout.id, payout.name or payout.id, amount,
-                    paidFrom[payout.id], 'pot_payout')
-
-                ArenaLog('PAYOUT UNDELIVERED: %d owed to %s on match %s -- they are not on the server. It is on the unpaid ledger and will be paid when they come back; /arenaadmin can list it.',
-                    amount, tostring(payout.id), tostring(matchId))
+                -- THE CITIZEN ID, NOT THE SERVER ID, and getting that
+                -- wrong made the sentence below a lie. `payout.id` is a
+                -- SERVER id -- Arena.ComputePayouts copies it straight out
+                -- of the winners list server/match.lua built from
+                -- `player.src` -- and `owe` files under a citizen id,
+                -- rejecting anything Arena.IsKey says is not one. A number
+                -- is not, so every pot payout that could not be delivered
+                -- was dropped on the floor by the very call that was
+                -- supposed to remember it, while the line underneath told
+                -- the operator it was on the ledger. Three of the four
+                -- undeliverable-money paths in this file already pass a
+                -- captured citizen id (`stake.citizenid`, `bet.citizenid`);
+                -- this was the fourth, and the odd one out.
+                local citizenid = citizenOf[payout.id] or citizenIdOf(payout.id)
+                if owe(citizenid, payout.name or nameOf[payout.id] or payout.id, amount,
+                    paidFrom[payout.id], 'pot_payout') then
+                    ArenaLog('PAYOUT UNDELIVERED: %d owed to %s (citizenid %s) on match %s -- they are not on the server. It is on the unpaid ledger and will be paid when they come back; /arenaadmin can list it.',
+                        amount, tostring(payout.id), tostring(citizenid), tostring(matchId))
+                else
+                    -- SAID DIFFERENTLY WHEN IT IS DIFFERENT. A winner with
+                    -- no citizen id anywhere -- paid out without ever having
+                    -- held escrow, and gone before the payout -- genuinely
+                    -- cannot be filed, and promising a ledger entry that
+                    -- does not exist is what this whole change is about.
+                    ArenaLog('PAYOUT LOST: %d owed to %s on match %s -- they are not on the server and there is no citizen id to file it against. Settle by hand.',
+                        amount, tostring(payout.id), tostring(matchId))
+                end
                 incidentWebhook('Payout not delivered', 'A settled payout could not be paid to its winner.', {
                     { name = 'Match', value = tostring(matchId) },
                     { name = 'Player', value = tostring(payout.id) },
@@ -1253,10 +1284,13 @@ function ArenaBetting.GetSideBet(matchId, src)
         -- AND NOT ONE THAT HAS ALREADY BEEN SETTLED. returnSideBet does not
         -- delete a row, it marks it -- `bet.settled = true` -- so a bet that
         -- has been handed back was still reported here as money on the
-        -- result. ArenaLobby.UpdateMatch returns every side-bet when the host
-        -- changes the mode, and the panel then went on printing "You have
-        -- $500 on crimson." over a stake that was back in the player's
-        -- wallet, backing a side the match no longer has.
+        -- result. ArenaLobby.UpdateMatch used to return every side-bet when
+        -- the host changed the mode, and the panel then went on printing "You
+        -- have $500 on crimson." over a stake that was back in the player's
+        -- wallet, backing a side the match no longer has. That refund is gone
+        -- -- the mode change is refused instead -- but a bet still comes back
+        -- through half a dozen other doors, and this is the check that keeps
+        -- the panel honest about every one of them.
         if bet.src == id and not bet.settled and bet.fromEntryFee ~= true then
             return {
                 amount = bet.amount,
@@ -1328,13 +1362,15 @@ function ArenaBetting.HasSpectatorBet(matchId, src)
         -- loop did not check it, and returnSideBet marks rather than deletes
         -- -- so a bet the server had HANDED BACK still counted as held.
         --
-        -- What that cost: ArenaLobby.UpdateMatch returns every side-bet when
-        -- the host changes the mode, saying in as many words "They get their
-        -- money and can back the one that replaced it." They could not.
-        -- PlaceSpectatorBet gates on this function, oneBetPerMatch ships
-        -- true, so every later bet on that lobby came back "One side-bet per
-        -- match. Yours is down." -- about a bet that had been refunded --
-        -- for the life of the match.
+        -- What that cost: ArenaLobby.UpdateMatch used to return every
+        -- side-bet when the host changed the mode, saying in as many words
+        -- "They get their money and can back the one that replaced it." They
+        -- could not. PlaceSpectatorBet gates on this function, oneBetPerMatch
+        -- ships true, so every later bet on that lobby came back "One
+        -- side-bet per match. Yours is down." -- about a bet that had been
+        -- refunded -- for the life of the match. The mode change is refused
+        -- now, but a returned bet still reaches this function from the
+        -- dead-pick refund and from teardown.
         --
         -- holdsSideBet and MatchesBackedBy both had the check. This is the
         -- one of the four that drifted.
@@ -1360,6 +1396,29 @@ local function fighterBetsOn()
     return type(block) == 'table' and block.enabled == true
 end
 
+--- The biggest stake somebody who is NOT in the fight may hold, or nil when
+--- a non-fighter may hold none at all.
+---
+--- WHY IT IS NOT Arena.ResolveSpectatorBet. That function answers "may this
+--- amount be taken", and refuses anything over the band. The question here
+--- is asked about money that has ALREADY been taken, from somebody who was
+--- a fighter when it was, and the only useful answer is the ceiling itself
+--- so the stake can be trimmed down to it. Refusing is not an option once
+--- the money has moved.
+---
+--- The same arithmetic Arena's own band check does -- floor first, then a
+--- ceiling that can never sit under it -- because a max below min would
+--- otherwise trim every walked-out bet to a number the operator never meant
+--- to allow.
+--- @return integer|nil
+local function spectatorCeiling()
+    local rules = Config.Betting.spectatorBets
+    if type(rules) ~= 'table' or rules.enabled ~= true then return nil end
+
+    local minimum = math.max(0, Arena.ToInt(rules.min) or 0)
+    return math.max(minimum, Arena.ToInt(rules.max) or minimum)
+end
+
 --- The side a fighter is allowed to back: their team, or themselves.
 --- @return string|nil
 local function ownSideOf(match, src)
@@ -1383,6 +1442,28 @@ end
 --- @param fighters table<number, table|boolean>
 --- @return boolean
 local function voided(bet, fighters)
+    -- NOT ON THE FINAL ROSTER, WHICH IS TWO DIFFERENT PEOPLE.
+    --
+    -- A spectator who never joined, judged on the pick they chose -- which is
+    -- what this line was written for -- and a FIGHTER who placed a bet at the
+    -- fighter band and then came off the roster, who was judged on the same
+    -- terms and should not have been. That second one was a live exploit:
+    -- fighterBets.max ships at twice spectatorBets.max, so a fighter could
+    -- take a 50,000 position, walk out of the lobby for nothing, and settle
+    -- it against a field nobody else could put more than 25,000 into.
+    --
+    -- THE ANSWER IS NOT HERE, and deliberately so. Voiding it would hand the
+    -- stake back, which is the exact refund ArenaBetting.MarkWalkedOut exists
+    -- to withhold -- a wager you can cancel once it is going badly is not a
+    -- wager. And trimming it here is too late: the pools above have already
+    -- been totalled and every winner's share is a proportion of them, so
+    -- shrinking a stake at settlement would move other people's money.
+    --
+    -- So the band is enforced at the moment the fact changes instead.
+    -- MarkWalkedOut trims the stake to what a non-fighter may hold, returns
+    -- the difference, and re-files the bet as a spectator's. By the time this
+    -- runs there is nothing left to correct, and this line is once again
+    -- about the only person it was ever about.
     local row = fighters[bet.src]
     if not row then return false end
 
@@ -1548,37 +1629,35 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     return true, nil
 end
 
---- Hands every unsettled side-bet on a match back, unjudged.
+--- How many unsettled side-bets are riding on this match.
 ---
---- FOR A MATCH THAT HAS CHANGED OUT FROM UNDER THEM. A side-bet names a
---- side: a team key in a team mode, a fighter's server id in a free-for-all.
---- Change the mode of an open lobby and every outstanding bet on it is
---- picking something that can no longer win -- a team key in a match with no
---- teams -- so at settlement it simply loses. Not voided, not refunded: lost,
---- with no way for the bettor to have seen it coming and nothing on screen
---- saying it happened.
+--- THE BOOK, AS A NUMBER, so a caller that must not change the shape of a
+--- match under the people who backed it can ask whether anybody has.
 ---
---- Returning them is the honest answer. They backed a match that no longer
---- exists in the shape they backed it in, and they can bet again on the one
---- that replaced it.
---- No reason key: returnSideBet tells the bettor in its own words, and a
---- parameter this passed along and that function ignored would read as
---- wired up.
+--- IT REPLACED A REFUND, and the refund was the defect. ArenaLobby.UpdateMatch
+--- used to hand the WHOLE BOOK back whenever the host changed the mode --
+--- correct on its own, because a bet naming a side the match no longer has
+--- cannot be judged -- but the host is a fighter with money on the outcome
+--- and flipping the mode cost them nothing and could be done again a second
+--- later. That is a "cancel everyone's bets" button, theirs alone, pressable
+--- the moment the book turns against them. Nothing had to be exploited; it
+--- was simply what the setting did.
+---
+--- So the mode is refused instead, and this is the question that refuses it.
+--- An honest host -- an open lobby nobody has backed -- gets the same free
+--- hand they always had, because the answer is zero.
+---
+--- Entry-fee rows are not bets anybody placed and are not counted. Settle
+--- writes them at the moment the round is decided, so one cannot exist while
+--- a lobby is still editable anyway.
 --- @param matchId string
---- @return integer returned
---- @return integer owed -- money that could not be handed back
-function ArenaBetting.ReturnSideBets(matchId)
-    local returned, owed = 0, 0
+--- @return integer
+function ArenaBetting.CountSideBets(matchId)
+    local count = 0
     for _, bet in ipairs(sideBets[matchId] or {}) do
-        if not bet.settled then
-            if returnSideBet(bet, matchId) then
-                returned = returned + 1
-            else
-                owed = owed + (Arena.ToInt(bet.amount) or 0)
-            end
-        end
+        if not bet.settled and bet.fromEntryFee ~= true then count = count + 1 end
     end
-    return returned, owed
+    return count
 end
 
 --- Marks every unsettled bet this player is holding on this match as one
@@ -1604,31 +1683,145 @@ end
 --- It also closes the second departure: two players on one side who both
 --- backed it, both leaving, would otherwise see the first one's bet returned
 --- when the second emptied the side.
+---
+--- AND IT IS WHERE THE FIGHTER BAND LAPSES, which is the other half of the
+--- same fact and was missing for as long as fighter bets have existed.
+---
+--- A fighter's stake is held to Config.Betting.fighterBets, which ships at
+--- TWICE the spectator ceiling. That is not a bonus, it is the price of being
+--- in the fight: the money is riding on a round the holder has to stand up
+--- in. Take the holder off the roster and every reason for the larger number
+--- goes with them -- but the stake did not move, and nothing re-read the
+--- band, so a fighter could put down 50,000, walk out of the lobby for
+--- nothing (the shipped entry fee is zero), and settle a fighter-sized
+--- position against a field capped at 25,000. On the shipped config that paid
+--- the leaver the honest spectator's whole stake.
+---
+--- TRIMMED, NOT VOIDED. Handing the bet back is the refund the whole function
+--- exists to withhold. What is returned is only the part the fighter band
+--- alone ever justified; what is left is a position any onlooker could have
+--- taken, judged on the pick the holder chose, and it still loses if that
+--- pick loses. Exactly the bet PlaceSpectatorBet would have written for them
+--- one second after they left.
+---
+--- AND RE-FILED AS A SPECTATOR'S, because standing is what changed. With
+--- betPayout.sharedPool off the two kinds settle in separate pools, and a
+--- lone walked-out fighter left in the fighters' pool is the only bet in it
+--- -- uncontested -- so SettleSpectatorBets hands the whole thing back and
+--- undoes the trim. `mode` is deliberately NOT touched: that is who funds the
+--- payout, which was agreed when the stake was taken, and changing it after
+--- the fact would move a pool bet onto the operator's own money.
+---
+--- THE MONEY MOVES FIRST AND THE RECORD FOLLOWS. `bet.amount` is only cut
+--- once the difference has actually been credited, or failing that filed
+--- against the character on the unpaid ledger. A trim recorded over money
+--- that went nowhere is money this resource has quietly destroyed.
 --- @param matchId string
 --- @param src any
 --- @return integer marked
+--- @return integer returned -- money handed back because the band lapsed
 function ArenaBetting.MarkWalkedOut(matchId, src)
     local id = serverId(src)
-    if not id or not Arena.IsKey(matchId) then return 0 end
+    if not id or not Arena.IsKey(matchId) then return 0, 0 end
 
-    local marked = 0
+    -- nil means non-fighters may hold nothing at all on this server, which is
+    -- a real combination: fighterBets carries its own `enabled`, so an
+    -- operator may run fighter bets with spectator bets switched off. There
+    -- is then no size a departed fighter's stake could legally be, and the
+    -- only honest answer left is the whole of it back.
+    local ceiling = spectatorCeiling()
+    local marked, returned = 0, 0
+
     for _, bet in ipairs(sideBets[matchId] or {}) do
         if bet.src == id and not bet.settled and bet.fromEntryFee ~= true then
             bet.walkedOut = true
             marked = marked + 1
+
+            if bet.kind == 'fighter' then
+                if ceiling == nil then
+                    local whole = Arena.ToInt(bet.amount) or 0
+                    if returnSideBet(bet, matchId) then
+                        returned = returned + whole
+                        ArenaLog('SIDE-BET BAND LAPSED: %s left match %s and this server allows non-fighters no side-bet at all -- the whole %d went back.',
+                            tostring(bet.name or id), tostring(matchId), whole)
+                    end
+                else
+                    local held = Arena.ToInt(bet.amount) or 0
+                    local excess = held - ceiling
+                    -- DEFENSIVE, NOT LOAD-BEARING, and nothing below asserts
+                    -- on it because nothing can: a stake inside the band
+                    -- makes `excess` negative, and both credit() and owe()
+                    -- refuse a non-positive amount, so the trim below never
+                    -- lands either way. It is here so the intent reads off
+                    -- the line rather than out of two other files.
+                    if excess > 0 then
+                        -- `bet.account` -- the account the stake actually
+                        -- LEFT, for the reason returnSideBet gives at length:
+                        -- money taken from the bank and handed back as cash
+                        -- is a laundering route through the arena, not a
+                        -- rounding error.
+                        local paid = credit(id, excess, transaction('sidebet_trim', matchId),
+                            bet.citizenid, bet.account)
+                        if paid then
+                            -- Only on delivery. Somebody whose game died is
+                            -- not there to read it, and the deferred branch
+                            -- below says so on the console instead.
+                            ArenaNotifyKey(id, 'notify.bet_trimmed', 'info', money(excess))
+                        else
+                            -- The same ledger every other undeliverable
+                            -- movement in this file uses: filed against the
+                            -- CHARACTER, so it outlives the match id, the
+                            -- teardown and the recycled server id. A player
+                            -- who dropped is the commonest way to reach this
+                            -- branch and the commonest reason it is needed.
+                            paid = owe(bet.citizenid, bet.name or id, excess, bet.account, 'sidebet_trim')
+                            if paid then
+                                ArenaLog('SIDE-BET TRIM DEFERRED: %d owed to %s (citizenid %s) on match %s -- recorded against their character and paid when they are next seen.',
+                                    excess, tostring(bet.name or id), tostring(bet.citizenid), tostring(matchId))
+                            end
+                        end
+
+                        if paid then
+                            bet.amount = ceiling
+                            returned = returned + excess
+                            ArenaLog('SIDE-BET TRIMMED: %s left match %s holding a fighter stake of %d; the fighter band went with them, so %d was returned and %d stands as a spectator bet.',
+                                tostring(bet.name or id), tostring(matchId), held, excess, ceiling)
+                        else
+                            -- The stake stays whole rather than being cut over
+                            -- money that never left. Loud, because a bet that
+                            -- kept the fighter band is the defect this guard
+                            -- was written for.
+                            ArenaLog('SIDE-BET TRIM FAILED: %d could not be returned to %s (citizenid %s) on match %s -- the bet stands at its full %d and is still held to the fighter band.',
+                                excess, tostring(bet.name or id), tostring(bet.citizenid), tostring(matchId), held)
+                            incidentWebhook('Side-bet band could not be trimmed',
+                                'A fighter left a match holding a stake above the spectator ceiling and the difference could not be returned.', {
+                                    { name = 'Match', value = tostring(matchId) },
+                                    { name = 'Player', value = ('%s (%s)'):format(tostring(bet.name or id), tostring(bet.citizenid)) },
+                                    { name = 'Held', value = money(held) },
+                                    { name = 'Over the ceiling by', value = money(excess) },
+                                })
+                        end
+                    end
+
+                    bet.kind = 'spectator'
+                end
+            end
         end
     end
-    return marked
+
+    return marked, returned
 end
 
 --- Returns every outstanding side-bet on one pick, because that pick can no
 --- longer win.
 ---
 --- THE SAME UNFAIRNESS AS A MODE CHANGE, ARRIVING BY A DIFFERENT DOOR.
---- ReturnSideBets above exists because changing the mode leaves every bet
---- naming something that cannot win, and its comment says why that must not
---- simply lose: "nothing on screen saying so and no way for the bettor to
---- have seen it coming."
+--- Changing the mode of a lobby leaves every bet on it naming something that
+--- cannot win, and such a bet must not simply lose: there is nothing on
+--- screen saying so and no way for the bettor to have seen it coming. That
+--- one is answered by refusing the change now -- see CountSideBets -- because
+--- a host who could void the book on demand was worse than the loss. This
+--- door cannot be refused the same way.
 ---
 --- A FIGHTER WALKING OUT does exactly the same thing to the people who
 --- backed them, and nothing was returning those. The bet was not voided and

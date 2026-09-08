@@ -406,7 +406,13 @@ t.test('DEFECT: a refunded side-bet locked the bettor out of that match for good
 
     t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'),
         'the first side-bet was refused, so there is nothing to hand back')
-    t.equals(s.betting.ReturnSideBets(matchId), 1, 'the bet was not handed back')
+    -- THROUGH THE DEAD-PICK REFUND, which is what hands a bet back now. The
+    -- mode change that used to do it is refused instead: a host who could
+    -- void the whole book for free, over and over, was worse than the loss
+    -- that refund was written to prevent. The rule under test here is
+    -- unchanged and has nothing to do with which door the refund came
+    -- through -- a returned bet must stop counting as one that is held.
+    t.equals((s.betting.ReturnBetsOn(matchId, 1)), 1, 'the bet was not handed back')
 
     local ok, err = s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash')
     t.isTrue(ok, ('a bettor who had been refunded could not back the match again: %s'):format(tostring(err)))
@@ -422,7 +428,7 @@ t.test('and the snapshot stops claiming they have money on it', function()
     t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'))
     t.isNotNil(s.betting.GetSideBet(matchId, 3), 'a live bet was not reported at all')
 
-    s.betting.ReturnSideBets(matchId)
+    s.betting.ReturnBetsOn(matchId, 1)
 
     t.isNil(s.betting.GetSideBet(matchId, 3),
         'the panel is still being told about a bet that was handed back')
@@ -684,13 +690,27 @@ t.test('but a FIGHTER cannot cancel their own losing bet by walking out', functi
     local fighterAfterStake = cash(1)
     t.equals(cash(3), 45000, 'the watcher\'s stake was never taken')
 
-    -- Fighter 1 walks out. Their own bet is theirs to lose; the watcher's is
-    -- on a pick that just died.
-    t.isTrue(s.lobby.Leave(1, 'bet.refund_left'), 'the fighter could not leave')
+    -- THEY CANNOT CLICK THEIR WAY OUT AT ALL ANY MORE, which is the first
+    -- half of the same rule and the reason this test now goes through the
+    -- other door. ArenaLobby.Leave refuses a voluntary exit from a lobby the
+    -- player has a bet on, exactly as Join refuses a seat to somebody who has
+    -- one -- and the size is why: fighterBets.max ships at twice the
+    -- spectator ceiling, so a fighter who could stand up kept a 50,000
+    -- position in a field capped at 25,000.
+    local left, refusal = s.lobby.Leave(1, 'bet.refund_left')
+    t.isTrue(left ~= true, 'a fighter walked out of a lobby holding a bet on it')
+    t.equals(refusal, 'error.bet_then_leave', 'the refusal did not say what they had done')
+    t.isNotNil(s.lobby.Get(matchId).players[1], 'the refused leave took them out anyway')
+
+    -- SO THEY DROP INSTEAD, which cannot be refused: the player is already
+    -- gone and holding their row would strand a stake, a routing bucket and a
+    -- suppressed dispatch flag. Their own bet is still theirs to lose; the
+    -- watcher's is on a pick that just died.
+    t.isTrue(s.lobby.Leave(1, 'bet.refund_left', true), 'a disconnect was refused, which cannot work')
 
     t.equals(cash(3), 50000, 'the watcher did not get their stake back on a pick that walked out')
     t.equals(cash(1), fighterAfterStake + 1000,
-        'the fighter got their own bet back by leaving -- only the 1000 entry fee should have returned')
+        'the fighter got their own bet back by dropping -- only the 1000 entry fee should have returned')
 end)
 
 -- ========================================================================

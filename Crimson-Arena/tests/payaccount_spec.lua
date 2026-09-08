@@ -345,12 +345,23 @@ t.test('DEFECT: placing a bet refreshes the panel that shows the balance', funct
         'and nobody else was told the pot had grown')
 end)
 
-t.test('DEFECT: changing a lobby\'s mode hands every side-bet back', function()
+t.test('DEFECT: changing a lobby\'s mode was a free "void every bet" button', function()
     -- A side-bet names a SIDE: a team key in a team mode, a fighter's server
     -- id in a free-for-all. Change the mode of an open lobby and every bet
     -- already on it is picking something that cannot win any more -- so at
     -- settlement it simply lost. Not voided, not refunded: lost, with nothing
     -- on screen saying so and no way for the bettor to have seen it coming.
+    --
+    -- This file used to assert the answer to that was to HAND THE WHOLE BOOK
+    -- BACK, which is fair to the bettors and is exactly what made the lever
+    -- worth pulling: the host is a fighter with money on the outcome, the
+    -- flip costs nothing, and it can be done again a second later. So the
+    -- host held a cancel-everyone's-bets button -- their own losing wager
+    -- included -- pressable the moment the book turned against them.
+    --
+    -- The mode is refused instead, so nobody's pick can die under them and
+    -- there is nothing to hand back. Asserted on BOTH: the refusal, and that
+    -- the stake stayed exactly where the bettor put it.
     local server = newServer({
         [1] = { cash = 50000, bank = 50000 },
         [2] = { cash = 50000, bank = 50000 },
@@ -367,10 +378,54 @@ t.test('DEFECT: changing a lobby\'s mode hands every side-bet back', function()
     t.equals(server.cash(3), 49500, 'the bet was never taken, so this proves nothing')
 
     -- The host changes their mind about the mode.
-    server.fire('updateMatch', 1, { modeKey = 'ffa' })
+    local ok, reason = server.lobby.UpdateMatch(1, { modeKey = 'ffa' })
 
-    t.equals(server.cash(3), 50000,
-        'A BET ON A TEAM THAT NO LONGER EXISTS WAS KEPT -- it can only lose now')
+    t.isTrue(ok ~= true, 'the host flipped the mode out from under a standing bet')
+    t.equals(reason, 'error.mode_locked_by_bets',
+        'the host was refused without being told which of their edits was the problem')
+    t.equals(server.lobby.Get(matchId).modeKey, 'tdm',
+        'the refusal came back and the mode changed anyway')
+    t.equals(server.cash(3), 49500,
+        'the refused mode change still handed the bettor their stake back')
+    t.isNotNil(server.betting.GetSideBet(matchId, 3),
+        'the bet was settled off the books by a change that never happened')
+end)
+
+t.test('and the host can still change everything else while the book is open', function()
+    -- THE HONEST HOST, WHO IS THE WHOLE REASON THE REFUSAL IS AIMED AT THE
+    -- MODE AND NOTHING ELSE. Only a mode change can make a side stop
+    -- existing; the arena, the lives and the radar leave every pick exactly
+    -- where it was, so a guard that locked the whole form once a bet was down
+    -- would take the feature away to fix an abuse of one field of it.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 },
+        [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 },
+    })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = 500, account = 'cash',
+    })
+
+    t.isTrue(server.lobby.UpdateMatch(1, { lives = 2 }),
+        'a lives edit was refused over a bet that does not name the lives')
+    t.isTrue(server.lobby.UpdateMatch(1, { arenaKey = 'skydome' }),
+        'an arena edit was refused over a bet that does not name the arena')
+
+    local match = server.lobby.Get(matchId)
+    t.equals(match.lives, 2, 'the lives edit did not land')
+    t.equals(match.arenaKey, 'skydome', 'the arena edit did not land')
+
+    -- AND RE-SENDING THE MODE IT ALREADY HAS IS NOT A CHANGE. The panel posts
+    -- the whole form on every Apply, so the mode arrives with every one of
+    -- those edits -- a guard that fired on the FIELD BEING PRESENT rather
+    -- than on the value differing would have locked the entire form.
+    t.isTrue(server.lobby.UpdateMatch(1, { modeKey = 'tdm', lives = 3 }),
+        'the host could not edit anything at all once a bet was down')
+    t.equals(server.lobby.Get(matchId).lives, 3, 'that edit did not land either')
 end)
 
 t.test('but editing anything ELSE leaves the bets exactly where they are', function()
@@ -434,6 +489,95 @@ t.test('and a bet the chosen account cannot cover is refused', function()
 
     t.equals(server.cash(3), 5000, 'CASH WAS SPENT ON A BET THE PLAYER ASKED TO PAY FROM THE BANK')
     t.equals(server.bank(3), 10)
+end)
+
+t.test('a fighter who DROPS keeps only what a watcher may hold', function()
+    -- THE DOOR NOTHING CAN SHUT. Refusing the voluntary leave closes the
+    -- button; it cannot close a disconnect, because the player is already
+    -- gone and holding their row would strand a ghost on the roster with a
+    -- routing bucket, a dispatch flag and a stake nobody can reach.
+    --
+    -- So the BAND lapses at the moment the fact changes. The stake was legal
+    -- at the fighter ceiling while they were fighting; the instant they are
+    -- off the roster the most a non-fighter may hold is the spectator
+    -- ceiling, and the difference goes back to the account it came from.
+    --
+    -- WITHOUT THIS the exploit runs on the drop route exactly as it did on
+    -- the leave route: bet at the fighter cap, pull the plug, and settle a
+    -- position at twice what this same file caps an honest watcher at.
+    local server = newServer({
+        [1] = { cash = 200000, bank = 0 },
+        [2] = { cash = 200000, bank = 0 },
+        [3] = { cash = 200000, bank = 0 },
+    }, function(config)
+        config.Betting.fighterBets.enabled = true
+    end)
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'ash' })
+    server.fire('joinMatch', 3, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+
+    local fighterMax = server.config.Betting.fighterBets.max
+    local watcherMax = server.config.Betting.spectatorBets.max
+    t.isTrue(fighterMax > watcherMax,
+        'the two bands are equal on this config, so this test measures nothing')
+
+    -- 3 is a FIGHTER, so the fighter band is what they are held to.
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = fighterMax, account = 'cash',
+    })
+    t.equals(server.cash(3), 200000 - fighterMax, 'the fighter bet was never taken')
+
+    -- dropped = true: the path a refusal can never reach.
+    server.lobby.Leave(3, nil, true)
+
+    t.equals(server.cash(3), 200000 - watcherMax,
+        ('the over-band part was not returned on a drop -- they are out %d, expected %d')
+            :format(200000 - server.cash(3), watcherMax))
+
+    local bet = server.betting.GetSideBet(matchId, 3)
+    t.isNotNil(bet, 'the bet vanished entirely rather than being trimmed')
+    t.equals(bet.amount, watcherMax,
+        'the stake still standing is not the spectator ceiling')
+end)
+
+t.test('and a fighter who drops inside the band keeps every penny of it', function()
+    -- THE OTHER HALF. The trim is a band lapsing, not a confiscation: a
+    -- stake a watcher could legally have placed is untouched, so a fighter
+    -- who bet modestly and crashed is not punished for crashing.
+    local server = newServer({
+        [1] = { cash = 200000, bank = 0 },
+        [2] = { cash = 200000, bank = 0 },
+        [3] = { cash = 200000, bank = 0 },
+    }, function(config)
+        config.Betting.fighterBets.enabled = true
+    end)
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'ash' })
+    server.fire('joinMatch', 3, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+
+    -- STRICTLY BELOW THE CEILING, not exactly on it. A stake sitting on the
+    -- boundary cannot tell "the trim was skipped" from "the trim ran and
+    -- landed on the same number" -- so a version that trimmed every walked-out
+    -- fighter's bet to the ceiling, raising a small one, would pass.
+    local watcherMax = server.config.Betting.spectatorBets.max
+    local modest = math.floor(watcherMax / 2)
+    t.isTrue(modest > 0 and modest < watcherMax, 'the fixture cannot express a stake inside the band')
+
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = modest, account = 'cash',
+    })
+    local before = server.cash(3)
+
+    server.lobby.Leave(3, nil, true)
+
+    t.equals(server.cash(3), before, 'a stake already inside the band was trimmed anyway')
+    local bet = server.betting.GetSideBet(matchId, 3)
+    t.isNotNil(bet, 'the bet vanished')
+    t.equals(bet.amount, modest, 'and the stake they really placed was altered')
 end)
 
 os.exit(t.summary())

@@ -1846,6 +1846,30 @@
            come back rejected. */
         if (editing) show(byId('create-fee-row'), false);
 
+        /* AND THE MODE LOCKS ONCE ANYBODY HAS BACKED THE MATCH.
+
+           A side-bet names a side, so changing the mode makes every
+           outstanding pick unwinnable. ArenaLobby.UpdateMatch used to answer
+           that by handing the whole book back -- which put a free, repeatable
+           "cancel everyone's bets" lever in the hands of a host who is
+           himself a fighter with a wager on the outcome. It refuses the
+           change now, and this is the panel agreeing rather than deciding.
+
+           ONLY THE MODE, and only when it is really being changed: the arena,
+           the lives and the radar do not touch anybody's pick and stay
+           editable with a full book, exactly as on the server.
+
+           `bets`, not `betPool`: an 'odds' side-bet is funded by the server
+           and never enters the pool, so the pool can read zero over a book
+           with money in it. int() of an absent field is 0, so a server that
+           predates the field offers the change and lets the server refuse it
+           -- the same benefit of the doubt betsOpen gets. */
+        if (!blocked && editing && int(editing.bets, 0) > 0
+            && String(state.createMode) !== String(editing.modeKey)) {
+            blocked = 'Bets are down on this match — the mode is fixed. '
+                + 'Close the lobby to change it and every bet goes back.';
+        }
+
         if (has(submit)) {
             submit.disabled = blocked !== null;
             submit.title = blocked || '';
@@ -2517,12 +2541,48 @@
 
         var leave = byId('btn-leave');
         if (has(leave)) {
+            /* A LOBBY YOU HAVE MONEY ON IS NOT ONE YOU CAN WALK OUT OF.
+
+               ArenaLobby.Leave refuses it, for the reason its twin on Join
+               already gives: a bet its holder can cancel at a moment of their
+               choosing is a bet with no risk in it. Walking out used to be
+               that cancel, and worse than a cancel -- the fighter band is
+               twice the spectator one, so a fighter kept a 50,000 position in
+               a field capped at 25,000 by standing up.
+
+               MIRRORED HERE OR THE FIX IS A LIT BUTTON AND A RED TOAST, which
+               is the exact defect class three commits in this repo have
+               already fixed once each. `player().bet` is the bet on the match
+               this player is IN, which is precisely the one the server asks
+               about.
+
+               THE SAME NARROWINGS THE SERVER MAKES, deliberately copied
+               rather than guessed: the lobby and the countdown, never a live
+               round -- a fighter being shot at may always quit, and the
+               server lets them -- and only for somebody who is IN the match,
+               never for a watcher, whose Stop Watching this button also is.
+
+               The countdown is not padding on either side: without it the
+               whole rule is worth waiting out a ten-second countdown for. */
+            var stuck = inMatch
+                && (String(match.state) === 'lobby' || String(match.state) === 'countdown')
+                && !!player().bet;
+
             leave.textContent = inMatch ? 'Leave Match' : 'Stop Watching';
-            leave.title = inMatch
-                ? 'Take yourself out of this match.'
-                : 'Stop watching and put the camera back on you.';
-            leave.disabled = false;
+            leave.title = stuck
+                ? 'Your money is on this match. See the round out, or have the lobby closed — '
+                    + 'that hands every bet back.'
+                : (inMatch
+                    ? 'Take yourself out of this match.'
+                    : 'Stop watching and put the camera back on you.');
+            leave.disabled = stuck;
             leave.onclick = function () {
+                /* Checked again in the handler, not only in the disabled
+                   flag: the handler outlives the render that disabled it, and
+                   a control the server will refuse is not one to leave armed
+                   on the strength of an attribute. Close Lobby directly above
+                   is guarded the same way and says the same thing. */
+                if (stuck) return;
                 if (inMatch) post('leaveMatch');
                 else post('stopSpectate');
             };

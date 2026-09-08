@@ -101,6 +101,14 @@ local function newLobby()
         return true
     end
 
+    -- MODELLED, NOT SILENCED, like Leave below. server/match.lua asks this
+    -- before it touches a departing player -- a lobby or countdown the player
+    -- has a side-bet on will not let them out -- and a stub that answered nil
+    -- would crash RemovePlayer rather than let this file measure it. Nothing
+    -- in this file places a bet, so the honest model of the shipped answer is
+    -- "yes, always".
+    function lobby.MayLeave() return true end
+
     function lobby.Leave(src, reasonKey)
         local match = lobby.GetByPlayer(src)
         if not match then return false end

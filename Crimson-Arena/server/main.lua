@@ -223,6 +223,8 @@ end
 --- @param src any
 --- @param reasonKey string?
 --- @param dropped boolean? -- true only from playerDropped
+--- @return boolean ok -- false when the exit was REFUSED
+--- @return string|nil refusal -- the locale key to put on their screen
 local function detach(src, reasonKey, dropped)
     -- ArenaMatch.RemovePlayer owns the "are they mid-match" question and
     -- already calls ArenaLobby.Leave itself; it returns false only when the
@@ -240,9 +242,18 @@ local function detach(src, reasonKey, dropped)
     -- been the correct one ('live' OR 'countdown'); this was a narrower copy
     -- of it that drifted. Asking the owner rather than re-deriving the answer
     -- is what stops it drifting again.
-    if ArenaMatch.RemovePlayer(src, reasonKey, dropped) then return end
+    --
+    -- AND IT OWNS THE REFUSAL WITH IT. ArenaLobby.Leave turns away a
+    -- voluntary exit from a lobby the player has a side-bet on -- a bet its
+    -- holder can cancel by standing up is a bet with no risk in it -- and
+    -- RemovePlayer carries that answer up rather than swallowing it. Passed
+    -- straight through: this function decides nothing about it, it only
+    -- refuses to lose it, which is the whole reason both exits come through
+    -- one door.
+    local handled, refusal = ArenaMatch.RemovePlayer(src, reasonKey, dropped)
+    if handled then return refusal == nil, refusal end
 
-    ArenaLobby.Leave(src, reasonKey, dropped)
+    return ArenaLobby.Leave(src, reasonKey, dropped)
 end
 
 -- ======================================================================
@@ -354,8 +365,13 @@ onClient('crimson_arena:server:joinMatch', RATE.join, function(src, data)
     ArenaNotifyKey(src, 'notify.match_joined', 'success')
 end)
 
+--- LEAVING CAN BE REFUSED, WHICH IS NEW, and this is where the player hears
+--- about it. A lobby the player has a side-bet on will not let them walk out
+--- of it; every other exit answers as it always did, and a `false` with no
+--- key -- nothing to leave -- still says nothing, exactly as before.
 onClient('crimson_arena:server:leaveMatch', RATE.leave, function(src)
-    detach(src, 'notify.you_left')
+    local ok, reason = detach(src, 'notify.you_left')
+    if not ok and reason then return refuse(src, reason) end
 end)
 
 onClient('crimson_arena:server:setTeam', RATE.choice, function(src, data)

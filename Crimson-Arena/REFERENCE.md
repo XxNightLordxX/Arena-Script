@@ -509,8 +509,8 @@ listed; the source documents them where they are.
 | `ArenaBetting.SecondsUntilBetsClose(match)` | Seconds until the book shuts on a live round, or nil when there is no window to wait on. |
 | `ArenaBetting.HasSpectatorBet(matchId, src)` | Whether this player holds any side-bet on this match, settled or not. |
 | `ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)` | Takes a spectator's side-bet on a team or a fighter. |
-| `ArenaBetting.ReturnSideBets(matchId)` | Hands every unsettled side-bet on a match back, unjudged. |
-| `ArenaBetting.MarkWalkedOut(matchId, src)` | Marks this player's unsettled bets as placed by somebody who then left, so the dead-pick refund never hands them back. |
+| `ArenaBetting.CountSideBets(matchId)` | How many unsettled side-bets are riding on a match, so a mode change can be refused rather than voiding the whole book. |
+| `ArenaBetting.MarkWalkedOut(matchId, src)` | Marks this player's unsettled bets as placed by somebody who then left, so the dead-pick refund never hands them back, and trims a fighter's stake to what a non-fighter may hold. |
 | `ArenaBetting.ReturnBetsOn(matchId, pick)` | Hands back every unsettled side-bet on one pick, because that pick can no longer win. |
 | `ArenaBetting.SettleSpectatorBets(matchId, winningPick)` | Settles every side-bet on a match. |
 | `ArenaBetting.PayOutstanding(src)` | Pays one character everything this resource owes them from a refund that could not be delivered. |
@@ -518,7 +518,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.Outstanding()` | How much this resource still owes, across how many characters. |
 | `ArenaBetting.Clear(matchId)` | Drops a match's money state. |
 
-#### `server/lobby.lua` — 22 functions
+#### `server/lobby.lua` — 23 functions
 
 | Function | What it does |
 |---|---|
@@ -534,6 +534,7 @@ listed; the source documents them where they are.
 | `ArenaLobby.MarkPanelClosed(src)` | Records that this player has closed the panel. |
 | `ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account)` | Opens a lobby and puts its host in it. |
 | `ArenaLobby.Join(src, matchId, teamKey, account)` | Seats a player in an open lobby, taking their entry fee. |
+| `ArenaLobby.MayLeave(src, dropped)` | Whether a player may take themselves out of the match they are in -- refused while they hold a side-bet on a lobby or a countdown, never on a disconnect. |
 | `ArenaLobby.Leave(src, reasonKey)` | Takes a player out of whatever they are attached to: a match if they are in one, otherwise the match they were watching. |
 | `ArenaLobby.Destroy(matchId, reasonKey)` | Refunds whatever is still escrowed, tells everyone, and removes the match from the registry. |
 | `ArenaLobby.HoldCountdown(src)` | Puts a counting-down lobby back to being a lobby. |

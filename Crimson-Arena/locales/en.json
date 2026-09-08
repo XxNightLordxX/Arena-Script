@@ -37,6 +37,8 @@
         "match_full": "That match is full.",
         "mode_picks_loadout": "This mode issues its own loadout -- there is nothing to pick.",
         "match_in_progress": "That match has already kicked off.",
+        "bet_then_leave": "Your money is on this match. See the round out, or have the lobby closed -- that hands every bet back.",
+        "mode_locked_by_bets": "Bets are down on this match. The mode is fixed -- close the lobby to change it and every bet goes back.",
         "round_time_out_of_range": "That round length is outside what this server allows.",
         "match_not_found": "That match is gone.",
         "mode_has_no_teams": "No sides in this mode. Everyone is a target.",
@@ -84,6 +86,7 @@
         "unknown_player": "Unknown"
     },
     "notify": {
+        "bet_trimmed": "Out of the fight, so your bet is cut to what a watcher may hold. %s back.",
         "eliminated": "You are out.",
         "fighter_dropped": "%s dropped out of the fight.",
         "gungame_demoted": "Down to tier %d of %d. %s in your hands.",

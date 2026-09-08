@@ -1628,6 +1628,69 @@ t.test('a player in a match cannot drop anything', function()
     t.isTrue(hook({ source = 1, toInventory = 1 }), 'moving things around their own pockets is fine')
 end)
 
+t.test('DEFECT: and cannot LOOT anything either -- which is where the kit went', function()
+    -- THE REPORT, IN A PLAYER'S WORDS: "when killing someone on free for all
+    -- or team deathmatch it gives 100 ammo per weapon chosen".
+    --
+    -- It was never a reward -- there is no on-kill grant outside the gun
+    -- game's killReward, and that is gated behind the ladder. ox_inventory
+    -- drops a dead player's inventory on the floor as its own container, and
+    -- the guard refused moves OUT and permitted every move IN. So a fighter
+    -- walking over a body could take the whole arena kit its owner had just
+    -- been issued: their weapons and every round that came with them, per
+    -- kill, for as long as bodies kept falling.
+    --
+    -- The exit was already catching the consequences -- reclaimWeapons takes
+    -- looted rounds back by name, which is why nothing walked OUT of the
+    -- arena -- but "it is confiscated at the door" is not "it never
+    -- happened". The round is still fought by somebody carrying four dead
+    -- men's ammunition, and a loadout nobody has to live within is not a
+    -- loadout.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    local hook = s.hook('swapItems')
+    t.isNotNil(hook, 'the guard should be registered')
+
+    t.isFalse(hook({ source = 1, fromInventory = 'drop-7', toInventory = 1 }),
+        'looting a dead fighter\'s drop was allowed')
+    t.isFalse(hook({ source = 1, fromInventory = 'stash-abc', toInventory = 1 }),
+        'and taking something out of a stash mid-round was allowed')
+    t.isFalse(hook({ source = 1, fromInventory = 2, toInventory = 1 }),
+        'and taking something out of another player was allowed')
+
+    -- AND THE THINGS THAT MUST STILL WORK.
+    t.isTrue(hook({ source = 1, fromInventory = 1, toInventory = 1 }),
+        'moving things around their own pockets is their business')
+    t.isTrue(hook({ source = 1 }),
+        'a payload naming no inventories at all must not be refused blind')
+end)
+
+t.test('and an id that arrives as a string still counts as their own pockets', function()
+    -- ox_inventory answers a player inventory as a number on some paths and
+    -- as a string on others. Compared only by identity, a fighter whose id
+    -- arrives the other way round is a fighter the guard silently stops
+    -- applying to -- and worse, one whose own pocket-to-pocket moves are all
+    -- refused.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    local hook = s.hook('swapItems')
+    t.isTrue(hook({ source = 1, fromInventory = '1', toInventory = '1' }),
+        'their own pockets were refused because the id came back as a string')
+end)
+
+t.test('and somebody NOT in a match may loot and drop as they please', function()
+    -- The guard is about being in a round, not about being on the server.
+    local s = newServer({ [1] = OWN })
+
+    local hook = s.hook('swapItems')
+    t.isTrue(hook({ source = 1, fromInventory = 'drop-7', toInventory = 1 }),
+        'a player outside the arena was stopped from picking things up')
+    t.isTrue(hook({ source = 1, toInventory = 'drop-7' }),
+        'and from putting things down')
+end)
+
 t.test('DEFECT: and cannot drop with the door OFF either', function()
     -- The guard asked `stashed[src]`, which is only ever populated when the
     -- door is SHUT. With Config.Loadouts.inventory.stripOnEntry off -- where

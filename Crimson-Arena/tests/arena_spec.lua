@@ -265,12 +265,16 @@ end)
 -- ======================================================================
 
 t.test('ResolveLoadout drops an unknown weapon key and honours the rest', function()
+    -- A KEY THAT IS GENUINELY NOT IN THE CATALOGUE. This used to name
+    -- `railgun`, which was in the catalogue and switched off -- so it tested
+    -- the DISABLED path under the name of the unknown one, and the day the
+    -- operator enabled everything it stopped testing anything at all.
     local loadout, rejected = Arena.ResolveLoadout({
-        weapons = { { key = 'railgun', ammo = 300 }, { key = 'rifle', ammo = 300 } },
+        weapons = { { key = 'nosuchweapon', ammo = 300 }, { key = 'rifle', ammo = 300 } },
     })
 
     t.equals(#rejected, 1)
-    t.equals(rejected[1], 'railgun')
+    t.equals(rejected[1], 'nosuchweapon')
     t.equals(#loadout.weapons, 1)
     t.equals(loadout.weapons[1].weapon, 'WEAPON_ASSAULTRIFLE')
     t.equals(loadout.weapons[1].ammo, 300)
@@ -279,13 +283,24 @@ end)
 t.test('ResolveLoadout refuses a disabled weapon by key exactly as it refuses an unknown one', function()
     -- `enabled = false` has to be indistinguishable from "no such weapon",
     -- or it is only a UI hint and a modified client walks straight past it.
-    t.isNil(Arena.GetWeaponByKey('grenadelauncher'))
+    --
+    -- SWITCHED OFF BY THIS TEST, not borrowed from the shipped catalogue.
+    -- Every weapon ships enabled now, so a test that reached for whichever
+    -- one happened to be off was a test that could be deleted by a config
+    -- edit -- and was, silently, the moment one happened.
+    local arena = tweaked(function(config)
+        for _, weapon in ipairs(config.Loadouts.weapons) do
+            if weapon.key == 'rifle' then weapon.enabled = false end
+        end
+    end)
 
-    local disabled, disabledRejected = Arena.ResolveLoadout({ weapons = { { key = 'grenadelauncher', ammo = 20 } } })
-    local unknown, unknownRejected = Arena.ResolveLoadout({ weapons = { { key = 'nosuchweapon', ammo = 20 } } })
+    t.isNil(arena.GetWeaponByKey('rifle'), 'the fixture did not actually switch it off')
+
+    local disabled, disabledRejected = arena.ResolveLoadout({ weapons = { { key = 'rifle', ammo = 20 } } })
+    local unknown, unknownRejected = arena.ResolveLoadout({ weapons = { { key = 'nosuchweapon', ammo = 20 } } })
 
     t.equals(#disabledRejected, 1)
-    t.equals(disabledRejected[1], 'grenadelauncher')
+    t.equals(disabledRejected[1], 'rifle')
     t.equals(#unknownRejected, 1)
     t.equals(unknownRejected[1], 'nosuchweapon')
     -- Both end up carrying nothing at all.

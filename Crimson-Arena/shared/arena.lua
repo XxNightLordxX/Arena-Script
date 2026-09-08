@@ -403,6 +403,32 @@ function Arena.GetEnabledModes()
                     if not Arena.PlaysLadder(key) then return nil end
                     return #Arena.LadderTiersFor(key)
                 end)(),
+                -- THE CLASSES THE LADDER IS BUILT OUT OF, so the host can
+                -- shape it in the creation menu: one row per class, how many
+                -- rungs each. Absent for every mode that does not climb one.
+                --
+                -- WEAPON NAMES ARE NOT SENT. The panel needs the label, the
+                -- default and the ceiling; what is IN each class is the
+                -- server's business, and the same rule Arena.ResolveSupplies
+                -- follows -- the key comes off the wire, the catalogue never
+                -- does.
+                tierClasses = (function()
+                    local classes = Arena.GunGameClasses(key)
+                    if #classes == 0 then return nil end
+                    -- Named apart from the `out` this closure sits inside:
+                    -- luacheck reads a shadowed upvalue as a warning, and the
+                    -- gate treats a warning as a failure.
+                    local rows = {}
+                    for _, class in ipairs(classes) do
+                        rows[#rows + 1] = {
+                            key = class.key,
+                            label = class.label,
+                            tiers = class.tiers,
+                            maxTiers = class.maxTiers,
+                        }
+                    end
+                    return rows
+                end)(),
                 -- WHAT EVERYBODY IS HANDED, for the panel to say out loud on
                 -- a screen it has just greyed out. Labels and counts only --
                 -- the ox_inventory item NAME is deliberately not sent, the
@@ -465,25 +491,190 @@ function Arena.PlaysLadder(modeKey)
     return #Arena.LadderTiersFor(modeKey) >= LADDER_MINIMUM
 end
 
+--- The weapon CLASSES a ladder is built out of, in climbing order, with the
+--- weapons each one can actually draw from on this server.
+---
+--- WHY CLASSES RATHER THAN A FLAT LIST OF POOLS. The ladder was thirty
+--- hand-written pools, and a flat list cannot be composed: "give me four
+--- shotgun rungs" is not a thing you can ask of it without knowing which of
+--- the thirty entries happened to be shotguns. It is also how the ladder got
+--- five melee rungs deep without anybody noticing that a sixth of every round
+--- was being fought with clubs.
+---
+--- PLAYABLE ONLY. A weapon an operator has switched off in config.weapons.lua
+--- is not in the pool, and a class left with nothing playable is not in the
+--- list at all -- so `maxTiers` below is always a number this server can
+--- really deliver rather than a number config typed.
 --- @param modeKey any
---- @return table[][] tiers -- catalogue entries, never bare keys
-function Arena.LadderTiersFor(modeKey)
+--- @return table[] classes -- { key, label, weapons = catalogue entries, tiers, maxTiers }
+function Arena.GunGameClasses(modeKey)
     local mode = Arena.GetModeByKey(modeKey)
-    local configured = mode and mode.gunGameTiers
+    local configured = mode and mode.gunGameClasses
     if type(configured) ~= 'table' then return {} end
 
-    local tiers = {}
-    for _, pool in ipairs(configured) do
-        local keys = type(pool) == 'table' and pool or { pool }
-        local playable = {}
-        for _, key in ipairs(keys) do
-            -- GetWeaponByKey answers nil for a disabled weapon exactly as it
-            -- does for an invented one, which is the whole reason the pool
-            -- is read through it rather than trusted.
-            local weapon = Arena.GetWeaponByKey(key)
-            if weapon then playable[#playable + 1] = weapon end
+    local out = {}
+    for _, class in ipairs(configured) do
+        if type(class) == 'table' and Arena.IsKey(class.key) then
+            local playable = {}
+            for _, key in ipairs(type(class.weapons) == 'table' and class.weapons or {}) do
+                -- GetWeaponByKey answers nil for a disabled weapon exactly as
+                -- it does for an invented one, which is the whole reason the
+                -- pool is read through it rather than trusted.
+                local weapon = Arena.GetWeaponByKey(key)
+                if weapon then playable[#playable + 1] = weapon end
+            end
+
+            if #playable > 0 then
+                -- ONE WEAPON PER RUNG IS THE FLOOR. Two rungs drawing from
+                -- the same single weapon is a promotion that hands you the
+                -- gun you are already holding, so a class can never have more
+                -- rungs than it has weapons.
+                local ceiling = #playable
+                local wanted = Arena.ToInt(class.tiers)
+                if wanted == nil or wanted < 0 then wanted = 0 end
+
+                out[#out + 1] = {
+                    key = class.key,
+                    label = class.label or class.key,
+                    weapons = playable,
+                    tiers = math.min(wanted, ceiling),
+                    maxTiers = ceiling,
+                }
+            end
         end
-        if #playable > 0 then tiers[#tiers + 1] = playable end
+    end
+    return out
+end
+
+--- One class's ordered weapons split into `count` rungs, weakest first.
+---
+--- CONTIGUOUS CHUNKS, NOT A ROUND-ROBIN, and that is what keeps the climb
+--- climbing INSIDE a class: config lists each class weakest-first, so the
+--- first rung has to draw from the front of that list and the last from the
+--- back. Dealt out one at a time instead, every rung would hold a spread of
+--- the whole class and a "promotion" could hand you a worse gun than the one
+--- you had.
+---
+--- The remainder goes to the EARLY rungs, so a class of eighteen across nine
+--- is 2,2,2,2,2,2,2,2,2 and one of eighteen across five is 4,4,4,3,3. Nothing
+--- rests on which end gets the extra; what matters is that every rung gets at
+--- least one, which the caller guarantees by clamping the count.
+--- @param weapons table[] -- catalogue entries, ordered
+--- @param count integer
+--- @return table[][] rungs
+local function splitIntoRungs(weapons, count)
+    local rungs = {}
+    if count <= 0 or #weapons == 0 then return rungs end
+
+    local size = math.floor(#weapons / count)
+    local extra = #weapons % count
+
+    local at = 1
+    for index = 1, count do
+        local take = size + (index <= extra and 1 or 0)
+        local rung = {}
+        for _ = 1, take do
+            rung[#rung + 1] = weapons[at]
+            at = at + 1
+        end
+        if #rung > 0 then rungs[#rungs + 1] = rung end
+    end
+    return rungs
+end
+
+--- A host's requested ladder shape, checked against what this server can
+--- actually build.
+---
+--- REFUSES RATHER THAN CLAMPS on a count above what a class holds, for the
+--- same reason the lives and the round length do: a host who asked for eight
+--- shotgun rungs on a server with six shotguns should be told, rather than
+--- dropped into a round with a different ladder from the one they set.
+---
+--- SILENTLY IGNORES a class this server does not have, because that is not
+--- the host's doing: an operator switching a class off between the panel
+--- opening and the create landing is not a tampered payload.
+---
+--- NIL FOR "DID NOT CHOOSE", which the match stores and the draw then reads
+--- as "use each class's own default".
+--- @param modeKey any
+--- @param requested any -- { [classKey] = count }, straight off the wire
+--- @return table|nil plan
+--- @return string|nil reasonKey
+function Arena.ResolveTierPlan(modeKey, requested)
+    if requested == nil then return nil, nil end
+    if type(requested) ~= 'table' then return nil, 'error.invalid_request' end
+
+    local classes = Arena.GunGameClasses(modeKey)
+    if #classes == 0 then return nil, nil end
+
+    local plan, total = {}, 0
+    for _, class in ipairs(classes) do
+        local asked = requested[class.key]
+        if asked ~= nil then
+            local count = Arena.ToInt(asked)
+            if count == nil or count < 0 or count > class.maxTiers then
+                return nil, 'error.tier_count_out_of_range'
+            end
+            plan[class.key] = count
+            total = total + count
+        else
+            total = total + class.tiers
+        end
+    end
+
+    -- A LADDER OF ONE RUNG IS NOT A LADDER: it is topped by the first kill of
+    -- the round, which is a worse mode than no ladder at all. Refused here so
+    -- the host is told, rather than at the draw where it would quietly fall
+    -- back to ordinary rules and hand everybody the loadout screen they were
+    -- just told they could not use.
+    if total < LADDER_MINIMUM then return nil, 'error.ladder_too_short' end
+
+    return plan, nil
+end
+
+--- @param modeKey any
+--- @param plan table|nil -- Arena.ResolveTierPlan's answer, or nil for the
+---        class defaults
+--- @return table[][] tiers -- catalogue entries, never bare keys
+function Arena.LadderTiersFor(modeKey, plan)
+    local classes = Arena.GunGameClasses(modeKey)
+
+    -- THE OLD FLAT SHAPE STILL WORKS. An operator who would rather write the
+    -- thirty pools out by hand than compose them from classes can, and their
+    -- config is not silently ignored -- it is simply not something a host can
+    -- reshape from the panel. Read only when there are no classes, so the two
+    -- can never both be in play.
+    if #classes == 0 then
+        local mode = Arena.GetModeByKey(modeKey)
+        local configured = mode and mode.gunGameTiers
+        if type(configured) ~= 'table' then return {} end
+
+        local tiers = {}
+        for _, pool in ipairs(configured) do
+            local keys = type(pool) == 'table' and pool or { pool }
+            local playable = {}
+            for _, key in ipairs(keys) do
+                local weapon = Arena.GetWeaponByKey(key)
+                if weapon then playable[#playable + 1] = weapon end
+            end
+            if #playable > 0 then tiers[#tiers + 1] = playable end
+        end
+        return tiers
+    end
+
+    local tiers = {}
+    for _, class in ipairs(classes) do
+        local count = class.tiers
+        if type(plan) == 'table' and plan[class.key] ~= nil then
+            -- Re-clamped rather than trusted. The plan was checked when it
+            -- was made, but a match outlives the moment it was created and an
+            -- operator can switch weapons off underneath it.
+            count = math.max(0, math.min(Arena.ToInt(plan[class.key]) or 0, class.maxTiers))
+        end
+
+        for _, rung in ipairs(splitIntoRungs(class.weapons, count)) do
+            tiers[#tiers + 1] = rung
+        end
     end
     return tiers
 end
@@ -568,6 +759,154 @@ function Arena.KillCeilingFor(arenaKey, factor)
 
     local grown = radius * math.max(1.0, tonumber(factor) or 1.0)
     return math.max(configured, grown * 2.25)
+end
+
+--- Every win condition this resource knows, in the order the picker shows
+--- them.
+---
+--- A FIXED LIST, NOT WHATEVER CONFIG SAYS. Each of these has code behind it
+--- in server/match.lua's evaluator; an operator inventing a fourth name would
+--- get a match no condition ever fires for, which reads as "the round never
+--- ends". So the list is the code's, and config chooses from it.
+local WIN_CONDITIONS = { 'last_standing', 'most_kills', 'score_limit' }
+
+--- @return string[] -- a copy, so a caller cannot edit the table above
+function Arena.WinConditions()
+    local out = {}
+    for _, key in ipairs(WIN_CONDITIONS) do out[#out + 1] = key end
+    return out
+end
+
+--- @param value any
+--- @return boolean
+local function isWinCondition(value)
+    if not Arena.IsKey(value) then return false end
+    for _, key in ipairs(WIN_CONDITIONS) do
+        if key == value then return true end
+    end
+    return false
+end
+
+--- The server-wide win condition, out of a setting that takes two shapes.
+---
+--- Config.Match.winCondition is a plain STRING on a server that fixes how
+--- every match is won, and a TABLE -- { allowChoose, default } -- on one that
+--- lets the host pick. Exactly the two shapes Config.Match.lives and
+--- Config.Match.roundTimeSeconds already take, for the same reason: an
+--- operator takes the decision away by writing one value and hands it over by
+--- writing a block, with no second setting to find.
+---
+--- FALLS BACK TO 'last_standing' rather than to nothing. A win condition the
+--- evaluator does not know is a round that never ends, so an unreadable
+--- setting resolves to the one every mode can always satisfy, and
+--- Arena.ValidateConfig names the typo at start-up.
+--- @return string
+function Arena.WinConditionDefault()
+    local setting = (Config.Match or {}).winCondition
+
+    if type(setting) == 'table' then
+        if isWinCondition(setting.default) then return setting.default end
+        return WIN_CONDITIONS[1]
+    end
+
+    if isWinCondition(setting) then return setting end
+    return WIN_CONDITIONS[1]
+end
+
+--- The conditions a host may choose between, or nil where this server fixes
+--- it.
+---
+--- NIL RATHER THAN A ONE-ITEM LIST, and the panel reads it that way: a
+--- control that cannot change anything invites a host to try, and then to
+--- wonder why nothing happened.
+--- @return string[]|nil
+function Arena.WinConditionChoice()
+    local setting = (Config.Match or {}).winCondition
+    if type(setting) ~= 'table' or setting.allowChoose ~= true then return nil end
+    return Arena.WinConditions()
+end
+
+--- One host's requested win condition, checked.
+---
+--- REFUSES RATHER THAN CLAMPS, like the lives and the round length beside it:
+--- a host who asked for something this server does not offer is told so,
+--- rather than dropped into a match won by a different rule from the one they
+--- set.
+---
+--- NIL OR EMPTY MEANS "DID NOT CHOOSE" and resolves to '', which the match
+--- stores and Arena.WinConditionFor then reads as "the server's own". A
+--- panel that was never touched is not a tampered payload.
+--- @param requested any
+--- @return string|nil condition -- '' when the host did not choose
+--- @return string|nil reasonKey
+function Arena.ResolveWinCondition(requested)
+    if requested == nil or requested == '' then return '', nil end
+
+    -- IGNORED, NOT REFUSED, on a server that does not offer the choice. A
+    -- stale panel is not an attack, and the round runs the server's rule.
+    if not Arena.WinConditionChoice() then return '', nil end
+
+    if not isWinCondition(requested) then return nil, 'error.win_condition_unavailable' end
+    return requested, nil
+end
+
+--- How one match is won: the host's pick, falling back to the server's.
+--- @param chosen any -- what the match stored
+--- @return string
+function Arena.WinConditionFor(chosen)
+    if isWinCondition(chosen) then return chosen end
+    return Arena.WinConditionDefault()
+end
+
+--- Whether a death costs a life under this win condition.
+---
+--- A SCORE LIMIT DOES NOT SPEND LIVES, at the operator's own instruction, and
+--- the reason it cannot is arithmetic rather than taste: the round ends when
+--- somebody reaches the limit, and a roster that can be eliminated will run
+--- out of players first on any limit worth setting. Three lives and a limit
+--- of 25 means the round is decided by last-man-standing every single time
+--- and the number nobody reached was decorative.
+---
+--- So a score limit respawns for ever, exactly as a gun game does -- and it
+--- is expressed here rather than in the death handler for the same reason the
+--- ladder's rule is: Arena.IsEliminated reads `lives`, `stillIn` reads that,
+--- and the panel, the respawn picker, the spectator gate and every
+--- winner-selection path read `stillIn`. One rule, read everywhere.
+--- @param condition any
+--- @return boolean
+function Arena.WinConditionSpendsLives(condition)
+    return Arena.WinConditionFor(condition) ~= 'score_limit'
+end
+
+--- How many rounds one verified kill pays for each weapon the killer is
+--- carrying, or nil for "this mode pays none".
+---
+--- WHY THE ARENA PAYS THIS AT ALL. A dead fighter's inventory lands on the
+--- floor as its own ox_inventory container, and for a while that was how
+--- people re-armed mid-round: walk over the body and take the whole kit its
+--- owner had just been issued -- their weapons and every round with them, per
+--- kill, for as long as bodies kept falling. Looting is refused now, and this
+--- is the other half of that decision: the resupply a round needs is paid
+--- openly, in a fixed amount, to the fighter who earned it, instead of
+--- arriving as however much the last person to die happened to be holding.
+---
+--- PER WEAPON, NOT PER KILL. The number is what EACH firearm in the killer's
+--- loadout is handed, so two weapons taking the same round are two payments:
+--- what you are carrying is what you are paid for. Melee names no ammunition
+--- item and is paid nothing, which needs no rule of its own.
+---
+--- NIL FOR "NO OPINION", the same shape as Arena.TierAmmoFor: a mode that
+--- does not set it, or sets it to zero or to something unreadable, pays
+--- nothing and the caller does no work.
+--- @param modeKey any
+--- @return integer|nil rounds
+function Arena.KillAmmoFor(modeKey)
+    local mode = Arena.GetModeByKey(modeKey)
+    if type(mode) ~= 'table' then return nil end
+
+    local wanted = Arena.ToInt(mode.killAmmo)
+    if not wanted or wanted <= 0 then return nil end
+    return wanted
 end
 
 --- How many rounds a gun-game tier weapon is handed, or nil for "whatever
@@ -4056,15 +4395,52 @@ function Arena.ValidateConfig()
     -- That gap is what a start-up validator is for.
     for _, mode in ipairs(Arena.GetEnabledModes()) do
         local raw = (Config.Modes or {})[mode.key] or {}
-        if raw.gunGameTiers ~= nil then
-            if type(raw.gunGameTiers) ~= 'table' then
-                complain(('Config.Modes["%s"].gunGameTiers is a %s. It has to be a list of tiers, weakest first, each one a list of weapon keys.')
-                    :format(mode.key, type(raw.gunGameTiers)))
+        -- EITHER SHAPE COUNTS AS "THIS MODE CLIMBS A LADDER".
+        --
+        -- This block was nested under `gunGameTiers ~= nil` alone, and the
+        -- shipped ladder is composed from CLASSES now -- so the moment that
+        -- happened the whole block stopped running: the anti-collusion cap,
+        -- the mode's clock, the kill reward, the starting kit and every
+        -- supply-ceiling check went quiet at once, on the one mode that has
+        -- the most of them. A guard that silently stops guarding when the
+        -- thing it guards is rewritten is worse than no guard.
+        local declaresLadder = raw.gunGameTiers ~= nil or raw.gunGameClasses ~= nil
+
+        -- AND NEVER BOTH. Arena.LadderTiersFor reads the classes and falls
+        -- back to the flat list only when there are none, so a config with
+        -- both has one of them doing nothing -- silently, and it is the one
+        -- an operator is more likely to have just edited.
+        if raw.gunGameTiers ~= nil and raw.gunGameClasses ~= nil then
+            complain(('Config.Modes["%s"] sets BOTH gunGameClasses and gunGameTiers. The classes win and the flat list is ignored -- delete whichever one you did not mean to keep.')
+                :format(mode.key))
+        end
+
+        if declaresLadder then
+            local shapeWrong = (raw.gunGameTiers ~= nil and type(raw.gunGameTiers) ~= 'table')
+                or (raw.gunGameClasses ~= nil and type(raw.gunGameClasses) ~= 'table')
+
+            if shapeWrong then
+                complain(('Config.Modes["%s"] declares a ladder that is not a table. gunGameClasses is a list of weapon classes; gunGameTiers is a list of tiers, weakest first, each one a list of weapon keys.')
+                    :format(mode.key))
             else
                 local playable = Arena.LadderTiersFor(mode.key)
+                -- HOW MANY THE OPERATOR ASKED FOR, whichever shape they wrote
+                -- it in, so the complaint can say "3 of the 30 you listed"
+                -- rather than only "3".
+                local listed = 0
+                if type(raw.gunGameClasses) == 'table' then
+                    for _, class in ipairs(raw.gunGameClasses) do
+                        if type(class) == 'table' then
+                            listed = listed + math.max(0, Arena.ToInt(class.tiers) or 0)
+                        end
+                    end
+                elseif type(raw.gunGameTiers) == 'table' then
+                    listed = #raw.gunGameTiers
+                end
+
                 if #playable < 2 then
                     complain(('Config.Modes["%s"] is enabled with %d tier(s) of the %d it lists actually playable -- a ladder needs at least two, so this mode will run as an ordinary free-for-all. Check the weapon keys against config.weapons.lua and that they are enabled.')
-                        :format(mode.key, #playable, #raw.gunGameTiers))
+                        :format(mode.key, #playable, listed))
                 else
                     -- ONLY WHEN THERE IS A LADDER TO SAY IT ABOUT. Reported
                     -- unconditionally, this contradicted the line above it:

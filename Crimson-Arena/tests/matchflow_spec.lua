@@ -896,6 +896,15 @@ local function newClientFixture(mutate)
         takenBack = {},
         disabled = {},
         clock = 3600000,
+        --- What GetPedSourceOfDeath answers. 900 keeps the ordinary
+        --- slow-death path -- the watch loop, a frame or more after the
+        --- death -- working exactly as it did; a test about the same-frame
+        --- hook sets it to 0, which is what the engine really returns there.
+        sourceOfDeath = 900,
+        --- ped -> player index, and index -> server id, for tests that need
+        --- two different killers to be distinguishable.
+        playerIndexOf = {},
+        serverIdOf = {},
         serverEvents = {},
         released = {},
         cleared = 0,
@@ -986,11 +995,26 @@ local function newClientFixture(mutate)
         DisablePlayerFiring = function(_player, on) f.firingBlocked = on end,
         IsPauseMenuActive = function() return false end,
         SetFrontendActive = function() end,
-        GetPedSourceOfDeath = function() return 900 end,
+        -- SETTABLE, AND 0 IS A REAL ANSWER.
+        --
+        -- This was hard-wired to 900, so the source of death was ALWAYS
+        -- available -- and the one defect this native has is that it is NOT:
+        -- the engine fills it in when the ped's death state is finalised,
+        -- which is after CEventNetworkEntityDamage has been dispatched. A
+        -- fixture that always answers hides the entire race, and hid it: a
+        -- kill that landed in one shot named nobody, and every test here
+        -- passed.
+        GetPedSourceOfDeath = function() return f.sourceOfDeath or 0 end,
         IsEntityAPed = function() return true end,
         IsPedAPlayer = function() return true end,
-        NetworkGetPlayerIndexFromPed = function() return 5 end,
-        GetPlayerServerId = function() return 7 end,
+        -- Per ped, so a test can tell WHICH killer was named rather than only
+        -- that one was.
+        NetworkGetPlayerIndexFromPed = function(ped)
+            return (f.playerIndexOf or {})[ped] or 5
+        end,
+        GetPlayerServerId = function(index)
+            return (f.serverIdOf or {})[index] or 7
+        end,
 
         -- The team outline. Recorded rather than ignored: an outline that is
         -- put on and never taken off outlives the match that drew it, and
@@ -2137,6 +2161,113 @@ t.test('and the hold is not re-written every frame while nothing has touched it'
 
     t.equals(writes, 0, 'the hold rewrote itself on a frame where nothing had drifted')
     f.env.SetPlayerTeam = realSet
+end)
+
+-- ======================================================================
+-- WHO KILLED YOU, WHEN THE KILL LANDED IN ONE SHOT
+-- ======================================================================
+
+--- Into a live round, then killed by the SAME-FRAME path -- the damage-event
+--- hook rather than the watch loop.
+---
+--- The two are not interchangeable, and that is the whole of this section:
+--- the watch loop finds the body a frame or more later, by which time the
+--- engine has filled in the ped's source of death; the hook runs in the frame
+--- the ped dies, deliberately, because that is what stops a medical script
+--- filing an ambulance out of the arena -- and there the source is still 0.
+--- @param attacker integer|nil
+local function killedInOneShot(f, attacker)
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    -- WHAT THE ENGINE REALLY ANSWERS THIS EARLY.
+    f.sourceOfDeath = 0
+    f.dead = true
+
+    f.fire('gameEventTriggered', 'CEventNetworkEntityDamage', { f.ped, attacker, nil, 1 })
+end
+
+t.test('THE BUG: a kill that landed in one shot named nobody at all', function()
+    -- IN A PLAYER'S WORDS: "headshots do not give points, on any of the
+    -- matches -- FFA, gun game and team deathmatch".
+    --
+    -- It was never about headshots as such and never about the mode: it was
+    -- about how FAST the victim died. A kill that took several shots, or that
+    -- ended in a bleed-out, was found by the watch loop a frame later with the
+    -- source of death set, and was credited. One that killed outright was
+    -- caught by the damage-event hook in the same frame, where the source is
+    -- 0 -- so killerServerId went out nil, the server had no claim to check,
+    -- and nothing was logged at either end because a nil claim is not a
+    -- rejected claim. The better the shot, the more reliably it happened.
+    local f = newClientFixture()
+    f.playerIndexOf = { [901] = 3 }
+    f.serverIdOf = { [3] = 42 }
+
+    killedInOneShot(f, 901)
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the death was not reported at all')
+    t.equals(reports[1].payload.killerServerId, 42,
+        'the killer the damage event named was dropped, so the kill was credited to nobody')
+end)
+
+t.test('and the slow-death path still names the killer it always did', function()
+    -- The watch loop, a frame or more after the death, where the engine HAS
+    -- filled the source in. This is the path that always worked, and it must
+    -- go on working: reading the damage event first must not mean ignoring
+    -- the native when there is no damage event to read.
+    local f = newClientFixture()
+    f.toFirstDeath()
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the watch loop stopped reporting deaths')
+    t.equals(reports[1].payload.killerServerId, 7,
+        'the source of death stopped being read when there is no attacker to prefer')
+end)
+
+t.test('and an attacker that is nobody falls back to the native rather than to nil', function()
+    -- A death with no attacker in the payload -- a fall, the boundary bleed,
+    -- drowning -- must not be worse off than it was. The native is asked
+    -- exactly as before.
+    local f = newClientFixture()
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    -- The native HAS been filled in by the time this one is spotted.
+    f.sourceOfDeath = 900
+    f.dead = true
+    f.fire('gameEventTriggered', 'CEventNetworkEntityDamage', { f.ped, 0, nil, 1 })
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the death was not reported')
+    t.equals(reports[1].payload.killerServerId, 7,
+        'an attacker of 0 should fall through to the source of death, not to nobody')
+end)
+
+t.test('and the victim cannot name themselves however the death was spotted', function()
+    -- The server refuses a self-report anyway -- resolveKiller does -- but a
+    -- client that sends one is a client claiming something untrue, and the
+    -- cheapest place to not say it is here.
+    local f = newClientFixture()
+    killedInOneShot(f, f.ped)
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the death was not reported')
+    t.isNil(reports[1].payload.killerServerId, 'the victim named themselves as their own killer')
 end)
 
 os.exit(t.summary())

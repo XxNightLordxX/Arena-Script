@@ -144,6 +144,10 @@
            fallback -- one life -- whatever the operator's default says and
            whatever the host picked before touching the box. */
         createLives: null,
+        /* The win condition the host has picked, or null until the snapshot
+           tells us what this server's default is. Same shape as createLives
+           and createRound beside it: null means "not seeded yet", not "none". */
+        createWin: null,
         createRound: null,
 
         /* The match the create form was last seeded from. Keyed on the id so
@@ -1266,6 +1270,12 @@
         if (state.createRound === null) {
             state.createRound = int((config.match || {}).roundTimeSeconds, 0);
         }
+        /* Its own guard, for the same reason the two above have theirs. The
+           server sends the RESOLVED default -- a string, never the config
+           block -- so this is the rule a host who touches nothing will run. */
+        if (state.createWin === null) {
+            state.createWin = keyOr((config.match || {}).winCondition, 'last_standing');
+        }
         if (state.betAmount === null) {
             /* Whichever kind of bet this server actually offers. Seeding
                from the spectator minimum on a server that only lets fighters
@@ -1294,6 +1304,7 @@
             state.createMode = editable.modeKey || state.createMode;
             state.createLives = int(editable.lives, int(state.createLives, 1));
             state.createRound = int(editable.roundTimeSeconds, int(state.createRound, 0));
+            state.createWin = keyOr(editable.winCondition, state.createWin);
             state.createRadar = editable.radar === true;
         } else if (!editable && state.seededFromMatch !== null) {
             /* ON THE TRANSITION ONLY, keyed the same way the seeding above
@@ -1690,8 +1701,59 @@
            the box where the mode is chosen, so it has to follow the select
            above it rather than a match that may not exist yet. */
         var creating = modeByKey(state.createMode);
+
+        /* WIN CONDITION, ABOVE LIVES, because the answer here decides whether
+           Lives Each is read at all. Hidden when the operator has fixed it,
+           and hidden for a ladder mode as well: a gun game is won by topping
+           the ladder or by its own clock whatever is set, so offering the
+           choice there would be a control that changes nothing. */
+        var laddered = modeIssuesLoadout(creating);
+        var winChoice = (cfg().match || {}).winConditionChoice;
+        var winUsed = Array.isArray(winChoice) && winChoice.length > 1 && !laddered;
+        show(byId('create-win-row'), winUsed);
+
+        var winSelect = byId('create-win');
+        if (has(winSelect) && winUsed) {
+            /* Rebuilt only when the options have actually changed, so the
+               select is not torn out from under an open dropdown on every
+               server push. */
+            var wanted = winChoice.join(',');
+            if (winSelect.getAttribute('data-options') !== wanted) {
+                winSelect.setAttribute('data-options', wanted);
+                clear(winSelect);
+                winChoice.forEach(function (key) {
+                    var option = makeEl('option', null,
+                        titleCase(labelFor(WIN_CONDITION_TEXT, key, key)));
+                    option.value = key;
+                    winSelect.appendChild(option);
+                });
+            }
+            if (document.activeElement !== winSelect) {
+                winSelect.value = keyOr(state.createWin, winChoice[0]);
+            }
+        }
+
+        var winHint = byId('create-win-hint');
+        if (has(winHint)) {
+            /* WHAT THE CHOICE ACTUALLY COSTS, said before it is made. A score
+               limit spends no lives, and a host who picks it and then finds
+               the Lives Each box gone would reasonably read that as a bug. */
+            winHint.textContent = !winUsed ? ''
+                : (state.createWin === 'score_limit'
+                    ? 'First to ' + int((cfg().match || {}).scoreLimit, 25)
+                      + ' kills takes it. Nobody is eliminated — everyone respawns until '
+                      + 'somebody gets there, so lives are not spent.'
+                    : (state.createWin === 'most_kills'
+                        ? 'Highest kill count when the clock runs out takes it.'
+                        : 'Last one standing takes it. Run out of lives and you are out.'));
+        }
+
         var livesChoice = (cfg().match || {}).livesChoice;
-        var livesUsed = !!livesChoice && !modeIssuesLoadout(creating);
+        /* AND A SCORE LIMIT SPENDS NO LIVES, which is the same reason a
+           ladder mode does not show this row: the number would be on screen,
+           editable, and read by nothing. */
+        var livesSpent = state.createWin !== 'score_limit';
+        var livesUsed = !!livesChoice && !laddered && livesSpent;
         show(byId('create-lives-row'), livesUsed);
 
         var livesInput = byId('create-lives');
@@ -1747,12 +1809,19 @@
            looks like a bug unless the reason goes in its place. */
         var livesNote = byId('create-lives-note');
         if (has(livesNote)) {
-            var laddered = modeIssuesLoadout(creating);
-            show(livesNote, laddered);
+            /* TWO REASONS THE ROW CAN GO, and they are not the same sentence.
+               A ladder mode has no lives by its own design; a score limit has
+               none because of the rule the host just picked one line above,
+               and telling them "gun game has no lives" about a free-for-all
+               would be nonsense. */
+            show(livesNote, laddered || !livesSpent);
             if (laddered) {
                 livesNote.textContent = String(creating.label || 'This mode')
                     + ' has no lives — everyone respawns until the clock stops, '
                     + 'and a death costs you a tier instead.';
+            } else if (!livesSpent) {
+                livesNote.textContent = 'A kill limit has no lives — everyone respawns '
+                    + 'until somebody reaches it.';
             }
         }
 
@@ -4607,6 +4676,15 @@
         state.createRound = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
     });
 
+    bind('create-win', 'change', function (event) {
+        state.createWin = keyOr(event.target.value, state.createWin);
+        /* Re-rendered because the choice moves more than itself: picking a
+           kill limit takes the Lives Each row away and puts a sentence in its
+           place. A control whose consequences appear only on the next server
+           push reads as a control that did nothing. */
+        render();
+    });
+
     bind('create-fee', 'input', function (event) {
         var fee = (betting().entryFee) || {};
         state.createFee = clampInt(event.target.value, int(fee.min, 0), int(fee.max, 0));
@@ -4623,6 +4701,7 @@
                 modeKey: state.createMode,
                 lives: int(state.createLives, 1),
                 roundTimeSeconds: int(state.createRound, 0),
+                winCondition: keyOr(state.createWin, ''),
                 /* radarIsOn(), not state.createRadar: an untouched toggle is
                    null, and null on the wire means "leave it alone" -- which
                    is not what the host sees on a button reading Radar Off. */
@@ -4637,6 +4716,7 @@
             entryFee: int(state.createFee, 0),
             lives: int(state.createLives, 1),
             roundTimeSeconds: int(state.createRound, 0),
+            winCondition: keyOr(state.createWin, ''),
             radar: radarIsOn(),
             /* The host joins their own match through the same door as
                everybody else, so their entry fee comes out of the account

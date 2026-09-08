@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 84 functions
+#### `shared/arena.lua` — 93 functions
 
 | Function | What it does |
 |---|---|
@@ -341,6 +341,15 @@ listed; the source documents them where they are.
 | `Arena.LadderTiersFor(modeKey)` | Every tier of a mode's gun-game ladder that still has a playable weapon in it, in climbing order. |
 | `Arena.RoundSecondsFor(modeKey, chosen)` | How long a round of one mode runs: the mode's own clock, falling back to Config.Match's. |
 | `Arena.TierAmmoFor(modeKey)` | How many rounds a gun-game tier weapon is handed, or nil for the weapon's own default. |
+| `Arena.KillAmmoFor(modeKey)` | How many rounds one verified kill pays for each weapon the killer carries. |
+| `Arena.WinConditions()` | Every win condition this resource knows, in picker order. |
+| `Arena.WinConditionDefault()` | The server-wide win condition, out of a setting that takes a string or a block. |
+| `Arena.WinConditionChoice()` | The conditions a host may pick between, or nil where the server fixes it. |
+| `Arena.ResolveWinCondition(requested)` | One host's requested win condition, refused rather than clamped. |
+| `Arena.WinConditionFor(chosen)` | How one match is won: the host's pick, falling back to the server's. |
+| `Arena.WinConditionSpendsLives(condition)` | Whether a death costs a life under this condition. |
+| `Arena.GunGameClasses(modeKey)` | The weapon classes a ladder is built from, with each one's playable pool and ceiling. |
+| `Arena.ResolveTierPlan(modeKey, requested)` | A host's requested ladder shape, refused rather than clamped. |
 | `Arena.KillCeilingFor(arenaKey, factor)` | How far apart two players may be for one to have killed the other, in this arena. |
 | `Arena.RoundTimeDefault()` | The server-wide round length, out of a setting that takes a number or a range. |
 | `Arena.RoundTimeChoice()` | The range a host may set a round length within, or nil when the choice is not offered. |
@@ -458,13 +467,14 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 14 functions
+#### `server/ammo.lua` — 15 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaAmmo.IsEnabled()` | Whether ammunition ITEMS are being handed out. |
 | `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
 | `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies. |
+| `ArenaAmmo.GrantRounds(src, matchId, item, count)` | Hands a player rounds mid-round and books them on the ammunition ledger. |
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.ReclaimAll(matchId, reasonKey)` | Reclaims the kit of every player in one match. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |

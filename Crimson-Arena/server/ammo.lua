@@ -148,12 +148,37 @@ end
 --- safe list is the default and config.lua OVERRIDES it rather than enabling
 --- it. Same shape of trap as the weapon catalogue: a new thing whose absence
 --- must not mean the broken behaviour.
-local DEFAULT_NEVER_TOUCH = { 'money', 'black_money' }
+--- NOTHING, and that is a deliberate answer rather than an oversight.
+---
+--- Everything a player owns goes into the stash on the way in. The arena's
+--- one promise is that a match cannot cost anyone anything, and the way it
+--- keeps that promise is by holding their belongings somewhere the round
+--- cannot reach -- so anything left OUT of the stash is something the round
+--- can reach: droppable, lootable off their body, and destroyable by the
+--- exit's own clear if it is still in their pockets.
+local DEFAULT_NEVER_STASH = {}
 
-local function untouchable()
+--- The names the exit's clear must not destroy when config.lua does not say.
+--- NOT an empty list.
+---
+--- These keys are new, and a key that is new is a key most running servers do
+--- not have: an operator who keeps their own config.lua across the upgrade --
+--- which is the normal way to upgrade, and the exact population that reported
+--- cash payouts vanishing -- has the `inventory` block without them in it.
+---
+--- Defaulting that to {} would hand them back the bug the key exists to fix,
+--- silently, with the door still on because stripOnEntry ships true. So the
+--- safe list is the default and config.lua OVERRIDES it rather than enabling
+--- it. Same shape of trap as the weapon catalogue: a new thing whose absence
+--- must not mean the broken behaviour.
+local DEFAULT_NEVER_DESTROY = { 'money', 'black_money' }
+
+--- @param names any
+--- @param fallback string[]
+--- @return table<string, boolean>, string[]
+local function nameSet(names, fallback)
     local map, list = {}, {}
-    local names = doorConfig().neverTouch
-    if type(names) ~= 'table' then names = DEFAULT_NEVER_TOUCH end
+    if type(names) ~= 'table' then names = fallback end
     for _, name in ipairs(names) do
         if Arena.IsKey(name) and not map[name] then
             map[name] = true
@@ -161,6 +186,50 @@ local function untouchable()
         end
     end
     return map, list
+end
+
+--- TWO LISTS, NOT ONE, AND THEY ARE NOT THE SAME QUESTION.
+---
+--- They were one -- `neverTouch` -- and being one is what put a player in an
+--- arena still carrying every note they own. The two jobs it was doing:
+---
+---   ON THE WAY IN, what stow() leaves in a player's pockets rather than
+---   putting in the stash. Cash was on this list on the reasoning that it
+---   "cannot be spent in an arena and cannot be looted off a body here", and
+---   the second half of that stopped being true the moment ox_inventory
+---   started dropping a dead fighter's inventory on the floor -- which it
+---   always did. A player killed in a round was dropping their whole
+---   wallet. Nothing should be in their pockets that the round did not issue,
+---   and cash is not an exception to that; it is the most valuable case of
+---   it.
+---
+---   ON THE WAY OUT, what the exit's wholesale ClearInventory must not
+---   destroy. Cash HAS to stay on this one. The pot and the side-bets settle
+---   in server/match.lua BEFORE anybody is sent home, so on a server where
+---   cash is an ox_inventory item the winnings are a money item sitting in an
+---   inventory the exit is about to clear -- and the clear is indiscriminate
+---   on the reasoning that everything in it belongs to the arena, which
+---   stopped being true the moment the winnings arrived. Bank was never
+---   affected, because bank is player data rather than an item; that
+---   asymmetry is exactly what made it look like "cash bets do not pay out".
+---
+--- So the same name belongs on the second list and not on the first, and one
+--- list could not say that.
+--- AND THE ENTRY CLEAR USES THE FIRST LIST, NOT THE SECOND. stow() puts
+--- everything in the stash and then wipes the pockets; anything the wipe
+--- KEEPS that the stash also took is duplicated -- the player walks into the
+--- round still holding it and finds a second copy waiting at the exit.
+--- Handing the exit's list to the entry clear did exactly that to cash the
+--- moment cash started being stashed. So the two clears get their own lists,
+--- for the same reason the two decisions do.
+--- @return table<string, boolean> skipMap -- left out of the stash on entry
+--- @return string[] skipList -- the same names, for the ENTRY clear
+--- @return string[] keepList -- left alone by the EXIT clear
+local function untouchable()
+    local door = doorConfig()
+    local skipMap, skipList = nameSet(door.neverStash, DEFAULT_NEVER_STASH)
+    local _, keepList = nameSet(door.neverDestroy, DEFAULT_NEVER_DESTROY)
+    return skipMap, skipList, keepList
 end
 
 --- HOW BIG THE BELONGINGS STASH IS, in slots and in weight.
@@ -328,6 +397,8 @@ local function stow(src, citizenid)
 
     -- Nothing to put away is a success, not a failure: an empty-handed player
     -- is still stripped-and-restored correctly, they simply have nothing.
+    -- The ENTRY clear's list, which is the same names the stash skipped and
+    -- deliberately NOT the exit's -- see untouchable().
     local skip, keep = untouchable()
     local stowed = {}
 
@@ -489,7 +560,7 @@ local function restore(src, record)
     local wiped = true
 
     if not record.cleared then
-        local _, keep = untouchable()
+        local _, _, keep = untouchable()
         if not oxDid('clearing the arena kit from ' .. tostring(src), function()
             return ox:ClearInventory(src, keep)
         end) then
@@ -1337,6 +1408,70 @@ function ArenaAmmo.Refresh(src, matchId, loadout)
     end
 
     ArenaDebug('weapons: refreshed the loadout for %s on match %s.', tostring(src), tostring(matchId))
+    return true
+end
+
+--- Hands one player rounds mid-round -- what a kill pays in a mode that
+--- pays ammunition -- and puts them on the arena's books.
+---
+--- ON THE AMMUNITION LEDGER, NOT THE SUPPLY ONE, and the difference is what
+--- the exit does with it: `issuedAmmo` is reclaimed against what the player
+--- is still HOLDING above the line they walked in on, which is the right
+--- arithmetic for something whose whole purpose is to be fired. Booked as a
+--- supply it would be asked for in full, ox_inventory would refuse the whole
+--- removal from anyone who had shot any of it, and the arena would take
+--- nothing back from precisely the fighters who used it most.
+---
+--- A FLAT AMOUNT, NOT A SHORTFALL, and that is the difference between this
+--- and `issueSpareRounds`. That one tops a fighter back up to the loadout
+--- they paid for and refuses to hand over rounds they already hold; this is
+--- a reward for something they did, so somebody who has fired nothing still
+--- earns it. Two functions because they are two rules, not one rule with a
+--- flag.
+--- @param src number
+--- @param matchId string
+--- @param item string -- an ox_inventory ammo item name
+--- @param count any
+--- @return boolean granted
+function ArenaAmmo.GrantRounds(src, matchId, item, count)
+    local ox = inventory()
+    if not ox then return false end
+
+    -- The same gates every sibling in this file has. A nil matchId would
+    -- throw on the ledger write below -- `table index is nil`, out of a kill
+    -- reward, inside the death report.
+    if not (type(src) == 'number' and src > 0) then return false end
+    if not Arena.IsKey(matchId) then return false end
+    if not Arena.IsKey(item) then return false end
+
+    local amount = Arena.ToInt(count) or 0
+    if amount <= 0 then return false end
+
+    -- WHAT THEY WALKED IN WITH, read before the arena adds to it. Guarded to
+    -- once per match per item inside rememberHeld, so a reward paid on the
+    -- fourth kill cannot move the line up to include the first three.
+    rememberHeld(ox, src, matchId, item)
+
+    local ok, granted = pcall(function() return ox:AddItem(src, item, amount) end)
+    if not (ok and granted ~= false) then
+        -- NOT ArenaLog. A reward that will not fit is an ordinary thing that
+        -- happens to somebody already carrying five hundred rounds, and a
+        -- console line for every such kill of every round is a log an
+        -- operator stops reading.
+        ArenaDebug('kill ammo: %s x%d was refused for %s -- no room, or no such item.',
+            item, amount, tostring(src))
+        return false
+    end
+
+    issuedAmmo[matchId] = issuedAmmo[matchId] or {}
+    local byName = issuedAmmo[matchId][src] or {}
+    issuedAmmo[matchId][src] = byName
+    byName[item] = (byName[item] or 0) + amount
+
+    issued[matchId] = issued[matchId] or {}
+    issued[matchId][src] = (issued[matchId][src] or 0) + amount
+
+    ArenaDebug('kill ammo: gave %s x%d to %s.', item, amount, tostring(src))
     return true
 end
 
@@ -2294,11 +2429,62 @@ CreateThread(function()
             end
             if not inArena then return true end
 
-            local target = payload.toInventory
-            if target and target ~= src and tostring(target) ~= tostring(src) then
+            --- Whether an inventory id names THIS player's own pockets.
+            ---
+            --- Compared as strings as well as directly: ox_inventory answers a
+            --- player inventory as a number on some paths and as a string on
+            --- others, and a fighter whose id arrives the other way round is a
+            --- fighter the guard silently stops applying to.
+            local function theirs(id)
+                if id == nil then return true end
+                return id == src or tostring(id) == tostring(src)
+            end
+
+            -- OUT. A move to anything that is not their own pockets is a drop,
+            -- a stash deposit or a hand-off, and none of those are things to
+            -- be doing in the middle of a round.
+            if not theirs(payload.toInventory) then
                 ArenaNotifyKey(src, 'error.no_dropping_in_arena', 'error')
                 return false
             end
+
+            -- AND IN, WHICH IS THE SAME RULE POINTED THE OTHER WAY.
+            --
+            -- THIS IS THE ONE THAT WAS MISSING, and it is the whole of a
+            -- report that read as "killing someone gives you a hundred rounds
+            -- per weapon". It was never a reward: ox_inventory drops a dead
+            -- player's inventory on the floor as its own container, and a
+            -- fighter who walked over the body could take the WHOLE arena kit
+            -- the victim had just been issued -- their weapons and every round
+            -- that came with them. Per kill, for as long as bodies kept
+            -- falling. The half of the hook that existed refused moves OUT and
+            -- permitted every move IN, so looting was not merely unguarded, it
+            -- was the one direction the guard explicitly let through.
+            --
+            -- The exit was already catching the consequences -- reclaimWeapons
+            -- takes back looted rounds by name, which is why nothing walked
+            -- out of the arena -- but "it is confiscated at the door" is not
+            -- the same as "it never happened": the round is still fought by
+            -- somebody carrying four dead men's ammunition, and the loadout a
+            -- player paid for stops meaning anything. What a kill is worth is
+            -- paid openly instead -- see Arena.KillAmmoFor.
+            --
+            -- NOT ONLY BODIES. The same move covers a stash, a vehicle boot
+            -- and another player's inventory, all of which are ways to bring
+            -- something into a round that the round did not issue -- and the
+            -- boot is the exact trick the tier swap's anti-parking rule exists
+            -- to refuse from the other side.
+            --
+            -- WHAT IT DOES NOT TOUCH: anything the ARENA hands over. Every
+            -- issue, top-up, kill reward and stash return goes through
+            -- ox_inventory's AddItem, which is a server-side write and raises
+            -- no swapItems hook at all. Nor does moving things around inside
+            -- their own pockets, which stays their business.
+            if not theirs(payload.fromInventory) then
+                ArenaNotifyKey(src, 'error.no_looting_in_arena', 'error')
+                return false
+            end
+
             return true
         end, { print = false })
     end)

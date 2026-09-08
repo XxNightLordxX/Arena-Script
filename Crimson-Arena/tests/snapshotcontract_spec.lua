@@ -363,7 +363,15 @@ t.test('the shipped catalogue is rich enough for the rest of this file to mean a
 
     t.isTrue(melee > 0, 'no melee weapon ships enabled, so the melee half of this file proves nothing')
     t.isTrue(firearms > 0, 'no shootable weapon ships enabled')
-    t.isTrue(disabled > 0, 'nothing ships disabled, so "a disabled weapon never appears" proves nothing')
+
+    -- EVERY WEAPON SHIPS ENABLED NOW, at the operator's own instruction, so
+    -- there is no longer a disabled one lying about for the test below to
+    -- borrow -- and borrowing one was always the weak part of it: a test
+    -- whose subject can be deleted by a config edit is a test that gets
+    -- deleted by a config edit, silently. It switches one off itself now,
+    -- which is what this line records rather than asserts.
+    t.equals(disabled, 0,
+        'something ships disabled -- that is fine, but the test below now switches its own off')
     t.isTrue(sharedAmmoTypeCount(Arena, config) > 0, 'the shared ammo type list is empty')
     t.isTrue(#ammoItemNames(Arena) > 0, 'no ammo type names an item, so the leak check has nothing to look for')
 end)
@@ -752,8 +760,19 @@ end)
 -- A DISABLED WEAPON IS GONE, NOT GREYED OUT
 -- ======================================================================
 
-t.test('nothing an operator shipped disabled appears in the snapshot', function()
-    local server = newArena()
+t.test('nothing an operator has disabled appears in the snapshot', function()
+    -- SWITCHED OFF BY THIS TEST, not borrowed from the shipped catalogue.
+    -- Every weapon ships enabled, so a test that walked the config looking
+    -- for a disabled one to check would have found none and checked nothing
+    -- -- which is what the guard at the bottom of it says out loud.
+    local OFF = { 'rifle', 'knife', 'pistol' }
+    local server = newArena(function(config)
+        for _, weapon in ipairs(config.Loadouts.weapons or {}) do
+            for _, key in ipairs(OFF) do
+                if weapon.key == key then weapon.enabled = false end
+            end
+        end
+    end)
     local loadouts = server.loadouts()
     local checked = 0
 
@@ -761,10 +780,14 @@ t.test('nothing an operator shipped disabled appears in the snapshot', function(
         if weapon.enabled == false then
             checked = checked + 1
             t.isNil(snapWeapon(loadouts, weapon.key),
-                ('%s ships disabled and reached the panel anyway'):format(weapon.key))
+                ('%s is disabled and reached the panel anyway'):format(weapon.key))
         end
     end
-    t.isTrue(checked > 0, 'the shipped config disables nothing, so this test checked nothing')
+    t.equals(checked, #OFF, 'the fixture did not switch off what it said it would')
+
+    -- AND THE REST OF THE CATALOGUE STILL ARRIVED, so this is not passing
+    -- because the snapshot is empty.
+    t.isTrue(#(loadouts.weapons or {}) > 0, 'the snapshot carried no weapons at all')
 end)
 
 t.test('switching a weapon off removes it from the panel and from what the server will hand out', function()

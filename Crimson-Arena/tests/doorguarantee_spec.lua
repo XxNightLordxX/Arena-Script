@@ -291,64 +291,89 @@ t.test('a match that finishes normally hands everything back', function()
 end)
 
 -- ========================================================================
--- MONEY NEVER GOES THROUGH THE DOOR
+-- MONEY GOES IN LIKE EVERYTHING ELSE, AND THE PAYOUT STILL SURVIVES
 --
--- On a server where ox_inventory holds cash as an item, the door used to
--- stash it like a burger. The way out then clears the whole inventory before
--- handing the stash back, on the reasoning that everything the player is
--- carrying belongs to the arena.
+-- TWO QUESTIONS, AND FOR A WHILE ONE SETTING ANSWERED BOTH -- wrongly, in
+-- opposite directions.
 --
--- THAT STOPS BEING TRUE BEFORE THE CLEAR RUNS. server/match.lua settles the
--- pot and the side-bets and only THEN sends everybody home, so a winner's
--- payout is credited into the inventory the exit is about to wipe. Their own
--- cash came back out of the stash; the winnings did not. Bank was untouched
--- throughout, because bank is player data rather than an item -- which is
--- what made it look like cash bets specifically do not pay out.
+--   ON THE WAY IN. Cash was left in a player's pockets on the reasoning that
+--   it "cannot be spent in an arena and cannot be looted off a body here".
+--   The second half was never true: ox_inventory drops a dead player's
+--   inventory on the floor whatever this resource thinks. So a fighter walked
+--   into a live round carrying every note they own and dropped the lot the
+--   first time somebody shot them. It goes in the stash now, with everything
+--   else -- `neverStash` ships EMPTY.
+--
+--   ON THE WAY OUT. The exit clears whatever a player is carrying, on the
+--   reasoning that at that moment everything in their pockets belongs to the
+--   arena. That stops being true before the clear runs: server/match.lua
+--   settles the pot and the side-bets and only THEN sends everybody home, so
+--   a winner's payout is credited into the inventory the exit is about to
+--   wipe. Bank was untouched throughout, because bank is player data rather
+--   than an item -- which is what made it look like cash bets specifically do
+--   not pay out. `neverDestroy` is the list that keeps it, and cash stays on
+--   it.
 -- ========================================================================
 
-t.test('cash is not taken at the door in the first place', function()
+t.test('THE REPORT: cash goes into the stash with everything else', function()
+    -- IN THE OPERATOR'S WORDS: "it is not taking money out of the inventory
+    -- when you start the match, so in the match I still have all my cash I
+    -- had before joining -- it takes the money out for the betting but not
+    -- the rest of my cash".
+    --
+    -- Which was true, and was the setting doing exactly what it said. The
+    -- reasoning behind it -- cash "cannot be looted off a body here" -- was
+    -- never true: ox_inventory drops a dead player's inventory on the floor
+    -- whatever this resource thinks, so a fighter was carrying their whole
+    -- wallet into a live round and dropping it the first time they died.
     local server = liveMatch({ 1, 2 }, { { name = 'money', count = 5000 } })
     local carrying = server.carrying(1)
 
     -- PROOF THE DOOR ACTUALLY RAN, first. Without this the test passes on a
-    -- build where the door never opened, which is the one state where money
-    -- surviving means nothing at all.
+    -- build where the door never opened, which is the one state where the
+    -- pockets being empty means nothing at all.
     t.isNil(carrying:find('phonex1', 1, true),
         'the door did not run, so this test proves nothing: ' .. carrying)
 
-    -- ASSERTED ON THE STASH, not on their pockets. Money left in the pockets
-    -- AND copied into the stash looks identical from the player's side and is
-    -- a duplication bug rather than a fix, so the pocket check alone cannot
-    -- tell a working door from a broken one.
-    t.isNil(server.stashed(1):find('money', 1, true),
-        'the door put cash in the arena stash: ' .. server.stashed(1))
-    t.isTrue(carrying:find('moneyx5000', 1, true) ~= nil,
-        'and it did not leave it with the player either: ' .. carrying)
+    t.isTrue(server.stashed(1):find('money', 1, true) ~= nil,
+        'the door left cash in the arena rather than putting it away: ' .. server.stashed(1))
+    t.isNil(carrying:find('money', 1, true),
+        'and it left a copy in their pockets as well, which is worse: ' .. carrying)
 end)
 
-t.test('and it protects money even when config.lua has never heard of the key', function()
-    -- THE UPGRADE CASE, and it is the normal one. `neverTouch` is new, so an
-    -- operator who keeps their own config.lua across the upgrade has the
+t.test('and it comes back out again at the exit', function()
+    -- The other half, and the half that matters: putting it away is only
+    -- safe if it comes back. INTACT is the whole inventory these fixtures
+    -- walk in with.
+    local server, matchId = liveMatch({ 1, 2 }, { { name = 'money', count = 5000 } })
+    server.match.End(matchId, 'match.ended')
+
+    local carrying = server.carrying(1)
+    t.isTrue(carrying:find('moneyx5000', 1, true) ~= nil,
+        'THE ARENA KEPT THEIR CASH -- ' .. carrying)
+    t.isTrue(carrying:find('phonex1', 1, true) ~= nil,
+        'and their own belongings did not come back either: ' .. carrying)
+end)
+
+t.test('and a payout is protected even when config.lua has never heard of the key', function()
+    -- THE UPGRADE CASE, and it is the normal one. `neverDestroy` is new, so
+    -- an operator who keeps their own config.lua across the upgrade has the
     -- inventory block WITHOUT it -- and that is exactly the person who
     -- reported the payout vanishing in the first place.
     --
     -- The default therefore has to be the safe list, not an empty one:
     -- config.lua overrides it, it does not enable it.
-    local server = liveMatch({ 1, 2 }, { { name = 'money', count = 5000 } },
-        function(config) config.Loadouts.inventory.neverTouch = nil end)
+    local server, matchId = liveMatch({ 1, 2 }, nil,
+        function(config) config.Loadouts.inventory.neverDestroy = nil end)
 
-    -- CHECKED WHILE THE ROUND IS LIVE, not after it. Ending the match hands
-    -- the stash back and empties it, so a post-match assertion that the stash
-    -- holds no money passes whatever the door did -- which is how the first
-    -- draft of this test passed with the safe default removed.
-    local carrying, stashed = server.carrying(1), server.stashed(1)
+    -- The payout, exactly where the real one lands: after the round is
+    -- decided, before the player is sent home.
+    server.give(1, 'money', 7500)
+    server.match.End(matchId, 'match.ended')
 
-    t.isNil(carrying:find('phonex1', 1, true),
-        'the door did not run, so this test proves nothing: ' .. carrying)
-    t.isNil(stashed:find('money', 1, true),
-        'with no neverTouch key the door stashed their cash again: ' .. stashed)
-    t.isTrue(carrying:find('moneyx5000', 1, true) ~= nil,
-        'and it did not leave the money with the player either: ' .. carrying)
+    local carrying = server.carrying(1)
+    t.isTrue(carrying:find('moneyx7500', 1, true) ~= nil,
+        'with no neverDestroy key the exit clear destroyed the payout: ' .. carrying)
 end)
 
 t.test('and money credited DURING a round survives the way out', function()

@@ -208,6 +208,7 @@ register('createMatch', function(data)
         entryFee = data.entryFee,
         lives = data.lives,
         roundTimeSeconds = data.roundTimeSeconds,
+        winCondition = data.winCondition,
         radar = data.radar,
         account = data.account,
     })
@@ -232,6 +233,7 @@ register('updateMatch', function(data)
         modeKey = data.modeKey,
         lives = data.lives,
         roundTimeSeconds = data.roundTimeSeconds,
+        winCondition = data.winCondition,
         radar = data.radar,
     })
 end)

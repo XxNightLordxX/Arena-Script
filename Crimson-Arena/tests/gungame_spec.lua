@@ -186,8 +186,28 @@ local SEVEN_TIERS = {
     { 'pistol50' }, { 'revolver' }, { 'appistol' },
 }
 
+--- Pins a gun game to one exact ladder, written out pool by pool.
+---
+--- CLEARS THE CLASSES AS WELL, and that is the whole reason this is a
+--- function rather than one assignment. The shipped ladder is composed from
+--- weapon CLASSES now -- melee, sidearms, and up, each with a rung count the
+--- host can shape in the creation menu -- and Arena.LadderTiersFor reads the
+--- classes first, falling back to a flat `gunGameTiers` only when there are
+--- none. So setting `gunGameTiers` alone changes nothing at all: the mode
+--- still has its classes, still builds the thirty-rung ladder from them, and
+--- a test asserting on a three-tier ladder measures the shipped one instead.
+---
+--- Every test below that wants a ladder of its own goes through here, so
+--- there is one place that knows both halves of that.
+--- @param config table
+--- @param pools table -- a list of tiers, each a list of weapon keys
+local function pinLadder(config, pools)
+    config.Modes.gungame.gunGameClasses = nil
+    config.Modes.gungame.gunGameTiers = pools
+end
+
 local function sevenTiers(config)
-    config.Modes.gungame.gunGameTiers = SEVEN_TIERS
+    pinLadder(config, SEVEN_TIERS)
 end
 
 local function newServer(mutate, seed, opts)
@@ -495,7 +515,14 @@ t.test('the ladder is one weapon per configured tier, in config order', function
     local s = newServer()
     s.play(2)
 
-    local tiers = s.config.Modes.gungame.gunGameTiers
+    -- THE RESOLVED POOLS, NOT THE RAW CONFIG. The shipped ladder is composed
+    -- from weapon CLASSES now -- so many rungs of melee, so many of
+    -- sidearms, and up -- and the flat `gunGameTiers` the test used to read
+    -- is not what the draw draws from any more. Arena.LadderTiersFor is: it
+    -- is the one function that turns either config shape into the ordered
+    -- pools the ladder is built out of, and reading it is what keeps this
+    -- test about the DRAW rather than about a config field.
+    local tiers = s.arena.LadderTiersFor('gungame')
     local drawn = s.ladder()
 
     t.equals(#drawn, #tiers,
@@ -507,7 +534,7 @@ t.test('the ladder is one weapon per configured tier, in config order', function
     for index, key in ipairs(drawn) do
         local inPool = false
         for _, candidate in ipairs(tiers[index]) do
-            if candidate == key then inPool = true end
+            if candidate.key == key then inPool = true end
         end
         t.isTrue(inPool, ('tier %d drew "%s", which is not in tier %d\'s pool')
             :format(index, tostring(key), index))
@@ -539,8 +566,8 @@ t.test('the first tier is melee and the last one is not', function()
         -- drawn forty times and asserted on never.
         for index, weapon in ipairs(ladder) do
             local inPool = false
-            for _, key in ipairs(s.config.Modes.gungame.gunGameTiers[index]) do
-                if key == weapon.key then inPool = true end
+            for _, candidate in ipairs(s.arena.LadderTiersFor('gungame')[index] or {}) do
+                if candidate.key == weapon.key then inPool = true end
             end
             t.isTrue(inPool, ('draw %d put %s on tier %d, which is not in that pool')
                 :format(attempt, tostring(weapon.key), index))
@@ -611,17 +638,23 @@ t.test('a tier whose whole pool is switched off is dropped, and two tiers is the
     -- is what decides how tall the ladder is; a test that recounts the pools
     -- itself asserts its own arithmetic and passes even when that function
     -- has stopped dropping anything.
+    -- PINNED, so "tier 4" names a pool this test wrote rather than whichever
+    -- rung the shipped class list happens to put there. Switching a whole
+    -- CLASS off in the catalogue would drop several rungs at once and the
+    -- arithmetic below counts one.
+    local FOUR = { { 'knife' }, { 'pistol' }, { 'combatpistol' }, { 'heavypistol' }, { 'pistol50' } }
     local s = newServer(function(config)
+        pinLadder(config, FOUR)
         -- Tier 4's whole pool, switched off in the catalogue.
         for _, weapon in ipairs(config.Loadouts.weapons) do
-            for _, key in ipairs(config.Modes.gungame.gunGameTiers[4]) do
+            for _, key in ipairs(FOUR[4]) do
                 if weapon.key == key then weapon.enabled = false end
             end
         end
     end)
     s.play(2)
 
-    local full = #s.config.Modes.gungame.gunGameTiers
+    local full = #FOUR
     t.equals(s.tierCount(), full - 1,
         'a tier with nothing playable in it should be dropped from the ladder')
     t.equals(#s.ladder(), full - 1, 'and the drawn ladder should be that much shorter')
@@ -631,7 +664,7 @@ t.test('a tier whose whole pool is switched off is dropped, and two tiers is the
     -- the mode quietly running as ordinary rules -- and Arena.ValidateConfig
     -- is what makes sure an operator hears about it.
     local bare = newServer(function(config)
-        config.Modes.gungame.gunGameTiers = { { 'knife' } }
+        pinLadder(config, { { 'knife' } })
     end)
     bare.play(2)
     t.equals(#bare.ladder(), 0, 'a single tier is not a ladder and should be played as ordinary rules')
@@ -868,7 +901,7 @@ t.test('one victim cannot be farmed for a whole ladder', function()
             config.Modes.gungame.maxTiersPerVictim = junk
             -- Three tiers against four opponents so the floor is 1 and the
             -- fallback of 2 is what binds.
-            config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' }, { 'rifle' } }
+            pinLadder(config, { { 'knife' }, { 'pistol' }, { 'rifle' } })
         end)
         typo.play(5)
         for _ = 1, 5 do typo.trade(2, 1) end
@@ -1026,7 +1059,7 @@ t.test('an uncredited kill pays nothing at all', function()
     -- one of these kills would be credited.
     local s = newServer(function(config)
         config.Modes.gungame.maxTiersPerVictim = 1
-        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' }, { 'rifle' } }
+        pinLadder(config, { { 'knife' }, { 'pistol' }, { 'rifle' } })
         config.Modes.gungame.killReward = {
             { key = 'bandage', count = 3 },
             { key = 'armour', count = 1, chance = 100 },
@@ -1255,9 +1288,9 @@ t.test('two tiers holding the same weapon never hand out two of it', function()
     -- deaths are free in this mode, so a player could sit on that boundary
     -- and pump it.
     local s = newServer(function(config)
-        config.Modes.gungame.gunGameTiers = {
+        pinLadder(config, {
             { 'knife' }, { 'pistol' }, { 'pistol' }, { 'rifle' },
-        }
+        })
     end)
     s.play(3)
 
@@ -1362,25 +1395,42 @@ t.test('the mode ships ON, and its ladder is a real one', function()
         'gun game was switched back off -- if that is deliberate, this test is the place to say so')
 
     -- AND WHAT SHIPS IS PLAYABLE, which is now the whole of this test's job.
-    t.isTrue(type(shipped.Modes.gungame.gunGameTiers) == 'table'
-        and #shipped.Modes.gungame.gunGameTiers > 1,
-        'the shipped ladder needs more than one tier')
+    --
+    -- READ THROUGH THE CLASSES. The shipped ladder is composed from weapon
+    -- classes rather than written out pool by pool, so `gunGameTiers` is
+    -- absent from the shipped config and asserting on it asserted on nil.
+    t.isTrue(type(shipped.Modes.gungame.gunGameClasses) == 'table'
+        and #shipped.Modes.gungame.gunGameClasses > 1,
+        'the shipped ladder needs more than one weapon class')
     t.isTrue(type(shipped.Modes.gungame.startingKit) == 'table',
         'and a starting kit')
 
-    -- EVERY TIER OF THE SHIPPED LADDER RESOLVES. A pool of keys that are all
-    -- switched off is dropped silently, so "it ships with seven tiers" and
-    -- "it ships with seven PLAYABLE tiers" are different claims and this is
+    -- EVERY CLASS OF THE SHIPPED LADDER RESOLVES. A class whose keys are all
+    -- switched off is dropped silently, so "it ships with seven classes" and
+    -- "it ships with seven PLAYABLE classes" are different claims and this is
     -- the second one.
-    for index, pool in ipairs(shipped.Modes.gungame.gunGameTiers) do
+    for index, class in ipairs(shipped.Modes.gungame.gunGameClasses) do
         local playable = 0
-        for _, key in ipairs(pool) do
+        for _, key in ipairs(class.weapons or {}) do
             for _, weapon in ipairs(shipped.Loadouts.weapons) do
                 if weapon.key == key and weapon.enabled ~= false then playable = playable + 1 end
             end
         end
-        t.isTrue(playable > 0, ('shipped tier %d has nothing playable in it'):format(index))
+        t.isTrue(playable > 0,
+            ('shipped class %d (%s) has nothing playable in it')
+                :format(index, tostring(class.key)))
+
+        -- AND NEVER MORE RUNGS THAN IT HAS WEAPONS, which is the one shape
+        -- of ladder that hands the same gun out on two tiers in a row.
+        t.isTrue((class.tiers or 0) <= playable,
+            ('shipped class %s asks for %d rungs out of %d playable weapons')
+                :format(tostring(class.key), class.tiers or 0, playable))
     end
+
+    -- ONE MELEE RUNG. The whole shape of the mode: everybody opens on a
+    -- blade, and the climb is out of melee from the very next tier.
+    t.equals(shipped.Modes.gungame.gunGameClasses[1].tiers, 1,
+        'the shipped ladder opens on more than one melee rung')
 
     -- AND THE KIT NAMES SUPPLIES THAT EXIST.
     for _, entry in ipairs(shipped.Modes.gungame.startingKit) do
@@ -1422,7 +1472,7 @@ t.test('two players topping the ladder in one sweep is a draw, and pays nobody',
     -- had won, recorded as a winner, and paid nothing -- while their own
     -- stake was judged a loser against the first.
     local s = newServer(function(config)
-        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' } }
+        pinLadder(config, { { 'knife' }, { 'pistol' } })
     end)
     s.play(4)
 
@@ -1648,7 +1698,7 @@ t.test('the ladder weapon carries its magazine, its attachments and its tint', f
                 weapon.tint = 3
             end
         end
-        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' } }
+        pinLadder(config, { { 'knife' }, { 'pistol' } })
     end)
     s.play(3)
 
@@ -1773,7 +1823,7 @@ t.test('the ladder beats the clock, the score limit and the last one standing', 
     local s = newServer(function(config)
         config.Match.winCondition = 'score_limit'
         config.Match.scoreLimit = 2
-        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' }, { 'rifle' } }
+        pinLadder(config, { { 'knife' }, { 'pistol' }, { 'rifle' } })
         config.Modes.gungame.roundTimeSeconds = 600
     end)
     s.play(4)
@@ -1794,7 +1844,7 @@ t.test('the ladder beats the clock, the score limit and the last one standing', 
     -- AND THE LADDER IS READ BEFORE THE CLOCK. Both conditions true at once,
     -- and the ladder is the one that decides.
     local racing = newServer(function(config)
-        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' } }
+        pinLadder(config, { { 'knife' }, { 'pistol' } })
         config.Modes.gungame.roundTimeSeconds = 120
     end)
     racing.play(4)
@@ -1831,12 +1881,32 @@ t.test('the validator names the thing that is wrong, and stays quiet when nothin
         return table.concat(said, '\n')
     end
 
+    -- THE WORDING MOVED WITH THE SHAPE. The complaint now has to cover two
+    -- ways of declaring a ladder -- a list of weapon CLASSES, or the flat
+    -- list of tiers -- so it names both rather than only the one an operator
+    -- happened to get wrong.
     t.isTrue(complaintsOf(function(config)
-        config.Modes.gungame.gunGameTiers = 'knife'
-    end):find('has to be a list of tiers', 1, true) ~= nil, 'a ladder of the wrong type is named as one')
+        pinLadder(config, 'knife')
+    end):find('declares a ladder that is not a table', 1, true) ~= nil,
+        'a ladder of the wrong type is named as one')
+
+    -- AND A CLASS LIST OF THE WRONG TYPE IS NAMED THE SAME WAY.
+    t.isTrue(complaintsOf(function(config)
+        config.Modes.gungame.gunGameTiers = nil
+        config.Modes.gungame.gunGameClasses = 'pistols'
+    end):find('declares a ladder that is not a table', 1, true) ~= nil,
+        'a class list of the wrong type is not named at all')
+
+    -- AND SETTING BOTH IS ITSELF THE COMPLAINT, because one of them is doing
+    -- nothing and it is silently the one an operator is likelier to have
+    -- just edited.
+    t.isTrue(complaintsOf(function(config)
+        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' } }
+    end):find('BOTH gunGameClasses and gunGameTiers', 1, true) ~= nil,
+        'a config setting both shapes was not told that one of them is ignored')
 
     t.isTrue(complaintsOf(function(config)
-        config.Modes.gungame.gunGameTiers = { { 'knife' } }
+        pinLadder(config, { { 'knife' } })
     end):find('a ladder needs at least two', 1, true) ~= nil, 'a one-tier ladder is named as one')
 
     t.isTrue(complaintsOf(function(config)
@@ -1861,7 +1931,7 @@ t.test('a tier may be written as a bare key, and the catalogue is never edited',
     -- BOTH DOCUMENTED AT LENGTH AND NEITHER EXERCISED. An operator writing
     -- one gun per step should not have to type the braces.
     local s = newServer(function(config)
-        config.Modes.gungame.gunGameTiers = { 'knife', { 'pistol' }, 'rifle' }
+        pinLadder(config, { 'knife', { 'pistol' }, 'rifle' })
     end)
     s.play(2)
 
@@ -1893,7 +1963,7 @@ t.test('a mode with one playable tier arms its players and spends their lives', 
     -- loadout screen shut by one rule and no ladder handed out by the other,
     -- and the whole lobby walked into the arena EMPTY-HANDED.
     local s = newServer(function(config)
-        config.Modes.gungame.gunGameTiers = { { 'knife' } }
+        pinLadder(config, { { 'knife' } })
     end)
 
     t.equals(s.arena.PlaysLadder('gungame'), false, 'one tier is not a ladder')
@@ -2117,7 +2187,7 @@ t.test('a tier tie is broken on the capped number, not the uncapped one', functi
     -- tiers -- so breaking a tier tie on it handed the decider straight back
     -- to the farm the cap exists to stop.
     local s = newServer(function(config)
-        config.Modes.gungame.gunGameTiers = { { 'knife' }, { 'pistol' }, { 'rifle' } }
+        pinLadder(config, { { 'knife' }, { 'pistol' }, { 'rifle' } })
         config.Modes.gungame.maxTiersPerVictim = 1
         config.Modes.gungame.roundTimeSeconds = 120
     end)
@@ -2740,9 +2810,9 @@ t.test('and the rounds those rungs were issued go back with them', function()
         -- TWO CALIBRES, deliberately: the tier being left behind fires
         -- something the tier being climbed onto does not, so "took the wrong
         -- one back" and "took none back" are different results.
-        config.Modes.gungame.gunGameTiers = {
+        pinLadder(config, {
             { 'knife' }, { 'pistol' }, { 'pistol50' },
-        }
+        })
     end)
     s.play(3)
 
@@ -2768,9 +2838,9 @@ t.test('a demotion takes back what the tier above handed out', function()
     -- way. In the player's words: "when going down tiers it removes all that
     -- stuff it gave you".
     local s = newServer(function(config)
-        config.Modes.gungame.gunGameTiers = {
+        pinLadder(config, {
             { 'knife' }, { 'pistol' }, { 'pistol50' },
-        }
+        })
     end)
     s.play(3)
 
@@ -2918,6 +2988,165 @@ t.test('and a gun game respawn is left to the ladder', function()
     t.equals(s.row(1).tier, 1, 'the death did not cost a tier')
     t.equals(s.ox.count(1, second), 0,
         'the respawn handed back the weapon the demotion had just taken away')
+end)
+
+-- ======================================================================
+-- WHAT A KILL PAYS IN AN ORDINARY MODE
+-- ======================================================================
+
+t.test('a verified kill in a free-for-all pays rounds for each weapon carried', function()
+    -- THE HONEST VERSION OF SOMETHING PLAYERS WERE ALREADY DOING.
+    -- ox_inventory drops a dead fighter's inventory on the floor as its own
+    -- container, and walking over the body used to hand the killer the whole
+    -- arena kit its owner had just been issued -- per kill, for as long as
+    -- bodies kept falling. Looting is refused now, so the resupply a round
+    -- with respawns actually needs is paid openly, in a fixed amount, to the
+    -- fighter who earned it.
+    local s = newServer(function(config)
+        config.Modes.ffa.killAmmo = 100
+    end)
+    s.play(3, 'ffa', function()
+        s.fire('setLoadout', 1, { weapons = { { key = 'pistol', ammo = 120 } }, supplies = {} })
+    end)
+
+    local gun = s.row(1).loadout.weapons[1]
+    local before = s.ox.count(1, gun.ammoTypeItem)
+
+    s.kill(2, 1)
+    t.equals(s.ox.count(1, gun.ammoTypeItem), before + 100,
+        'the kill paid no rounds at all')
+
+    s.revive(2)
+    s.kill(2, 1)
+    t.equals(s.ox.count(1, gun.ammoTypeItem), before + 200,
+        'and a second kill paid nothing on top of the first')
+end)
+
+t.test('and it is per WEAPON, so two guns taking the same round are two payments', function()
+    -- Collapsing them by calibre would quietly make a two-pistol loadout
+    -- worth half what a pistol-and-rifle loadout is, which is not the rule
+    -- config states.
+    local s = newServer(function(config)
+        config.Modes.ffa.killAmmo = 100
+    end)
+    s.play(3, 'ffa', function()
+        s.fire('setLoadout', 1, {
+            weapons = { { key = 'pistol', ammo = 60 }, { key = 'combatpistol', ammo = 60 } },
+            supplies = {},
+        })
+    end)
+
+    local weapons = s.row(1).loadout.weapons
+    t.equals(#weapons, 2, 'the fixture did not issue two weapons')
+    t.equals(weapons[1].ammoTypeItem, weapons[2].ammoTypeItem,
+        'the two weapons do not share a calibre, so this tests the wrong thing')
+
+    local item = weapons[1].ammoTypeItem
+    local before = s.ox.count(1, item)
+
+    s.kill(2, 1)
+    t.equals(s.ox.count(1, item), before + 200, 'two weapons should be two payments')
+end)
+
+t.test('and melee is paid nothing, because a blade names no ammunition', function()
+    local s = newServer(function(config)
+        config.Modes.ffa.killAmmo = 100
+    end)
+    s.play(3, 'ffa', function()
+        s.fire('setLoadout', 1, { weapons = { { key = 'knife' } }, supplies = {} })
+    end)
+
+    local gun = s.row(1).loadout.weapons[1]
+    t.isTrue(gun ~= nil and not s.arena.IsKey(gun.ammoTypeItem),
+        'the fixture gave the blade an ammo item, so this proves nothing')
+
+    local held = 0
+    for _, row in ipairs(s.ox.pockets[1] or {}) do
+        if tostring(row.name):find('^ammo') then held = held + (row.count or 1) end
+    end
+
+    s.kill(2, 1)
+
+    local after = 0
+    for _, row in ipairs(s.ox.pockets[1] or {}) do
+        if tostring(row.name):find('^ammo') then after = after + (row.count or 1) end
+    end
+    t.equals(after, held, 'a knife was paid ammunition')
+end)
+
+t.test('and a claim the server did not verify pays nothing', function()
+    -- The same gate the scoreboard uses. resolveKiller refuses a teammate, a
+    -- fighter who is out of the round, and anyone too far away to have done
+    -- it -- and an unverified claim must not be a way to print ammunition.
+    local s = newServer(function(config)
+        config.Modes.ffa.killAmmo = 100
+    end)
+    s.play(3, 'ffa', function()
+        s.fire('setLoadout', 1, { weapons = { { key = 'pistol', ammo = 120 } }, supplies = {} })
+    end)
+
+    local gun = s.row(1).loadout.weapons[1]
+    local before = s.ox.count(1, gun.ammoTypeItem)
+
+    -- Nobody with server id 99 is in this match.
+    s.kill(2, 99)
+    t.equals(s.ox.count(1, gun.ammoTypeItem), before, 'an unverified claim paid the reward')
+
+    -- And naming yourself is refused too.
+    s.revive(2)
+    s.kill(2, 2)
+    t.equals(s.ox.count(1, gun.ammoTypeItem), before, 'a self-report paid the reward')
+end)
+
+t.test('and a gun game pays no rounds this way -- the ladder pays its own', function()
+    -- A promotion already re-arms the climber with the tier's full
+    -- ammunition and killReward pays the bandages. Paying this on top would
+    -- be a second resupply for one kill.
+    local s = newServer(function(config)
+        sevenTiers(config)
+        config.Modes.gungame.killAmmo = 100
+    end)
+    s.play(3)
+
+    s.trade(2, 1)
+    local entry = s.row(1).loadout.weapons[1]
+    local magazine = s.arena.MagazineFor(s.arena.GetWeaponByKey(entry.key), entry.ammo)
+
+    t.equals(s.ox.count(1, entry.ammoTypeItem), entry.ammo - magazine,
+        'the ladder paid the kill-ammo reward on top of the tier it had just issued')
+end)
+
+t.test('and the rounds it pays are on the arena\'s books', function()
+    -- A reward handed over and not recorded is a reward the player keeps: on
+    -- a server with the door off it is the whole of an ammunition shop, one
+    -- match at a time.
+    local s = newServer(function(config)
+        config.Modes.ffa.killAmmo = 100
+    end)
+    s.play(3, 'ffa', function()
+        s.fire('setLoadout', 1, { weapons = { { key = 'pistol', ammo = 120 } }, supplies = {} })
+    end)
+
+    local before = s.ammo.OnLoan(s.matchId())
+    s.kill(2, 1)
+    t.equals(s.ammo.OnLoan(s.matchId()), before + 100,
+        'the reward was handed over without being written down')
+end)
+
+t.test('and a mode that names no killAmmo pays none', function()
+    -- Deleting the line has to still work, which is what config.lua promises
+    -- of it.
+    local s = newServer(function(config)
+        config.Modes.ffa.killAmmo = nil
+    end)
+    s.play(3, 'ffa', function()
+        s.fire('setLoadout', 1, { weapons = { { key = 'pistol', ammo = 120 } }, supplies = {} })
+    end)
+
+    local gun = s.row(1).loadout.weapons[1]
+    local before = s.ox.count(1, gun.ammoTypeItem)
+    s.kill(2, 1)
+    t.equals(s.ox.count(1, gun.ammoTypeItem), before, 'a mode with no killAmmo paid rounds anyway')
 end)
 
 os.exit(t.summary())

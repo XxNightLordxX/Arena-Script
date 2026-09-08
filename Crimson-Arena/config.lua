@@ -19,18 +19,18 @@
     ------------------------------------------------------------------------------
        84   Lobby         The NPC players walk up to
       181   Schedule      Opening hours: when the door is actually open
-      219   Match         Lives, timers, player counts, win condition
-      521   Teams         The sides, and whether they may be uneven
-      676   Modes         Free-for-all and team deathmatch
-      917   DefaultMode   Which of them a new lobby opens on
-      936   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1154  UI            Panel colours, logo and title
-      1212  Permissions   Who may open a match, who may force-stop one
-      1293  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1865   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2332   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2342   Webhook       Optional: a Discord line per finished match
-     2379   Dispatch      Optional: keeping police and EMS out of the arena
+      225   Match         Lives, timers, player counts, win condition
+      557   Teams         The sides, and whether they may be uneven
+      712   Modes         Free-for-all and team deathmatch
+      1064  DefaultMode   Which of them a new lobby opens on
+      1083  Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1301  UI            Panel colours, logo and title
+      1359  Permissions   Who may open a match, who may force-stop one
+      1440  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2012   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2515   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2525   Webhook       Optional: a Discord line per finished match
+     2562   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -180,7 +180,13 @@ Config.Lobby = {
 -- ======================================================================
 Config.Schedule = {
     -- Off, the arena never shuts and nothing below is read.
-    enabled = true,
+    --
+    -- OFF FOR TESTING. The windows below are kept exactly as they were, so
+    -- turning this back to `true` restores the shipped schedule with nothing
+    -- to retype. While it is off the arena opens at any hour, which is the
+    -- only way to test a mode whose round is longer than the window it would
+    -- have to start in.
+    enabled = false,
 
     -- WHOLE HOURS, 24-hour clock. `from` is the minute the doors open and
     -- `to` is the minute they shut: 05:00-07:00 is open at 06:59 and shut
@@ -294,7 +300,37 @@ Config.Match = {
     --   'last_standing' -- everyone else eliminated
     --   'most_kills'    -- highest kill count when the clock runs out
     --   'score_limit'   -- first to `scoreLimit` kills
-    winCondition = 'last_standing',
+    --
+    -- TWO SHAPES, exactly like `lives` above and `roundTimeSeconds` below.
+    -- Write a plain string -- `winCondition = 'last_standing'` -- to fix it
+    -- for every match on this server and take the choice away. Write the
+    -- block below and the host picks it from a dropdown when they create the
+    -- match, falling back to `default` if they leave it alone.
+    --
+    -- THE LIST IS THE CODE'S, NOT CONFIG'S. Each of the three names has an
+    -- evaluator behind it in server/match.lua; a fourth name invented here
+    -- would be a match no condition ever fires for, which from a seat reads
+    -- as "the round never ends". So there is no `options` line to write --
+    -- allowChoose offers all three -- and Arena.ValidateConfig names a
+    -- `default` it does not recognise at start-up.
+    --
+    -- A LADDER MODE IGNORES ALL OF IT. A gun game is won by topping the
+    -- ladder or by its own clock, whatever is set here; see Config.Modes
+    -- .gungame.
+    winCondition = {
+        allowChoose = true,
+        default = 'last_standing',
+    },
+
+    -- FIRST TO THIS MANY KILLS, under 'score_limit' and ignored otherwise.
+    --
+    -- LIVES ARE NOT SPENT UNDER A SCORE LIMIT, and that is arithmetic rather
+    -- than taste: the round is meant to end when somebody reaches this
+    -- number, and a roster that can be eliminated runs out of players first
+    -- on any limit worth setting. Three lives and a limit of 25 means the
+    -- round is decided by last-man-standing every single time and this number
+    -- was decorative. So a score-limit round respawns for ever, exactly as a
+    -- gun game does, and `lives` above is not read.
     scoreLimit = 25,
 
     -- Metres a player may be scattered from the spawn point they drew, so
@@ -674,12 +710,43 @@ Config.Teams = {
 -- team picker is not shown at all. `teams = true` shows the team picker.
 -- ======================================================================
 Config.Modes = {
+    -- WHAT A KILL PAYS IN AMMUNITION, in these two modes.
+    --
+    -- ROUNDS PER KILL, PER WEAPON YOU ARE CARRYING. Land a kill and every
+    -- firearm in your loadout is handed this many rounds of its own calibre.
+    -- Two weapons taking the same round are two payments, because the number
+    -- is per WEAPON: what you are carrying is what you are paid for.
+    --
+    -- WHY THE ARENA PAYS IT RATHER THAN THE BODY. A dead fighter's inventory
+    -- lands on the floor as its own container, and for a while that WAS how
+    -- people were re-arming: walk over the body, take the whole kit its owner
+    -- had just been issued. That is now refused
+    -- (`Config.Loadouts.inventory.blockDropsInArena`), because a round fought
+    -- out of other people's pockets is not the round anybody picked a loadout
+    -- for -- so the resupply is paid openly, in a fixed amount, to the person
+    -- who earned it.
+    --
+    -- ONLY ON A KILL THE SERVER VERIFIED. The same check the scoreboard uses:
+    -- a real, damageable opponent in this match, close enough to have done
+    -- it. A claim that fails it pays nothing.
+    --
+    -- MELEE IS PAID NOTHING, and needs no rule of its own: a blade names no
+    -- ammunition item, so there is nothing to hand over.
+    --
+    -- 0, or deleting the line, switches it off and a kill pays no rounds.
+    --
+    -- A NOTE ON FARMING. There is no per-victim cap on this the way the gun
+    -- game has one on its tiers, so two players who agree to trade deaths can
+    -- pump ammunition between them. In these modes a death costs a LIFE, so
+    -- the trade runs out on its own -- but on a server with generous lives,
+    -- or with `Config.Match.lives` unbounded, set this lower or to 0.
     ['ffa'] = {
         label = 'Free For All',
         description = 'Every player for themselves. Last one breathing takes the pot.',
         enabled = true,
         teams = false,
         icon = 'fas fa-skull-crossbones',
+        killAmmo = 100,
     },
 
     ['tdm'] = {
@@ -688,6 +755,7 @@ Config.Modes = {
         enabled = true,
         teams = true,
         icon = 'fas fa-users',
+        killAmmo = 100,
     },
 
     -- ==================================================================
@@ -767,37 +835,116 @@ Config.Modes = {
         -- which is a real run rather than a formality. A much longer ladder
         -- is one nobody finishes and the clock decides every round; a much
         -- shorter one is finished in the first two minutes.
-        gunGameTiers = {
-            { 'bat', 'hammer', 'nightstick', 'stonehatchet' },
-            { 'bottle', 'hatchet', 'poolcue', 'candycane' },
-            { 'crowbar', 'knife', 'switchblade', 'flashlight' },
-            { 'dagger', 'knuckles', 'wrench' },
-            { 'golfclub', 'machete', 'battleaxe' },   -- 5
-            { 'appistol', 'navyrevolver', 'snspistol' },
-            { 'ceramicpistol', 'gadgetpistol', 'snspistolmk2' },
-            { 'combatpistol', 'pistol', 'tecpistol' },
-            { 'doubleaction', 'pistol50', 'vintagepistol' },
-            { 'heavypistol', 'pistolmk2', 'pistolxm3' },   -- 10
-            { 'machinepistol', 'revolver' },
-            { 'marksmanpistol', 'revolvermk2' },
-            { 'assaultshotgun', 'heavyshotgun', 'autoshotgun' },
-            { 'bullpupshotgun', 'shotgun' },
-            { 'combatshotgun', 'pumpshotgunmk2' },   -- 15
-            { 'dbshotgun', 'sawnoffshotgun' },
-            { 'advancedrifle', 'combatpdw', 'specialcarbinemk2' },
-            { 'rifle', 'compactrifle', 'tacticalrifle' },
-            { 'riflemk2', 'gusenberg' },
-            { 'assaultsmg', 'heavyrifle' },   -- 20
-            { 'battlerifle', 'mg' },
-            { 'bullpuprifle', 'microsmg' },
-            { 'bullpupriflemk2', 'militaryrifle' },
-            { 'carbine', 'minismg' },
-            { 'carbineriflemk2', 'smg' },   -- 25
-            { 'combatmg', 'smgmk2' },
-            { 'combatmgmk2', 'specialcarbine' },
-            { 'heavysniper', 'marksmanriflemk2', 'sniper' },
-            { 'snipermk2', 'musket' },
-            { 'marksman', 'precisionrifle' },   -- 30
+        -- THE LADDER, BY WEAPON CLASS.
+        --
+        -- Each entry is one CLASS of weapon -- melee, sidearms, and up -- in
+        -- climbing order, with its own ordered pool of weapons (weakest
+        -- first) and how many RUNGS of the ladder that class fills by
+        -- default. The pool is split evenly across those rungs, so a class
+        -- of eighteen sidearms across nine rungs draws two apiece and the
+        -- climb still goes weakest-to-strongest inside the class.
+        --
+        -- THE HOST PICKS THE COUNTS. The match-creation menu shows one row
+        -- per class, and `tiers` here is what it opens on. A class set to 0
+        -- is left out of the ladder entirely -- a server that wants pistols
+        -- and rifles and nothing else is a legal ladder.
+        --
+        -- WHY CLASSES RATHER THAN A FLAT LIST OF POOLS. It was a flat list,
+        -- and a flat list cannot be composed: "give me four shotgun rungs" is
+        -- not a thing you can ask of it without knowing which of the thirty
+        -- entries happened to be shotguns. It is also how the ladder got five
+        -- melee rungs deep without anybody noticing that a sixth of every
+        -- round was being fought with clubs.
+        --
+        -- A class can never have more rungs than it has weapons: one weapon
+        -- per rung is the floor, and asking for more is refused rather than
+        -- padded, because two rungs drawing from the same single weapon is a
+        -- promotion that hands you the gun you are already holding.
+        --
+        -- `enabled = false` on a WEAPON in config.weapons.lua removes it from
+        -- these pools wherever it appears, and a class left with nothing
+        -- playable is skipped.
+        gunGameClasses = {
+            {
+                key = 'melee',
+                label = 'Melee',
+                -- ONE RUNG BY DEFAULT, AND THAT IS THE POINT OF THE MODE.
+                -- Everybody opens the round on a blade or a bat -- which is
+                -- what makes the first kill of a gun game the hardest one --
+                -- and the climb is out of melee from the very next tier.
+                tiers = 1,
+                weapons = {
+                    'bat', 'hammer', 'nightstick', 'stonehatchet', 'bottle', 'hatchet',
+                    'poolcue', 'candycane', 'crowbar', 'knife', 'switchblade', 'flashlight',
+                    'dagger', 'knuckles', 'wrench', 'golfclub', 'machete', 'battleaxe',
+                },
+            },
+            {
+                key = 'sidearm',
+                label = 'Sidearms',
+                -- THE LONGEST STRETCH, because this is the part of the climb
+                -- everybody sees every round: a player who never gets past
+                -- tier 6 should still have felt the gun get better three
+                -- times on the way.
+                tiers = 9,
+                weapons = {
+                    'snspistol', 'vintagepistol', 'pistol', 'ceramicpistol',
+                    'combatpistol', 'gadgetpistol', 'snspistolmk2', 'pistolxm3',
+                    'appistol', 'doubleaction', 'heavypistol', 'tecpistol',
+                    'pistolmk2', 'navyrevolver', 'pistol50', 'marksmanpistol',
+                    'revolver', 'revolvermk2',
+                },
+            },
+            {
+                key = 'smg',
+                label = 'Machine Pistols & SMGs',
+                tiers = 4,
+                weapons = {
+                    'machinepistol', 'minismg', 'microsmg', 'smg',
+                    'assaultsmg', 'smgmk2', 'combatpdw', 'gusenberg',
+                },
+            },
+            {
+                key = 'shotgun',
+                label = 'Shotguns',
+                -- Close-range rungs in the MIDDLE of the ladder, which is
+                -- what stops the climb being one long straight line of "more
+                -- range than the last one".
+                tiers = 4,
+                weapons = {
+                    'dbshotgun', 'sawnoffshotgun', 'pumpshotgunmk2', 'shotgun',
+                    'bullpupshotgun', 'combatshotgun', 'assaultshotgun',
+                    'heavyshotgun', 'autoshotgun',
+                },
+            },
+            {
+                key = 'rifle',
+                label = 'Carbines & Rifles',
+                tiers = 7,
+                weapons = {
+                    'compactrifle', 'advancedrifle', 'carbine', 'rifle',
+                    'carbineriflemk2', 'riflemk2', 'bullpuprifle', 'specialcarbine',
+                    'bullpupriflemk2', 'specialcarbinemk2', 'tacticalrifle',
+                    'militaryrifle', 'heavyrifle', 'battlerifle',
+                },
+            },
+            {
+                key = 'heavy',
+                label = 'Heavy',
+                tiers = 2,
+                weapons = { 'musket', 'mg', 'combatmg', 'combatmgmk2' },
+            },
+            {
+                key = 'precision',
+                label = 'Precision',
+                -- AT THE TOP, where a player who has already earned
+                -- twenty-seven kills is the one holding it.
+                tiers = 3,
+                weapons = {
+                    'marksman', 'marksmanriflemk2', 'sniper',
+                    'precisionrifle', 'heavysniper', 'snipermk2',
+                },
+            },
         },
 
         -- WHAT A KILL IS WORTH BESIDES THE TIER, by supply key from
@@ -1974,13 +2121,36 @@ Config.Loadouts = {
         -- something you already use.
         stashPrefix = 'crimson_arena_',
 
-        -- ITEMS THE DOOR MUST NEVER TOUCH, by name.
+        -- WHAT STAYS IN A PLAYER'S POCKETS ON THE WAY IN, rather than
+        -- going into the stash with everything else.
         --
-        -- MONEY, AND THIS IS NOT A PREFERENCE. On a server where ox_inventory
-        -- holds cash as an item, the door used to stash it like anything
-        -- else -- and the way out clears the whole inventory before handing
-        -- the stash back, on the reasoning that everything the player is
-        -- carrying at that moment belongs to the arena.
+        -- EMPTY, AND THAT IS THE POINT. The arena's one promise is that a
+        -- match cannot cost anybody anything, and the way it keeps that
+        -- promise is by holding their belongings somewhere the round cannot
+        -- reach. Anything named here is something the round CAN reach: it can
+        -- be dropped, it lands on the floor as loot when its owner dies --
+        -- ox_inventory drops a dead player's inventory whatever this
+        -- resource thinks -- and if it is still in their pockets at the exit
+        -- it meets the wholesale clear.
+        --
+        -- CASH USED TO BE ON THIS LIST, on the reasoning that it "cannot be
+        -- spent in an arena and cannot be looted off a body here". The second
+        -- half was never true, and the first half is not the question: a
+        -- fighter was walking into a live round carrying every note they own
+        -- and dropping the lot the first time somebody shot them.
+        --
+        -- It is still protected at the OTHER end -- see `neverDestroy` below,
+        -- which is the list that keeps a payout from being destroyed on the
+        -- way out. Those are two different questions and they were one
+        -- setting, which is how cash ended up answered wrongly on both.
+        neverStash = {},
+
+        -- WHAT THE EXIT'S CLEAR MUST NOT DESTROY.
+        --
+        -- The exit wipes whatever a player is carrying, on the reasoning that
+        -- at that moment everything in their pockets belongs to the arena --
+        -- their own is in the stash. That reasoning has exactly one hole in
+        -- it, and it is this one:
         --
         -- A PAYOUT LANDS INSIDE THAT WINDOW. The pot and the side-bets are
         -- settled in server/match.lua BEFORE anybody is sent home, so a
@@ -1990,20 +2160,33 @@ Config.Loadouts = {
         -- affected, because bank is player data rather than an item -- which
         -- is exactly why it looked like "cash bets do not pay out".
         --
-        -- Cash is also not kit: it cannot be spent in an arena, cannot be
-        -- looted off a body here, and taking it in costs the player nothing.
-        -- So it never goes in the stash and it is never cleared.
-        --
         -- Add any other item your server treats as currency or as an
         -- account. Names are ox_inventory item names.
-        neverTouch = { 'money', 'black_money' },
+        neverDestroy = { 'money', 'black_money' },
 
-        -- Refuse to let players drop anything while they are in a match.
+        -- Refuse to let players move anything in or out of their pockets
+        -- while they are in a match.
         --
-        -- Cheaper and far more reliable than hunting down bags off the floor
-        -- afterwards: a dropped item becomes its own inventory in the world,
-        -- and finding every one of them again is guesswork. Not dropping in
-        -- the first place is not.
+        -- OUT, because a dropped item becomes its own inventory in the world
+        -- and finding every one of them again afterwards is guesswork. Not
+        -- dropping in the first place is not.
+        --
+        -- AND IN, WHICH IS THE HALF THAT MATTERS MOST IN A ROUND WITH
+        -- RESPAWNS. ox_inventory drops a dead player's inventory on the floor
+        -- as its own container, so without this a fighter walking over a body
+        -- could take the whole arena kit its owner had just been issued --
+        -- their weapons and every round that came with them, per kill, for as
+        -- long as bodies kept falling. It read from a seat as "killing
+        -- somebody gives you a hundred rounds per weapon", which is not a
+        -- reward this resource has ever paid. The same rule covers a stash, a
+        -- vehicle boot and another player's inventory: a round is fought with
+        -- what the round issued.
+        --
+        -- Nothing the ARENA hands over is affected. Every issue, top-up, kill
+        -- reward and stash return is a server-side write and raises no hook.
+        --
+        -- Off, both directions are allowed and the exit is the only thing
+        -- standing between the arena and what people carried in or out of it.
         blockDropsInArena = true,
 
         -- How often, in seconds, the server checks for belongings it still

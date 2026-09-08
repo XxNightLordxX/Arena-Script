@@ -184,7 +184,13 @@ local function ladderOf(match)
     if type(match) ~= 'table' then return {} end
     if type(match.ladder) == 'table' then return match.ladder end
 
-    local tiers = Arena.LadderTiersFor(match.modeKey)
+    -- THIS MATCH'S OWN SHAPE. `tierPlan` is what the host built in the
+    -- creation menu -- how many rungs of each weapon class -- and nil means
+    -- they left it alone, which falls through to the mode's own defaults.
+    -- Read off the match rather than the config for the same reason its lives
+    -- and its clock are: an operator editing the classes mid-session must not
+    -- reshape a ladder that is already being climbed.
+    local tiers = Arena.LadderTiersFor(match.modeKey, match.tierPlan)
     local drawn = {}
     for _, pool in ipairs(tiers) do
         -- ONE FROM EACH POOL. math.random over the pool length, and a pool
@@ -526,6 +532,33 @@ end
 ---
 --- PAID ONLY ON A CREDITED KILL. Hanging it off the same gate as the tier is
 --- what stops an accomplice being farmed for bandages after
+--- `maxTiersPerVictim` has stopped paying tiers.
+--- @param match table
+--- @param killer table
+local function payKillAmmo(match, killer)
+    local rounds = Arena.KillAmmoFor(match.modeKey)
+    if not rounds then return end
+
+    local loadout = killer.loadout
+    if type(loadout) ~= 'table' then return end
+
+    -- PER WEAPON, NOT PER CALIBRE, and the loop is deliberately not
+    -- de-duplicated by item. The rule config states is "this many rounds for
+    -- each firearm you are carrying", so two nine-millimetre pistols are two
+    -- payments of nine-millimetre: what you are carrying is what you are paid
+    -- for. Collapsing them would quietly make a two-pistol loadout worth half
+    -- what a pistol-and-rifle loadout is.
+    --
+    -- MELEE FALLS OUT ON ITS OWN. A blade names no ammoTypeItem -- see
+    -- Arena.ResolveWeaponEntry -- so there is nothing to hand over and no
+    -- rule of its own is needed.
+    for _, entry in ipairs(loadout.weapons or {}) do
+        if Arena.IsKey(entry.ammoTypeItem) then
+            ArenaAmmo.GrantRounds(killer.src, match.id, entry.ammoTypeItem, rounds)
+        end
+    end
+end
+
 --- `maxTiersPerVictim` has stopped paying tiers.
 --- @param match table
 --- @param killer table
@@ -1012,7 +1045,13 @@ local function evaluate(match)
     -- it did. It ends the round on raw kills, and a ladder is not raw kills
     -- -- a player who traded fifteen deaths for fifteen kills is standing on
     -- tier 1 and would take the pot off somebody six tiers above them.
-    if not playingLadder and Config.Match.winCondition == 'score_limit' and reachedScoreLimit(match, teamMode) then
+    -- THE MATCH'S OWN CONDITION, not the config's. The host picks it when
+    -- they create the round and it is stored on the match, so re-reading the
+    -- config here would let an operator's mid-session edit change how a match
+    -- already being fought is won.
+    if not playingLadder and Arena.WinConditionFor(match.winCondition) == 'score_limit'
+        and reachedScoreLimit(match, teamMode)
+    then
         local winners = decideOnKills(match, teamMode)
         return winners, #winners > 0 and 'match.ended_score_limit' or 'match.ended_draw'
     end
@@ -2333,6 +2372,31 @@ function ArenaMatch.OnDeath(src, killerSrc)
             else
                 ArenaNotifyKey(killer.src, 'notify.gungame_no_credit', 'warning', player.name)
             end
+        else
+            -- AND WHAT A KILL PAYS IN AN ORDINARY MODE: rounds, for each
+            -- weapon the killer is carrying.
+            --
+            -- THIS IS THE HONEST VERSION OF SOMETHING PLAYERS WERE ALREADY
+            -- DOING. ox_inventory drops a dead fighter's inventory on the
+            -- floor as its own container, and walking over the body used to
+            -- hand the killer the whole arena kit its owner had just been
+            -- issued -- their weapons and every round with them, per kill,
+            -- for as long as bodies kept falling. That is refused now
+            -- (`blockDropsInArena` guards both directions), so the resupply a
+            -- round with respawns actually needs is paid openly, in a fixed
+            -- amount, to the fighter who earned it, instead of arriving as
+            -- however much the last person to die happened to be holding.
+            --
+            -- NOT IN A LADDER MODE, which pays its own way: a promotion
+            -- re-arms the climber with the tier's full ammunition, and
+            -- `killReward` above pays the bandages and plates. Paying this on
+            -- top would be a second resupply for one kill.
+            --
+            -- ON THE SAME VERIFIED KILL the scoreboard counts and nothing
+            -- looser: `resolveKiller` has already refused a teammate, a
+            -- fighter who is out of the round, and anyone too far away to
+            -- have done it.
+            payKillAmmo(match, killer)
         end
     elseif killerSrc ~= nil then
         ArenaDebug('unverified kill claim on match %s: %s says %s killed them',
@@ -2396,8 +2460,21 @@ function ArenaMatch.OnDeath(src, killerSrc)
     -- winner-selection path in this file read `stillIn`. A second rule
     -- saying "except in a ladder" in each of those places is five rules that
     -- can disagree.
+    -- AND NEITHER DOES A SCORE LIMIT, for a reason that is arithmetic rather
+    -- than taste. That round is meant to end when somebody reaches the limit,
+    -- and a roster that can be eliminated runs out of players first on any
+    -- limit worth setting: three lives and a limit of 25 means the round is
+    -- decided by last-man-standing every single time and the number nobody
+    -- reached was decorative. So it respawns for ever, exactly as a ladder
+    -- does, and by the same mechanism -- leaving `lives` alone, which
+    -- Arena.IsEliminated reads, which `stillIn` reads, which the panel, the
+    -- respawn picker, the spectator gate and every winner-selection path in
+    -- this file read.
+    --
+    -- Asked of Arena rather than spelled out here, so the panel's own answer
+    -- and this one cannot drift apart.
     local remaining
-    if playingLadder then
+    if playingLadder or not Arena.WinConditionSpendsLives(match.winCondition) then
         remaining = math.max(1, Arena.ToInt(player.lives) or 1)
     else
         remaining = (Arena.ToInt(player.lives) or 1) - 1

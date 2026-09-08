@@ -623,7 +623,19 @@ local function snapshotConfig()
             -- not offer the choice -- the same shape, and the same silence,
             -- as `livesChoice` above.
             roundTimeChoice = Arena.RoundTimeChoice(),
-            winCondition = Config.Match.winCondition,
+            -- RESOLVED, NOT RAW, and for the same reason roundTimeSeconds
+            -- above is: this setting now takes two shapes, and a panel handed
+            -- the TABLE would print "Win by [object Object]" -- or, more
+            -- likely, silently fall through its label lookup and print the
+            -- fallback for every server that lets its hosts choose.
+            winCondition = Arena.WinConditionDefault(),
+            -- The conditions a host may pick between, absent on a server that
+            -- fixes it -- the same shape, and the same silence, as
+            -- `livesChoice` and `roundTimeChoice` above.
+            winConditionChoice = Arena.WinConditionChoice(),
+            -- WHAT A SCORE LIMIT IS, so the picker can say "first to 25"
+            -- rather than "first to the number on the server you cannot see".
+            scoreLimit = math.max(1, Arena.ToInt(Config.Match.scoreLimit) or 1),
             onlyHostCanStart = Config.Match.onlyHostCanStart ~= false,
             -- WHETHER READYING UP IS WHAT STARTS THE ROUND. It ships ON, and
             -- the panel told every player the opposite in as many words --
@@ -793,6 +805,17 @@ local function snapshotMatches()
             -- wants the number the clock will actually count down from --
             -- which for a ladder mode is the mode's own, not the server's.
             roundTimeSeconds = Arena.RoundSecondsFor(match.modeKey, match.roundTimeSeconds),
+            -- HOW THIS ROUND IS WON, resolved the same way: '' on the match
+            -- means the host did not choose, and a player deciding whether to
+            -- join wants the rule that will actually decide it. A ladder mode
+            -- is won by the ladder whatever this says, which is why the panel
+            -- reads `modeIssuesLoadout` before it draws this.
+            winCondition = Arena.WinConditionFor(match.winCondition),
+            -- AND WHETHER DYING COSTS ANYTHING IN IT. `lives` above is the
+            -- number the host set; under a score limit it is not spent at
+            -- all, and a card showing "3 lives" over a round nobody can be
+            -- eliminated from is the panel telling a plain untruth.
+            livesSpent = Arena.WinConditionSpendsLives(match.winCondition),
             -- WHAT A WINNER IS ACTUALLY PLAYING FOR. GetPot is the entry
             -- pot alone; with betPayout.includeEntryPot on -- the shipped
             -- default -- the side-bets settle in the same pool, so a
@@ -1090,11 +1113,17 @@ end
 --- @param radar any -- the host's pick, resolved against Config.Match.radar
 --- @param account any -- which of their accounts pays the entry fee
 --- @param roundTime any -- the host's pick, resolved against
----        Config.Match.roundTimeSeconds. LAST, and after `account`, because
----        every existing caller passes these seven positionally.
+---        Config.Match.roundTimeSeconds. After `account`, because every
+---        existing caller passes these seven positionally.
+--- @param winCondition any -- the host's pick, resolved against
+---        Config.Match.winCondition. After `roundTime`, because this list is
+---        POSITIONAL and the only safe place to add to it is the end.
+--- @param tierPlan any -- the host's gun-game ladder, as { [classKey] = rungs }.
+---        LAST, for the same reason.
 --- @return string|nil matchId
 --- @return string|nil reasonKey
-function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account, roundTime)
+function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account, roundTime,
+    winCondition, tierPlan)
     local host = tonumber(src)
     if not host then return nil, 'error.invalid_request' end
     if not ArenaCanCreate(host) then return nil, 'error.no_permission' end
@@ -1140,6 +1169,19 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
     local resolvedRound, roundReason = Arena.ResolveRoundTime(roundTime)
     if not resolvedRound then return nil, roundReason end
 
+    -- REFUSED, NOT CLAMPED, like the three above it. '' back means the host
+    -- did not choose -- either they left the dropdown alone or this server
+    -- does not offer it -- and the server's own condition is what runs.
+    local resolvedWin, winReason = Arena.ResolveWinCondition(winCondition)
+    if not resolvedWin then return nil, winReason end
+
+    -- REFUSED, NOT CLAMPED, like everything above it: a host who asked for
+    -- eight shotgun rungs on a server with six shotguns is told so rather
+    -- than dropped into a round climbing a different ladder from the one they
+    -- built. nil back with no reason means they did not choose.
+    local resolvedTiers, tierReason = Arena.ResolveTierPlan(wantedMode, tierPlan)
+    if tierReason then return nil, tierReason end
+
     local id = ArenaNewId()
     local hostName = ArenaPlayerName(host)
 
@@ -1168,6 +1210,17 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
         -- when the round starts would let an operator's mid-session edit
         -- change the length of a match already being fought.
         roundTimeSeconds = resolvedRound,
+        -- '' MEANS "THE HOST DID NOT CHOOSE", and Arena.WinConditionFor then
+        -- falls through to the server's own. Stored on the match for the same
+        -- reason `lives` and `roundTimeSeconds` are: re-reading the config
+        -- when the round is decided would let an operator's mid-session edit
+        -- change how a match already being fought is won.
+        winCondition = resolvedWin,
+        -- THE SHAPE OF THIS MATCH'S LADDER, or nil for the mode's own. Read
+        -- by `ladderOf` when the round draws its weapons, and stored for the
+        -- same reason `lives` is: an operator switching a weapon class off
+        -- mid-session must not reshape a lobby that is already open.
+        tierPlan = resolvedTiers,
         createdAt = os.time(),
         -- 0, not nil, until server/match.lua schedules them: a nil field
         -- would simply be absent from the snapshot the panel receives.
@@ -1977,6 +2030,8 @@ function ArenaLobby.UpdateMatch(src, data)
     local arenaKey, modeKey, lives = match.arenaKey, match.modeKey, match.lives
     local radar = match.radar == true
     local roundTime = Arena.ToInt(match.roundTimeSeconds) or 0
+    local winCondition = Arena.IsKey(match.winCondition) and match.winCondition or ''
+    local tierPlan = match.tierPlan
 
     if data.arenaKey ~= nil then
         local arena = Arena.GetArenaByKey(data.arenaKey)
@@ -2000,6 +2055,22 @@ function ArenaLobby.UpdateMatch(src, data)
         local resolved, reason = Arena.ResolveRoundTime(data.roundTimeSeconds)
         if not resolved then return false, reason end
         roundTime = resolved
+    end
+
+    if data.winCondition ~= nil then
+        local resolved, reason = Arena.ResolveWinCondition(data.winCondition)
+        if not resolved then return false, reason end
+        winCondition = resolved
+    end
+
+    if data.tierPlan ~= nil then
+        -- AGAINST THE MODE BEING SET, not the one the match is on. A host
+        -- switching to gun game and shaping its ladder in the same edit is
+        -- one action from their side, and checking the plan against the old
+        -- mode would refuse it for having classes that mode does not have.
+        local resolved, reason = Arena.ResolveTierPlan(modeKey, data.tierPlan)
+        if reason then return false, reason end
+        tierPlan = resolved
     end
 
     if data.radar ~= nil then
@@ -2054,6 +2125,8 @@ function ArenaLobby.UpdateMatch(src, data)
     match.lives = lives
     match.radar = radar
     match.roundTimeSeconds = roundTime
+    match.winCondition = winCondition
+    match.tierPlan = tierPlan
     match.label = locale('match.label', match.hostName,
         (Arena.GetModeByKey(modeKey) or {}).label or modeKey)
 

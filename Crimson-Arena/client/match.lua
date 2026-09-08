@@ -668,7 +668,10 @@ end
 --- harmless, and it is set BEFORE anything else so a second caller inside
 --- the same frame finds the door already shut.
 --- @param ped integer
-local function handleDeath(ped)
+--- @param attacker integer|nil -- the entity CEventNetworkEntityDamage named,
+---        when the death was spotted by that hook. See below for why this is
+---        passed in rather than asked for.
+local function handleDeath(ped, attacker)
     if deathReported or not IsEntityDead(ped) then return end
 
     if not matchLive then
@@ -683,13 +686,56 @@ local function handleDeath(ped)
 
     -- A hint, not a verdict. The server checks the claim against its own
     -- record of who was alive and on which team.
+    --
+    -- THE DAMAGE EVENT'S ATTACKER FIRST, AND THIS IS THE WHOLE OF "HEADSHOTS
+    -- GIVE NO POINTS".
+    --
+    -- GET_PED_SOURCE_OF_DEATH is not populated in the frame the ped dies: the
+    -- engine fills it in when the death state is finalised, which is after
+    -- the damage event has been dispatched. Whether that matters depends
+    -- entirely on WHICH of this file's two spotters gets there first --
+    --
+    --   the watch loop finds the body on its next pass, a frame or more
+    --   later, by which time the source is set and the kill is credited;
+    --
+    --   the CEventNetworkEntityDamage hook above runs in the frame the ped
+    --   dies -- deliberately, because that is what stops a medical script
+    --   filing an ambulance out of the arena -- and there the source is 0.
+    --
+    -- So a kill that took several shots, or that ended in a bleed-out, was
+    -- credited, and one that killed outright was not: killerServerId went out
+    -- nil, the server had no claim to check, and nothing was logged at either
+    -- end because a nil claim is not a rejected claim. From a seat that is
+    -- "headshots do not give points", and the better the shot the more
+    -- reliably it happened.
+    --
+    -- The damage event carries the attacker in its own payload, so the hook
+    -- hands it in. Everything below is unchanged and still applies to it: it
+    -- has to be a ped, a player, and not the victim.
     local killerServerId
-    local source = GetPedSourceOfDeath(ped)
-    if source ~= 0 and source ~= ped and IsEntityAPed(source) and IsPedAPlayer(source) then
+    local source = attacker
+    if not (source and source ~= 0 and DoesEntityExist(source)) then
+        source = GetPedSourceOfDeath(ped)
+    end
+
+    if source and source ~= 0 and source ~= ped and IsEntityAPed(source) and IsPedAPlayer(source) then
         local index = NetworkGetPlayerIndexFromPed(source)
         if index and index ~= -1 then
             killerServerId = GetPlayerServerId(index)
         end
+    end
+
+    -- SAID OUT LOUD WHEN THERE IS NOBODY TO NAME. A kill nobody is credited
+    -- with and a death nobody caused look identical from the server, and both
+    -- of them look like "the scoreboard is broken" from a seat.
+    --
+    -- print, not ArenaDebug: that helper is SERVER-SIDE and does not exist in
+    -- this realm at all. Calling it here would throw out of the middle of a
+    -- death report -- which is exactly the sort of line that gets added for
+    -- diagnostics and then breaks the thing it was meant to explain.
+    if not killerServerId and Config.Debug then
+        print(('[crimson_arena] [debug] death: nobody could be named as the killer -- attacker %s, source of death %s.')
+            :format(tostring(attacker), tostring(GetPedSourceOfDeath(ped))))
     end
 
     TriggerServerEvent('crimson_arena:server:reportDeath', { killerServerId = killerServerId })
@@ -733,12 +779,16 @@ AddEventHandler('gameEventTriggered', function(event, data)
     if event ~= 'CEventNetworkEntityDamage' then return end
     if not currentMatch or deathReported then return end
 
-    local victim, victimDied = data[1], data[4]
+    -- data[2] IS THE ATTACKER, and handing it on is what credits a kill that
+    -- landed in one shot. GetPedSourceOfDeath is still empty this early --
+    -- see handleDeath -- so without this the fast deaths were the ones that
+    -- went uncredited, which is to say the good ones.
+    local victim, attacker, victimDied = data[1], data[2], data[4]
     if victimDied ~= 1 and victimDied ~= true then return end
     if not victim or not DoesEntityExist(victim) then return end
     if victim ~= PlayerPedId() then return end
 
-    handleDeath(victim)
+    handleDeath(victim, attacker)
 end)
 
 --- Insist on the arena's health and armour for a moment.

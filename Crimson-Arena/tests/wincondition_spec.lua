@@ -247,8 +247,14 @@ end
 -- ======================================================================
 
 t.test('the shipped default is last_standing', function()
+    -- THROUGH THE RESOLVER, NOT OFF THE RAW SETTING. Config.Match
+    -- .winCondition now takes two shapes -- a plain string on a server that
+    -- fixes it, a { allowChoose, default } block on one that lets the host
+    -- pick -- exactly as `lives` and `roundTimeSeconds` already do. Read raw,
+    -- this compared a string against a TABLE and every test below it was
+    -- aimed at a rule nobody was running.
     local server = newServer()
-    t.equals(server.config.Match.winCondition, 'last_standing',
+    t.equals(server.env.Arena.WinConditionDefault(), 'last_standing',
         'the default changed -- everything below is aimed at the wrong rule')
 end)
 
@@ -477,15 +483,36 @@ end)
 -- ======================================================================
 
 t.test('one side left standing ends it even under score_limit', function()
+    -- RUNNING OUT OF OPPONENTS BEATS EVERY RULE, and it still does -- but
+    -- under a score limit you can no longer run out of them by KILLING them.
+    --
+    -- A score limit spends no lives, at the operator's own instruction and
+    -- for a reason that is arithmetic rather than taste: the round is meant
+    -- to end when somebody reaches the number, and a roster that can be
+    -- eliminated runs out of players first on any limit worth setting. So a
+    -- death here costs nothing and the victim is back on their feet -- which
+    -- means the only way to be the last one left is for everybody else to
+    -- actually LEAVE, and that is what this walks now.
     local server = newServer(function(config)
         config.Match.winCondition = 'score_limit'
         config.Match.scoreLimit = 99
     end)
     server.play(2)
+
     server.kill(2, 1)
     server.settle(3)
+    t.equals(server.endedWith(), nil,
+        'a death ended a score-limit round -- it spends no lives, so nobody was eliminated')
 
-    t.equals(server.endedWith(), 'match.ended_last_standing',
+    server.fire('leaveMatch', 2, {})
+    server.settle(3)
+
+    -- UNDER ITS OWN NAME. A roster that empties out is 'abandoned' rather
+    -- than 'last_standing' -- the same rule, reached by people leaving rather
+    -- than by people being eliminated -- and the survivor still takes it,
+    -- which is the part that matters and the part a score limit must not
+    -- have broken.
+    t.equals(server.endedWith(), 'match.ended_abandoned',
         'a round with one fighter left waited for a score limit of 99')
     t.equals(listed(server.winners()), '1', 'the survivor did not take it')
 end)
@@ -577,18 +604,34 @@ t.test('and a score limit reached by somebody who is OUT does not end the round'
     -- The same rule on the other caller. Reaching the limit and being
     -- knocked out before the sweep sees it used to end the round on that
     -- score -- and then hand it to whoever led among everybody else.
+    -- NOT BY ELIMINATION ANY MORE. A score limit spends no lives, so the
+    -- leader cannot be knocked out of one -- they can only leave, which puts
+    -- them out of the round by the other door and is the case this rule has
+    -- to hold for either way.
     local server = newServer(function(config)
         config.Match.winCondition = 'score_limit'
         config.Match.scoreLimit = 2
     end)
-    leaderKnockedOut(server)
+    server.play(5)
+    server.kill(2, 1)
+    server.kill(3, 1)
+    t.equals(server.rowOf(1).kills, 2, 'fighter 1 did not reach the limit, so this proves nothing')
+
+    server.fire('leaveMatch', 1, {})
     server.settle(3)
 
     t.equals(server.endedWith(), nil,
-        'the round ended on a score limit reached by a fighter who was already out')
+        'the round ended on a score limit reached by a fighter who is no longer in it')
     t.equals(listed(server.winners()), '', 'somebody was paid for a round that is still being fought')
 
-    -- And it can still end normally afterwards.
+    -- And it can still end normally afterwards -- on the limit, reached by
+    -- somebody who is actually in the round. Two kills, because that is the
+    -- limit and a score-limit round eliminates nobody: fighter 5 is back on
+    -- their feet after the first one.
+    server.kill(5, 4)
+    server.settle(3)
+    t.equals(server.endedWith(), nil, 'one kill against a limit of two ended the round')
+
     server.kill(5, 4)
     server.settle(3)
     t.equals(listed(server.winners()), '4', 'the round could no longer be won at all')

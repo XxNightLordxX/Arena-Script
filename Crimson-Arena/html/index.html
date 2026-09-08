@@ -86,6 +86,19 @@
                     <p id="create-fee-hint" class="hint"></p>
                 </div>
 
+                <!-- HOW THE ROUND IS WON. Above Lives Each on purpose: the
+                     choice made here decides whether Lives Each is read at
+                     all -- a score limit spends no lives -- so a host meets
+                     the question in the order the answers depend on.
+
+                     Hidden when the operator has fixed the condition, on the
+                     same rule as everything else in this form. -->
+                <div id="create-win-row" class="field">
+                    <span class="field-label">Win Condition</span>
+                    <select id="create-win"></select>
+                    <p id="create-win-hint" class="hint"></p>
+                </div>
+
                 <!-- Hidden when the operator has fixed the number: a control
                      that cannot change anything is worse than no control,
                      because it invites a host to try. -->

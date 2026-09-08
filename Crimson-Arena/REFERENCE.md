@@ -324,7 +324,6 @@ line-number map that is regenerated whenever the file changes.
 | `html/` | — | The panel. |
 | `locales/` | — | Every player-visible string. |
 | `sql/install.sql` | — | The leaderboard table, for operators who import by hand. |
-| `tests/` | — | The spec suite and the fake-native harness it runs against. |
 
 ---
 

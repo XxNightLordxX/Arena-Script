@@ -514,7 +514,7 @@ The shipped `skydome` uses it, so six fighters get the 35 m circle in config
 and twenty get a 57 m one on a floor to match. Every roster size from four to
 thirty-two lands the full stated separation, checked across sixty random
 seeds for each of seven roster sizes — four hundred and twenty rosters — in
-`tests/skyarena_spec.lua`.
+the spec suite (see Development, below).
 
 Leave the block out and the arena stays the size you configured. Both
 shipped arenas do scale, to different ceilings: the skydome up to 2.0x
@@ -1216,34 +1216,21 @@ Set `Config.Debug = true` and restart. It is chatty by design — every stake, r
 
 ## Development
 
-```sh
-tests/run.sh        # all three CI gates: parse, luacheck, then the specs
-```
+**THE TEST SUITE IS NOT IN THIS RELEASE.** It was 76 Lua specs and a Node
+suite for the panel, and it was removed for shipping along with `.luacheckrc`
+and everything else nobody running a server needs. It is not gone: it is in
+this repository's history, and one `git checkout` of the commit before the
+release brings the whole of it back.
 
-That one command is the whole check. It runs the same three gates as CI, in
-the same order — every `.lua` file parses, `luacheck .` is clean against
-`.luacheckrc`, and every `tests/*_spec.lua` passes under plain lua5.4
-followed by `tests/panel/` under node. A green run of it means a green run of
-CI.
+What it was for, if you ever want it: `tests/run.sh` ran three gates in one
+command -- every `.lua` file parses, `luacheck .` is clean, and every spec
+passes under plain `lua5.4`, followed by the panel suite under `node`.
 
-It did not always. The parse and lint gates lived only in the workflow, so a
-change could pass the whole suite locally and still go red on a shadowed
-local or a stray global — which is exactly what happened. They are in the
-script now. `luac5.4` and `luacheck` are skipped with a notice where they are
-not installed, like `node` below, since neither is a dependency of the
-resource itself.
-
-`tests/panel/` is the odd one out: it loads the real, unmodified `html/app.js`
-in a DOM shim under Node and asserts what the panel puts **on the wire**, not
-what the source looks like. It exists because the panel is the one place a
-value can be computed correctly and still never arrive — a field the form
-never reads reaches the server as `undefined` and silently falls back, with
-both ends looking right. It runs in CI, and `run.sh` skips it with a notice
-where `node` is not installed rather than failing.
-
-All three run on every push and pull request via
-`.github/workflows/lua-check.yml`, which keeps them as separate steps so a
-failure annotates the right file.
+The panel suite was the odd one out and the most useful. It loaded the real,
+unmodified `html/app.js` in a DOM shim and asserted what the panel puts **on
+the wire**, because that is the one place a value can be computed correctly
+and still never arrive: a field the form never reads reaches the server as
+`undefined` and falls back silently, with both ends looking right.
 
 `shared/arena.lua` calls no native at all. That is what lets the test suite load the real, unmodified production file under plain Lua and exercise every rule directly.
 

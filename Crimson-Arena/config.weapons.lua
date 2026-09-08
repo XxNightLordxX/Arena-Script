@@ -1,53 +1,5 @@
---[[
-    crimson_arena/config.weapons.lua
+-- Crimson Arena: the weapons the arena may hand out.
 
-    THE WEAPON CATALOGUE, and nothing else.
-
-    It lives in its own file because of what it is rather than what it does:
-    a list of ninety-odd blocks that an operator scrolls PAST every time they
-    want to change a timer, a payout or a spawn. Moving it out is not a
-    behaviour change -- this file is loaded straight after config.lua, into
-    the same `Config` table, and every rule about these entries is written in
-    the block comment below exactly as it was.
-
-    LOAD ORDER IS LOAD-BEARING. config.lua defines `Config.Loadouts`, and the
-    line below writes one key into it. fxmanifest.lua lists config.lua first
-    for that reason; swapping them raises on a nil index at start-up.
-]]
-
--- THE WEAPON LIST.
---
--- ADD AND REMOVE FREELY. Paste a block in and it appears in the picker at
--- the next restart; delete one and it is gone from the arena for everybody,
--- including anyone whose panel was still showing it -- the server checks
--- every request against this list before it hands out a single round, so a
--- weapon that is not here cannot be obtained by asking for it.
---
--- `enabled = false` does exactly the same as deleting, while keeping the
--- entry to switch back on later. There is no difference the player can see.
---
--- COPY THIS TO ADD ONE:
---
---     {
---         key = 'microsmg',                 -- unique; the panel and wire use it
---         weapon = 'WEAPON_MICROSMG',       -- the real GTA name; this is what is given
---         label = 'Micro SMG',              -- what the player reads
---         category = 'automatic',           -- a key from Config.Loadouts.categories, in config.lua
---         enabled = true,
---         ammo = { default = 120, options = { 60, 120, 250, 500 }, max = 500 },
---         components = {},
---         tint = 0,
---     },
---
--- Two keys the same, or an ammo option above that weapon's own max, are
--- named in the server console at startup rather than failing quietly in
--- front of a player.
---
---   key      -- what the panel and the wire use. Must be unique.
---   weapon   -- the real GTA weapon name. This is what is actually given.
---   ammo     -- default/options/max; the rules are in config.lua's
---               Config.Loadouts header, which is loaded before this file.
---   enabled  -- false hides it everywhere without deleting the entry.
 Config.Loadouts.weapons = {
     -- GENERATED FROM THIS SERVER'S OWN ox_inventory weapons.lua.
     --
@@ -66,7 +18,6 @@ Config.Loadouts.weapons = {
     -- ENABLED = FALSE ON EXPLOSIVES, LAUNCHERS AND NOVELTIES. They are
     -- present so they can be switched on deliberately, rather than absent
 
-    -- ---- SIDEARM ---------------------------------------------------
     {
         key = 'acidspray',
         weapon = 'WEAPON_ACIDSPRAY',
@@ -343,7 +294,6 @@ Config.Loadouts.weapons = {
         tint = 0,
     },
 
-    -- ---- AUTOMATIC -------------------------------------------------
     {
         key = 'advancedrifle',
         weapon = 'WEAPON_ADVANCEDRIFLE',
@@ -609,7 +559,6 @@ Config.Loadouts.weapons = {
         tint = 0,
     },
 
-    -- ---- SHOTGUN ---------------------------------------------------
     {
         key = 'assaultshotgun',
         weapon = 'WEAPON_ASSAULTSHOTGUN',
@@ -710,7 +659,6 @@ Config.Loadouts.weapons = {
         tint = 0,
     },
 
-    -- ---- PRECISION -------------------------------------------------
     {
         key = 'heavysniper',
         weapon = 'WEAPON_HEAVYSNIPER',
@@ -789,7 +737,6 @@ Config.Loadouts.weapons = {
         tint = 0,
     },
 
-    -- ---- HEAVY -----------------------------------------------------
     {
         key = 'emplauncher',
         weapon = 'WEAPON_EMPLAUNCHER',
@@ -934,7 +881,6 @@ Config.Loadouts.weapons = {
         tint = 0,
     },
 
-    -- ---- MELEE -----------------------------------------------------
     {
         key = 'bat',
         weapon = 'WEAPON_BAT',

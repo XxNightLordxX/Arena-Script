@@ -29,13 +29,38 @@ executable content afterwards.
 """
 import sys, os, re
 
-# A comment block survives if any line in it says "somebody thought about
-# this and the answer is not the obvious one".
-WARNS = re.compile(
-    r'(on purpose|deliberate|do not |never |must not|and that is why'
-    r'|before .*tidy|is not an oversight|disagree|THE REPORT|IN A PLAYER'
-    r'|THE DEFECT|THE BUG|THE REGRESSION|cannot |it did not|used to )',
-    re.I)
+# A comment block survives if any line in it says "somebody thought about this
+# and the answer is not the obvious one".
+#
+# TWO LISTS, AND THE SPLIT IS THE WHOLE ACCURACY OF THIS TOOL. The first
+# version was one case-insensitive list that included `never `, `cannot ` and
+# `used to `, and it kept 10,560 comment lines out of 18,654 -- 57%, against a
+# stated intention of keeping only the warnings. Those three words are not
+# warnings; they are how ordinary English explains anything ("a bucket cannot
+# hide a client from itself", "this never reaches a player"). And `used to `
+# is the marker of HISTORY, which is exactly the category being removed.
+#
+# What separates the two in this codebase is CASE. A warning aimed at the next
+# editor is shouted -- DO NOT, NEVER, CANNOT, THE DEFECT -- because that is the
+# house style for a sentence that must not be skimmed past. So `never` in a
+# sentence is prose and `NEVER` is an instruction, and only the second is kept.
+#
+# The lower-case list is for phrases that are warnings whatever their case:
+# nothing writes "deliberate" or "is not an oversight" except to tell you that
+# what you are looking at was chosen.
+WARNS_ANY_CASE = re.compile(
+    r'(on purpose|deliberate|must not|do not |is not an oversight|disagree'
+    r'|before .*tidy|none of them can be read)', re.I)
+
+WARNS_SHOUTED = re.compile(
+    r'(NEVER |CANNOT |DO NOT|THE DEFECT|THE BUG|THE REGRESSION|THE REPORT'
+    r'|IN A PLAYER)')
+
+
+def warns(block):
+    """Does this run of comment lines carry a warning?"""
+    return WARNS_ANY_CASE.search(block) is not None \
+        or WARNS_SHOUTED.search(block) is not None
 
 
 def comment_lines_lua(src):
@@ -255,7 +280,7 @@ def strip(path, header=None):
         while j < len(lines) and pure(j):
             j += 1
         block = '\n'.join(lines[i:j])
-        if not WARNS.search(block):
+        if not warns(block):
             for k in range(i, j):
                 keep[k] = False
         i = j

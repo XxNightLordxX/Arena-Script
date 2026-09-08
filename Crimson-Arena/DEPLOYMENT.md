@@ -5,14 +5,19 @@ Read this before the resource goes anywhere near players.
 ## The honest status of this build
 
 Everything that can be checked without a running FiveM server has been checked:
-every Lua file parses, `luacheck` is clean across the resource, and the spec
-suite exercises the real production files under plain Lua 5.4 — the rules, the
-payout arithmetic, the escrow invariants, the locale coverage.
+every Lua file parses, `luacheck` is clean across the resource, and a suite of
+76 specs exercised the real production files under plain Lua 5.4 — the rules,
+the payout arithmetic, the escrow invariants, the locale coverage.
 
-The client is also run against a *model* of the game — `tests/fixtures/world.lua`
-gives it objects, prop dimensions and a streaming bubble, and the real
-`client/match.lua` builds the sky arena inside it. That model found three
+The client was also run against a *model* of the game: a fake-native harness
+gave it objects, prop dimensions and a streaming bubble, and the real
+`client/match.lua` built the sky arena inside it. That model found three
 defects the reading had missed. It is still a model.
+
+**That suite is not in this release.** It ran green against the exact code in
+this folder — comments and all, before and after they were stripped — and was
+then removed for shipping. It is in the repository's history if you ever want
+it back.
 
 **None of it has ever loaded into FXServer.** No ped has spawned, no panel has
 opened, no weapon has been handed out, no routing bucket has replicated. Tests
@@ -125,13 +130,14 @@ against each other because the renderer has no way to decide which is in front,
 and it stays solid underfoot the whole time — so it reads as the arena being
 broken rather than as a prop in the wrong place.
 
-Both are checked, so you do not have to hold them in your head. `tests/run.sh`
-fails if two pieces are within the distance a rotated prop sweeps, if any two
-intersect at the headings you wrote, if the shipped arena stops placing every
-roster from two to thirty-two at its stated separation, or if it stops placing
-eight fighters **with growth switched off** — which is the one that actually
-bites, because a roster big enough to grow the arena gets the extra room for
-free and hides the problem.
+Both were checked by the suite this release ships without, so if you move
+pieces around you are checking them yourself now. What it tested for, and what
+to look for: two pieces within the distance a rotated prop sweeps; any two
+intersecting at the headings you wrote; the arena failing to place every roster
+from two to thirty-two at its stated separation; and — the one that actually
+bites — failing to place eight fighters **with growth switched off**, because a
+roster big enough to grow the arena gets the extra room for free and hides the
+problem.
 
 Edit the list, run the suite, and read what it says. Do not trust a layout that
 merely looks right: the numbers in the skydome's `cover` block were arrived at

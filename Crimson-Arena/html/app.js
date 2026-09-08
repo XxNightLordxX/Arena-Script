@@ -148,6 +148,12 @@
            tells us what this server's default is. Same shape as createLives
            and createRound beside it: null means "not seeded yet", not "none". */
         createWin: null,
+        /* The gun-game ladder the host is building, as { [classKey]: rungs }.
+           Empty means "every class on its own default", which is what a host
+           who never touches the rows runs -- and what the server reads a nil
+           plan as, so the two agree without either having to know the
+           numbers. */
+        createTiers: {},
         /* The kill limit the host has named, or null until the snapshot says
            what this server opens on. Same shape as createLives beside it. */
         createLimit: null,
@@ -329,6 +335,14 @@
         winner_takes_all: 'Winner takes all',
         per_kill: 'Split by kills'
     };
+
+    /* The rung dropdown built for each weapon class, by class key.
+       HELD RATHER THAN LOOKED UP. These are built by the panel and have no
+       ids of their own, so the alternative is querySelector -- which couples
+       the panel to a DOM feature its own test harness does not implement, and
+       made the whole picker untestable. A map is what the code wanted anyway:
+       the rows are rebuilt in one place and read in one place. */
+    var tierSelects = {};
 
     var WIN_CONDITION_TEXT = {
         last_standing: 'last one standing',
@@ -1314,6 +1328,9 @@
             state.createLives = int(editable.lives, int(state.createLives, 1));
             state.createRound = int(editable.roundTimeSeconds, int(state.createRound, 0));
             state.createWin = keyOr(editable.winCondition, state.createWin);
+            if (editable.tierPlan && typeof editable.tierPlan === 'object') {
+                state.createTiers = editable.tierPlan;
+            }
             state.createLimit = int(editable.scoreLimit, int(state.createLimit, 25));
             state.createRadar = editable.radar === true;
         } else if (!editable && state.seededFromMatch !== null) {
@@ -1785,6 +1802,106 @@
                 ? 'The first fighter to this many kills takes the round. '
                   + int(limitChoice.min, 1) + ' to ' + int(limitChoice.max, 1) + '.'
                 : '';
+        }
+
+        /* THE LADDER ROWS, for a gun game and nothing else. One per weapon
+           class the mode declares, each a dropdown of how many rungs of that
+           class the climb has -- 0 leaves the class out altogether, which is
+           a legal ladder: pistols and rifles and nothing else is a mode
+           somebody will want. */
+        var tierClasses = arrayOf(creating && creating.tierClasses);
+        var tiersUsed = laddered && tierClasses.length > 0;
+        show(byId('create-tiers-row'), tiersUsed);
+
+        var tierBox = byId('create-tiers');
+        if (has(tierBox)) {
+            /* Rebuilt only when the classes themselves change, so an open
+               dropdown is not torn out from under the host on every server
+               push. The signature carries the ceilings as well as the keys:
+               an operator switching weapons off changes what a row may
+               offer without changing which rows there are. */
+            var signature = tierClasses.map(function (row) {
+                return String(row.key) + ':' + int(row.maxTiers, 0);
+            }).join(',');
+
+            if (!tiersUsed) {
+                clear(tierBox);
+                tierSelects = {};
+                tierBox.setAttribute('data-classes', '');
+            } else if (tierBox.getAttribute('data-classes') !== signature) {
+                tierBox.setAttribute('data-classes', signature);
+                clear(tierBox);
+                tierSelects = {};
+                tierClasses.forEach(function (row) {
+                    var line = makeEl('div', 'tier-row');
+                    line.appendChild(makeEl('span', 'tier-name', String(row.label || row.key)));
+
+                    var select = makeEl('select');
+                    /* A REAL ID, the way every other control in this panel is
+                       addressable. The rows are built rather than written into
+                       index.html, so without one they are reachable only by
+                       querySelector -- which couples the panel to a DOM
+                       feature and made the picker untestable. */
+                    select.id = 'create-tier-' + String(row.key);
+                    select.setAttribute('data-class', String(row.key));
+                    for (var count = 0; count <= int(row.maxTiers, 0); count += 1) {
+                        var option = makeEl('option', null, String(count));
+                        option.value = String(count);
+                        select.appendChild(option);
+                    }
+                    select.addEventListener('change', function (event) {
+                        var key = event.target.getAttribute('data-class');
+                        var next = {};
+                        Object.keys(state.createTiers).forEach(function (name) {
+                            next[name] = state.createTiers[name];
+                        });
+                        next[key] = int(event.target.value, 0);
+                        state.createTiers = next;
+                        /* Re-rendered because the hint below counts the whole
+                           ladder, and a total that only catches up on the
+                           next server push reads as a control that did
+                           nothing. */
+                        render();
+                    });
+                    tierSelects[String(row.key)] = select;
+                    line.appendChild(select);
+                    tierBox.appendChild(line);
+                });
+            }
+
+            /* The values, every render, whether or not the rows were
+               rebuilt -- and never into the one the host has open. */
+            if (tiersUsed) {
+                tierClasses.forEach(function (row) {
+                    var select = tierSelects[String(row.key)];
+                    if (!select || document.activeElement === select) return;
+                    var chosen = state.createTiers[row.key];
+                    select.value = String(chosen === undefined ? int(row.tiers, 0) : int(chosen, 0));
+                });
+            }
+        }
+
+        var tierHint = byId('create-tiers-hint');
+        if (has(tierHint)) {
+            if (!tiersUsed) {
+                tierHint.textContent = '';
+            } else {
+                var rungs = 0;
+                tierClasses.forEach(function (row) {
+                    var chosen = state.createTiers[row.key];
+                    rungs += (chosen === undefined ? int(row.tiers, 0) : int(chosen, 0));
+                });
+                /* THE TOTAL, AND THE FLOOR IT HAS TO CLEAR. A one-rung ladder
+                   is topped by the first kill of the round, so the server
+                   refuses it -- and a host who has just dialled every row to
+                   zero should read that here rather than meet it as a
+                   refusal on the Create button. */
+                tierHint.textContent = rungs < 2
+                    ? 'A ladder needs at least two tiers — this one has '
+                      + rungs + '.'
+                    : 'How many rungs of each weapon class the climb has — '
+                      + rungs + ' tiers in all. 0 leaves a class out.';
+            }
         }
 
         var livesChoice = (cfg().match || {}).livesChoice;
@@ -4418,6 +4535,240 @@
     }
 
     // ==================================================================
+    // THE ADMIN TABLET
+    //
+    // Opened by /arenaadmin and by nothing else. It draws three screens in
+    // one panel -- the live matches, one match's fighters, one fighter's
+    // escrow -- and every button on it posts to a server handler that
+    // re-checks ArenaIsAdmin on arrival. Nothing here is a permission check;
+    // this is a view, and a view that is wrong about who is looking at it
+    // costs nothing because the server is not asking it.
+    // ==================================================================
+
+    var admin = {
+        open: false,
+        matches: [],
+        /* The match this tablet has open, as the server last described it --
+           id, state, pot and the fighters in it. Null on the list screen. */
+        focused: null,
+        /* The fighter's server id, or null. Kept as an ID rather than as the
+           row itself so a refresh redraws them from the new snapshot instead
+           of showing a fighter frozen at the moment they were clicked. */
+        player: null,
+        /* Stashes nobody has had back yet, by citizen id. Empty on a healthy
+           server, which is the point: a row here is somebody who is short.
+
+           EVERY STASH THIS SERVER HAS EVER MADE, not only the ones this RUN
+           remembers: the in-memory records die with a restart and the stashes
+           do not, so a player left outstanding when the server went down was
+           somebody nothing could name afterwards. */
+        owed: [],
+        stashesFound: 0,
+        stashesRead: 0,
+    };
+
+    function adminRefresh() {
+        post('adminState', { matchId: admin.focused ? admin.focused.id : null });
+    }
+
+    /* The fighter admin.player names, out of the CURRENT snapshot. */
+    function adminPlayerRow() {
+        if (!admin.focused || admin.player === null) return null;
+        var rows = arrayOf(admin.focused.players);
+        for (var index = 0; index < rows.length; index += 1) {
+            if (int(rows[index].src, -1) === admin.player) return rows[index];
+        }
+        return null;
+    }
+
+    function renderAdmin() {
+        var root = byId('arena-admin');
+        if (!has(root)) return;
+        show(root, admin.open);
+        if (!admin.open) return;
+
+        var row = adminPlayerRow();
+        /* A fighter who has left the match while their card was open falls
+           back to the match, and a match that has ended falls back to the
+           list -- rather than leaving an admin looking at a screen about
+           somebody who is no longer there. */
+        var onPlayer = row !== null;
+        var onMatch = !onPlayer && admin.focused !== null;
+
+        show(byId('admin-list'), !onPlayer && !onMatch);
+        show(byId('admin-detail'), onMatch);
+        show(byId('admin-player'), onPlayer);
+
+        /* ---- the list ---- */
+        var list = byId('admin-matches');
+        if (has(list)) {
+            clear(list);
+            arrayOf(admin.matches).forEach(function (match) {
+                var card = makeEl('button', 'admin-match');
+                card.type = 'button';
+                card.appendChild(makeEl('span', 'admin-match-name',
+                    String(match.label || match.id)));
+                card.appendChild(makeEl('span', 'admin-match-facts',
+                    String(match.state) + ' · ' + plural(match.players, 'player')
+                        + ' · pot ' + money(int(match.pot, 0))));
+                card.addEventListener('click', function () {
+                    admin.player = null;
+                    /* Asked for rather than assumed: the list row carries a
+                       head count, and the detail screen needs the fighters
+                       themselves. */
+                    post('adminState', { matchId: match.id });
+                });
+                list.appendChild(card);
+            });
+        }
+        show(byId('admin-empty'), arrayOf(admin.matches).length === 0);
+
+        /* ---- what never made it back ----
+           Drawn on the LIST screen, because it is a fact about the server
+           rather than about any one match: the people on it are usually not
+           in a round at all, which is exactly why the sweep cannot finish
+           for them. */
+        var owed = arrayOf(admin.owed);
+        show(byId('admin-owed-row'), !onPlayer && !onMatch && owed.length > 0);
+
+        var owedLine = byId('admin-owed-line');
+        if (has(owedLine)) {
+            /* HOW MANY WERE OPENED, out of how many exist. Four stashes with
+               things in them means something different depending on whether
+               that is all of them or the first sixty of nine hundred, and an
+               admin cannot tell those apart from the list alone. */
+            var found = int(admin.stashesFound, 0);
+            var read = int(admin.stashesRead, 0);
+            var unread = Math.max(0, found - read);
+
+            owedLine.textContent = owed.length === 0 ? ''
+                : plural(owed.length, 'stash') + ' still holding somebody\'s belongings. '
+                  + 'The server retries on its own for anyone who is online; '
+                  + 'this is for the ones who are not.'
+                  + (unread > 0
+                      ? ' ' + plural(unread, 'older stash', 'older stashes')
+                        + ' were not opened this time — the newest ' + read + ' were.'
+                      : '');
+        }
+
+        var owedBox = byId('admin-owed');
+        if (has(owedBox)) {
+            clear(owedBox);
+            owed.forEach(function (entry) {
+                var card = makeEl('div', 'admin-owed-entry');
+                card.appendChild(makeEl('span', 'admin-owed-who', String(entry.citizenid)));
+
+                var items = arrayOf(entry.items);
+                card.appendChild(makeEl('span', 'admin-owed-what',
+                    items.length === 0
+                        /* AN EMPTY STASH ON THIS LIST IS ITS OWN ANSWER: the
+                           record says something is owed and the stash reads
+                           empty, which is the shape of the bug that lost
+                           people their belongings. Said plainly rather than
+                           drawn as a blank row. */
+                        ? 'the stash reads EMPTY — nothing to hand over'
+                        : items.map(function (item) {
+                            return String(item.name) + ' ×' + int(item.count, 0);
+                        }).join(', ')));
+
+                /* ONE BUTTON, TWO THINGS, and it says which it is about to
+                   do. There is no live inventory to put items into for
+                   somebody who is not on the server, so for them the server
+                   QUEUES the return instead -- which is not a consolation
+                   prize: the retry only ever tries the people it has on its
+                   list, and a stash found by name after a restart is on
+                   nobody's list at all. Queuing is what puts it back on one. */
+                var online = int(entry.src, 0);
+                var give = makeEl('button', 'admin-owed-give',
+                    online > 0 ? 'Hand it back' : 'Queue for when they return');
+                give.type = 'button';
+                /* The only thing that makes this button pointless is an empty
+                   stash. Being offline does not. */
+                give.disabled = items.length === 0;
+                give.addEventListener('click', function () {
+                    post('adminReturn', {
+                        target: online,
+                        citizenid: entry.citizenid,
+                        stash: entry.stash,
+                    });
+                });
+                card.appendChild(give);
+                owedBox.appendChild(card);
+            });
+        }
+
+        /* ---- one match ---- */
+        if (onMatch) {
+            byId('admin-detail-title').textContent = String(admin.focused.label || admin.focused.id);
+            byId('admin-detail-line').textContent = String(admin.focused.state)
+                + ' · pot ' + money(int(admin.focused.pot, 0));
+
+            var people = byId('admin-players');
+            if (has(people)) {
+                clear(people);
+                arrayOf(admin.focused.players).forEach(function (fighter) {
+                    var card = makeEl('button', 'admin-player-row');
+                    card.type = 'button';
+                    card.appendChild(makeEl('span', 'admin-player-name', String(fighter.name)));
+                    card.appendChild(makeEl('span', 'admin-player-facts',
+                        (fighter.alive === true ? 'alive' : 'down')
+                            + ' · ' + int(fighter.kills, 0) + 'k/' + int(fighter.deaths, 0) + 'd'
+                            + ' · ' + int(fighter.lives, 0) + ' lives'));
+                    card.addEventListener('click', function () {
+                        admin.player = int(fighter.src, -1);
+                        renderAdmin();
+                    });
+                    people.appendChild(card);
+                });
+            }
+        }
+
+        /* ---- one fighter ---- */
+        if (onPlayer) {
+            byId('admin-player-title').textContent = String(row.name);
+            byId('admin-player-line').textContent =
+                (row.alive === true ? 'On their feet' : 'Down')
+                + ' · ' + int(row.kills, 0) + ' kills, ' + int(row.deaths, 0) + ' deaths'
+                + ' · ' + int(row.lives, 0) + ' lives'
+                + (row.team ? ' · ' + titleCase(String(row.team)) : '');
+
+            /* A REVIVE IS FOR SOMEBODY WHO IS DOWN. Offering it on a fighter
+               who is already up is a button that does nothing, which reads as
+               a broken button rather than as a no-op. */
+            var revive = byId('admin-revive');
+            if (has(revive)) revive.disabled = row.alive === true;
+
+            /* WHAT THE ARENA IS ACTUALLY HOLDING, beside what it BELIEVES it
+               put away. Those two disagreeing is the whole of the bug that
+               lost people their belongings, so an admin staring at an empty
+               list is told which kind of empty it is. */
+            var expected = int(row.escrowExpected, 0);
+            var items = arrayOf(row.escrow);
+            var staked = int(row.staked, 0);
+
+            byId('admin-escrow-line').textContent =
+                (staked > 0
+                    ? money(staked) + ' staked from ' + String(row.stakedFrom || 'their wallet') + '. '
+                    : 'No stake held. ')
+                + (expected === 0
+                    ? 'Nothing was put in their stash.'
+                    : (items.length === expected
+                        ? expected + ' item(s) held.'
+                        : 'THE ARENA PUT ' + expected + ' ITEM(S) AWAY AND THE STASH HOLDS '
+                          + items.length + '.'));
+
+            var held = byId('admin-escrow');
+            if (has(held)) {
+                clear(held);
+                items.forEach(function (item) {
+                    held.appendChild(makeEl('div', 'admin-escrow-row',
+                        String(item.name) + ' ×' + int(item.count, 0)));
+                });
+            }
+        }
+    }
+
+    // ==================================================================
     // MESSAGES FROM LUA
     // ==================================================================
 
@@ -4451,6 +4802,40 @@
                     /* The overlay reads config for the pot line, so a
                        snapshot that changes it must reach the HUD too. */
                     renderHud();
+                    break;
+
+                case 'adminOpen':
+                    admin.open = true;
+                    admin.matches = arrayOf(data.matches);
+                    admin.owed = arrayOf(data.owed);
+                    admin.stashesFound = int(data.stashesFound, 0);
+                    admin.stashesRead = int(data.stashesRead, 0);
+                    admin.focused = null;
+                    admin.player = null;
+                    renderAdmin();
+                    break;
+
+                case 'adminState':
+                    /* Dropped when the tablet is not open: a push that
+                       arrives after it was closed would otherwise draw over
+                       whatever the player is looking at now. */
+                    if (!admin.open) break;
+                    admin.matches = arrayOf(data.matches);
+                    admin.owed = arrayOf(data.owed);
+                    admin.stashesFound = int(data.stashesFound, 0);
+                    admin.stashesRead = int(data.stashesRead, 0);
+                    admin.focused = (data.focused && typeof data.focused === 'object')
+                        ? data.focused
+                        : null;
+                    if (!admin.focused) admin.player = null;
+                    renderAdmin();
+                    break;
+
+                case 'adminClose':
+                    admin.open = false;
+                    admin.focused = null;
+                    admin.player = null;
+                    renderAdmin();
                     break;
 
                 case 'notify':
@@ -4711,6 +5096,41 @@
         state.createRound = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
     });
 
+    /* ---- the admin tablet ---- */
+
+    bind('admin-close', 'click', function () {
+        /* Lua owns the focus release, so the close goes THERE rather than
+           being handled here: a screen that hides itself and leaves NUI focus
+           held costs the player their character. */
+        post('adminClose', {});
+    });
+
+    bind('admin-back', 'click', function () {
+        admin.focused = null;
+        admin.player = null;
+        renderAdmin();
+        adminRefresh();
+    });
+
+    bind('admin-player-back', 'click', function () {
+        admin.player = null;
+        renderAdmin();
+    });
+
+    bind('admin-stop', 'click', function () {
+        if (!admin.focused) return;
+        /* STOPPING A MATCH REFUNDS EVERYBODY AND HANDS EVERY KIT BACK -- it
+           is ArenaMatch.Abort, the same call the text command makes, and the
+           same one the idle sweep and a resource restart make. The round is
+           unwound as though it had not happened. */
+        post('adminStop', { matchId: admin.focused.id });
+    });
+
+    bind('admin-revive', 'click', function () {
+        if (admin.player === null) return;
+        post('adminRevive', { target: admin.player });
+    });
+
     bind('create-limit', 'input', function (event) {
         var band = (cfg().match || {}).scoreLimitChoice || {};
         state.createLimit = clampInt(event.target.value, int(band.min, 1), int(band.max, 1));
@@ -4747,6 +5167,7 @@
                 roundTimeSeconds: int(state.createRound, 0),
                 winCondition: keyOr(state.createWin, ''),
                 scoreLimit: int(state.createLimit, 0),
+            tierPlan: state.createTiers,
                 /* radarIsOn(), not state.createRadar: an untouched toggle is
                    null, and null on the wire means "leave it alone" -- which
                    is not what the host sees on a button reading Radar Off. */
@@ -4763,6 +5184,7 @@
             roundTimeSeconds: int(state.createRound, 0),
             winCondition: keyOr(state.createWin, ''),
             scoreLimit: int(state.createLimit, 0),
+            tierPlan: state.createTiers,
             radar: radarIsOn(),
             /* The host joins their own match through the same door as
                everybody else, so their entry fee comes out of the account

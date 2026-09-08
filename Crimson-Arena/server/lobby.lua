@@ -827,6 +827,12 @@ local function snapshotMatches()
             -- deciding whether to join wants the number the round will really
             -- finish on.
             scoreLimit = Arena.ScoreLimitFor(match.scoreLimit),
+            -- THE LADDER THE HOST BUILT, so the creation form can show it
+            -- back to them once the lobby is open and they become its
+            -- editor. Nil where they took the mode's own shape, which the
+            -- panel reads the same way the server does: "every class on its
+            -- own default".
+            tierPlan = match.tierPlan,
             -- WHAT A WINNER IS ACTUALLY PLAYING FOR. GetPot is the entry
             -- pot alone; with betPayout.includeEntryPot on -- the shipped
             -- default -- the side-bets settle in the same pool, so a

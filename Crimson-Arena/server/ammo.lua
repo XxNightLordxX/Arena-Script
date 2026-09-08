@@ -2159,6 +2159,49 @@ function ArenaAmmo.StashOf(src)
     return record and record.stash or nil
 end
 
+--- Everything the arena is holding for one player, read out of their stash.
+---
+--- FOR AN ADMIN LOOKING AT A LIVE ROUND, and for nothing else: this is what
+--- /arenaadmin shows when somebody clicks a fighter. "Their kit is safe" is a
+--- claim this resource makes constantly and could not, until now, be asked to
+--- demonstrate -- the stash is real and openable, but only by someone who
+--- knows to go looking for it and what it is called.
+---
+--- READ-ONLY, AND IT MOVES NOTHING. It does not register the stash, does not
+--- take, does not hand back; a stash ox_inventory has forgotten reads empty
+--- here exactly as it would anywhere else, and the caller is told the count
+--- the record expects so the two can be compared on screen.
+--- @param src number
+--- @return table|nil held -- { stash, expected, items = { { name, count } } }
+function ArenaAmmo.HeldFor(src)
+    local record = stashed[src]
+    if type(record) ~= 'table' then return nil end
+
+    local out = {
+        stash = record.stash,
+        -- WHAT THE ARENA BELIEVES IT PUT IN. Shown beside what is actually
+        -- there, because those two disagreeing is the whole of the bug that
+        -- lost people their belongings -- and an admin staring at an empty
+        -- list needs to know whether that is normal.
+        expected = Arena.ToInt(record.stowedCount) or 0,
+        items = {},
+    }
+
+    local ox = inventory()
+    if not ox then return out end
+
+    local ok, items = pcall(function() return ox:GetInventoryItems(record.stash) end)
+    if not ok or type(items) ~= 'table' then return out end
+
+    for _, item in ipairs(itemsIn(items)) do
+        out.items[#out.items + 1] = {
+            name = item.name,
+            count = math.max(0, Arena.ToInt(item.count) or 0),
+        }
+    end
+    return out
+end
+
 -- ======================================================================
 -- THE RETRY
 --
@@ -2382,6 +2425,202 @@ function ArenaAmmo.Owed()
     local total = 0
     for _ in pairs(owed) do total = total + 1 end
     return total
+end
+
+--- HOW MANY STASHES ONE LOOK READS THE CONTENTS OF.
+---
+--- Finding the names is one cheap query; reading what is IN each one is an
+--- ox_inventory call apiece, and a server that has run arena matches for a
+--- year has a row for every character that ever fought. So the names are all
+--- fetched and the contents of the newest handful are read, and the screen is
+--- told how many it did not open rather than being handed a shorter list with
+--- no explanation.
+local STASH_SCAN_LIMIT = 60
+
+local warnedNoStashTable = false
+
+--- Every arena stash this server has ever made, whether or not this run
+--- remembers it.
+---
+--- WHY THIS GOES TO THE DATABASE. `owed` and `stashed` are in MEMORY. They
+--- are the right shape for a running server -- they survive a reconnect, the
+--- sweep works from them, and the exit writes them -- and they are gone the
+--- moment the resource restarts. The STASHES are not: they are real
+--- ox_inventory stashes with a real row, and a player whose belongings were
+--- outstanding when the server went down is a player nothing in this file can
+--- name afterwards. That is the exact case where somebody stays short for
+--- ever, and it was invisible.
+---
+--- BY NAME, because the name is the one thing this resource controls: every
+--- stash it makes is `stashPrefix .. citizenid`, so a LIKE on the prefix
+--- finds them all and nothing else.
+---
+--- DEGRADES RATHER THAN FAILS. No oxmysql, an unreachable database, an
+--- ox_inventory whose table is shaped differently -- any of those and this
+--- answers with what memory knows, which is what it could always answer with.
+--- The database is an enrichment here, never a dependency: this must not be
+--- the one screen that stops working on a drag-and-drop install.
+--- @param cb fun(rows: table[]) -- { citizenid, stash, items, remembered }
+--- @param scanned fun(total: integer, read: integer)? -- how many rows exist
+---        and how many had their contents read
+function ArenaAmmo.AllStashes(cb, scanned)
+    local prefix = doorConfig().stashPrefix
+    if not Arena.IsKey(prefix) then prefix = 'crimson_arena_' end
+
+    --- What this RUN knows, which is the floor rather than the answer.
+    local known = {}
+    for citizenid, stash in pairs(owed) do
+        known[stash] = { citizenid = citizenid, stash = stash, remembered = true }
+    end
+    for _, record in pairs(stashed) do
+        if type(record) == 'table' and Arena.IsKey(record.stash) then
+            known[record.stash] = known[record.stash]
+                or { citizenid = record.citizenid, stash = record.stash, remembered = true }
+        end
+    end
+
+    --- Reads the contents of each stash we are going to open, and answers.
+    local function finish(names, total)
+        local ox = inventory()
+        local rows = {}
+
+        for _, row in ipairs(names) do
+            local items = {}
+            if ox then
+                -- REGISTERED FIRST. ox_inventory forgets every stash it was
+                -- told about when it restarts, and a stash it does not know
+                -- about is not one it will read -- which is precisely the
+                -- state this whole function exists for.
+                pcall(function()
+                    return ox:RegisterStash(row.stash, 'Arena Belongings',
+                        STASH_SLOTS, STASH_WEIGHT, row.citizenid)
+                end)
+
+                local ok, held = pcall(function() return ox:GetInventoryItems(row.stash) end)
+                if ok and type(held) == 'table' then
+                    for _, item in ipairs(itemsIn(held)) do
+                        items[#items + 1] = {
+                            name = item.name,
+                            count = math.max(0, Arena.ToInt(item.count) or 0),
+                        }
+                    end
+                end
+            end
+
+            -- AN EMPTY STASH IS NOT HELD IN ESCROW. Every character who has
+            -- ever fought here has a row; almost all of them were emptied
+            -- back into their owner years ago, and listing those would bury
+            -- the handful that matter.
+            if #items > 0 then
+                rows[#rows + 1] = {
+                    citizenid = row.citizenid,
+                    stash = row.stash,
+                    items = items,
+                    remembered = row.remembered == true,
+                }
+            end
+        end
+
+        table.sort(rows, function(a, b) return a.citizenid < b.citizenid end)
+        if scanned then scanned(total, #names) end
+        cb(rows)
+    end
+
+    --- What memory alone can answer with, as a list.
+    local function fromMemory()
+        local names = {}
+        for _, row in pairs(known) do names[#names + 1] = row end
+        table.sort(names, function(a, b) return a.stash < b.stash end)
+        return names
+    end
+
+    if GetResourceState('oxmysql') ~= 'started' then
+        if not warnedNoStashTable then
+            warnedNoStashTable = true
+            ArenaLog('door: oxmysql is not started, so the admin tablet can only list the '
+                .. 'stashes THIS RUN knows about. A stash left outstanding by an earlier run '
+                .. 'is still a real stash and still holds its owner\'s things -- it simply '
+                .. 'cannot be found by name from here.')
+        end
+        local names = fromMemory()
+        return finish(names, #names)
+    end
+
+    local sent = pcall(function()
+        exports.oxmysql:query(
+            'SELECT name, owner FROM ox_inventory WHERE name LIKE ? ORDER BY lastupdated DESC',
+            { prefix .. '%' },
+            function(result)
+                if type(result) ~= 'table' then
+                    local names = fromMemory()
+                    return finish(names, #names)
+                end
+
+                local names = {}
+                for _, row in ipairs(result) do
+                    local stash = row.name
+                    if Arena.IsKey(stash) then
+                        local citizenid = Arena.IsKey(row.owner) and row.owner
+                            or stash:sub(#prefix + 1)
+                        local remembered = known[stash] ~= nil
+                        known[stash] = nil
+
+                        if #names < STASH_SCAN_LIMIT then
+                            names[#names + 1] = {
+                                citizenid = citizenid,
+                                stash = stash,
+                                remembered = remembered,
+                            }
+                        end
+                    end
+                end
+
+                -- ANYTHING MEMORY KNOWS THAT THE QUERY DID NOT RETURN goes on
+                -- the end rather than being dropped. A stash written this tick
+                -- may not be in the rows we just read, and the one thing this
+                -- screen must never do is fail to mention somebody who is
+                -- short.
+                for _, row in pairs(known) do names[#names + 1] = row end
+
+                finish(names, #result)
+            end)
+    end)
+
+    if not sent then
+        local names = fromMemory()
+        finish(names, #names)
+    end
+end
+
+
+--- Puts one stash on the list the sweep works from, so its owner is handed
+--- it the moment they are next seen.
+---
+--- THE ANSWER FOR SOMEBODY WHO IS NOT HERE. ArenaAmmo.ReturnLeftovers needs a
+--- live source to give items to, and an offline player has none -- so the
+--- only safe thing an admin can do for them is make sure the server tries the
+--- instant they come back. This is that.
+---
+--- IT CLOSES A REAL GAP RATHER THAN ADDING A CONVENIENCE. `owed` is in
+--- memory: a restart empties it, and the sweep only ever tries the people ON
+--- it. So a stash left outstanding when the server went down was invisible to
+--- the retry for ever after -- the items were safe in a real stash and
+--- nothing was ever going to hand them over. The admin tablet finds those
+--- stashes by name; this is what puts them back on the list.
+---
+--- MOVES NOTHING. No register, no read, no add, no remove: it writes one
+--- entry keyed by citizen id -- which is why it works for a player who is not
+--- on the server and will still work if they come back on a different id.
+--- @param citizenid any
+--- @param stash any
+--- @return boolean queued
+function ArenaAmmo.QueueReturn(citizenid, stash)
+    if not (Arena.IsKey(citizenid) and Arena.IsKey(stash)) then return false end
+
+    owed[citizenid] = stash
+    ArenaLog('door: %s\'s stash (%s) is queued -- it will be handed over the next time they are seen.',
+        tostring(citizenid), tostring(stash))
+    return true
 end
 
 CreateThread(function()

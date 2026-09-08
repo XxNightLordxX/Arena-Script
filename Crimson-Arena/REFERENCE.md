@@ -160,8 +160,8 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **73 spec files** covering the shared, server and client logic, run with `lua5.4`
-  against a fake-native harness, plus **16 panel suites** that load the real
+- **74 spec files** covering the shared, server and client logic, run with `lua5.4`
+  against a fake-native harness, plus **17 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
   rather than chosen answers, which is what found the self-damage hole in the
@@ -471,7 +471,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 15 functions
+#### `server/ammo.lua` — 18 functions
 
 | Function | What it does |
 |---|---|
@@ -479,6 +479,9 @@ listed; the source documents them where they are.
 | `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
 | `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies. |
 | `ArenaAmmo.GrantRounds(src, matchId, item, count)` | Hands a player rounds mid-round and books them on the ammunition ledger. |
+| `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
+| `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
+| `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.ReclaimAll(matchId, reasonKey)` | Reclaims the kit of every player in one match. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |
@@ -501,7 +504,7 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 29 functions
+#### `server/betting.lua` — 30 functions
 
 | Function | What it does |
 |---|---|
@@ -509,6 +512,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.Wallet(src)` | What one player holds in each of them, for the panel's own display. |
 | `ArenaBetting.IsRefundReason(reason)` | Whether a payout line is a stake coming back rather than money won. |
 | `ArenaBetting.IsEnabled()` | Whether betting is switched on at all. |
+| `ArenaBetting.StakeOf(matchId, src)` | What one player has staked on one match and not yet had back. |
 | `ArenaBetting.GetPot(matchId)` | What a match is holding right now. |
 | `ArenaBetting.GetStake(matchId, src)` | One player's share of the held pot -- 0 once it has been refunded or paid out, because at that point this match holds nothing of theirs. |
 | `ArenaBetting.TakeStake(src, matchId, amount, account)` | Takes a player's entry fee and holds it against `matchId`. |

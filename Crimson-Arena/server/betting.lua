@@ -619,6 +619,29 @@ function ArenaBetting.IsEnabled()
     return Config.Betting.enabled == true
 end
 
+--- What one player has staked on one match and not yet had back.
+---
+--- FOR AN ADMIN LOOKING AT A LIVE ROUND. "Their money is in escrow" is a
+--- claim this resource makes and could not be asked to demonstrate: the
+--- number lived in a local table with no reader, so the only way to see it
+--- was to end the round and watch what came back.
+---
+--- READ-ONLY, AND IT MOVES NOTHING. A settled stake answers 0 -- it has
+--- already been paid or refunded and is not held any more, which is the
+--- distinction an admin is actually asking about.
+--- @param matchId any
+--- @param src any
+--- @return integer amount
+--- @return string|nil account -- which pocket it came out of
+function ArenaBetting.StakeOf(matchId, src)
+    local id = serverId(src)
+    if not id or not Arena.IsKey(matchId) then return 0, nil end
+
+    local stake = stakesOf(matchId)[id]
+    if type(stake) ~= 'table' or stake.settled then return 0, nil end
+    return math.max(0, Arena.ToInt(stake.amount) or 0), stake.account
+end
+
 --- What a match is holding right now. Refunded and settled stakes are gone
 --- from it, which is what gives `Clear`'s check something real to test.
 --- @param matchId string

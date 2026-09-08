@@ -138,6 +138,21 @@
                     <p id="create-round-hint" class="hint"></p>
                 </div>
 
+                <!-- THE LADDER, for a gun game only. One row per weapon
+                     class -- melee, sidearms, and up -- with a dropdown for
+                     how many rungs of it the climb has.
+
+                     Hidden for every other mode, because there is no ladder
+                     to shape, and hidden on a server whose mode declares no
+                     classes. Built by the panel rather than written out
+                     here: the classes are the operator's, and how many there
+                     are is their business. -->
+                <div id="create-tiers-row" class="field">
+                    <span class="field-label">Weapon Tiers</span>
+                    <div id="create-tiers"></div>
+                    <p id="create-tiers-hint" class="hint"></p>
+                </div>
+
                 <!-- THE RADAR, here beside Lives Each rather than in the
                      lobby, because it is the same kind of thing: a rule of
                      the match that the host sets once and everybody in it
@@ -319,6 +334,60 @@
 <div id="arena-countdown" class="hidden">
     <div id="countdown-value"></div>
     <div id="countdown-label"></div>
+</div>
+
+<!-- THE ADMIN TABLET, opened by /arenaadmin and by nothing else.
+
+     ITS OWN SCREEN RATHER THAN A TAB OF THE PANEL. The panel is what a
+     PLAYER uses; this is what somebody watching the server uses. Bolting it
+     on as a tab would put admin controls in every player's panel and rely on
+     the panel to hide them, which is the shape of gate this resource does
+     not use: the server refuses what the panel merely does not draw. Every
+     action behind these buttons re-checks ArenaIsAdmin on arrival. -->
+<div id="arena-admin" class="hidden">
+    <header id="admin-head">
+        <h1 id="admin-title">Arena Control</h1>
+        <button id="admin-close" type="button">Close</button>
+    </header>
+
+    <!-- THE LIST. Live matches and nothing else -- this screen is not a
+         second lobby browser. -->
+    <section id="admin-list">
+        <p id="admin-empty" class="hint hidden">No matches are running.</p>
+        <div id="admin-matches"></div>
+    </section>
+
+    <!-- ONE MATCH, opened by clicking it. -->
+    <section id="admin-detail" class="hidden">
+        <button id="admin-back" type="button">Back to matches</button>
+        <h2 id="admin-detail-title"></h2>
+        <p id="admin-detail-line" class="hint"></p>
+        <button id="admin-stop" type="button">Stop this match</button>
+        <div id="admin-players"></div>
+    </section>
+
+    <!-- WHAT NEVER MADE IT BACK. Somebody whose belongings are still in a
+         stash because a return failed and the sweep has not been able to
+         finish -- usually because they have not been on the server since.
+         Empty on a healthy server, which is the point: a row here is
+         somebody who is short. -->
+    <section id="admin-owed-row" class="hidden">
+        <h3>Not handed back yet</h3>
+        <p id="admin-owed-line" class="hint"></p>
+        <div id="admin-owed"></div>
+    </section>
+
+    <!-- ONE FIGHTER, opened by clicking them: what the arena is holding for
+         them, and the one control that acts on them. -->
+    <section id="admin-player" class="hidden">
+        <button id="admin-player-back" type="button">Back to the match</button>
+        <h2 id="admin-player-title"></h2>
+        <p id="admin-player-line" class="hint"></p>
+        <button id="admin-revive" type="button">Revive</button>
+        <h3>Held by the arena</h3>
+        <p id="admin-escrow-line" class="hint"></p>
+        <div id="admin-escrow"></div>
+    </section>
 </div>
 
 <script src="app.js"></script>

@@ -437,7 +437,7 @@ t.test('the surface this file fuzzes is the whole surface, not just net events',
         counts[point.kind] = counts[point.kind] + 1
     end
 
-    t.equals(counts.net, 17, 'the number of client events changed -- update this file with it')
+    t.equals(counts.net, 21, 'the number of client events changed -- update this file with it')
     t.isTrue(counts.callback >= 1, 'the ox_lib callback surface vanished')
     t.isTrue(counts.handler >= 8,
         ('only %d AddEventHandler entry points found'):format(counts.handler))
@@ -449,6 +449,13 @@ t.test('the surface this file fuzzes is the whole surface, not just net events',
     for _, required in ipairs({
         'crimson_arena:server:getState', 'weaponDamageEvent',
         'explosionEvent', 'playerDropped',
+        -- THE ADMIN TABLET. Named rather than left to the count, because
+        -- these four are the ones that STOP matches, revive people and empty
+        -- stashes -- the highest-value things on the wire, and the ones an
+        -- attacker reaches by firing the event rather than by running the
+        -- command that draws the screen.
+        'crimson_arena:server:adminState', 'crimson_arena:server:adminStop',
+        'crimson_arena:server:adminRevive', 'crimson_arena:server:adminReturn',
     }) do
         t.isTrue(byName[required] == true, ('%s is no longer being fuzzed'):format(required))
     end

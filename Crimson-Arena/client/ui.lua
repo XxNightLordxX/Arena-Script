@@ -94,6 +94,44 @@ function ArenaUI.Open()
     SetNuiFocus(true, true)
 end
 
+--- THE ADMIN TABLET, opened by /arenaadmin.
+---
+--- ITS OWN SCREEN, NOT A TAB. The panel is what a PLAYER uses -- matches to
+--- join, a loadout to pick, bets to place -- and the tablet is what somebody
+--- watching the server uses. Bolting it on as a tab would put an admin
+--- control in every player's panel and rely on the panel to hide it, which is
+--- exactly the shape of gate this resource does not use: the server refuses
+--- what the panel merely does not draw.
+---
+--- ONE FOCUS, SHARED. SetNuiFocus is global state with no stack, so the
+--- tablet closes the panel rather than layering on top of it -- see the note
+--- at the top of this file.
+local adminOpen = false
+
+--- @param payload table -- the first snapshot, so the screen has something
+---        to draw before its own refresh comes back
+local function openAdmin(payload)
+    -- The panel and the tablet cannot both hold focus, and the panel is the
+    -- one that has to give way: an admin typed a command to get here.
+    ArenaUI.Close()
+
+    adminOpen = true
+    ArenaUI.Send('adminOpen', payload)
+    SetNuiFocus(true, true)
+end
+
+RegisterNetEvent('crimson_arena:client:openAdmin', function(payload)
+    openAdmin(type(payload) == 'table' and payload or { matches = {} })
+end)
+
+--- The server's answer to a refresh, a stop or a revive. Dropped when the
+--- tablet is not open: a push that arrives after the screen was closed would
+--- otherwise draw over whatever the player is looking at now.
+RegisterNetEvent('crimson_arena:client:adminState', function(payload)
+    if not adminOpen then return end
+    ArenaUI.Send('adminState', type(payload) == 'table' and payload or {})
+end)
+
 --- Safe to call when already closed; the release is unconditional because
 --- releasing focus we do not hold costs nothing and failing to release
 --- focus we do hold costs the player their character.
@@ -210,6 +248,7 @@ register('createMatch', function(data)
         roundTimeSeconds = data.roundTimeSeconds,
         winCondition = data.winCondition,
         scoreLimit = data.scoreLimit,
+        tierPlan = data.tierPlan,
         radar = data.radar,
         account = data.account,
     })
@@ -236,6 +275,7 @@ register('updateMatch', function(data)
         roundTimeSeconds = data.roundTimeSeconds,
         winCondition = data.winCondition,
         scoreLimit = data.scoreLimit,
+        tierPlan = data.tierPlan,
         radar = data.radar,
     })
 end)
@@ -318,6 +358,37 @@ register('spectatorBet', function(data)
         pick = data.pick,
         amount = data.amount,
         account = data.account,
+    })
+end)
+
+register('adminClose', function()
+    adminOpen = false
+    ArenaUI.Send('adminClose')
+    SetNuiFocus(false, false)
+end)
+
+register('adminState', function(data)
+    TriggerServerEvent('crimson_arena:server:adminState', { matchId = data.matchId })
+end)
+
+register('adminStop', function(data)
+    TriggerServerEvent('crimson_arena:server:adminStop', { matchId = data.matchId })
+end)
+
+register('adminRevive', function(data)
+    TriggerServerEvent('crimson_arena:server:adminRevive', { target = data.target })
+end)
+
+register('adminReturn', function(data)
+    TriggerServerEvent('crimson_arena:server:adminReturn', {
+        -- ALL THREE. `target` is a live source and is what hands items over
+        -- now; the other two are how the same button queues a return for
+        -- somebody who is not on the server, where there is no source to give
+        -- anything to.
+        target = data.target,
+        citizenid = data.citizenid,
+        stash = data.stash,
+        matchId = data.matchId,
     })
 end)
 

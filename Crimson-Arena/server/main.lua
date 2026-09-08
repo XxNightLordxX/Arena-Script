@@ -50,6 +50,10 @@ local RATE = {
     -- A line in the console and nothing else, sent only when what it says
     -- changes. Tight, because nothing is waiting on it.
     diag = 1000,
+    -- THE ADMIN TABLET. Loose, because an operator watching a live round
+    -- refreshes it deliberately and every handler behind it re-checks
+    -- ArenaIsAdmin -- the rate limit is a flood guard, not the gate.
+    admin = 500,
 }
 
 -- ======================================================================
@@ -682,12 +686,270 @@ RegisterCommand('arenahours', function(src)
     end
 end, false)
 
+-- ======================================================================
+-- THE ADMIN TABLET
+--
+-- /arenaadmin with no arguments opens a small screen listing the live
+-- matches: click a match to see who is in it and stop it, click a fighter to
+-- see what the arena is holding for them and put them back on their feet.
+--
+-- EVERY HANDLER RE-CHECKS ArenaIsAdmin, and that is not belt and braces. The
+-- command is what OPENS the screen; it is not authorisation for anything the
+-- screen does. A client can fire these events without ever having run the
+-- command -- that is what a client is -- so the gate has to be on the action.
+--
+-- READ-ONLY EXCEPT FOR TWO THINGS, both of which already existed as admin
+-- powers: stopping a match (ArenaMatch.Abort, which refunds everybody) and
+-- reviving a fighter (the same call the respawn path makes). The escrow view
+-- moves nothing at all.
+-- ======================================================================
+
+--- One row per live match, with what an admin needs to pick between them.
+--- @return table[]
+local function adminMatches()
+    local rows = {}
+    for _, match in ipairs(ArenaLobby.All()) do
+        rows[#rows + 1] = {
+            id = match.id,
+            label = match.label,
+            arenaKey = match.arenaKey,
+            modeKey = match.modeKey,
+            state = match.state,
+            hostName = match.hostName,
+            players = ArenaLobby.PlayerCount(match),
+            pot = ArenaBetting.GetPot(match.id),
+        }
+    end
+    return rows
+end
+
+--- Who is in one match, and what the arena is holding for each of them.
+---
+--- THE ESCROW IS THE POINT OF THIS SCREEN. "Their kit is safe" and "their
+--- stake is held" are claims this resource makes constantly and could not be
+--- asked to demonstrate: both lived in local tables with no reader, so the
+--- only way to see either was to end the round and watch what came back.
+--- @param matchId string
+--- @return table|nil
+local function adminMatch(matchId)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return nil end
+
+    local rows = {}
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        local held = ArenaAmmo.HeldFor(player.src)
+        local staked, account = ArenaBetting.StakeOf(match.id, player.src)
+
+        rows[#rows + 1] = {
+            src = player.src,
+            name = player.name,
+            team = player.team,
+            alive = player.alive == true,
+            kills = Arena.ToInt(player.kills) or 0,
+            deaths = Arena.ToInt(player.deaths) or 0,
+            lives = Arena.ToInt(player.lives) or 0,
+            -- WHAT IS ACTUALLY IN THE STASH, beside what the arena BELIEVES
+            -- it put there. Those two disagreeing is the whole of the bug
+            -- that lost people their belongings, and an admin staring at an
+            -- empty list needs to know whether that is normal.
+            escrow = held and held.items or {},
+            escrowStash = held and held.stash or nil,
+            escrowExpected = held and held.expected or 0,
+            staked = staked,
+            stakedFrom = account,
+        }
+    end
+
+    return {
+        id = match.id,
+        label = match.label,
+        state = match.state,
+        pot = ArenaBetting.GetPot(match.id),
+        players = rows,
+    }
+end
+
+--- Stamps each outstanding stash with the SERVER ID of whoever it belongs
+--- to, when they are on the server.
+---
+--- ArenaAmmo keys `owed` by citizen id, deliberately: a server id is whoever
+--- holds it now, and the whole reason that table survives a reconnect is that
+--- it does not use one. But the hand-back needs a live source to give items
+--- to, so the two are matched up here rather than inside ammo.lua -- and the
+--- absence of one is a real answer the screen shows ("not on the server")
+--- rather than a row it hides.
+--- @param rows table[]
+--- @return table[]
+local function withHolders(rows)
+    local byCitizen = {}
+    for _, id in ipairs(GetPlayers() or {}) do
+        local target = Arena.ToInt(id)
+        local player = target and ArenaGetPlayer(target) or nil
+        local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
+        if Arena.IsKey(citizenid) then byCitizen[citizenid] = target end
+    end
+
+    for _, row in ipairs(rows) do
+        row.src = byCitizen[row.citizenid]
+    end
+    return rows
+end
+
+--- @param src number
+--- @param matchId string|nil -- the match the tablet has open, if any
+local function pushAdmin(src, matchId)
+    -- ASYNCHRONOUS, because the stash list is a database read. Everything
+    -- else on this screen is in memory and instant; the one thing that is not
+    -- is also the one thing that has to outlive a restart, so the push waits
+    -- for it rather than sending a screen with a hole in it and filling the
+    -- hole later.
+    local matches = adminMatches()
+    local focused = Arena.IsKey(matchId) and adminMatch(matchId) or nil
+
+    local total, read = 0, 0
+    ArenaAmmo.AllStashes(function(rows)
+        TriggerClientEvent('crimson_arena:client:adminState', src, {
+            matches = matches,
+            focused = focused,
+            owed = withHolders(rows),
+            -- HOW MANY ROWS EXIST AND HOW MANY WERE OPENED. An admin looking
+            -- at four stashes needs to know whether that is all of them or
+            -- the first four of nine hundred.
+            stashesFound = total,
+            stashesRead = read,
+        })
+    end, function(found, opened) total, read = found, opened end)
+end
+
+
+onClient('crimson_arena:server:adminState', RATE.admin, function(src, data)
+    if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
+    local payload = tableArg(data) or {}
+    pushAdmin(src, keyArg(payload.matchId))
+end)
+
+onClient('crimson_arena:server:adminStop', RATE.admin, function(src, data)
+    if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
+
+    local payload = tableArg(data)
+    local matchId = payload and keyArg(payload.matchId)
+    if not matchId or not ArenaLobby.Get(matchId) then
+        return refuse(src, 'error.match_not_found')
+    end
+
+    -- Abort, not Destroy: the admin path refunds everybody whatever state the
+    -- match is in, and a live round needs unwinding first. The same call the
+    -- text command makes.
+    ArenaMatch.Abort(matchId, 'notify.match_stopped_by_admin')
+    ArenaLog('%s stopped match %s from the admin tablet', ArenaPlayerName(src), matchId)
+
+    -- The match this admin was looking at no longer exists, so the tablet is
+    -- sent back to the list rather than to a detail screen for a dead id.
+    pushAdmin(src, nil)
+end)
+
+onClient('crimson_arena:server:adminReturn', RATE.admin, function(src, data)
+    if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
+
+    local payload = tableArg(data)
+    if not payload then return refuse(src, 'error.invalid_request') end
+
+    local target = intArg(payload.target)
+
+    -- ONLINE: HAND IT OVER NOW.
+    --
+    -- The same call the sweep makes, and deliberately not a shortcut around
+    -- it. ReturnLeftovers refuses somebody who is mid-match, works out their
+    -- citizen id itself, and hands back only what is actually in their stash
+    -- -- so an admin pressing this cannot conjure items, cannot reach into
+    -- somebody else's stash, and cannot empty one into a player who is
+    -- standing in a live round.
+    if target and target > 0 then
+        local ok, returned = ArenaAmmo.ReturnLeftovers(target)
+        ArenaLog('%s handed %s %d item(s) back from the admin tablet (%s)',
+            ArenaPlayerName(src), ArenaPlayerName(target), returned or 0,
+            ok and 'complete' or 'still outstanding')
+
+        return pushAdmin(src, keyArg(payload.matchId))
+    end
+
+    -- OFFLINE: QUEUE IT, so the server hands it over the moment they are next
+    -- seen.
+    --
+    -- There is no live inventory to put items into for somebody who is not
+    -- here, so this is the only safe thing an admin can do for them -- and it
+    -- is not a consolation prize, it closes a real gap. `owed` is in MEMORY:
+    -- a restart empties it and the sweep only ever tries the people on it, so
+    -- a stash left outstanding when the server went down was invisible to the
+    -- retry for ever after. The items were safe in a real stash and nothing
+    -- was ever going to hand them over. This puts it back on the list.
+    local citizenid = keyArg(payload.citizenid)
+    local stash = keyArg(payload.stash)
+    if not (citizenid and stash) then return refuse(src, 'error.invalid_request') end
+
+    if not ArenaAmmo.QueueReturn(citizenid, stash) then
+        return refuse(src, 'error.invalid_request')
+    end
+
+    ArenaLog('%s queued %s\'s stash (%s) from the admin tablet -- it goes back the next time they are seen.',
+        ArenaPlayerName(src), citizenid, stash)
+    ArenaNotifyKey(src, 'notify.return_queued', 'success', citizenid)
+
+    pushAdmin(src, keyArg(payload.matchId))
+end)
+
+onClient('crimson_arena:server:adminRevive', RATE.admin, function(src, data)
+    if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
+
+    local payload = tableArg(data)
+    local target = payload and intArg(payload.target)
+    if not target or target <= 0 then return refuse(src, 'error.invalid_request') end
+
+    -- IN A MATCH, AND THIS ADMIN'S OWN VIEW OF IT. Reviving somebody who is
+    -- not in a round is not this screen's business -- there is a /arenarevive
+    -- for that -- and taking the id straight off the wire would make this a
+    -- revive-anybody button dressed as an arena tool.
+    local match = ArenaLobby.GetByPlayer(target)
+    if not match then return refuse(src, 'error.not_in_match') end
+
+    local row = match.players[target]
+    if row then row.alive = true end
+    ArenaDispatch.Revive(target)
+    ArenaLog('%s revived %s from the admin tablet', ArenaPlayerName(src), ArenaPlayerName(target))
+
+    pushAdmin(src, match.id)
+end)
+
 RegisterCommand('arenaadmin', function(src, args)
     if not ArenaIsAdmin(src) then
         return refuse(src, 'error.no_permission')
     end
 
-    local action = keyArg(args[1]) or 'list'
+    local action = keyArg(args[1]) or (src == 0 and 'list' or 'tablet')
+
+    -- NO ARGUMENTS, FROM A PLAYER, OPENS THE SCREEN. The console has no NUI
+    -- to open one in, so it keeps the list it always had -- which is also why
+    -- `tablet` is only the default for a real player rather than for
+    -- everybody.
+    if action == 'tablet' then
+        if src == 0 then return tell(src, locale('cmd.usage')) end
+        -- THE SAME READ THE REFRESH DOES, rather than a lighter first
+        -- payload: the stash list is the half of this screen an operator
+        -- opened it for, and a first draw without it would show "nothing
+        -- outstanding" to somebody whose whole reason for looking is that
+        -- somebody is short.
+        local opening = adminMatches()
+        local total, read = 0, 0
+        ArenaAmmo.AllStashes(function(rows)
+            TriggerClientEvent('crimson_arena:client:openAdmin', src, {
+                matches = opening,
+                owed = withHolders(rows),
+                stashesFound = total,
+                stashesRead = read,
+            })
+        end, function(found, opened) total, read = found, opened end)
+        return
+    end
 
     if action == 'list' then
         local all = ArenaLobby.All()

@@ -91,6 +91,7 @@
         "unknown_player": "Unknown"
     },
     "notify": {
+        "return_queued": "%s's belongings are queued -- they go back the next time they are seen.",
         "bet_trimmed": "Out of the fight, so your bet is cut to what a watcher may hold. %s back.",
         "eliminated": "You are out.",
         "fighter_dropped": "%s dropped out of the fight.",

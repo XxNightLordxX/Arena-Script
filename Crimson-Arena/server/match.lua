@@ -2110,6 +2110,36 @@ end
 --- @param matchId string
 --- @param requestedBy integer? -- nil is the server itself, and is never refused
 --- @return boolean ok
+--- Whether this arena has nobody else already fighting in it.
+---
+--- ONE COPY, ASKED TWICE. This lives here rather than inside Begin because
+--- Begin is not the last word: the countdown that follows it runs for
+--- `lobbyCountdownSeconds` and ArenaMatch.Start is what actually puts people
+--- on the ground. Two lobbies on the same arena whose hosts press Start in
+--- the same second both pass this in Begin -- neither is `live` or in
+--- `countdown` yet -- and then both go live on the same piece of map, which
+--- is the thing this guard exists to prevent. The opening hours are re-asked
+--- at that second for exactly the same reason and this was not.
+---
+--- SKIPPED WHERE MATCHES ARE INSTANCED. With a routing bucket the two rounds
+--- cannot see each other and sharing the ground costs nothing.
+--- @param match table
+--- @return boolean free
+local function arenaIsFree(match)
+    if ArenaDispatch.GetBucket(match.id) ~= nil then return true end
+
+    for _, other in ipairs(ArenaLobby.All()) do
+        if other.id ~= match.id and other.arenaKey == match.arenaKey
+            and (other.state == 'live' or other.state == 'countdown')
+        then
+            ArenaLog('MATCH REFUSED: %s cannot start in arena "%s" while match %s is being fought there -- this server is not instancing matches, so they would share the ground.',
+                tostring(match.id), tostring(match.arenaKey), tostring(other.id))
+            return false
+        end
+    end
+    return true
+end
+
 --- @return string|nil reasonKey
 function ArenaMatch.Begin(matchId, requestedBy)
     local match = ArenaLobby.Get(matchId)
@@ -2168,17 +2198,7 @@ function ArenaMatch.Begin(matchId, requestedBy)
     -- actually in force. Asked of ArenaDispatch rather than of the config,
     -- because the config is what an operator INTENDED and this is about what
     -- the server is really doing.
-    if ArenaDispatch.GetBucket(matchId) == nil then
-        for _, other in ipairs(ArenaLobby.All()) do
-            if other.id ~= matchId and other.arenaKey == match.arenaKey
-                and (other.state == 'live' or other.state == 'countdown')
-            then
-                ArenaLog('MATCH REFUSED: %s cannot start in arena "%s" while match %s is being fought there -- this server is not instancing matches, so they would share the ground.',
-                    tostring(matchId), tostring(match.arenaKey), tostring(other.id))
-                return false, 'error.arena_in_use'
-            end
-        end
-    end
+    if not arenaIsFree(match) then return false, 'error.arena_in_use' end
 
     local countdown = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
     match.state = 'countdown'
@@ -2248,7 +2268,29 @@ function ArenaMatch.Begin(matchId, requestedBy)
             return
         end
 
-        ArenaMatch.Start(matchId)
+        -- AND THE ROOM IS TOLD WHEN IT DOES NOT START.
+        --
+        -- This call used to throw the refusal away. Everything below
+        -- ArenaMatch.Start's guard is careful about it -- the lobby is put
+        -- back to `waiting`, nobody is moved, the state is broadcast -- and
+        -- then the one thing that would explain it was dropped on the floor.
+        -- So the countdown ran to zero, the numbers stopped, and every
+        -- fighter stood in the lobby with no word of any kind. The arena
+        -- being taken by another round, somebody without a side, the doors
+        -- shutting inside the last few seconds and a roster that dropped
+        -- below the minimum are all live paths to it.
+        --
+        -- The HOST asked for this round, so they get it as a refusal;
+        -- everybody else gets it as a warning, because it is news rather
+        -- than an answer.
+        local started, refusal = ArenaMatch.Start(matchId)
+        if not started and Arena.IsKey(refusal) then
+            local failed = ArenaLobby.Get(matchId)
+            for _, player in ipairs(failed and ArenaLobby.PlayerArray(failed) or {}) do
+                ArenaNotifyKey(player.src, refusal,
+                    player.src == (failed and failed.hostSource) and 'error' or 'warning')
+            end
+        end
     end)
 
     return true, nil
@@ -2288,11 +2330,37 @@ function ArenaMatch.Start(matchId)
         ok, reason = false, 'error.arena_shut'
     end
 
+    -- AND THE GROUND IS RE-ASKED FOR, on the same reasoning as the hours
+    -- above it. Begin checked this before the countdown; the countdown is
+    -- seconds long and another lobby can have taken the arena inside it --
+    -- two hosts pressing Start in the same second both passed Begin, because
+    -- neither round was live yet.
+    if ok and not arenaIsFree(match) then
+        ok, reason = false, 'error.arena_in_use'
+    end
+
     if not ok then
         -- Nobody has been moved yet, so the lobby simply goes back to
         -- waiting.
         match.state = 'lobby'
         match.startsAt = nil
+
+        -- AND EVERY READY IS TAKEN BACK, or the lobby is stuck.
+        --
+        -- A round only starts two ways: the host presses Start, or the last
+        -- person readies up and ArenaLobby.SetReady begins it. So a lobby
+        -- where EVERYBODY is already ready has no way to retry -- there is
+        -- no last person left to ready up. Every row reads Ready, every
+        -- button offers to take a ready BACK, the clock is gone, and on the
+        -- shipped `onlyHostCanStart` a fighter who is not the host has
+        -- nothing on screen to press at all.
+        --
+        -- Clearing them puts the room back where it was a moment before the
+        -- countdown, which is the state the retry is built for: the next
+        -- person to ready up starts it. It costs one button press each, and
+        -- the alternative is a lobby that looks ready for ever.
+        for _, player in pairs(match.players) do player.ready = false end
+
         ArenaLobby.Broadcast()
         return false, reason
     end
@@ -2394,6 +2462,18 @@ function ArenaMatch.Start(matchId)
 
         sendEnterArena(match, player, index, arena, freeze)
     end
+
+    -- THE ROSTER IS ON THE GROUND, and this is the only record of it that
+    -- outlives the exit path.
+    --
+    -- `countdown` is two different states wearing one name: a lobby counting
+    -- down has nobody placed, and this -- the frozen countdown after
+    -- everybody has been teleported in -- is a round being fought that has
+    -- not been promoted to `live` yet. ArenaLobby.Leave has to tell them
+    -- apart, and it cannot ask the dispatch: RemovePlayer clears a leaver's
+    -- flag on the way past, several lines before Leave is called, so by then
+    -- the answer is always "not in the arena".
+    match.placed = true
 
     ArenaLobby.Broadcast()
 

@@ -230,12 +230,13 @@ t.test('and its function tables list the functions each file really defines', fu
         local documented, rows = {}, #section.rows
         for _, name in ipairs(section.rows) do documented[name] = true end
 
-        local defined, count = {}, 0
+        local defined, count, order = {}, 0, {}
         for line in read('../' .. path):gmatch('[^\n]+') do
             local name = line:match('^function ([%a_][%w_.]*)%(')
             if name then
                 defined[name] = true
                 count = count + 1
+                order[#order + 1] = name
             end
         end
 
@@ -250,6 +251,23 @@ t.test('and its function tables list the functions each file really defines', fu
             t.isTrue(documented[name] == true,
                 ('%s defines %s and REFERENCE.md never mentions it'):format(path, name))
         end
+        -- AND IN THE ORDER THE FILE DEFINES THEM, which REFERENCE.md says
+        -- of itself in as many words. The two checks above compare the rows
+        -- and the definitions as SETS, so the order was free to rot and did:
+        -- four of these tables had drifted out of it, one of them by
+        -- seventy-four rows, and nothing anywhere noticed. A reader
+        -- following the list down the file is the whole reason the order is
+        -- claimed at all.
+        for index, name in ipairs(order) do
+            if section.rows[index] ~= name then
+                t.equals(section.rows[index], name,
+                    ('%s row %d: REFERENCE.md lists %s where the file defines %s -- '
+                        .. 'the table is meant to be in definition order')
+                        :format(path, index, tostring(section.rows[index]), name))
+                break
+            end
+        end
+
         for name in pairs(documented) do
             t.isTrue(defined[name] == true,
                 ('REFERENCE.md lists %s under %s and the file does not define it')

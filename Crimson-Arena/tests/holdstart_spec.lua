@@ -39,7 +39,7 @@ local function newServer(wallets, mutate)
 
     local qbx = Sandbox.newQbxCore(players)
     local threads = Sandbox.newThreadRunner()
-    local netEvents, console = {}, {}
+    local netEvents, console, sent = {}, {}, {}
     -- Who has actually been teleported into the arena, which is a different
     -- question to what the match calls its own state.
     local inArena = {}
@@ -52,7 +52,13 @@ local function newServer(wallets, mutate)
         Wait = threads.Wait,
         SetTimeout = threads.SetTimeout,
         print = function(line) console[#console + 1] = line end,
-        TriggerClientEvent = function() end,
+        -- CAPTURED, not swallowed. What the room is TOLD when a countdown
+        -- ends in nothing is the whole of the last test in this file, and a
+        -- stub that drops every client event answers "nothing was said" no
+        -- matter what the server did.
+        TriggerClientEvent = function(event, target, payload)
+            sent[#sent + 1] = { event = event, target = target, payload = payload }
+        end,
         TriggerEvent = function() end,
         RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
         -- Nothing here drives a disconnect, so the handlers are taken and
@@ -109,7 +115,47 @@ local function newServer(wallets, mutate)
     end
 
     local server = { env = env, qbx = qbx, config = env.Config,
-        betting = env.ArenaBetting, lobby = env.ArenaLobby }
+        betting = env.ArenaBetting, lobby = env.ArenaLobby, match = env.ArenaMatch }
+
+    --- The SENTENCES notified to one player, oldest first.
+    ---
+    --- Rendered, not keys, and the docstring said the opposite for a while.
+    --- This fixture loads the real locales/en.json and ArenaNotifyKey renders
+    --- before it sends, so what reaches the wire is finished text. Use
+    --- `server.wasTold` below rather than this: it renders the key it is
+    --- given and compares like with like. An assertion written against a raw
+    --- key here would never match, and would be a test of nothing.
+    --- @param src integer
+    --- @return string[]
+    function server.notices(src)
+        local out = {}
+        for _, message in ipairs(sent) do
+            if message.target == src and tostring(message.event):find('notify', 1, true) then
+                out[#out + 1] = tostring(type(message.payload) == 'table'
+                    and (message.payload.description or message.payload.key)
+                    or message.payload)
+            end
+        end
+        return out
+    end
+
+    --- Whether `src` was told the thing `key` names, at any point.
+    ---
+    --- RENDERED, because this fixture loads the real locale file and
+    --- ArenaNotifyKey renders before it sends -- so what arrives on the wire
+    --- is the sentence. Compared against locale(key) rather than against a
+    --- sentence typed into the test, so rewording en.json does not
+    --- quietly turn these into tests of nothing.
+    --- @param src integer
+    --- @param key string
+    --- @return boolean
+    function server.wasTold(src, key)
+        local wanted = env.locale(key)
+        for _, said in ipairs(server.notices(src)) do
+            if said == wanted then return true end
+        end
+        return false
+    end
 
     function server.fire(event, src, data)
         local handler = netEvents['crimson_arena:server:' .. event]
@@ -331,6 +377,150 @@ t.test('nor may it be stopped once the room is standing in the arena', function(
     t.isFalse(ok, 'a start was held after the room was already standing in the arena')
     t.equals(reason, 'error.match_in_progress')
     t.isNotNil(matchId)
+end)
+
+-- ======================================================================
+-- AND A COUNTDOWN THAT ENDS IN NOTHING SAYS WHY
+-- ======================================================================
+--
+-- The same thread, one line further on. ArenaMatch.Start can refuse at the
+-- moment the countdown reaches zero -- the arena taken by another round,
+-- somebody without a side, the doors shutting inside the last few seconds,
+-- a roster that dropped under the minimum -- and everything around that
+-- refusal is careful: nobody is moved, the lobby goes back to `waiting`,
+-- the state is broadcast.
+--
+-- And then the reason was thrown away. `ArenaMatch.Start(matchId)` was
+-- called for its side effects and its two return values were dropped, so
+-- the numbers counted to zero, stopped, and the room stood in the lobby
+-- with no word of any kind about what had just happened.
+
+t.test('THE SILENCE: a start refused at zero left the room with no word', function()
+    local server, matchId = counting(0, lastSecond)
+
+    -- One step parks the thread in its final Wait, which is the window the
+    -- round is decided in.
+    server.step(1)
+    t.equals(server.lobby.Get(matchId).state, 'countdown',
+        'the countdown finished before the window opened, so this tests nothing')
+
+    -- The arena goes away underneath them. Any of Start's refusals would do;
+    -- this one needs no second match and no clock.
+    server.config.Arenas.trailerpark.enabled = false
+    server.step(4)
+
+    t.equals(server.lobby.Get(matchId).state, 'lobby',
+        'the round started on an arena that is no longer there')
+    t.isTrue(server.wasTold(1, 'error.arena_unavailable'),
+        'the host watched their countdown reach zero and was told nothing: '
+            .. table.concat(server.notices(1), ', '))
+    t.isTrue(server.wasTold(2, 'error.arena_unavailable'),
+        'the other fighter was told nothing either: '
+            .. table.concat(server.notices(2), ', '))
+end)
+
+t.test('and a countdown that DOES start says nothing, which is the control', function()
+    -- A fix that notified unconditionally would pass the test above and put
+    -- an error in front of every player at the start of every round.
+    local server, matchId = counting(0, lastSecond)
+
+    server.step(6)
+
+    t.isTrue(server.lobby.Get(matchId).state ~= 'lobby',
+        'the round never started, so this proves nothing about a good one')
+    t.isFalse(server.wasTold(1, 'error.arena_unavailable'),
+        'a round that started told the host it had been refused')
+    t.isFalse(server.wasTold(2, 'error.arena_unavailable'))
+end)
+
+t.test('and every ready is taken back, or the lobby can never try again', function()
+    -- A round starts two ways: the host presses Start, or the LAST person
+    -- readies up and SetReady begins it. So a lobby where everybody is
+    -- already ready has no way to retry -- there is no last person left.
+    --
+    -- Left alone, the refusal produced a room where every row read Ready,
+    -- every button offered to take a ready back, the clock was gone, and on
+    -- the shipped `onlyHostCanStart` a fighter who is not the host had
+    -- nothing on screen to press at all.
+    local server, matchId = counting(0, lastSecond)
+
+    -- READY, the way a full lobby that started itself would be. `counting`
+    -- begins the round directly, so nothing has set these.
+    for _, src in ipairs({ 1, 2 }) do server.lobby.Get(matchId).players[src].ready = true end
+
+    server.step(1)
+    t.equals(server.lobby.Get(matchId).state, 'countdown',
+        'the countdown finished before the window opened, so this tests nothing')
+    t.isTrue(server.lobby.Get(matchId).players[1].ready,
+        'nobody was ready to begin with, so this proves nothing')
+
+    server.config.Arenas.trailerpark.enabled = false
+    server.step(4)
+
+    local failed = server.lobby.Get(matchId)
+    t.equals(failed.state, 'lobby', 'the round started on an arena that is no longer there')
+    t.isFalse(failed.players[1].ready == true,
+        'the host was left marked ready with nothing that would ever act on it')
+    t.isFalse(failed.players[2].ready == true, 'and so was the other fighter')
+end)
+
+t.test('and a countdown that DOES start leaves them ready, which is the control',
+    function()
+        -- Clearing readiness on the way IN would take the roster apart at
+        -- the moment the round begins.
+        local server, matchId = counting(0, lastSecond)
+        for _, src in ipairs({ 1, 2 }) do server.lobby.Get(matchId).players[src].ready = true end
+
+        server.step(6)
+
+        local match = server.lobby.Get(matchId)
+        t.isTrue(match.state ~= 'lobby', 'the round never started, so this proves nothing')
+        t.isTrue(match.players[1].ready == true,
+            'a round that started took everybody\'s ready away')
+    end)
+
+t.test('THE DOUBLE BOOKING: a held countdown cannot take an arena back', function()
+    -- Begin asks whether the arena is free, and then the countdown runs.
+    -- ArenaMatch.Start accepts a lobby in `lobby` as readily as one in
+    -- `countdown` -- deliberately, so a held start can be pressed again --
+    -- and it did not re-ask for the ground.
+    --
+    -- So: one lobby counts down and is HELD, which frees the arena. A second
+    -- lobby takes it. The first host then presses Start Match Now, and both
+    -- rosters end up on the same piece of map. The opening hours are re-asked
+    -- at that exact moment for exactly this reason; the ground was not.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 },
+        [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 },
+        [4] = { cash = 50000, bank = 50000 },
+    }, slowLobby)
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local first = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = first })
+    t.isTrue((server.env.ArenaMatch.Begin(first, 1)), 'the first lobby would not begin')
+
+    -- HELD, which puts it back to `lobby` and lets go of the arena.
+    t.isTrue(server.lobby.HoldCountdown(1), 'the host could not hold their own countdown')
+
+    server.fire('createMatch', 3, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local second
+    for _, match in ipairs(server.lobby.All()) do
+        if match.id ~= first then second = match.id end
+    end
+    t.isNotNil(second, 'the second lobby never opened, so this tests nothing')
+    server.fire('joinMatch', 4, { matchId = second })
+    t.isTrue((server.env.ArenaMatch.Begin(second, 3)), 'the second lobby could not take the arena')
+    t.equals(server.lobby.Get(second).state, 'countdown', 'the second lobby is not counting down')
+
+    -- And now the first host presses Start Match Now.
+    local started, reason = server.env.ArenaMatch.Start(first)
+
+    t.isFalse(started == true,
+        'two rounds were put on the same arena at once -- they share the ground')
+    t.equals(reason, 'error.arena_in_use', 'and the host was not told why')
+    t.isFalse(server.placedAnyone(), 'somebody was teleported in anyway')
 end)
 
 os.exit(t.summary())

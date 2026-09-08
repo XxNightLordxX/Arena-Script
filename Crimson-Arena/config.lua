@@ -28,9 +28,9 @@
       1416  Permissions   Who may open a match, who may force-stop one
       1497  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      2069   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2572   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2582   Webhook       Optional: a Discord line per finished match
-     2619   Dispatch      Optional: keeping police and EMS out of the arena
+     2598   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2608   Webhook       Optional: a Discord line per finished match
+     2645   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -2200,6 +2200,32 @@ Config.Loadouts = {
         -- which is the list that keeps a payout from being destroyed on the
         -- way out. Those are two different questions and they were one
         -- setting, which is how cash ended up answered wrongly on both.
+        --
+        -- DO NOT PUT ANYTHING VALUABLE HERE. Read the paragraph above once
+        -- more if you are about to: an item named here stays in a fighter's
+        -- POCKETS for the whole round, and ox_inventory empties a dead
+        -- player's pockets onto the floor. They will die. It will drop. The
+        -- arena refuses to let anybody pick things up mid-round -- including
+        -- them, including their own -- so it stays there, and the round ends
+        -- around it.
+        --
+        -- A phone, a radio, a key: leave them OFF this list. Off it, they go
+        -- into the stash on the way in and come back at the exit, which is
+        -- the only place in a round that anything is actually safe.
+        --
+        -- What IS reasonable here is something the round may as well destroy
+        -- and nobody will miss -- and even then, the stash costs nothing.
+        --
+        -- Anything named here is at least spared the wholesale clear at the
+        -- exit, if it somehow survived to reach it. That is the one thing
+        -- this list protects against, and it is the smaller of the two ways
+        -- an item is lost.
+        --
+        -- ARENA ITEMS ARE IGNORED HERE. Name a weapon, an ammunition item or
+        -- a supply and the arena will not honour it -- it is stashed and
+        -- returned like anything else, and a line is written to the server
+        -- console saying so. Honouring it would let fighters walk out with
+        -- the kit they were issued, every round, for ever.
         neverStash = {},
 
         -- WHAT THE EXIT'S CLEAR MUST NOT DESTROY.

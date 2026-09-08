@@ -42,7 +42,7 @@ local function newServer()
         [2] = { citizenid = 'BBB22222', name = 'Rival', money = { cash = 50000, bank = 0 } },
     })
     local threads = Sandbox.newThreadRunner()
-    local sent, netEvents, handlers = {}, {}, {}
+    local sent, netEvents, handlers, recorded = {}, {}, {}, {}
     local dispatch = { cleared = {}, set = {}, bucketIn = {}, bucketOut = {}, flags = {} }
 
     local env = Sandbox.newArenaEnv({
@@ -77,6 +77,12 @@ local function newServer()
             GetLeaderboard = function(cb) cb({}) end,
             EnsureSchema = function() end,
             RecordMatch = function() end,
+            -- CAPTURED, not swallowed. Whether a fighter who vanished from
+            -- inside the frozen countdown wears a loss is a question about
+            -- this window, which is what this file is for -- and a stub that
+            -- dropped the call answered "nobody was recorded" whatever the
+            -- server did.
+            Record = function(row) recorded[#recorded + 1] = row end,
             Flush = function() end,
         },
         ArenaAmmo = {
@@ -167,6 +173,12 @@ local function newServer()
         end
         return hits
     end
+
+    --- Every leaderboard row written, in order.
+    function server.recorded() return recorded end
+
+    --- What one player is holding.
+    function server.cash(src) return qbx.players[src].money.cash end
 
     function server.countOf(list, value)
         local hits = 0
@@ -297,6 +309,61 @@ t.test('a player in no match at all is not sent an arena exit', function()
     local server = newServer()
     server.fire('leaveMatch', 2)
     t.equals(server.sentTo('exitArena', 2), 0)
+end)
+
+-- ======================================================================
+-- AND THE SAME WINDOW IS NOT A FREE LOOK AT THE ARENA
+-- ======================================================================
+--
+-- The other half of the same drift. `ArenaLobby.Leave` read `match.state`
+-- and nothing else, so for the whole frozen countdown -- roster teleported
+-- in, weapons handed out, standing on the ground -- it answered "this round
+-- has not started". Which meant closing the game inside those five seconds
+-- returned the entry fee in full, recorded no loss, and told the fighters
+-- standing there watching somebody vanish nothing at all.
+--
+-- One second later, the identical act forfeits the stake and writes a loss.
+-- The window is the length of Config.Match.startCountdownSeconds and it is
+-- the only moment in a round where quitting is free.
+
+t.test('THE FREE LOOK: dropping inside the frozen countdown is not a refund', function()
+    local server = newServer()
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 1000 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
+
+    local paid = server.cash(1)
+    t.equals(paid, 49000, 'the entry fee was never taken, so a refund cannot be seen')
+
+    t.isTrue((server.env.ArenaMatch.Start(matchId)), 'the round would not start')
+    t.equals(server.lobby.Get(matchId).state, 'countdown',
+        'the match is not in its frozen countdown, so this is testing a different window')
+    t.isTrue(server.env.ArenaDispatch.IsPlayerInArena(1),
+        'nobody was actually placed in the arena, so this window is not the one')
+
+    server.drop(1)
+
+    t.equals(server.cash(1), paid,
+        'the stake came back to somebody who was standing in the arena when they went')
+    t.equals(#server.recorded(), 0,
+        'a dropped connection was recorded as a loss, which is the rule for a QUIT')
+end)
+
+t.test('and dropping from the lobby BEFORE it starts still is one', function()
+    -- The control, and the rule the window was borrowing: nobody has been
+    -- moved, nothing has been fought, and the stake goes back.
+    local server = newServer()
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 1000 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
+
+    t.equals(server.lobby.Get(matchId).state, 'lobby', 'the match already started')
+    t.isFalse(server.env.ArenaDispatch.IsPlayerInArena(1), 'somebody is already in the arena')
+
+    server.drop(1)
+
+    t.equals(server.cash(1), 50000,
+        'a player who left a lobby nobody had fought in lost their entry fee')
 end)
 
 print('countdownexit_spec')

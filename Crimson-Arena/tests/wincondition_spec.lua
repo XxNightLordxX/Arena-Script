@@ -53,6 +53,7 @@ local function newServer(mutate)
     local qbx = Sandbox.newQbxCore(players)
     local threads = Sandbox.newThreadRunner()
     local netEvents, console, sent, posts, recorded = {}, {}, {}, {}, {}
+    local gameEvents = {}
     local clock = 0
 
 local env = Sandbox.newArenaEnv({
@@ -67,7 +68,11 @@ local env = Sandbox.newArenaEnv({
         end,
         TriggerEvent = function() end,
         RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
-        AddEventHandler = function() end,
+        -- CAPTURED, because playerDropped is registered here rather than as
+        -- a net event, and whether a crash is recorded the way a rage-quit
+        -- is is a rule this file is the home of. A stub that swallowed the
+        -- registration left that rule with no test at all.
+        AddEventHandler = function(name, fn) gameEvents[name] = fn end,
         RegisterCommand = function() end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         GetGameTimer = function() clock = clock + 60000 return clock end,
@@ -143,6 +148,46 @@ local env = Sandbox.newArenaEnv({
     --- One client event, from one player. Exposed so a test can drive a
     --- path server.play does not cover -- walking out, for one.
     server.fire = fire
+
+    --- One player's connection going away, through the same handler the
+    --- server really registers for it.
+    --- @param src integer
+    function server.drop(src)
+        local handler = gameEvents['playerDropped']
+        if not handler then error('nothing handles playerDropped', 2) end
+        env.source = src
+        handler()
+    end
+
+    --- How many snapshots have been pushed to one player.
+    ---
+    --- Counted rather than merely looked for, because a snapshot goes out
+    --- when a lobby opens -- so "is there one" is answered yes by a server
+    --- that has sent nothing since.
+    --- @param src integer
+    --- @return integer
+    function server.statePushes(src)
+        local seen = 0
+        for _, message in ipairs(sent) do
+            if message.target == src and message.event == 'crimson_arena:client:state' then
+                seen = seen + 1
+            end
+        end
+        return seen
+    end
+
+    --- The LAST snapshot pushed to one player, or nil where none was.
+    --- @param src integer
+    --- @return table|nil
+    function server.lastState(src)
+        local found
+        for _, message in ipairs(sent) do
+            if message.target == src and message.event == 'crimson_arena:client:state' then
+                found = message.payload
+            end
+        end
+        return found
+    end
 
     --- Opens a match with `count` fighters and starts it.
     --- @param count integer
@@ -743,6 +788,64 @@ t.test('and the kills and deaths they had already taken go with it', function()
     t.equals(row.earnings, 0, 'a leaver was credited with earnings')
 end)
 
+t.test('AND A CRASH IS NOT A QUIT: a dropped connection wears no loss', function()
+    -- THE TWO RULES DISAGREE ON PURPOSE, and server/lobby.lua says so where
+    -- it makes the call. The MONEY does not separate a quit from a crash --
+    -- charging only genuine disconnects would take the stake from the player
+    -- whose game died and hand it back to the one who quit on purpose. The
+    -- LEADERBOARD is the opposite call: a loss follows you for the life of
+    -- the server, and somebody whose game crashed should not wear one.
+    --
+    -- Untested until now, which is how a tidy-up that folded either rule
+    -- into the other would have gone unnoticed.
+    local server = newServer()
+    server.play(3)
+    server.kill(3, 1)       -- fighter 1 has a kill and is still standing
+
+    server.drop(1)
+
+    t.equals(#server.recorded(), 0,
+        'a fighter whose connection went away was given a loss on the board')
+end)
+
+t.test('and walking out of the SAME round still is one, which is the control',
+    function()
+        -- Side by side with the test above, because the two differ by one
+        -- boolean and a rule that recorded nobody would pass that one.
+        local server = newServer()
+        server.play(3)
+        server.kill(3, 1)
+
+        walkOut(server, 1)
+
+        local rows = server.recorded()
+        t.equals(#rows, 1, 'walking out recorded nothing, so the crash rule proves nothing')
+        t.isFalse(rows[1].won, 'walking out of a live round was recorded as a WIN')
+    end)
+
+t.test('and a drop from a LOBBY records nothing either, for the other reason',
+    function()
+        -- Not the crash rule: nobody is recorded for leaving a lobby at all,
+        -- however they go. Here so a reading of the test above as "drops are
+        -- never recorded" cannot be mistaken for the rule.
+        --
+        -- BUILT WITHOUT server.play, which starts the round. A fourth
+        -- argument would have been ignored and the match would have gone
+        -- live -- and a live round spares a dropped fighter for the OTHER
+        -- reason, so the test would have passed without touching a lobby.
+        local server = newServer()
+        local id = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash',
+            nil, nil, nil, nil)
+        t.isNotNil(id, 'no lobby was opened at all')
+        t.isTrue((server.lobby.Join(2, id, nil, 'cash')), 'nobody else could join it')
+        t.equals(server.lobby.Get(id).state, 'lobby',
+            'the match is not sitting in its lobby, so this is not testing one')
+
+        server.drop(1)
+
+        t.equals(#server.recorded(), 0, 'leaving a lobby was put on the board')
+    end)
+
 t.test('and a LOBBY is not a round, so leaving one records nothing', function()
     -- The same answer their stake gets on that path: handed back, nothing
     -- happened. A fix that recorded every departure would give a loss to
@@ -1265,5 +1368,124 @@ t.test('and the same server still refuses a free-for-all on it, which is the con
         t.isNil(ok, 'a clockless free-for-all on most kills opened anyway')
         t.equals(reason, 'error.win_condition_needs_clock', 'and the host was not told why')
     end)
+
+-- ======================================================================
+-- A REFUSED EDIT PUTS THE FORM BACK
+-- ======================================================================
+--
+-- The create/edit form is the second control in the panel that holds a
+-- DRAFT -- values that exist only in the browser until the server agrees.
+-- It seeds once per lobby id, on purpose: a broadcast lands on every join,
+-- ready, bet and match start anywhere on the server, and re-seeding on
+-- those would overwrite a host mid-edit.
+--
+-- Which leaves exactly one moment it MUST seed again. A refused "Apply
+-- changes" was only a red toast, so the form went on showing the rule the
+-- server had just turned down, over a lobby still fought under the old one,
+-- with the lobby card beside it disagreeing and nothing saying which was
+-- real. server/main.lua's own note beside the loadout picker states the
+-- rule this was breaking.
+
+t.test('THE SILENT DRAFT: a refused edit counts, and the snapshot goes back', function()
+    -- A server that offers the choice and has no clock to offer with it, so
+    -- picking most kills is refused for the reason this file is about.
+    local server = newServer(function(config)
+        config.Match.winCondition = { allowChoose = true, default = 'last_standing' }
+        config.Match.roundTimeSeconds = 0
+    end)
+
+    local id = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash',
+        nil, nil, nil, nil)
+    t.isNotNil(id, 'no lobby was opened, so there is nothing to edit')
+
+    local before, pushedBefore = server.lastState(1), server.statePushes(1)
+    t.equals(before and tonumber(before.player and before.player.editRefused) or 0, 0,
+        'the count started above zero, so a rise proves nothing')
+
+    server.fire('updateMatch', 1, { winCondition = 'most_kills' })
+
+    -- COUNTED, not merely present. A snapshot already exists from opening
+    -- the lobby, so `isNotNil` on the last one is satisfied whether the
+    -- refusal pushed anything or not -- it would report "a snapshot arrived"
+    -- over a server that sent nothing.
+    t.isTrue(server.statePushes(1) > pushedBefore,
+        'the refusal pushed no snapshot at all, so the form never hears about it')
+
+    local after = server.lastState(1)
+    t.equals(tonumber(after.player and after.player.editRefused), 1,
+        'a refused edit was not counted, so the form keeps the rule the server turned down')
+
+    -- AND AGAIN, because the production comments say a COUNT rather than a
+    -- flag, and nothing was checking the difference: a `= 1` would satisfy
+    -- every assertion above and then never move again, so the second refusal
+    -- in one lobby would leave the form holding the rejected rule.
+    server.fire('updateMatch', 1, { winCondition = 'most_kills' })
+    t.equals(tonumber(server.lastState(1).player.editRefused), 2,
+        'the second refusal did not move the count, so the form re-seeds only once')
+
+    -- AND THE MATCH IS UNTOUCHED, which is the other half: a refusal that
+    -- half-applied would be worse than one that said nothing.
+    t.equals(server.lobby.Get(id).winCondition, '',
+        'the refused rule was written onto the match anyway')
+end)
+
+t.test('and the count goes with them when their connection does', function()
+    -- A SERVER ID IS HANDED ON. Everything else keyed by source in this
+    -- resource is dropped on playerDropped and says so where it is dropped
+    -- -- the admin tablet's refresh ticket, the rate-limit history. This
+    -- count was the one that was not tested, and the cost of leaking it is
+    -- the next player to be given that id opening a form that re-seeds
+    -- itself on a refusal somebody else was told about.
+    local server = newServer(function(config)
+        config.Match.winCondition = { allowChoose = true, default = 'last_standing' }
+        config.Match.roundTimeSeconds = 0
+    end)
+
+    local id = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash',
+        nil, nil, nil, nil)
+    t.isNotNil(id, 'no lobby was opened, so there is nothing to refuse')
+
+    server.fire('updateMatch', 1, { winCondition = 'most_kills' })
+    t.equals(tonumber(server.lastState(1).player.editRefused), 1,
+        'the refusal was not counted, so this test has nothing to watch being dropped')
+
+    server.drop(1)
+
+    -- The same source, back on the server and in a lobby of their own.
+    local second = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash',
+        nil, nil, nil, nil)
+    t.isNotNil(second, 'the recycled source could not open a lobby')
+
+    t.equals(tonumber(server.lastState(1).player.editRefused) or 0, 0,
+        'the new player inherited a refusal count that was never theirs')
+end)
+
+t.test('and an edit the server ACCEPTS does not count as a refusal', function()
+    -- The control. A count that rose on every edit would re-seed the form
+    -- constantly and throw away whatever the host was typing next.
+    local server = newServer(function(config)
+        config.Match.winCondition = { allowChoose = true, default = 'last_standing' }
+        config.Match.roundTimeSeconds = 600
+    end)
+
+    local id = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash',
+        nil, nil, nil, nil)
+    t.isNotNil(id)
+
+    local pushedBefore = server.statePushes(1)
+    server.fire('updateMatch', 1, { winCondition = 'most_kills' })
+
+    -- A SNAPSHOT REALLY ARRIVED, so the zero below is read off a fresh one.
+    -- Reading it off a stale snapshot cannot tell "not counted" from "the
+    -- panel never heard anything at all".
+    t.isTrue(server.statePushes(1) > pushedBefore,
+        'an accepted edit broadcast nothing, so the panel still shows the old rule')
+
+    local after = server.lastState(1)
+    t.equals(tonumber(after.player and after.player.editRefused) or 0, 0,
+        'an accepted edit was counted as a refusal')
+    t.equals(server.lobby.Get(id).winCondition, 'most_kills',
+        'the accepted rule was not written onto the match')
+end)
 
 os.exit(t.summary())

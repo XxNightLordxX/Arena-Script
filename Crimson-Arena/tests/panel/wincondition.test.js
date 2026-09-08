@@ -51,6 +51,13 @@ function snapshot(choice, modeKey, seat) {
         id: 'm1', arenaKey: 'a', arenaLabel: 'Arena',
         modeKey: mode, modeLabel: 'Mode', state: 'lobby',
         playerCount: 1, hostName: 'John Allday', players: [], teams: [],
+        /* THE RULE THE SERVER RESOLVED ONTO THIS MATCH. It is always on the
+           wire (server/lobby.lua sends Arena.WinConditionFor), and the form
+           seeds itself from it -- so a fixture without it made every seeding
+           test fall back to whatever was already in `state`, which is the
+           thing those tests are supposed to be measuring. */
+        winCondition: 'last_standing',
+        livesSpent: true,
     };
     return {
         config: {
@@ -480,6 +487,80 @@ test('and a server WITH a clock still offers all three, which is the control', (
     });
     assert.deepStrictEqual(values, ALL,
         'most kills was dropped on a server that has a clock: ' + values.join(', '));
+});
+
+test('THE DRAFT THAT OUTLIVED ITS REFUSAL: a turned-down edit puts the form back', () => {
+    /* The create/edit form is the second control on this panel holding a
+       DRAFT -- values that live in the browser until the server agrees. It
+       seeds once per lobby id, deliberately, so a broadcast in the middle of
+       somebody typing does not overwrite them. A REFUSAL is the one moment
+       that has to seed again: without it the form goes on saying "most
+       kills" over a lobby still fought as "last standing", with the card
+       beside it disagreeing and nothing saying which is real. */
+    const panel = opened(ALL);
+
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+    assert.strictEqual(panel.node('create-win').value, 'most_kills',
+        'the host could not choose it at all, so this proves nothing');
+
+    /* The server turns it down and pushes the state back. Same lobby, only
+       the refusal count has moved.
+
+       THE LOBBY IS FOUGHT AS `score_limit`, deliberately a THIRD value. The
+       fixture's default and the dropdown's first option are both
+       `last_standing`, so a form that simply reset to its default would look
+       identical to one that re-seeded from the match -- and the test would
+       pass on a panel that had stopped reading `editable.winCondition` at
+       all. Only the match's own rule can produce this answer. */
+    const refused = snapshot(ALL);
+    refused.matches[0].winCondition = 'score_limit';
+    refused.player.editRefused = 1;
+    panel.send('state', refused);
+
+    assert.strictEqual(panel.node('create-win').value, 'score_limit',
+        'the form did not seed from the rule the lobby is actually fought under');
+});
+
+test('and again on the SECOND refusal, which a flag would not manage', () => {
+    /* A count rather than a flag, and this is the difference. A boolean that
+       is already true says nothing when it is set again -- so the host's
+       second rejected edit would sit on screen for the life of the lobby. */
+    const panel = opened(ALL);
+
+    const first = snapshot(ALL);
+    first.matches[0].winCondition = 'score_limit';
+    first.player.editRefused = 1;
+    panel.send('state', first);
+    assert.strictEqual(panel.node('create-win').value, 'score_limit',
+        'the first refusal did not re-seed, so this proves nothing');
+
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+
+    const second = snapshot(ALL);
+    second.matches[0].winCondition = 'score_limit';
+    second.player.editRefused = 2;
+    panel.send('state', second);
+
+    assert.strictEqual(panel.node('create-win').value, 'score_limit',
+        'the second refusal left the form holding the rule the server turned down');
+});
+
+test('and an ordinary broadcast still does NOT overwrite the host mid-edit', () => {
+    /* The control, and the reason the seeding is keyed at all: a render
+       happens on every join, ready, bet and match start anywhere on the
+       server. A form that re-seeded on those would reset the host's typing
+       whenever anybody else did anything. */
+    const panel = opened(ALL);
+
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+
+    panel.send('state', snapshot(ALL));
+
+    assert.strictEqual(panel.node('create-win').value, 'most_kills',
+        'an unrelated broadcast reset the host\'s choice');
 });
 
 console.log('');

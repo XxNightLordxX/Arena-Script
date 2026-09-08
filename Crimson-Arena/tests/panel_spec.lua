@@ -989,9 +989,19 @@ end)
 t.test('the form is seeded from the match once, not on every broadcast', function()
     -- Re-seeding each push would overwrite the host mid-edit -- the same
     -- class of bug as writing into an input while it is focused.
+    --
+    -- KEYED ON THE MATCH AND ON THE REFUSAL COUNT. The key used to be the
+    -- match id alone, and that was one case short: a REFUSED edit leaves the
+    -- form showing a rule the server has just turned down, over a lobby
+    -- still fought under the old one. The count moves only on a refusal, so
+    -- an ordinary broadcast still changes nothing -- which is what this test
+    -- is really about, and what tests/panel/wincondition.test.js proves by
+    -- driving the panel rather than by reading it.
     local app = readPanelFile('app.js')
-    t.contains(app, 'state.seededFromMatch !== editable.id',
-        'the seed is not keyed on the match, so it repeats on every push')
+    t.contains(app, 'state.seededFromMatch !== seedKey',
+        'the seed is not compared against a key at all, so it repeats on every push')
+    t.contains(app, "String(editable.id) + '#'",
+        'the seed key is no longer built from the match, so one lobby\'s settings carry into another')
 end)
 
 print('panel_spec')

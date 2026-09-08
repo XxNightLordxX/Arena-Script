@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 98 functions
+#### `shared/arena.lua` — 99 functions
 
 | Function | What it does |
 |---|---|
@@ -336,40 +336,37 @@ listed; the source documents them where they are.
 | `Arena.GetEnabledArenas()` | Every arena an operator has left switched on, in config order. |
 | `Arena.GetArenaByKey(key)` | One enabled arena by key, or nil. |
 | `Arena.GetEnabledModes()` | Every mode an operator has left switched on, in config order. |
-| `Arena.GetModeByKey(key)` | One enabled mode by key, or nil. |
 | `Arena.PlaysLadder(modeKey)` | Whether a mode plays a gun-game ladder at all -- the one answer every caller reads. |
+| `Arena.GunGameClasses(modeKey)` | The weapon classes a ladder is built from, with each one's playable pool and ceiling. |
+| `Arena.ResolveTierPlan(modeKey, requested)` | A host's requested ladder shape, refused rather than clamped. |
 | `Arena.LadderTiersFor(modeKey)` | Every tier of a mode's gun-game ladder that still has a playable weapon in it, in climbing order. |
 | `Arena.RoundSecondsFor(modeKey, chosen)` | How long a round of one mode runs: the mode's own clock, falling back to Config.Match's. |
-| `Arena.TierAmmoFor(modeKey)` | How many rounds a gun-game tier weapon is handed, or nil for the weapon's own default. |
-| `Arena.KillAmmoFor(modeKey)` | How many rounds one verified kill pays for each weapon the killer carries. |
+| `Arena.KillCeilingFor(arenaKey, factor)` | How far apart two players may be for one to have killed the other, in this arena. |
 | `Arena.WinConditions()` | Every win condition this resource knows, in picker order. |
 | `Arena.WinConditionDefault()` | The server-wide win condition, out of a setting that takes a string or a block. |
 | `Arena.WinConditionChoice()` | The conditions a host may pick between, or nil where the server fixes it. |
 | `Arena.ResolveWinCondition(requested)` | One host's requested win condition, refused rather than clamped. |
 | `Arena.WinConditionFor(chosen)` | How one match is won: the host's pick, falling back to the server's. |
-| `Arena.WinConditionSpendsLives(condition)` | Whether a death costs a life under this condition. |
-| `Arena.WinConditionNeedsClock(condition)` | Whether only a round clock can settle this condition. |
-| `Arena.GunGameClasses(modeKey)` | The weapon classes a ladder is built from, with each one's playable pool and ceiling. |
-| `Arena.ResolveTierPlan(modeKey, requested)` | A host's requested ladder shape, refused rather than clamped. |
 | `Arena.ScoreLimitDefault()` | The server-wide kill limit, out of a setting that takes a number or a range. |
 | `Arena.ScoreLimitChoice()` | The band a host may name a kill limit within, or nil where the server fixes it. |
 | `Arena.ResolveScoreLimit(requested)` | One host's requested kill limit, refused rather than clamped. |
 | `Arena.ScoreLimitFor(chosen)` | The limit a match is played to: the host's, falling back to the server's. |
-| `Arena.KillCeilingFor(arenaKey, factor)` | How far apart two players may be for one to have killed the other, in this arena. |
+| `Arena.WinConditionSpendsLives(condition)` | Whether a death costs a life under this condition. |
+| `Arena.WinConditionNeedsClock(condition)` | Whether only a round clock can settle this condition. |
+| `Arena.KillAmmoFor(modeKey)` | How many rounds one verified kill pays for each weapon the killer carries. |
+| `Arena.TierAmmoFor(modeKey)` | How many rounds a gun-game tier weapon is handed, or nil for the weapon's own default. |
 | `Arena.RoundTimeDefault()` | The server-wide round length, out of a setting that takes a number or a range. |
 | `Arena.RoundTimeChoice()` | The range a host may set a round length within, or nil when the choice is not offered. |
 | `Arena.ResolveRoundTime(requested)` | How long a host may make a round, refused rather than clamped; 0 means they did not choose. |
+| `Arena.GetModeByKey(key)` | One enabled mode by key, or nil. |
 | `Arena.ModeUsesTeams(modeKey)` | True when this mode puts players on sides. |
 | `Arena.GetAmmoOptions(weapon)` | The ammo values the panel offers for one weapon. |
-| `Arena.ScheduleSpans()` | The opening-hours windows as sorted, disjoint spans of minutes; empty means always open. |
-| `Arena.ScheduleStatus(hour, minute)` | Whether the arena is open at that time, and when it next opens or shuts. |
-| `Arena.ClockText(minutes)` | Minutes since midnight as `HH:MM` -- the one place that formatting lives. |
-| `Arena.ScheduleLine()` | The whole schedule on one line, or nil when the arena keeps no hours. |
 | `Arena.AllowsCustomAmmo(weapon)` | Whether a player may type their own ammunition amount rather than being held to the preset list. |
 | `Arena.ResolveAmmo(weapon, requested)` | Turns whatever a client asked for into an ammo count the server is willing to hand out. |
 | `Arena.IsMeleeWeapon(weapon)` | Whether a weapon is melee, which is the one distinction this resource draws between kinds of weapon. |
 | `Arena.GetAmmoTypes(weapon)` | The ammo types on offer for one weapon: its own list, or the shared default, or none. |
 | `Arena.AllAmmoItems()` | Every item name any ammo type in the catalogue can hand out, deduplicated. |
+| `Arena.AllIssuedItems()` | Every item name the arena can put in somebody's hands: weapons, ammunition and supplies. |
 | `Arena.ResolveAmmoType(weapon, requested)` | Turns whatever ammo type a client asked for into one this server is willing to load. |
 | `Arena.MagazineFor(weapon, rounds)` | What a weapon starts LOADED with, when the rest of the rounds a player picked are handed over as inventory items instead. |
 | `Arena.StartingVitals()` | The health and armour every fighter starts every life on — a rule, not a setting. |
@@ -379,6 +376,7 @@ listed; the source documents them where they are.
 | `Arena.SupplyByKey(key)` | One enabled supply by its key, or nil. |
 | `Arena.StartingKitFor(modeKey)` | The supplies a mode hands everybody at the start of a round, whatever they picked -- or nil when it names none. |
 | `Arena.ResolveSupplies(requested)` | Turns whatever a client asked to carry into a list the server will hand over. |
+| `Arena.SlotsPerPlayer()` | How many weapons one player may carry, guns and blades together. 0 is no limit. |
 | `Arena.ResolveWeaponEntry(weapon, ammoType, ammo)` | One weapon of a loadout, built -- policy-free, so the gun-game ladder can use it without being judged as a player request. |
 | `Arena.ResolveLoadout(request)` | Validates a whole loadout request and returns the concrete thing to hand a player -- real GTA weapon names and real ammo counts, nothing the caller supplied passed through untouched. |
 | `Arena.BoundaryOf(arena)` | The arena's boundary block when it is switched on -- the one reading of `enabled`. |
@@ -415,8 +413,11 @@ listed; the source documents them where they are.
 | `Arena.ComputeSpectatorPayout(stake)` | What one winning spectator side-bet pays back, stake included. |
 | `Arena.CanStartMatch(match)` | Whether a lobby may start. |
 | `Arena.HasRoom(currentCount)` | Whether one more player will fit. |
+| `Arena.ScheduleSpans()` | The opening-hours windows as sorted, disjoint spans of minutes; empty means always open. |
+| `Arena.ScheduleStatus(hour, minute)` | Whether the arena is open at that time, and when it next opens or shuts. |
+| `Arena.ClockText(minutes)` | Minutes since midnight as `HH:MM` -- the one place that formatting lives. |
+| `Arena.ScheduleLine()` | The whole schedule on one line, or nil when the arena keeps no hours. |
 | `Arena.LoadoutChooser()` | Who picks the loadout everyone fights with. |
-| `Arena.SlotsPerPlayer()` | How many weapons one player may carry, guns and blades together. 0 is no limit. |
 | `Arena.ValidateConfig()` | Walks the whole config and returns everything wrong with it, by name. |
 | `Arena.ReportConfigProblems()` | Prints whatever ValidateConfig found. |
 
@@ -448,13 +449,13 @@ listed; the source documents them where they are.
 | `ArenaRateLimit(src, bucket, intervalMs)` | Whether this call is inside the interval for that bucket; false throttles it. |
 | `ArenaForgetPlayer(src)` | Drops one player's rate-limit history; main.lua calls it from playerDropped. |
 | `ArenaWebhook(title, description, fields)` | Posts one embed to the configured Discord webhook. |
+| `ArenaNewId()` | A fresh match id, unique for this server run. |
 | `ArenaHoursNow()` | The hour and minute the schedule is judged against -- the server's own clock, plus `offsetHours`. |
 | `ArenaSetHoursOverride(mode)` | An admin's standing decision about the doors: `'open'`, `'shut'`, or anything else to follow the schedule. In memory, so a restart gives the clock its say back. |
 | `ArenaHoursOverride()` | That decision, or nil where there is none. |
 | `ArenaHoursOpen()` | Whether the doors are open right now. Fails OPEN on every path that cannot produce a schedule. |
 | `ArenaHoursSnapshot()` | The opening-hours block the panel, the NPC and the marker are all drawn from. |
 | `ArenaHoursState()` | The same facts kept apart, for `/arenahours`. |
-| `ArenaNewId()` | A fresh match id, unique for this server run. |
 
 #### `server/dispatch.lua` — 13 functions
 
@@ -479,23 +480,23 @@ listed; the source documents them where they are.
 | Function | What it does |
 |---|---|
 | `ArenaAmmo.IsEnabled()` | Whether ammunition ITEMS are being handed out. |
-| `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
+| `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)` | Swaps one issued tier weapon for another, for a gun-game promotion or demotion. |
 | `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies -- or takes the weapon away, where `allowWeaponWithoutAmmoItem` is off and its rounds could not be issued. |
 | `ArenaAmmo.GrantRounds(src, matchId, item, count)` | A flat grant of ammunition onto the arena's ledger, for a kill reward. Hands over nothing where `Config.Loadouts.ammoItems.enabled` is off, like every other issue path. |
-| `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
-| `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
-| `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
+| `ArenaAmmo.GrantSupply(src, matchId, item, count)` | Hands one player one supply mid-round and puts it on the arena's books. |
+| `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.ReclaimAll(matchId, reasonKey)` | Reclaims the kit of every player in one match. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |
 | `ArenaAmmo.OnLoan(matchId)` | How many rounds one match is still on the hook for. |
 | `ArenaAmmo.IsHolding(src)` | Whether this resource is currently holding this player's inventory. |
 | `ArenaAmmo.StashOf(src)` | The stash a player's kit is in, for an admin who needs to point them at it. |
+| `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server. |
 | `ArenaAmmo.Owed()` | How many characters this resource still owes belongings to. |
-| `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)` | Swaps one issued tier weapon for another, for a gun-game promotion or demotion. |
-| `ArenaAmmo.GrantSupply(src, matchId, item, count)` | Hands one player one supply mid-round and puts it on the arena's books. |
+| `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
+| `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
 
 #### `server/stats.lua` — 5 functions
 
@@ -513,6 +514,8 @@ listed; the source documents them where they are.
 |---|---|
 | `ArenaBetting.Accounts()` | The accounts a player may be asked to choose between, in the operator's own order. |
 | `ArenaBetting.Wallet(src)` | What one player holds in each of them, for the panel's own display. |
+| `ArenaBetting.BetsAreOpen(match)` | Whether the book is still taking side-bets on this match. |
+| `ArenaBetting.SecondsUntilBetsClose(match)` | Seconds until the book shuts on a live round, or nil when there is no window to wait on. |
 | `ArenaBetting.IsRefundReason(reason)` | Whether a payout line is a stake coming back rather than money won. |
 | `ArenaBetting.IsEnabled()` | Whether betting is switched on at all. |
 | `ArenaBetting.StakeOf(matchId, src)` | What one player has staked on one match and not yet had back. |
@@ -529,8 +532,6 @@ listed; the source documents them where they are.
 | `ArenaBetting.GetSideBet(matchId, src)` | One player's own side-bet on a match, or nil. |
 | `ArenaBetting.HoldsSideBet(matchId, src)` | Whether this player is holding an UNSETTLED side-bet on this match. |
 | `ArenaBetting.MatchesBackedBy(src)` | Every match this player currently has an unsettled side-bet on, so the panel can refuse a Join the server would refuse. |
-| `ArenaBetting.BetsAreOpen(match)` | Whether the book is still taking side-bets on this match. |
-| `ArenaBetting.SecondsUntilBetsClose(match)` | Seconds until the book shuts on a live round, or nil when there is no window to wait on. |
 | `ArenaBetting.HasSpectatorBet(matchId, src)` | Whether this player holds any side-bet on this match, settled or not. |
 | `ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)` | Takes a spectator's side-bet on a team or a fighter. |
 | `ArenaBetting.CountSideBets(matchId)` | How many unsettled side-bets are riding on a match, so a mode change can be refused rather than voiding the whole book. |
@@ -542,7 +543,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.Outstanding()` | How much this resource still owes, across how many characters. |
 | `ArenaBetting.Clear(matchId)` | Drops a match's money state. |
 
-#### `server/lobby.lua` — 23 functions
+#### `server/lobby.lua` — 25 functions
 
 | Function | What it does |
 |---|---|
@@ -551,6 +552,8 @@ listed; the source documents them where they are.
 | `ArenaLobby.All()` | Oldest first, id breaking the tie, so two reads of an unchanged registry can never render the match list in a different order. |
 | `ArenaLobby.PlayerCount(match)` | How many players a match has seated. |
 | `ArenaLobby.PlayerArray(match)` | The roster as an ARRAY, in join order -- the shape every Arena.* rule takes, and the order a spawn index is drawn from. |
+| `ArenaLobby.NoteEditRefused(src)` | Records that one player asked for an edit the server would not make, so the panel re-seeds the form. |
+| `ArenaLobby.ForgetEditRefusals(src)` | Drops that count on the way out, so a recycled server id inherits nothing. |
 | `ArenaLobby.PushState(src)` | Sends one player the snapshot as it stands right now -- the undo for a request the server refused. |
 | `ArenaLobby.BuildState(src)` | The whole snapshot one player is allowed to see: matches, their own row, the leaderboard and their wallet. |
 | `ArenaLobby.Broadcast()` | Pushes the snapshot to everyone who can see it and nobody who cannot. |

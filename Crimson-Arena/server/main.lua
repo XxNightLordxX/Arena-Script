@@ -512,7 +512,31 @@ onClient('crimson_arena:server:updateMatch', RATE.choice, function(src, data)
         scoreLimit = intArg(data.scoreLimit),
         tierPlan = tableArg(data.tierPlan),
     })
-    if not ok then return refuse(src, reason) end
+    if not ok then
+        -- AND THE SCREEN GOES BACK, exactly as the loadout picker's does one
+        -- handler down and for the same reason. The create/edit form is the
+        -- other control on this panel holding a DRAFT, so a refusal that was
+        -- only a red toast left it showing the rule the server had just
+        -- turned down -- with the lobby card beside it showing the rule the
+        -- round is actually fought under, and nothing saying which was real.
+        --
+        -- The count is what makes the push land: the form seeds once per
+        -- lobby id on purpose, so that a broadcast in the middle of somebody
+        -- typing does not overwrite them. A refusal is the one moment it
+        -- must seed again.
+        -- ONLY FOR SOMEBODY WHO HAS A FORM OPEN. A full snapshot is the
+        -- most expensive thing this file builds -- every lobby, every
+        -- player's own row, the leaderboard -- and without this guard an
+        -- empty `updateMatch` from a client that has never opened a lobby
+        -- bought one, four times a second, before any membership check ran.
+        -- The push exists to put a HOST'S form back; a player with no lobby
+        -- has no form to put back.
+        if ArenaLobby.GetByPlayer(src) ~= nil then
+            ArenaLobby.NoteEditRefused(src)
+            ArenaLobby.PushState(src)
+        end
+        return refuse(src, reason)
+    end
 end)
 
 --- A death report is a hint from the victim's client, and it is treated as
@@ -613,6 +637,10 @@ AddEventHandler('playerDropped', function()
     -- still in flight for them is discarded on arrival rather than sent to
     -- whoever holds that id next.
     adminScan[src] = nil
+
+    -- The count of edits this server has refused them, for the same reason:
+    -- keyed by source, and a source is handed on to whoever connects next.
+    ArenaLobby.ForgetEditRefusals(src)
 
     -- Last, and always: the rate-limit history is keyed by source and
     -- nothing else drops it, so skipping this leaks a table per player who

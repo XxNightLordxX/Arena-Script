@@ -1344,6 +1344,45 @@ function Arena.AllAmmoItems()
     return items
 end
 
+--- EVERY ITEM NAME THIS ARENA CAN PUT IN SOMEBODY'S HANDS: the weapons, the
+--- ammunition for them, and the supplies.
+---
+--- WHAT IT IS FOR. The door destroys whatever a fighter is carrying on the
+--- way out, because at that moment everything in their pockets came from the
+--- arena -- their own is in the stash. That is the promise which makes a
+--- round free to enter, and it is the one an operator must not be able to
+--- switch off by accident.
+---
+--- `Config.Loadouts.inventory.neverStash` is a list of things the door
+--- leaves in a fighter's pockets, and naming an item there also protects it
+--- from that clear. Naming an ARENA item there would therefore hand it over
+--- for good: kept at the exit, and the arena no longer even recording that
+--- it issued one. Two hundred rounds a round, for ever, from one line of
+--- config. This is the list that says which names cannot be handed over.
+---
+--- THE RAW WEAPON LIST, not the enabled one, for the same reason
+--- AllAmmoItems uses it: a weapon an operator switched off yesterday is
+--- still a weapon somebody could be holding today.
+--- @return table<string, boolean>
+function Arena.AllIssuedItems()
+    local items = Arena.AllAmmoItems()
+
+    for _, weapon in ipairs((Config.Loadouts or {}).weapons or {}) do
+        if type(weapon) == 'table' and Arena.IsKey(weapon.weapon) then
+            items[weapon.weapon] = true
+        end
+    end
+
+    local supplies = ((Config.Loadouts or {}).supplies or {}).items
+    for _, entry in ipairs(type(supplies) == 'table' and supplies or {}) do
+        if type(entry) == 'table' and Arena.IsKey(entry.item) then
+            items[entry.item] = true
+        end
+    end
+
+    return items
+end
+
 --- Turns whatever ammo type a client asked for into one this server is
 --- willing to load.
 ---

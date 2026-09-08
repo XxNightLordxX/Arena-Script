@@ -1379,16 +1379,37 @@
            host mid-edit, which is the same class of bug as the input being
            rewritten while focused. */
         var editable = editableMatch();
-        if (editable && state.seededFromMatch !== editable.id) {
-            state.seededFromMatch = editable.id;
+        /* THE LOBBY, AND HOW MANY TIMES THE SERVER HAS SAID NO.
+           Seeding is keyed on the match id so a broadcast in the middle of
+           somebody typing does not overwrite them -- and that is right for
+           every broadcast except one. A REFUSED edit means the form is now
+           showing a rule the server turned down, over a lobby still fought
+           under the old one, with the card beside it disagreeing. The count
+           moves on each refusal, so the form seeds again from what the
+           server actually holds. */
+        var seedKey = editable
+            ? String(editable.id) + '#' + int((state.player || {}).editRefused, 0)
+            : null;
+        if (editable && state.seededFromMatch !== seedKey) {
+            state.seededFromMatch = seedKey;
             state.createArena = editable.arenaKey || state.createArena;
             state.createMode = editable.modeKey || state.createMode;
             state.createLives = int(editable.lives, int(state.createLives, 1));
             state.createRound = int(editable.roundTimeSeconds, int(state.createRound, 0));
             state.createWin = keyOr(editable.winCondition, state.createWin);
-            if (editable.tierPlan && typeof editable.tierPlan === 'object') {
-                state.createTiers = editable.tierPlan;
-            }
+            /* SEEDED EITHER WAY, and the `else` is the half that was
+               missing. The server sends `tierPlan` only once a plan has been
+               ACCEPTED -- nil while the host has never had one through -- so
+               guarding the seed on its presence left the ladder as the one
+               field a push-back could not reach. Which made it the one field
+               that mattered: a gun-game lobby's most likely refusal IS the
+               ladder ("a gun game needs at least two tiers to climb"), and
+               the host was handed their rejected ladder back, unchanged,
+               with their unrelated edits reverted around it. Pressing Apply
+               again produced the same refusal for ever. */
+            state.createTiers = (editable.tierPlan && typeof editable.tierPlan === 'object')
+                ? editable.tierPlan
+                : {};
             state.createLimit = int(editable.scoreLimit, int(state.createLimit, 25));
             state.createRadar = editable.radar === true;
         } else if (!editable && state.seededFromMatch !== null) {
@@ -1410,6 +1431,12 @@
                and it happens once. */
             state.seededFromMatch = null;
             state.createRadar = null;
+            /* AND THE LADDER, for the reason this branch exists at all: not
+               carrying one lobby's choices into a different one. It was left
+               out, so a ladder shaped for a gun game rode out of that lobby
+               and into the next createMatch payload -- on whatever mode the
+               host picked next. */
+            state.createTiers = {};
         }
 
         /* Joining a match is the moment the lobby screen becomes the

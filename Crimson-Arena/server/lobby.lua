@@ -674,6 +674,27 @@ local function loadoutPreview()
     return previewLoadout
 end
 
+--- How many edits this server has refused each player, by src.
+---
+--- Not persisted and not keyed by citizen id on purpose: it exists to make
+--- one browser re-read one lobby, and a reconnect gets a fresh form anyway.
+local editRefusals = {}
+
+--- Records that `src` asked for an edit the server would not make.
+--- @param src any
+function ArenaLobby.NoteEditRefused(src)
+    local target = tonumber(src)
+    if not target then return end
+    editRefusals[target] = (editRefusals[target] or 0) + 1
+end
+
+--- Forgets one player's refusal count, on the way out.
+--- @param src any
+function ArenaLobby.ForgetEditRefusals(src)
+    local target = tonumber(src)
+    if target then editRefusals[target] = nil end
+end
+
 --- The one part of the snapshot that differs per recipient.
 ---
 --- `false` rather than nil for the empty cases: a nil field does not survive
@@ -727,6 +748,23 @@ local function snapshotPlayer(src)
         -- stayed lit and the refusal arrived after the click.
         backing = ArenaBetting.MatchesBackedBy(src),
         isHost = match ~= nil and match.hostSource == src,
+        -- HOW MANY OF THEIR EDITS THIS SERVER HAS TURNED DOWN.
+        --
+        -- The create/edit form is the second control in this panel that
+        -- holds a DRAFT -- values that exist only in the browser until the
+        -- server agrees -- and server/main.lua's note beside the loadout
+        -- picker says why that matters: every other control renders straight
+        -- off the snapshot, so a refusal leaves it showing what the server
+        -- already holds. This one does not. It seeds once per lobby and then
+        -- keeps whatever was typed, so a refused "Apply changes" left the
+        -- form saying `most_kills` over a lobby still fought as
+        -- `last_standing`, with the card next to it disagreeing and nothing
+        -- saying which was real.
+        --
+        -- A COUNT RATHER THAN A FLAG, because the panel needs to notice a
+        -- SECOND refusal as well as a first, and a boolean that is already
+        -- true says nothing when it is set again.
+        editRefused = editRefusals[src] or 0,
     }
 end
 
@@ -1539,7 +1577,26 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
     -- Both the leaderboard rule and the announcement further down turn on
     -- it, and they must agree: a fighter told somebody walked out is being
     -- told about a round the walker was recorded as losing.
-    local liveRound = match.state == 'live'
+    --
+    -- AND `countdown` IS TWO DIFFERENT STATES WEARING ONE NAME. A lobby
+    -- counting down has nobody on the ground; a match in its FREEZE, after
+    -- ArenaMatch.Start has teleported the whole roster in, is a round being
+    -- fought that has not been promoted to `live` yet. Reading the name
+    -- alone made those the same thing, and the five seconds between them
+    -- were a free look at the arena: closing the game inside that window
+    -- returned the stake in full, recorded no loss, and told the fighters
+    -- standing there watching somebody vanish nothing at all -- while the
+    -- same act one second later forfeited everything.
+    --
+    -- READ OFF THE MATCH, not off the dispatch. Asking
+    -- ArenaDispatch.IsPlayerInArena looks like the right question and always
+    -- answers no here: ArenaMatch.RemovePlayer sends the leaver home -- which
+    -- clears that very flag -- several lines before it calls this function.
+    -- `match.placed` is set by ArenaMatch.Start when the roster is teleported
+    -- in, and nothing clears it.
+    local placed = match.state == 'countdown' and match.placed == true
+
+    local liveRound = match.state == 'live' or placed
 
     -- STILL IN THE FIGHT WHEN THEY WENT, which is not the same as "the round
     -- was live". An eliminated fighter KEEPS their row on purpose -- the
@@ -1563,7 +1620,7 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
     -- waiting to respawn from one who is out for good.
     local wasFighting = liveRound and not Arena.IsEliminated(player)
 
-    local started = match.state == 'live' or match.state == 'ended'
+    local started = match.state == 'live' or match.state == 'ended' or placed
     local refund
     if started then
         refund = Config.Betting.refundOnDisconnectDuringMatch == true
@@ -1713,6 +1770,16 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
     -- server id, so their bet names the same pick a spectator's bet on them
     -- does; without this line, walking out cancels a wager that was going
     -- badly and hands the money back. fighterBets ships on.
+    --
+    -- AND IN A LOBBY TOO, WHICH LOOKS HARSH AND IS NOT. It was put behind
+    -- `started` for a while on the reasoning that nothing can be going badly
+    -- in a round nobody has fought -- but the wager is on the FIELD, and the
+    -- field is what changes while a lobby fills. A fighter who backs
+    -- themselves for the fighterBets ceiling -- twice the spectator one --
+    -- and then watches somebody far better walk in has a wager going badly
+    -- before a shot is fired, and closing the game would be the way out of
+    -- it. Standing up is already refused for the same reason (see MayLeave),
+    -- so sparing the drop would leave one door open and the other shut.
     ArenaBetting.MarkWalkedOut(match.id, target)
 
     if leftTeam then

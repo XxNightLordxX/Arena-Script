@@ -204,8 +204,10 @@ end
 --- one promise is that a match cannot cost anyone anything, and the way it
 --- keeps that promise is by holding their belongings somewhere the round
 --- cannot reach -- so anything left OUT of the stash is something the round
---- can reach: droppable, lootable off their body, and destroyable by the
---- exit's own clear if it is still in their pockets.
+--- can reach: droppable, and lootable off their body once ox_inventory has
+--- emptied their pockets onto the floor. It is spared the exit's own clear
+--- -- see untouchable() -- but that is the smaller of the two ways an item
+--- named here is lost, and the round will find the other one first.
 local DEFAULT_NEVER_STASH = {}
 
 --- The names the exit's clear must not destroy when config.lua does not say.
@@ -277,8 +279,61 @@ end
 --- @return string[] keepList -- left alone by the EXIT clear
 local function untouchable()
     local door = doorConfig()
-    local skipMap, skipList = nameSet(door.neverStash, DEFAULT_NEVER_STASH)
-    local _, keepList = nameSet(door.neverDestroy, DEFAULT_NEVER_DESTROY)
+    local _, rawSkip = nameSet(door.neverStash, DEFAULT_NEVER_STASH)
+    local keepMap, keepList = nameSet(door.neverDestroy, DEFAULT_NEVER_DESTROY)
+
+    -- AN ARENA ITEM NAMED ON `neverStash` IS IGNORED, and ignoring it is the
+    -- kindest of the three things that could happen to it.
+    --
+    -- The list is for a player's OWN belongings -- a phone, a radio, a key --
+    -- and it does two things to a name: leaves it in their pockets on the way
+    -- in, and spares it from the wholesale clear on the way out. Do that to
+    -- something the arena issues and the fighter walks out with the kit, and
+    -- the arena reports a clean wipe so it forgets it ever issued one: no
+    -- debt, no sweep, no retry. Two hundred rounds a round, for ever.
+    --
+    -- Refusing only the second half would be worse than useless: their own
+    -- copy of the item would then be left in their pockets and destroyed at
+    -- the exit. So the name is dropped from both halves and the item takes
+    -- the ordinary path -- into the stash, which is where it is safe, and out
+    -- again at the end.
+    local arenaIssues = Arena.AllIssuedItems()
+    local skipMap, skipList = {}, {}
+    for _, name in ipairs(rawSkip) do
+        if arenaIssues[name] then
+            ArenaLog('door: `neverStash` names %s, which is an item this arena issues. '
+                .. 'Ignoring it -- it goes to the stash like everything else, and comes '
+                .. 'back at the exit.', name)
+        else
+            skipMap[name] = true
+            skipList[#skipList + 1] = name
+        end
+    end
+
+    -- NOT STASHING SOMETHING IS NOT PERMISSION TO DESTROY IT.
+    --
+    -- These were two independent lists, and the gap between them destroyed
+    -- things. `neverStash` says "leave this in their pockets on the way in";
+    -- the exit then clears whatever is in their pockets, keeping only what
+    -- `neverDestroy` names. So an item on the first list and not the second
+    -- was carried through the whole round and then wiped at the door -- and
+    -- the only warning was one clause in a config comment saying it "meets
+    -- the wholesale clear".
+    --
+    -- There is no reading of "do not take this from them" that means
+    -- "destroy it instead", so the first list now implies the second. An
+    -- operator who wants an item destroyed can still say so by leaving it
+    -- off `neverStash`, which is what puts it safely in the stash anyway.
+    --
+    -- `skipList` has already had the arena's own items taken out of it above,
+    -- so nothing here can hand the kit over.
+    for _, name in ipairs(skipList) do
+        if not keepMap[name] then
+            keepMap[name] = true
+            keepList[#keepList + 1] = name
+        end
+    end
+
     return skipMap, skipList, keepList
 end
 

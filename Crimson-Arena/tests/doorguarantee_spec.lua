@@ -854,4 +854,139 @@ t.test('and a fighter who is genuinely mid-round is still refused', function()
         'a fighter can loot into their own pockets mid-round')
 end)
 
+-- ======================================================================
+-- NOT TAKING SOMETHING IS NOT PERMISSION TO DESTROY IT
+-- ======================================================================
+--
+-- The door has two lists and they were independent:
+--
+--   neverStash    "leave this in their pockets on the way in"
+--   neverDestroy  "the exit's clear must not wipe this"
+--
+-- Which left a hole exactly the size of the difference between them. An item
+-- on the first list and not the second was carried, unprotected, through the
+-- whole round -- and then met the wholesale clear at the exit, which keeps
+-- only what the SECOND list names. The arena destroyed the one thing it had
+-- promised not to touch.
+--
+-- The only warning was a clause in a config comment. An operator naming an
+-- item they did not want the arena taking had to know to name it again, in a
+-- different list, under a different heading, to stop the arena destroying it
+-- instead.
+
+t.test('THE REPORT: an item the door was told to leave alone was wiped at the exit',
+    function()
+        local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+            -- Named on one list and not the other, which is the whole of it.
+            config.Loadouts.inventory.neverStash = { 'phone' }
+            config.Loadouts.inventory.neverDestroy = { 'money' }
+        end)
+
+        -- It never went to the stash, which is what the operator asked for.
+        t.isNil(server.stashed(1):find('phone', 1, true),
+            'the door stashed an item it was told to leave in their pockets: '
+                .. server.stashed(1))
+
+        server.match.End(matchId, 'match.ended')
+
+        local carrying = server.carrying(1)
+        t.isTrue(carrying:find('phonex1', 1, true) ~= nil,
+            'THE ARENA DESTROYED IT. It was never stashed, so there was nothing to hand '
+                .. 'back -- and the exit clear wiped it where it sat: ' .. carrying)
+    end)
+
+t.test('and the clear still ran, in the same round, over the same fighter', function()
+    -- THE PAIR THE FIX HAS TO SATISFY AT ONCE, asserted in one fixture
+    -- rather than two. Its first version checked only that an UNNAMED item
+    -- survived a round -- which is what happens if the exit stops clearing
+    -- anything at all, so the control passed on exactly the fix it was
+    -- written to catch.
+    --
+    -- Named and unnamed, side by side: the phone is protected, and something
+    -- the arena handed over in the same round is not.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Loadouts.inventory.neverStash = { 'phone' }
+    end)
+
+    server.give(1, 'ammo-9', 120)
+
+    server.match.End(matchId, 'match.ended')
+
+    local carrying = server.carrying(1)
+    t.isTrue(carrying:find('phonex1', 1, true) ~= nil,
+        'the protected item did not survive: ' .. carrying)
+    t.isNil(carrying:find('ammo-9', 1, true),
+        'and the clear did not run at all, so the protection above means nothing: ' .. carrying)
+end)
+
+t.test('and the arena kit is still destroyed, which is what the clear is for', function()
+    -- The other control. `neverStash` growing must not become a way to keep
+    -- the weapons the arena issued -- those are the whole reason the exit
+    -- clears anything.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Loadouts.inventory.neverStash = { 'phone' }
+    end)
+
+    -- Something the ARENA gave them, arriving mid-round the way a kill
+    -- payment does.
+    server.give(1, 'ammo-9', 250)
+
+    server.match.End(matchId, 'match.ended')
+
+    t.isNil(server.carrying(1):find('ammo-9', 1, true),
+        'the exit let a fighter walk out with the arena\'s own ammunition: '
+            .. server.carrying(1))
+end)
+
+t.test('AND `neverStash` CANNOT BE USED TO WALK OUT WITH THE KIT', function()
+    -- The hole the rule above opened, and the reason it is not a plain
+    -- merge. `neverStash` protects a name from the exit's clear -- so
+    -- naming something the ARENA issues would keep it: `armour`, `ammo-9`,
+    -- a weapon. And the exit would still report a clean wipe, so the arena
+    -- forgets it ever issued one. No debt, no sweep, no retry. Two hundred
+    -- rounds a round, for ever, out of one line of config.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Loadouts.inventory.neverStash = { 'armour', 'bandage' }
+    end)
+
+    -- Issued mid-round, the way a kill payment or a respawn refresh arrives.
+    server.give(1, 'armour', 1)
+    server.give(1, 'bandage', 2)
+
+    server.match.End(matchId, 'match.ended')
+
+    local carrying = server.carrying(1)
+    t.isNil(carrying:find('armour', 1, true),
+        'a fighter walked out wearing the arena\'s own plate: ' .. carrying)
+    t.isNil(carrying:find('bandage', 1, true),
+        'and carrying its bandages: ' .. carrying)
+end)
+
+t.test('and the same names still reach the stash, so nobody loses their own', function()
+    -- The kindest of the three things that could happen to an operator's
+    -- mistake. Refusing only the exit half would leave a player's OWN plate
+    -- in their pockets for the round and then destroy it at the door -- a
+    -- worse outcome than the setting they were reaching for. The name is
+    -- ignored on both halves instead, so the item takes the ordinary path.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Loadouts.inventory.neverStash = { 'armour' }
+    end, { { name = 'armour', count = 3 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    for _, src in ipairs({ 1, 2 }) do server.fire('setReady', src, { ready = true }) end
+    server.match.Start(match.id)
+    server.step()
+
+    t.isTrue(server.stashed(1):find('armour', 1, true) ~= nil,
+        'the fighter\'s own plate was left in their pockets to be destroyed: '
+            .. server.stashed(1))
+
+    server.match.End(match.id, 'match.ended')
+
+    t.isTrue(server.carrying(1):find('armourx3', 1, true) ~= nil,
+        'and it did not come back: ' .. server.carrying(1))
+end)
+
 os.exit(t.summary())

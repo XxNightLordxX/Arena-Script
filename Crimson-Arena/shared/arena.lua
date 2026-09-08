@@ -500,13 +500,88 @@ end
 --- zero as true, so `mode.roundTimeSeconds or Config...` keeps it.
 --- @param modeKey any
 --- @return integer seconds
-function Arena.RoundSecondsFor(modeKey)
+function Arena.RoundSecondsFor(modeKey, chosen)
+    -- THE HOST'S OWN NUMBER FIRST, and this parameter is the whole of what
+    -- "adjustable timer" means.
+    --
+    -- Before it, the only two answers were the mode's config value and the
+    -- server's config value -- so a round's length could be changed by
+    -- editing a file and restarting, and by nothing else. In gun game, where
+    -- the clock is not a backstop but the win condition itself, that made the
+    -- one rule the mode is built around the one rule a host could not set.
+    --
+    -- Passed in rather than read off a match table, because two of the three
+    -- callers have no match: Arena.GetEnabledModes describes a mode before
+    -- anybody has created one, and the validator runs at boot.
+    local picked = Arena.ToInt(chosen)
+    if picked and picked > 0 then return picked end
+
     local mode = Arena.GetModeByKey(modeKey)
     -- No `or nil` tail: `mode and Arena.ToInt(...)` is already nil when
     -- either half is, and the tail could never change the value.
     local own = mode and Arena.ToInt(mode.roundTimeSeconds)
-    local shared = Arena.ToInt((Config.Match or {}).roundTimeSeconds) or 0
-    return math.max(0, own or shared)
+    return math.max(0, own or Arena.RoundTimeDefault())
+end
+
+--- The server-wide round length, out of a setting that takes two shapes.
+---
+--- Config.Match.roundTimeSeconds is a plain NUMBER on a server that fixes
+--- the length for every match, and a TABLE -- { allowChoose, min, max,
+--- default } -- on one that lets the host pick. Exactly the two shapes
+--- Config.Match.lives already takes, for the same reason: an operator takes
+--- the decision away by writing a number, and hands it over by writing a
+--- range, with no second setting to find.
+---
+--- ONE READER FOR BOTH SHAPES, because there were three places reading this
+--- with `Arena.ToInt(...) or 0` -- and `Arena.ToInt` of a table is nil, so
+--- the moment the setting grew a range every one of them would have read the
+--- server's round length as ZERO, which is the value that means "no clock at
+--- all".
+--- @return integer
+function Arena.RoundTimeDefault()
+    local block = (Config.Match or {}).roundTimeSeconds
+    if type(block) ~= 'table' then return math.max(0, Arena.ToInt(block) or 0) end
+
+    local minimum = math.max(1, Arena.ToInt(block.min) or 1)
+    local maximum = math.max(minimum, Arena.ToInt(block.max) or minimum)
+    return Arena.ClampInt(block.default, minimum, maximum) or minimum
+end
+
+--- The range a host may set a round length within, or nil when this server
+--- does not offer the choice. The shape the panel is sent.
+--- @return table|nil
+function Arena.RoundTimeChoice()
+    local block = (Config.Match or {}).roundTimeSeconds
+    if type(block) ~= 'table' or block.allowChoose ~= true then return nil end
+
+    local minimum = math.max(1, Arena.ToInt(block.min) or 1)
+    return { min = minimum, max = math.max(minimum, Arena.ToInt(block.max) or minimum) }
+end
+
+--- How long a host may make a round, resolved from what they asked for.
+---
+--- REFUSED, NOT CLAMPED, the same as Arena.ResolveLives and for the same
+--- reason: a host who typed 1800 and silently got 600 would believe they
+--- were running a different match to the one they are in.
+---
+--- ANSWERS 0 WHEN THE HOST DID NOT CHOOSE, rather than the mode's number.
+--- 0 is what the match stores for "no opinion", and Arena.RoundSecondsFor
+--- then falls through to the mode's own clock -- so a gun game whose host
+--- left the box alone still runs its designed 480 seconds, and one whose
+--- host set 900 runs 900.
+--- @param requested any
+--- @return integer|nil seconds -- 0 for "the host did not choose"
+--- @return string|nil reason
+function Arena.ResolveRoundTime(requested)
+    local choice = Arena.RoundTimeChoice()
+    if not choice then return 0, nil end
+
+    local wanted = Arena.ToInt(requested)
+    if not wanted then return 0, nil end
+    if wanted < choice.min or wanted > choice.max then
+        return nil, 'error.round_time_out_of_range'
+    end
+    return wanted, nil
 end
 
 --- @param key any
@@ -3821,6 +3896,32 @@ function Arena.ValidateConfig()
             complain(('Config.Teams.list["%s"].order is a %s, not a number -- that team has fallen back to the end of the list.')
                 :format(tostring(key), type(team.order)))
         end
+    end
+
+    -- A ROUND-LENGTH RANGE THAT IS NOT ONE. The setting takes a plain number
+    -- or a { allowChoose, min, max, default } table, and a table whose range
+    -- is upside down or whose default sits outside it is a control that
+    -- refuses the number it opens on.
+    local roundBlock = (Config.Match or {}).roundTimeSeconds
+    if type(roundBlock) == 'table' then
+        local low = Arena.ToInt(roundBlock.min)
+        local high = Arena.ToInt(roundBlock.max)
+        if low ~= nil and high ~= nil and high < low then
+            complain(('Config.Match.roundTimeSeconds.max is %d, below its min of %d -- no round length would be accepted.')
+                :format(high, low))
+        end
+        local wanted = Arena.ToInt(roundBlock.default)
+        local choice = Arena.RoundTimeChoice()
+        if choice and wanted ~= nil and (wanted < choice.min or wanted > choice.max) then
+            complain(('Config.Match.roundTimeSeconds.default is %d, outside its own %d to %d range -- the create box opens on a number the server then refuses.')
+                :format(wanted, choice.min, choice.max))
+        end
+        if roundBlock.allowChoose == true and Arena.RoundTimeDefault() <= 0 then
+            complain('Config.Match.roundTimeSeconds lets the host choose but resolves to 0, which means no round clock at all -- give it a default inside its own range.')
+        end
+    elseif roundBlock ~= nil and Arena.ToInt(roundBlock) == nil then
+        complain(('Config.Match.roundTimeSeconds is a %s -- it has to be a number of seconds, or a { allowChoose, min, max, default } table. It is being read as 0, which means no round clock at all.')
+            :format(type(roundBlock)))
     end
 
     -- A SUPPLY CEILING THAT IS NOT A CEILING. Arena.SupplyTotalCap floors it

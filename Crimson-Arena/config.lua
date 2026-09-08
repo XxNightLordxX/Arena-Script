@@ -20,17 +20,17 @@
        84   Lobby         The NPC players walk up to
       181   Schedule      Opening hours: when the door is actually open
       219   Match         Lives, timers, player counts, win condition
-      476   Teams         The sides, and whether they may be uneven
-      631   Modes         Free-for-all and team deathmatch
-      837   DefaultMode   Which of them a new lobby opens on
-      856   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1066  UI            Panel colours, logo and title
-      1124  Permissions   Who may open a match, who may force-stop one
-      1205  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1777   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2244   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2254   Webhook       Optional: a Discord line per finished match
-     2291   Dispatch      Optional: keeping police and EMS out of the arena
+      498   Teams         The sides, and whether they may be uneven
+      653   Modes         Free-for-all and team deathmatch
+      859   DefaultMode   Which of them a new lobby opens on
+      878   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1088  UI            Panel colours, logo and title
+      1146  Permissions   Who may open a match, who may force-stop one
+      1227  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1799   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2266   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2276   Webhook       Optional: a Discord line per finished match
+     2313   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -244,7 +244,29 @@ Config.Match = {
 
     -- 0 = no time limit. When the clock runs out the win condition is
     -- decided on kills.
-    roundTimeSeconds = 600,
+    -- HOW LONG A ROUND RUNS, and who gets to decide.
+    --
+    -- TWO SHAPES, exactly like `lives` above. A plain number fixes the
+    -- length for every match on this server. A table opens it to the HOST,
+    -- who picks it in Create Match the same way they pick lives -- which is
+    -- what makes a gun game's clock adjustable without editing this file,
+    -- and a gun game's clock is not a backstop but the thing that ends the
+    -- round.
+    --
+    -- A MODE'S OWN `roundTimeSeconds` STILL WINS OVER THE DEFAULT and still
+    -- loses to the host. The order is: what the host set for this match,
+    -- then the mode's own number, then `default` here. So gun game runs its
+    -- designed 480 seconds unless somebody says otherwise, and a host who
+    -- says otherwise gets what they asked for.
+    --
+    -- `allowChoose = false`, or writing a plain number here instead, takes
+    -- the control off the create screen entirely.
+    roundTimeSeconds = {
+        allowChoose = true,
+        min = 60,
+        max = 3600,
+        default = 600,
+    },
 
     -- LIVES PER PLAYER. 1 = eliminated on the first death. Above that, a
     -- player who dies is put back at a fresh spawn point with a full

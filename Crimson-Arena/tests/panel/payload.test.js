@@ -38,6 +38,8 @@ function snapshot(overrides) {
         match: {
             lives: 3,
             livesChoice: { min: 1, max: 10 },
+            roundTimeSeconds: 600,
+            roundTimeChoice: { min: 60, max: 3600 },
             minPlayers: 2,
             maxPlayers: 0,
             onlyHostCanStart: true,
@@ -149,6 +151,48 @@ test('a snapshot carrying the operator\'s THEME still renders the page', () => {
     assert.ok(/Airfield/.test(panel.text('create-arena') + panel.text('matches')),
         'the page rendered nothing at all with a theme on the wire: '
             + JSON.stringify(panel.text('matches')));
+});
+
+test('Round Length opens on the number the server says it will run', () => {
+    const panel = opened();
+    assert.ok(!panel.node('create-round-row').classList.contains('hidden'),
+        'the row is hidden on a server that offers the choice');
+    assert.strictEqual(panel.node('create-round').value, '600',
+        'the box shows ' + JSON.stringify(panel.node('create-round').value)
+        + ' -- the state behind it was never seeded from config');
+    assert.ok(/10:00/.test(panel.text('create-round-hint')),
+        'the hint should say what 600 seconds is in minutes: '
+        + panel.text('create-round-hint'));
+});
+
+test('and the length typed is the length created', () => {
+    /* THE WHOLE POINT OF THE CONTROL. Gun game is decided by its clock, so
+       until this existed the one rule the mode is built around was the one
+       rule a host could not set without editing config.lua and restarting. */
+    const panel = opened();
+    panel.type('create-round', '900');
+    panel.fire('create-submit', 'click');
+
+    const sent = panel.posted.find((p) => p.name === 'createMatch');
+    assert.ok(sent, 'nothing was posted at all');
+    assert.strictEqual(sent.body.roundTimeSeconds, 900,
+        'typed 900, posted ' + sent.body.roundTimeSeconds);
+});
+
+test('and a server that fixes the length offers no control at all', () => {
+    /* A control that cannot change anything is worse than no control,
+       because it invites a host to try. The server sends no range when the
+       operator has written a plain number. */
+    const snap = snapshot();
+    delete snap.config.match.roundTimeChoice;
+    const panel = loadPanel(ROOT);
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.ok(panel.node('create-round-row').classList.contains('hidden'),
+        'a fixed round length still drew a box the host can type into');
+    assert.strictEqual(panel.text('create-round-hint'), '',
+        'and left a hint under it: ' + panel.text('create-round-hint'));
 });
 
 console.log('');

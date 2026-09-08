@@ -1896,7 +1896,10 @@ local function goLive(matchId)
     -- mode this exists for: it is the only one where nobody is ever
     -- eliminated, so the clock is the whole ending rather than a backstop,
     -- and it wants a shorter round than a last-man-standing match does.
-    local roundTime = Arena.RoundSecondsFor(match.modeKey)
+    -- THE HOST'S NUMBER IF THEY SET ONE. `match.roundTimeSeconds` is 0 when
+    -- they did not, and RoundSecondsFor then falls through to the mode's own
+    -- clock exactly as it always did.
+    local roundTime = Arena.RoundSecondsFor(match.modeKey, match.roundTimeSeconds)
     match.endsAt = roundTime > 0 and (match.startsAt + roundTime) or nil
 
     pushToMatch(match, 'crimson_arena:client:matchLive', { endsAt = match.endsAt })

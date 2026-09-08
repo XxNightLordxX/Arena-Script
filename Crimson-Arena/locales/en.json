@@ -37,6 +37,7 @@
         "match_full": "That match is full.",
         "mode_picks_loadout": "This mode issues its own loadout -- there is nothing to pick.",
         "match_in_progress": "That match has already kicked off.",
+        "round_time_out_of_range": "That round length is outside what this server allows.",
         "match_not_found": "That match is gone.",
         "mode_has_no_teams": "No sides in this mode. Everyone is a target.",
         "mode_unavailable": "That mode is not running.",

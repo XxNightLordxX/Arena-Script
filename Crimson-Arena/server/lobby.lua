@@ -613,7 +613,16 @@ local function snapshotConfig()
             -- round went unanswered by a panel that had the answer written
             -- into it.
             restoreLoadoutOnExit = Config.Match.restoreLoadoutOnExit == true,
-            roundTimeSeconds = math.max(0, Arena.ToInt(Config.Match.roundTimeSeconds) or 0),
+            -- THROUGH THE ONE READER. This setting takes a plain number or a
+            -- { allowChoose, min, max, default } table, and `Arena.ToInt` of
+            -- a table is nil -- so the moment it grew a range, spelling the
+            -- read out here would have told every panel the server's round
+            -- length was 0, which is the value that means "no clock at all".
+            roundTimeSeconds = Arena.RoundTimeDefault(),
+            -- The range a host may move within, absent on a server that does
+            -- not offer the choice -- the same shape, and the same silence,
+            -- as `livesChoice` above.
+            roundTimeChoice = Arena.RoundTimeChoice(),
             winCondition = Config.Match.winCondition,
             onlyHostCanStart = Config.Match.onlyHostCanStart ~= false,
             -- WHETHER READYING UP IS WHAT STARTS THE ROUND. It ships ON, and
@@ -779,6 +788,11 @@ local function snapshotMatches()
             -- the host's own control from it, and every other player needs
             -- to know whether the round they are joining has a radar in it.
             radar = match.radar == true,
+            -- HOW LONG THIS ROUND RUNS, resolved rather than raw: 0 on the
+            -- match means the host did not choose, and a player joining
+            -- wants the number the clock will actually count down from --
+            -- which for a ladder mode is the mode's own, not the server's.
+            roundTimeSeconds = Arena.RoundSecondsFor(match.modeKey, match.roundTimeSeconds),
             -- WHAT A WINNER IS ACTUALLY PLAYING FOR. GetPot is the entry
             -- pot alone; with betPayout.includeEntryPot on -- the shipped
             -- default -- the side-bets settle in the same pool, so a
@@ -1066,9 +1080,12 @@ end
 --- @param lives any -- the host's pick, resolved against Config.Match.lives
 --- @param radar any -- the host's pick, resolved against Config.Match.radar
 --- @param account any -- which of their accounts pays the entry fee
+--- @param roundTime any -- the host's pick, resolved against
+---        Config.Match.roundTimeSeconds. LAST, and after `account`, because
+---        every existing caller passes these seven positionally.
 --- @return string|nil matchId
 --- @return string|nil reasonKey
-function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account)
+function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account, roundTime)
     local host = tonumber(src)
     if not host then return nil, 'error.invalid_request' end
     if not ArenaCanCreate(host) then return nil, 'error.no_permission' end
@@ -1108,6 +1125,12 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
     -- the operator's default written onto their match.
     local resolvedRadar = Arena.ResolveRadar(radar)
 
+    -- REFUSED, NOT CLAMPED, like the lives above it. 0 back means the host
+    -- did not choose -- either they left the box alone or this server does
+    -- not offer it -- and the mode's own clock is what runs.
+    local resolvedRound, roundReason = Arena.ResolveRoundTime(roundTime)
+    if not resolvedRound then return nil, roundReason end
+
     local id = ArenaNewId()
     local hostName = ArenaPlayerName(host)
 
@@ -1129,6 +1152,13 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
         -- the same kind of thing: a rule of this match, chosen once, that
         -- everybody in it fights under.
         radar = resolvedRadar,
+        -- 0 MEANS "THE HOST DID NOT CHOOSE", and Arena.RoundSecondsFor then
+        -- falls through to the mode's own clock -- so a gun game whose host
+        -- left the box alone still runs its designed 480 seconds. Stored on
+        -- the match for the same reason `lives` is: re-reading the config
+        -- when the round starts would let an operator's mid-session edit
+        -- change the length of a match already being fought.
+        roundTimeSeconds = resolvedRound,
         createdAt = os.time(),
         -- 0, not nil, until server/match.lua schedules them: a nil field
         -- would simply be absent from the snapshot the panel receives.
@@ -1844,6 +1874,7 @@ function ArenaLobby.UpdateMatch(src, data)
     -- is half legal does not leave the match half changed.
     local arenaKey, modeKey, lives = match.arenaKey, match.modeKey, match.lives
     local radar = match.radar == true
+    local roundTime = Arena.ToInt(match.roundTimeSeconds) or 0
 
     if data.arenaKey ~= nil then
         local arena = Arena.GetArenaByKey(data.arenaKey)
@@ -1861,6 +1892,12 @@ function ArenaLobby.UpdateMatch(src, data)
         local resolved, reason = Arena.ResolveLives(data.lives)
         if not resolved then return false, reason end
         lives = resolved
+    end
+
+    if data.roundTimeSeconds ~= nil then
+        local resolved, reason = Arena.ResolveRoundTime(data.roundTimeSeconds)
+        if not resolved then return false, reason end
+        roundTime = resolved
     end
 
     if data.radar ~= nil then
@@ -1900,6 +1937,7 @@ function ArenaLobby.UpdateMatch(src, data)
     match.modeKey = modeKey
     match.lives = lives
     match.radar = radar
+    match.roundTimeSeconds = roundTime
     match.label = locale('match.label', match.hostName,
         (Arena.GetModeByKey(modeKey) or {}).label or modeKey)
 

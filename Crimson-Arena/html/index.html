@@ -101,6 +101,19 @@
                      the row went was hidden by the row going. -->
                 <div id="create-lives-note" class="hint hidden"></div>
 
+                <!-- HOW LONG THE ROUND RUNS. Hidden on the same rule as Lives
+                     Each -- the operator can fix it by writing a plain number
+                     for Config.Match.roundTimeSeconds instead of a range.
+                     Unlike Lives Each it is shown for EVERY mode, because a
+                     ladder mode spends no lives and is decided by this clock
+                     alone: it is the one rule gun game is built around, and
+                     it was the one rule a host could not set. -->
+                <div id="create-round-row" class="field">
+                    <span class="field-label">Round Length</span>
+                    <input id="create-round" type="number" min="60" step="30">
+                    <p id="create-round-hint" class="hint"></p>
+                </div>
+
                 <!-- THE RADAR, here beside Lives Each rather than in the
                      lobby, because it is the same kind of thing: a rule of
                      the match that the host sets once and everybody in it

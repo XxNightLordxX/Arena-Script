@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 79 functions
+#### `shared/arena.lua` — 82 functions
 
 | Function | What it does |
 |---|---|
@@ -339,7 +339,10 @@ listed; the source documents them where they are.
 | `Arena.GetModeByKey(key)` | One enabled mode by key, or nil. |
 | `Arena.PlaysLadder(modeKey)` | Whether a mode plays a gun-game ladder at all -- the one answer every caller reads. |
 | `Arena.LadderTiersFor(modeKey)` | Every tier of a mode's gun-game ladder that still has a playable weapon in it, in climbing order. |
-| `Arena.RoundSecondsFor(modeKey)` | How long a round of one mode runs: the mode's own clock, falling back to Config.Match's. |
+| `Arena.RoundSecondsFor(modeKey, chosen)` | How long a round of one mode runs: the mode's own clock, falling back to Config.Match's. |
+| `Arena.RoundTimeDefault()` | The server-wide round length, out of a setting that takes a number or a range. |
+| `Arena.RoundTimeChoice()` | The range a host may set a round length within, or nil when the choice is not offered. |
+| `Arena.ResolveRoundTime(requested)` | How long a host may make a round, refused rather than clamped; 0 means they did not choose. |
 | `Arena.ModeUsesTeams(modeKey)` | True when this mode puts players on sides. |
 | `Arena.GetAmmoOptions(weapon)` | The ammo values the panel offers for one weapon. |
 | `Arena.ScheduleSpans()` | The opening-hours windows as sorted, disjoint spans of minutes; empty means always open. |

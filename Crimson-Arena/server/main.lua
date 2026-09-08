@@ -335,7 +335,7 @@ onClient('crimson_arena:server:createMatch', RATE.create, function(src, data)
     -- falls back to the operator's defaults for both.
     local matchId, reason = ArenaLobby.Create(src, arenaKey, keyArg(payload.modeKey),
         intArg(payload.entryFee), intArg(payload.lives), boolArg(payload.radar),
-        keyArg(payload.account))
+        keyArg(payload.account), intArg(payload.roundTimeSeconds))
     if not matchId then return refuse(src, reason) end
 
     ArenaNotifyKey(src, 'notify.match_created', 'success')
@@ -457,6 +457,7 @@ onClient('crimson_arena:server:updateMatch', RATE.choice, function(src, data)
         -- UpdateMatch leaves the setting alone -- rather than a stray string
         -- reading as `true` and switching a radar on nobody asked for.
         radar = boolArg(data.radar),
+        roundTimeSeconds = intArg(data.roundTimeSeconds),
     })
     if not ok then return refuse(src, reason) end
 end)

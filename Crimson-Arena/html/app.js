@@ -144,6 +144,7 @@
            fallback -- one life -- whatever the operator's default says and
            whatever the host picked before touching the box. */
         createLives: null,
+        createRound: null,
 
         /* The match the create form was last seeded from. Keyed on the id so
            the seed happens once on becoming host, not on every broadcast --
@@ -1259,6 +1260,12 @@
         if (state.createLives === null) {
             state.createLives = int((config.match || {}).lives, 1);
         }
+        /* Its own guard for the same reason the lives one has its own: the
+           server sends the resolved default, which is the number a host who
+           touches nothing is going to run. */
+        if (state.createRound === null) {
+            state.createRound = int((config.match || {}).roundTimeSeconds, 0);
+        }
         if (state.betAmount === null) {
             /* Whichever kind of bet this server actually offers. Seeding
                from the spectator minimum on a server that only lets fighters
@@ -1286,6 +1293,7 @@
             state.createArena = editable.arenaKey || state.createArena;
             state.createMode = editable.modeKey || state.createMode;
             state.createLives = int(editable.lives, int(state.createLives, 1));
+            state.createRound = int(editable.roundTimeSeconds, int(state.createRound, 0));
             state.createRadar = editable.radar === true;
         } else if (!editable && state.seededFromMatch !== null) {
             /* ON THE TRANSITION ONLY, keyed the same way the seeding above
@@ -1703,6 +1711,38 @@
                 : '';
         }
 
+        /* ROUND LENGTH, on the same rule as Lives Each -- absent when the
+           operator has fixed it -- but shown for EVERY mode rather than
+           hidden for a ladder.
+           
+           A ladder mode is exactly where it matters most: it spends no
+           lives, so this clock is the only thing that ends the round, and
+           until now it was the one rule of gun game a host could not set
+           without editing config.lua and restarting. */
+        var roundChoice = (cfg().match || {}).roundTimeChoice;
+        var roundUsed = !!roundChoice;
+        show(byId('create-round-row'), roundUsed);
+
+        var roundInput = byId('create-round');
+        if (has(roundInput) && roundUsed) {
+            roundInput.min = String(int(roundChoice.min, 1));
+            roundInput.max = String(int(roundChoice.max, 1));
+            if (document.activeElement !== roundInput) {
+                roundInput.value = String(int(state.createRound, 0));
+            }
+        }
+
+        var roundHint = byId('create-round-hint');
+        if (has(roundHint)) {
+            /* IN BOTH UNITS. The box takes seconds because that is what the
+               server stores and what config.lua is written in, and nobody
+               reads 900 as fifteen minutes without being told. */
+            roundHint.textContent = roundUsed
+                ? 'How long a round runs, in seconds — ' + clock(int(state.createRound, 0))
+                  + '. ' + int(roundChoice.min, 1) + ' to ' + int(roundChoice.max, 1) + '.'
+                : '';
+        }
+
         /* SAID, NOT JUST HIDDEN. A row that disappears when the mode changes
            looks like a bug unless the reason goes in its place. */
         var livesNote = byId('create-lives-note');
@@ -1912,9 +1952,16 @@
            length of the round they were about to play. */
         var mode = modeByKey(match.modeKey);
         var tiers = mode ? int(mode.tiers, 0) : 0;
-        var roundTime = mode && mode.roundTimeSeconds !== undefined && mode.roundTimeSeconds !== null
-            ? int(mode.roundTimeSeconds, 0)
-            : int(matchCfg.roundTimeSeconds, 0);
+        /* THE MATCH'S OWN NUMBER FIRST, now that a host can set one. The
+           server resolves it before sending -- host's pick, then the mode's
+           clock, then the server default -- so this is the number the round
+           will really count down from, and reading the mode's config here
+           would tell a lobby whose host chose 900 that it was playing 480. */
+        var roundTime = match.roundTimeSeconds !== undefined && match.roundTimeSeconds !== null
+            ? int(match.roundTimeSeconds, 0)
+            : (mode && mode.roundTimeSeconds !== undefined && mode.roundTimeSeconds !== null
+                ? int(mode.roundTimeSeconds, 0)
+                : int(matchCfg.roundTimeSeconds, 0));
 
         /* THE MATCH'S OWN NUMBER FIRST, and the operator default only as a
            fallback for a match that predates the field.
@@ -4495,6 +4542,11 @@
         state.createLives = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
     });
 
+    bind('create-round', 'input', function (event) {
+        var choice = (cfg().match || {}).roundTimeChoice || {};
+        state.createRound = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
+    });
+
     bind('create-fee', 'input', function (event) {
         var fee = (betting().entryFee) || {};
         state.createFee = clampInt(event.target.value, int(fee.min, 0), int(fee.max, 0));
@@ -4510,6 +4562,7 @@
                 arenaKey: state.createArena,
                 modeKey: state.createMode,
                 lives: int(state.createLives, 1),
+                roundTimeSeconds: int(state.createRound, 0),
                 /* radarIsOn(), not state.createRadar: an untouched toggle is
                    null, and null on the wire means "leave it alone" -- which
                    is not what the host sees on a button reading Radar Off. */
@@ -4523,6 +4576,7 @@
             modeKey: state.createMode,
             entryFee: int(state.createFee, 0),
             lives: int(state.createLives, 1),
+            roundTimeSeconds: int(state.createRound, 0),
             radar: radarIsOn(),
             /* The host joins their own match through the same door as
                everybody else, so their entry fee comes out of the account

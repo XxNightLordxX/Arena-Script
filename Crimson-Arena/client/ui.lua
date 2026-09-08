@@ -207,6 +207,7 @@ register('createMatch', function(data)
         modeKey = data.modeKey,
         entryFee = data.entryFee,
         lives = data.lives,
+        roundTimeSeconds = data.roundTimeSeconds,
         radar = data.radar,
         account = data.account,
     })
@@ -230,6 +231,7 @@ register('updateMatch', function(data)
         arenaKey = data.arenaKey,
         modeKey = data.modeKey,
         lives = data.lives,
+        roundTimeSeconds = data.roundTimeSeconds,
         radar = data.radar,
     })
 end)

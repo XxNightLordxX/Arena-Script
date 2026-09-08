@@ -2459,4 +2459,105 @@ t.test('a ladder round crowns a climber, not a side, so no side is named', funct
         'and told the team-mate who lost that their side had taken it')
 end)
 
+-- ======================================================================
+-- THE ADJUSTABLE CLOCK
+-- ======================================================================
+
+t.test('a host can set how long the round runs, and it is what runs', function()
+    -- THE MODE IS DECIDED BY ITS CLOCK, so the clock was the one rule of it
+    -- a host could not set. Arena.RoundSecondsFor read the mode's config
+    -- value and then the server's, and nothing else -- so "adjustable timer"
+    -- meant editing config.lua and restarting.
+    local s = newServer(function(config)
+        config.Match.roundTimeSeconds = { allowChoose = true, min = 60, max = 3600, default = 600 }
+    end)
+
+    local designed = s.arena.RoundSecondsFor('gungame')
+    t.equals(designed, 480, 'the shipped gun game no longer runs its own 480 seconds')
+
+    -- THE HOST'S NUMBER WINS OVER THE MODE'S OWN.
+    t.equals(s.arena.RoundSecondsFor('gungame', 900), 900,
+        'a host who set 900 seconds is not getting 900 seconds')
+
+    -- AND LEAVING IT ALONE STILL RUNS THE MODE'S DESIGNED CLOCK. 0 is what
+    -- the match stores for "the host did not choose", and reading it as a
+    -- real answer would give every untouched gun game no clock at all.
+    t.equals(s.arena.RoundSecondsFor('gungame', 0), 480,
+        'a host who chose nothing lost the mode\'s own clock')
+    t.equals(s.arena.RoundSecondsFor('gungame', nil), 480,
+        'and nil is the same as not choosing')
+end)
+
+t.test('and the clock the round really counts down from is the one they set', function()
+    -- END TO END, through the real createMatch handler and the real Start,
+    -- because the number agreeing in Arena and disagreeing on the match is
+    -- exactly the shape of the defect this fixes.
+    local s = newServer(function(config)
+        config.Match.roundTimeSeconds = { allowChoose = true, min = 60, max = 3600, default = 600 }
+    end)
+
+    s.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'gungame', entryFee = 0, account = 'cash',
+        roundTimeSeconds = 900,
+    })
+    local match = s.lobby.All()[1]
+    t.equals(match.roundTimeSeconds, 900, 'the host\'s choice never reached the match')
+
+    for src = 2, 3 do s.fire('joinMatch', src, { matchId = match.id, account = 'cash' }) end
+    for src = 1, 3 do s.fire('setReady', src, { ready = true }) end
+    for _ = 1, 4 do if s.lobby.Get(match.id).state == 'live' then break end s.settle(1) end
+
+    local live = s.lobby.Get(match.id)
+    t.equals(live.state, 'live', 'the round did not start')
+    t.equals(live.endsAt - live.startsAt, 900,
+        ('the round was scheduled for %d seconds, not the 900 the host set')
+            :format((live.endsAt or 0) - (live.startsAt or 0)))
+end)
+
+t.test('and a length this server does not allow is refused, not quietly clamped', function()
+    -- The same rule Arena.ResolveLives follows: a host who typed 9999 and
+    -- silently got 3600 would believe they were running a different match.
+    local s = newServer(function(config)
+        config.Match.roundTimeSeconds = { allowChoose = true, min = 60, max = 3600, default = 600 }
+    end)
+
+    local id, why = s.lobby.Create(1, 'trailerpark', 'gungame', 0, nil, false, 'cash', 9999)
+    t.isNil(id, 'a round length over the maximum was accepted')
+    t.equals(why, 'error.round_time_out_of_range', 'and the refusal has to say which rule')
+
+    local low, lowWhy = s.lobby.Create(1, 'trailerpark', 'gungame', 0, nil, false, 'cash', 10)
+    t.isNil(low, 'a round length under the minimum was accepted')
+    t.equals(lowWhy, 'error.round_time_out_of_range', 'and likewise')
+
+    -- AND ONE INSIDE THE RANGE IS TAKEN.
+    local ok = s.lobby.Create(1, 'trailerpark', 'gungame', 0, nil, false, 'cash', 1200)
+    t.isTrue(ok ~= nil, 'a legal round length was refused')
+end)
+
+t.test('and an operator who fixes the number takes the control away', function()
+    -- The plain-number shape. Every reader has to keep working, and the
+    -- panel must be sent no range at all -- a control that cannot change
+    -- anything invites a host to try.
+    local s = newServer(function(config)
+        config.Match.roundTimeSeconds = 600
+    end)
+
+    t.equals(s.arena.RoundTimeDefault(), 600, 'a plain number stopped being read')
+    t.isNil(s.arena.RoundTimeChoice(), 'a fixed length still offered the host a range')
+
+    -- AND A HOST WHO ASKS ANYWAY IS IGNORED RATHER THAN REFUSED: a stale
+    -- panel is not a tampered payload, and the round runs the mode's clock.
+    local seconds, why = s.arena.ResolveRoundTime(900)
+    t.equals(seconds, 0, 'a request on a server that does not offer the choice was honoured')
+    t.isNil(why, 'and it must not be reported as an error')
+end)
+
+t.test('and the mode\'s clock still beats the server default', function()
+    local s = newServer(function(config)
+        config.Match.roundTimeSeconds = { allowChoose = true, min = 60, max = 3600, default = 600 }
+    end)
+    t.equals(s.arena.RoundSecondsFor('gungame'), 480, 'the mode lost its own clock')
+    t.equals(s.arena.RoundSecondsFor('ffa'), 600, 'and an ordinary mode lost the server default')
+end)
+
 os.exit(t.summary())

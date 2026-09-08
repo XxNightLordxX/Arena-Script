@@ -100,7 +100,11 @@ function snapshot(options) {
             matchId: o.who === 'host' ? 'm1' : null,
             /* What renderLobby actually reads to decide who may start it. */
             isHost: o.who === 'host',
-            spectating: false,
+            /* WATCHING rather than fighting. A spectator is one of the two
+               people the shut screen does not take over for -- the round they
+               are watching is still legally being fought -- so they are also
+               the seat these greying rules can still be asked about. */
+            spectating: o.who === 'watcher' ? 'm1' : false,
             team: false,
         },
         matches: [match],
@@ -120,8 +124,27 @@ function opened(options) {
 
 console.log('==> Create Match, against a shut arena');
 
-test('THE BUG: Create Match was lit while the arena was shut', () => {
+test('a shut arena is not offered Create Match at all, nor anything else', () => {
+    /* STRONGER THAN GREYING IT. The whole body is replaced by one screen
+       saying the arena is closed and when it opens, so there is no lit button
+       to press and no dead one to wonder about. The greying below still
+       matters for the two people that screen does not take over for. */
     const panel = opened({ schedule: SHUT });
+
+    assert.ok(!panel.node('arena-shut').classList.contains('hidden'),
+        'a shut arena did not draw the closed screen');
+    assert.ok(panel.node('arena-body').classList.contains('hidden'),
+        'the create panel is still on screen behind it');
+    assert.ok(/05:00/.test(panel.text('arena-shut-hours')),
+        'and the screen did not say when it opens: ' + panel.text('arena-shut-hours'));
+});
+
+test('THE BUG: and for somebody the screen spares, Create Match is still greyed', () => {
+    /* A spectator keeps the whole panel -- the round they are watching is
+       still being fought -- so every one of these rules has to hold for them.
+       This is the original bug, asked at the one seat that can still see the
+       button. */
+    const panel = opened({ schedule: SHUT, who: 'watcher' });
 
     assert.strictEqual(panel.node('create-submit').disabled, true,
         'Create Match was offered while the arena was shut');
@@ -164,7 +187,7 @@ function joinButton(panel) {
 }
 
 test('THE BUG: Join was lit on a lobby the server would refuse', () => {
-    const panel = opened({ schedule: SHUT });
+    const panel = opened({ schedule: SHUT, who: 'watcher' });
 
     const join = joinButton(panel);
     assert.ok(join, 'no Join button was drawn at all');
@@ -191,7 +214,7 @@ test('and a shut arena is named rather than the entry fee', () => {
     /* Placed before the full and the fee checks, so a shut arena is named
        rather than telling somebody they cannot afford a match they could
        afford perfectly well an hour from now. */
-    const panel = opened({ schedule: SHUT });
+    const panel = opened({ schedule: SHUT, who: 'watcher' });
     assert.ok(!/afford|cover/i.test(joinButton(panel).title),
         'a shut arena was reported as a money problem: ' + joinButton(panel).title);
 });

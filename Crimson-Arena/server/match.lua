@@ -496,6 +496,49 @@ local function creditsTier(match, killer, victim)
     return true
 end
 
+--- Gives one per-victim credit back when a tier is lost.
+---
+--- IN A PLAYER'S WORDS: "when you hit your max tier then die a lot then you
+--- kill that same person you wont go back up".
+---
+--- creditsTier counts kills PER VICTIM and the count only ever went up, while
+--- a player's position is `ladderKills - tiersLost` and goes both ways. So a
+--- climber who reached the top off three kills on somebody, then died three
+--- times, was back on tier 1 with that opponent recorded as having bought
+--- them three tiers -- and worth nothing to them for the rest of the round.
+--- They could stand next to the only other player in the arena, kill them
+--- repeatedly, and never move.
+---
+--- WHAT THE CAP IS ACTUALLY FOR is bounding how much of the ladder ONE
+--- opponent can carry you up. A tier you climbed and then lost carried you
+--- nowhere, so it should not be held against that opponent -- and once the
+--- credit is refunded the count means "tiers this victim is holding me up
+--- by", which is the thing worth capping.
+---
+--- THE LARGEST ENTRY PAYS. Which victim a lost tier belongs to is not
+--- recorded and could not be without pretending to know something the round
+--- never established, so the loss comes off whoever has bought the most --
+--- the one the cap is policing. It cannot let a farm through: the total
+--- refunded can never exceed the total lost, so a player who never dies is
+--- capped exactly as before.
+--- @param player table
+local function refundTierCredit(player)
+    if type(player.ladderVictims) ~= 'table' then return end
+
+    local worst, most = nil, 0
+    for src, taken in pairs(player.ladderVictims) do
+        local count = math.max(0, Arena.ToInt(taken) or 0)
+        if count > most then worst, most = src, count end
+    end
+
+    if worst == nil then return end
+    if most <= 1 then
+        player.ladderVictims[worst] = nil
+    else
+        player.ladderVictims[worst] = most - 1
+    end
+end
+
 --- Whether a percentage chance came up. No chance named at all means every
 --- time, which is what makes `chance` an optional field rather than one
 --- every reward entry has to carry.
@@ -1412,6 +1455,14 @@ local function pushHud(match)
     local common = {
         remaining = remaining,
         total = #players,
+        -- WHETHER "REMAINING" IS A COUNTDOWN OR A CONSTANT. Under a ladder,
+        -- a kill limit or most kills nobody is eliminated, so `remaining`
+        -- equals `total` for the whole round -- and a header reading
+        -- "Remaining 6 / 6" all the way to the final second implies
+        -- eliminations that cannot happen. The panel says "6 fighters"
+        -- instead when this is false. Resolved here, where the rule lives.
+        livesSpent = #ladderOf(match) == 0
+            and Arena.WinConditionSpendsLives(match.winCondition),
         timeLeft = match.endsAt and math.max(0, match.endsAt - os.time()) or nil,
         -- WHAT A WINNER IS ACTUALLY PLAYING FOR, the same figure the lobby
         -- card shows. This was GetPot -- the entry pot ALONE -- while
@@ -1468,6 +1519,23 @@ end
 --- @param freezeSeconds integer
 local function sendEnterArena(match, player, index, arena, freezeSeconds)
     local teamKey = teamOf(match, player)
+
+    -- NOBODY STARTS A ROUND DEAD.
+    --
+    -- IN A PLAYER'S WORDS: "if i kill someone prior to a match start they
+    -- spawn in dead". Being shot in the street is a thing that happens to
+    -- somebody queued for a round, and nothing between the lobby and the
+    -- arena floor looked at whether they were on their feet -- so they were
+    -- teleported in, frozen for the countdown, and then stood there down for
+    -- the whole match while everybody else fought over them.
+    --
+    -- THE SAME CALL THE RESPAWN AND THE TABLET MAKE, so a server's own
+    -- medical script decides what standing somebody up means; this resource
+    -- has not had a revive of its own since it was deliberately removed.
+    -- Harmless for the overwhelming majority who walk in alive: reviving
+    -- somebody who is already up is what the medical script is asked to
+    -- ignore, and it does.
+    ArenaDispatch.Revive(player.src)
 
     -- Set here rather than at join: somebody sitting in a lobby menu picking
     -- a rifle is not in a fight, and suppressing their alerts while they
@@ -2204,6 +2272,22 @@ function ArenaMatch.Start(matchId)
         modeKey = match.modeKey,
         players = players,
     })
+    -- AND THE DOORS, RE-ASKED HERE AND NOT ONLY IN ArenaMatch.Begin.
+    --
+    -- Begin checks them and then runs a countdown players may back out of --
+    -- seconds, and on a lobby countdown rather more than that -- and the
+    -- arena can close inside it. Nothing re-asked, so a lobby that was legal
+    -- when the clock started teleported everybody into a closed arena when it
+    -- finished. An admin who shut the doors watched a round begin anyway.
+    --
+    -- Folded into the SAME failure path rather than returned early, because
+    -- that path is what puts the lobby back to waiting: an early return would
+    -- leave it stuck in `countdown` for ever, which is a worse version of the
+    -- bug it fixes.
+    if ok and not ArenaHoursOpen() then
+        ok, reason = false, 'error.arena_shut'
+    end
+
     if not ok then
         -- Nobody has been moved yet, so the lobby simply goes back to
         -- waiting.
@@ -2432,6 +2516,7 @@ function ArenaMatch.OnDeath(src, killerSrc)
     if playingLadder then
         if tierScore(player) > 0 then
             player.tiersLost = (Arena.ToInt(player.tiersLost) or 0) + 1
+            refundTierCredit(player)
         end
 
         -- AND IT IS NEVER HANDED BACK. A refused swap means the weapon
@@ -3085,12 +3170,43 @@ end
 --- @param reasonKey string
 --- @return integer closed
 function ArenaMatch.CloseWaitingLobbies(reasonKey)
+    --- Whether a match has actually put anybody in the arena yet.
+    ---
+    --- `countdown` IS TWO DIFFERENT STATES WEARING ONE NAME. ArenaMatch.Begin
+    --- sets it for the lobby countdown, where nobody has moved and everybody
+    --- may still back out; ArenaMatch.Start sets it again for the freeze,
+    --- where everybody is standing in the arena waiting for the guns to go
+    --- live. The first is a waiting lobby in every sense that matters here
+    --- and the second is a round.
+    ---
+    --- ASKED OF THE DISPATCH FLAG rather than of a field on the match,
+    --- because that flag is what records who has really been teleported in --
+    --- and it is the same question every other guard in this resource asks.
+    ---
+    --- FAILS TOWARDS "PLACED". When it cannot be asked at all, the answer is
+    --- that people ARE in there, so a round is never torn down on a guess.
+    local function nobodyPlaced(match)
+        if type(ArenaDispatch) ~= 'table'
+            or type(ArenaDispatch.IsPlayerInArena) ~= 'function'
+        then
+            return false
+        end
+        for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+            if ArenaDispatch.IsPlayerInArena(player.src) then return false end
+        end
+        return true
+    end
+
     -- Ids collected before destroying, the pattern the idle sweep already
     -- uses, because Destroy removes from the very registry All() was read
     -- from.
     local waiting = {}
     for _, match in ipairs(ArenaLobby.All()) do
-        if match.state == 'lobby' then waiting[#waiting + 1] = match.id end
+        if match.state == 'lobby'
+            or (match.state == 'countdown' and nobodyPlaced(match))
+        then
+            waiting[#waiting + 1] = match.id
+        end
     end
 
     for _, id in ipairs(waiting) do

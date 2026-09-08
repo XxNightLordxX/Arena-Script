@@ -11,6 +11,7 @@
 
       last_standing   the shipped default: the last side alive takes it.
       score_limit     first to `Config.Match.scoreLimit` kills.
+      most_kills      the highest count when the round clock stops.
 
     And two rules that are easy to get wrong and silent when you do:
 
@@ -22,6 +23,12 @@
       RUNNING OUT OF OPPONENTS     with one side left standing there is
       ENDS IT UNDER EVERY RULE     nothing left to decide it with, whatever
                                    the configured condition says.
+
+      ONLY THE LAST ONE STANDING   both rules that end on a COUNT have to
+      SPENDS A LIFE                keep everybody in the fight until the
+                                   count decides it. Eliminate people under
+                                   either and the round ends on the survivor
+                                   with the count never read.
 ]]
 
 local t = dofile('testkit.lua')
@@ -1095,5 +1102,168 @@ t.test('and a limit outside the band is refused, so no match opens on it', funct
 
     t.equals(#server.lobby.All(), 0, 'a refused create left a match behind')
 end)
+
+-- ======================================================================
+-- MOST KILLS WHEN THE CLOCK RUNS OUT
+-- ======================================================================
+--
+-- IN A PLAYER'S WORDS: "on win condition it should not have a lives for most
+-- kills till the clock runs out".
+--
+-- The third condition shipped spending lives, because the test for "does a
+-- death cost anything" was `~= 'score_limit'` and most kills was simply not
+-- 'score_limit'. So the rule a host picked -- whoever has the most kills
+-- when the clock stops -- was decided by the roster instead: the round ended
+-- the moment one player ran out of lives, under ended_last_standing, with
+-- the clock still running and the kill count never read.
+
+t.test('THE REPORT: under most kills, a death costs no life', function()
+    -- ONE LIFE EACH, so the old rule cannot be mistaken for the new one:
+    -- two kills is two eliminations out of three fighters, and the round
+    -- ended on the survivor before this fix.
+    local server = newServer(function(config)
+        config.Match.winCondition = 'most_kills'
+        config.Match.lives = 1
+    end)
+    server.play(3)
+
+    server.kill(2, 1)
+    server.kill(3, 1)
+    server.settle(3)
+
+    -- THE ROUND FIRST. An eliminated fighter keeps their row, but a round
+    -- that has ENDED has no rows at all -- so asking about the row first
+    -- fails on a nil index and says nothing about why.
+    t.equals(server.endedWith(), nil,
+        'the round ended on the last one standing, which is not the rule the host picked')
+    t.isNil(server.rowOf(2).placement,
+        'a death under most kills eliminated the fighter')
+end)
+
+t.test('and the clock is what ends it, on the count', function()
+    local server = newServer(function(config)
+        config.Match.winCondition = 'most_kills'
+        config.Match.lives = 1
+    end)
+    server.play(3)
+
+    server.kill(2, 1)
+    server.kill(3, 1)
+    server.expire()
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_time_up',
+        'the clock did not decide a most-kills round')
+    t.equals(listed(server.winners()), '1', 'the kill leader did not take it')
+end)
+
+t.test('and a fighter who died most still wins it on kills', function()
+    -- THE WHOLE POINT OF THE RULE, and the case lives made impossible: the
+    -- leader on kills has been killed more often than anybody. With lives
+    -- spent they were out of the round long before the clock; without them
+    -- they are still in it and the count is what is read.
+    local server = newServer(function(config)
+        config.Match.winCondition = 'most_kills'
+        config.Match.lives = 1
+    end)
+    server.play(3)
+
+    server.kill(1, 2)
+    server.kill(1, 3)   -- fighter 1 has died twice on a one-life setting
+    server.kill(2, 1)
+    server.kill(3, 1)
+    server.kill(2, 1)   -- and has three kills to everybody else's one
+    server.expire()
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_time_up', 'the clock did not decide the round')
+    t.equals(listed(server.winners()), '1',
+        'the fighter with the most kills did not take it')
+end)
+
+t.test('and last standing still spends lives, so this did not turn them off everywhere',
+    function()
+        -- The control. A change that stopped lives being spent AT ALL would
+        -- pass all three tests above and break the shipped default.
+        local server = newServer(function(config)
+            config.Match.winCondition = 'last_standing'
+            config.Match.lives = 1
+        end)
+        server.play(3)
+
+        server.kill(2, 1)
+        server.settle(3)
+
+        t.isNotNil(server.rowOf(2).placement,
+            'a death under last standing no longer eliminates anybody')
+    end)
+
+t.test('and a round with no clock at all is refused, not left running', function()
+    -- THE OTHER HALF OF TAKING LIVES OFF IT. Nothing about the roster ends a
+    -- most-kills round any more, so on a mode whose clock resolves to 0 it
+    -- would run until the last player walked out. Lives were quietly ending
+    -- those rounds before, on the wrong rule.
+    local server = newServer(function(config)
+        config.Match.winCondition = { allowChoose = true, default = 'last_standing' }
+        config.Match.roundTimeSeconds = 0
+    end)
+
+    local ok, reason = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash', nil,
+        'most_kills', nil, nil)
+    t.isNil(ok, 'a most-kills round with no clock opened anyway')
+    t.equals(reason, 'error.win_condition_needs_clock', 'and the host was not told why')
+    t.equals(#server.lobby.All(), 0, 'a refused create left a match behind')
+end)
+
+t.test('and the same round WITH a clock opens', function()
+    -- The control: a guard that refused every most-kills match would pass
+    -- the test above and take the condition off the server.
+    local server = newServer(function(config)
+        config.Match.winCondition = { allowChoose = true, default = 'last_standing' }
+        config.Match.roundTimeSeconds = 600
+    end)
+
+    local ok, reason = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash', nil,
+        'most_kills', nil, nil)
+    t.isNotNil(ok, 'a most-kills round with a clock was refused: ' .. tostring(reason))
+end)
+
+t.test('and a LADDER mode with no clock is not refused, because it ignores all of it',
+    function()
+        -- A gun game is won by topping the ladder, whatever the win
+        -- condition says -- server/match.lua reads the ladder BEFORE the
+        -- condition and overrides it, and config.lua documents
+        -- `gungame.roundTimeSeconds = 0` as a supported setting that leaves
+        -- the ladder as the only thing that ends the round.
+        --
+        -- So a guard that did not ask about the ladder first took the mode
+        -- off a server running it that way: every attempt to open a gun game
+        -- refused over a rule the mode never consults.
+        local server = newServer(function(config)
+            config.Match.winCondition = 'most_kills'
+            config.Match.roundTimeSeconds = 0
+            config.Modes.gungame.roundTimeSeconds = 0
+        end)
+
+        local ok, reason = server.lobby.Create(1, 'trailerpark', 'gungame', 0, 3, false, 'cash',
+            nil, nil, nil, nil)
+        t.isNotNil(ok, 'a clockless gun game was refused: ' .. tostring(reason))
+    end)
+
+t.test('and the same server still refuses a free-for-all on it, which is the control',
+    function()
+        -- The other direction: an exemption written as "skip the guard" would
+        -- pass the test above and take the guard off every mode.
+        local server = newServer(function(config)
+            config.Match.winCondition = 'most_kills'
+            config.Match.roundTimeSeconds = 0
+            config.Modes.gungame.roundTimeSeconds = 0
+        end)
+
+        local ok, reason = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash',
+            nil, nil, nil, nil)
+        t.isNil(ok, 'a clockless free-for-all on most kills opened anyway')
+        t.equals(reason, 'error.win_condition_needs_clock', 'and the host was not told why')
+    end)
 
 os.exit(t.summary())

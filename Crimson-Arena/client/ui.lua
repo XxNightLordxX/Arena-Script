@@ -87,12 +87,6 @@ local closeAdmin
 function ArenaUI.Open()
     if isOpen or isOpening then return end
 
-    -- ONE SCREEN AT A TIME, and the tablet gives way here for the same reason
-    -- the panel gives way to it: SetNuiFocus is global state with no stack.
-    -- Without this, pressing E at the lobby ped with the tablet up drew the
-    -- panel underneath an opaque full-screen modal.
-    closeAdmin()
-
     isOpening = true
 
     local token = closeToken
@@ -101,9 +95,34 @@ function ArenaUI.Open()
     isOpening = false
     if token ~= closeToken then return end
     if not state then
+        -- NOTHING IS TOUCHED ON THE WAY OUT, and that is the fix rather than
+        -- an omission.
+        --
+        -- `state` is nil whenever the snapshot callback is THROTTLED -- a
+        -- 500ms bucket, so an ordinary thing rather than an error: press E
+        -- twice quickly and the second press lands here. closeAdmin() used to
+        -- run BEFORE the snapshot was asked for, so this ordinary refusal shut
+        -- a working tablet, opened no panel in its place, and returned holding
+        -- the focus the tablet had taken. Mouse captured, nothing drawn, and
+        -- ESC could reach neither screen because the page reads its two open
+        -- flags and both were now false. Reconnecting was the only way out.
+        --
+        -- Leaving both alone costs the press and nothing else: an admin keeps
+        -- the tablet they had, and a player who had nothing open still has
+        -- nothing open and their controls.
         ArenaUI.Notify(locale('error.state_unavailable'), 'error')
         return
     end
+
+    -- ONE SCREEN AT A TIME, and the tablet gives way here for the same reason
+    -- the panel gives way to it: SetNuiFocus is global state with no stack.
+    -- Without this, pressing E at the lobby ped with the tablet up drew the
+    -- panel underneath an opaque full-screen modal.
+    --
+    -- AFTER THE SNAPSHOT, NOT BEFORE IT. Taking the tablet away first meant
+    -- every refused open -- a throttled callback, a server that answered
+    -- nothing -- shut a working screen and put nothing in its place.
+    closeAdmin()
 
     isOpen = true
     ArenaUI.Send('open', state)

@@ -419,15 +419,177 @@ end
 --- @param spawn table -- vector4-shaped
 --- @param radius number
 --- @return number, number, number, number
-local function scatter(spawn, radius)
-    local x, y, z, heading = spawn.x, spawn.y, spawn.z, spawn.w or 0.0
-    if radius and radius > 0.0 then
-        local angle = math.random() * math.pi * 2.0
-        local distance = math.sqrt(math.random()) * radius
-        x = x + math.cos(angle) * distance
-        y = y + math.sin(angle) * distance
+--- How much solid stuff may sit above a spawn point before it is somewhere
+--- nobody should be put down. A metre and a half is roughly a standing
+--- person: less than that overhead and they are inside whatever it is.
+local SPAWN_HEADROOM = 1.5
+
+--- How far up a spawn point is probed from, looking for a roof.
+local SPAWN_PROBE_UP = 12.0
+
+--- How far out, in metres, a fighter is moved to get out from under
+--- something -- nearest ring first, so the escape costs as little of the
+--- spacing the spawn plan worked out as it can.
+---
+--- FOUR METRES IS NOT ENOUGH ON ITS OWN and the outer rings are why. A
+--- caravan is about ten metres long, so a nudge inside its own footprint
+--- comes out in the same trailer.
+local SPAWN_ESCAPE_RINGS = { 4.0, 8.0, 12.0 }
+
+--- How many points are tried on each ring.
+local SPAWN_ESCAPE_PER_RING = 4
+
+--- The lowest height the ground is searched from, in metres above the point.
+---
+--- NOT Config.Match.spawnHeightOffset, which is where a player is HELD.
+--- Tying the two together made an operator's decision about how far somebody
+--- drops when the countdown ends into a decision about which storey the
+--- search finds first. Three metres clears a spawn Z authored slightly under
+--- its own surface, which is the case this low probe exists for; 50 and 200
+--- above it catch everything else.
+local GROUND_PROBE_LOW = 3.0
+
+--- Whether something solid is sitting on top of this spot.
+---
+--- IN A PLAYER'S WORDS: "in the trailer park i keep spawning in trailers".
+---
+--- GetGroundZFor_3dCoord -- which is what places everybody on a real-ground
+--- arena -- searches downward for TERRAIN and knows nothing about props. The
+--- trailer park is a real map location with trailers standing on it, so the
+--- probe cheerfully answered with the dirt UNDERNEATH one and the fighter was
+--- put down inside it. Both natives behaved exactly as documented.
+---
+--- A SHAPE TEST IS THE ONE THAT KNOWS ABOUT PROPS. Fired straight down from
+--- overhead, it stops at the first solid thing -- a trailer roof, a container,
+--- a wall -- so a hit well above the ground means this spot has something over
+--- it, and a spot with something over it is a spot somebody would arrive
+--- inside of.
+---
+--- FAILS OPEN. A shape test that answers nothing, or a build with no shape
+--- tests at all, leaves the point usable: the worst case then is what shipped
+--- before this existed, and refusing every spawn point in an arena would be
+--- very much worse than occasionally using a poor one.
+--- @param x number
+--- @param y number
+--- @param groundZ number -- where the terrain under this point is
+--- @return boolean blocked
+local function roofedOver(x, y, groundZ)
+    if type(StartExpensiveSynchronousShapeTestLosProbe) ~= 'function'
+        or type(GetShapeTestResult) ~= 'function'
+    then
+        return false
     end
-    return x, y, z, heading
+
+    -- FLAGS: the map, vehicles and objects. Peds are deliberately left out --
+    -- somebody standing on the spot is not a reason nobody may spawn there,
+    -- and the scatter exists to spread people out anyway.
+    --
+    -- THE NUMBERS, SPELLED OUT, because the first version of this said
+    -- exactly the sentence above and then wrote `1 + 2 + 8` -- which is the
+    -- map, vehicles and RAGDOLLS. It requested the one family the comment
+    -- disclaimed and omitted the one it claimed. The trailers that started
+    -- all this are baked map geometry, so flag 1 covered them and the report
+    -- really was fixed; what the wrong value quietly cost was every prop
+    -- this resource or any other SPAWNS -- a shipping container laid out as
+    -- cover reads as open sky to a probe that never asked about objects.
+    --
+    -- 1 IntersectWorld, 2 IntersectVehicles, 16 IntersectObjects.
+    -- Not 4 (peds) and not 8 (ragdolls): on the respawn path this runs
+    -- while the player is still a corpse, and their own body is not a roof.
+    local handle = StartExpensiveSynchronousShapeTestLosProbe(
+        x, y, groundZ + SPAWN_PROBE_UP,
+        x, y, groundZ + SPAWN_HEADROOM,
+        1 + 2 + 16, 0, 4)
+
+    local _, hit, endCoords = GetShapeTestResult(handle)
+    if hit ~= 1 and hit ~= true then return false end
+
+    -- READ WITHOUT INDEXING SOMETHING THAT CANNOT BE INDEXED. The first
+    -- version of this was `type(endCoords) == 'table' and tonumber(...) or
+    -- tonumber(endCoords and endCoords.z)` -- and the second half of that
+    -- indexes whatever it was handed. A number or a `true` back from a build
+    -- whose native answers differently throws out of here, out of the
+    -- placement, and out of the entry handler, which has already set the
+    -- dispatch flag and the friendly-fire hold: a player left standing in
+    -- the city, flagged as being in an arena they are not in.
+    --
+    -- The 'table' test was also the wrong question. In the CitizenFX runtime
+    -- a vector3 answers 'vector3' to `type`, never 'table' -- the same trap
+    -- four guards in this resource fell into before -- so on a real server
+    -- that branch never fired and every read came through the unguarded one.
+    local shape = type(endCoords)
+    local hitZ
+    if shape == 'vector3' or shape == 'vector4' or shape == 'table' or shape == 'userdata' then
+        hitZ = tonumber(endCoords.z)
+    end
+
+    -- FAILS OPEN, as the contract above says. A hit whose coordinate cannot
+    -- be read is an answer of nothing, and an answer of nothing leaves the
+    -- point usable -- this used to return `blocked`, which is the one exit
+    -- in here that failed the wrong way.
+    if hitZ == nil then return false end
+
+    -- A hit is only interesting if it is genuinely OVERHEAD.
+    return hitZ > groundZ + SPAWN_HEADROOM
+end
+
+--- The points to try, nearest first: the one we were given, then rings
+--- outward. Only the first is ever used unless something is over it.
+--- @param x number
+--- @param y number
+--- @return table[] points
+local function escapeRoute(x, y)
+    local points = { { x = x, y = y } }
+    for ring, distance in ipairs(SPAWN_ESCAPE_RINGS) do
+        -- TURNED HALF A STEP EACH RING, so the rings do not line up into
+        -- four spokes -- which would test the same four bearings three
+        -- times and miss everything between them.
+        local twist = (ring - 1) * math.pi / SPAWN_ESCAPE_PER_RING
+        for step = 1, SPAWN_ESCAPE_PER_RING do
+            local angle = twist + (step - 1) * math.pi * 2.0 / SPAWN_ESCAPE_PER_RING
+            points[#points + 1] = {
+                x = x + math.cos(angle) * distance,
+                y = y + math.sin(angle) * distance,
+            }
+        end
+    end
+    return points
+end
+
+--- A point inside the spawn's scatter radius.
+---
+--- IT DOES NOT LOOK FOR A ROOF, AND IT CANNOT. This is where the clearance
+--- check went first, and it was dead on both shipped arenas twice over:
+---
+---   THERE IS NOTHING TO REDRAW. The server sends `scatterRadius = 0.0` for
+---   any spawn that came out of the plan (server/match.lua), and both
+---   shipped arenas plan every spawn -- so `draw()` returns the same point
+---   every time. A retry loop with one candidate is not a search; it tested
+---   the same coordinate eight times and then used it.
+---
+---   AND THE WORLD IS NOT THERE YET. On entry this runs before the player
+---   has been moved -- they are still at the lobby, five kilometres from the
+---   trailer park -- and GetGroundZFor_3dCoord only answers about collision
+---   that has streamed in. It reported failure for every candidate, so the
+---   probe was never even reached.
+---
+--- Both of those are properties of WHERE the check was, not of the check.
+--- It lives in placeAt now: after the collision wait, next to the ground the
+--- decision needs.
+--- @param spawn table
+--- @param radius number|nil
+--- @return number x, number y, number z, number heading
+local function scatter(spawn, radius)
+    local baseX, baseY = spawn.x, spawn.y
+    local z, heading = spawn.z, spawn.w or 0.0
+
+    if not (radius and radius > 0.0) then return baseX, baseY, z, heading end
+
+    local angle = math.random() * math.pi * 2.0
+    local distance = math.sqrt(math.random()) * radius
+    return baseX + math.cos(angle) * distance,
+        baseY + math.sin(angle) * distance,
+        z, heading
 end
 
 --- Teleports and waits for the ground to exist. Without the collision wait
@@ -469,9 +631,10 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted, exactZ, 
     --   freeze is dropped: on entry that is the end of the countdown, and on
     --   a respawn it is immediately.
     --
-    -- Config.Match.spawnHeightOffset is therefore worth turning DOWN once a
-    -- sky arena is known to be solid underfoot: it costs nothing on ground
-    -- arenas and it is a visible drop on a built one.
+    -- Config.Match.spawnHeightOffset is a metre as shipped, which is a step
+    -- off a kerb rather than a drop: enough to keep a ped's origin out of
+    -- the prop it is standing on, not enough to be a fall when the freeze
+    -- comes off or a flare saying where a spawn is.
     local lift = tonumber(Config.Match.spawnHeightOffset) or 1.0
 
     FreezeEntityPosition(ped, true)
@@ -544,19 +707,84 @@ local function placeAt(ped, x, y, z, heading, leaveFrozen, stillWanted, exactZ, 
     -- question is asked from, and asking from further up costs nothing.
     -- Several are tried in the same frame: what makes them robust is
     -- starting from DIFFERENT heights, not from different frames.
-    local placed = false
-    for _, probe in ipairs({ lift, 50.0, 200.0 }) do
-        local found, groundZ = GetGroundZFor_3dCoord(x, y, z + probe, false)
-        -- `> -190.0` rejects the answer the game gives when it knows nothing:
-        -- the bottom of the world. `floorZ` rejects the other wrong answer --
-        -- real terrain that is genuinely there and is nowhere near this
-        -- arena, which is what an arena in the sky gets asked about.
-        local belowTheArena = floorZ ~= nil and groundZ and groundZ < floorZ
-        if found and groundZ and groundZ > -190.0 and not belowTheArena then
-            SetEntityCoordsNoOffset(ped, x, y, groundZ + 0.15, false, false, false)
-            placed = true
-            break
+    --
+    -- AND THE FIRST ONE IS NOT `lift`. It used to be, and that quietly made
+    -- Config.Match.spawnHeightOffset -- a setting about where a player is
+    -- HELD -- into the height the ground is searched from as well. Lowering
+    -- the hold from three metres to one therefore also lowered the first
+    -- probe, and the two are not the same decision: on an arena with a
+    -- second walkable surface between the spawn and fifty metres up -- an
+    -- overpass, a tunnel mouth, a tiered lot -- a first probe that starts
+    -- underground falls through to the 50 metre one, which searches down
+    -- from above the DECK and answers with the deck. The fighter is placed
+    -- on the wrong storey by a setting that has nothing to do with it.
+    --- The ground under one point, or nil where it is not known.
+    --- @return number|nil groundZ
+    local function groundUnder(px, py)
+        for _, probe in ipairs({ GROUND_PROBE_LOW, 50.0, 200.0 }) do
+            local found, groundZ = GetGroundZFor_3dCoord(px, py, z + probe, false)
+            -- `> -190.0` rejects the answer the game gives when it knows
+            -- nothing: the bottom of the world. `floorZ` rejects the other
+            -- wrong answer -- real terrain that is genuinely there and is
+            -- nowhere near this arena, which is what an arena in the sky
+            -- gets asked about.
+            local belowTheArena = floorZ ~= nil and groundZ and groundZ < floorZ
+            if found and groundZ and groundZ > -190.0 and not belowTheArena then
+                return groundZ
+            end
         end
+        return nil
+    end
+
+    -- AND NOT INSIDE ANYTHING. IN A PLAYER'S WORDS: "in the trailer park i
+    -- keep spawning in trailers".
+    --
+    -- GetGroundZFor_3dCoord above searches downward for TERRAIN and knows
+    -- nothing about what is standing on it, so on a real map location with
+    -- trailers on it the probe answers with the dirt UNDERNEATH one and the
+    -- fighter is put down inside it. Both natives behave exactly as
+    -- documented.
+    --
+    -- HERE, AND NOT WHERE THE POINT WAS DRAWN, for two reasons that each
+    -- killed the first attempt on their own: the collision wait above has
+    -- just run, so the geometry the shape test needs actually exists; and
+    -- this is a placement rather than a draw, so there is somewhere else to
+    -- go. A planned spawn arrives with no scatter radius at all -- the plan
+    -- already spread the roster and kept it clear of the arena's own cover
+    -- -- so nudging one at random was never available; moving a BLOCKED one
+    -- the shortest distance that clears it is.
+    --
+    -- THE SPACING THE PLAN BOUGHT IS SPENT ONLY WHERE IT HAS TO BE. The
+    -- first point tried is the one the plan chose, so a clear spawn costs
+    -- one shape test and moves nobody. The rings are walked nearest first,
+    -- so a blocked one gives up as little separation as will get it out.
+    local placed = false
+    local fallbackX, fallbackY, fallbackZ
+    for _, point in ipairs(escapeRoute(x, y)) do
+        local groundZ = groundUnder(point.x, point.y)
+        if groundZ then
+            -- THE FIRST POINT WITH KNOWN GROUND, kept whatever else happens.
+            -- On the ordinary path that is the planned spawn itself.
+            if fallbackZ == nil then
+                fallbackX, fallbackY, fallbackZ = point.x, point.y, groundZ
+            end
+            if not roofedOver(point.x, point.y, groundZ) then
+                SetEntityCoordsNoOffset(ped, point.x, point.y, groundZ + 0.15,
+                    false, false, false)
+                placed = true
+                break
+            end
+        end
+    end
+
+    -- FAILS OPEN, ONTO THE POINT WE WERE GIVEN. An arena with cover over
+    -- every ring is a worse round; an arena nobody can be placed in is no
+    -- round at all, and the planned point is a better answer than the
+    -- furthest ring of a failed search.
+    if not placed and fallbackZ then
+        SetEntityCoordsNoOffset(ped, fallbackX, fallbackY, fallbackZ + 0.15,
+            false, false, false)
+        placed = true
     end
 
     if not placed then
@@ -2476,6 +2704,25 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     local token = matchToken
     local ped = PlayerPedId()
 
+    -- HANDS AWAY, BEFORE ANYTHING ELSE HAPPENS TO THEM.
+    --
+    -- IN A PLAYER'S WORDS: "what if someone has a weapon in hand before a
+    -- match start and the match starts". They walk in still holding it. The
+    -- door moves their ITEMS into a stash on the server, and ox_inventory
+    -- reconciles the ped from the inventory a moment later -- but "a moment
+    -- later" is inside the start countdown, and what a player sees is
+    -- themselves standing in the arena with their own gun out, before the
+    -- arena has issued them anything.
+    --
+    -- HOLSTERED, NOT CONFISCATED, and the difference is the whole of why this
+    -- is one line rather than RemoveAllPedWeapons. ox_inventory owns the
+    -- weapons in this resource -- the item IS the weapon -- so wiping the ped
+    -- would destroy things a player still owns an item for on a server that
+    -- runs with the door OFF, which is the exact bug the comment on the exit
+    -- path a few hundred lines above exists to remember. Putting their hands
+    -- away costs them nothing and takes nothing.
+    SetCurrentPedWeapon(ped, UNARMED, true)
+
     -- Before anything can make a noise. The countdown is still inside the
     -- arena, and a shot fired during it is still a shot fired.
     ArenaDispatch.Enter(data.matchId)
@@ -2491,7 +2738,8 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- in the middle of an argument list is truncated to one -- so passing it
     -- inline alongside the freeze flag would hand placeAt an x and nothing
     -- else.
-    local sx, sy, sz, sheading = scatter(data.spawn, tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
+    local sx, sy, sz, sheading = scatter(data.spawn,
+        tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
 
     -- THE PLAYER IS MOVED FIRST, FROZEN, AND THE FLOOR IS BUILT AROUND THEM.
     --

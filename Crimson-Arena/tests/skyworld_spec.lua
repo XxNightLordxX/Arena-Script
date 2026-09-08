@@ -435,12 +435,29 @@ t.test('the hold is a sane height, so nothing can slide with it', function()
     -- is here so the rest can be written against the config safely.
     --
     -- Above zero: a ped placed level with a prop has its origin inside it
-    -- and falls through, which is the defect the hold exists for. Under
-    -- five: it is a drop the player takes when the countdown ends, and it
-    -- is also a flare visible across the arena saying where a spawn is.
-    local offset = tonumber(Sandbox.newArenaEnv().Config.Match.spawnHeightOffset) or 1.0
+    -- and falls through, which is the defect the hold exists for.
+    --
+    -- AND NOT MUCH ABOVE IT. IN A PLAYER'S WORDS: "ensure that in the
+    -- skydome and in the trailer park you dont spawn to low in props or to
+    -- high". The hold is released the instant the countdown ends, so it is
+    -- a drop the fighter takes at the moment the round starts -- and a
+    -- ceiling of five metres is a two-storey fall that lands them mid-fight.
+    -- A metre and a half is a step off a kerb: enough to clear the prop's
+    -- own surface, not enough to be a fall or a flare saying where a spawn
+    -- is. This is the one assertion in the file written against a number
+    -- rather than against the config, so it is what stops the setting and
+    -- the assertions sliding together.
+    -- THE RAW VALUE FIRST. `tonumber(...) or 1.0` supplies a passing answer
+    -- whenever the setting is missing or is not a number, so deleting
+    -- spawnHeightOffset from config.lua outright left this test green --
+    -- asserting a default this file made up rather than anything config says.
+    local raw = Sandbox.newArenaEnv().Config.Match.spawnHeightOffset
+    t.isNotNil(raw, 'spawnHeightOffset is gone from config, so this test is checking its own default')
+    t.equals(type(raw), 'number', 'spawnHeightOffset is not a number, and the lift is arithmetic')
+
+    local offset = tonumber(raw) or 1.0
     t.isTrue(offset > 0.0, ('spawnHeightOffset is %0.2f -- a ped placed level with the floor falls through it'):format(offset))
-    t.isTrue(offset <= 5.0, ('spawnHeightOffset is %0.2f -- that is a fall, and it broadcasts the spawn'):format(offset))
+    t.isTrue(offset <= 1.5, ('spawnHeightOffset is %0.2f -- that is a drop when the countdown ends, not a step'):format(offset))
 end)
 
 t.test('DEFECT: entering the skydome builds a floor and stands the player on it', function()

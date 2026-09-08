@@ -47,6 +47,7 @@
         "no_dropping_in_arena": "Not in here. Nothing leaves the arena.",
         "no_looting_in_arena": "Not in here. You fight with what you were issued.",
         "win_condition_unavailable": "This server does not offer that win condition.",
+        "win_condition_needs_clock": "Most kills is decided when the clock runs out, so the round needs one. Set a round length, or pick another win condition.",
         "tier_count_out_of_range": "This server does not have that many weapons in that tier.",
         "ladder_too_short": "A gun game needs at least two tiers to climb.",
         "score_limit_out_of_range": "This server does not allow a kill limit that size.",
@@ -82,6 +83,8 @@
         "ended_time_up": "Match over. Clock ran out.",
         "hours_shut_help": "The ~r~Arena~s~ is shut. It opens at %s.",
         "hours_shut_label": "Arena shut -- opens at %s",
+        "hours_shut_now_help": "The ~r~Arena~s~ is shut.",
+        "hours_shut_now_label": "Arena shut",
         "keep_out": "A match is being fought at %s. You have been moved outside it.",
         "label": "%s's %s",
         "left": "You walked out of the match."

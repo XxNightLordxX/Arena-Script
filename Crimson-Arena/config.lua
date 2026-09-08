@@ -20,17 +20,17 @@
        84   Lobby         The NPC players walk up to
       181   Schedule      Opening hours: when the door is actually open
       227   Match         Lives, timers, player counts, win condition
-      569   Teams         The sides, and whether they may be uneven
-      724   Modes         Free-for-all and team deathmatch
-      1076  DefaultMode   Which of them a new lobby opens on
-      1095  Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1313  UI            Panel colours, logo and title
-      1371  Permissions   Who may open a match, who may force-stop one
-      1452  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2024   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2527   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2537   Webhook       Optional: a Discord line per finished match
-     2574   Dispatch      Optional: keeping police and EMS out of the arena
+      592   Teams         The sides, and whether they may be uneven
+      747   Modes         Free-for-all and team deathmatch
+      1121  DefaultMode   Which of them a new lobby opens on
+      1140  Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1358  UI            Panel colours, logo and title
+      1416  Permissions   Who may open a match, who may force-stop one
+      1497  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2069   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2572   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2582   Webhook       Optional: a Discord line per finished match
+     2619   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -285,6 +285,13 @@ Config.Match = {
     -- the round lasts long enough for position and ammunition to matter.
     -- Watch roundTimeSeconds alongside it -- three lives each across a full
     -- lobby is a much longer fight than one.
+    --
+    -- ONLY 'last_standing' SPENDS THEM. Both of the other win conditions end
+    -- on a COUNT -- most kills when the clock stops, or first to the kill
+    -- limit -- and a round that eliminates people ends on the survivor
+    -- before the count is ever read. So this number is set, stored and
+    -- echoed back under all three, and read under one; the panel takes the
+    -- box away under the other two and says why. See `winCondition` below.
     -- Set a plain number here instead -- `lives = 3` -- to fix it for every
     -- match and take the choice away.
     lives = {
@@ -315,6 +322,18 @@ Config.Match = {
     -- as "the round never ends". So there is no `options` line to write --
     -- allowChoose offers all three -- and Arena.ValidateConfig names a
     -- `default` it does not recognise at start-up.
+    --
+    -- TWO OF THE THREE SPEND NO LIVES, and it is arithmetic rather than
+    -- taste. Both 'most_kills' and 'score_limit' are decided by a COUNT, and
+    -- a roster that can be eliminated runs out of players before the count
+    -- decides anything: `lives` above is simply not read under either, and
+    -- the panel takes its box away and says so.
+    --
+    -- AND 'most_kills' NEEDS A CLOCK. Nothing about the roster can end it,
+    -- so on a mode whose `roundTimeSeconds` resolves to 0 the round would
+    -- run until the last player walked out. A host who picks it without one
+    -- is refused at creation rather than dropped into a match that never
+    -- finishes.
     --
     -- A LADDER MODE IGNORES ALL OF IT. A gun game is won by topping the
     -- ladder or by its own clock, whatever is set here; see Config.Modes
@@ -363,28 +382,32 @@ Config.Match = {
     --
     -- Finding the real ground is a separate job and is handled by searching
     -- down from well overhead -- a maths query nobody is ever at, and the
-    -- part that actually fixes a spawn Z written below the surface. That
-    -- height is not configurable because it is not a gameplay decision.
-    -- RAISED FROM 1.0, because a metre was not clearing it.
+    -- part that actually fixes a spawn Z written below the surface.
     --
-    -- Three metres is still not a skydive -- nobody watching learns where
-    -- anybody spawned from it, which is the reason this is not simply set to
-    -- fifty -- but it is enough head-room that a ped placed a moment before
-    -- the ground finishes streaming falls onto terrain instead of through it.
+    -- A METRE, AND THAT IS THE WHOLE OF IT. IN A PLAYER'S WORDS: "ensure
+    -- that in the skydome and in the trailer park you dont spawn to low in
+    -- props or to high". A metre is a step off a kerb: enough to keep a
+    -- ped's origin out of the prop it is standing on, which is the failure
+    -- this exists for, and not enough to be a fall. This shipped at three
+    -- for a while, and three is a drop somebody takes at the exact moment
+    -- the countdown ends -- as well as a flare, visible across the arena,
+    -- saying where a spawn point is.
     --
-    -- This is the height a player is HELD at. It is not the height the ground
-    -- is searched from: that is fixed, much higher, and explained where the
-    -- probe happens in client/match.lua.
+    -- This is the height a player is HELD at, and nothing else. It is NOT
+    -- the height the ground is searched from: those are three fixed heights
+    -- in client/match.lua, none of them this one. They used to begin with
+    -- this setting, which quietly turned a decision about how far somebody
+    -- drops into a decision about which storey the ground search finds
+    -- first -- see GROUND_PROBE_LOW where the probe happens.
     --
     -- ON A GROUND ARENA NOBODY EVER SEES IT: the probe answers, and the
     -- player is put on the answer. On an arena that builds its own floor
     -- there is no probe to answer, so this is where they are really left and
     -- they fall it when the freeze drops -- at the end of the countdown on
-    -- entry, and at once on a respawn. Worth turning down to a metre once a
-    -- sky arena is confirmed solid underfoot; leave it here until then,
-    -- because the failure it guards against is falling out of the world and
-    -- the cost of it is a short drop.
-    spawnHeightOffset = 3.0,
+    -- entry, and at once on a respawn. tests/skyworld_spec.lua holds it
+    -- above zero and at or under a metre and a half, which is the band
+    -- between "inside the floor" and "a drop".
+    spawnHeightOffset = 1.0,
 
     -- THE RADAR, which replaced permanent blips.
     --
@@ -749,9 +772,24 @@ Config.Modes = {
     --
     -- A NOTE ON FARMING. There is no per-victim cap on this the way the gun
     -- game has one on its tiers, so two players who agree to trade deaths can
-    -- pump ammunition between them. In these modes a death costs a LIFE, so
-    -- the trade runs out on its own -- but on a server with generous lives,
-    -- or with `Config.Match.lives` unbounded, set this lower or to 0.
+    -- pump ammunition between them.
+    --
+    -- WHAT BOUNDS THE TRADE IS THE WIN CONDITION, and it is worth knowing
+    -- which one you are running. Under 'last_standing' a death costs a LIFE,
+    -- so the trade runs out on its own after `Config.Match.lives` of them.
+    -- Under 'score_limit' and 'most_kills' nobody is eliminated -- that is
+    -- the point of both rules -- so what ends it is the kill limit or the
+    -- round clock instead, and a long clock is a long trade. This used to
+    -- say a death always costs a life; that stopped being true of
+    -- 'score_limit' when it was added and of 'most_kills' when its lives
+    -- were taken off, and the note was left standing over both.
+    --
+    -- ON THE SHIPPED SETTINGS THE ROUNDS GO NOWHERE. `stripOnEntry` empties
+    -- the arena kit at the door and `blockDropsInArena` refuses to let a
+    -- fighter move anything out of their own inventory mid-match, so
+    -- whatever they pump between them dies with the round. Turn either of
+    -- those off and the trade becomes a real item farm: set this lower, or
+    -- to 0, on a server running either that way.
     ['ffa'] = {
         label = 'Free For All',
         description = 'Every player for themselves. Last one breathing takes the pot.',
@@ -1042,29 +1080,36 @@ Config.Modes = {
         -- the ladder ending the round outright, it would buy the whole pot
         -- in under a minute.
         --
-        -- 2 is deliberately generous to honest play -- killing the same
-        -- opponent twice in a round is ordinary -- and useless to a farm: a
-        -- seven-tier ladder needs seven credited kills to top, so at this
-        -- cap that is four different victims.
+        -- OFF ON THIS SERVER, AND THE REASON IS THE 1v1.
         --
-        -- WHICH IS WHY THE CAP HAS A FLOOR IT RAISES ITSELF TO. Four victims
-        -- means five players, and Config.Match.minPlayers ships at 2 -- so
-        -- taken literally this made the mode's own win condition unreachable
-        -- in a small lobby, and a four-man round always went to the clock
-        -- while somebody collected "no tier for that one" forever. The cap
-        -- is "spread your kills across the field", and a small field has
-        -- nowhere to spread: the server raises it to whatever one climber
-        -- would need against everybody else in the room. In a full lobby
-        -- that works out smaller than this number and changes nothing, and
-        -- it only ever loosens where a farm could not have paid anyway --
-        -- the accomplice in a two-man match is the only other stake there is.
+        -- The cap means "spread your kills across the field", and a field of
+        -- one has nowhere to spread. The server does raise it automatically
+        -- for small lobbies -- to whatever one climber would need against
+        -- everybody else in the room -- but that floor is deliberately
+        -- divided by at least two, so a straight 1v1 still could not top the
+        -- ladder however well anybody played. Somebody who wants to settle a
+        -- gun game head to head should be able to.
         --
-        -- `0` removes the cap, which is only sensible on a closed server.
-        -- A value that is NOT A NUMBER does not remove it: it falls back to
-        -- this default and Arena.ValidateConfig says so at start-up, because
-        -- a typo silently switching the anti-collusion rule off is the one
-        -- way this setting must not be able to fail.
-        maxTiersPerVictim = 2,
+        -- WHAT IT COSTS, PLAINLY. This is the anti-collusion rule, and off is
+        -- off: with an entry fee or bets running, two players can trade kills
+        -- and one of them tops the ladder in under a minute, which ends the
+        -- round and takes the pot. The server cannot see a kill happen -- it
+        -- is told who died and who they say killed them -- so nothing else in
+        -- this resource catches that. On a server where the people playing
+        -- are known to each other that is a fair trade; on an open one with
+        -- real money on the round it is not.
+        --
+        -- PUT IT BACK by writing a number here. `2` was the shipped value and
+        -- is generous to honest play -- killing the same opponent twice in a
+        -- round is ordinary -- while a seven-tier ladder at that cap needs
+        -- four different victims to top.
+        --
+        -- A value that is NOT A NUMBER does not mean off: it falls back to
+        -- the built-in default and Arena.ValidateConfig says so at start-up,
+        -- because a typo silently switching the anti-collusion rule off is
+        -- the one way this setting must not be able to fail. Only a real `0`
+        -- removes it, which is what this is.
+        maxTiersPerVictim = 0,
 
         -- Tell the room when somebody reaches the top tier, so the last
         -- stretch is a race everybody can see rather than a surprise ending.

@@ -217,6 +217,15 @@ local NATIVE_DEFAULTS = {
     -- answer rather than a nil call -- and a fixture that DOES model them
     -- overrides this, the same as every other native here.
     GetPlayerTeam = function() return -1 end,
+    --- THE SPAWN CLEARANCE PROBE, answering "nothing overhead".
+    ---
+    --- Defaulted here rather than in each spec because the answer every spec
+    --- that is not ABOUT spawn clearance wants is the same one: open sky. A
+    --- fixture missing it does not fail an assertion, it throws out of the
+    --- middle of the spawn picker -- and the fail-open direction is what the
+    --- client itself takes when a build has no shape tests at all.
+    StartExpensiveSynchronousShapeTestLosProbe = function() return 0 end,
+    GetShapeTestResult = function() return 2, 0, { x = 0.0, y = 0.0, z = 0.0 }, nil, 0 end,
 }
 
 function Sandbox.newEnv(overrides)

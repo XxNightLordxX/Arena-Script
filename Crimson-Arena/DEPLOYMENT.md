@@ -242,10 +242,10 @@ is a kilometre of air.
       neither should ever happen with the wall standing.
 - [ ] Die once. You come back **on the floor**, not on the terrain a kilometre
       below and not under the platform. **Expect a short drop on landing** —
-      you are placed `Config.Match.spawnHeightOffset` above the surface (3 m as
-      shipped) and released. Turn it down to `1.0` once you are satisfied the
-      floor is solid; it exists because a ped placed level with a prop has its
-      origin inside it and falls through, which is exactly what was reported.
+      you are placed `Config.Match.spawnHeightOffset` above the surface (1 m as
+      shipped) and released — a step off a kerb, not a fall. It exists because
+      a ped placed level with a prop has its origin inside it and falls
+      through, which is exactly what was reported.
 - [ ] End the match. **Fly back to `1500, 3000, 1201`. Nothing is left
       standing.** A prop nobody deletes stays there for the rest of the session,
       in an instance you cannot normally reach to look at it.
@@ -287,9 +287,16 @@ wrong here is something the resource did that it should not have.
       through a caravan. This arena's `cover` block ships switched off for that
       reason; it is left laid out in `config.lua` in case you ever want it.
 - [ ] **You are standing on the ground**, at the height the ground actually is,
-      not three metres above it. The lift in the sky arena is for a floor that
-      has to be built; on real ground the game is asked where the ground is and
-      you are put on the answer.
+      not hanging above it. The lift is for a floor that has to be built; on
+      real ground the game is asked where the ground is and you are put on the
+      answer.
+- [ ] **You are not inside a caravan.** Spawn, die, and spawn again half a
+      dozen times, walking a few paces each time to check what is over your
+      head. The ground search knows about terrain and nothing else, so a
+      point with a trailer standing on it reads as open dirt; a fighter put
+      there is moved out to the nearest clear ring before they are set down.
+      If you land inside one anyway, say where — the escape rings are 4, 8
+      and 12 metres, and something bigger than that needs a wider one.
 - [ ] Walk out to the far rows of vans, the track in, and the fence line.
       **No bleed warning inside the park.** The boundary is 100 m and grows to
       135 at a full roster; sixty metres used to reach the spawn ring and very

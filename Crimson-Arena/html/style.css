@@ -1717,10 +1717,12 @@ option {
     left: 50%;
     transform: translate(-50%, -50%);
     display: grid;
-    /* Header, tab bar, then everything else in one scrolling row. Only one
-       screen below is ever shown at a time, so they share that row rather
-       than each claiming one. */
-    grid-template-rows: auto auto 1fr;
+    /* Header, the doors strip, the tab bar, then whichever screen is up.
+       Only one screen is ever shown at a time, so they share that last row
+       rather than each claiming one -- and a closed arena, which puts the tab
+       bar away entirely, gives the row back to its one screen rather than
+       leaving a gap where the tabs were. */
+    grid-template-rows: auto auto auto 1fr;
     width: min(56rem, 92vw);
     height: min(44rem, 88vh);
     background: var(--bg);
@@ -1763,9 +1765,10 @@ option {
     text-transform: uppercase;
 }
 
-/* THE DOORS, at the top of the match list because it is a fact about the
-   whole arena rather than about any one round. Its own strip rather than a
-   card: it is not a thing to click INTO. */
+/* THE DOORS, above the tabs because it is a fact about the whole arena
+   rather than about any one round -- and because it has to stay reachable
+   when the arena is CLOSED and every other screen is put away. Its own strip
+   rather than a card: it is not a thing to click INTO. */
 #admin-doors {
     display: flex;
     align-items: center;
@@ -1797,7 +1800,8 @@ option {
 #admin-detail,
 #admin-player,
 #admin-stashes,
-#admin-stash-detail {
+#admin-stash-detail,
+#admin-shut {
     display: flex;
     flex-direction: column;
     gap: 0.8rem;
@@ -1822,7 +1826,8 @@ option {
    by being moved into a different section. */
 #admin-detail-title,
 #admin-player-title,
-#admin-stash-title {
+#admin-stash-title,
+#admin-shut-title {
     margin: 0;
     font-family: var(--font-display);
     font-size: 1.4rem;
@@ -1952,4 +1957,74 @@ option {
         grid-column: 1;
         grid-row: auto;
     }
+}
+
+/* THE PLAYER'S CLOSED SCREEN. It replaces the tabs and the whole body, so it
+   claims the row they were sharing -- and it is the only thing a player sees
+   for the fourteen hours a day the shipped schedule keeps the arena shut, so
+   it is worth looking like something.
+
+   IT SHIPPED WITH NO RULES AT ALL, which is the same defect as the admin
+   tablet's and was caught the same way: the stylesheet guard walks the
+   tablet's ids and had never been pointed at this one. */
+#arena-shut {
+    grid-row: 2 / span 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.2rem;
+    min-height: 0;
+    padding: 2rem 1.2rem;
+    text-align: center;
+    overflow-y: auto;
+}
+
+#arena-shut-title {
+    margin: 0;
+    max-width: 30ch;
+    font-family: var(--font-display);
+    /* BIG. A player who walked to the arena and found it shut should be able
+       to read why from where they are standing. */
+    font-size: 3.2rem;
+    line-height: 1.1;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-wrap: balance;
+    color: var(--accent-bright);
+}
+
+#arena-shut-why {
+    margin: 0;
+    max-width: 46ch;
+    font-size: 1.15rem;
+    line-height: 1.5;
+}
+
+#arena-shut-hours {
+    margin: 0;
+    max-width: 52ch;
+    color: var(--text-muted);
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* THE CLOSED SCREEN. Three short lines and nothing else, so what it says is
+   unmissable -- the whole point of drawing it INSTEAD of the tablet is that
+   an operator should not have to work out why the place is empty. */
+#admin-shut {
+    justify-content: center;
+    text-align: center;
+    gap: 1rem;
+}
+
+#admin-shut-title {
+    font-size: 2.4rem;
+    /* The one lit thing on a screen that is otherwise deliberately bare. */
+    color: var(--accent-bright);
+}
+
+#admin-shut .hint {
+    flex: 0 0 auto;
+    font-size: 1rem;
 }

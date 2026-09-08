@@ -30,6 +30,43 @@ print('stashscan_spec')
 ---   control.rows    -- what the name query answers with
 ---   control.fail    -- the query answers a non-table, as a broken read does
 ---   control.contents -- what each stash holds, by stash name
+--- The rows a MySQL `LIKE` pattern would really return.
+---
+--- `%` is any run of characters, `_` is exactly one, and a backslash escapes
+--- either -- which is the whole of what the resource's escaping is for, so a
+--- fixture that ignores the pattern cannot be asked whether the escaping
+--- works.
+--- @param pattern any
+--- @param rows table[]
+--- @return table[]
+local function matching(pattern, rows)
+    if type(pattern) ~= 'string' then return {} end
+
+    local out, lua = {}, '^'
+    local index = 1
+    while index <= #pattern do
+        local char = pattern:sub(index, index)
+        if char == '\\' then
+            -- Escaped: the next character is a literal, whatever it is.
+            index = index + 1
+            lua = lua .. pattern:sub(index, index):gsub('%W', '%%%0')
+        elseif char == '%' then
+            lua = lua .. '.*'
+        elseif char == '_' then
+            lua = lua .. '.'
+        else
+            lua = lua .. char:gsub('%W', '%%%0')
+        end
+        index = index + 1
+    end
+    lua = lua .. '$'
+
+    for _, row in ipairs(rows) do
+        if type(row.name) == 'string' and row.name:find(lua) then out[#out + 1] = row end
+    end
+    return out
+end
+
 --- @param mutate fun(config: table)?
 local function newAmmo(control, mutate)
     control = control or {}
@@ -74,7 +111,24 @@ local function newAmmo(control, mutate)
                     queries[#queries + 1] = { sql = sql, params = params }
                     if type(cb) ~= 'function' then return end
                     if control.fail then return cb(false) end
-                    cb(control.rows or {})
+
+                    -- THE PATTERN IS APPLIED, NOT JUST RECORDED.
+                    --
+                    -- This double used to answer `control.rows` whatever was
+                    -- asked, which made the file's own "and the query still
+                    -- matches this arena's own stashes" test -- written and
+                    -- labelled as the control for the escaping test above it
+                    -- -- incapable of failing. Escaping the prefix into
+                    -- something that matches literally nothing left the suite
+                    -- green while the real screen would list none.
+                    local rows = matching(params and params[1], control.rows or {})
+                    cb(rows)
+                    -- A DATABASE THAT ANSWERS TWICE. oxmysql should not, and
+                    -- the resource must survive one that does -- which is
+                    -- what the `answered` latch is for. Without this the
+                    -- fixture had exactly one path to the callback, so the
+                    -- test named for that latch could not fail.
+                    if control.answerTwice then cb(rows) end
                 end,
             },
         }, { __call = function() end }),
@@ -264,6 +318,23 @@ t.test('and a scan answers once and once only', function()
     local answered = 0
     f.ammo.AllStashes(function() answered = answered + 1 end)
     t.equals(answered, 1, ('the callback ran %d times'):format(answered))
+end)
+
+t.test('and a database that answers TWICE is only listened to once', function()
+    -- The latch exists because four paths can reach `finish` -- the query's
+    -- callback, the two fallbacks either side of it, and the watchdog -- and
+    -- a second answer would open every stash a second time and redraw a
+    -- screen the admin may have moved on inside.
+    local f = newAmmo({
+        rows = { row('crimson_arena_CID001', 'CID001') },
+        contents = { crimson_arena_CID001 = { { name = 'phone', count = 1 } } },
+        answerTwice = true,
+    })
+
+    local answered = 0
+    f.ammo.AllStashes(function() answered = answered + 1 end)
+
+    t.equals(answered, 1, ('the caller was answered %d times'):format(answered))
 end)
 
 os.exit(t.summary())

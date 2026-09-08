@@ -418,7 +418,11 @@ t.test('reviving puts one fighter back on their feet', function()
     s.fire('adminRevive', 1, { target = 2 })
 
     t.isTrue(s.lobby.Get(id).players[2].alive, 'the roster still says they are down')
-    t.equals(s.revived()[1], 2, 'the medical script was never told')
+    -- THE LAST ONE, not the first: everybody is revived once on the way into
+    -- the arena now, so the first entry in this list is that rather than the
+    -- button this test pressed.
+    local told = s.revived()
+    t.equals(told[#told], 2, 'the medical script was never told')
 end)
 
 t.test('and nobody outside a match can be revived through it', function()
@@ -755,6 +759,46 @@ t.test('THE BUG: reviving an ELIMINATED fighter put them back in the running', f
         .. 'be crowned and paid the pot without firing a shot')
 end)
 
+t.test('THE REPORT: and a fighter down during the START COUNTDOWN can be revived', function()
+    -- IN A PLAYER'S WORDS: "i was unable to use arenaadmin tablet to revive
+    -- them", of somebody killed before the match started.
+    --
+    -- The guard read `state == 'live'`, and the start countdown is
+    -- `countdown` -- everybody standing in the arena, frozen, waiting for the
+    -- guns. Somebody who arrived down is exactly the person an admin is
+    -- reaching for at that moment, and the tablet refused: the medical revive
+    -- went out while the roster went on calling them dead, so they stood up
+    -- and the round still treated them as a corpse.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    t.equals(s.lobby.Get(id).state, 'countdown', 'the round is not in its countdown')
+
+    local row = s.lobby.Get(id).players[2]
+    row.alive = false
+
+    s.fire('adminRevive', 1, { target = 2 })
+
+    t.isTrue(s.lobby.Get(id).players[2].alive,
+        'a fighter down in the start countdown could not be put back on their feet')
+end)
+
+t.test('and a lobby that has not started is still refused', function()
+    -- Nobody is in an arena then, so there is no round standing to restore --
+    -- and the medical revive is /arenarevive's job, not this screen's.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    t.equals(s.lobby.Get(id).state, 'lobby', 'the match already started')
+
+    local row = s.lobby.Get(id).players[2]
+    row.alive = false
+
+    s.fire('adminRevive', 1, { target = 2 })
+
+    t.isFalse(s.lobby.Get(id).players[2].alive,
+        'a lobby that has not begun had a round standing restored in it')
+end)
+
 t.test('and is still picked up off the floor, because that is what the button says', function()
     -- The two halves are separate on purpose. Standing somebody up medically
     -- is never the wrong thing to do; putting them back into a round that has
@@ -769,7 +813,11 @@ t.test('and is still picked up off the floor, because that is what the button sa
     row.lives = 0
 
     s.fire('adminRevive', 1, { target = 2 })
-    t.equals(s.revived()[1], 2, 'the medical script was never told')
+    -- THE LAST ONE, not the first: everybody is revived once on the way into
+    -- the arena now, so the first entry in this list is that rather than the
+    -- button this test pressed.
+    local told = s.revived()
+    t.equals(told[#told], 2, 'the medical script was never told')
 end)
 
 t.test('and a fighter with lives LEFT is still put back into the round', function()
@@ -845,6 +893,77 @@ t.test('and a scan still in flight when its admin leaves is dropped', function()
 
     t.equals(#s.sentNamed('adminState'), before,
         'a scan was pushed at a server id whose admin had already left')
+end)
+
+-- ======================================================================
+-- AND THE DOORS ARE ON EVERY PUSH
+--
+-- The tablet has a switch for them and draws a whole screen off them, and a
+-- switch that cannot show its own state is a switch nobody can trust.
+-- ======================================================================
+
+t.test('the tablet is told whether the arena is open, and who decided that', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminState', 1, {})
+    local payload = s.lastNamed('adminState').payload
+
+    t.isTrue(payload.hoursOpen, 'the tablet was not told the arena is open')
+    t.isNil(payload.hoursForced, 'it was told somebody had decided that, and nobody had')
+end)
+
+t.test('and the same on the very first draw, not only on a refresh', function()
+    -- The command opens the screen before the stash sweep answers. A doors
+    -- state that only arrived with the refresh would leave the first frame
+    -- drawing a closed arena as open, or the other way about.
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.command('arenaadmin', 1, {})
+    local opened = s.lastNamed('openAdmin').payload
+
+    t.isTrue(opened.hoursOpen, 'the first draw was not told whether the arena is open')
+end)
+
+t.test('and it carries the HOURS, so a closed arena can say what it is closed until', function()
+    -- A field the server does not send is a field the screen cannot draw, and
+    -- both ends look correct while it is missing. This resource has shipped
+    -- that bug more than once.
+    -- NO MATCH OPENED, deliberately: with hours enforced this window may well
+    -- be shut at the moment the suite runs, and a lobby that could not be
+    -- created would fail this test for a reason it is not about.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = 0 }
+    end)
+
+    s.fire('adminState', 1, {})
+    local payload = s.lastNamed('adminState').payload
+
+    t.equals(payload.hoursLine, '05:00-07:00', 'the schedule did not reach the screen')
+end)
+
+t.test('and says so plainly on a server that keeps no hours at all', function()
+    -- Not the same as "open all day" said badly: there is no window to quote,
+    -- and the screen has its own words for that.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = false, windows = {}, offsetHours = 0 }
+    end)
+
+    s.fire('adminState', 1, {})
+    t.isNil(s.lastNamed('adminState').payload.hoursLine,
+        'a server keeping no hours sent some anyway')
+end)
+
+t.test('and an admin closing it is reported back as an admin closing it', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    local payload = s.lastNamed('adminState').payload
+    t.isFalse(payload.hoursOpen, 'the tablet still thinks the arena is open')
+    t.equals(payload.hoursForced, 'shut', 'and cannot tell an admin closed it')
 end)
 
 os.exit(t.summary())

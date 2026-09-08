@@ -532,9 +532,19 @@ t.test('an eliminated player is revived for the medical script and NOT released'
     local match = newMatch(f, 2)
     goLive(f, match)
 
+    -- COUNTED FROM THE DEATH, not from the start of time: everybody is
+    -- revived once on the way INTO the arena now -- nobody starts a round
+    -- dead -- so a fixed total here would be measuring that entry revive as
+    -- well as the one this test is about.
+    --
+    -- AND AS A DELTA, not as `>= 1`. The entry revive has already happened
+    -- by this line, so `>= 1` was satisfied before OnDeath was called at all
+    -- -- deleting the elimination revive outright left this test green.
+    local before = f.lastRevive(2)
     t.isTrue(f.M.OnDeath(2, 1))
 
-    t.equals(f.lastRevive(2), 1, 'the eliminated player was never revived for the medical script')
+    t.equals(f.lastRevive(2), before + 1,
+        'the eliminated player was never revived for the medical script')
     t.isNil(f.lastPayload('crimson_arena:client:respawn', 2),
         'an eliminated player was sent a respawn, which is what releases the hold')
 end)
@@ -894,6 +904,10 @@ local function newClientFixture(mutate)
         wiped = 0,
         --- Every weapon removed one at a time, in order.
         takenBack = {},
+        --- Every SetCurrentPedWeapon, in order. The first one on the way into
+        --- an arena is what says whether the player walked in holding their
+        --- own gun.
+        selected = {},
         disabled = {},
         clock = 3600000,
         --- What GetPedSourceOfDeath answers. 900 keeps the ordinary
@@ -912,7 +926,37 @@ local function newClientFixture(mutate)
         -- Where the player has been put, in order. A placement that happens
         -- AFTER they have gone home is the defect the last test covers.
         placements = {},
+        --- THE DICE, when a test needs to know where somebody landed.
+        ---
+        --- The spawn scatter draws two numbers per point -- an angle and a
+        --- distance -- so a list here is read in pairs and cycles when it
+        --- runs out. Left nil, the real math.random is used and the scatter
+        --- is as random as it is on a server, which is what every test that
+        --- is not ABOUT the scatter wants.
+        randomDraws = nil,
+        --- Every spawn-clearance probe fired, in order. An arena that builds
+        --- its own floor must fire none at all.
+        probes = {},
     }
+
+    --- The scatter's own dice, replaced only when a test loaded some.
+    local nextDraw = 0
+    local function steeredRandom(lower, upper)
+        local rolls = f.randomDraws
+        -- ONLY THE ARGUMENT-LESS FORM is steered. math.random(a, b) is a
+        -- different question -- pick an integer in a range -- and the code
+        -- that asks it wants a real answer. One guard, not two: with `lower`
+        -- nil a `upper` on its own is an error in math.random anyway, so a
+        -- second branch for it could never be reached.
+        if lower ~= nil then return math.random(lower, upper) end
+        if type(rolls) ~= 'table' or #rolls == 0 then return math.random() end
+        -- READ IN PAIRS, so a list with an odd number in it swaps the angle
+        -- and the distance round on the second lap and every assertion about
+        -- where somebody landed quietly changes meaning.
+        assert(#rolls % 2 == 0, 'randomDraws is read in pairs -- an angle and a distance')
+        nextDraw = nextDraw % #rolls + 1
+        return rolls[nextDraw]
+    end
 
     local env = Sandbox.newArenaEnv({
         CreateThread = runner.CreateThread,
@@ -930,6 +974,12 @@ local function newClientFixture(mutate)
         GetResourceState = function() return 'missing' end,
 
         joaat = function(name) return name end,
+
+        -- `math` ITSELF, so the scatter's dice can be loaded. Everything
+        -- else on the table is the real one: only the argument-less
+        -- math.random() the scatter uses is steered, and only when a test
+        -- has said what it should roll.
+        math = setmetatable({ random = steeredRandom }, { __index = math }),
 
         PlayerPedId = function() return f.ped end,
         IsEntityDead = function() return f.dead end,
@@ -956,7 +1006,46 @@ local function newClientFixture(mutate)
         SetEntityHeading = function() end,
         RequestCollisionAtCoord = function() end,
         HasCollisionLoadedAroundEntity = function() return f.groundReady end,
-        GetGroundZFor_3dCoord = function() return false, nil end,
+        -- SETTABLE, like every other native here that a test needs to steer.
+        -- Nil means "the ground is not known", which is the default and the
+        -- case placeAt's fallback exists for.
+        GetGroundZFor_3dCoord = function()
+            if f.groundZ == nil then return false, nil end
+            return true, f.groundZ
+        end,
+        -- THE SPAWN CLEARANCE PROBE. The handle carries the point it was
+        -- asked about, so the result can answer per point -- which is the
+        -- whole question: is THIS spot under a trailer.
+        -- THE FLAGS ARE RECORDED TOO. This stub took only x1 and y1 and
+        -- threw the rest away, so the value telling the engine WHAT to look
+        -- for was the one argument no test could see -- and it shipped
+        -- wrong: `1 + 2 + 8` is the map, vehicles and ragdolls, where the
+        -- comment above the call claimed objects and disclaimed peds.
+        StartExpensiveSynchronousShapeTestLosProbe = function(x1, y1, z1, x2, y2, z2, flags)
+            f.probes[#f.probes + 1] = {
+                x = x1, y = y1, fromZ = z1, toZ = z2, flags = flags,
+            }
+            return { x = x1, y = y1 }
+        end,
+        GetShapeTestResult = function(handle)
+            -- A HIT WHOSE COORDINATE IS NOT A COORDINATE. `f.shapeAnswer` is
+            -- what a build whose native answers in a shape this code does
+            -- not expect hands back -- a number, a boolean, a string. The
+            -- read used to index it, which threw out of the whole entry.
+            if f.shapeAnswer ~= nil then return 2, 1, f.shapeAnswer end
+
+            local within = f.roofedWithin
+            if within == nil or type(handle) ~= 'table' then
+                return 2, 0, { x = 0.0, y = 0.0, z = 0.0 }
+            end
+            local dx = (handle.x or 0.0) - (f.roofedAtX or 0.0)
+            local dy = (handle.y or 0.0) - (f.roofedAtY or 0.0)
+            if math.sqrt(dx * dx + dy * dy) <= within then
+                -- Hit, well above the ground: a roof.
+                return 2, 1, { x = handle.x, y = handle.y, z = (f.groundZ or 0.0) + 10.0 }
+            end
+            return 2, 0, { x = 0.0, y = 0.0, z = 0.0 }
+        end,
         -- Frozen, so placeAt's five-second bail-out never trips and
         -- `groundReady` stays the only thing that ends the wait.
         -- A REAL CLOCK the tests can move. Frozen at zero, every deadline
@@ -975,7 +1064,11 @@ local function newClientFixture(mutate)
         -- loadout says -- on entry or on any life after it.
         SetPedArmour = function(_ped, value) f.armour = value end,
         SetEntityHealth = function(_ped, value) f.health = value end,
-        SetCurrentPedWeapon = function() end,
+        -- RECORDED, because a stub that answers nothing cannot tell "the
+        -- arena put this player's hands away on the way in" from "it did
+        -- not", and that is a real question about what somebody walks into
+        -- the arena holding.
+        SetCurrentPedWeapon = function(_ped, hash) f.selected[#f.selected + 1] = hash end,
         GiveWeaponComponentToPed = function() end,
         SetPedWeaponTintIndex = function() end,
         -- RECORDED, for the same reason SetPedArmour above is. These two are
@@ -2269,5 +2362,380 @@ t.test('and the victim cannot name themselves however the death was spotted', fu
     t.equals(#reports, 1, 'the death was not reported')
     t.isNil(reports[1].payload.killerServerId, 'the victim named themselves as their own killer')
 end)
+
+
+-- ======================================================================
+-- NOBODY WALKS IN HOLDING THEIR OWN GUN
+-- ======================================================================
+
+t.test('THE REPORT: a player holding a weapon when the round starts is emptied', function()
+    -- IN A PLAYER'S WORDS: "what if someone has a weapon in hand before a
+    -- match start and the match starts so that needs fixed".
+    --
+    -- ox_inventory owns the weapons here -- the item IS the weapon -- so
+    -- nothing between the lobby and the arena floor looked at what was
+    -- already in somebody's hands. They walked in with it and opened the
+    -- round holding a gun the arena never issued them anything for.
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+
+    t.isTrue(#f.selected > 0, 'nothing was ever done to what the player is holding')
+    t.equals(f.selected[1], f.env.joaat('WEAPON_UNARMED'),
+        'the first thing the arena did to their hands was not to empty them')
+end)
+
+t.test('and it is HOLSTERED, not confiscated', function()
+    -- ox_inventory owns the weapons in this resource -- the item IS the
+    -- weapon -- so wiping the ped on the way IN would destroy things a
+    -- player still owns an item for on a server running with the door off.
+    -- That is the same mistake the exit path made once and carries a
+    -- comment about.
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+
+    -- READ ON A RUN WHERE THE HOLSTER DEMONSTRABLY HAPPENED. On its own,
+    -- "nothing was wiped" was already true before any of this existed --
+    -- entry never called RemoveAllPedWeapons -- so deleting the holster left
+    -- this test green. The two halves have to be asserted together, or this
+    -- one is a claim about a code path that is not running.
+    t.equals(f.selected[1], f.env.joaat('WEAPON_UNARMED'),
+        'their hands were never emptied, so there is no holstering here to be the gentle version of')
+    t.equals(f.wiped or 0, 0,
+        'the arena wiped the ped on the way in, which destroys weapons the player owns')
+end)
+
+-- ======================================================================
+-- NOBODY STARTS A ROUND DEAD
+-- ======================================================================
+
+t.test('THE REPORT: somebody killed before the match starts is stood up on entry', function()
+    -- IN A PLAYER'S WORDS: "if i kill someone prior to a match start they
+    -- spawn in dead".
+    --
+    -- Being shot in the street is a thing that happens to somebody queued
+    -- for a round, and nothing between the lobby and the arena floor looked
+    -- at whether they were on their feet. They were teleported in, frozen
+    -- for the countdown, and then lay there for the whole match while
+    -- everybody else fought over them.
+    local f = newFixture(instantRound)
+    local match = newMatch(f, 2)
+
+    goLive(f, match)
+
+    t.isTrue(f.lastRevive(1) >= 1, 'fighter 1 was placed in the arena without being stood up')
+    t.isTrue(f.lastRevive(2) >= 1, 'and neither was fighter 2')
+end)
+
+t.test('and it is the medical script that does it, not a revive of our own', function()
+    -- This resource deliberately has no revive of its own -- it was removed
+    -- so a server's own ambulance script decides what standing somebody up
+    -- means. The entry has to go through the same door as the respawn and
+    -- the admin tablet, or it is that removed revive coming back by the side.
+    local f = newFixture(instantRound)
+    local match = newMatch(f, 2)
+    goLive(f, match)
+
+    -- The fixture records ArenaDispatch.Revive, which is the handoff.
+    t.isTrue(f.lastRevive(1) >= 1,
+        'the entry stood a player up without telling the medical script')
+
+    -- AND THE NEGATIVE THIS TEST IS NAMED FOR. The line above is a strict
+    -- subset of the test before it -- both go red on the same deletion, so
+    -- alone it was a duplicate. What is actually being claimed is that the
+    -- entry has no revive OF ITS OWN, and the tell for one would be the
+    -- server running a death path on somebody who never died.
+    t.isNil(f.lastPayload('crimson_arena:client:respawn', 1),
+        'the entry sent a respawn of its own instead of handing off to the medical script')
+    t.isNil(f.lastPayload('crimson_arena:client:eliminated', 1),
+        'the entry ran the elimination path on a player who never died')
+end)
+
+-- ======================================================================
+-- NOBODY IS PUT DOWN INSIDE THE SCENERY
+-- ======================================================================
+--
+-- IN A PLAYER'S WORDS: "in the trailer park i keep spawning in trailers".
+--
+-- THESE SEND `scatterRadius = 0.0`, WHICH IS WHAT THE SERVER REALLY SENDS.
+-- The first version of this section passed 12.0 and the whole feature was
+-- tested against a number production never uses: both shipped arenas plan
+-- every spawn, and a planned spawn is sent with no scatter at all
+-- (server/match.lua) precisely so the client does not undo the spacing the
+-- plan just worked out. A clearance check written as "redraw inside the
+-- scatter radius" therefore had one candidate and could not move anybody --
+-- which is why the check now lives in placeAt, next to the ground, and
+-- steps OUTWARD from the planned point instead of redrawing.
+
+--- How many points placeAt tries: the one it was given, then the rings.
+--- Mirrored from client/match.lua's SPAWN_ESCAPE_RINGS and
+--- SPAWN_ESCAPE_PER_RING.
+local SPAWN_ESCAPE_POINTS = 1 + 3 * 4
+
+--- A client on flat ground with a roof over everything within
+--- `blockedRadius` of the spawn point, and open sky outside it.
+--- @param blockedRadius number
+--- @return table f
+local function worldWithARoof(blockedRadius)
+    local f = newClientFixture()
+    f.groundZ = 30.0
+    f.roofedAtX, f.roofedAtY = 10.0, 20.0
+    f.roofedWithin = blockedRadius
+    return f
+end
+
+--- Where the fighter was actually put down.
+local function landedAt(f)
+    return f.placements[#f.placements]
+end
+
+--- How far from the planned spawn point they ended up.
+local function movedBy(f)
+    local placed = landedAt(f)
+    if not placed then return nil end
+    local dx, dy = placed.x - 10.0, placed.y - 20.0
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+--- One fighter walked into an arena, on the payload the server really sends
+--- for a planned spawn: the point, and no scatter.
+local function enterTrailerPark(f, arenaKey)
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        arenaKey = arenaKey or 'trailerpark',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+end
+
+t.test('THE REPORT: a fighter is moved out from under a trailer', function()
+    -- GetGroundZFor_3dCoord searches downward for TERRAIN and knows nothing
+    -- about what is standing on it, so on a real map location with trailers
+    -- on it the probe answered with the dirt UNDERNEATH one and the fighter
+    -- was put down inside it. Both natives behaved exactly as documented.
+    --
+    -- Three metres of cover: the planned point is under it, the first ring
+    -- at four metres is not.
+    local f = worldWithARoof(3.0)
+
+    enterTrailerPark(f)
+
+    local placed = landedAt(f)
+    t.isNotNil(placed, 'the fighter was never placed anywhere')
+    t.isTrue(movedBy(f) > 3.0,
+        'the fighter was put down under the roof, which is the inside of a trailer')
+end)
+
+t.test('and moved as little as will clear it, because the spacing was earned',
+    function()
+        -- THE PLAN ALREADY SPREAD THIS ROSTER. Every metre the escape spends
+        -- is a metre of separation the server worked out and this gave back,
+        -- so the rings are walked nearest first and the search stops at the
+        -- first clear point rather than the best one.
+        local f = worldWithARoof(3.0)
+
+        enterTrailerPark(f)
+
+        t.isTrue(movedBy(f) < 4.5,
+            'a three-metre obstruction moved the fighter further than the first ring')
+    end)
+
+t.test('and further out when the near ring is under it too', function()
+    -- The other direction: an escape that only ever tried one distance
+    -- would pass the test above and leave anybody under something bigger
+    -- than four metres exactly where they were. A caravan is about ten
+    -- metres long, which is the whole reason there is more than one ring.
+    local f = worldWithARoof(5.0)
+
+    enterTrailerPark(f)
+
+    t.isTrue(movedBy(f) > 5.0,
+        'the fighter was left under a five-metre roof because only one ring was tried')
+    t.isTrue(movedBy(f) < 8.5, 'and was moved further than the ring that cleared it')
+end)
+
+t.test('and an arena roofed over EVERY ring still places somebody', function()
+    -- FAILS OPEN, ONTO THE POINT THE PLAN CHOSE. A poor spawn is a worse
+    -- round; no spawn at all is no round -- and the planned point is a
+    -- better answer than the furthest ring of a search that failed, because
+    -- it is the one the server separated everybody on.
+    local f = worldWithARoof(1000.0)
+
+    enterTrailerPark(f)
+
+    local placed = landedAt(f)
+    t.isNotNil(placed, 'an arena with cover everywhere placed nobody at all')
+    t.equals(placed.x, 10.0, 'the fall-back was not the point the plan chose')
+    t.equals(placed.y, 20.0, 'the fall-back was not the point the plan chose')
+
+    -- AND IT REALLY TRIED. A check that answered "clear" for everything
+    -- would place somebody here too, on the first point.
+    t.equals(#f.probes, SPAWN_ESCAPE_POINTS,
+        'the picker did not walk every ring before giving up')
+end)
+
+t.test('and an arena that builds its OWN floor is never probed', function()
+    -- THE OTHER HALF OF THE SAME REPORT: "in the skydome ... you dont spawn
+    -- to low in props or to high". The skydome's surface is a prop THIS
+    -- resource spawns, and the ground search does not know about props
+    -- either -- which is why an exact-Z arena is placed at the Z it was
+    -- given and nothing is asked. There is no ground answer to hang a roof
+    -- test off, and its own floor is what a downward ray would find.
+    --
+    -- The trailer park, told to use its Z exactly -- the flag the sky arena
+    -- carries. The sky arena itself builds a floor out of dozens of props on
+    -- the way in, which is client/world.lua's spec to exercise, not this
+    -- one's; the flag is what the placement actually reads.
+    local f = newClientFixture(function(config)
+        local arena = (config.Arenas or {})['trailerpark']
+        t.isNotNil(arena, 'the trailer park is gone from config, so this test steers nothing')
+        arena.exactSpawnZ = true
+    end)
+    f.groundZ = 30.0
+    f.roofedAtX, f.roofedAtY = 10.0, 20.0
+    f.roofedWithin = 1000.0
+
+    enterTrailerPark(f)
+
+    t.equals(#f.probes, 0,
+        'an arena that builds its own floor was probed, and that floor is the roof')
+    t.isNotNil(landedAt(f), 'nobody was placed in the arena at all')
+
+    -- AND THE SAME WORLD WITHOUT THE FLAG IS PROBED, in the same test.
+    -- On its own, "no probes were fired" is also what a build with the
+    -- clearance check ripped out answers -- so the exemption would be
+    -- borrowing its proof from a different test. This half is the control:
+    -- one flag apart, thirteen probes apart.
+    local probed = worldWithARoof(1000.0)
+    enterTrailerPark(probed)
+    t.isTrue(#probed.probes > 0,
+        'no arena is probed at all, so the exemption above proves nothing')
+end)
+
+t.test('and the probe asks about the things a spawn can be inside of', function()
+    -- WHAT THE RAY IS LOOKING FOR, which is the one argument no test could
+    -- see until the stub started recording it. `1 + 2 + 8` shipped here: the
+    -- map, vehicles and RAGDOLLS -- the exact opposite of the comment above
+    -- the call, which claimed objects and said peds were left out.
+    --
+    -- The trailers are baked map geometry, so flag 1 covered the report that
+    -- started this. What the wrong value cost was every prop anything
+    -- SPAWNS: a shipping container laid out as cover read as open sky.
+    local f = worldWithARoof(3.0)
+
+    enterTrailerPark(f)
+
+    local probe = f.probes[1]
+    t.isNotNil(probe, 'nothing was probed at all, so this test read nothing')
+
+    local flags = probe.flags or 0
+    -- 1 IntersectWorld: the trailers, and every other piece of baked map.
+    t.isTrue(flags % 2 == 1, 'the probe does not ask about the map itself')
+    -- 16 IntersectObjects: anything CreateObject put there, this resource's
+    -- own cover included.
+    t.isTrue(math.floor(flags / 16) % 2 == 1, 'the probe does not ask about spawned props')
+    -- 4 peds, 8 ragdolls: a person standing on the spot is not a roof, and
+    -- on the respawn path the probe runs while the player is still a corpse.
+    t.isTrue(math.floor(flags / 4) % 2 == 0, 'the probe treats a standing player as a roof')
+    t.isTrue(math.floor(flags / 8) % 2 == 0, 'the probe treats a body on the ground as a roof')
+
+    -- AND IT LOOKS DOWNWARD. A ray fired the other way answers about the
+    -- ground, not about what is over it.
+    t.isTrue(probe.fromZ > probe.toZ, 'the probe is fired upward, away from the spot')
+end)
+
+t.test('and a shape test that answers something unreadable leaves the point alone',
+    function()
+        -- FAILS OPEN, and this exit used to be the one that did not. A hit
+        -- whose end coordinate cannot be read is an answer of nothing, and
+        -- an answer of nothing has to leave the point usable -- otherwise a
+        -- build whose native answers in a shape this code does not expect
+        -- refuses every point in the arena.
+        --
+        -- AND IT MUST NOT THROW. The read used to index whatever it was
+        -- handed, so a number or a `true` came back out of the placement and
+        -- out of the entry handler -- which has already set the dispatch
+        -- flag and the friendly-fire hold. The player is then standing in
+        -- the city, flagged as being in an arena they never reached.
+        for _, answer in ipairs({ 7.5, true, 'nowhere' }) do
+            local f = newClientFixture()
+            f.groundZ = 30.0
+            f.shapeAnswer = answer
+
+            local ok = pcall(enterTrailerPark, f)
+            t.isTrue(ok, 'an unreadable shape-test answer threw out of the entry')
+
+            local placed = landedAt(f)
+            t.isNotNil(placed, 'nobody was placed at all')
+            t.equals(placed.x, 10.0, 'the planned point was refused over an unreadable answer')
+            -- PROBED ONCE, which is the half that says WHY it landed there.
+            -- Failing closed lands on the planned point too -- by walking
+            -- all thirteen and giving up -- so the coordinate alone cannot
+            -- tell "the point was accepted" from "everything was refused".
+            t.equals(#f.probes, 1,
+                'the point was refused and the rings walked, which is failing closed')
+        end
+    end)
+
+t.test('and open ground is used exactly as the plan chose it', function()
+    -- The control: a world with nothing overhead must place the fighter on
+    -- the point the server planned, unmoved, and must not start walking the
+    -- rings -- or every spawn gives back the separation the plan bought.
+    local f = newClientFixture()
+    f.groundZ = 30.0
+
+    enterTrailerPark(f)
+
+    local placed = landedAt(f)
+    t.isNotNil(placed, 'nobody was placed on open ground')
+    t.equals(placed.x, 10.0, 'the fighter was moved off a spawn point with nothing over it')
+    t.equals(placed.y, 20.0, 'the fighter was moved off a spawn point with nothing over it')
+    t.equals(#f.probes, 1, 'open ground was not probed, or the rings were walked anyway')
+end)
+
+t.test('and a scatter radius, where a server sends one, still spreads people out',
+    function()
+        -- An arena with its spawn area switched off falls back to a
+        -- round-robin list of points, and THAT is sent with a real radius --
+        -- the one case where the client is meant to move somebody itself.
+        local f = newClientFixture()
+        f.groundZ = 30.0
+        -- Dice read in pairs, an angle then a distance: the full radius due
+        -- east of the point.
+        f.randomDraws = { 0.0, 1.0 }
+
+        f.fire('crimson_arena:client:enterArena', {
+            matchId = 'match-1',
+            modeKey = 'ffa',
+            arenaKey = 'trailerpark',
+            spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+            scatterRadius = 12.0,
+            freezeSeconds = 0,
+            loadout = { weapons = {}, health = 200, armor = 0 },
+        })
+
+        local placed = landedAt(f)
+        t.isNotNil(placed, 'nobody was placed at all')
+        t.equals(placed.x, 22.0, 'the scatter did not move the fighter to the point it drew')
+        t.equals(placed.y, 20.0, 'the scatter did not move the fighter to the point it drew')
+    end)
 
 os.exit(t.summary())

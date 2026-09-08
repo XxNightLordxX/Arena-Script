@@ -204,10 +204,19 @@ local function relabelLobbyPed()
     local ped = Config.Lobby.ped
     local wanted = ped.targetLabel
     if ArenaState.DoorsShut() then
+        -- SHUT IS SAID EITHER WAY, and the opening time is the part that may
+        -- be missing. Until an admin could close the arena from the tablet,
+        -- shut ALWAYS came with a time -- Arena.ScheduleStatus only sets
+        -- `opensAt` when it is answering "closed, and here is when it is
+        -- not" -- so the inner guard was the only test and the outer one was
+        -- decoration. A closure that has no next opening because it is not
+        -- the schedule's therefore left this ped wearing its ordinary label,
+        -- and a player walked up to the usual prompt with no hint the doors
+        -- were shut at all.
         local opensAt = ArenaState.Schedule().opensAt
-        if type(opensAt) == 'string' then
-            wanted = locale('match.hours_shut_label', opensAt)
-        end
+        wanted = type(opensAt) == 'string'
+            and locale('match.hours_shut_label', opensAt)
+            or locale('match.hours_shut_now_label')
     end
 
     if wanted == pedLabel then return end
@@ -288,8 +297,13 @@ end
 --- @return string
 local function doorHelpText(marker)
     if not ArenaState.DoorsShut() then return marker.helpText end
+
+    -- The same rule as the ped's label, for the same reason: the closure is
+    -- the fact, and the opening time is a detail that may not exist. Falling
+    -- back to the ORDINARY help text here told a player standing on a shut
+    -- arena's marker to press E and expect a lobby.
     local opensAt = ArenaState.Schedule().opensAt
-    if type(opensAt) ~= 'string' then return marker.helpText end
+    if type(opensAt) ~= 'string' then return locale('match.hours_shut_now_help') end
     return locale('match.hours_shut_help', opensAt)
 end
 

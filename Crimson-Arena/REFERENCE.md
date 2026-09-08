@@ -161,7 +161,7 @@ instancing really happened rather than assuming it did.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
 - **75 spec files** covering the shared, server and client logic, run with `lua5.4`
-  against a fake-native harness, plus **20 panel suites** that load the real
+  against a fake-native harness, plus **21 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
   rather than chosen answers, which is what found the self-damage hole in the
@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 97 functions
+#### `shared/arena.lua` — 98 functions
 
 | Function | What it does |
 |---|---|
@@ -348,6 +348,7 @@ listed; the source documents them where they are.
 | `Arena.ResolveWinCondition(requested)` | One host's requested win condition, refused rather than clamped. |
 | `Arena.WinConditionFor(chosen)` | How one match is won: the host's pick, falling back to the server's. |
 | `Arena.WinConditionSpendsLives(condition)` | Whether a death costs a life under this condition. |
+| `Arena.WinConditionNeedsClock(condition)` | Whether only a round clock can settle this condition. |
 | `Arena.GunGameClasses(modeKey)` | The weapon classes a ladder is built from, with each one's playable pool and ceiling. |
 | `Arena.ResolveTierPlan(modeKey, requested)` | A host's requested ladder shape, refused rather than clamped. |
 | `Arena.ScoreLimitDefault()` | The server-wide kill limit, out of a setting that takes a number or a range. |
@@ -479,8 +480,8 @@ listed; the source documents them where they are.
 |---|---|
 | `ArenaAmmo.IsEnabled()` | Whether ammunition ITEMS are being handed out. |
 | `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
-| `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies. |
-| `ArenaAmmo.GrantRounds(src, matchId, item, count)` | Hands a player rounds mid-round and books them on the ammunition ledger. |
+| `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies -- or takes the weapon away, where `allowWeaponWithoutAmmoItem` is off and its rounds could not be issued. |
+| `ArenaAmmo.GrantRounds(src, matchId, item, count)` | A flat grant of ammunition onto the arena's ledger, for a kill reward. Hands over nothing where `Config.Loadouts.ammoItems.enabled` is off, like every other issue path. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
 | `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
@@ -579,7 +580,7 @@ listed; the source documents them where they are.
 | `ArenaMatch.End(matchId, reasonKey, winners)` | Ends a round that was actually fought: decides the winners, settles the money, records it, and sends everybody home with a result. |
 | `ArenaMatch.Abort(matchId, reasonKey)` | The refund-everything path: a resource stop, an admin force-stop, a lobby that emptied out, a round that could not start. |
 | `ArenaMatch.RemovePlayer(src, reasonKey)` | One player out, mid-round: they left, they were dropped, or an admin pulled them. |
-| `ArenaMatch.CloseWaitingLobbies(reasonKey)` | Shuts every lobby still waiting to start and hands back every stake. Live rounds are left to finish. Run when a schedule window closes and when an admin closes the arena. |
+| `ArenaMatch.CloseWaitingLobbies(reasonKey)` | Shuts every lobby still waiting to start -- including one counting down that nobody has been placed in -- and hands back every stake. A round anybody is standing in is left to finish. Run when a schedule window closes and when an admin closes the arena. Answers how many it tried to close. |
 | `ArenaMatch.IsLive(matchId)` | Whether a match is in its live phase. |
 
 #### `client/ui.lua` — 9 functions

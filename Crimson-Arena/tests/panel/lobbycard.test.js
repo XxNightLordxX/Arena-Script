@@ -44,7 +44,8 @@ function test(name, fn) {
  * operator default the server really sends, and it is the value the card used
  * to display. A fixture that set it to match would hide the bug.
  */
-function inLobby(lives) {
+function inLobby(lives, rules) {
+    const extra = rules || {};
     const match = {
         id: 'm1',
         arenaKey: 'airfield',
@@ -58,6 +59,12 @@ function inLobby(lives) {
         teams: [],
     };
     if (lives !== undefined) match.lives = lives;
+    /* THE MATCH'S OWN RULE AND WHETHER IT SPENDS LIVES, both of which the
+       server resolves onto the match and sends. Set only when a test is
+       about them, so every existing case still describes a snapshot that
+       carries neither. */
+    if (extra.winCondition !== undefined) match.winCondition = extra.winCondition;
+    if (extra.livesSpent !== undefined) match.livesSpent = extra.livesSpent;
 
     return {
         config: {
@@ -70,6 +77,10 @@ function inLobby(lives) {
                 maxPlayers: 0,
                 roundTimeSeconds: 600,
                 onlyHostCanStart: true,
+                /* THE OPERATOR DEFAULT, deliberately different from what the
+                   tests below put on the match -- the card used to read this
+                   one, exactly as it used to read `lives` from here. */
+                winCondition: 'last_standing',
             },
             betting: {
                 enabled: false,
@@ -86,10 +97,10 @@ function inLobby(lives) {
     };
 }
 
-function lobbyText(lives) {
+function lobbyText(lives, rules) {
     const panel = loadPanel(ROOT);
-    panel.send('open', inLobby(lives));
-    panel.send('state', inLobby(lives));
+    panel.send('open', inLobby(lives, rules));
+    panel.send('state', inLobby(lives, rules));
     return panel.text('lobby-meta');
 }
 
@@ -142,6 +153,68 @@ test('the rest of the card still renders, so this is not passing on an empty nod
     assert.ok(/Free For All/.test(text), 'the mode is missing from the card: ' + text);
     assert.ok(/Sandy Shores Airfield/.test(text), 'the arena is missing from the card: ' + text);
     assert.ok(/John Allday/.test(text), 'the host is missing from the card: ' + text);
+});
+
+console.log('');
+console.log('==> and what it says about how the round is won');
+
+test('THE SAME BUG ON THE WIN CONDITION: the card read the server default', () => {
+    /* `matchCfg.winCondition` is the operator's default, sent in the config
+       block; `match.winCondition` is the rule the server resolved for THIS
+       match and has been sending all along. A host who picked "most kills
+       when the clock runs out" had their card announce last one standing to
+       everybody looking at it. */
+    const text = lobbyText(3, { winCondition: 'most_kills', livesSpent: false });
+    assert.ok(/most kills when the clock runs out/i.test(text),
+        'the card does not name the rule this match is played by: ' + text);
+    assert.ok(!/last one standing/i.test(text),
+        'the card is still announcing the operator default: ' + text);
+});
+
+test('and a round that spends no lives does not advertise any', () => {
+    /* IN A PLAYER'S WORDS: "it should not have a lives for most kills till
+       the clock runs out". A card reading "3 lives each" over a round nobody
+       can be eliminated from is the panel telling a plain untruth. */
+    const text = lobbyText(3, { winCondition: 'most_kills', livesSpent: false });
+    assert.ok(!/lives each/i.test(text),
+        'the card quotes lives on a round that spends none: ' + text);
+    assert.ok(/No lives/i.test(text), 'the card says nothing about lives at all: ' + text);
+});
+
+test('and says the CLOCK is what ends it, not a kill limit', () => {
+    const text = lobbyText(3, { winCondition: 'most_kills', livesSpent: false });
+    assert.ok(/until the clock stops/i.test(text),
+        'the card does not say what ends a most-kills round: ' + text);
+});
+
+test('and a kill limit says the limit instead', () => {
+    /* The other livesless condition, and it ends on a different thing. One
+       sentence for both would be wrong for one of them. */
+    const text = lobbyText(3, { winCondition: 'score_limit', livesSpent: false });
+    assert.ok(/reaches the limit/i.test(text),
+        'the card says a kill-limit round ends on the clock: ' + text);
+});
+
+test('and last one standing still quotes the lives, which is the control', () => {
+    const text = lobbyText(3, { winCondition: 'last_standing', livesSpent: true });
+    assert.ok(/3 lives each/.test(text),
+        'the card stopped quoting lives on the one rule that spends them: ' + text);
+    assert.ok(/last one standing/i.test(text),
+        'the card does not name the rule: ' + text);
+});
+
+test('and a snapshot with no livesSpent field reads the condition instead', () => {
+    /* Older matches, and any snapshot written before the field existed --
+       the same fallback `lives` above has, and the reason reading the field
+       is safe rather than a new way to render "undefined". */
+    const text = lobbyText(3, { winCondition: 'most_kills' });
+    assert.ok(!/lives each/i.test(text),
+        'a snapshot with no livesSpent field fell back to quoting lives: ' + text);
+    /* AND THE POSITIVE. The line above is satisfied by an empty string, so
+       a card that rendered nothing at all would pass it -- which is exactly
+       what happened when renderLobbyMeta was made to clear and return. */
+    assert.ok(/No lives — respawn until the clock stops/i.test(text),
+        'the card says nothing in place of the lives it dropped: ' + text);
 });
 
 console.log('');

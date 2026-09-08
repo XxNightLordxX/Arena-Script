@@ -1195,6 +1195,30 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
     local resolvedWin, winReason = Arena.ResolveWinCondition(winCondition)
     if not resolvedWin then return nil, winReason end
 
+    -- AND A ROUND THAT CAN ONLY BE ENDED BY A CLOCK NEEDS ONE.
+    --
+    -- "Most kills when the clock runs out" spends no lives, so nothing about
+    -- the roster ends it: on a mode whose clock resolves to 0 the match runs
+    -- until the last player walks out. Refused here rather than started and
+    -- left hanging, and refused against the CLOCK THIS MATCH WILL REALLY RUN
+    -- -- the host's own number, then the mode's, then the server's, which is
+    -- the same order the countdown reads.
+    --
+    -- NOT ON A LADDER MODE, and every other reader of the win condition asks
+    -- the same question first: server/match.lua reads the ladder BEFORE the
+    -- condition and overrides it, the death handler skips lives for one, and
+    -- config.lua says "A LADDER MODE IGNORES ALL OF IT" in as many words. A
+    -- gun game is ended by somebody topping the ladder, which is why
+    -- `gungame.roundTimeSeconds = 0` is documented as a supported setting --
+    -- so without this, a server running a clockless gun game could not open
+    -- one at all, refused over a condition the mode never consults.
+    if not Arena.PlaysLadder(wantedMode)
+        and Arena.WinConditionNeedsClock(resolvedWin)
+        and Arena.RoundSecondsFor(wantedMode, resolvedRound) <= 0
+    then
+        return nil, 'error.win_condition_needs_clock'
+    end
+
     -- REFUSED, NOT CLAMPED, like everything above it: a host who asked for
     -- eight shotgun rungs on a server with six shotguns is told so rather
     -- than dropped into a round climbing a different ladder from the one they
@@ -2112,6 +2136,20 @@ function ArenaLobby.UpdateMatch(src, data)
 
     if data.radar ~= nil then
         radar = Arena.ResolveRadar(data.radar)
+    end
+
+    -- THE SAME CLOCK THAT CREATION DEMANDS, because an edit can take it away.
+    -- Switching to "most kills" or clearing the round length are both one
+    -- move from the host's side, and either one on its own leaves a round
+    -- nothing can end. Checked against what this edit WOULD leave, and
+    -- refused before a single field is written.
+    -- Ladder-exempt for the same reason creation is: switching an open lobby
+    -- TO a gun game is the move that would otherwise be refused here.
+    if not Arena.PlaysLadder(modeKey)
+        and Arena.WinConditionNeedsClock(winCondition)
+        and Arena.RoundSecondsFor(modeKey, roundTime) <= 0
+    then
+        return false, 'error.win_condition_needs_clock'
     end
 
     -- A mode change can strand players on a team the new mode does not have,

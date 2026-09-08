@@ -76,6 +76,56 @@ local probed = {}
 --- @type table<string, table<number, integer>>
 local issued = {}
 
+--- Characters the empty-read warning has already been said for.
+---
+--- The retry keeps trying for ever by design, and the warning must not: one
+--- entry here is the difference between a line worth reading and a line that
+--- teaches an operator to ignore the console.
+--- @type table<string, boolean>
+local warnedEmptyRead = {}
+
+--- The stash record sitting on `src`, but only when it belongs to whoever
+--- holds that server id NOW.
+---
+--- `stashed` IS KEYED BY SERVER ID AND SERVER IDS ARE RECYCLED, and those two
+--- facts are only safe together because a record is normally dropped the
+--- moment its exit succeeds. A record whose exit could NOT finish is kept on
+--- purpose -- it is what the sweep and the debt list work from -- so it
+--- outlives its owner's disconnect, and FiveM will hand that id to the next
+--- person who connects.
+---
+--- What that cost, before this existed: the swapItems guard reads this table
+--- to decide who is "in the arena", so the new holder of that id was refused
+--- every inventory move they made anywhere on the map -- their own house
+--- stash, a glovebox, a shop, handing a friend an item -- for as long as they
+--- stayed connected, with the arena's own "you fight with what you were
+--- issued" notification explaining it. Nothing cleared it, because the sweep
+--- that would have is itself gated on this table.
+---
+--- A MISSING PLAYER IS NOT A MISMATCH. Between a drop and the next connect
+--- there is no character on that id at all, and answering "not theirs" then
+--- would quietly switch the guard off for the seconds a player is loading in.
+--- @param src number
+--- @return table|nil
+local function ownRecord(src)
+    local record = stashed[src]
+    if record == nil then return nil end
+    if not Arena.IsKey(record.citizenid) then return record end
+
+    -- WRAPPED, because one of this function's callers is the ox_inventory
+    -- swapItems hook: it runs inside somebody else's inventory move, and
+    -- ArenaGetPlayer is an unguarded export call that raises while qbx_core is
+    -- restarting. A throw there fails the move rather than this check.
+    local ok, citizenid = pcall(function()
+        local player = ArenaGetPlayer(src)
+        return player and player.PlayerData and player.PlayerData.citizenid or nil
+    end)
+    if not (ok and Arena.IsKey(citizenid)) then return record end
+
+    if citizenid ~= record.citizenid then return nil end
+    return record
+end
+
 --- Whether ammunition ITEMS are being handed out. Note this is separate from
 --- the door: Config.Loadouts.inventory.stripOnEntry decides whether a player's
 --- own kit is taken, and that happens whether or not any ammo item is issued.
@@ -1384,8 +1434,15 @@ function ArenaAmmo.Refresh(src, matchId, loadout)
             -- the two are independent items: the magazine rides in the
             -- weapon's own metadata, and issueSpareRounds reads live pockets
             -- for the shortfall either way.
-            local handed = issueSpareRounds(ox, src, matchId, entry, pass)
-            local armed = handed
+            -- `ok`, NOT `handed`. issueSpareRounds answers (ok, count) and
+            -- returns `true, 0` on three legitimate no-ops -- no ammo item, a
+            -- zero spare, a shortfall already covered -- so this is "ox
+            -- _inventory did not refuse", which is the same thing
+            -- ArenaAmmo.Issue reads. Named `handed` it invited a future edit
+            -- to `handed > 0`, which would confiscate every melee weapon and
+            -- every already-supplied one on every respawn, silently.
+            local roundsOk = issueSpareRounds(ox, src, matchId, entry, pass)
+            local armed = roundsOk
                 or (Config.Loadouts.ammoItems or {}).allowWeaponWithoutAmmoItem ~= false
 
             -- OFF AND ON AGAIN, ONE COPY. There is no way to refill a
@@ -2204,15 +2261,32 @@ end
 --- Whether this resource is currently holding this player's inventory.
 --- @param src number
 --- @return boolean
+-- THE THREE READERS BELOW ALL GO THROUGH ownRecord, and that is not
+-- tidiness. `stashed` is keyed by server id, a record is deliberately KEPT
+-- when an exit could not finish, and FiveM hands a freed id to whoever
+-- connects next -- so a raw read answers a stranger's question with a
+-- departed player's belongings.
+--
+-- ArenaAmmo.HeldFor is the one that made it visible: server/main.lua calls it
+-- for every fighter on every admin-tablet push, so the escrow screen printed
+-- the departed character's item list -- their cash included, now that
+-- `neverStash` ships empty -- against the name of whoever inherited their id.
+-- Nothing was ever MOVED, because the hand-back path re-derives the citizen
+-- id from the live player, but the screen an operator reads to decide who is
+-- short was naming the wrong person.
+--
+-- The swapItems guard was already asking through ownRecord. This is the rest
+-- of the file agreeing with it, rather than half of it rejecting a record the
+-- other half prints.
 function ArenaAmmo.IsHolding(src)
-    return stashed[src] ~= nil
+    return ownRecord(src) ~= nil
 end
 
 --- The stash a player's kit is in, for an admin who needs to point them at it.
 --- @param src number
 --- @return string|nil
 function ArenaAmmo.StashOf(src)
-    local record = stashed[src]
+    local record = ownRecord(src)
     return record and record.stash or nil
 end
 
@@ -2231,7 +2305,7 @@ end
 --- @param src number
 --- @return table|nil held -- { stash, expected, items = { { name, count } } }
 function ArenaAmmo.HeldFor(src)
-    local record = stashed[src]
+    local record = ownRecord(src)
     if type(record) ~= 'table' then return nil end
 
     local out = {
@@ -2320,42 +2394,6 @@ local function midMatch(src)
         return ArenaDispatch.IsPlayerInArena(src) == true
     end
     return true
-end
-
---- The stash record sitting on `src`, but only when it belongs to whoever
---- holds that server id NOW.
----
---- `stashed` IS KEYED BY SERVER ID AND SERVER IDS ARE RECYCLED, and those two
---- facts are only safe together because a record is normally dropped the
---- moment its exit succeeds. A record whose exit could NOT finish is kept on
---- purpose -- it is what the sweep and the debt list work from -- so it
---- outlives its owner's disconnect, and FiveM will hand that id to the next
---- person who connects.
----
---- What that cost, before this existed: the swapItems guard reads this table
---- to decide who is "in the arena", so the new holder of that id was refused
---- every inventory move they made anywhere on the map -- their own house
---- stash, a glovebox, a shop, handing a friend an item -- for as long as they
---- stayed connected, with the arena's own "you fight with what you were
---- issued" notification explaining it. Nothing cleared it, because the sweep
---- that would have is itself gated on this table.
----
---- A MISSING PLAYER IS NOT A MISMATCH. Between a drop and the next connect
---- there is no character on that id at all, and answering "not theirs" then
---- would quietly switch the guard off for the seconds a player is loading in.
---- @param src number
---- @return table|nil
-local function ownRecord(src)
-    local record = stashed[src]
-    if record == nil then return nil end
-    if not Arena.IsKey(record.citizenid) then return record end
-
-    local player = ArenaGetPlayer(src)
-    local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
-    if not Arena.IsKey(citizenid) then return record end
-
-    if citizenid ~= record.citizenid then return nil end
-    return record
 end
 
 --- Whether this player's stash is worth opening on this pass.
@@ -2450,10 +2488,21 @@ function ArenaAmmo.ReturnLeftovers(src)
     -- Bigger now than when it was written, too: `neverStash` ships empty, so
     -- what is in that stash is the player's cash as well as their things.
     if returned == 0 and failures == 0 and stowedCount > 0 then
-        ArenaLog('door: %s\'s stash (%s) READ EMPTY on a retry, and %d item(s) are recorded as being ' ..
-            'in it. Nothing has been handed back and the debt is being kept -- the stash is a real ' ..
-            'one and /arenaadmin can open it.',
-            tostring(src), stash, stowedCount)
+        -- SAID ONCE PER CHARACTER, not once per pass.
+        --
+        -- The sweep comes back every returnRetrySeconds and this branch keeps
+        -- the debt on purpose, so the two together are a loop -- and a line
+        -- repeating the same sentence every thirty seconds for the life of
+        -- the server is the log an operator stops reading, which is the rule
+        -- stated sixty lines below about the partial-return branch. It is
+        -- worth saying loudly the first time and worth nothing after that.
+        if not warnedEmptyRead[citizenid] then
+            warnedEmptyRead[citizenid] = true
+            ArenaLog('door: %s\'s stash (%s) READ EMPTY on a retry, and %d item(s) are recorded as ' ..
+                'being in it. Nothing has been handed back and the debt is being kept -- the stash ' ..
+                'is a real one and /arenaadmin can open it. Said once; the sweep goes on trying.',
+                tostring(src), stash, stowedCount)
+        end
         owed[citizenid] = stash
         -- NOT `answered`. Marking this character as looked-at would spend
         -- their one look on a read nobody can trust; `owed` brings the sweep
@@ -2484,6 +2533,9 @@ function ArenaAmmo.ReturnLeftovers(src)
     -- that is the reconnect this whole section exists for -- so it is found
     -- by citizen id, not by src.
     owed[citizenid] = nil
+    -- CLEARED WITH THE DEBT, so if this character's stash ever goes unreadable
+    -- again it is a new problem and says so.
+    warnedEmptyRead[citizenid] = nil
     for other, record in pairs(stashed) do
         if record.citizenid == citizenid then
             stashed[other] = nil
@@ -2582,6 +2634,16 @@ local STASH_SCAN_LIMIT = 60
 --- callback simply never running. Without this, everything waiting on that
 --- callback waited for ever with nothing in the console to read.
 local STASH_SCAN_TIMEOUT = 8000
+
+--- HOW MANY CHARACTERS MAY BE ON THE DEBT LIST AT ONCE.
+---
+--- Not a tuning knob -- a backstop. Entries arrive from two places: a return
+--- that genuinely could not finish, and the tablet's queue button. The first
+--- is bounded by how many people are on the server; the second was bounded by
+--- nothing, and every entry costs a stash read on every later look at the
+--- tablet. A server that really owes two hundred people their belongings has
+--- a bigger problem than this number.
+local OWED_LIMIT = 200
 
 local warnedNoStashTable = false
 
@@ -2722,43 +2784,45 @@ function ArenaAmmo.AllStashes(cb, scanned)
                 end
 
                 local names = {}
-                for _, row in ipairs(result) do
-                    local stash = row.name
-                    if Arena.IsKey(stash) then
-                        local citizenid = Arena.IsKey(row.owner) and row.owner
-                            or stash:sub(#prefix + 1)
-                        -- FORGOTTEN FROM `known` ONLY WHEN IT IS ACTUALLY
-                        -- APPENDED, and that ordering is the whole of a real
-                        -- bug. The line below drops rows past the read limit;
-                        -- clearing `known` before it meant such a row was
-                        -- taken off the memory list AND left off the answer,
-                        -- so the backstop a few lines down could no longer
-                        -- put it back.
-                        --
-                        -- Which cost exactly the person this screen exists
-                        -- for: a player whose kit is stuck in escrow, on a
-                        -- server with sixty more recently-touched stashes,
-                        -- was not listed at all -- and the counters did not
-                        -- hint at it either, because from here it looked like
-                        -- everything picked had been opened.
-                        if #names < STASH_SCAN_LIMIT then
-                            local remembered = known[stash] ~= nil
-                            known[stash] = nil
-                            names[#names + 1] = {
-                                citizenid = citizenid,
-                                stash = stash,
-                                remembered = remembered,
-                            }
-                        end
-                    end
+                -- THE DEBTS FIRST, AND THEY GET THE BUDGET FIRST.
+                --
+                -- A row this run KNOWS is outstanding is somebody the server
+                -- has already failed once; a row the database merely has is
+                -- usually a character who was handed their things back years
+                -- ago. Filling the budget from the query and letting the debts
+                -- take whatever was left over is exactly backwards, and it is
+                -- what dropped the one person this screen exists for off the
+                -- end of a busy server's list.
+                --
+                -- ONE BUDGET FOR BOTH, which is the other half of it. This
+                -- loop used to sit outside the cap entirely, so the real
+                -- ceiling on how many stashes one look opens was however many
+                -- entries `owed` happened to hold -- and the tablet's own
+                -- queue button writes those, with nothing bounding them. Every
+                -- push after that paid two blocking ox_inventory calls per
+                -- entry, for the life of the resource.
+                local seen = {}
+                for _, row in pairs(known) do
+                    if #names >= STASH_SCAN_LIMIT then break end
+                    seen[row.stash] = true
+                    names[#names + 1] = row
                 end
 
-                -- ANYTHING MEMORY KNOWS THAT THE QUERY DID NOT RETURN goes on
-                -- the end rather than being dropped. A stash written this tick
-                -- may not be in the rows we just read, and the one thing this
-                -- screen must never do is fail to mention somebody who is
-                -- short.
-                for _, row in pairs(known) do names[#names + 1] = row end
+                for _, row in ipairs(result) do
+                    local stash = row.name
+                    if Arena.IsKey(stash) and not seen[stash] and #names < STASH_SCAN_LIMIT then
+                        local citizenid = Arena.IsKey(row.owner) and row.owner
+                            or stash:sub(#prefix + 1)
+                        names[#names + 1] = {
+                            citizenid = citizenid,
+                            stash = stash,
+                            -- Not on the debt list: the loop above took every
+                            -- one of those already, so anything reaching here
+                            -- was found by name and nothing else.
+                            remembered = false,
+                        }
+                    end
+                end
 
                 finish(names, #result)
             end)
@@ -2822,14 +2886,56 @@ function ArenaAmmo.QueueReturn(citizenid, stash)
     -- the stash name for itself and ignores the stored one -- but a foreign
     -- stash being re-registered and read is not something an arena should do
     -- at all, and it happened on every refresh from then on.
-    local expected = stashFor(citizenid)
-    if stash ~= expected then
-        ArenaLog('door: refused to queue %s as %s\'s belongings -- that is not the stash this ' ..
-            'arena would have made for them.', tostring(stash), tostring(citizenid))
+    -- A CITIZEN ID SHAPED LIKE ONE.
+    --
+    -- The stash check below proves the name starts with this arena's prefix
+    -- and NOTHING else, because the caller supplies both halves and the name
+    -- is built from the id -- so `stash == stashFor(citizenid)` holds for any
+    -- id at all, including one somebody invented. That is a tautology
+    -- wearing a guard's clothes, and this is the part that is not.
+    if #citizenid > 32 or citizenid:find('[^%w_%-]') then
+        ArenaLog('door: refused to queue a return for %q -- that is not the shape of a '
+            .. 'citizen id.', tostring(citizenid))
         return false
     end
 
-    owed[citizenid] = expected
+    -- THE NAME IS ONE OF THIS ARENA'S, checked by its prefix rather than by
+    -- rebuilding it from the citizen id.
+    --
+    -- Equality looked stricter and was wrong: AllStashes takes the citizen id
+    -- from the database's `owner` column in preference to the name's suffix,
+    -- and the two need not be byte-identical -- an `owner` of `char1:CID001`
+    -- on a stash named `crimson_arena_CID001` is an ordinary row. The tablet
+    -- drew it, an admin pressed its button, and the server refused with a
+    -- generic "invalid request" that named nothing.
+    --
+    -- What actually has to be true is that the name belongs to this arena.
+    -- The shape check above bounds the id and OWED_LIMIT below bounds how many
+    -- of these there can be, which together are what the equality was reached
+    -- for in the first place.
+    local prefix = doorConfig().stashPrefix
+    if not Arena.IsKey(prefix) then prefix = 'crimson_arena_' end
+
+    if stash:sub(1, #prefix) ~= prefix then
+        ArenaLog('door: refused to queue %s as %s\'s belongings -- that is not one of this ' ..
+            'arena\'s stashes.', tostring(stash), tostring(citizenid))
+        return false
+    end
+
+    -- AND THE LIST IS BOUNDED. Every entry costs a stash read on every look at
+    -- the tablet, for as long as the resource runs -- an entry is only ever
+    -- cleared for a character who actually logs in, so one invented id is
+    -- permanent. A real server owes belongings to a handful of people at a
+    -- time; a number far above that is somebody filling the list rather than
+    -- using it.
+    if owed[citizenid] == nil and ArenaAmmo.Owed() >= OWED_LIMIT then
+        ArenaLog('door: refused to queue a return for %s -- %d characters are already owed '
+            .. 'belongings, which is far past anything a working server reaches. Hand some '
+            .. 'of them back before adding more.', tostring(citizenid), OWED_LIMIT)
+        return false
+    end
+
+    owed[citizenid] = stash
     ArenaLog('door: %s\'s stash (%s) is queued -- it will be handed over the next time they are seen.',
         tostring(citizenid), tostring(stash))
     return true
@@ -2920,7 +3026,36 @@ CreateThread(function()
             -- every inventory move anywhere on the map, their own house stash
             -- and glovebox included, with nothing able to clear it -- the
             -- sweep that would have is gated on the same table.
-            local inArena = ownRecord(src) ~= nil
+            -- A STASH RECORD IS NOT PRESENCE, and reading it as presence
+            -- was a lockout with no way out of it.
+            --
+            -- A record is KEPT on purpose when an exit could not empty the
+            -- stash -- that is what the retry works from -- and the read-empty
+            -- guard in ReturnLeftovers keeps the debt written, so such a
+            -- record is never settled and never dropped. Read as "this player
+            -- is in the arena", it refused that player every inventory move
+            -- they made anywhere on the map: their own house stash, a
+            -- glovebox, a shop, handing a friend an item. For the rest of the
+            -- session, through a reconnect, while standing nowhere near an
+            -- arena, with the arena's own "you fight with what you were
+            -- issued" line explaining it.
+            --
+            -- THE MATCH IS THE QUESTION. A fighter's record names a match that
+            -- still exists; a stranded one names a round that ended and was
+            -- destroyed long ago. Asked through ArenaLobby because that is the
+            -- registry -- and asked for rather than assumed, since it loads
+            -- after this file, in which case the older and stricter answer is
+            -- kept.
+            local record = ownRecord(src)
+            local inArena = false
+            if record ~= nil then
+                if type(ArenaLobby) == 'table' and type(ArenaLobby.Get) == 'function' then
+                    inArena = Arena.IsKey(record.matchId)
+                        and ArenaLobby.Get(record.matchId) ~= nil
+                else
+                    inArena = true
+                end
+            end
             if not inArena and type(ArenaDispatch) == 'table'
                 and type(ArenaDispatch.IsPlayerInArena) == 'function'
             then

@@ -337,6 +337,39 @@ t.test('and a failed snapshot leaves the player their controls', function()
     t.equals(#f.notifications, 1, 'a failed fetch said nothing to the player')
 end)
 
+t.test('THE TRAP: a refused open with the TABLET up left the mouse captured', function()
+    -- The snapshot callback is throttled on a 500ms bucket and answers nil
+    -- when it refuses, which makes this an ORDINARY thing rather than an
+    -- error: an admin with the tablet open presses E at the lobby ped twice
+    -- in quick succession, and the second press lands on the refusal.
+    --
+    -- The tablet was taken away BEFORE the snapshot was asked for, so that
+    -- refusal shut a working screen, opened nothing, and returned without
+    -- releasing the focus the tablet had been holding. Mouse captured,
+    -- nothing drawn, and ESC could reach neither screen because the page
+    -- reads its two open flags and both were now false. Reconnecting was the
+    -- only way out.
+    local f = newPanel({ snapshot = false })
+    f.fire('crimson_arena:client:openAdmin', { matches = {} })
+    t.isTrue(f.lastFocus().hasFocus, 'the tablet never took focus, so this proves nothing')
+
+    f.UI.Open()
+
+    -- STILL HELD, BY THE TABLET, which is the correct answer: the tablet is
+    -- still drawn and still the thing on screen. What must never happen is
+    -- focus held with NOTHING drawn, and the two assertions together are what
+    -- say that.
+    t.isTrue(f.lastFocus().hasFocus,
+        'a refused panel open let go of the focus the tablet was holding')
+
+    local shut = 0
+    for _, message in ipairs(f.sent) do
+        if message.action == 'adminClose' then shut = shut + 1 end
+    end
+    t.equals(shut, 0,
+        'a refused panel open took the tablet away, leaving focus held over nothing')
+end)
+
 -- ========================================================================
 -- WHERE A NOTIFICATION GOES
 -- ========================================================================
@@ -626,6 +659,36 @@ t.test('and the page\'s own Close button still works', function()
     f.UI.Close()
     t.equals(#messages(f, 'adminClose'), before,
         'the tablet was closed twice, so one of the two shut nothing')
+end)
+
+t.test('THE BRIDGE: the doors buttons reach the server', function()
+    -- The page proves it POSTS adminHours and the server proves it ACTS on
+    -- crimson_arena:server:adminHours, and between them sits this relay --
+    -- which nothing joined. Renaming its target left every suite green while
+    -- the three door buttons silently did nothing on a real server.
+    local f = newPanel()
+
+    t.isTrue(f.post('adminHours', { forced = 'shut', matchId = 'm1' }),
+        'no callback is registered for adminHours')
+
+    local sent = f.lastServer('crimson_arena:server:adminHours')
+    t.isNotNil(sent, 'the doors buttons reached no server event at all')
+    t.equals(sent.payload.forced, 'shut', 'the state asked for did not survive the relay')
+    t.equals(sent.payload.matchId, 'm1', 'and neither did the match the tablet has open')
+end)
+
+t.test('and a cleared override survives the relay as an absence', function()
+    -- "Follow the schedule" posts no state at all, and the server reads
+    -- anything that is not one of its two words as exactly that. A relay that
+    -- coerced it into a boolean would turn "hand it back to the clock" into
+    -- "hold it open".
+    local f = newPanel()
+
+    f.post('adminHours', { forced = nil, matchId = nil })
+
+    local sent = f.lastServer('crimson_arena:server:adminHours')
+    t.isNotNil(sent, 'the schedule button reached no server event')
+    t.isNil(sent.payload.forced, 'handing the arena back to its clock asked for a state')
 end)
 
 os.exit(t.summary())

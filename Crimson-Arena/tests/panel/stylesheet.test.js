@@ -47,7 +47,16 @@ function test(name, fn) {
 }
 
 const html = fs.readFileSync(path.join(ROOT, 'html', 'index.html'), 'utf8');
-const cssRaw = fs.readFileSync(path.join(ROOT, 'html', 'style.css'), 'utf8');
+const cssOnDisk = fs.readFileSync(path.join(ROOT, 'html', 'style.css'), 'utf8');
+
+/* THE STYLESHEET WITHOUT ITS COMMENTS.
+   Every rule in this file is explained in prose above it, and those comments
+   name the very selectors they describe -- so a scan of the raw text finds
+   `#arena-admin` in the sentence "its own modal, not a tab of the panel" and
+   calls the screen dressed. Deleting every rule for it while its explanation
+   survives left this file green, which is the exact bug it exists to catch,
+   wearing its own documentation as a disguise. */
+const cssRaw = cssOnDisk.replace(/\/\*[\s\S]*?\*\//g, ' ');
 
 /* THE STYLESHEET WITHOUT ITS @media BLOCKS.
    A class whose ONLY rule sits inside `@media (max-width: 56rem)` is a class
@@ -182,14 +191,42 @@ console.log('==> including the rows app.js invents while drawing it');
 test('every admin- class the panel creates has a rule', () => {
     /* app.js builds the list rows, so they are in no markup file at all --
        which is exactly how they go unstyled without anybody noticing. */
+    /* EVERY SINGLE-QUOTED STRING, not only the ones sitting inline in a
+       makeEl call.
+
+       The scan used to read `makeEl('tag', 'class')` literally, so a class
+       passed through a variable was invisible -- and the Return button is
+       built exactly that way (`returnButton(entry, 'btn admin-owed-give')`),
+       which made the one control this file was rewritten around the one
+       control it could not see. Deleting its rule left the suite green. */
+    /* EVERY SINGLE-QUOTED STRING, not only the ones sitting inline in a
+       makeEl call.
+
+       The scan used to read `makeEl('tag', 'class')` literally, so a class
+       passed through a variable was invisible -- and the Return button is
+       built exactly that way (`returnButton(entry, 'btn admin-owed-give')`),
+       which made the one control this file was rewritten around the one
+       control it could not see. Deleting its rule left the suite green.
+
+       MINUS THE IDS, which are the same shape and are looked up rather than
+       created: they are checked by the markup walk above, where an element
+       may legitimately be dressed by a class instead. */
+    const ids = new Set();
+    const lookup = /(?:byId|bind)\('([^'\n]+)'/g;
+    let found = lookup.exec(js);
+    while (found !== null) {
+        ids.add(found[1]);
+        found = lookup.exec(js);
+    }
+
     const created = new Set();
-    const call = /makeEl\(\s*'(\w+)'\s*,\s*'([^']+)'/g;
-    let match = call.exec(js);
+    const literal = /'([^'\n]*)'/g;
+    let match = literal.exec(js);
     while (match !== null) {
-        match[2].split(/\s+/).forEach(function (name) {
-            if (name.indexOf('admin-') === 0) created.add(name);
+        match[1].split(/\s+/).forEach(function (name) {
+            if (/^admin-[\w-]+$/.test(name) && !ids.has(name)) created.add(name);
         });
-        match = call.exec(js);
+        match = literal.exec(js);
     }
 
     assert.ok(created.size > 0,
@@ -201,6 +238,35 @@ test('every admin- class the panel creates has a rule', () => {
     });
     assert.deepStrictEqual(orphans, [],
         'these classes are drawn and never styled: ' + orphans.join(', '));
+});
+
+console.log('');
+console.log('==> and so is the screen a shut arena shows its players');
+
+test('THE SAME BUG, THE OTHER SCREEN: the player\'s closed screen had no rules', () => {
+    /* It shipped exactly as the tablet did -- markup, behaviour, and nothing
+       in the stylesheet -- and this file could not see it, because it walks
+       the tablet's ids and had never been pointed anywhere else. On the
+       shipped schedule that screen is what a player sees for fourteen hours a
+       day, which makes it the most-looked-at thing in the resource. */
+    ['arena-shut', 'arena-shut-title', 'arena-shut-why', 'arena-shut-hours']
+        .forEach(function (id) {
+            assert.ok(styled('#' + id),
+                'style.css has no rule for #' + id + ', so it draws in the browser\'s '
+                + 'own defaults over a running game');
+        });
+});
+
+test('and its heading is actually big, which is the whole request', () => {
+    /* "explaining in big letters why its close". A closed sign nobody can
+       read from where they are standing is a closed sign that does not work. */
+    const block = css.slice(css.indexOf('#arena-shut-title'));
+    const rule = block.slice(0, block.indexOf('}'));
+    const size = /font-size:\s*([\d.]+)rem/.exec(rule);
+
+    assert.ok(size, 'the heading sets no font size at all: ' + rule);
+    assert.ok(parseFloat(size[1]) >= 2,
+        'the heading is ' + size[1] + 'rem, which is not "big letters"');
 });
 
 console.log('');

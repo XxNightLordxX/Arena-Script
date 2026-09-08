@@ -40,6 +40,22 @@
         <button id="arena-close" type="button">&#10005;</button>
     </header>
 
+    <!-- A SHUT ARENA IS ONE SCREEN, and the tabs go with everything else.
+         Matches, Loadout and Bets are all things a player cannot do right
+         now: offering them is offering five ways to find that out one at a
+         time. What is wanted instead is the answer, in letters big enough to
+         read from where they are standing, and when to come back.
+
+         A FIGHTER MID-ROUND IS THE EXCEPTION. Closing the arena stops people
+         coming in and leaves the round already being fought to finish -- so
+         somebody still in one keeps their whole panel, because everything on
+         it is still true for them. -->
+    <section id="arena-shut" class="hidden">
+        <h2 id="arena-shut-title">The arena is closed</h2>
+        <p id="arena-shut-why"></p>
+        <p id="arena-shut-hours"></p>
+    </section>
+
     <nav id="arena-nav">
         <button class="arena-tab" type="button" data-tab="matches">Matches</button>
         <button class="arena-tab" type="button" data-tab="lobby">Lobby</button>
@@ -350,6 +366,39 @@
         <button id="admin-close" class="btn" type="button">Close</button>
     </header>
 
+    <!-- THE DOORS, ABOVE THE TABS AND ALWAYS ON SCREEN. Whether the arena is
+         letting anybody in is a fact about the whole place rather than about
+         any one round -- and it is the one control that has to stay reachable
+         when the arena is CLOSED, because every other screen is put away then
+         and this is what puts them back.
+
+         THREE BUTTONS RATHER THAN A TOGGLE, because there are three states
+         and only one of them is "whatever the schedule says". A two-way
+         switch would have to pick which of open and shut counts as "off",
+         and neither of them does.
+
+         CLOSING DOES NOT END A ROUND ALREADY BEING FOUGHT: it stops people
+         coming in, and the fight already happening is fought to the end. -->
+    <div id="admin-doors">
+        <span id="admin-doors-state"></span>
+        <button id="admin-doors-schedule" class="btn" type="button">Follow the schedule</button>
+        <button id="admin-doors-open" class="btn" type="button">Hold open</button>
+        <button id="admin-doors-shut" class="btn btn-danger" type="button">Close the arena</button>
+    </div>
+
+    <!-- A CLOSED ARENA IS ONE SCREEN, AND THIS IS IT. Nothing else is drawn:
+         there are no matches to list, because closing destroys every lobby
+         waiting to start, and a screenful of controls for a place nobody can
+         get into is a screenful of ways to be confused. What an operator
+         needs here is the three facts -- that it is closed, what the hours
+         are, and whether a person or the clock closed it -- and the buttons
+         above, which are the way back. -->
+    <section id="admin-shut" class="hidden">
+        <h2 id="admin-shut-title">The arena is closed</h2>
+        <p id="admin-shut-who" class="hint"></p>
+        <p id="admin-shut-hours" class="hint"></p>
+    </section>
+
     <!-- TWO SUBJECTS, NOT ONE SCREEN WITH A SECTION BOLTED UNDER IT.
          The matches are what is happening now; the escrow is what the arena
          is holding, which outlives every one of them -- a stash from a run
@@ -369,26 +418,6 @@
     <!-- THE LIST. Live matches and nothing else -- this screen is not a
          second lobby browser. -->
     <section id="admin-list">
-        <!-- THE DOORS. Config.Schedule can have the arena shut at four in the
-             morning, and an operator running an event at four in the morning
-             needs a way in that is not editing config and restarting the
-             resource -- and the same operator needs to be able to close it
-             mid-afternoon without one either.
-
-             THREE BUTTONS RATHER THAN A TOGGLE, because there are three
-             states and only one of them is "whatever the schedule says". A
-             two-way switch would have to pick which of open and shut counts
-             as "off", and neither of them does.
-
-             CLOSING DOES NOT END A ROUND ALREADY BEING FOUGHT: it stops
-             people coming in, and the fight already happening is fought to
-             the end. -->
-        <div id="admin-doors">
-            <span id="admin-doors-state"></span>
-            <button id="admin-doors-schedule" class="btn" type="button">Follow the schedule</button>
-            <button id="admin-doors-open" class="btn" type="button">Hold open</button>
-            <button id="admin-doors-shut" class="btn btn-danger" type="button">Close the arena</button>
-        </div>
         <p id="admin-empty" class="hint hidden">No matches are running.</p>
         <div id="admin-matches"></div>
     </section>
@@ -422,6 +451,12 @@
     <section id="admin-stashes" class="hidden">
         <p id="admin-stash-line" class="hint"></p>
         <p id="admin-stash-empty" class="hint hidden">The arena is holding nothing for anybody.</p>
+        <!-- SAID WHILE THE SWEEP IS STILL RUNNING. The screen opens on what
+             memory knows and the database follows, so there is a moment where
+             an empty list means "not looked yet" rather than "nothing held" --
+             and those are opposite answers to the question somebody opened
+             this tab to ask. -->
+        <p id="admin-stash-waiting" class="hint hidden">Reading the stashes&hellip;</p>
         <div id="admin-stash-list"></div>
     </section>
 

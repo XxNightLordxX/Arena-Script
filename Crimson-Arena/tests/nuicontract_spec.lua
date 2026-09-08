@@ -40,6 +40,17 @@ end
 
 local PANEL = read('../html/app.js')
 local RELAY = read('../client/ui.lua')
+--- THE THIRD HOP. This file used to stop at the relay, and the seam it did
+--- not watch is where the next one happened: server/main.lua rebuilds the
+--- payload BY HAND before handing it to ArenaLobby, and it left
+--- `winCondition`, `scoreLimit` and `tierPlan` out of the updateMatch table.
+--- The panel posted all three, the relay named all three, ArenaLobby read
+--- and validated all three -- and a host pressing Apply changes moved the
+--- arena, the mode, the lives, the radar and the clock while the win
+--- condition, the kill limit and the gun-game ladder stayed exactly as they
+--- were. UpdateMatch returned success, so nothing refused and nothing
+--- warned.
+local HANDLERS = read('../server/main.lua')
 
 --- Every name the panel posts to, in source order.
 local function panelPosts()
@@ -136,6 +147,69 @@ for _, name in ipairs(CHECKED) do
             .. 'indistinguishable from "the host did not choose" -- so the server falls back to the default and reports success')
     end)
 end
+
+-- ------------------------------------------------------------------
+-- ...nor dropped again by the handler on the far side of the wire
+-- ------------------------------------------------------------------
+
+--- Every field the relay reads off the panel's payload for one callback.
+--- @param name string
+--- @return string[]
+local function relayForwards(name)
+    local body = relayBody(name)
+    local names, seen = {}, {}
+    if not body then return names end
+    for field in body:gmatch('data%.([%a_][%w_]*)') do
+        if not seen[field] then
+            seen[field] = true
+            names[#names + 1] = field
+        end
+    end
+    return names
+end
+
+--- The body of one onClient('crimson_arena:server:name', ...) handler.
+--- @param name string
+--- @return string|nil
+local function handlerBody(name)
+    return HANDLERS:match("onClient%('crimson_arena:server:" .. name .. "'.-\nend%)")
+end
+
+for _, name in ipairs({ 'createMatch', 'updateMatch' }) do
+    t.test(('and %s reads every one of them on the server'):format(name), function()
+        local forwarded = relayForwards(name)
+        t.isTrue(#forwarded > 3,
+            ('only %d fields were found in the %s relay, so this test is checking almost nothing')
+                :format(#forwarded, name))
+
+        local body = handlerBody(name)
+        t.isNotNil(body, ('server/main.lua registers no handler for %s'):format(name))
+
+        local dropped = {}
+        for _, field in ipairs(forwarded) do
+            -- The handler reads each one off its own payload table, under
+            -- whichever name it gave it: `data.x` or `payload.x`.
+            if not body:find('%.' .. field) then dropped[#dropped + 1] = field end
+        end
+
+        t.equals(table.concat(dropped, ', '), '',
+            ('the client sends these to %s and the server handler never reads them. They reach ArenaLobby as nil, '):format(name)
+            .. 'which is indistinguishable from "the host did not choose" -- so the setting is left exactly as it was '
+            .. 'and the call still returns success')
+    end)
+end
+
+t.test('and the field extractor really sees the three that went missing', function()
+    -- Guards the guard, the same way the radar test below does. A pattern
+    -- that found nothing would report a clean pass on a relay that forwards
+    -- nothing at all.
+    local forwarded = {}
+    for _, field in ipairs(relayForwards('updateMatch')) do forwarded[field] = true end
+    for _, field in ipairs({ 'winCondition', 'scoreLimit', 'tierPlan' }) do
+        t.isTrue(forwarded[field] == true,
+            ('the extractor cannot see %s in the updateMatch relay, so the test above proves nothing'):format(field))
+    end
+end)
 
 -- ------------------------------------------------------------------
 -- The two specific regressions, named, so a failure says which

@@ -70,6 +70,10 @@ local RATE = {
 --- @type table<number, number>
 local adminScan = {}
 
+--- The number the next scan takes. Only ever goes up.
+--- @type number
+local adminTicket = 0
+
 -- ======================================================================
 -- ARGUMENT READERS
 --
@@ -494,6 +498,19 @@ onClient('crimson_arena:server:updateMatch', RATE.choice, function(src, data)
         -- reading as `true` and switching a radar on nobody asked for.
         radar = boolArg(data.radar),
         roundTimeSeconds = intArg(data.roundTimeSeconds),
+        -- THESE THREE WERE MISSING, and the shape of that is the one this
+        -- resource keeps rediscovering: the panel posts them, client/ui.lua
+        -- names them in its relay, ArenaLobby.UpdateMatch reads and
+        -- validates all three -- and this handler in the middle built a
+        -- table without them. So "Apply changes" moved the arena, the mode,
+        -- the lives, the radar and the clock, and silently refused to move
+        -- the win condition, the kill limit or the gun-game ladder. Nothing
+        -- errored at either end, because nothing at either end was wrong.
+        --
+        -- Sanitised exactly as the create door sanitises them.
+        winCondition = keyArg(data.winCondition),
+        scoreLimit = intArg(data.scoreLimit),
+        tierPlan = tableArg(data.tierPlan),
     })
     if not ok then return refuse(src, reason) end
 end)
@@ -695,10 +712,38 @@ RegisterCommand('arenahours', function(src)
     tell(src, ('  offsetHours:       %+d'):format(hours.offsetHours))
     tell(src, ('  arena is going by: %s'):format(hours.arenaClock))
     tell(src, ('  windows:           %s'):format(hours.line or '(none -- open at every hour)'))
+
+    -- AN ADMIN'S DECISION, SAID FIRST AND ALWAYS.
+    --
+    -- This is the one command an operator runs to answer "why is the arena
+    -- shut", and it could not answer it. ArenaHoursState grew a `forced`
+    -- field for exactly this -- its own comment says an operator reading
+    -- "open" at four in the morning needs to know whether that is the
+    -- schedule or somebody's decision -- and nothing read it. On a server
+    -- keeping no hours, an arena an admin had closed printed "open at every
+    -- hour" and stopped.
+    if hours.forced then
+        tell(src, ('  OVERRIDDEN:        an admin has the doors %s. /arenaadmin puts them back.')
+            :format(hours.forced == 'open' and 'HELD OPEN past the schedule'
+                or 'CLOSED inside the schedule'))
+    end
+
+    -- OUTSIDE `if hours.line`, because whether the arena is open right now is
+    -- worth saying on every server -- and on one with no windows at all it is
+    -- the ONLY thing worth saying, since an override is then the only thing
+    -- that can have shut it.
+    local when = hours.open and hours.snapshot.closesAt or hours.snapshot.opensAt
+    tell(src, ('  right now:         %s%s'):format(
+        hours.open and 'OPEN' or 'SHUT',
+        -- NAMED ONLY WHEN THERE IS ONE. `closesAt` is set only while the
+        -- SCHEDULE says open and `opensAt` only while it says shut, so an
+        -- override that disagrees with the clock leaves the matching one
+        -- absent -- and this line used to print the word `nil` at an
+        -- operator trying to work out what was wrong.
+        type(when) == 'string' and (hours.open and (', until ' .. when)
+            or (', opens at ' .. when)) or ''))
+
     if hours.line then
-        tell(src, ('  right now:         %s'):format(hours.open
-            and ('OPEN, until ' .. tostring(hours.snapshot.closesAt))
-            or ('SHUT, opens at ' .. tostring(hours.snapshot.opensAt))))
         -- THE ACTIONABLE LINE. An operator whose box is in the wrong
         -- timezone needs the number to type, not a diagnosis.
         tell(src, '  if "this machine says" is not your local time, put the difference in '
@@ -785,6 +830,14 @@ local function adminMatch(matchId)
         label = match.label,
         state = match.state,
         pot = ArenaBetting.GetPot(match.id),
+        -- WHETHER THE `lives` ON EACH ROW ABOVE MEANS ANYTHING. Under a kill
+        -- limit or most kills nobody is eliminated, so that number never
+        -- moves -- and an admin reading it to decide who is nearly out is
+        -- reading a constant. Sent rather than worked out on the panel, for
+        -- the same reason the lobby card's copy is: the rule is the match's,
+        -- and the panel has no business re-deriving it.
+        livesSpent = not Arena.PlaysLadder(match.modeKey)
+            and Arena.WinConditionSpendsLives(match.winCondition),
         players = rows,
     }
 end
@@ -830,7 +883,15 @@ local function pushAdmin(src, matchId)
     -- this admin is allowed to draw; an older one that answers late is
     -- dropped where it stands rather than painting a stale screen over a
     -- fresh one.
-    local ticket = (adminScan[src] or 0) + 1
+    -- MONOTONIC ACROSS THE WHOLE SERVER, not per source.
+    --
+    -- Per source, `playerDropped` clears the entry and the next scan for that
+    -- id restarts at 1 -- the same number a scan issued before the disconnect
+    -- may still be holding. A reconnecting admin could then have their tablet
+    -- painted with rows read before they left. One counter that only ever goes
+    -- up cannot collide with itself.
+    adminTicket = adminTicket + 1
+    local ticket = adminTicket
     adminScan[src] = ticket
 
     local total, read = 0, 0
@@ -846,6 +907,13 @@ local function pushAdmin(src, matchId)
             -- arena that quietly never shuts again.
             hoursOpen = ArenaHoursOpen(),
             hoursForced = ArenaHoursOverride(),
+            -- THE HOURS THEMSELVES, so a closed arena can say what it is
+            -- closed UNTIL rather than only that it is closed. Both are nil
+            -- on a server that keeps no schedule, which is the honest answer
+            -- there: nothing is being enforced, so there is no window to
+            -- quote and no next opening to name.
+            hoursLine = Arena.ScheduleLine(),
+            hoursOpensAt = ArenaHoursSnapshot().opensAt,
             owed = withHolders(rows),
             -- HOW MANY ROWS EXIST AND HOW MANY WERE OPENED. An admin looking
             -- at four stashes needs to know whether that is all of them or
@@ -1019,8 +1087,20 @@ onClient('crimson_arena:server:adminRevive', RATE.admin, function(src, data)
     -- never the wrong thing to do. The ROUND standing is restored only for a
     -- fighter the round has lives left for, and only while it is still being
     -- fought.
+    -- A ROUND BEING FOUGHT OR ABOUT TO BE.
+    --
+    -- `live` alone was too tight, and it showed up in the report that a
+    -- player killed before the match started could not be revived from here:
+    -- the start countdown is `countdown`, everybody is standing in the arena
+    -- frozen, and somebody who arrived down is exactly the person an admin is
+    -- reaching for. Refusing there left the medical revive happening while
+    -- the roster went on calling them dead.
+    --
+    -- `lobby` is still refused, and deliberately: nobody is in an arena then,
+    -- so there is no round standing to restore.
+    local fighting = match.state == 'live' or match.state == 'countdown'
     local eliminated = Arena.IsEliminated(row)
-    if row and not eliminated and match.state == 'live' then
+    if row and not eliminated and fighting then
         row.alive = true
     end
 
@@ -1073,6 +1153,13 @@ RegisterCommand('arenaadmin', function(src, args)
             stashesRead = 0,
             hoursOpen = ArenaHoursOpen(),
             hoursForced = ArenaHoursOverride(),
+            -- THE HOURS THEMSELVES, so a closed arena can say what it is
+            -- closed UNTIL rather than only that it is closed. Both are nil
+            -- on a server that keeps no schedule, which is the honest answer
+            -- there: nothing is being enforced, so there is no window to
+            -- quote and no next opening to name.
+            hoursLine = Arena.ScheduleLine(),
+            hoursOpensAt = ArenaHoursSnapshot().opensAt,
         })
 
         -- AND THEN THE SWEEP, exactly as the screen's own refresh button asks

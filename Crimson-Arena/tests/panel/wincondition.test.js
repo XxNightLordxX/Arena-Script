@@ -340,6 +340,148 @@ test('and no box at all where the operator has fixed the number', () => {
         'a server that fixes the kill limit still offered a box for it');
 });
 
+test('THE REPORT: most kills takes the Lives Each row away too', () => {
+    /* "on win condition it should not have a lives for most kills till the
+       clock runs out". The rule is decided when the clock stops, so
+       eliminating people ends the round before the count is ever read --
+       the server spends no lives under it, and the panel must not offer a
+       box for the ones it does not spend. */
+    const panel = opened(ALL);
+    assert.ok(!hidden(panel, 'create-lives-row'),
+        'Lives Each was already hidden, so this proves nothing');
+
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+
+    assert.ok(hidden(panel, 'create-lives-row'),
+        'most kills spends no lives, and the Lives Each box was still offered');
+});
+
+test('and says the clock is what ends it, not a kill limit', () => {
+    /* The note where the row was. A host told "everyone respawns until
+       somebody reaches it" would go looking for a finish line this round
+       does not have. */
+    const panel = opened(ALL);
+
+    /* BRACKETED, because `hidden()` alone cannot see this. The harness
+       creates nodes on demand and never parses index.html, so a note the
+       panel has not touched reports "not hidden" -- and deleting the
+       show() that reveals it left this test passing. Asserting it is
+       hidden on the last-standing baseline FIRST is what makes the reveal
+       observable. */
+    assert.ok(hidden(panel, 'create-lives-note'),
+        'the note is on screen under a rule that spends lives, so its reveal proves nothing');
+
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+
+    const note = panel.node('create-lives-note');
+    assert.ok(!hidden(panel, 'create-lives-note'),
+        'the row vanished with nothing in its place');
+    assert.ok(/clock/i.test(note.textContent),
+        'the note does not say the clock ends it: ' + note.textContent);
+    assert.ok(!/reaches it/i.test(note.textContent),
+        'the note describes a kill limit under a condition with none: ' + note.textContent);
+});
+
+test('and the hint says lives are not spent, before the choice is made', () => {
+    const panel = opened(ALL);
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+
+    assert.ok(/lives are not spent/i.test(panel.node('create-win-hint').textContent),
+        'the hint does not warn that lives go with this choice: '
+            + panel.node('create-win-hint').textContent);
+});
+
+test('and it does NOT bring the kill-limit box with it', () => {
+    /* The two questions were one while a score limit was the only condition
+       without lives. Reading "spends no lives" to mean "plays to a limit"
+       would put a finish line on a round that ends on a clock. */
+    const panel = opened(ALL);
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+
+    assert.ok(hidden(panel, 'create-limit-row'),
+        'a round decided by the clock was offered a kill limit to play to');
+});
+
+test('and Lives Each comes back when the host changes their mind', () => {
+    const panel = opened(ALL);
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+    assert.ok(hidden(panel, 'create-lives-row'), 'the fixture did not hide it');
+
+    panel.node('create-win').value = 'last_standing';
+    panel.fire('create-win', 'change');
+
+    assert.ok(!hidden(panel, 'create-lives-row'),
+        'Lives Each never came back after the host changed their mind');
+    assert.ok(hidden(panel, 'create-lives-note'),
+        'the note explaining a missing row outlived the row going missing');
+});
+
+test('and it is not offered at all where no round clock exists to run out', () => {
+    /* THE PANEL MUST NOT OFFER WHAT THE SERVER REFUSES. With the round
+       length fixed at 0 the server turns a most-kills match down at
+       creation -- and the refusal says "set a round length", pointing at a
+       box the panel is not drawing, because there is no round length to
+       set. */
+    const panel = loadPanel(ROOT);
+    const snap = snapshot(ALL);
+    snap.config.match.roundTimeSeconds = 0;
+    delete snap.config.match.roundTimeChoice;
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    const values = panel.node('create-win').children.map(function (option) {
+        return option.value;
+    });
+    assert.ok(values.indexOf('most_kills') === -1,
+        'a round that can only end on a clock was offered on a server with none: '
+            + values.join(', '));
+    /* The other two are unaffected -- one ends on eliminations, the other on
+       a count somebody eventually reaches. */
+    assert.deepStrictEqual(values, ['last_standing', 'score_limit'],
+        'dropping most kills took something else with it: ' + values.join(', '));
+});
+
+test('and the host is not left holding it after the option goes', () => {
+    /* They can pick it while a clock exists and then lose the clock. Left
+       alone, the form would go on posting a condition the dropdown no longer
+       shows and the server always refuses. */
+    const panel = loadPanel(ROOT);
+    const withClock = snapshot(ALL);
+    panel.send('open', withClock);
+    panel.send('state', withClock);
+
+    panel.node('create-win').value = 'most_kills';
+    panel.fire('create-win', 'change');
+
+    const noClock = snapshot(ALL);
+    noClock.config.match.roundTimeSeconds = 0;
+    delete noClock.config.match.roundTimeChoice;
+    panel.send('state', noClock);
+
+    panel.fire('create-submit', 'click');
+
+    const posted = panel.posted.filter(function (row) {
+        return row.name === 'createMatch' || row.name === 'updateMatch';
+    });
+    assert.strictEqual(posted.length, 1, 'the submit did not post at all');
+    assert.notStrictEqual(posted[0].body.winCondition, 'most_kills',
+        'the form still posted a condition the server would refuse');
+});
+
+test('and a server WITH a clock still offers all three, which is the control', () => {
+    const panel = opened(ALL);
+    const values = panel.node('create-win').children.map(function (option) {
+        return option.value;
+    });
+    assert.deepStrictEqual(values, ALL,
+        'most kills was dropped on a server that has a clock: ' + values.join(', '));
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

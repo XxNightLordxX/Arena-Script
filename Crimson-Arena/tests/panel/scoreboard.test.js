@@ -462,5 +462,46 @@ test('and a side this server does not have is not drawn as one', () => {
 });
 
 console.log('');
+test('THE UNTRUTH: a round nobody can be eliminated from counted down anyway', () => {
+    /* Under a ladder, a kill limit or most kills nobody is ever out, so
+       `remaining` equals `total` from the first second to the last. A header
+       shaped like a countdown then says people are being knocked out when
+       none can be, and a fighter watching it wonders why it never moves. */
+    const panel = loadPanel(ROOT);
+    panel.send('hud', {
+        visible: true,
+        hud: { remaining: 6, total: 6, kills: 2, deaths: 1, timeLeft: 300, livesSpent: false },
+    });
+
+    const text = panel.node('hud-alive').textContent;
+    assert.ok(!/Remaining/.test(text),
+        'the header still counts down in a round with no eliminations: ' + text);
+    assert.ok(/6 fighters/.test(text),
+        'the header does not say how many are in the round: ' + text);
+});
+
+test('and a round that DOES eliminate still counts down, which is the control', () => {
+    const panel = loadPanel(ROOT);
+    panel.send('hud', {
+        visible: true,
+        hud: { remaining: 3, total: 8, kills: 2, deaths: 1, timeLeft: 300, livesSpent: true },
+    });
+
+    assert.strictEqual(panel.node('hud-alive').textContent, 'Remaining 3 / 8',
+        'the countdown was taken off a round that has one');
+});
+
+test('and a payload with no livesSpent field counts as it always did', () => {
+    /* Older servers, and any snapshot written before the field existed. */
+    const panel = loadPanel(ROOT);
+    panel.send('hud', {
+        visible: true,
+        hud: { remaining: 3, total: 8, kills: 2, deaths: 1, timeLeft: 300 },
+    });
+
+    assert.strictEqual(panel.node('hud-alive').textContent, 'Remaining 3 / 8',
+        'a snapshot with no livesSpent field lost its header');
+});
+
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

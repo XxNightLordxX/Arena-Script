@@ -374,6 +374,40 @@
         return teamed === true ? WIN_CONDITION_TEAM_TEXT : WIN_CONDITION_TEXT;
     }
 
+    /* THE CONDITIONS THAT SPEND NO LIVES, which is Arena.WinConditionSpendsLives
+       said again on this side of the wire. Both rounds that end on a COUNT --
+       first to the kill limit, and most kills when the clock runs out -- have
+       to keep everybody in the fight until the count decides it: eliminate
+       people and the round ends on the last one standing with the count never
+       read. Only "last one standing" spends a life.
+
+       Kept as a list, and not as `!== 'score_limit'`, because that is the
+       exact test both ends used and it is what quietly answered "spends
+       lives" for most kills. */
+    var WIN_CONDITIONS_WITHOUT_LIVES = {
+        score_limit: true,
+        most_kills: true
+    };
+
+    /* @param key string -- a win condition key
+       @return boolean */
+    function winSpendsLives(key) {
+        return WIN_CONDITIONS_WITHOUT_LIVES[key] !== true;
+    }
+
+    /* " · 3 lives", or nothing at all where the round does not spend them.
+       A gun game, a kill limit and most kills all leave that number exactly
+       where it started, so an admin reading it to decide who is nearly out
+       is reading a constant. The server resolves the rule onto the match and
+       sends it; absent, the number is shown as it always was.
+       @param match object -- the admin match detail
+       @param fighter object
+       @return string */
+    function livesFact(match, fighter) {
+        if (match && match.livesSpent === false) return '';
+        return ' · ' + int(fighter.lives, 0) + ' lives';
+    }
+
     function money(amount) {
         var symbol = '$';
         if (state.config && state.config.betting && typeof state.config.betting.currencySymbol === 'string') {
@@ -1401,9 +1435,12 @@
     // costs that panel, not the whole menu.
     // ==================================================================
 
+    /* Hands back whatever fn returned, so a renderer can report that it took
+       the screen over -- and undefined when it threw, which reads as "no" at
+       every call site. */
     function guarded(fn) {
         try {
-            fn();
+            return fn();
         } catch {
             /* Swallowed for the reason in the file header: the alternative
                is a dead panel the player cannot close. */
@@ -1441,6 +1478,19 @@
         var wasFocusedId = wasFocused && wasFocused.id ? String(wasFocused.id) : null;
 
         guarded(renderHeader);
+
+        /* A SHUT ARENA IS ONE SCREEN, and everything below it is skipped.
+           Matches, Loadout and Bets are all things a player cannot do right
+           now, so offering them is offering five ways to find that out one at
+           a time.
+
+           A FIGHTER MID-ROUND KEEPS THEIR PANEL. Closing the arena stops
+           people coming IN and leaves the round already being fought to
+           finish -- so for somebody still in one, every tab is still true and
+           taking them away would strand them behind a wall with no Leave
+           Match button. */
+        if (guarded(renderShut)) return;
+
         guarded(renderTabs);
         guarded(renderMatches);
         guarded(renderLobby);
@@ -1454,6 +1504,48 @@
                 again.focus();
             }
         }
+    }
+
+    /* @returns {boolean} whether the shut screen took over the panel */
+    function renderShut() {
+        /* ANYBODY THE ROUND STILL CONCERNS KEEPS THEIR PANEL, and that is
+           two kinds of person, not one.
+
+           A FIGHTER, because closing the arena leaves the round already being
+           fought to finish -- every tab is still true for them, and taking
+           them away strands a live fighter with no Leave Match button.
+
+           AND A SPECTATOR, because Stop Watching is built inside the body
+           this screen replaces. Somebody watching a round that is still
+           legally being fought would have been told "the arena is closed",
+           which is not true of what they are doing, and left with no way out
+           of the camera but a key nothing on screen mentions. */
+        var shut = doorsShut()
+            && playerMatchId() === null
+            && spectatingMatchId() === null;
+
+        show(byId('arena-shut'), shut);
+        show(byId('arena-nav'), !shut);
+        show(byId('arena-body'), !shut);
+        if (!shut) return false;
+
+        /* WHO SHUT IT. `forced` is the admin's standing decision, and it is
+           on the wire for players as well as for the tablet: "an admin closed
+           it" and "it is four in the morning" are different answers, and only
+           one of them has a time to come back at. */
+        var forced = schedule().forced;
+        byId('arena-shut-why').textContent = forced === 'shut'
+            ? 'An admin has closed it. It stays closed until they open it again.'
+            : 'It is outside the hours this server keeps it open.';
+
+        var line = schedule().line;
+        var opensAt = schedule().opensAt;
+        byId('arena-shut-hours').textContent = (typeof line === 'string' && line !== '')
+            ? 'Arena hours: ' + line + '.'
+              + (typeof opensAt === 'string' && opensAt ? ' Next opening ' + opensAt + '.' : '')
+            : 'This server keeps no opening hours — it opens again when an admin says so.';
+
+        return true;
     }
 
     function renderHeader() {
@@ -1759,9 +1851,45 @@
            the ladder or by its own clock whatever is set, so offering the
            choice there would be a control that changes nothing. */
         var laddered = modeIssuesLoadout(creating);
-        var winChoice = (cfg().match || {}).winConditionChoice;
+        var offered = (cfg().match || {}).winConditionChoice;
+
+        /* AND MOST KILLS NEEDS A CLOCK TO RUN OUT. Nobody is eliminated
+           under it, so the clock is the only thing that can end the round --
+           and on a server whose round length resolves to 0 the server
+           refuses it at creation. Offering it here would be the panel
+           holding out a rule the server always says no to, with the refusal
+           ("set a round length") pointing at a box that is not on screen
+           because there is no round length to set.
+
+           THE CLOCK THIS MATCH WOULD REALLY RUN: the host's own number if
+           they named one, then the mode's own, which the server resolves and
+           sends per mode. Same order Arena.RoundSecondsFor reads them in. */
+        /* AND THE HOST'S OWN NUMBER ONLY COUNTS WHERE THE SERVER TAKES ONE.
+           `state.createRound` keeps whatever was last seeded into it, so a
+           panel that had a clock and then lost the setting would still be
+           holding 600 -- and post it, to a server that reads a fixed
+           roundTimeSeconds and treats the number as "the host did not
+           choose". The box is not on screen in that case either. */
+        var roundOffered = !!(cfg().match || {}).roundTimeChoice;
+        var wouldRun = roundOffered && int(state.createRound, 0) > 0
+            ? int(state.createRound, 0)
+            : int(creating && creating.roundTimeSeconds,
+                int((cfg().match || {}).roundTimeSeconds, 0));
+        var winChoice = Array.isArray(offered) && wouldRun <= 0
+            ? offered.filter(function (key) { return key !== 'most_kills'; })
+            : offered;
+
         var winUsed = Array.isArray(winChoice) && winChoice.length > 1 && !laddered;
         show(byId('create-win-row'), winUsed);
+
+        /* AND THE HOST IS NOT LEFT HOLDING ONE THAT IS NO LONGER OFFERED.
+           They can pick most kills, then switch to a clockless mode: the
+           dropdown loses the option, and without this the form would keep
+           posting it and the server would keep refusing. */
+        if (Array.isArray(winChoice) && winChoice.length > 0
+            && winChoice.indexOf(state.createWin) === -1) {
+            state.createWin = winChoice[0];
+        }
 
         var winSelect = byId('create-win');
         if (has(winSelect) && winUsed) {
@@ -1775,6 +1903,8 @@
                mode select to team deathmatch. */
             var teamed = !!(creating && creating.teams === true);
             var words = winWords(teamed);
+            /* The list itself is part of the signature, so an option
+               dropped for want of a clock really leaves the dropdown. */
             var wanted = winChoice.join(',') + (teamed ? '|teams' : '');
             if (winSelect.getAttribute('data-options') !== wanted) {
                 winSelect.setAttribute('data-options', wanted);
@@ -1807,8 +1937,11 @@
                     : (state.createWin === 'most_kills'
                         ? (teamedHint
                             ? 'The side with the most kills between them when the clock runs '
-                              + 'out takes it.'
-                            : 'Highest kill count when the clock runs out takes it.')
+                              + 'out takes it. Nobody is eliminated — everyone respawns until '
+                              + 'the clock stops, so lives are not spent.'
+                            : 'Highest kill count when the clock runs out takes it. Nobody is '
+                              + 'eliminated — everyone respawns until the clock stops, so '
+                              + 'lives are not spent.')
                         : (teamedHint
                             ? 'The last side with anybody still standing takes it — the whole '
                               + 'side wins it, fallen team-mates included. Run out of lives and '
@@ -1816,16 +1949,22 @@
                             : 'Last one standing takes it. Run out of lives and you are out.')));
         }
 
-        /* AND A SCORE LIMIT SPENDS NO LIVES, which is the same reason a
-           ladder mode does not show the lives row: the number would be on
-           screen, editable, and read by nothing. */
-        var livesSpent = state.createWin !== 'score_limit';
+        /* AND NEITHER OF THE TWO COUNTING CONDITIONS SPENDS LIVES, which is
+           the same reason a ladder mode does not show the lives row: the
+           number would be on screen, editable, and read by nothing. */
+        var livesSpent = winSpendsLives(state.createWin);
 
         /* THE FINISH LINE ITSELF, and only where the host has chosen to play
            to one. Under every other condition the number is not read, so a
-           box for it would be a control that changes nothing. */
+           box for it would be a control that changes nothing.
+
+           ASKED OF THE CONDITION DIRECTLY, not of `livesSpent`. The two were
+           the same question while a score limit was the only condition
+           without lives; now that most kills is one too, reading `livesSpent`
+           here would put the kill-limit box on a round that ends on a
+           clock. */
         var limitChoice = (cfg().match || {}).scoreLimitChoice;
-        var limitUsed = !!limitChoice && winUsed && !livesSpent;
+        var limitUsed = !!limitChoice && winUsed && state.createWin === 'score_limit';
         show(byId('create-limit-row'), limitUsed);
 
         var limitInput = byId('create-limit');
@@ -2013,8 +2152,15 @@
                     + ' has no lives — everyone respawns until the clock stops, '
                     + 'and a death costs you a tier instead.';
             } else if (!livesSpent) {
-                livesNote.textContent = 'A kill limit has no lives — everyone respawns '
-                    + 'until somebody reaches it.';
+                /* AND THE TWO OF THEM ARE NOT THE SAME SENTENCE EITHER. One
+                   round ends when somebody gets there, the other when the
+                   clock stops, and a host told the wrong one would go looking
+                   for a finish line that is not in this round. */
+                livesNote.textContent = state.createWin === 'most_kills'
+                    ? 'Most kills has no lives — everyone respawns until the clock stops, '
+                      + 'and the highest count when it does takes it.'
+                    : 'A kill limit has no lives — everyone respawns '
+                      + 'until somebody reaches it.';
             }
         }
 
@@ -2263,6 +2409,18 @@
            and always was. This line simply asked the wrong object for it. */
         var lives = int(match.lives, int(matchCfg.lives, 1));
 
+        /* WHETHER THIS ROUND SPENDS THEM AT ALL. The server resolves it on
+           the match and has sent it all along -- nothing on this side read
+           it, so the card announced "3 lives each" over a round nobody can be
+           eliminated from, which is the plain untruth the server-side comment
+           beside the field was written to prevent.
+
+           Defaulted from the condition rather than to `true`, so a snapshot
+           that predates the field still says the right thing. */
+        var spendsLives = match.livesSpent !== undefined && match.livesSpent !== null
+            ? match.livesSpent === true
+            : winSpendsLives(keyOr(match.winCondition, matchCfg.winCondition));
+
         /* The rules of the round, spelled out here because this is the last
            screen before it starts and none of it is guessable from the
            weapons list. */
@@ -2282,14 +2440,27 @@
                how tall. */
             tiers > 0
                 ? 'Respawn until the clock stops'
-                : (lives === 1
-                    ? 'One life — first death is elimination'
-                    : plural(lives, 'life', 'lives') + ' each'),
+                : (!spendsLives
+                    /* WHAT ACTUALLY ENDS IT, not just "no lives". The two
+                       conditions without lives finish on different things --
+                       one on the clock, one on the count -- and a player
+                       reading the card is deciding whether to join. */
+                    ? (keyOr(match.winCondition, matchCfg.winCondition) === 'score_limit'
+                        ? 'No lives — respawn until somebody reaches the limit'
+                        : 'No lives — respawn until the clock stops')
+                    : (lives === 1
+                        ? 'One life — first death is elimination'
+                        : plural(lives, 'life', 'lives') + ' each')),
             roundTime > 0 ? 'Round lasts ' + clock(roundTime) : 'No round clock',
+            /* THE MATCH'S OWN RULE, not the server's default. This read
+               `matchCfg.winCondition` -- the same wrong object `lives` above
+               was read from, for the same reason -- so a host who picked
+               "most kills when the clock runs out" had their lobby card
+               announce the server default to everybody looking at it. */
             tiers > 0
                 ? 'Win by topping the ' + tiers + '-tier ladder — a kill climbs, a death drops'
                 : 'Win by ' + labelFor(winWords(match.teams === true),
-                    matchCfg.winCondition, 'the mode rules')
+                    keyOr(match.winCondition, matchCfg.winCondition), 'the mode rules')
         ];
         if (bettingOn()) {
             bits.push('Entry ' + money(match.entryFee));
@@ -4471,7 +4642,17 @@
             timer.textContent = (left === null || left === undefined) ? '' : clock(left);
         }
 
-        if (has(alive)) alive.textContent = 'Remaining ' + int(hud.remaining, 0) + ' / ' + int(hud.total, 0);
+        if (has(alive)) {
+            /* "REMAINING 6 / 6" ALL ROUND IS NOT A COUNT, IT IS A PROMISE
+               THE ROUND DOES NOT KEEP. Under a ladder, a kill limit or most
+               kills nobody is eliminated, so the left-hand number never
+               moves -- and a header shaped like a countdown says people are
+               being knocked out when none can be. The server resolves which
+               kind of round this is; absent, it counts as it always did. */
+            alive.textContent = hud.livesSpent === false
+                ? plural(int(hud.total, 0), 'fighter')
+                : 'Remaining ' + int(hud.remaining, 0) + ' / ' + int(hud.total, 0);
+        }
 
         if (has(kills)) kills.textContent = 'Kills ' + int(hud.kills, 0) + '  Deaths ' + int(hud.deaths, 0);
 
@@ -4616,11 +4797,21 @@
            being the ABSENCE of a decision rather than a third kind of shut. */
         hoursOpen: true,
         hoursForced: null,
+        /* The schedule this server keeps, and the next time it opens. Both
+           null where no hours are enforced at all -- which is not the same as
+           "open all day" said badly: there is simply no window to quote. */
+        hoursLine: null,
+        hoursOpensAt: null,
         /* Which of the tablet's two subjects is on screen: 'matches' or
            'stashes'. Each tab has its own depth below it -- a match and then
            a fighter, or a stash -- and those are screens WITHIN a tab rather
-           than tabs of their own. */
-        tab: 'matches',
+           than tabs of their own.
+
+           NULL UNTIL THE ADMIN PICKS ONE, which is how the tablet knows to
+           land on the closed screen rather than on a tab -- and how a second
+           /arenaadmin lands on the matches rather than wherever the last one
+           was left. */
+        tab: null,
         /* The stash the Stashes tab has open, by citizen id, or null for the
            list. An ID rather than the row itself, for the same reason
            admin.player is: a refresh redraws it from the new snapshot instead
@@ -4647,41 +4838,6 @@
         if (!has(root)) return;
         show(root, admin.open);
         if (!admin.open) return;
-
-        var onStashes = admin.tab === 'stashes';
-
-        /* The stash admin.stash names, out of the CURRENT snapshot -- so a
-           stash that has since been handed back falls out to the list rather
-           than leaving an admin looking at a manifest of nothing. */
-        var stash = null;
-        if (onStashes && admin.stash !== null) {
-            arrayOf(admin.owed).forEach(function (entry) {
-                if (String(entry.citizenid) === String(admin.stash)) stash = entry;
-            });
-        }
-
-        var row = onStashes ? null : adminPlayerRow();
-        /* A fighter who has left the match while their card was open falls
-           back to the match, and a match that has ended falls back to the
-           list -- rather than leaving an admin looking at a screen about
-           somebody who is no longer there. */
-        var onPlayer = row !== null;
-        var onMatch = !onStashes && !onPlayer && admin.focused !== null;
-        var onStash = stash !== null;
-
-        show(byId('admin-list'), !onStashes && !onPlayer && !onMatch);
-        show(byId('admin-detail'), onMatch);
-        show(byId('admin-player'), onPlayer);
-        show(byId('admin-stashes'), onStashes && !onStash);
-        show(byId('admin-stash-detail'), onStash);
-
-        /* WHICH TAB IS LIT. The screens below each list are a depth within
-           their tab, not tabs of their own, so the tab stays lit while an
-           admin is two screens down inside it. */
-        var matchesTab = byId('admin-tab-matches');
-        var stashesTab = byId('admin-tab-stashes');
-        if (has(matchesTab)) matchesTab.classList.toggle('active', !onStashes);
-        if (has(stashesTab)) stashesTab.classList.toggle('active', onStashes);
 
         /* ---- the doors ---- */
         var doorState = byId('admin-doors-state');
@@ -4716,6 +4872,94 @@
             node.disabled = current;
         });
 
+        /* A CLOSED ARENA IS ONE SCREEN. Nothing else is drawn -- there are no
+           matches to list, because closing destroys every lobby waiting to
+           start, and a screenful of controls for a place nobody can get into
+           is a screenful of ways to be confused.
+
+           The doors strip above the tabs is deliberately NOT part of this:
+           it is the way back, and putting it away with everything else would
+           leave an admin looking at a closed arena with no button to open
+           it. */
+        /* THE TABS STAY, AND THE CLOSED SCREEN IS WHERE THE TABLET LANDS.
+           Deliberately NOT what the player panel does, where a shut arena
+           really is one screen because nothing else on it is true.
+
+           An admin's screen is different. Closing the arena leaves a round
+           already being fought to finish, so there can be a live match with
+           people in it -- and putting the tabs away took the Stop button, the
+           Revive button and every stash with them, at the exact moment an
+           operator is most likely to want them. On the shipped schedule the
+           arena is shut fourteen hours a day, so that was the tablet's
+           ordinary state rather than an edge of it. */
+        var shut = admin.hoursOpen === false && admin.tab === null;
+        show(byId('admin-shut'), shut);
+
+        if (shut) {
+            /* PUT AWAY BY NAME, because the block below that normally decides
+               which screen is up is skipped entirely here -- and a screen
+               left alone keeps whatever it was last given. The match list is
+               the one that bites: it is the DEFAULT screen and carries no
+               `hidden` class in the markup, so it is on screen from the first
+               frame unless something takes it away. */
+            show(byId('admin-list'), false);
+            show(byId('admin-detail'), false);
+            show(byId('admin-player'), false);
+            show(byId('admin-stashes'), false);
+            show(byId('admin-stash-detail'), false);
+
+            byId('admin-shut-who').textContent = admin.hoursForced === 'shut'
+                ? 'An admin closed it. It stays closed until somebody opens it '
+                  + 'again — a restart counts.'
+                : 'It is outside the hours this server keeps.';
+
+            byId('admin-shut-hours').textContent = admin.hoursLine
+                ? 'Arena hours: ' + admin.hoursLine + '.'
+                  + (admin.hoursOpensAt ? ' Next opening ' + admin.hoursOpensAt + '.' : '')
+                /* NO SCHEDULE AT ALL is its own answer, and a real one: it
+                   means the closure can only be an admin's, so quoting hours
+                   that do not exist would be the wrong kind of reassuring. */
+                : 'This server keeps no opening hours — nothing reopens it on its own.';
+
+            return;
+        }
+
+        var onStashes = admin.tab === 'stashes';
+        var onMatches = !onStashes && !shut;
+
+        /* The stash admin.stash names, out of the CURRENT snapshot -- so a
+           stash that has since been handed back falls out to the list rather
+           than leaving an admin looking at a manifest of nothing. */
+        var stash = null;
+        if (onStashes && admin.stash !== null) {
+            arrayOf(admin.owed).forEach(function (entry) {
+                if (String(entry.citizenid) === String(admin.stash)) stash = entry;
+            });
+        }
+
+        var row = onStashes ? null : adminPlayerRow();
+        /* A fighter who has left the match while their card was open falls
+           back to the match, and a match that has ended falls back to the
+           list -- rather than leaving an admin looking at a screen about
+           somebody who is no longer there. */
+        var onPlayer = row !== null;
+        var onMatch = !onStashes && !onPlayer && admin.focused !== null;
+        var onStash = stash !== null;
+
+        show(byId('admin-list'), onMatches && !onPlayer && !onMatch);
+        show(byId('admin-detail'), onMatches && onMatch);
+        show(byId('admin-player'), onMatches && onPlayer);
+        show(byId('admin-stashes'), onStashes && !onStash);
+        show(byId('admin-stash-detail'), onStashes && onStash);
+
+        /* WHICH TAB IS LIT. The screens below each list are a depth within
+           their tab, not tabs of their own, so the tab stays lit while an
+           admin is two screens down inside it. */
+        var matchesTab = byId('admin-tab-matches');
+        var stashesTab = byId('admin-tab-stashes');
+        if (has(matchesTab)) matchesTab.classList.toggle('active', onMatches);
+        if (has(stashesTab)) stashesTab.classList.toggle('active', onStashes);
+
         /* ---- the list ---- */
         var list = byId('admin-matches');
         if (has(list)) {
@@ -4730,6 +4974,15 @@
                         + ' · pot ' + money(int(match.pot, 0))));
                 card.addEventListener('click', function () {
                     admin.player = null;
+                    /* CLICKING INTO A MATCH IS CHOOSING THE MATCHES TAB, and
+                       saying so here is what stops the closed screen eating
+                       it. `tab` starts null, and the closed screen is drawn
+                       whenever the doors are shut AND no tab is chosen -- so
+                       an admin who opened the tablet, clicked into a live
+                       round, and then shut the arena watched the Stop and
+                       Revive buttons vanish at the exact moment they are
+                       most likely to want them. */
+                    admin.tab = 'matches';
                     /* Asked for rather than assumed: the list row carries a
                        head count, and the detail screen needs the fighters
                        themselves. */
@@ -4768,6 +5021,12 @@
                     target: online,
                     citizenid: entry.citizenid,
                     stash: entry.stash,
+                    /* THE MATCH THIS TABLET HAS OPEN, like every other ask.
+                       The server answers with `focused` built from it, and
+                       leaving it out answered null -- so handing somebody
+                       their belongings quietly closed the match an admin had
+                       open behind the Stashes tab. */
+                    matchId: admin.focused ? admin.focused.id : null,
                 });
             });
             return give;
@@ -4791,7 +5050,19 @@
         /* AN EMPTY TAB SAYS SO. It is a whole screen rather than a section
            that could be left out of another one, and a blank screen reads as
            a screen that failed to load. */
-        show(byId('admin-stash-empty'), onStashes && !onStash && owed.length === 0);
+        /* "THE ARENA IS HOLDING NOTHING FOR ANYBODY" IS A CLAIM, and it must
+           not be made before anything has been looked at. /arenaadmin opens
+           with an empty list on purpose and lets the database sweep follow,
+           so pressing Stashes in the first second used to state, as fact, the
+           opposite of the reason somebody opened it -- for up to the eight
+           seconds the sweep is given to answer.
+
+           `stashesRead` is how the two are told apart: zero means "not looked
+           yet", and any positive number means a real answer, including the
+           real answer that there is nothing. */
+        var looked = int(admin.stashesRead, 0) > 0 || int(admin.stashesFound, 0) > 0;
+        show(byId('admin-stash-empty'), onStashes && !onStash && owed.length === 0 && looked);
+        show(byId('admin-stash-waiting'), onStashes && !onStash && owed.length === 0 && !looked);
 
         var stashLine = byId('admin-stash-line');
         if (has(stashLine)) {
@@ -4904,7 +5175,7 @@
                     card.appendChild(makeEl('span', 'admin-player-facts',
                         (fighter.alive === true ? 'alive' : 'down')
                             + ' · ' + int(fighter.kills, 0) + 'k/' + int(fighter.deaths, 0) + 'd'
-                            + ' · ' + int(fighter.lives, 0) + ' lives'));
+                            + livesFact(admin.focused, fighter)));
                     card.addEventListener('click', function () {
                         admin.player = int(fighter.src, -1);
                         renderAdmin();
@@ -4920,7 +5191,7 @@
             byId('admin-player-line').textContent =
                 (row.alive === true ? 'On their feet' : 'Down')
                 + ' · ' + int(row.kills, 0) + ' kills, ' + int(row.deaths, 0) + ' deaths'
-                + ' · ' + int(row.lives, 0) + ' lives'
+                + livesFact(admin.focused, row)
                 + (row.team ? ' · ' + titleCase(String(row.team)) : '');
 
             /* A REVIVE IS FOR SOMEBODY WHO IS DOWN. Offering it on a fighter
@@ -5005,8 +5276,20 @@
                     admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
                         ? data.hoursForced
                         : null;
+                    admin.hoursLine = typeof data.hoursLine === 'string' ? data.hoursLine : null;
+                    admin.hoursOpensAt = typeof data.hoursOpensAt === 'string'
+                        ? data.hoursOpensAt
+                        : null;
                     admin.focused = null;
                     admin.player = null;
+                    /* AND THE TAB, which this used to leave alone. Opening
+                       the tablet, pressing Stashes, closing it and opening it
+                       again landed back on the stash list -- drawn from an
+                       `owed` array this very payload had just emptied, so it
+                       greeted the operator with "the arena is holding nothing
+                       for anybody". A fresh open starts at the front. */
+                    admin.tab = null;
+                    admin.stash = null;
                     renderAdmin();
                     break;
 
@@ -5022,6 +5305,10 @@
                     admin.hoursOpen = data.hoursOpen !== false;
                     admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
                         ? data.hoursForced
+                        : null;
+                    admin.hoursLine = typeof data.hoursLine === 'string' ? data.hoursLine : null;
+                    admin.hoursOpensAt = typeof data.hoursOpensAt === 'string'
+                        ? data.hoursOpensAt
                         : null;
                     admin.focused = (data.focused && typeof data.focused === 'object')
                         ? data.focused
@@ -5385,6 +5672,7 @@
             target: int(open.src, 0),
             citizenid: open.citizenid,
             stash: open.stash,
+            matchId: admin.focused ? admin.focused.id : null,
         });
     });
 

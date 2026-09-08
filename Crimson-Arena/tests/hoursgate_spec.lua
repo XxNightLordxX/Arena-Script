@@ -89,6 +89,8 @@ end
 --- @param admins table<integer, boolean>? -- who IsPlayerAceAllowed says yes for
 local function newArena(wallets, mutate, jobs, admins)
     admins = admins or {}
+    --- Who the dispatch flag says has been teleported into a round.
+    local inArena = {}
     local qbx = Sandbox.newQbxCore(roster(wallets, jobs))
     local oxlib = Sandbox.newOxLib()
     local threads = Sandbox.newThreadRunner()
@@ -180,13 +182,21 @@ local function newArena(wallets, mutate, jobs, admins)
             OnLoan = function() return 0 end,
         },
         ArenaDispatch = {
-            Set = function() end,
-            Clear = function() end,
+            -- WHO IS ACTUALLY IN THE ARENA, tracked rather than answered.
+            --
+            -- IsPlayerInArena used to be a hard-wired `false`, which is the
+            -- shape of double this codebase has been bitten by more than once:
+            -- it answers, so nothing throws, and every question put to it gets
+            -- the same reply whether the fighters are standing in the arena or
+            -- have never been near it. The bell's "a live round is left alone"
+            -- test leaned on it and proved nothing.
+            Set = function(src, matchId) inArena[src] = matchId end,
+            Clear = function(src) inArena[src] = nil end,
             -- Recorded like the rest: the exit path now tells whatever handles
             -- death that the player is alive again, and a stub missing it is a
             -- nil call rather than a silent no-op.
             Revive = function() end,
-            IsPlayerInArena = function() return false end,
+            IsPlayerInArena = function(src) return inArena[src] ~= nil end,
             ClearDownState = function() return 0 end,
             EnterBucket = function() end,
             ExitBucket = function() end,
@@ -438,15 +448,29 @@ t.test('and a round already being fought is left alone', function()
     local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
     t.isTrue((s.lobby.Join(2, id, nil, nil)))
     t.isTrue((s.match.Begin(id, 1)))
-    s.step()
-    s.step()
 
-    s.step()
+    -- STEPPED UNTIL IT IS REALLY LIVE. Begin runs a lobby countdown, Start
+    -- runs a freeze countdown after it, and each is its own thread -- so a
+    -- fixed handful of steps got as far as `countdown` and stopped there,
+    -- which is a different match state with a different rule.
+    for _ = 1, 40 do
+        if s.lobby.Get(id) and s.lobby.Get(id).state == 'live' then break end
+        s.step()
+    end
+
+    -- THE ROUND IS ACTUALLY BEING FOUGHT, asserted rather than assumed.
+    -- Without this the test reads as "a live round survives" while the match
+    -- may still have been sitting in its lobby countdown, where surviving is
+    -- not the rule at all -- nobody has been placed there and closing the
+    -- doors is supposed to take it away.
+    t.equals(s.lobby.Get(id).state, 'live',
+        'the match never went live, so this proves nothing about live rounds')
+
     s.config.Schedule.windows = shutNow()
     s.step()
 
-    -- Widening the bell's filter from == 'lobby' to ~= 'ended' is the
-    -- mutation this kills, and it is the one that aborts live rounds.
+    -- Widening the bell's filter to catch a round anybody has been PLACED in
+    -- is the mutation this kills, and it is the one that aborts live rounds.
     t.isNotNil(s.lobby.Get(id), 'the bell tore down a round that was already being fought')
 end)
 
@@ -643,6 +667,106 @@ t.test('and hands every stake back when it does', function()
     t.equals(s.cash(2), 5000, 'and so was everybody who had joined it')
 end)
 
+t.test('THE STUCK CASE: a lobby mid-COUNTDOWN is closed too, not left to start', function()
+    -- `countdown` is two different states wearing one name. ArenaMatch.Begin
+    -- sets it for the lobby countdown, where nobody has moved and everybody
+    -- may still back out; ArenaMatch.Start sets it again for the freeze,
+    -- where everybody is standing in the arena. The first is a waiting lobby
+    -- in every sense that matters here.
+    --
+    -- Left alone, that countdown ran to completion and teleported everybody
+    -- into an arena an admin had just closed.
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    t.isTrue((s.match.Begin(id, 1)))
+    t.equals(s.lobby.Get(id).state, 'countdown', 'the countdown never started')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    t.isNil(s.lobby.Get(id),
+        'a lobby counting down was left to finish and drop everybody into a closed arena')
+end)
+
+t.test('and even if the countdown somehow finishes, the start is refused', function()
+    -- The belt to the braces above. ArenaMatch.Begin checks the doors and
+    -- then waits; nothing re-asked, so a lobby that was legal when the clock
+    -- started could open a round after they shut. Folded into Start's own
+    -- failure path, so the lobby goes back to WAITING rather than sticking in
+    -- `countdown` for ever.
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+
+    s.env.ArenaSetHoursOverride('shut')
+
+    local ok, reason = s.match.Start(id)
+    t.isFalse(ok, 'a round started inside a closed arena')
+    t.equals(reason, 'error.arena_shut')
+    t.equals(s.lobby.Get(id).state, 'lobby',
+        'the lobby was left stuck in its countdown with no way out')
+end)
+
+t.test('THE STUCK CASE: a round in its FREEZE countdown is left alone', function()
+    -- The other half of `countdown`, and the dangerous half. By this point
+    -- ArenaMatch.Start has teleported everybody into the arena and they are
+    -- standing frozen waiting for the guns to go live -- so tearing the match
+    -- down here would leave people in an arena with no round to be in and
+    -- nothing to end it.
+    --
+    -- THE DISPATCH FLAG is what tells the two countdowns apart, and this is
+    -- the test that proves it is being read: from the outside the freeze
+    -- countdown and the lobby countdown are the same word.
+    --
+    -- START IS CALLED DIRECTLY, and the freeze given a real length, because
+    -- the two countdowns are separate threads and on the shipped numbers the
+    -- freeze can be over inside a single tick -- a window that does not exist
+    -- is one no test can stand in.
+    local s = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Schedule = { enabled = true, windows = openNow(), offsetHours = 0 }
+        config.Match.startCountdownSeconds = 30
+    end, nil, { [1] = true })
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    t.isTrue((s.match.Start(id)))
+
+    t.equals(s.lobby.Get(id).state, 'countdown', 'the round is not in its freeze')
+    t.isTrue(s.env.ArenaDispatch.IsPlayerInArena(1),
+        'nobody was placed, so this is the lobby countdown and proves the wrong thing')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    t.isNotNil(s.lobby.Get(id),
+        'closing the arena tore down a round whose fighters were already standing in it')
+end)
+
+t.test('and a server that cannot ask the flag keeps its rounds anyway', function()
+    -- server/dispatch.lua loads AFTER server/match.lua, so it is asked for
+    -- rather than assumed -- the idiom every other guard in these files
+    -- keeps. The direction of the fallback is the whole point: unable to tell
+    -- whether anybody is in there, the answer must be that they ARE, so a
+    -- round is never torn down on a guess.
+    local s = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Schedule = { enabled = true, windows = openNow(), offsetHours = 0 }
+        config.Match.startCountdownSeconds = 30
+    end, nil, { [1] = true })
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    t.isTrue((s.match.Start(id)))
+    t.equals(s.lobby.Get(id).state, 'countdown')
+
+    -- Taken away AFTER the round was placed, which is the only way to model
+    -- "this question cannot be answered" from out here.
+    s.env.ArenaDispatch = nil
+
+    s.env.ArenaMatch.CloseWaitingLobbies('notify.hours_lobby_closed')
+
+    t.isNotNil(s.lobby.Get(id),
+        'a round was torn down because nothing could say whether anybody was in it')
+end)
+
 t.test('and closing it does NOT end a round already being fought', function()
     -- Shutting the arena is about who may come IN. A fight already happening
     -- is fought to the end -- the same rule the schedule itself keeps when a
@@ -744,13 +868,29 @@ end)
 t.test('and everybody is told, not just the admin who pressed it', function()
     -- The doors decide what the lobby NPC says, whether the ground marker is
     -- drawn and what line the panel puts under Create Match.
+    -- COUNTED FOR SOMEBODY WHO IS NOT THE ADMIN, and that is the whole
+    -- assertion. The handler ends by pushing a fresh tablet payload to
+    -- whoever pressed the button, so counting every client event proved only
+    -- that the admin heard about their own press -- and removing the
+    -- broadcast entirely left this test green while the lobby NPC, the ground
+    -- marker and every other player's Create Match line went on calling the
+    -- arena shut.
     local s = arenaWithHours(shutNow(), nil, { [1] = true })
-    local before = #s.sent()
+    s.fire('requestState', 2, { panel = true })   -- player 2 has the panel OPEN, so is a broadcast recipient
+    local before = 0
+    for _, row in ipairs(s.sent()) do
+        if row.target ~= 1 then before = before + 1 end
+    end
 
     s.fire('adminHours', 1, { forced = 'open' })
 
-    t.isTrue(#s.sent() > before,
-        'the doors opened and nobody was told -- every other screen still says shut')
+    local after = 0
+    for _, row in ipairs(s.sent()) do
+        if row.target ~= 1 then after = after + 1 end
+    end
+    t.isTrue(after > before,
+        'the doors opened and nobody but the admin was told -- every other screen '
+        .. 'still says shut')
 end)
 
 os.exit(t.summary())

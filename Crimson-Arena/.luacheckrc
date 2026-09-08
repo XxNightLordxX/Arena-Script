@@ -173,6 +173,9 @@ files['client/'] = {
         'CreateThread',
         'GetCurrentResourceName',
         'GetGameTimer', 'GetGroundZFor_3dCoord',
+        -- The spawn clearance probe: a shape test is the only thing that knows
+        -- about PROPS, which is what GetGroundZFor_3dCoord above does not.
+        'StartExpensiveSynchronousShapeTestLosProbe', 'GetShapeTestResult',
         'RegisterCommand',
         'RegisterNetEvent',
         'TriggerEvent',

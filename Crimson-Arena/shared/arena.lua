@@ -934,7 +934,7 @@ function Arena.ScoreLimitFor(chosen)
     return Arena.ScoreLimitDefault()
 end
 
---- Whether a death costs a life under this win condition.
+--- The win conditions under which a death costs nothing.
 ---
 --- A SCORE LIMIT DOES NOT SPEND LIVES, at the operator's own instruction, and
 --- the reason it cannot is arithmetic rather than taste: the round ends when
@@ -943,7 +943,28 @@ end
 --- of 25 means the round is decided by last-man-standing every single time
 --- and the number nobody reached was decorative.
 ---
---- So a score limit respawns for ever, exactly as a gun game does -- and it
+--- MOST KILLS IS THE SAME ARITHMETIC, and it shipped without noticing.
+--- IN A PLAYER'S WORDS: "on win condition it should not have a lives for
+--- most kills till the clock runs out". The rule is "whoever has the most
+--- kills when the clock stops" -- so the clock is the only thing that may
+--- end it. Give it lives and the round ends the moment one player or one
+--- side runs out of them, under `match.ended_last_standing`, with the clock
+--- still running and the kill count never consulted. A host who picked
+--- "most kills when the clock runs out" got last-man-standing wearing its
+--- name, every single time.
+---
+--- A LIST RATHER THAN A COMPARISON. `~= 'score_limit'` was the old test, and
+--- it silently answered "spends lives" for anything new -- which is how most
+--- kills came to be in this state. A condition added here has to be thought
+--- about.
+local WIN_CONDITIONS_WITHOUT_LIVES = {
+    score_limit = true,
+    most_kills = true,
+}
+
+--- Whether a death costs a life under this win condition.
+---
+--- So those conditions respawn for ever, exactly as a gun game does -- and it
 --- is expressed here rather than in the death handler for the same reason the
 --- ladder's rule is: Arena.IsEliminated reads `lives`, `stillIn` reads that,
 --- and the panel, the respawn picker, the spectator gate and every
@@ -951,7 +972,22 @@ end
 --- @param condition any
 --- @return boolean
 function Arena.WinConditionSpendsLives(condition)
-    return Arena.WinConditionFor(condition) ~= 'score_limit'
+    return WIN_CONDITIONS_WITHOUT_LIVES[Arena.WinConditionFor(condition)] ~= true
+end
+
+--- Whether this win condition can only be settled by a round clock.
+---
+--- THE OTHER HALF OF TAKING LIVES OFF MOST KILLS. Nobody is eliminated under
+--- it any more, so nothing about the roster can end the round: on a mode with
+--- `roundTimeSeconds = 0` the match runs until the last player walks out of
+--- it. Lives were quietly ending those rounds before, on the wrong rule.
+---
+--- A score limit is NOT on this list, and the difference is real: somebody
+--- reaches a kill limit eventually, so a limit round ends on its own.
+--- @param condition any
+--- @return boolean
+function Arena.WinConditionNeedsClock(condition)
+    return Arena.WinConditionFor(condition) == 'most_kills'
 end
 
 --- How many rounds one verified kill pays for each weapon the killer is

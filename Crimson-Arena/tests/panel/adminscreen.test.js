@@ -73,6 +73,25 @@ test('and it opens on the live matches, not an empty list', () => {
         'a tablet opened with a live match on it says there are none');
 });
 
+test('a second /arenaadmin opens on the matches, not wherever the last one ended', () => {
+    /* `adminOpen` resets the matches, the stashes and the focused match, and
+       used to leave the TAB alone -- so opening the tablet, pressing Stashes,
+       closing it and opening it again landed on the stash list, drawn from an
+       `owed` array the fresh payload had just emptied. */
+    const panel = opened();
+    panel.fire('admin-tab-stashes', 'click');
+    assert.ok(!hidden(panel, 'admin-stashes'), 'the stashes tab never opened');
+
+    panel.send('adminClose', {});
+    panel.send('adminOpen', {
+        matches: [], owed: [], stashesFound: 0, stashesRead: 0,
+        hoursOpen: true, hoursForced: null,
+    });
+
+    assert.ok(!hidden(panel, 'admin-list'), 'the second open did not land on the matches');
+    assert.ok(hidden(panel, 'admin-stashes'), 'it landed back on the stashes');
+});
+
 test('and opens on the matches, not on the stashes', () => {
     /* Two subjects, one screen at a time. /arenaadmin is most often typed
        because something is happening NOW. */
@@ -81,6 +100,50 @@ test('and opens on the matches, not on the stashes', () => {
     assert.ok(hidden(panel, 'admin-stashes'), 'it opened on the stashes instead');
     assert.ok(panel.node('admin-tab-matches').classList.contains('active'),
         'the Matches tab is not lit');
+});
+
+test('THE BUG: ESC did not reach the tablet at all', () => {
+    /* The page's key handler returned early on `state.open`, which is the
+       PANEL's flag -- so while the tablet was up, the one screen whose Close
+       button can become unreachable, ESC did nothing whatever.
+
+       Asserted here rather than assumed: the harness's own
+       document.addEventListener was a no-op until this session, so nothing
+       bound to the document -- every key in the page -- had ever been
+       reachable by a test at all. */
+    const panel = opened();
+
+    const handled = panel.key('Escape');
+
+    assert.ok(handled, 'ESC was not handled at all while the tablet was open');
+    assert.strictEqual(postsNamed(panel, 'adminClose').length, 1,
+        'ESC did not ask Lua to close the tablet');
+});
+
+test('and it asks LUA to close it rather than hiding it here', () => {
+    /* Lua owns the focus release. A screen that hides itself and leaves NUI
+       focus held costs the player their character -- the same failure the
+       tablet's close path exists to prevent, arrived at from the page. */
+    const panel = opened();
+    panel.key('Escape');
+
+    assert.ok(!hidden(panel, 'arena-admin'),
+        'the page hid the tablet itself instead of letting Lua do it');
+});
+
+test('and ESC with no tablet up still closes the panel, as it always did', () => {
+    const panel = loadPanel(ROOT);
+    panel.send('open', {
+        config: {
+            arenas: [], modes: [], match: {}, betting: { enabled: false },
+            loadouts: { weapons: [] }, teams: { list: [] }, ui: {},
+        },
+        player: {}, matches: [], leaderboard: [],
+    });
+
+    const handled = panel.key('Escape');
+    assert.ok(handled, 'ESC stopped working on the panel');
+    assert.strictEqual(postsNamed(panel, 'close').length, 1, 'ESC did not close the panel');
 });
 
 console.log('');
@@ -305,13 +368,36 @@ test('and how many of them nobody can be handed is said out loud', () => {
         'the caption does not say how many are for somebody who is away: ' + line);
 });
 
-test('an empty tab says so rather than drawing a blank screen', () => {
+test('THE LIE: an empty list before the sweep answered claimed nobody is short', () => {
+    /* /arenaadmin opens with an empty stash list on purpose and lets the
+       database sweep follow -- so pressing Stashes in the first second used to
+       state, as fact, the opposite of the reason somebody opened it, and go on
+       stating it for up to the eight seconds the sweep is given to answer. */
     const panel = opened();
     panel.fire('admin-tab-stashes', 'click');
 
     assert.ok(!hidden(panel, 'admin-stashes'), 'the tab did not open');
+    assert.ok(hidden(panel, 'admin-stash-empty'),
+        'the tab claimed the arena is holding nothing before it had looked');
+    assert.ok(!hidden(panel, 'admin-stash-waiting'),
+        'and did not say it was still reading');
+});
+
+test('and once it HAS looked and found none, it says that instead', () => {
+    /* The control. A screen that only ever said "reading..." would pass the
+       test above and never give an operator their answer. */
+    const panel = opened();
+    panel.send('adminState', {
+        matches: [], focused: null, owed: [],
+        stashesFound: 12, stashesRead: 12,
+        hoursOpen: true, hoursForced: null,
+    });
+    panel.fire('admin-tab-stashes', 'click');
+
     assert.ok(!hidden(panel, 'admin-stash-empty'),
-        'an empty tab is a blank screen, which reads as one that failed to load');
+        'a finished sweep that found nothing never says so');
+    assert.ok(hidden(panel, 'admin-stash-waiting'),
+        'and is still claiming to be reading');
 });
 
 test('and arriving on the tab asks the server for a fresh read', () => {
@@ -503,11 +589,226 @@ test('and a state the server has never heard of reads as the schedule', () => {
 });
 
 console.log('');
+console.log('==> and a closed arena is ONE screen');
+
+function closedTablet(forced, line, opensAt) {
+    const panel = opened();
+    panel.send('adminState', {
+        matches: [{
+            id: 'm1', label: 'Trailer Park', arenaKey: 'a', modeKey: 'ffa',
+            state: 'live', hostName: 'John Allday', players: 2, pot: 0,
+        }],
+        focused: null,
+        owed: [{
+            citizenid: 'CID777', stash: 'crimson_arena_CID777',
+            items: [{ name: 'phone', count: 1 }],
+        }],
+        stashesFound: 1, stashesRead: 1,
+        hoursOpen: false, hoursForced: forced,
+        hoursLine: line, hoursOpensAt: opensAt,
+    });
+    return panel;
+}
+
+test('THE REQUEST: a closed arena draws the closed screen and NOTHING else', () => {
+    /* There are no matches to list -- closing destroys every lobby waiting to
+       start -- and a screenful of controls for a place nobody can get into is
+       a screenful of ways to be confused. */
+    const panel = closedTablet('shut', '05:00-07:00, 12:00-14:00', null);
+
+    assert.ok(!hidden(panel, 'admin-shut'), 'the closed screen was not drawn');
+    assert.ok(hidden(panel, 'admin-list'), 'the match list is still on screen');
+    assert.ok(hidden(panel, 'admin-stashes'), 'so is the stash list');
+    assert.ok(hidden(panel, 'admin-detail'), 'so is the match detail');
+    assert.ok(hidden(panel, 'admin-player'), 'so is the fighter card');
+});
+
+test('but the TABS stay, because a live round still needs stopping', () => {
+    /* Deliberately not what the player panel does. Closing the arena leaves
+       the round already being fought to finish, so there can be a live match
+       with people in it -- and putting the tabs away took the Stop button,
+       the Revive button and every stash with them, at the exact moment an
+       operator is most likely to want them. On the shipped schedule the arena
+       is shut fourteen hours a day, so that is the tablet's ordinary state
+       rather than an edge of it. */
+    const panel = closedTablet('shut', '05:00-07:00', null);
+    assert.ok(!hidden(panel, 'admin-tabs'), 'the tabs went away with everything else');
+
+    panel.fire('admin-tab-matches', 'click');
+    assert.ok(!hidden(panel, 'admin-list'), 'and the match list could not be reached');
+    assert.ok(hidden(panel, 'admin-shut'), 'the closed screen stayed over it');
+});
+
+test('and the Stashes tab is reachable, which is when it is most wanted', () => {
+    /* A player whose belongings are stuck in escrow is a question with
+       nothing to do with opening hours, and 03:00 is exactly when somebody
+       would be looking into it. */
+    const panel = closedTablet('shut', '05:00-07:00', null);
+
+    panel.fire('admin-tab-stashes', 'click');
+    assert.ok(!hidden(panel, 'admin-stashes'), 'the stashes could not be reached');
+});
+
+test('THE REQUEST: it says the hours underneath', () => {
+    const panel = closedTablet(null, '05:00-07:00, 12:00-14:00', '05:00');
+    const hours = panel.text('admin-shut-hours');
+
+    assert.ok(/05:00-07:00/.test(hours), 'the hours are not on the screen: ' + hours);
+    assert.ok(/12:00-14:00/.test(hours), 'and not all of them: ' + hours);
+    assert.ok(/05:00/.test(hours), 'nor when it next opens: ' + hours);
+});
+
+test('THE REQUEST: and whether an ADMIN closed it', () => {
+    const byAdmin = closedTablet('shut', '05:00-07:00', null);
+    assert.ok(/admin/i.test(byAdmin.text('admin-shut-who')),
+        'a closure an admin made does not say so: ' + byAdmin.text('admin-shut-who'));
+
+    const byClock = closedTablet(null, '05:00-07:00', '05:00');
+    assert.ok(!/admin/i.test(byClock.text('admin-shut-who')),
+        'a closure the SCHEDULE made was blamed on an admin: '
+        + byClock.text('admin-shut-who'));
+    assert.ok(/hours/i.test(byClock.text('admin-shut-who')),
+        'and does not say it is the hours: ' + byClock.text('admin-shut-who'));
+});
+
+test('and a server with no hours at all says THAT, rather than quoting none', () => {
+    /* No schedule means the closure can only be an admin's -- so quoting
+       hours that do not exist would be the wrong kind of reassuring. */
+    const panel = closedTablet('shut', null, null);
+    const hours = panel.text('admin-shut-hours');
+    assert.ok(/no opening hours/i.test(hours),
+        'a server that keeps no hours was given some: ' + hours);
+    assert.ok(/nothing reopens it/i.test(hours),
+        'and was not told nothing will reopen it on its own: ' + hours);
+});
+
+test('THE WAY BACK is still on screen, or the arena can never be reopened', () => {
+    /* Every other screen is put away when the arena is closed. If the doors
+       went with them, an admin would be looking at a closed arena with no
+       button to open it and no way to get one. */
+    const panel = closedTablet('shut', '05:00-07:00', null);
+
+    assert.ok(!hidden(panel, 'admin-doors'), 'the doors strip was put away too');
+    assert.ok(!panel.node('admin-doors-open').disabled,
+        'the button that reopens the arena is dead');
+    assert.ok(!panel.node('admin-doors-schedule').disabled,
+        'so is the one that hands it back to the schedule');
+
+    panel.fire('admin-doors-open', 'click');
+    const posts = postsNamed(panel, 'adminHours');
+    assert.strictEqual(posts[posts.length - 1].body.forced, 'open',
+        'reopening from the closed screen asked for something else');
+});
+
+test('and the strip still says which kind of closed it is', () => {
+    const byAdmin = closedTablet('shut', '05:00-07:00', null);
+    assert.ok(/closed by an admin/i.test(byAdmin.text('admin-doors-state')),
+        'the strip does not say an admin closed it: '
+        + byAdmin.text('admin-doors-state'));
+});
+
+test('and the tablet comes back the moment the arena opens again', () => {
+    const panel = closedTablet('shut', '05:00-07:00', null);
+    assert.ok(hidden(panel, 'admin-list'), 'it was never put away, so this proves nothing');
+
+    panel.send('adminState', {
+        matches: [], focused: null, owed: [], stashesFound: 0, stashesRead: 0,
+        hoursOpen: true, hoursForced: 'open',
+        hoursLine: '05:00-07:00', hoursOpensAt: null,
+    });
+
+    assert.ok(hidden(panel, 'admin-shut'), 'the closed screen stayed up over an open arena');
+    assert.ok(!hidden(panel, 'admin-list'), 'and the match list did not come back');
+});
+
+console.log('');
 if (failures.length > 0) {
     failures.forEach(function (row) {
         console.log('FAILED: ' + row.name);
         console.log(row.error.stack);
     });
 }
+
+/* One live match with two fighters in it, reached the way an admin reaches
+   it -- by pressing its row -- with the doors either way. `livesSpent` is
+   the rule the server resolved onto the match. */
+function focusedMatch(hoursOpen, livesSpent) {
+    const panel = opened();
+
+    const rows = panel.node('admin-matches').children;
+    assert.ok(rows.length > 0, 'the match list drew no rows to press');
+    press(rows[0]);
+
+    panel.send('adminState', {
+        matches: [{
+            id: 'm1', label: 'Trailer Park', arenaKey: 'a', modeKey: 'ffa',
+            state: 'live', hostName: 'John Allday', players: 2, pot: 0,
+        }],
+        focused: {
+            id: 'm1', label: 'Trailer Park', state: 'live', pot: 0,
+            livesSpent: livesSpent,
+            players: [
+                { src: 1, name: 'Fighter One', alive: true, kills: 3, deaths: 1, lives: 3 },
+                { src: 2, name: 'Fighter Two', alive: false, kills: 1, deaths: 3, lives: 3 },
+            ],
+        },
+        owed: [], stashesFound: 0, stashesRead: 0,
+        hoursOpen: hoursOpen, hoursForced: hoursOpen ? null : 'shut',
+        hoursLine: '05:00-07:00', hoursOpensAt: null,
+    });
+    return panel;
+}
+
+console.log('');
+console.log('==> and closing the doors does not take the round with them');
+
+test('THE REGRESSION: shutting the arena hid the match the admin was looking at', () => {
+    /* `admin.tab` starts null, and the closed screen is drawn whenever the
+       doors are shut AND no tab has been chosen. Pressing a match row did not
+       count as choosing one -- so an admin who opened the tablet, clicked
+       into a live round and then pressed Close the arena watched the Stop
+       button, the Revive button and the fighter list disappear at the exact
+       moment they are most likely to want them. */
+    const open = focusedMatch(true, true);
+    assert.ok(!hidden(open, 'admin-detail'),
+        'the detail screen was never reached, so this test proves nothing');
+
+    const shut = focusedMatch(false, true);
+    assert.ok(!hidden(shut, 'admin-detail'),
+        'closing the arena hid the live match the admin had open');
+    assert.ok(hidden(shut, 'admin-shut'),
+        'the closed screen took over a screen the admin had chosen');
+});
+
+test('and a tablet opened fresh on a closed arena still lands on the closed screen', () => {
+    /* The control. A fix that simply stopped drawing the closed screen would
+       pass the test above and lose the feature. */
+    const panel = closedTablet('shut', '05:00-07:00', null);
+    assert.ok(!hidden(panel, 'admin-shut'), 'the closed screen stopped being drawn at all');
+    assert.ok(hidden(panel, 'admin-detail'), 'and the detail screen is not what it drew');
+});
+
+console.log('');
+console.log('==> and it does not quote lives a round never spends');
+
+test('a round that spends lives says how many each fighter has left', () => {
+    const panel = focusedMatch(true, true);
+    const facts = panel.text('admin-players');
+    assert.ok(/3 lives/.test(facts),
+        'the fighter rows stopped saying how many lives are left: ' + facts);
+});
+
+test('THE UNTRUTH: a round with no lives still counted them down at the admin', () => {
+    /* Under a kill limit or most kills nobody is eliminated, so that number
+       never moves. An admin reading it to decide who is nearly out is reading
+       a constant. */
+    const panel = focusedMatch(true, false);
+    const facts = panel.text('admin-players');
+    assert.ok(!/lives/.test(facts),
+        'the rows quote lives in a round that spends none: ' + facts);
+    assert.ok(/3k\/1d/.test(facts),
+        'the rest of the row went with it, so this is passing on an empty screen: ' + facts);
+});
+
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length > 0 ? 1 : 0);

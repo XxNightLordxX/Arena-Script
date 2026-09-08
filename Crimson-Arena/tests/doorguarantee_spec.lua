@@ -799,6 +799,51 @@ t.test('and the sweep will still look at that newcomer', function()
         'the sweep skipped the newcomer because somebody else\'s record sat on their id')
 end)
 
+t.test('THE LOCKOUT: a stranded record must not follow them round the map', function()
+    -- The worst thing this session nearly shipped, and it was a regression
+    -- inside a fix.
+    --
+    -- A record is KEPT when an exit cannot empty the stash, and the read-empty
+    -- guard keeps the debt written -- so that record is never settled and
+    -- never dropped. The swapItems guard read it as "this player is in the
+    -- arena", so from that moment every inventory move they made ANYWHERE was
+    -- refused: their own house stash, a glovebox, a shop, handing a friend an
+    -- item. For the rest of the session, through a reconnect, standing
+    -- nowhere near an arena, with the arena's own line explaining it.
+    --
+    -- Their belongings being stuck is the problem this player already has.
+    -- Being unable to touch anything they own for the rest of the night is a
+    -- second one nobody asked for.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.forgetStash(1)
+    server.match.End(matchId, 'match.ended')
+
+    t.isTrue(server.ammo.IsHolding(1), 'the record was not kept, so this proves nothing')
+    t.equals(server.ammo.Owed(), 1, 'and the debt was not written')
+
+    t.isTrue(server.mayMove(1, 1, 'house_stash_theirs'),
+        'a player whose arena stash could not be read cannot put anything in their own')
+    t.isTrue(server.mayMove(1, 'house_stash_theirs', 1),
+        'nor take anything out of it')
+    t.isTrue(server.mayMove(1, 1, 'a_friend'),
+        'nor hand a friend an item, anywhere on the map')
+end)
+
+t.test('and the sweep still comes back for them', function()
+    -- The debt is what brings it back, and it must survive the narrowing
+    -- above: freeing the player must not mean forgetting the stash.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.forgetStash(1)
+    server.match.End(matchId, 'match.ended')
+
+    for _ = 1, 3 do server.ammo.SweepReturns() end
+    t.equals(server.ammo.Owed(), 1, 'the debt was dropped along with the lockout')
+
+    server.forgetStash(1, false)
+    server.ammo.SweepReturns()
+    t.equals(server.carrying(1), INTACT, 'and their things never came back')
+end)
+
 t.test('and a fighter who is genuinely mid-round is still refused', function()
     -- The narrowing must not switch the guard off. The record belongs to the
     -- person sitting on that id, so it still speaks for them.

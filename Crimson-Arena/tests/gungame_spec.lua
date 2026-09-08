@@ -208,6 +208,15 @@ end
 
 local function sevenTiers(config)
     pinLadder(config, SEVEN_TIERS)
+    -- AND THE CAP IS PINNED TOO, for the same reason the ladder is.
+    --
+    -- The shipped value is an operator's choice and this server ships it OFF
+    -- -- a gun game there is meant to be winnable head to head. Every test
+    -- below is about the RULE rather than about that choice, so it names the
+    -- number it is reasoning with instead of reading whatever config happens
+    -- to say. Read from config, all of them turned into assertions about a
+    -- setting nobody had changed.
+    config.Modes.gungame.maxTiersPerVictim = 2
 end
 
 local function newServer(mutate, seed, opts)
@@ -977,14 +986,19 @@ t.test('and on the SHIPPED ladder it is the floor that binds, not the cap', func
     -- ceil(30/5) = 6 with a full lobby -- so the cap only starts binding
     -- again in a room big enough for spreading kills to be possible. The rule
     -- is untouched; there is simply somewhere to spread to now.
-    local s = newServer()
+    -- THE CAP IS NAMED HERE, not read from config: this server ships it OFF
+    -- and the arithmetic below is about the rule, which still exists for
+    -- anybody who turns it back on.
+    local s = newServer(function(config)
+        config.Modes.gungame.maxTiersPerVictim = 2
+    end)
     s.play(6)
     t.equals(s.tierCount(), 30, 'the shipped ladder is thirty tiers')
 
     for _ = 1, 8 do s.trade(2, 1) end
     t.equals(s.row(1).ladderKills, 6,
-        'ceil(30 tiers / 5 opponents) is what one victim is worth, not the shipped cap of 2')
-    t.isTrue(s.row(1).ladderKills > s.config.Modes.gungame.maxTiersPerVictim,
+        'ceil(30 tiers / 5 opponents) is what one victim is worth, not the cap of 2')
+    t.isTrue(s.row(1).ladderKills > 2,
         'and that is looser than the configured cap, which is the whole point')
 end)
 
@@ -1825,6 +1839,11 @@ t.test('the ladder beats the clock, the score limit and the last one standing', 
         config.Match.scoreLimit = 2
         pinLadder(config, { { 'knife' }, { 'pistol' }, { 'rifle' } })
         config.Modes.gungame.roundTimeSeconds = 600
+        -- PINNED, and only so the scenario below survives: with the cap off,
+        -- the three deaths player 1 takes hand player 2 three credits, and on
+        -- a three-tier ladder that tops it and ends the round before the
+        -- thing this test is about can be asked.
+        config.Modes.gungame.maxTiersPerVictim = 2
     end)
     s.play(4)
 
@@ -3147,6 +3166,194 @@ t.test('and a mode that names no killAmmo pays none', function()
     local before = s.ox.count(1, gun.ammoTypeItem)
     s.kill(2, 1)
     t.equals(s.ox.count(1, gun.ammoTypeItem), before, 'a mode with no killAmmo paid rounds anyway')
+end)
+
+-- ======================================================================
+-- A TIER YOU LOST IS NOT A TIER THAT OPPONENT BOUGHT YOU
+-- ======================================================================
+
+t.test('THE REPORT: climb, die it all back, and the same opponent pays again', function()
+    -- IN A PLAYER'S WORDS: "when you hit your max tier then die a lot then
+    -- you kill that same person you wont go back up."
+    --
+    -- creditsTier counted kills PER VICTIM and the count only ever went up,
+    -- while a player's position is `ladderKills - tiersLost` and goes both
+    -- ways. So a climber who went up off one opponent and then died it all
+    -- back was on tier 1 with that opponent recorded as having bought them
+    -- everything -- and worth nothing for the rest of the round. They could
+    -- stand next to the only other player in the arena, kill them over and
+    -- over, and never move.
+    local s = newServer(sevenTiers)
+    s.play(5)
+    local cap = s.config.Modes.gungame.maxTiersPerVictim
+    t.isTrue(cap > 0, 'the cap is off, so this proves nothing')
+
+    -- All the way up, off one opponent, to exactly where the cap stops them.
+    for _ = 1, cap do s.trade(2, 1) end
+    t.equals(s.row(1).tier, cap + 1, 'the climb did not happen')
+
+    -- And all the way back down.
+    for _ = 1, cap do s.trade(1, 2) end
+    t.equals(s.row(1).tier, 1, 'the deaths did not cost the tiers')
+
+    -- The same opponent, again. This is the kill the player reported.
+    s.trade(2, 1)
+
+    t.equals(s.row(1).tier, 2,
+        'a tier that was climbed and then lost was still held against that opponent, so '
+        .. 'killing them paid nothing and the player was stuck where they stood')
+end)
+
+t.test('and the cap still binds somebody who never dies', function()
+    -- The control, and the thing that must not be given away. The refund can
+    -- only ever pay back a tier that was actually LOST, so a climber who
+    -- takes no deaths is capped exactly as before -- which is the run the cap
+    -- was written to refuse.
+    local s = newServer(sevenTiers)
+    s.play(5)
+    local cap = s.config.Modes.gungame.maxTiersPerVictim
+
+    for _ = 1, cap + 4 do s.trade(2, 1) end
+
+    t.equals(s.row(1).tier, cap + 1,
+        'the refund handed a farm the tiers the cap exists to withhold')
+    t.equals(s.row(1).ladderKills, cap, 'and credited kills it should not have')
+end)
+
+t.test('and a farm cannot be laundered through deaths on somebody else', function()
+    -- The shape a cheat would try: climb off the accomplice to the cap, then
+    -- die deliberately to a THIRD player to buy the credit back, then climb
+    -- off the accomplice again.
+    --
+    -- It buys nothing, and the arithmetic is why: every death costs a tier
+    -- before it refunds a credit, so the ladder position after any number of
+    -- rounds of that is exactly what it would have been anyway. Dying to move
+    -- up is not a strategy.
+    local s = newServer(sevenTiers)
+    s.play(5)
+    local cap = s.config.Modes.gungame.maxTiersPerVictim
+
+    for _ = 1, cap do s.trade(2, 1) end
+    local peak = s.row(1).tier
+
+    for _ = 1, 3 do
+        s.trade(1, 3)      -- die to a third player
+        s.trade(2, 1)      -- and climb off the accomplice again
+    end
+
+    t.equals(s.row(1).tier, peak,
+        'dying on purpose bought ladder position it should not have')
+end)
+
+t.test('and one death gives back exactly one credit, not the whole opponent', function()
+    -- The size of the refund matters as much as its existence. Handing back
+    -- the victim's WHOLE count on a single death would let a climber buy the
+    -- cap over again for the price of one death -- cheaper than the climb it
+    -- pays for, which is a farm with an extra step.
+    --
+    -- Cap of two: climb twice off one opponent, die once, and exactly one
+    -- more kill on them should pay.
+    local s = newServer(sevenTiers)
+    s.play(5)
+    local cap = s.config.Modes.gungame.maxTiersPerVictim
+    t.equals(cap, 2, 'this test is written around a cap of two')
+
+    for _ = 1, cap do s.trade(2, 1) end
+    t.equals(s.row(1).tier, cap + 1, 'the climb did not happen')
+
+    s.trade(1, 2)                       -- one death: tier cap, one credit back
+    t.equals(s.row(1).tier, cap, 'the death did not cost a tier')
+
+    s.trade(2, 1)                       -- spends the refunded credit
+    s.trade(2, 1)                       -- and this one must not pay
+
+    t.equals(s.row(1).tier, cap + 1,
+        'one death handed back more than one tier\'s worth of credit against that opponent')
+end)
+
+t.test('and the refund never runs a victim into negative credit', function()
+    -- A player can lose tiers they did not buy from anybody in particular --
+    -- the first death of the round, before any kill. The refund must not
+    -- write a negative count that a later kill could spend.
+    local s = newServer(sevenTiers)
+    s.play(5)
+    local cap = s.config.Modes.gungame.maxTiersPerVictim
+
+    for _ = 1, 6 do s.trade(1, 2) end   -- die repeatedly having climbed nothing
+    t.equals(s.row(1).tier, 1, 'nobody drops below tier 1')
+
+    for _ = 1, cap + 3 do s.trade(2, 1) end
+    t.equals(s.row(1).tier, cap + 1,
+        'deaths taken before any climb were banked as credit against the cap')
+end)
+
+-- ======================================================================
+-- THE FARM CAP IS OFF ON THIS SERVER, AND THE 1v1 IS WHY
+-- ======================================================================
+
+t.test('THE REQUEST: a 1v1 can be won on the ladder, on the shipped config', function()
+    -- "take off the farm cap as what if i do a 1v1 etc".
+    --
+    -- The cap means "spread your kills across the field", and a field of one
+    -- has nowhere to spread. The server does raise the cap for small lobbies,
+    -- but that floor is deliberately divided by at least two -- so a straight
+    -- 1v1 could not top the ladder however well anybody played, and the code
+    -- said so in its own comment: "in a 1v1 the ladder cannot be topped".
+    --
+    -- SHIPPED CONFIG, not a mutated one. That is the whole assertion: this
+    -- server's own settings, two players, and a ladder that can be finished.
+    local s = newServer(function(config)
+        pinLadder(config, { { 'knife' }, { 'pistol' }, { 'rifle' } })
+    end)
+    t.equals(s.config.Modes.gungame.maxTiersPerVictim, 0,
+        'the shipped cap is not off, so this is not testing the shipped config')
+
+    s.play(2)
+    local height = #s.ladder()
+    t.isTrue(height >= 2, 'the pinned ladder is too short to climb')
+
+    for _ = 1, height do s.trade(2, 1) end
+    s.settle(2)
+
+    t.isNil(s.lobby.Get(s.matchId()),
+        'a 1v1 climbed the whole ladder off its one opponent and the round never ended')
+end)
+
+t.test('and nothing else about the mode changed with it', function()
+    -- The cap being off is a subtraction, not a rewrite: kills still climb,
+    -- deaths still drop, and the ladder still ends the round. A change that
+    -- quietly altered any of those would pass the test above.
+    local s = newServer(function(config)
+        pinLadder(config, { { 'knife' }, { 'pistol' }, { 'rifle' }, { 'smg' }, { 'carbine' } })
+    end)
+    s.play(3)
+
+    s.trade(2, 1)
+    t.equals(s.row(1).tier, 2, 'a kill no longer climbs')
+
+    s.trade(1, 2)
+    t.equals(s.row(1).tier, 1, 'a death no longer drops')
+
+    -- And the killer who has been climbing is where their kills put them.
+    t.equals(s.row(2).tier, 2, 'the other climber was not moved by their own kill')
+end)
+
+t.test('and an operator who wants it back gets it back', function()
+    -- `0` is the off switch this server has chosen, not a removal. Writing a
+    -- number puts the rule back exactly as it was, which is what makes the
+    -- choice reversible rather than a decision taken for every server that
+    -- ever runs this.
+    local s = newServer(function(config)
+        pinLadder(config, SEVEN_TIERS)
+        config.Modes.gungame.maxTiersPerVictim = 2
+    end)
+    s.play(5)
+
+    for _ = 1, 6 do s.trade(2, 1) end
+
+    t.equals(s.row(1).ladderKills, 2, 'the cap did not come back when it was asked for')
+    t.isTrue(s.told(1):find('No tier for that one', 1, true) ~= nil,
+        'and the climber was not told why they stopped')
 end)
 
 os.exit(t.summary())

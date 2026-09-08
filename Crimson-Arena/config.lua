@@ -20,22 +20,22 @@
        81   Lobby         The NPC players walk up to
       151   Schedule      Opening hours: when the door is actually open
       187   Match         Lives, timers, player counts, win condition
-      466   Teams         The sides, and whether they may be uneven
-      579   Modes         Free-for-all, team deathmatch and gun game
-      883   DefaultMode   Which of them a new lobby opens on
-      898   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1061  UI            Panel colours, logo and title
-      1111  Permissions   Who may open a match, who may force-stop one
-      1189  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1623   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1953   Database      Optional: all-time leaderboard. Off, no SQL to import
-     1963   Webhook       Optional: a Discord line per finished match
-     1995   Dispatch      Optional: keeping police and EMS out of the arena
+      484   Teams         The sides, and whether they may be uneven
+      600   Modes         Free-for-all, team deathmatch and gun game
+      904   DefaultMode   Which of them a new lobby opens on
+      923   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1100  UI            Panel colours, logo and title
+      1150  Permissions   Who may open a match, who may force-stop one
+      1231  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1665   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     1997   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2007   Webhook       Optional: a Discord line per finished match
+     2039   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
-    (Those line numbers are checked by tests/configmap_spec.lua, so a map
-    that has gone stale fails the suite instead of sending you to the wrong
-    part of the file.)
+    (Those line numbers were kept honest by a test, which is not in this
+    release -- so if you add or remove lines above a setting, the number
+    beside it goes stale and nothing will tell you.)
 
     FOUR THINGS THAT TRIP PEOPLE UP
 
@@ -216,8 +216,11 @@ Config.Match = {
     -- it for every match. Write the block below and the HOST picks it when
     -- they create the match, opening on `default`.
     --
-    -- WHICHEVER IS SET LOWEST DOWN THIS LIST WINS: what the host chose, then
-    -- the mode's own `roundTimeSeconds` (gun game has one), then `default`.
+    -- THE FIRST OF THESE THAT IS SET WINS: what the host chose for this
+    -- match, then the mode's own `roundTimeSeconds` (gun game has one), then
+    -- `default` below. So gun game runs its designed 480 seconds unless a
+    -- host says otherwise, and a host who says otherwise gets what they
+    -- asked for.
     --
     -- `allowChoose = false` takes the control off the create screen.
     roundTimeSeconds = {
@@ -317,7 +320,8 @@ Config.Match = {
         -- Where the host's toggle starts.
         defaultOn = false,
 
-        -- 30 seconds dark, most of a second lit.
+        -- The whole cycle, and how much of it is lit: a sweep every 30
+        -- seconds, visible for most of a second, so 29.2s of it is dark.
         intervalMs = 30000,
         visibleMs = 800,
     },
@@ -336,10 +340,13 @@ Config.Match = {
     -- Hurting YOURSELF is never refused -- a fall or your own grenade is not
     -- crossfire.
     --
-    -- IT ALSO CARRIES THE SERVER-SIDE HALF OF FRIENDLY FIRE. Switching this
-    -- off does NOT let teammates shoot each other: two other places still
-    -- refuse it. What you lose is the refusal an edited client cannot talk
-    -- its way past. The switch to move is Config.Teams.friendlyFire.
+    -- IT ALSO CARRIES THE ONLY SERVER-SIDE REFUSAL OF FRIENDLY FIRE, so
+    -- SWITCHING IT OFF REALLY DOES LET TEAMMATES SHOOT EACH OTHER. This is
+    -- the one place a shot can be refused at all; the only other things
+    -- standing between a bullet and a teammate are the client, which an
+    -- edited one ignores, and the scoreboard, which merely declines to
+    -- credit the kill. Leave it on and use Config.Teams.friendlyFire to
+    -- decide whether teammates may fight.
     crossfireGuard = {
         enabled = true,
     },
@@ -414,10 +421,21 @@ Config.Match = {
         enabled = true,
 
         -- HOW FAR PAST THE ARENA'S OWN FENCE counts as outside, in metres.
-        -- Generous on purpose: the fence itself already bleeds anybody who
-        -- crosses it, so this is not a second boundary -- it is the distance
-        -- at which "they are not in this fight at all" stops being arguable.
-        outsideMetres = 60.0,
+        --
+        -- SMALL ON PURPOSE, BECAUSE THE TOLERANCE COMES FROM `outsideTicks`
+        -- AND NOT FROM HERE. This shipped at 60 and that was a hiding place:
+        -- the distance is measured in three dimensions from the middle of the
+        -- arena, so anywhere 59m outside the sphere was permanently legal --
+        -- including a point directly under the skydome's floor, through a
+        -- kilometre of air nobody could reach. From there the kill ceiling
+        -- still covered the whole arena, so a fighter could park out of the
+        -- fight, stay credited, and be handed the round when everybody else
+        -- had killed each other. Which is the exploit this block exists for.
+        --
+        -- Ten metres is enough for the honest case and no more: a fighter who
+        -- steps over the line is being bled by the boundary already and either
+        -- comes back -- which clears the count -- or dies of it.
+        outsideMetres = 10.0,
 
         -- HOW MANY ONE-SECOND CHECKS IN A ROW they must be out there before
         -- the server removes them from the round. Their stake is forfeit,
@@ -507,9 +525,12 @@ Config.Teams = {
     --   everybody it touched, and it is allowed or refused whole. The kill
     --   is still not counted.
     --
-    --   EXPLOSIONS ARE NOT REFUSED. No explosive ships enabled; turn one on
-    --   in config.weapons.lua and teammates can blow each other up whatever
-    --   this says.
+    --   EXPLOSIONS ARE NOT REFUSED, AND EXPLOSIVES DO SHIP ENABLED. Every
+    --   weapon in config.weapons.lua is switched on, the whole `heavy`
+    --   category included -- launchers, the minigun, the railgun, the
+    --   flamethrower. So on a team mode, teammates CAN blow each other up
+    --   whatever this setting says. Switch the heavy entries off in
+    --   config.weapons.lua if that is not the round you want.
     friendlyFire = false,
 
     -- YOUR OWN SIDE ON THE MAP, all round. Knowing where your team is is the
@@ -891,9 +912,13 @@ Config.DefaultMode = 'ffa'
 -- HOW THE MONEY MOVES: an entry fee leaves the player's account the moment
 -- they lock in and is held by the match. It is paid to the winners at the
 -- end, or refunded in full if the match never starts, is closed by the
--- server, or ends with nobody eligible to be paid. Two settings below --
--- `refundOnCancel` and `refundOnDisconnectBeforeStart` -- can stop a stake
--- coming back; both refund by default.
+-- server, or ends with nobody eligible to be paid.
+--
+-- THREE SETTINGS BELOW DECIDE WHETHER A STAKE COMES BACK, and they do not
+-- all ship the same way. `refundOnCancel` and `refundOnDisconnectBeforeStart`
+-- both refund. `refundOnDisconnectDuringMatch` does NOT: a fighter who
+-- crashes out of a live round forfeits, and that is the commonest case of
+-- the three.
 -- ======================================================================
 Config.Betting = {
     enabled = true,
@@ -966,6 +991,13 @@ Config.Betting = {
         -- One bet each. Off, a fighter may keep adding to their position
         -- while the lobby is open.
         oneBetPerMatch = true,
+
+        -- WHEN THE BOOK SHUTS FOR A FIGHTER: the moment the round goes live,
+        -- and there is no setting for it. `spectatorBets.closeAfterStartSeconds`
+        -- below keeps the book open a little way into a live round, and that
+        -- grace is for WATCHERS only -- a fighter betting on themselves
+        -- thirty seconds in would be betting on a round they can already see
+        -- the shape of, at a fighter's ceiling, having banked the first kills.
     },
     currencySymbol = '$',
 
@@ -999,6 +1031,13 @@ Config.Betting = {
 
     -- Below this head count the match still runs, but the pot is refunded
     -- rather than paid out -- stops two friends farming each other.
+    --
+    -- ONLY WHEN THE POT SETTLES ON ITS OWN, exactly like `houseCutPercent`
+    -- above it. `betPayout.includeEntryPot` ships ON, which turns the entry
+    -- fees into bets in the pool, and the pool has no head count to check --
+    -- so on the shipped settings A TWO-PLAYER MATCH PAYS OUT IN FULL and
+    -- this number is never read. The console says so at start-up. Turn
+    -- includeEntryPot off for the guard to bite.
     minPlayersToPayOut = 2,
 
     -- 0 = no ceiling on the total pot.
@@ -1111,7 +1150,10 @@ Config.UI = {
 Config.Permissions = {
     -- Jobs allowed to CREATE a match. Empty = anyone may.
     createJobs = {},
-    -- ACE/ox_lib admin groups allowed to force-stop or wipe a match.
+    -- ACE/ox_lib admin groups. This is the whole admin surface, not just the
+    -- stop button: /arenaadmin (the tablet -- force-stop, wipe, the unpaid
+    -- ledger, opening a player's stash by hand, and holding the arena's doors
+    -- open past Config.Schedule) and /arenahours are both gated on it.
     adminGroups = { 'admin', 'god' },
     -- Anyone may join a match someone else created.
     joinJobs = {},
@@ -1653,8 +1695,10 @@ Config.Loadouts = {
     -- THESE ARE ABOUT WHAT A PLAYER MAY PICK. A mode that issues its own kit
     -- is not picking, so a gun game still opens on a blade.
     --
-    -- MIND WHAT COUNTS AS MELEE: a weapon with no `ammo.max` is treated as
-    -- melee whatever category it is filed under.
+    -- MIND WHAT COUNTS AS MELEE: any weapon whose `ammo.max` is 1 or absent
+    -- is treated as melee whatever category it is filed under -- a weapon
+    -- that holds one round is a club as far as this is concerned. With
+    -- allowMelee off, a single-shot weapon you added silently disappears.
     allowFirearms = true,
     allowMelee = true,
 

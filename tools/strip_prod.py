@@ -57,10 +57,55 @@ WARNS_SHOUTED = re.compile(
     r'|IN A PLAYER)')
 
 
+# WARNINGS A REVIEW FOUND THAT THE RULE ABOVE MISSED.
+#
+# THIS IS A LIST OF EXCEPTIONS AND IT IS HONEST ABOUT BEING ONE. The obvious
+# generalisation -- "a shouted clause is a warning" -- was tried and measured
+# and does not work here, because the house style shouts everything: section
+# headings, paragraph openers and emphasis all look exactly like a warning to
+# any rule that counts capital letters. At three capitalised words in a row it
+# keeps 74% of all commentary; at seven it starts dropping real warnings. There
+# is no threshold that separates them, so there is no rule to write.
+#
+# What is left is judgement, and judgement does not compress into a regex. Each
+# phrase below identifies one comment block that a reviewer read and decided the
+# next editor cannot safely be without -- an invariant, a fixed ordering, a
+# guard that looks redundant and is not. They are quoted from the block itself
+# so that if the block is ever rewritten the phrase stops matching and the block
+# is dropped, which is the right failure: a stale exception should lapse rather
+# than protect text that no longer says what it said.
+REVIEWED = (
+    'WHY THIS IS NOT `ipairs`',              # ammo.lua: slot-keyed inventory reads
+    'match.players` is keyed by SERVER ID',  # lobby.lua: the same trap
+    'THE ORDER OF THESE FIVE IS FIXED',      # match.lua: End()'s settlement order
+    'AFTER THE EXITS, WHICH IS THE WHOLE POINT',  # match.lua: ArenaAmmo.Clear's position
+    'THE LIST OF TYPES IS THE WHOLE POINT',  # arena.lua: vectors are their own type
+    'THE INVARIANT',                         # betting.lua: the escrow contract
+    'THE ROSTER THE ROUND STARTED WITH',     # match.lua: the latched ladder divisor
+    'TWO VICTIMS, ALWAYS',                   # match.lua: the max(2) that is the guard
+    'WHY THIS DOES NOT JUST READ THE RETURN VALUE',  # betting.lua: nil means success
+    'A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY',  # ammo.lua, both sites
+    'THIS IS THE ONE THAT WAS MISSING',      # ammo.lua: the swapItems IN direction
+    'UNGUARDED IT WOULD BE FATAL',           # match.lua (client): the per-frame thread
+    'SERVER IDS ARE RECYCLED',               # ammo.lua: ownRecord
+    'A MISSING PLAYER IS NOT A MISMATCH',    # ammo.lua: the other branch of it
+)
+
+
 def warns(block):
-    """Does this run of comment lines carry a warning?"""
-    return WARNS_ANY_CASE.search(block) is not None \
-        or WARNS_SHOUTED.search(block) is not None
+    """Does this run of comment lines carry a warning?
+
+    THE BLOCK IS FLATTENED FIRST, and that is not tidiness. Comment text wraps,
+    so a phrase this is looking for can straddle a line break -- `ammo.lua`
+    really did say "kept on\n--- purpose", and a rule reading raw lines saw
+    neither "on purpose" nor anything else it knew. Stripping the comment
+    markers and collapsing the whitespace makes the block one sentence again,
+    which is what it is.
+    """
+    flat = re.sub(r'\s+', ' ', re.sub(r'(?m)^\s*(--+\[?=*\[?|//+|/\*+|\*+/?|#)', ' ', block))
+    if WARNS_ANY_CASE.search(flat) or WARNS_SHOUTED.search(flat):
+        return True
+    return any(phrase in flat for phrase in REVIEWED)
 
 
 def comment_lines_lua(src):

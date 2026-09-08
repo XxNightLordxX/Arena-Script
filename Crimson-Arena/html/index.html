@@ -1,6 +1,4 @@
 <!DOCTYPE html>
-<!-- Crimson Arena: what the panel is made of. -->
-
 <!--
     crimson_arena/html/index.html
 
@@ -42,6 +40,16 @@
         <button id="arena-close" type="button">&#10005;</button>
     </header>
 
+    <!-- A SHUT ARENA IS ONE SCREEN, and the tabs go with everything else.
+         Matches, Loadout and Bets are all things a player cannot do right
+         now: offering them is offering five ways to find that out one at a
+         time. What is wanted instead is the answer, in letters big enough to
+         read from where they are standing, and when to come back.
+
+         A FIGHTER MID-ROUND IS THE EXCEPTION. Closing the arena stops people
+         coming in and leaves the round already being fought to finish -- so
+         somebody still in one keeps their whole panel, because everything on
+         it is still true for them. -->
     <section id="arena-shut" class="hidden">
         <h2 id="arena-shut-title">The arena is closed</h2>
         <p id="arena-shut-why"></p>
@@ -78,11 +86,19 @@
                     <select id="create-mode"></select>
                 </label>
 
+                <!-- Hidden wholesale when betting is off. A free match has no
+                     fee to set, and a blank input left behind would still read
+                     as one that could be. -->
                 <div id="create-fee-row" class="field">
                     <span class="field-label">Entry Fee</span>
                     <input id="create-fee" type="number" min="0" step="1">
                     <div id="create-fee-presets"></div>
+                    <!-- Which account the entry fee comes out of. Same
+                         control as the one on the Bets tab and the same
+                         choice; this one is read when you create or join. -->
                     <div id="create-account"></div>
+                    <!-- What the fee actually buys, written from the payout
+                         rule in the snapshot rather than assumed. -->
                     <p id="create-fee-hint" class="hint"></p>
                 </div>
 
@@ -99,32 +115,70 @@
                     <p id="create-win-hint" class="hint"></p>
                 </div>
 
+                <!-- THE FINISH LINE, and only where the host has actually
+                     chosen a kill limit. It is meaningless under every other
+                     win condition, so it is not merely greyed there -- it is
+                     not drawn. Hidden as well where the operator has fixed
+                     the number. -->
                 <div id="create-limit-row" class="field">
                     <span class="field-label">Kill Limit</span>
                     <input id="create-limit" type="number" min="1" step="1">
                     <p id="create-limit-hint" class="hint"></p>
                 </div>
 
+                <!-- Hidden when the operator has fixed the number: a control
+                     that cannot change anything is worse than no control,
+                     because it invites a host to try. -->
                 <div id="create-lives-row" class="field">
                     <span class="field-label">Lives Each</span>
                     <input id="create-lives" type="number" min="1" step="1">
                     <p id="create-lives-hint" class="hint"></p>
                 </div>
 
+                <!-- OUTSIDE THE ROW, because it is what REPLACES the row. It
+                     sat inside it, and the one thing that hides the row is a
+                     mode with no lives -- so the sentence explaining where
+                     the row went was hidden by the row going. -->
                 <div id="create-lives-note" class="hint hidden"></div>
 
+                <!-- HOW LONG THE ROUND RUNS. Hidden on the same rule as Lives
+                     Each -- the operator can fix it by writing a plain number
+                     for Config.Match.roundTimeSeconds instead of a range.
+                     Unlike Lives Each it is shown for EVERY mode, because a
+                     ladder mode spends no lives and is decided by this clock
+                     alone: it is the one rule gun game is built around, and
+                     it was the one rule a host could not set. -->
                 <div id="create-round-row" class="field">
                     <span class="field-label">Round Length</span>
                     <input id="create-round" type="number" min="60" step="30">
                     <p id="create-round-hint" class="hint"></p>
                 </div>
 
+                <!-- THE LADDER, for a gun game only. One row per weapon
+                     class -- melee, sidearms, and up -- with a dropdown for
+                     how many rungs of it the climb has.
+
+                     Hidden for every other mode, because there is no ladder
+                     to shape, and hidden on a server whose mode declares no
+                     classes. Built by the panel rather than written out
+                     here: the classes are the operator's, and how many there
+                     are is their business. -->
                 <div id="create-tiers-row" class="field">
                     <span class="field-label">Weapon Tiers</span>
                     <div id="create-tiers"></div>
                     <p id="create-tiers-hint" class="hint"></p>
                 </div>
 
+                <!-- THE RADAR, here beside Lives Each rather than in the
+                     lobby, because it is the same kind of thing: a rule of
+                     the match that the host sets once and everybody in it
+                     fights under. It used to be a toggle each player gave
+                     themselves down in the lobby, which made a round only
+                     as dark as its least patient fighter.
+
+                     Sitting in this box is also what makes it host-only,
+                     with no second check to keep in step: the box is only
+                     an editor for a match you are hosting. -->
                 <div id="create-radar-row" class="field">
                     <span class="field-label">Radar</span>
                     <button id="btn-radar" class="btn" type="button">Radar Off</button>
@@ -132,6 +186,8 @@
                 </div>
 
                 <button id="create-submit" class="btn btn-primary" type="button">Create Match</button>
+                <!-- Says what pressing it does, or why it cannot be pressed.
+                     A greyed-out button with no reason reads as broken. -->
                 <p id="create-hint" class="hint"></p>
             </div>
         </section>
@@ -151,39 +207,77 @@
                 <div id="lobby-actions">
                     <button id="btn-ready" class="btn" type="button">Ready Up</button>
                     <button id="btn-start" class="btn btn-primary" type="button">Start Match Now</button>
+                    <!-- Only the host of a lobby that has not started sees this;
+                         renderLobby hides it for everybody else rather than
+                         greying it out, because a control you may never use is
+                         not information. -->
                     <button id="btn-close" class="btn" type="button">Close Lobby</button>
                     <button id="btn-leave" class="btn btn-danger" type="button">Leave Match</button>
                 </div>
             </div>
         </section>
 
+        <!-- TWO LISTS, NOT ONE FILTERED GRID.
+
+             The server keeps a separate allowance for shootable weapons and
+             for melee and spends them separately, so this screen shows them
+             separately: two sections, both on screen at once, each with its
+             own heading and its own counter. A player whose guns are full can
+             see at a glance that their blade slot is still free -- which is
+             the one thing a single grid under a single counter could never
+             say, and the reason it said the wrong thing instead.
+
+             Each list scrolls inside its own box: thirty guns and twenty
+             blades is an ordinary config, and neither the page nor the panel
+             body may ever grow a scrollbar over the game. -->
         <section id="tab-loadout" class="arena-panel">
+            <!-- The sentence that is true of both lists, plus whatever the
+                 ammo-type cap adds to it. Written by app.js: the rule it
+                 states is the operator's, not this file's. -->
             <div id="loadout-note"></div>
 
+            <!-- Only when both lists below are switched off. -->
             <div id="loadout-empty" class="hidden"></div>
 
             <div id="loadout-lists">
                 <section id="loadout-firearms" class="loadout-section">
                     <div class="loadout-section-head">
                         <h2 class="panel-heading">Firearms</h2>
+                        <!-- '3 of 4 weapons' -- the SHARED count. Both
+                             sections show it, because there is one pool and
+                             a player reading the melee list still needs to
+                             know how full they are. -->
                         <span id="firearms-count" class="loadout-count"></span>
                     </div>
+                    <!-- Category tabs over the FIREARMS list only. app.js
+                         drops them when there is only one group to pick
+                         between; with thirty guns in the list they earn
+                         their place. -->
                     <div id="loadout-cats"></div>
                     <div id="weapon-grid" class="weapon-grid"></div>
                 </section>
 
+                <!-- Hidden outright when allowMelee is false. The operator
+                     turned melee off, and an empty or greyed-out section would
+                     read as a fault rather than as a decision. -->
                 <section id="loadout-melee" class="loadout-section">
                     <div class="loadout-section-head">
                         <h2 class="panel-heading">Melee</h2>
                         <!-- The same shared counter as above, on purpose. -->
                         <span id="melee-count" class="loadout-count"></span>
                     </div>
+                    <!-- No tabs here: melee is one section already. -->
                     <div id="melee-grid" class="weapon-grid"></div>
                 </section>
             </div>
 
+            <!-- The last thing read before a round locks the choice in: the
+                 count, and per weapon the weapon, the amount and the round.
+                 One group, because there is one pool. -->
             <div id="loadout-slots"></div>
             <div id="supplies-picker"></div>
+            <!-- The button and the one line that says whether pressing it is
+                 still needed. -->
             <div id="loadout-save-row">
                 <button id="loadout-save" class="btn btn-primary" type="button">Save Loadout</button>
                 <span id="loadout-save-status" class="hint"></span>
@@ -191,10 +285,14 @@
         </section>
 
         <section id="tab-bets" class="arena-panel">
+            <!-- Shown alone when betting is off; the controls below it are
+                 hidden in that case. -->
             <div id="bet-disabled"></div>
 
             <div id="bet-summary"></div>
 
+            <!-- Every side-bet control in one column, so the layout does not
+                 have to be re-counted each time one of them is hidden. -->
             <div id="bet-form">
                 <p id="bet-note" class="hint"></p>
                 <div id="bet-pick"></div>
@@ -203,6 +301,10 @@
                     <input id="bet-amount" type="number" min="0" step="1">
                 </label>
 
+                <!-- WHICH POCKET PAYS. Only drawn where the operator allows
+                     more than one account: a server that takes cash and
+                     nothing else has no choice to offer, and a picker with
+                     one option on it is a control that answers nothing. -->
                 <div id="bet-account-row" class="field">
                     <span class="field-label">Pay From</span>
                     <div id="bet-account"></div>
@@ -250,12 +352,33 @@
     <div id="countdown-label"></div>
 </div>
 
+<!-- THE ADMIN TABLET, opened by /arenaadmin and by nothing else.
+
+     ITS OWN SCREEN RATHER THAN A TAB OF THE PANEL. The panel is what a
+     PLAYER uses; this is what somebody watching the server uses. Bolting it
+     on as a tab would put admin controls in every player's panel and rely on
+     the panel to hide them, which is the shape of gate this resource does
+     not use: the server refuses what the panel merely does not draw. Every
+     action behind these buttons re-checks ArenaIsAdmin on arrival. -->
 <div id="arena-admin" class="hidden">
     <header id="admin-head">
         <h1 id="admin-title">Arena Control</h1>
         <button id="admin-close" class="btn" type="button">Close</button>
     </header>
 
+    <!-- THE DOORS, ABOVE THE TABS AND ALWAYS ON SCREEN. Whether the arena is
+         letting anybody in is a fact about the whole place rather than about
+         any one round -- and it is the one control that has to stay reachable
+         when the arena is CLOSED, because every other screen is put away then
+         and this is what puts them back.
+
+         THREE BUTTONS RATHER THAN A TOGGLE, because there are three states
+         and only one of them is "whatever the schedule says". A two-way
+         switch would have to pick which of open and shut counts as "off",
+         and neither of them does.
+
+         CLOSING DOES NOT END A ROUND ALREADY BEING FOUGHT: it stops people
+         coming in, and the fight already happening is fought to the end. -->
     <div id="admin-doors">
         <span id="admin-doors-state"></span>
         <button id="admin-doors-schedule" class="btn" type="button">Follow the schedule</button>
@@ -263,22 +386,43 @@
         <button id="admin-doors-shut" class="btn btn-danger" type="button">Close the arena</button>
     </div>
 
+    <!-- A CLOSED ARENA IS ONE SCREEN, AND THIS IS IT. Nothing else is drawn:
+         there are no matches to list, because closing destroys every lobby
+         waiting to start, and a screenful of controls for a place nobody can
+         get into is a screenful of ways to be confused. What an operator
+         needs here is the three facts -- that it is closed, what the hours
+         are, and whether a person or the clock closed it -- and the buttons
+         above, which are the way back. -->
     <section id="admin-shut" class="hidden">
         <h2 id="admin-shut-title">The arena is closed</h2>
         <p id="admin-shut-who" class="hint"></p>
         <p id="admin-shut-hours" class="hint"></p>
     </section>
 
+    <!-- TWO SUBJECTS, NOT ONE SCREEN WITH A SECTION BOLTED UNDER IT.
+         The matches are what is happening now; the escrow is what the arena
+         is holding, which outlives every one of them -- a stash from a run
+         that ended months ago is still somebody's belongings, and the tab is
+         where you go to look for it rather than something you scroll past on
+         the way to a live round.
+
+         BY ID, NOT BY CLASS. app.js reaches these with getElementById the
+         way it reaches every other control it drives; the panel's own tab bar
+         uses querySelectorAll, which its test harness does not implement --
+         so those tabs cannot be pressed by a test and these can. -->
     <nav id="admin-tabs">
         <button id="admin-tab-matches" class="arena-tab" type="button">Matches</button>
         <button id="admin-tab-stashes" class="arena-tab" type="button">Stashes</button>
     </nav>
 
+    <!-- THE LIST. Live matches and nothing else -- this screen is not a
+         second lobby browser. -->
     <section id="admin-list">
         <p id="admin-empty" class="hint hidden">No matches are running.</p>
         <div id="admin-matches"></div>
     </section>
 
+    <!-- ONE MATCH, opened by clicking it. -->
     <section id="admin-detail" class="hidden">
         <button id="admin-back" class="btn" type="button">Back to matches</button>
         <h2 id="admin-detail-title"></h2>
@@ -287,13 +431,37 @@
         <div id="admin-players"></div>
     </section>
 
+    <!-- EVERY STASH THIS ARENA IS HOLDING SOMETHING IN, on a tab of its own
+         because it is a different question from "what is happening now". A
+         live match ends within the hour; a stash outlives every run of this
+         resource, and a character whose belongings were outstanding when the
+         server went down is somebody nothing else here can even name.
+
+         WHO IT IS FOR, AND A BUTTON, ON THE ROW. Those are the two things an
+         operator came to this screen to do, so neither of them costs a click
+         first. What is IN it is one level down, because a manifest of every
+         item in forty stashes is a wall rather than a list.
+
+         IT DOES NOT NEED ITS OWNER TO BE ONLINE. The list is built from the
+         ox_inventory rows themselves rather than from who is connected. There
+         is no live inventory to put things into for somebody who is not here,
+         so their button QUEUES the return instead -- which is the only thing
+         that ever brings it back to them: the retry sweep works from a list,
+         and a stash found by name after a restart is on nobody's list. -->
     <section id="admin-stashes" class="hidden">
         <p id="admin-stash-line" class="hint"></p>
         <p id="admin-stash-empty" class="hint hidden">The arena is holding nothing for anybody.</p>
+        <!-- SAID WHILE THE SWEEP IS STILL RUNNING. The screen opens on what
+             memory knows and the database follows, so there is a moment where
+             an empty list means "not looked yet" rather than "nothing held" --
+             and those are opposite answers to the question somebody opened
+             this tab to ask. -->
         <p id="admin-stash-waiting" class="hint hidden">Reading the stashes&hellip;</p>
         <div id="admin-stash-list"></div>
     </section>
 
+    <!-- ONE STASH, OPENED BY CLICKING IT: everything in it, and the same
+         button the row carries. -->
     <section id="admin-stash-detail" class="hidden">
         <button id="admin-stash-back" class="btn" type="button">Back to stashes</button>
         <h2 id="admin-stash-title"></h2>
@@ -302,6 +470,8 @@
         <div id="admin-stash-items"></div>
     </section>
 
+    <!-- ONE FIGHTER, opened by clicking them: what the arena is holding for
+         them, and the one control that acts on them. -->
     <section id="admin-player" class="hidden">
         <button id="admin-player-back" class="btn" type="button">Back to the match</button>
         <h2 id="admin-player-title"></h2>

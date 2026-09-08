@@ -1,4 +1,15 @@
--- Crimson Arena: the arena ped, the doors, and opening the panel.
+--[[
+    crimson_arena/client/main.lua
+
+    The lobby end of the resource: the NPC (or marker) players walk up to,
+    the map blip, the optional command, and the cached copy of the server's
+    state snapshot that the other client files read.
+
+    NOTHING HERE DECIDES ANYTHING. Every button this file can reach ends in
+    a server event; the snapshot it caches is whatever the server last sent.
+    The client's job is to draw the door, not to decide who may walk through
+    it.
+]]
 
 -- ======================================================================
 -- CACHED SERVER STATE
@@ -13,43 +24,69 @@ ArenaState = {}
 
 local snapshot
 
+--- The whole last-known snapshot, or nil before the first push.
+--- @return table|nil
 function ArenaState.Get()
     return snapshot
 end
 
+--- Replaces the cache. Only the `state` handler below should call this.
+--- @param newState table|nil
 function ArenaState.Set(newState)
     snapshot = type(newState) == 'table' and newState or nil
 end
 
+--- The match this player belongs to, lobby or live, or nil.
+--- @return string|nil
 function ArenaState.MatchId()
     local player = snapshot and snapshot.player
     return player and player.matchId or nil
 end
 
+--- @return boolean
 function ArenaState.IsInMatch()
     return ArenaState.MatchId() ~= nil
 end
 
+--- The opening-hours block the server last sent, or an empty table.
+---
+--- ALWAYS A TABLE, never nil, so every caller reads `.open` the same way --
+--- and reads it as "shut only on an explicit false". A snapshot assembled
+--- before this field existed must leave the door looking open and let the
+--- server be the one to refuse.
+--- @return table
 function ArenaState.Schedule()
     return snapshot and snapshot.schedule or {}
 end
 
+--- @return boolean -- true only when the server has actually said "shut"
 function ArenaState.DoorsShut()
     return ArenaState.Schedule().open == false
 end
 
+-- ======================================================================
+-- LOBBY FIXTURES
+-- ======================================================================
+
 local TARGET_NAME = 'crimson_arena_lobby'
 
+--- What the NPC's option currently says, so relabelLobbyPed fires on a
+--- CHANGE and not on every state push. nil until the ped is first labelled.
 local pedLabel = nil
 local MODEL_LOAD_TIMEOUT_MS = 10000
 
 local lobbyPed
 local lobbyBlip
 
+--- @param message string
 local function warn(message)
     print(('[crimson_arena] %s'):format(message))
 end
 
+--- 'ped' | 'marker' | 'both', with anything else treated as 'ped'.
+--- Called exactly once at start so an operator typo produces one line in
+--- the console rather than one per frame.
+--- @return string
 local function resolveInteraction()
     local mode = Config.Lobby.interaction
     if mode == 'ped' or mode == 'marker' or mode == 'both' then return mode end
@@ -63,6 +100,11 @@ local function openPanel()
     ArenaUI.Open()
 end
 
+--- Loads a model with a bounded wait. Returns nil rather than hanging when
+--- the model is missing or bad -- a lobby with no NPC is recoverable, a
+--- client stuck in a load loop is not.
+--- @param model string
+--- @return integer|nil hash
 local function loadModel(model)
     local hash = joaat(model)
     if not IsModelInCdimage(hash) or not IsModelValid(hash) then return nil end
@@ -77,14 +119,27 @@ local function loadModel(model)
     return hash
 end
 
+--- ox_target's export table, or nil when it is not running.
+---
+--- ASKED FOR RATHER THAN ASSUMED. `exports.ox_target` on a server where
+--- ox_target is missing or stopped does not return nil -- it raises, and a
+--- raise inside the startup thread below takes the marker, the blip and the
+--- fallback command down with the ped, leaving the arena unreachable with
+--- nothing in the console pointing at the cause.
+--- @return table? targeting
 local function targeting()
     if GetResourceState('ox_target') ~= 'started' then return nil end
     return exports.ox_target
 end
 
+--- @return boolean spawned -- whether an NPC is really standing there. There
+--- is no fallback: false means the lobby has nothing in it, and the start-up
+--- console line says so.
 local function spawnLobbyPed()
     local ped = Config.Lobby.ped
 
+    -- Checked BEFORE the model loads: an NPC nobody can interact with is
+    -- worse than no NPC, because it looks like the resource is working.
     local target = targeting()
     if not target then
         warn('ox_target is not started, so the lobby NPC would have nobody able to talk to it. ' ..
@@ -100,9 +155,13 @@ local function spawnLobbyPed()
     end
 
     local coords = ped.coords
+    -- config.lua documents `coords.z` as the GROUND z; CreatePed puts the
+    -- ped's root there, which leaves it hovering, so drop it a unit.
     lobbyPed = CreatePed(4, hash, coords.x, coords.y, coords.z - 1.0, coords.w, false, true)
     SetModelAsNoLongerNeeded(hash)
 
+    -- Mission entity so the engine's population culling cannot delete the
+    -- NPC out from under the target registration.
     SetEntityAsMissionEntity(lobbyPed, true, true)
     if ped.freeze then FreezeEntityPosition(lobbyPed, true) end
     if ped.invincible then SetEntityInvincible(lobbyPed, true) end
@@ -118,17 +177,42 @@ local function spawnLobbyPed()
             onSelect = openPanel,
         },
     })
+    -- Recorded so the first state push is not read as a change and does not
+    -- register the NPC a second time.
     pedLabel = ped.targetLabel
 
     return true
 end
 
+--- Re-label the lobby NPC when the doors open or shut.
+---
+--- THE ONE SURFACE A PLAYER WHO IS GOING TO WALK AWAY EVER READS. Somebody
+--- who finds the arena shut does not open the panel to find out why; they
+--- look at the NPC, get nothing, and leave.
+---
+--- ox_target has no field this repository has read for a label that changes
+--- on its own, so the option is removed and added again -- the same pair
+--- this file already makes, with the same five fields it already passes.
+--- Nothing here is a third-party API this resource has not seen the source
+--- of.
+---
+--- Only on a change, and never during startup: tests/lobbyworld_spec.lua
+--- counts the registrations made by the startup thread.
 local function relabelLobbyPed()
     if not lobbyPed or not DoesEntityExist(lobbyPed) then return end
 
     local ped = Config.Lobby.ped
     local wanted = ped.targetLabel
     if ArenaState.DoorsShut() then
+        -- SHUT IS SAID EITHER WAY, and the opening time is the part that may
+        -- be missing. Until an admin could close the arena from the tablet,
+        -- shut ALWAYS came with a time -- Arena.ScheduleStatus only sets
+        -- `opensAt` when it is answering "closed, and here is when it is
+        -- not" -- so the inner guard was the only test and the outer one was
+        -- decoration. A closure that has no next opening because it is not
+        -- the schedule's therefore left this ped wearing its ordinary label,
+        -- and a player walked up to the usual prompt with no hint the doors
+        -- were shut at all.
         local opensAt = ArenaState.Schedule().opensAt
         wanted = type(opensAt) == 'string'
             and locale('match.hours_shut_label', opensAt)
@@ -140,6 +224,9 @@ local function relabelLobbyPed()
     local target = targeting()
     if not target then return end
 
+    -- Wrapped for the reason every other target call in this file is: a
+    -- raise here would leave the NPC registered under the old label with no
+    -- line in the console saying why the new one never appeared.
     local ok = pcall(function()
         target:removeLocalEntity(lobbyPed, TARGET_NAME)
         target:addLocalEntity(lobbyPed, {
@@ -156,10 +243,15 @@ local function relabelLobbyPed()
     if ok then pedLabel = wanted end
 end
 
+--- An orphaned mission ped survives a resource restart, so every restart
+--- would otherwise leave one more identical NPC standing in the lobby.
 local function removeLobbyPed()
     if not lobbyPed then return end
 
     if DoesEntityExist(lobbyPed) then
+        -- Same guard as the registration: ox_target can be stopped between
+        -- the ped going up and this resource coming down, and an orphaned
+        -- NPC left standing is a worse outcome than a skipped de-register.
         local target = targeting()
         if target then target:removeLocalEntity(lobbyPed, TARGET_NAME) end
         SetEntityAsMissionEntity(lobbyPed, true, true)
@@ -168,10 +260,12 @@ local function removeLobbyPed()
     lobbyPed = nil
 end
 
+--- @param mode string
 local function createBlip(mode)
     local blip = Config.Lobby.blip
     if not blip.enabled then return end
 
+    -- Point the blip at whichever fixture the player is actually looking for.
     local coords = mode == 'marker' and Config.Lobby.marker.coords or Config.Lobby.ped.coords
 
     lobbyBlip = AddBlipForCoord(coords.x, coords.y, coords.z)
@@ -192,14 +286,32 @@ local function removeBlip()
     lobbyBlip = nil
 end
 
+--- What the ground marker offers, which is not always "open the panel".
+---
+--- The draw loop captures `Config.Lobby.marker` ONCE, outside the thread, so
+--- it does not pick up a changing schedule for free -- and mutating the
+--- operator's own config table in place to make it would be worse. One call
+--- per frame inside the interact radius, which is the only place a player
+--- is standing still and reading.
+--- @param marker table
+--- @return string
 local function doorHelpText(marker)
     if not ArenaState.DoorsShut() then return marker.helpText end
 
+    -- The same rule as the ped's label, for the same reason: the closure is
+    -- the fact, and the opening time is a detail that may not exist. Falling
+    -- back to the ORDINARY help text here told a player standing on a shut
+    -- arena's marker to press E and expect a lobby.
     local opensAt = ArenaState.Schedule().opensAt
     if type(opensAt) ~= 'string' then return locale('match.hours_shut_now_help') end
     return locale('match.hours_shut_help', opensAt)
 end
 
+--- The marker path. Draws only inside `drawDistance` and only listens for
+--- the key inside `interactDistance`; outside the draw radius it sleeps a
+--- full second, because a lobby marker is something a player is near for a
+--- few seconds an hour and a per-frame loop the rest of the time is pure
+--- waste on every client on the server.
 local function startMarkerThread()
     local marker = Config.Lobby.marker
     local center = vector3(marker.coords.x, marker.coords.y, marker.coords.z)
@@ -238,21 +350,67 @@ local function startMarkerThread()
     end)
 end
 
+-- ======================================================================
+-- WIRING
+-- ======================================================================
+
+-- Caching only. client/ui.lua registers its own handler for this same
+-- event and is the one that pushes the snapshot into the panel; this file
+-- owns the cache that match.lua and spectate.lua read. Relaying from here
+-- as well would send the panel two copies of every update.
 RegisterNetEvent('crimson_arena:client:state', function(newState)
     ArenaState.Set(newState)
 
+    -- The fence round any arena being fought in that this player is not in.
+    -- Handed on here rather than read out of the cache by the fence itself,
+    -- so a match ending stops it in the same instant the state says so.
     if type(ArenaMatch) == 'table' and type(ArenaMatch.SetKeepOut) == 'function' then
         ArenaMatch.SetKeepOut(type(newState) == 'table' and newState.keepOut or nil)
     end
 
+    -- After the cache is set, never before: it reads the schedule out of it.
     relabelLobbyPed()
 end)
 
 CreateThread(function()
+    -- SAID IN F8 AS WELL AS THE SERVER CONSOLE, because the symptom of a
+    -- config fault is usually something a player can SEE and an operator
+    -- testing in-game is looking here, not at the server log.
+    --
+    -- The one that made this necessary: the weapon catalogue lives in
+    -- config.weapons.lua, and a server missing that file has no weapons at
+    -- all. What the tester sees is the panel saying so; what named the file
+    -- was a warning printed only on the server, in another window.
+    --
+    -- Normally zero lines, so this costs nothing on a healthy server -- and
+    -- when it is not zero, the arena is misconfigured and everybody's
+    -- console saying so is the point. Same reading as the `lobby:` line
+    -- below, which is also unconditional.
     Arena.ReportConfigProblems()
 
     local mode = resolveInteraction()
 
+    -- WHICH FIXTURE GOES UP IS THE OPERATOR'S DECISION AND NOBODY ELSE'S.
+    -- An NPC that cannot be put up leaves the lobby without one, and says so
+    -- in the console; it does not quietly become a ground marker instead.
+    -- A resource that silently plays a different setting than the one in the
+    -- file is a resource whose config cannot be trusted, and 'both' is
+    -- already there for an operator who wants the marker as a safety net.
+    --
+    -- WRAPPED, because a raise in here used to take everything after it down.
+    --
+    -- This file already says so about `targeting()`: "a raise inside the
+    -- startup thread below takes the marker and the blip down with the ped,
+    -- leaving the arena unreachable with nothing in the console pointing at
+    -- the cause". That was true of exactly one call in spawnLobbyPed and the
+    -- guard was put around that one. Everything
+    -- else in there can raise too -- CreatePed on a model the game will not
+    -- give, a scenario name it does not know, and above all
+    -- ox_target:addLocalEntity, whose shape is another resource's to change.
+    --
+    -- The symptom is unmistakable and was unexplainable: NO NPC AND NO BLIP,
+    -- on a resource that reports itself started. The blip is drawn two lines
+    -- below this one.
     local pedUp = false
     if mode == 'ped' or mode == 'both' then
         local ok, result = pcall(spawnLobbyPed)
@@ -268,6 +426,18 @@ CreateThread(function()
     if mode == 'marker' or mode == 'both' then startMarkerThread() end
     createBlip(mode)
 
+    -- WHERE THE ARENA ACTUALLY WENT, said out loud on every start.
+    --
+    -- config.lua is where an operator puts these coordinates, and a
+    -- coordinate that appears not to take is the most confusing failure this
+    -- resource has: the resource works, the panel works, and the arena is somewhere
+    -- they did not put it. From outside, "my edit was ignored", "I am looking
+    -- at the old spot" and "the folder the server runs is not the one I
+    -- edited" all look identical -- nothing was in the console to tell them
+    -- apart.
+    --
+    -- Not gated on Config.Debug: this is one line at start-up, and it is
+    -- worth more to the person who needs it than it costs everybody else.
     local where = pedUp and Config.Lobby.ped.coords or Config.Lobby.marker.coords
     local fixture = pedUp and 'NPC' or (mode == 'ped' and 'NOTHING -- see the warning above' or 'ground marker')
     warn(('lobby: %s at %.2f, %.2f, %.2f (interaction = %s).'):format(

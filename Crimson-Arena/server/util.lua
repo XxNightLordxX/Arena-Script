@@ -1,5 +1,3 @@
--- Crimson Arena: small helpers the rest of the server shares.
-
 --[[
     crimson_arena/server/util.lua
 
@@ -17,21 +15,61 @@
     later file can call these without a require or an existence guard.
 ]]
 
+-- ======================================================================
+-- CONSOLE
+-- ======================================================================
+
+--- A bad format string in a log line must never take down the code that was
+--- only trying to explain itself, so a formatting failure degrades to the
+--- raw template instead of raising.
+--- @param fmt any
+--- @param ... any
+--- @return string
 local function compose(fmt, ...)
     if select('#', ...) == 0 then return tostring(fmt) end
     local ok, text = pcall(string.format, fmt, ...)
     return ok and text or tostring(fmt)
 end
 
+--- Console line an operator will always see.
+--- @param fmt string
+--- @param ... any -- string.format arguments
 function ArenaLog(fmt, ...)
     print(('[crimson_arena] %s'):format(compose(fmt, ...)))
 end
 
+--- The chatty half, gated on Config.Debug -- which ships ON. Off, this is a
+--- single comparison at every call site; on, it is a line of console per
+--- event, which is what it is there for.
+--- @param fmt string
+--- @param ... any
 function ArenaDebug(fmt, ...)
     if Config.Debug ~= true then return end
     print(('[crimson_arena] [debug] %s'):format(compose(fmt, ...)))
 end
 
+-- ======================================================================
+-- NOTIFICATIONS
+-- ======================================================================
+
+--- One player-visible message, handed to client/ui.lua to place.
+---
+--- SENT AS THIS RESOURCE'S OWN EVENT rather than straight to ox_lib because
+--- WHERE it lands is a client-side question: ArenaUI.Notify puts it on the
+--- panel's toast rail while the panel is up and falls through to ox_lib when
+--- it is not. Triggering 'ox_lib:notify' from here answers that question for
+--- it -- and answers it wrong for every refusal a player triggers from
+--- inside the panel, which is most of them, since ox_lib draws its own toast
+--- underneath the panel's full-screen scrim. The title comes back on the
+--- ox_lib path in ArenaUI.Notify, so an arena message still names itself.
+---
+--- A nil, zero or negative source is a bug further up. TriggerClientEvent
+--- would take it without complaint and the message would simply never
+--- arrive, so it is refused out loud here rather than lost silently.
+--- @param src any
+--- @param description string
+--- @param notifyType string? -- 'info'|'success'|'warning'|'error'
+--- @return boolean sent
 function ArenaNotify(src, description, notifyType)
     local target = tonumber(src)
     if not target or target <= 0 then
@@ -46,7 +84,16 @@ function ArenaNotify(src, description, notifyType)
     return true
 end
 
+--- The form almost every caller wants: Arena.* hands back locale KEYS, not
+--- sentences, and they go straight through here.
+--- @param src any
+--- @param localeKey string
+--- @param notifyType string?
+--- @param ... any -- locale format arguments
+--- @return boolean sent
 function ArenaNotifyKey(src, localeKey, notifyType, ...)
+    -- A nil key reaches here whenever a caller forwards a `reason` that was
+    -- never set; locale() would raise on it, inside an event handler.
     if not Arena.IsKey(localeKey) then
         ArenaLog('refused to notify %s with an empty locale key', tostring(src))
         return false
@@ -54,12 +101,22 @@ function ArenaNotifyKey(src, localeKey, notifyType, ...)
     return ArenaNotify(src, locale(localeKey, ...), notifyType)
 end
 
+-- ======================================================================
+-- PLAYERS
+-- ======================================================================
+
+--- @param src any
+--- @return table|nil player -- the qbx_core player object, nil if not loaded
 function ArenaGetPlayer(src)
     local target = tonumber(src)
     if not target or target <= 0 then return nil end
     return exports.qbx_core:GetPlayer(target)
 end
 
+--- Never nil. The name ends up in log lines, webhooks and the panel, and a
+--- nil in any of those is either an error or a blank row nobody can act on.
+--- @param src any
+--- @return string
 function ArenaPlayerName(src)
     local target = tonumber(src)
     local player = ArenaGetPlayer(target)
@@ -74,6 +131,8 @@ function ArenaPlayerName(src)
         if Arena.IsKey(data.name) then return data.name end
     end
 
+    -- Connected but not loaded into qbx_core yet -- the account name is
+    -- still better than nothing to log against.
     if target and target > 0 then
         local connected = GetPlayerName(target)
         if Arena.IsKey(connected) then return connected end
@@ -82,6 +141,25 @@ function ArenaPlayerName(src)
     return locale('meta.unknown_player')
 end
 
+-- ======================================================================
+-- PERMISSIONS
+-- ======================================================================
+
+--- ACE check against Config.Permissions.adminGroups.
+---
+--- Both spellings are tried because servers hand admin out both ways: a
+--- `add_ace group.admin ...` line in a permissions.cfg, and a bare `admin`
+--- ace from an admin menu that manages its own principals.
+---
+--- Source 0 is the server console, which cannot hold an ACE and must never
+--- be locked out of its own admin command.
+---
+--- An EMPTY adminGroups list means NOBODY here, unlike the job lists below
+--- it. Reading empty as "everyone" is right for an arena that is open to
+--- the server; applied to force-stop and wipe it would hand every player
+--- the ability to end other people's matches.
+--- @param src any
+--- @return boolean
 function ArenaIsAdmin(src)
     local target = tonumber(src)
     if not target then return false end
@@ -116,6 +194,7 @@ local function jobAllowed(src, jobs)
     local name = job and job.name
     if not Arena.IsKey(name) then return false end
 
+    -- Operators write these lists both ways: { 'police' } and { police = true }.
     if jobs[name] then return true end
     for _, allowed in ipairs(jobs) do
         if allowed == name then return true end
@@ -123,20 +202,47 @@ local function jobAllowed(src, jobs)
     return false
 end
 
+--- @param src any
+--- @return boolean
 function ArenaCanCreate(src)
     return jobAllowed(src, Config.Permissions.createJobs)
 end
 
+--- The same question asked of somebody joining a match they did not open.
+--- One rule, two lists: a near-copy of the function above would let the two
+--- permissions drift apart -- an operator who writes `{ police = true }` in
+--- one and has it honoured, and writes it in the other and does not, has
+--- found a bug rather than a setting.
+--- @param src any
+--- @return boolean
 function ArenaCanJoin(src)
     return jobAllowed(src, Config.Permissions.joinJobs)
 end
+
+-- ======================================================================
+-- RATE LIMITING
+-- ======================================================================
 
 --- Timestamp of the last ACCEPTED call, per source, per bucket. Buckets
 --- keep one spammed event from starving another: a player hammering
 --- joinMatch must not also lock themselves out of leaveMatch.
 local lastCall = {}
 
+--- @param src any
+--- @param bucket string -- an event name, or anything stable
+--- @param intervalMs any -- 0 or less means no limit
+--- @return boolean allowed -- true when the caller may proceed
 function ArenaRateLimit(src, bucket, intervalMs)
+    -- A REAL PLAYER ID IS ALWAYS ABOVE ZERO, and everything else in this
+    -- resource that takes one says so -- ArenaDispatch.Set and ArenaNotify
+    -- above both refuse `<= 0`. This did not, so it was the one entry
+    -- point that would open a bucket for an id no `playerDropped` will ever
+    -- arrive for, and ArenaForgetPlayer is the only thing that clears one.
+    --
+    -- Not reachable from the wire: FXServer stamps `source` with a real
+    -- player. It is consistency rather than a live defect, and the cost of
+    -- being the odd one out is that the next person to read this has to work
+    -- out which convention is the real one.
     local target = tonumber(src)
     if not target or target <= 0 then return false end
 
@@ -159,16 +265,34 @@ function ArenaRateLimit(src, bucket, intervalMs)
     return true
 end
 
+--- Drops one player's rate-limit history; main.lua calls it from
+--- playerDropped. Without it `lastCall` gains a table per player who has
+--- ever connected and never gives one back for the life of the resource.
+--- @param src any
 function ArenaForgetPlayer(src)
     local target = tonumber(src)
     if target then lastCall[target] = nil end
 end
 
+-- ======================================================================
+-- WEBHOOK
+-- ======================================================================
+
+--- Posts one embed to the configured Discord webhook.
+---
+--- Fire and forget: the response is only ever looked at to say, under
+--- Config.Debug, that Discord refused it. A match must never wait on an
+--- HTTP round trip to somebody else's server.
+--- @param title string
+--- @param description string?
+--- @param fields table[]? -- Discord embed fields: { { name, value, inline } }
 function ArenaWebhook(title, description, fields)
     local webhook = Config.Webhook or {}
     if webhook.enabled ~= true then return end
     if not Arena.IsKey(webhook.url) then return end
 
+    -- Discord rejects an embed whose `fields` is an empty object, which is
+    -- exactly what json.encode makes of an empty Lua table.
     local list = (type(fields) == 'table' and #fields > 0) and fields or nil
 
     local payload = json.encode({
@@ -184,15 +308,30 @@ function ArenaWebhook(title, description, fields)
     })
 
     PerformHttpRequest(webhook.url, function(status)
+        -- 204 is Discord's success for a webhook post; 200 covers proxies
+        -- that answer with a body.
         if status ~= 200 and status ~= 204 then
             ArenaDebug('webhook POST answered %s', tostring(status))
         end
     end, 'POST', payload, { ['Content-Type'] = 'application/json' })
 end
 
+-- ======================================================================
+-- IDS
+-- ======================================================================
+
+--- Both halves of a match id are load-bearing:
+---   the counter makes a collision within one server run impossible, which
+---   a random id of any length only makes unlikely;
+---   the per-run salt stops a restart from re-issuing ids the previous run
+---   already handed out -- a client can still be holding a snapshot full of
+---   them, and would otherwise "join" an id that now belongs to somebody
+---   else's lobby.
+--- Base 16 keeps the result short enough to read out over a console line.
 local idSalt = math.random(0, 0xffff)
 local idCounter = 0
 
+--- @return string id
 function ArenaNewId()
     idCounter = idCounter + 1
     return ('m%04x%x'):format(idSalt, idCounter)
@@ -220,11 +359,21 @@ end
 -- feature to the one anybody pictures when they write them down.
 -- ======================================================================
 
+--- The hour and minute the schedule is judged against.
+---
+--- `offsetHours` is added here rather than inside the rule, so that
+--- shared/arena.lua goes on being handed a plain wall-clock time and stays
+--- exercisable without one.
+--- @return integer hour
+--- @return integer minute
 function ArenaHoursNow()
     local schedule = Config.Schedule
     local offset = 0
     if type(schedule) == 'table' then
         local wanted = Arena.ToInt(schedule.offsetHours)
+        -- Out of range is treated as 0 and the validator has already said
+        -- so by name. Silently honouring -300 would put the arena's day
+        -- somewhere nobody asked for.
         if wanted and math.abs(wanted) <= 14 then offset = wanted end
     end
 
@@ -248,16 +397,49 @@ end
 --- @type string|nil
 local hoursOverride = nil
 
+--- Sets, or clears, the standing decision.
+---
+--- ONE SWITCH, READ IN ONE PLACE. Everything that asks whether the arena is
+--- open goes through ArenaHoursOpen below -- creating a match, joining one,
+--- the sweep that shuts the waiting lobbies when the doors close, the NPC,
+--- the marker and the panel's own line -- so this cannot be honoured by some
+--- of them and not others.
+---
+--- ANYTHING THAT IS NOT 'open' OR 'shut' CLEARS IT. A typo must hand the
+--- arena back to its schedule rather than invent a fourth state that nothing
+--- downstream knows how to read.
+--- @param mode any -- 'open', 'shut', or anything else to follow the schedule
+--- @return string|nil state
 function ArenaSetHoursOverride(mode)
     hoursOverride = (mode == 'open' or mode == 'shut') and mode or nil
     return hoursOverride
 end
 
+--- @return string|nil -- 'open', 'shut', or nil for the schedule
 function ArenaHoursOverride()
     return hoursOverride
 end
 
+--- Whether the doors are open right now.
+---
+--- FAILS OPEN, ALWAYS. Every path that cannot produce a schedule -- no
+--- Config.Schedule, the switch off, an empty window list, every window
+--- unusable -- answers TRUE. An arena wrongly shut is indistinguishable,
+--- from every player at once, from a resource that has stopped working;
+--- an arena wrongly open is a round somebody got to fight.
+--- @return boolean
 function ArenaHoursOpen()
+    -- AN ADMIN'S DECISION BEATS THE CLOCK, and is asked first so the schedule
+    -- is not even consulted. That ordering matters for the sweep in
+    -- server/match.lua: it shuts every waiting lobby the moment this turns
+    -- false, and an override read second would let a window closing mid-round
+    -- tear down the lobbies an admin had just opened the doors for.
+    --
+    -- 'shut' DOES NOT END A ROUND ALREADY BEING FOUGHT. That is not a promise
+    -- made here -- it is the sweep's, which only ever tears down lobbies --
+    -- but it is the reason this is safe to point in both directions: closing
+    -- the arena stops people coming IN, and the fight already happening is
+    -- fought to the end.
     if hoursOverride == 'open' then return true end
     if hoursOverride == 'shut' then return false end
 
@@ -275,6 +457,14 @@ function ArenaHoursOpen()
     return type(status) ~= 'table' or status.open ~= false
 end
 
+--- The block the panel, the NPC and the marker are all drawn from.
+---
+--- Assembled once per push and handed to every recipient: it is the same
+--- for everybody, because it is the server's clock and not theirs.
+---
+--- `line` is present ONLY when hours are genuinely being enforced, so the
+--- panel can never advertise a schedule the server is not keeping.
+--- @return table
 function ArenaHoursSnapshot()
     local hour, minute = ArenaHoursNow()
     local status = Arena.ScheduleStatus(hour, minute)
@@ -282,6 +472,15 @@ function ArenaHoursSnapshot()
 
     local block = { open = status.open == true, now = Arena.ClockText(hour * 60 + minute) }
 
+    -- THE SAME ANSWER THE SERVER IS ACTING ON. This block is what the panel,
+    -- the lobby NPC and the ground marker are all drawn from, so an override
+    -- the server honours and this does not is an arena letting people in
+    -- through a door every screen calls locked -- or turning them away from
+    -- one every screen calls open.
+    --
+    -- `line` is kept rather than dropped: the ordinary hours are still worth
+    -- telling somebody, and `forced` is what says they are not being kept
+    -- right now.
     if hoursOverride ~= nil then
         block.open = hoursOverride == 'open'
         block.forced = hoursOverride
@@ -293,6 +492,13 @@ function ArenaHoursSnapshot()
     return block
 end
 
+--- The same facts, kept APART, for /arenahours.
+---
+--- Separate fields rather than one sentence for the reason
+--- ArenaDispatch.IsolationState keeps its three apart: an operator reading
+--- "shut" cannot act on it without knowing which clock said so and what
+--- offset was applied to it.
+--- @return table
 function ArenaHoursState()
     local schedule = Config.Schedule
     local raw = os.date('*t')
@@ -305,6 +511,10 @@ function ArenaHoursState()
         arenaClock = Arena.ClockText(hour * 60 + minute),
         line = Arena.ScheduleLine(),
         open = ArenaHoursOpen(),
+        -- SAID APART FROM `open`, for the reason the whole of this function
+        -- keeps its facts apart: an operator reading "open" at four in the
+        -- morning needs to know whether that is the schedule or somebody's
+        -- decision.
         forced = hoursOverride,
         snapshot = ArenaHoursSnapshot(),
     }

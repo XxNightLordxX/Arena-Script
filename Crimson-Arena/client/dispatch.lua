@@ -1,5 +1,3 @@
--- Crimson Arena: keeping the police and the medics out of the arena.
-
 --[[
     crimson_arena/client/dispatch.lua
 
@@ -47,18 +45,36 @@
 
 ArenaDispatch = {}
 
+--- Nil when not in a match, and the match id while one is running. It is
+--- the in-a-match latch Enter/Exit pair on, nothing more.
 local restore = nil
 
+-- ======================================================================
+-- THE PUBLISHED FACT
+-- ======================================================================
+
+--- Whether this player is currently in an arena match.
+---
+--- Reads the local record rather than the state bag, because a state bag
+--- read immediately after a write can still return the old value -- and a
+--- dispatch script asking "should I suppress this shot" is asking at
+--- exactly that moment.
+--- @return boolean
 function ArenaDispatch.IsInArena()
     return restore ~= nil
 end
 
+--- @return string|nil
 function ArenaDispatch.MatchId()
     return restore and restore.matchId or nil
 end
 
 exports('IsInArena', ArenaDispatch.IsInArena)
 exports('GetArenaMatchId', ArenaDispatch.MatchId)
+
+-- ======================================================================
+-- THIRD-PARTY MUTE EXPORTS
+-- ======================================================================
 
 --- Calls each Config.Dispatch.custom.disableExports entry with `enabled`.
 ---
@@ -111,6 +127,13 @@ end
 -- session, off the back of one arena round.
 -- ======================================================================
 
+--- Silences everything this resource is able to silence, and records that
+--- a match is running so Exit() knows there is something to undo.
+---
+--- Safe to call twice: a second call while already active is ignored, so a
+--- re-entry cannot fire the operator's mute exports a second time and leave
+--- the unmute one call short.
+--- @param matchId string
 function ArenaDispatch.Enter(matchId)
     if restore then return end
 
@@ -119,13 +142,23 @@ function ArenaDispatch.Enter(matchId)
     callDisableExports(true)
 end
 
+--- Undoes Enter(), exactly. Safe to call when nothing is active, which is
+--- what lets client/match.lua call it on every exit path -- normal finish,
+--- disconnect, resource stop -- without first working out whether it needs
+--- to.
 function ArenaDispatch.Exit()
     if not restore then return end
 
+    -- Cleared before the call below, so a re-entry racing this exit sees
+    -- an inactive state rather than being refused by the guard in Enter.
     restore = nil
 
     callDisableExports(false)
 end
+
+-- ======================================================================
+-- THE DEAD STATE
+-- ======================================================================
 
 --- Puts an arena casualty back on their feet in the same instant they went
 --- down, held frozen, invisible and untouchable until the server says what
@@ -147,6 +180,11 @@ end
 --- @param ped integer
 --- @return boolean handled
 function ArenaDispatch.ClearDeadState(ped)
+    -- ONE SWITCH, NOT TWO. `suppressAmbulanceDown` sat on the line above
+    -- this one and gated exactly the same function -- two keys an operator
+    -- had to set the same way, in two parts of config, to change one
+    -- behaviour, and either of them alone silently doing nothing. It is
+    -- gone; clearDeadStateImmediately is the switch.
     local config = Config.Dispatch or {}
     if config.clearDeadStateImmediately == false then return false end
     if not restore then return false end
@@ -156,6 +194,9 @@ function ArenaDispatch.ClearDeadState(ped)
 
     NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
 
+    -- Alive, but not back in the fight: the server has not said yet whether
+    -- this is a respawn or an elimination, and a player who could shoot
+    -- during that gap would be shooting from beyond the grave.
     local resurrected = PlayerPedId()
     SetEntityInvincible(resurrected, true)
     SetEntityVisible(resurrected, false, false)

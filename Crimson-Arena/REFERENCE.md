@@ -176,7 +176,7 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **76 spec files** covering the shared, server and client logic, run with `lua5.4`
+- **77 spec files** covering the shared, server and client logic, run with `lua5.4`
   against a fake-native harness, plus **21 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
@@ -523,13 +523,14 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 30 functions
+#### `server/betting.lua` — 31 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaBetting.Accounts()` | The accounts a player may be asked to choose between, in the operator's own order. |
 | `ArenaBetting.Wallet(src)` | What one player holds in each of them, for the panel's own display. |
-| `ArenaBetting.BetsAreOpen(match)` | Whether the book is still taking side-bets on this match. |
+| `ArenaBetting.BetsAreOpen(match)` | Whether the book is still taking side-bets on this match, for a WATCHER. |
+| `ArenaBetting.FighterBetsAreOpen(match)` | The same question for somebody fighting in it, which shuts the moment the round goes live. |
 | `ArenaBetting.SecondsUntilBetsClose(match)` | Seconds until the book shuts on a live round, or nil when there is no window to wait on. |
 | `ArenaBetting.IsRefundReason(reason)` | Whether a payout line is a stake coming back rather than money won. |
 | `ArenaBetting.IsEnabled()` | Whether betting is switched on at all. |

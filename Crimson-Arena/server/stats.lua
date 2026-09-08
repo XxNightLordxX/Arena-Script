@@ -1,13 +1,55 @@
--- Crimson Arena: the record. Wins, kills, streaks, and the database.
+--[[
+    crimson_arena/server/stats.lua
+
+    The leaderboard, and the only place this resource talks to a database.
+
+    TWO MODES, ONE API. With Config.Database.enabled on, finished matches
+    are folded into `crimson_arena_stats` and the leaderboard is all-time.
+    With it off nothing is written anywhere, the same numbers live in a Lua
+    table, and the leaderboard covers this server run only. Callers cannot
+    tell which mode they are in: Record takes the same entry, GetLeaderboard
+    hands the same rows to the same callback, and neither mode errors when
+    the other's half of the machinery is missing.
+
+    WRITES ARE QUEUED, NOT IMMEDIATE. A match end would otherwise fire one
+    round trip per player at the exact moment the server is busiest -- the
+    teleports, the payouts and the state broadcast all land in the same
+    frame. The queue turns that into one batch per Config.Database
+    flushIntervalMs.
+]]
 
 ArenaStats = {}
 
+--- Rows recorded but not yet written, keyed by citizenid. These are DELTAS,
+--- never totals: the upsert adds them to whatever the row already holds, so
+--- a flush never has to read a row back first, and two servers sharing one
+--- database cannot overwrite each other's numbers.
 local pending = {}
 
+--- Runs one query through oxmysql, or reports that it could not.
+---
+--- WHY THIS IS NOT `MySQL.query`. That name comes from `@oxmysql/lib/MySQL.lua`
+--- in the manifest, and a manifest include is not optional: FXServer resolves
+--- it before this file is ever read, so listing it would make oxmysql
+--- mandatory for every install -- including the drag-and-drop default, where
+--- Config.Database.enabled is false and this resource has no table, no query
+--- and no reason to need a database at all. Going through the export instead
+--- moves the question to run time, where the answer can be "not installed,
+--- and that is fine".
+---
+--- Every caller is already behind a Config.Database.enabled check, so this
+--- only ever reports a database that was switched ON and then not installed.
+--- @param sql string
+--- @param params table
+--- @param cb fun(result: any)
+--- @return boolean dispatched
 local warnedNoDatabase = false
 
 local function dbQuery(sql, params, cb)
     if GetResourceState('oxmysql') ~= 'started' then
+        -- Said once. A flush sends one query per player, so an unguarded
+        -- line here would print the same sentence eight times a minute and
+        -- bury everything else in the console.
         if not warnedNoDatabase then
             warnedNoDatabase = true
             ArenaLog('Config.Database.enabled is true but oxmysql is not started. ' ..
@@ -18,6 +60,9 @@ local function dbQuery(sql, params, cb)
         return false
     end
 
+    -- pcall because a database that is installed but unreachable throws out
+    -- of the export rather than into the callback, and a throw here would
+    -- take down the flush timer for the rest of the run.
     local ok, err = pcall(function()
         exports.oxmysql:query(sql, params, cb)
     end)
@@ -32,8 +77,14 @@ local function dbQuery(sql, params, cb)
     return true
 end
 
+--- Totals since the resource started. Kept in BOTH modes -- it is the
+--- leaderboard when there is no database, and the answer when a query
+--- cannot be answered.
 local session = {}
 
+-- MySQL 8 would rather this used a row alias than VALUES(), but MariaDB --
+-- what most FiveM servers actually run -- has no alias syntax at all, and
+-- VALUES() works on both.
 local UPSERT_SQL = [[
     INSERT INTO crimson_arena_stats
         (citizenid, name, wins, losses, kills, deaths, earnings, updated_at)
@@ -62,15 +113,27 @@ local SCHEMA_SQL = [[
     )
 ]]
 
+--- How many distinct players may sit in the write queue while the database
+--- refuses writes. A flush that cannot reach the database puts every row
+--- back, so with the setting on and no database reachable the queue would
+--- otherwise grow for the life of the server -- one entry per player who
+--- has ever fought. This is a backstop for that, not a normal limit: a
+--- reachable database empties the queue every flush interval, and a
+--- database that comes back later writes the whole backlog.
 local MAX_RETAINED = 5000
 local warnedQueueFull = false
 
+--- Adds one delta into a totals table, creating the row on first sight.
+--- @param store table<string, table>
+--- @param citizenid string
+--- @param delta table
 local function accumulate(store, citizenid, delta)
     local row = store[citizenid]
     if not row then
         row = { citizenid = citizenid, name = delta.name, wins = 0, losses = 0, kills = 0, deaths = 0, earnings = 0 }
         store[citizenid] = row
     end
+    -- Characters get renamed; the most recent name is the useful one.
     row.name = delta.name
     row.wins = row.wins + delta.wins
     row.losses = row.losses + delta.losses
@@ -79,10 +142,16 @@ local function accumulate(store, citizenid, delta)
     row.earnings = row.earnings + delta.earnings
 end
 
+--- The session table as leaderboard rows -- the same five fields, in the
+--- same order, that the database query produces.
+--- @param size integer
+--- @return table[]
 local function sessionRows(size)
     local ordered = {}
     for _, row in pairs(session) do ordered[#ordered + 1] = row end
 
+    -- citizenid breaks the last tie, so `pairs` ordering can never make two
+    -- reads of identical data render the panel differently.
     table.sort(ordered, function(a, b)
         if a.wins ~= b.wins then return a.wins > b.wins end
         if a.kills ~= b.kills then return a.kills > b.kills end
@@ -104,11 +173,19 @@ local function sessionRows(size)
     return rows
 end
 
+--- Folds one player's finished match into the totals.
+--- @param entry table -- { citizenid, name, won, kills, deaths, earnings }
+--- @return boolean recorded -- false when there was no citizenid to key on
 function ArenaStats.Record(entry)
     if type(entry) ~= 'table' or not Arena.IsKey(entry.citizenid) then return false end
 
     local delta = {
+        -- Truncated to the column widths here rather than at write time: a
+        -- MySQL in strict mode rejects an over-long value outright, and one
+        -- long name would take the whole batch down with it.
         name = (Arena.IsKey(entry.name) and entry.name or entry.citizenid):sub(1, 128),
+        -- There is no third outcome in this table. A player who was in a
+        -- match and did not win it lost it.
         wins = entry.won == true and 1 or 0,
         losses = entry.won == true and 0 or 1,
         kills = math.max(0, Arena.ToInt(entry.kills) or 0),
@@ -123,12 +200,23 @@ function ArenaStats.Record(entry)
     return true
 end
 
+--- Records every player of a finished match in one call.
+---
+--- It reads the match the way server/match.lua leaves it: `winners` is the
+--- array of ids the win condition settled on, `payouts` is what
+--- Arena.ComputePayouts returned. A `won` or `earnings` already written
+--- onto a player record wins over both, so a mode that decides those for
+--- itself does not have to fake a winners list to be recorded correctly.
+--- @param match table -- a finished lobby record
+--- @return integer recorded -- players folded in
 function ArenaStats.RecordMatch(match)
     if type(match) ~= 'table' or type(match.players) ~= 'table' then return 0 end
 
     local won = {}
     for _, id in ipairs(match.winners or {}) do won[id] = true end
 
+    -- A refund is a player's own stake handed back, not something they won,
+    -- so it must never show up as earnings on an all-time leaderboard.
     local earned = {}
     for _, payout in ipairs(match.payouts or {}) do
         local reason = type(payout.reason) == 'string' and payout.reason or ''
@@ -162,6 +250,13 @@ function ArenaStats.RecordMatch(match)
     return recorded
 end
 
+--- Hands the top rows to `cb`. Always calls back exactly once, in both
+--- modes, with an array that may be empty -- never with nil, and never by
+--- raising.
+---
+--- What the database returns is what the last flush left behind: a match
+--- that ended seconds ago appears once the queue is written.
+--- @param cb fun(rows: table[]) -- rows = { { name, wins, kills, deaths, earnings } }
 function ArenaStats.GetLeaderboard(cb)
     if type(cb) ~= 'function' then return end
 
@@ -172,6 +267,9 @@ function ArenaStats.GetLeaderboard(cb)
         return
     end
 
+    -- LIMIT is spliced in rather than bound: a placeholder there is not
+    -- portable across oxmysql's prepared path, and `size` has already been
+    -- forced through Arena.ToInt, so there is no string to inject.
     local query = ([[
         SELECT name, wins, kills, deaths, earnings
         FROM crimson_arena_stats
@@ -181,6 +279,9 @@ function ArenaStats.GetLeaderboard(cb)
 
     dbQuery(query, {}, function(result)
         if type(result) ~= 'table' then
+            -- The query could not be answered. This run's own numbers beat
+            -- an empty panel and a client waiting on a callback that the
+            -- error path never fired.
             cb(sessionRows(size))
             return
         end
@@ -199,14 +300,32 @@ function ArenaStats.GetLeaderboard(cb)
     end)
 end
 
+--- Writes everything queued and empties the queue.
+---
+--- main.lua calls this on resource stop as well as on the timer, and that
+--- is the entire reason it is exported: a server that restarts 59 seconds
+--- into a 60-second flush interval would otherwise throw away every match
+--- played in that minute.
+--- A row the database refused goes back on the queue rather than being
+--- dropped, so the next flush tries it again -- including a flush minutes
+--- later, after oxmysql has been started or the connection has come back.
+--- @return integer rows -- player rows actually sent, not merely attempted
 function ArenaStats.Flush()
     if Config.Database.enabled ~= true then return 0 end
 
+    -- Swapped out before the first query goes out, so anything recorded
+    -- while this runs queues for the next flush instead of being written
+    -- twice or dropped.
     local batch = pending
     pending = {}
 
+    -- `pending` is empty as of the line above, so the whole allowance is
+    -- free. Recomputed per flush rather than carried, which keeps it exact
+    -- without a counter to drift: a row put back here is taken into `batch`
+    -- by the next flush, and the allowance resets with it.
     local room = MAX_RETAINED
 
+    --- Puts a row that could not be written back on the queue.
     local function requeue(row)
         local existing = pending[row.citizenid]
         if not existing then
@@ -222,6 +341,9 @@ function ArenaStats.Flush()
             room = room - 1
         end
 
+        -- accumulate treats the delta's name as the newer one, which is
+        -- backwards here: `row` was recorded BEFORE anything queued since
+        -- this flush began, so a rename in that window would be undone.
         local newerName = existing and existing.name
         accumulate(pending, row.citizenid, row)
         if newerName then pending[row.citizenid].name = newerName end
@@ -229,6 +351,17 @@ function ArenaStats.Flush()
 
     local dispatched = 0
     for citizenid, row in pairs(batch) do
+        -- The callback is where a lost row is caught. dbQuery hands it nil
+        -- on every failure it knows about -- oxmysql not started, or the
+        -- export throwing -- and oxmysql itself calls back with nil when the
+        -- query fails on the server. Either way the delta is already out of
+        -- `pending`, and without this it is gone for good: the swap above is
+        -- what makes a concurrent Record safe, and it is also what makes a
+        -- failed write unrecoverable unless the row is handed back.
+        --
+        -- A callback is required regardless: without one oxmysql awaits the
+        -- result, and a flush called from the resource-stop handler has to
+        -- dispatch and return rather than block the stop.
         if dbQuery(UPSERT_SQL, {
             citizenid:sub(1, 64),
             row.name,
@@ -244,10 +377,17 @@ function ArenaStats.Flush()
         end
     end
 
+    -- Counted from what dbQuery actually sent, not from the size of the
+    -- batch. A server with Config.Database.enabled on and oxmysql missing
+    -- used to report a full flush every minute while writing nothing at all.
     if dispatched > 0 then ArenaDebug('flushed %d stat row(s)', dispatched) end
     return dispatched
 end
 
+--- Creates the table if it is not there. Safe on every start, and does
+--- nothing at all when the database is off -- an operator running without
+--- one never finds a table they did not ask for.
+--- @return boolean ran
 function ArenaStats.EnsureSchema()
     if Config.Database.enabled ~= true then return false end
 
@@ -257,6 +397,9 @@ function ArenaStats.EnsureSchema()
     return true
 end
 
+-- The flush timer. Only worth a thread when something can be queued: with
+-- the database off, Record never fills `pending`. The floor stops a
+-- flushIntervalMs of 0 from turning this into a per-frame loop.
 if Config.Database.enabled == true then
     CreateThread(function()
         local interval = math.max(1000, Arena.ToInt(Config.Database.flushIntervalMs) or 60000)

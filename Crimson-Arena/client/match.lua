@@ -229,6 +229,17 @@ end
 --- only ever put back by something that actually changed it.
 local friendlyFireHeld = false
 
+--- The network team this client was on before the arena moved it, so the exit
+--- puts back what it found rather than what it assumes.
+---
+--- ONLY THE TEAM. holdFriendlyFire changes three things and this is the only
+--- one the engine will tell you the prior value of: PLAYER::GET_PLAYER_TEAM
+--- exists, and there is no getter for NETWORK_SET_FRIENDLY_FIRE_OPTION or
+--- SET_CAN_ATTACK_FRIENDLY at all. Those two are put back at the vanilla
+--- defaults on the way out and that stays an assumption -- a documented one
+--- rather than a hidden one.
+local priorTeam = nil
+
 --- @param ped integer
 local function holdFriendlyFire(ped)
     if not currentMatch then return end
@@ -240,6 +251,11 @@ local function holdFriendlyFire(ped)
 
     local index = Arena.TeamIndex(currentMatch.teamKey)
     if not index then return end
+
+    -- READ BEFORE THE WRITE, and only on the call that actually holds -- a
+    -- respawn calls this again on the new ped, and re-reading there would
+    -- record the arena's OWN team as the thing to go back to.
+    if not friendlyFireHeld then priorTeam = GetPlayerTeam(PlayerId()) end
 
     SetPlayerTeam(PlayerId(), index)
     NetworkSetFriendlyFireOption(false)
@@ -253,10 +269,14 @@ local function releaseFriendlyFire(ped)
     if not friendlyFireHeld then return end
     friendlyFireHeld = false
 
-    -- -1 IS "NO TEAM", which is where a player on an ordinary RP server
-    -- starts and what nothing else here ever changes. Restoring to anything
-    -- else would be inventing a state this resource did not find.
-    SetPlayerTeam(PlayerId(), -1)
+    -- WHAT WAS THERE, falling back to -1. "No team" is where a player on an
+    -- ordinary RP server starts, and for a long time putting that back was
+    -- the only thing this could do -- but it is an assumption, and on a
+    -- server whose own resource puts players on network teams it was a wrong
+    -- one: the arena read nothing on the way in and stamped -1 on the way
+    -- out, so leaving a round quietly cleared somebody else's team.
+    SetPlayerTeam(PlayerId(), priorTeam or -1)
+    priorTeam = nil
     NetworkSetFriendlyFireOption(true)
     SetCanAttackFriendly(ped, true, true)
 end
@@ -554,6 +574,18 @@ local function reviveForCountdown(ped)
     -- The resurrect can hand back a different handle, so nothing below may
     -- use the one that was passed in.
     local revived = PlayerPedId()
+
+    -- THE PER-PED HALF OF THE HOLD, RE-APPLIED. SetCanAttackFriendly is set
+    -- on a PED, and a resurrect can hand back a different one -- this
+    -- function's own comment three lines up says exactly that. So the flag
+    -- stayed on the corpse and the ped the player stands in for the rest of
+    -- the round never carried it, which also aimed leaveArena's release at a
+    -- ped that had nothing to release.
+    --
+    -- holdFriendlyFire is idempotent and self-guarding: it returns early
+    -- with no match, in a free-for-all, and on a server that wants friendly
+    -- fire. Calling it again costs nothing.
+    holdFriendlyFire(revived)
     ClearPedBloodDamage(revived)
 
     -- Back to exactly what the server sent them in on: full health and a
@@ -2547,6 +2579,15 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     -- second time. Nothing between the resurrect above and this line yields,
     -- so the watch cannot get a look in between the two.
     deathReported = false
+
+    -- THE HOLD IS PER-PED, AND THIS IS A NEW PED. SetCanAttackFriendly was
+    -- set on the body that walked in; NetworkResurrectLocalPlayer above hands
+    -- back a different one, and that half of the hold does not follow it. The
+    -- player-level halves (team and the network option) do survive, so the
+    -- gap is narrow -- but it is the half that stops this client's own shots
+    -- from landing on a teammate, and without this line it stays dropped for
+    -- the rest of the round while exitArena releases a ped that never held it.
+    holdFriendlyFire(ped)
 
     ClearPedBloodDamage(ped)
 

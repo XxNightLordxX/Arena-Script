@@ -119,6 +119,23 @@ function panelFor(modeKey, scoreboard) {
     return panel;
 }
 
+/* The same panel with the ladder mode's `startingKit` replaced -- `null`
+   deletes the field the way a mode that names no kit really arrives.
+
+   THE THREE ANSWERS ARE DIFFERENT ON PURPOSE, which is the whole of the two
+   tests at the bottom of this file: a list is "here is the kit", an empty
+   list is "nothing at all, deliberately", and no field is "this mode has no
+   opinion -- hand out whatever this server hands out". */
+function panelWithKit(kit) {
+    const panel = loadPanel(ROOT);
+    const snap = snapshot('gungame', []);
+    const mode = snap.config.modes.find((m) => m.key === 'gungame');
+    if (kit === null) delete mode.startingKit; else mode.startingKit = kit;
+    panel.send('open', snap);
+    panel.send('state', snap);
+    return panel;
+}
+
 console.log('==> the tier column on the scoreboard');
 
 /* Two fighters, the second of them ahead on the ladder and behind on kills
@@ -281,6 +298,33 @@ test('the host is not offered Lives Each for a mode that spends none', () => {
 
     const note = panel.text('create-lives-note');
     assert.ok(/no lives/.test(note), 'and should say why it went: ' + note);
+});
+
+test('a mode that names NO kit does not claim nobody is issued anything', () => {
+    /* Deleting `startingKit` is a documented, distinct choice, and the
+       server honours it: kitFor falls through and every fighter walks in
+       carrying this server's own supply defaults -- a plate and a couple of
+       bandages on the shipped config. The panel collapsed that into the
+       empty-list case and printed "No supplies are issued in this mode."
+       while the round handed out three items. */
+    const slots = panelWithKit(null).text('loadout-slots');
+
+    assert.ok(!/No supplies are issued in this mode/.test(slots),
+        'the screen says nobody is issued anything, and the server issues the defaults: ' + slots);
+    assert.ok(/by default/.test(slots),
+        'and it should say where what they carry comes from: ' + slots);
+});
+
+test('and one that names an EMPTY kit still says exactly that', () => {
+    /* The other half. An empty list really does mean nothing is carried,
+       and a panel that softened it into "whatever the server hands out"
+       would be wrong in the opposite direction. */
+    const slots = panelWithKit([]).text('loadout-slots');
+
+    assert.ok(/No supplies are issued in this mode/.test(slots),
+        'a mode that deliberately issues nothing should say so: ' + slots);
+    assert.ok(!/by default/.test(slots),
+        'and must not promise a fallback the server will not apply: ' + slots);
 });
 
 console.log('');

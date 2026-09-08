@@ -424,6 +424,43 @@ test('the board is inert, so it cannot swallow a click meant for the game', () =
         'the results board swallows clicks meant for the game underneath it');
 });
 
+test('a team round names the side that took it, on everybody\'s card', () => {
+    /* THE ONE FACT THE CARD DID NOT CARRY. "You Won" is about the reader,
+       the placement is about the reader, and the rows are individuals -- so
+       nothing on the board said which side had won, and a spectator, who is
+       sent this board and nothing else at the end of a round, was never told
+       how the fight they had just watched finished. */
+    const panel = panelWith(false);
+    panel.send('results', {
+        results: { won: false, winningTeam: 'red', reason: 'Match over.', kills: 0, deaths: 2 },
+    });
+
+    const text = panel.text('arena-results');
+    assert.ok(/Red/.test(text), 'the winning side is missing from the board: ' + text);
+    assert.ok(/takes it/i.test(text), 'and it should read as a result: ' + text);
+});
+
+test('and a free-for-all card carries no side at all', () => {
+    /* The server sends the field only for team modes; a panel that drew
+       something for a free-for-all would be inventing a side. */
+    const panel = panelWith(false);
+    panel.send('results', { results: { won: true, placement: 1, kills: 4, deaths: 1 } });
+
+    const text = panel.text('arena-results');
+    assert.ok(!/takes it/i.test(text), 'a free-for-all card named a winning side: ' + text);
+});
+
+test('and a side this server does not have is not drawn as one', () => {
+    /* teamByKey answers null for a key the snapshot does not carry, and the
+       line is skipped rather than drawn with a raw key in it. */
+    const panel = panelWith(false);
+    panel.send('results', { results: { won: true, winningTeam: 'nosuchteam', kills: 1, deaths: 0 } });
+
+    const text = panel.text('arena-results');
+    assert.ok(!/nosuchteam/.test(text), 'the raw key was printed on the card: ' + text);
+    assert.ok(/You Won/i.test(text), 'and the rest of the card should still be there: ' + text);
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

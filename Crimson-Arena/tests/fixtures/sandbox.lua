@@ -211,6 +211,12 @@ end
 local NATIVE_DEFAULTS = {
     GetPlayerPed = function(src) return tonumber(src) or 1 end,
     GetEntityCoords = function() return { x = 1000.0, y = 2000.0, z = 30.0 } end,
+    -- -1 IS "NO TEAM", the state a player on a server that does not use
+    -- network teams is really in. client/match.lua reads this before it moves
+    -- anybody, so a fixture that does not model teams still gets a truthful
+    -- answer rather than a nil call -- and a fixture that DOES model them
+    -- overrides this, the same as every other native here.
+    GetPlayerTeam = function() return -1 end,
 }
 
 function Sandbox.newEnv(overrides)

@@ -20,17 +20,17 @@
        84   Lobby         The NPC players walk up to
       181   Schedule      Opening hours: when the door is actually open
       219   Match         Lives, timers, player counts, win condition
-      465   Teams         The sides, and whether they may be uneven
-      612   Modes         Free-for-all and team deathmatch
-      816   DefaultMode   Which of them a new lobby opens on
-      835   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1045  UI            Panel colours, logo and title
-      1103  Permissions   Who may open a match, who may force-stop one
-      1184  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1756   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2214   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2224   Webhook       Optional: a Discord line per finished match
-     2261   Dispatch      Optional: keeping police and EMS out of the arena
+      476   Teams         The sides, and whether they may be uneven
+      631   Modes         Free-for-all and team deathmatch
+      835   DefaultMode   Which of them a new lobby opens on
+      854   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1064  UI            Panel colours, logo and title
+      1122  Permissions   Who may open a match, who may force-stop one
+      1203  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1775   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2233   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2243   Webhook       Optional: a Discord line per finished match
+     2280   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -382,10 +382,21 @@ Config.Match = {
     -- A player hurting THEMSELVES is never refused: a fall or your own
     -- grenade is not crossfire.
     --
-    -- AND IT CARRIES Config.Teams.friendlyFire. The engine gives one place
-    -- a shot can be refused at all, and this is it, so the same guard that
-    -- keeps the arena and the city apart is what keeps you from shooting
-    -- your own side. Switching this off switches that off with it.
+    -- AND IT CARRIES THE SERVER-SIDE HALF of Config.Teams.friendlyFire. The
+    -- damage packet is the one place the server can refuse a shot outright,
+    -- and this is the guard that reads it -- so the same switch that keeps
+    -- the arena and the city apart is what authoritatively keeps you from
+    -- shooting your own side.
+    --
+    -- IT DOES NOT CARRY THE OTHER TWO, and this used to say it did. Turning
+    -- this off does NOT turn friendly fire on: server/match.lua still
+    -- refuses to credit a teammate kill, and the client still puts your
+    -- whole side on one engine team with friendly fire switched off there,
+    -- which is a real refusal and not merely a scoring rule. What you lose
+    -- by switching this off is the authoritative server-side refusal -- the
+    -- one an edited client cannot talk its way past. To let teammates fight
+    -- each other, set Config.Teams.friendlyFire = true; that is the switch
+    -- all three sites read.
     --
     -- Off is the old behaviour: the bucket alone.
     crossfireGuard = {
@@ -497,8 +508,16 @@ Config.Teams = {
     autoAssignIfUnchosen = true,
 
     -- Can teammates hurt each other? Off means the SHOT is refused, not
-    -- merely that the kill goes uncredited. Config.Match.crossfireGuard is
-    -- what enforces it, so this setting does nothing with that switched off.
+    -- merely that the kill goes uncredited.
+    --
+    -- THREE PLACES ENFORCE IT and only one of them is
+    -- Config.Match.crossfireGuard: that guard refuses the damage packet on
+    -- the SERVER, which is the authoritative one. The other two hold with
+    -- the guard switched off -- a teammate kill is still never credited,
+    -- and the client still puts your side on one engine team with friendly
+    -- fire off there, so the bullets really are refused. Switching the
+    -- guard off therefore weakens this setting; it does not undo it. This
+    -- line is the switch to move.
     --
     -- WHAT "REFUSED" COVERS, exactly, because the engine decides the shape
     -- of this and not us:

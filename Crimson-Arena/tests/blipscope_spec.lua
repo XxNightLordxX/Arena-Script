@@ -71,6 +71,25 @@ local function newFixture(mutate)
         nextBlip = 1,
         streamed = { [MATE] = true, [FOE] = true, [FOE2] = true },
         printed = {},      -- every console line, so a silent failure is testable
+        -- THE ENGINE'S OWN NETWORK TEAM, remembered rather than assumed.
+        --
+        -- The getter below reads THIS and the setter writes it, so the
+        -- fixture answers what was really last set -- which is the only way
+        -- a test can tell "the exit put back what it found" from "the exit
+        -- put back what it had just written itself". -1 is "no team", where
+        -- a player on an ordinary server sits; a test that cares about a
+        -- prior team sets its own before entering.
+        --
+        -- `f.team` beside it is a different fact: what THIS RESOURCE last
+        -- wrote, nil until it writes anything, which is what the free-for-all
+        -- tests below assert on.
+        engineTeam = -1,
+        -- EVERY SetCanAttackFriendly, AS { ped, on } PAIRS. The flag alone
+        -- cannot answer the question this native raises, because it is
+        -- PER-PED and a respawn hands back a different ped: a trail reading
+        -- [1001 off] then [1002 on] is a hold that was put on one body and
+        -- taken off another.
+        friendlyCalls = {},
     }
 
     local env = Sandbox.newArenaEnv({
@@ -143,9 +162,13 @@ local function newFixture(mutate)
 
         SetEntityDrawOutlineRenderTechnique = function(group) f.technique = group end,
         ResetEntityDrawOutlineRenderTechnique = function() f.technique = nil end,
-        SetPlayerTeam = function(_player, team) f.team = team end,
+        GetPlayerTeam = function() return f.engineTeam end,
+        SetPlayerTeam = function(_player, team) f.team = team; f.engineTeam = team end,
         NetworkSetFriendlyFireOption = function(on) f.friendlyFire = on end,
-        SetCanAttackFriendly = function(_ped, on) f.canAttackFriendly = on end,
+        SetCanAttackFriendly = function(ped, on)
+            f.canAttackFriendly = on
+            f.friendlyCalls[#f.friendlyCalls + 1] = { ped = ped, on = on }
+        end,
         SetEntityDrawOutline = function(ped, on)
             f.outlineCalls[#f.outlineCalls + 1] = { ped = ped, on = on }
             if on then f.outlines[ped] = true else f.outlines[ped] = nil end
@@ -188,7 +211,10 @@ local function newFixture(mutate)
             f.outlineTicks[#f.outlineTicks + 1] = clocks[co] or 0
         end,
 
-        NetworkResurrectLocalPlayer = function() end,
+        -- A RESURRECT HANDS BACK A NEW PED, which is the whole shape of the
+        -- friendly-fire bug below: SET_CAN_ATTACK_FRIENDLY is set on a ped,
+        -- and the ped a player respawns on is not the one they died on.
+        NetworkResurrectLocalPlayer = function() f.ped = f.ped + 1 end,
         FreezeEntityPosition = function() end,
         GiveWeaponToPed = function() end,
         SetEntityHealth = function() end,
@@ -291,6 +317,18 @@ local function newFixture(mutate)
     end
 
     return f
+end
+
+--- Every SetCanAttackFriendly call as `ped:on`, in order, for a failure
+--- message that says what really happened rather than which flag was last.
+--- @param calls table[]
+--- @return string
+local function listedCalls(calls)
+    local out = {}
+    for _, call in ipairs(calls) do
+        out[#out + 1] = ('%s:%s'):format(tostring(call.ped), tostring(call.on))
+    end
+    return table.concat(out, ' ')
 end
 
 --- @param ids table -- set of server ids
@@ -1170,6 +1208,98 @@ t.test('and the resource stopping mid-round puts it back as well', function()
 
     t.equals(f.team, -1, 'a restart mid-round left the player on the arena\'s team for good')
     t.isTrue(f.friendlyFire, 'a restart mid-round left friendly fire off for good')
+end)
+
+t.test('a respawn puts the hold on the ped the player comes back on', function()
+    -- SET_CAN_ATTACK_FRIENDLY IS PER-PED and a resurrect hands back a new
+    -- one, so the half of the hold that stops THIS client's own bullets
+    -- landing on a teammate was dropped by the first death of the round and
+    -- never re-applied. Measured before the fix: the entire call trail was
+    -- [ped=1001 off], on a player who had been standing on ped 1002 since
+    -- their first respawn -- and the exit then released 1002, a ped that had
+    -- never carried it.
+    --
+    -- The player-level halves survive a respawn (SetPlayerTeam and
+    -- NetworkSetFriendlyFireOption are per-player), which is why this is a
+    -- narrow hole rather than "friendly fire came back on" -- and why the
+    -- flags alone could not see it.
+    local f = newFixture()
+    f.enterLive()
+    local entered = f.ped
+
+    f.fire('crimson_arena:client:respawn', {
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
+        scatterRadius = 0,
+    })
+    for _ = 1, 6 do f.step() end
+
+    t.isTrue(f.ped ~= entered,
+        'the fixture did not give the player a new ped, so this test measures nothing')
+
+    local held = nil
+    for _, call in ipairs(f.friendlyCalls) do
+        if call.ped == f.ped and call.on == false then held = call end
+    end
+    t.isTrue(held ~= nil,
+        ('the ped the player respawned on (%s) was never told to refuse its own side -- '
+            .. 'trail: %s'):format(tostring(f.ped), listedCalls(f.friendlyCalls)))
+end)
+
+t.test('and the exit releases the ped that is actually carrying it', function()
+    -- The other end of the same defect: releaseFriendlyFire reads
+    -- PlayerPedId() at exit, so it always aimed at the CURRENT ped -- which
+    -- was the right ped to aim at only if the hold had followed the player
+    -- there. It had not.
+    local f = newFixture()
+    f.enterLive()
+    f.fire('crimson_arena:client:respawn', {
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
+        scatterRadius = 0,
+    })
+    for _ = 1, 6 do f.step() end
+
+    local onExit = f.ped
+    f.fire('crimson_arena:client:exitArena', {})
+
+    local heldIt, releasedIt = false, false
+    for _, call in ipairs(f.friendlyCalls) do
+        if call.ped == onExit and call.on == false then heldIt = true end
+        if call.ped == onExit and call.on == true then releasedIt = true end
+    end
+    t.isTrue(releasedIt, 'the exit released some other ped than the one the player is on')
+    t.isTrue(heldIt,
+        ('the exit released a ped that never held the setting -- trail: %s')
+            :format(listedCalls(f.friendlyCalls)))
+end)
+
+t.test('and leaving puts back the network team the player was already on', function()
+    -- -1 IS AN ASSUMPTION, not a reading. The arena stamped it on the way
+    -- out without ever having asked what was there, so on a server whose own
+    -- resource puts players on network teams, walking out of a round quietly
+    -- cleared somebody else's. PLAYER::GET_PLAYER_TEAM exists, so this one
+    -- is readable -- unlike the two engine flags beside it, which have no
+    -- getter at all and stay documented assumptions.
+    local f = newFixture()
+    f.engineTeam = 7
+    f.enterLive()
+
+    t.equals(f.team, f.env.Arena.TeamIndex('crimson'), 'the hold never started')
+
+    -- THROUGH A RESPAWN, which is what makes this about the read and not
+    -- merely about the write. The hold is re-applied on the new ped every
+    -- time somebody comes back up, and a version that re-read the prior team
+    -- there would record the ARENA'S OWN side as the thing to go back to --
+    -- restoring a value it had written itself, which looks exactly like
+    -- working until somebody checks what the player walked in on.
+    f.fire('crimson_arena:client:respawn', {
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
+        scatterRadius = 0,
+    })
+    for _ = 1, 6 do f.step() end
+
+    f.fire('crimson_arena:client:exitArena', {})
+    t.equals(f.team, 7, 'the player was left on no team instead of the one they walked in on')
+    t.equals(f.engineTeam, 7, 'and the engine still has them on the arena\'s side')
 end)
 
 t.test('THE CAUSE: the outline mask is drawn with a group ped shaders implement', function()

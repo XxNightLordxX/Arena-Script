@@ -430,6 +430,14 @@ local function snapshotConfig()
             -- the one screen where the picker is sitting right above the
             -- button.
             autoAssignIfUnchosen = Config.Teams.autoAssignIfUnchosen ~= false,
+            -- WHETHER BOTH SIDES REALLY HAVE TO HAVE SOMEBODY IN THEM. The
+            -- last of Arena.TeamsAreStartable's rules the panel could not
+            -- see, and it was hardcoded there as always-on -- so a server
+            -- that had switched it off was still told to level its sides,
+            -- and a server that had it on lit Start on a lobby where one
+            -- side was empty. Sent so the panel's Start gate can be the
+            -- server's rule rather than a copy of its default.
+            requireBothTeamsOccupied = Config.Teams.requireBothTeamsOccupied ~= false,
             list = Arena.GetEnabledTeams(),
         },
 

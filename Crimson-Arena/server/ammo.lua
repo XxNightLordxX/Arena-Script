@@ -722,6 +722,26 @@ local function issueSpareRounds(ox, src, matchId, entry)
     local count = itemsFor(spare)
     if not (Arena.IsKey(item) and count > 0) then return true, 0 end
 
+    -- ONLY THE SHORTFALL, AND THAT IS WHAT STOPS A FARM.
+    --
+    -- A gun game calls this on EVERY tier change, and nothing takes loose
+    -- rounds back on a demotion -- so a player who bounced one tier boundary
+    -- collected another full batch each way. Deaths cost no lives in that
+    -- mode, so the loop was free and unbounded: climb, step off a roof,
+    -- climb again, and never run dry. Running dry is supposed to be the
+    -- thing that makes a tier weapon worth using well.
+    --
+    -- TOPPING UP IS STILL RIGHT, which is why this is a shortfall and not a
+    -- flat refusal: a climber who has fired their rounds should be re-armed
+    -- by the promotion they earned. One who has fired nothing gets nothing,
+    -- because they already have it.
+    local counted, answer = pcall(function() return ox:GetItemCount(src, item) end)
+    if counted then
+        local held = math.max(0, Arena.ToInt(answer) or 0)
+        count = count - held
+        if count <= 0 then return true, 0 end
+    end
+
     -- BOTH have to be true. pcall succeeding only means the call did not
     -- throw; ox_inventory returns false for a full inventory or an item name
     -- that does not exist.

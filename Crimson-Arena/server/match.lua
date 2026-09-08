@@ -425,7 +425,28 @@ local function creditsTier(match, killer, victim)
     -- accomplice in a two-man match is the only other stake in the pot.
     local cap = configured
     if cap > 0 then
-        local opponents = math.max(0, Arena.Count(match.players) - 1)
+        -- THE ROSTER THE ROUND STARTED WITH, NOT THE ONE LEFT STANDING.
+        --
+        -- This counted `match.players` live, on every kill -- and
+        -- ArenaLobby.Leave deletes a departed fighter's row, so the divisor
+        -- shrank as people walked out and the cap rose with it. The attacker
+        -- chooses when that happens.
+        --
+        -- MEASURED, END TO END: a six-man gun game with a 5,000 entry fee.
+        -- Farm three accomplices flat out and the seven-tier ladder is
+        -- exactly one credit short -- the cap works. Then two accomplices
+        -- fire leaveMatch, the roster drops to four, the floor rises from 2
+        -- to 3, and ONE more kill on a victim who was already farmed out now
+        -- credits: ladder topped, round over, the whole 30,000 pot to the
+        -- attacker. The spent count persists, so the raise RETROACTIVELY
+        -- reopens a victim the cap had closed.
+        --
+        -- Latched at the start of the round instead. What the floor exists
+        -- for is a property of the lobby that was assembled -- can a climber
+        -- reach the top against this many people -- not of who happens to be
+        -- left at the moment of a kill.
+        local roster = Arena.ToInt(match.ladderSpread) or Arena.Count(match.players)
+        local opponents = math.max(0, roster - 1)
         local height = #ladderOf(match)
 
         -- TWO VICTIMS, ALWAYS. The floor is divided by at least two however
@@ -505,6 +526,22 @@ local function payKillReward(match, killer)
     local rewards = mode.killReward
     if type(rewards) ~= 'table' then return end
 
+    -- ONE BUDGET FOR THE WHOLE PAYMENT rather than one per line, and it is
+    -- what makes the two ceilings below mean anything when a reward list
+    -- names the same supply twice. Clamping each entry on its own read the
+    -- `max` as a per-line allowance: two bandage lines of 30 against a
+    -- ceiling of 30 paid 60, five paid 150, and an operator who wanted a
+    -- better-than-even chance at one plate by writing four 25% lines got
+    -- four plates on the roll where they all came up.
+    --
+    -- SPENT ON WHAT WAS ACTUALLY HANDED OVER. A line whose chance did not
+    -- come up costs nothing, and neither does one ox_inventory refused for
+    -- want of room -- the player is not holding it, so it cannot be what
+    -- stops the next line paying.
+    local paid = {}
+    local remaining = Arena.SupplyTotalCap()
+    local capped = remaining > 0
+
     for _, entry in ipairs(rewards) do
         if type(entry) == 'table' then
             local supply = Arena.SupplyByKey(entry.key)
@@ -514,12 +551,21 @@ local function payKillReward(match, killer)
             -- the kill reward disagreed about how many of a supply a player
             -- may hold: a reward of 99999 bandages against a configured
             -- ceiling of 30 handed over 99999.
-            local count = supply
-                and (Arena.ClampInt(entry.count, 0, Arena.SupplyMax(supply)) or 0)
+            local room = supply
+                and math.max(0, Arena.SupplyMax(supply) - (paid[supply.key] or 0))
                 or 0
+            local count = supply and (Arena.ClampInt(entry.count, 0, room) or 0) or 0
+
+            -- And under `supplies.totalItems` as well, which is the ceiling
+            -- on everything together -- the one the picker enforces and this
+            -- path used to walk straight past.
+            if capped and count > remaining then count = remaining end
 
             if supply and Arena.IsKey(supply.item) and count > 0 and rolled(entry.chance) then
-                ArenaAmmo.GrantSupply(killer.src, match.id, supply.item, count)
+                if ArenaAmmo.GrantSupply(killer.src, match.id, supply.item, count) then
+                    paid[supply.key] = (paid[supply.key] or 0) + count
+                    if capped then remaining = remaining - count end
+                end
             end
         end
     end
@@ -994,11 +1040,32 @@ end
 --- results board has a full finishing order to read rather than a hole
 --- where the survivors are.
 --- @param match table
-local function assignFinalPlacements(match)
+--- @param winners table|nil -- the srcs the round was decided for, so the
+---        order agrees with the result instead of being worked out again
+local function assignFinalPlacements(match, winners)
     local unplaced = {}
     for _, player in pairs(match.players) do
         if not player.placement then unplaced[#unplaced + 1] = player end
     end
+
+    -- WHO ACTUALLY WON, FIRST, ahead of every score term below.
+    --
+    -- The round is decided by one function and ranked here by another, and
+    -- in a team mode the two ask different questions: decideOnKills crowns
+    -- the side with the most kills between them, while this ranked every
+    -- fighter individually -- so a winner on a side that out-fragged the
+    -- other could easily sit below the losing side's top fragger. Measured:
+    -- a 2v2 that crimson took 4-3 handed a crimson winner "You Won" and
+    -- "Placed #3" on the same card, under a board whose top row was the ash
+    -- player who beat them.
+    --
+    -- It cannot be avoided by ranking harder: a team win has two or more
+    -- winners and only one of them can be #1, so ANY individual ranking
+    -- contradicts the card for everybody else on the winning side. Sorting
+    -- the winning side to the top is what makes the placement mean "you were
+    -- on the side that won, and here is where you came within it".
+    local won = {}
+    for _, src in ipairs(winners or {}) do won[src] = true end
 
     -- RANKED ON THE LADDER WHERE THERE IS ONE, and that is the third reader
     -- of this question to be pointed at the same two functions. The board
@@ -1010,6 +1077,8 @@ local function assignFinalPlacements(match)
     local ladder = #ladderOf(match)
 
     table.sort(unplaced, function(a, b)
+        local aWon, bWon = won[a.src] == true, won[b.src] == true
+        if aWon ~= bWon then return aWon end
         if ladder > 0 then
             local aTier, bTier = tierScore(a), tierScore(b)
             if aTier ~= bTier then return aTier > bTier end
@@ -2033,6 +2102,10 @@ function ArenaMatch.Start(matchId)
 
     -- Last round's leavers must not score for this one.
     match.departedKills = nil
+
+    -- HOW MANY THE ROUND STARTED WITH, latched here and read by creditsTier.
+    -- See there for why counting the live roster instead was an exploit.
+    match.ladderSpread = #players
     -- Respawns carry on round-robin from where the initial placement left
     -- off.
     match.spawnCursor = #players
@@ -2352,7 +2425,7 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     end
 
     match.state = 'ended'
-    assignFinalPlacements(match)
+    assignFinalPlacements(match, winners)
     match.winners = winners
 
     local endReason = Arena.IsKey(reasonKey) and reasonKey or 'match.ended'
@@ -2421,8 +2494,16 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     local payouts = ArenaBetting.Settle(match.id, context)
     match.payouts = payouts
 
-    local _, _, sideEarnings = ArenaBetting.SettleSpectatorBets(
-        match.id, winningPick(match, winners, teamMode))
+    -- HOISTED, because two things want it now. It has always decided the
+    -- spectator side-bets; it is also the only place that works out WHICH
+    -- SIDE took a team round, and the results card never said. Everybody in
+    -- a team deathmatch -- the winners, the losers and the spectators, whose
+    -- only end-of-round message this is -- was shown a board with no mention
+    -- of the winning team on it, ordered by individual kills, whose top row
+    -- was as likely as not the losing side's best fragger.
+    local pick = winningPick(match, winners, teamMode)
+
+    local _, _, sideEarnings = ArenaBetting.SettleSpectatorBets(match.id, pick)
 
     local won, earned = {}, {}
     for _, id in ipairs(winners) do won[id] = true end
@@ -2490,6 +2571,13 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             -- payload was written, read by nothing.
             reason = locale(endReason),
             won = won[player.src] == true,
+            -- THE SIDE THAT TOOK IT, in a team mode and nowhere else -- in a
+            -- free-for-all `pick` is the winning fighter's src, which is a
+            -- different fact and is already carried by `won` and the board.
+            -- The KEY, not a label: the panel has the team list on the wire
+            -- already and draws it in the operator's own words and colour,
+            -- the same rule the scoreboard rows follow.
+            winningTeam = teamMode and pick or nil,
             placement = player.placement,
             kills = math.max(0, Arena.ToInt(player.kills) or 0),
             deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
@@ -2529,6 +2617,11 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             local results = {
                 reason = locale(endReason),
                 won = false,
+                -- Sent to a spectator for the same reason it is sent to a
+                -- fighter, only more so: this board is the whole of what
+                -- they are told, and "who won" is the one thing somebody
+                -- who just watched a round wants off it.
+                winningTeam = teamMode and pick or nil,
                 earnings = 0,
                 scoreboard = board,
             }

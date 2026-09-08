@@ -890,6 +890,24 @@ function Arena.SupplyMax(supply)
     return math.max(0, Arena.ToInt(supply.max) or 0)
 end
 
+--- The most supply items of every kind together a player may carry in, or 0
+--- when the operator set no ceiling at all.
+---
+--- ONE READER, because three places need this number and two of them did not
+--- have it. Arena.ResolveSupplies read `totalItems` inline and enforced it;
+--- Arena.StartingKitFor and the gun game's kill reward never looked at it, so
+--- a ceiling of three admitted a fifty-five-item kit and paid out past it
+--- every kill. A setting two of its three consumers ignore is not a ceiling,
+--- it is a suggestion the picker happens to honour.
+---
+--- 0 IS "NO CEILING" and is returned as 0 rather than as nil, because every
+--- caller has to ask "is there one" before subtracting anyway -- and a nil
+--- that means unlimited is one `or 0` away from meaning zero allowed.
+--- @return integer
+function Arena.SupplyTotalCap()
+    return math.max(0, Arena.ToInt(suppliesConfig().totalItems) or 0)
+end
+
 --- One enabled supply by its key, or nil.
 ---
 --- THROUGH Arena.GetEnabledSupplies rather than straight off the config
@@ -953,12 +971,28 @@ function Arena.StartingKitFor(modeKey)
         end
     end
 
+    -- UNDER THE SAME CEILING THE PICKER IS UNDER. A kit is a carry like any
+    -- other, and it was the one carry `supplies.totalItems` did not bound:
+    -- a mode naming five supplies at their own maxima walked in with
+    -- fifty-five items against an operator's ceiling of three, and the
+    -- picker -- which honours it -- could not have asked for that. Read in
+    -- catalogue order, so which supply gets the last of the allowance is a
+    -- property of the config rather than of how the mode block was typed.
+    local remaining = Arena.SupplyTotalCap()
+    local capped = remaining > 0
+
     local out = {}
     for _, supply in ipairs(Arena.GetEnabledSupplies()) do
         local asked = wanted[supply.key]
         if asked ~= nil then
             local count = Arena.ClampInt(asked, 0, Arena.SupplyMax(supply)) or 0
+            -- CLAMPED EVEN AT ZERO REMAINING, the same as in the picker and
+            -- for the same reason: reading "is there budget" as "is there
+            -- any left" stops clamping the moment it runs out, and the
+            -- supply after the one that spent it is unbounded.
+            if capped and count > remaining then count = remaining end
             if count > 0 then
+                if capped then remaining = remaining - count end
                 out[#out + 1] = {
                     key = supply.key,
                     label = supply.label or supply.key,
@@ -1017,8 +1051,9 @@ function Arena.ResolveSupplies(requested)
 
     -- 0 MEANS NO CEILING, which is why this is tracked as "is there one"
     -- plus a remaining count rather than as a number that means both.
-    local capped = (Arena.ToInt(config.totalItems) or 0) > 0
-    local remaining = capped and Arena.ToInt(config.totalItems) or 0
+    local ceiling = Arena.SupplyTotalCap()
+    local capped = ceiling > 0
+    local remaining = ceiling
 
     for _, supply in ipairs(Arena.GetEnabledSupplies()) do
         local maximum = Arena.SupplyMax(supply)
@@ -1467,7 +1502,24 @@ function Arena.TeamsAreStartable(players)
                 if not largest or count > largest then largest = count end
             end
         end
-        local allowed = Arena.ToInt(Config.Teams.maxTeamSizeDifference) or 1
+        -- FLOORED AT ZERO, the same as the number server/lobby.lua puts on
+        -- the wire for the panel. Read raw, a negative allowance is not a
+        -- stricter rule but a broken one: `largest - smallest` is never
+        -- below zero, so with -1 the comparison `0 > -1` is true and a
+        -- PERFECTLY LEVEL roster is refused as unbalanced -- 1v1, 3v3, 5v5,
+        -- every team match on the server, for ever, while free-for-all
+        -- carries on working. And 0 is a plausible typo here: two lines
+        -- below it in config.lua, `maxTeamSize = 0` means "no limit", so an
+        -- operator reaching for "no limit" on this one has already been
+        -- taught to try a number that is not a real allowance.
+        --
+        -- Clamped rather than complained about at the point of use, because
+        -- the panel was ALREADY told 0 (lobby.lua clamps its snapshot) and a
+        -- rule that disagrees with the screen is the actual defect: the host
+        -- saw two level sides, no warning, a lit Start button, and a toast
+        -- saying the sides were too lopsided. Arena.ValidateConfig names the
+        -- typo separately, at boot, where an operator can act on it.
+        local allowed = math.max(0, Arena.ToInt(Config.Teams.maxTeamSizeDifference) or 1)
         if smallest and largest and (largest - smallest) > allowed then
             return false, 'error.teams_unbalanced'
         end
@@ -3750,6 +3802,18 @@ function Arena.ValidateConfig()
         end
     end
 
+    -- A NEGATIVE TEAM ALLOWANCE. Both readers clamp it to 0 now, so nothing
+    -- breaks -- but 0 and -1 mean very different things to whoever typed it,
+    -- and the operator who typed -1 almost certainly meant "no limit". Left
+    -- unsaid they get "sides must be exactly equal" and never find out why.
+    if Config.Teams.allowUnequal == false then
+        local allowance = Arena.ToInt(Config.Teams.maxTeamSizeDifference)
+        if allowance ~= nil and allowance < 0 then
+            complain(('Config.Teams.maxTeamSizeDifference is %d. A negative allowance is read as 0 -- sides must be exactly equal. For no limit at all, set Config.Teams.allowUnequal = true.')
+                :format(allowance))
+        end
+    end
+
     -- A team mode is enabled but no team is.
     for _, mode in ipairs(Arena.GetEnabledModes()) do
         if mode.teams and #Arena.GetEnabledTeams() < 2 then
@@ -3874,6 +3938,16 @@ function Arena.ValidateConfig()
                             complain(('Config.Modes["%s"].%s is a %s. It has to be a list of { key = ..., count = ... } entries naming supplies from Config.Loadouts.supplies.items.')
                                 :format(mode.key, field, type(list)))
                         else
+                            -- WHAT THE LIST ADDS UP TO, not just what each
+                            -- line says. Both of the checks below are about
+                            -- the whole list, and both were missing while
+                            -- every per-line check was present -- so a mode
+                            -- could name the same supply four times, or five
+                            -- different ones at their own maxima, and be told
+                            -- nothing while the server quietly handed over a
+                            -- fraction of it.
+                            local seen, total = {}, 0
+
                             for index, reward in ipairs(list) do
                                 if type(reward) ~= 'table' then
                                     complain(('Config.Modes["%s"].%s entry %d is a %s -- it has to be { key = ..., count = ... }, not a bare supply key.')
@@ -3892,6 +3966,13 @@ function Arena.ValidateConfig()
                                             complain(('Config.Modes["%s"].%s gives %d %s, over that supply\'s own max of %d -- it is clamped to the max.')
                                                 :format(mode.key, field, count, tostring(reward.key), Arena.SupplyMax(supply)))
                                         end
+
+                                        if seen[supply.key] then
+                                            complain(('Config.Modes["%s"].%s names the supply "%s" more than once. The two lines share that supply\'s max of %d rather than getting one each -- write the amount you want on a single line.')
+                                                :format(mode.key, field, supply.key, Arena.SupplyMax(supply)))
+                                        end
+                                        seen[supply.key] = true
+                                        total = total + math.max(0, math.min(count or 0, Arena.SupplyMax(supply)))
                                     end
 
                                     -- A CHANCE THAT WILL NOT PARSE IS NOT
@@ -3902,6 +3983,12 @@ function Arena.ValidateConfig()
                                             :format(mode.key, field, tostring(reward.key), type(reward.chance)))
                                     end
                                 end
+                            end
+
+                            local ceiling = Arena.SupplyTotalCap()
+                            if ceiling > 0 and total > ceiling then
+                                complain(('Config.Modes["%s"].%s adds up to %d items, over Config.Loadouts.supplies.totalItems of %d -- everything past the ceiling is dropped, in catalogue order.')
+                                    :format(mode.key, field, total, ceiling))
                             end
                         end
                     end

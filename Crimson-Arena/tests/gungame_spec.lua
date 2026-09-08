@@ -2069,4 +2069,180 @@ t.test('a tier tie is broken on the capped number, not the uncapped one', functi
         'level on tiers AND on credited kills is a draw -- raw kills must not break it')
 end)
 
+-- ======================================================================
+-- 44-49. WHAT THE RE-VERIFICATION FOUND
+-- ======================================================================
+
+t.test('accomplices walking out does not raise the per-victim cap', function()
+    -- THE EXPLOIT, END TO END. The cap floor divides the ladder by the
+    -- number of OPPONENTS, and that was counted live off `match.players` --
+    -- a table ArenaLobby.Leave deletes a departed fighter's row from. So the
+    -- divisor shrank as people left and the cap rose with it, and because
+    -- the spent count persists the raise RETROACTIVELY reopened a victim the
+    -- cap had already closed. The attacker chooses when it happens, which
+    -- makes it a button rather than an accident.
+    --
+    -- Six fighters, a seven-tier ladder: five opponents gives ceil(7/5) = 2,
+    -- the shipped cap. Farm three accomplices flat out -> 6 credits, one
+    -- short of the top. Two accomplices leave: four on the roster, three
+    -- opponents, ceil(7/3) = 3, and one more kill on an already-farmed
+    -- victim tops the ladder.
+    local s = newServer()
+    s.play(6)
+    local top = s.tierCount()
+    t.equals(top, 7, 'the shipped ladder is seven tiers, which is what this arithmetic assumes')
+
+    for _, victim in ipairs({ 2, 3, 4 }) do
+        for _ = 1, 5 do s.trade(victim, 1) end
+    end
+    t.equals(s.row(1).ladderKills, 6,
+        'three victims at the shipped cap of 2 is six credits, one short of the top')
+
+    -- THE BUTTON.
+    s.fire('leaveMatch', 5)
+    s.fire('leaveMatch', 6)
+    t.isNil(s.match_().players[5], 'the fixture did not really remove the leavers')
+
+    for _ = 1, 5 do s.trade(2, 1) end
+    t.equals(s.row(1).ladderKills, 6,
+        'a victim the cap had closed must not reopen because somebody else left')
+
+    s.settle(2)
+    t.equals(s.endedWith(), nil, 'and the ladder must not be topped by it')
+end)
+
+t.test('and the latched roster still lets a small lobby reach the top', function()
+    -- THE OTHER DIRECTION, because latching the roster at the start is only
+    -- right if it is the roster the FLOOR was written for. A three-man lobby
+    -- has two opponents against seven tiers, so the floor really is four
+    -- apiece -- and it has to stay four for the whole round rather than
+    -- being recomputed away.
+    local s = newServer()
+    s.play(3)
+    t.equals(s.match_().ladderSpread, 3, 'the roster is latched when the round starts')
+
+    for round = 1, s.tierCount() do s.trade(2 + (round % 2), 1) end
+    t.equals(s.row(1).ladderKills, s.tierCount(), 'a three-man lobby can still top the ladder')
+    s.settle(2)
+    t.equals(s.endedWith(), 'match.ended_ladder', 'and the round ends on it')
+end)
+
+t.test('a supply named twice in one kill reward shares one ceiling', function()
+    -- EACH ENTRY WAS CLAMPED ON ITS OWN, so N lines naming the same supply
+    -- each drew the full `max`: two lines paid 60 bandages against a ceiling
+    -- of 30, ten lines paid 300. The validator promised "it is clamped to
+    -- the max" for a single over-large line while saying nothing at all
+    -- about the duplicate that breaks the same promise.
+    --
+    -- The sibling field startingKit has always deduplicated -- it reads the
+    -- kit in catalogue order rather than in written order -- so the two
+    -- halves of the same config disagreed about what a repeated key means.
+    local s = newServer(function(config)
+        config.Modes.gungame.killReward = {
+            { key = 'bandage', count = 99999 },
+            { key = 'bandage', count = 99999 },
+            { key = 'bandage', count = 99999 },
+        }
+    end)
+    s.play(3)
+
+    local supply
+    for _, entry in ipairs(s.config.Loadouts.supplies.items) do
+        if entry.key == 'bandage' then supply = entry end
+    end
+    assert(supply, 'the fixture cannot find the bandage supply')
+    local ceiling = s.arena.SupplyMax(supply)
+    t.isTrue(ceiling > 0, 'the bandage supply has no max, so this test measures nothing')
+
+    local before = s.ox.count(1, supply.item)
+    s.trade(2, 1)
+    local paid = s.ox.count(1, supply.item) - before
+
+    t.equals(paid, ceiling,
+        ('three lines naming one supply paid %d against a ceiling of %d'):format(paid, ceiling))
+end)
+
+t.test('and the operator is told about the duplicate rather than left to find it', function()
+    local s = newServer(function(config)
+        config.Modes.gungame.killReward = {
+            { key = 'bandage', count = 5 },
+            { key = 'bandage', count = 5 },
+        }
+    end)
+
+    local said = table.concat(s.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(said:find('more than once', 1, true) ~= nil,
+        ('the complaint should say the key is repeated -- got: %s'):format(said))
+    t.isTrue(said:find('killReward', 1, true) ~= nil,
+        ('and name the field it is in -- got: %s'):format(said))
+
+    -- QUIET ON THE SHIPPED REWARD, which names each supply once.
+    local clean = newServer()
+    local quiet = table.concat(clean.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(quiet:find('more than once', 1, true) == nil,
+        ('the shipped gun game raised a duplicate complaint: %s'):format(quiet))
+end)
+
+t.test('the total-supplies ceiling binds the mode kit and the kill reward too', function()
+    -- `supplies.totalItems` is documented as "a ceiling across ALL supplies
+    -- together, not per entry", and the loadout picker has always honoured
+    -- it. The mode kit and the kill reward did not: with a ceiling of 3, a
+    -- kit naming two supplies at their own maxima walked in holding 55 items
+    -- and one credited kill handed over 55 more -- while the picker on the
+    -- same screen was refusing anything past 3.
+    local s = newServer(function(config)
+        config.Loadouts.supplies.totalItems = 3
+        config.Modes.gungame.startingKit = {
+            { key = 'armour', count = 25 },
+            { key = 'bandage', count = 30 },
+        }
+        config.Modes.gungame.killReward = {
+            { key = 'armour', count = 25 },
+            { key = 'bandage', count = 30 },
+        }
+    end)
+    s.play(3)
+
+    --- Every supply item one fighter is holding, added up.
+    local function carried(src)
+        local total = 0
+        for _, entry in ipairs(s.config.Loadouts.supplies.items) do
+            total = total + s.ox.count(src, entry.item)
+        end
+        return total
+    end
+
+    t.equals(carried(1), 3, 'the mode kit walked past the ceiling of 3')
+
+    local before = carried(1)
+    s.trade(2, 1)
+    t.equals(carried(1) - before, 3, 'and one kill paid past it')
+end)
+
+t.test('and the operator is told when a mode names more than the ceiling allows', function()
+    local s = newServer(function(config)
+        config.Loadouts.supplies.totalItems = 3
+        config.Modes.gungame.startingKit = {
+            { key = 'armour', count = 2 },
+            { key = 'bandage', count = 5 },
+        }
+    end)
+
+    local said = table.concat(s.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(said:find('totalItems', 1, true) ~= nil,
+        ('the complaint should name the ceiling -- got: %s'):format(said))
+    t.isTrue(said:find('startingKit', 1, true) ~= nil,
+        ('and the field that is over it -- got: %s'):format(said))
+
+    -- QUIET WHEN THERE IS NO CEILING, which is what ships: 0 means no limit,
+    -- and complaining about a kit that is "over" it would fire on every
+    -- default server.
+    local clean = newServer(function(config)
+        config.Loadouts.supplies.totalItems = 0
+    end)
+    local quiet = table.concat(clean.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(quiet:find('totalItems', 1, true) == nil,
+        ('a ceiling of 0 raised a complaint: %s'):format(quiet))
+end)
+
 os.exit(t.summary())

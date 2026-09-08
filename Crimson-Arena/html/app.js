@@ -1973,6 +1973,78 @@
         return int(counts[key], 0);
     }
 
+    /* WHY THE SERVER WOULD REFUSE TO START THIS TEAM MATCH, lowercase, or
+       null when it would not.
+
+       ONE ANSWER FOR TWO SCREENS. The picker printed two loose warnings and
+       the Start button consulted none of them, so a lobby the server was
+       always going to turn down was offered with a full-strength green
+       button whose tooltip said "Send everyone into the arena": one side
+       empty, sides three against one, a side over its cap, or somebody who
+       had not picked on a server that will not pick for them. Two of those
+       four had no text anywhere on the screen at all -- the host clicked,
+       got a red toast, and had nothing to act on.
+
+       IN THE SERVER'S OWN ORDER, and it matters: ArenaMatch.Begin runs
+       assignMissingTeams first and Arena.TeamsAreStartable after it, so the
+       reason a host is shown is the reason they would actually be given.
+       Every term reads a number server/lobby.lua already puts on the wire.
+       This is the panel agreeing with the server, never deciding for it --
+       Begin refuses all of it again. */
+    function teamStartBlocker(match) {
+        if (!match || match.teams !== true) return null;
+
+        var teams = cfg().teams || {};
+        var list = arrayOf(teams.list);
+        if (list.length < 2) return 'this server has fewer than two sides switched on.';
+
+        var cap = int(teams.maxTeamSize, 0);
+        var occupied = 0;
+        var smallest = null;
+        var largest = null;
+        var freeSeats = 0;
+
+        /* OCCUPIED SIDES ONLY for the spread, which is what
+           Arena.TeamsAreStartable measures. Counting an empty third side as
+           a 0 would report every two-sided lobby on a three-team server as
+           wildly uneven. */
+        list.forEach(function (team) {
+            var count = teamCountOf(match, team.key);
+            if (count > 0) {
+                occupied += 1;
+                if (smallest === null || count < smallest) smallest = count;
+                if (largest === null || count > largest) largest = count;
+            }
+            if (cap > 0) freeSeats += Math.max(0, cap - count);
+        });
+
+        var sideless = arrayOf(match.players).filter(function (entry) {
+            return !keyOr(entry && entry.team, null);
+        }).length;
+
+        if (teams.autoAssignIfUnchosen === false && sideless > 0) {
+            return plural(sideless, 'player') + ' still without a side, and this server '
+                + 'will not pick one for them.';
+        }
+        if (cap > 0 && largest !== null && largest > cap) {
+            return 'a side is over its ' + plural(cap, 'player') + ' limit.';
+        }
+        if (cap > 0 && sideless > freeSeats) {
+            return 'more players are without a side than the sides have seats left for them.';
+        }
+        if (teams.requireBothTeamsOccupied !== false && occupied < 2) {
+            return 'both sides need a body in them.';
+        }
+        if (teams.allowUnequal === false && smallest !== null) {
+            var gap = Math.max(0, int(teams.maxTeamSizeDifference, 1));
+            if (largest - smallest > gap) {
+                return 'the sides are ' + smallest + ' against ' + largest + ', more than '
+                    + plural(gap, 'player') + ' apart.';
+            }
+        }
+        return null;
+    }
+
     function renderTeamPicker(match) {
         var host = byId('team-picker');
         if (!has(host)) return;
@@ -1989,15 +2061,9 @@
 
         var list = arrayOf(teams.list);
         var mine = keyOr(player().team, null);
-        var occupied = 0;
-        var lowest = null;
-        var highest = null;
 
         list.forEach(function (team) {
             var count = teamCountOf(match, team.key);
-            if (count > 0) occupied += 1;
-            if (lowest === null || count < lowest) lowest = count;
-            if (highest === null || count > highest) highest = count;
 
             var tile = makeEl('div', 'team-tile');
             tile.style.borderLeftColor = teamColor(team);
@@ -2049,23 +2115,22 @@
         }
 
         /* Uneven teams are legal by default -- 7v1 is a match, not an
-           error -- so the counts are stated plainly and nothing is
-           flagged. Only an operator who switched the allowance off wants
-           to see a warning here. */
-        /* AGAINST THE SERVER'S OWN ALLOWANCE, not against zero. The rule is
-           "no more than maxTeamSizeDifference apart", and warning on any
-           difference at all told a 3v2 lobby the round could not start when
-           it perfectly well could -- so a host levelled sides the server had
-           never objected to. Defaults to 1 to match the server's own
-           fallback for an unset value. */
-        var allowedGap = int(teams.maxTeamSizeDifference, 1);
-        if (teams.allowUnequal === false && list.length > 0 && highest - lowest > allowedGap) {
+           error -- so the counts are stated plainly and nothing is flagged
+           unless the server would really refuse. Warning against zero rather
+           than against the server's own allowance used to tell a 3v2 lobby
+           the round could not start when it perfectly well could, and a host
+           levelled sides the server had never objected to.
+
+           THROUGH THE SAME ANSWER THE START BUTTON USES. Two hand-written
+           warnings lived here, and they disagreed with the button above them
+           in both directions: they stayed silent on a side over its cap and
+           on a player with no side, and they told an all-unpicked lobby that
+           both sides needed a body on a server that would have split it and
+           started it perfectly happily. */
+        var refusal = teamStartBlocker(match);
+        if (refusal !== null) {
             host.appendChild(makeEl('div', 'hint',
-                'Sides are uneven (' + lowest + ' vs ' + highest + '). This server will not start a match '
-                + 'while they differ by more than ' + plural(allowedGap, 'player') + '.'));
-        }
-        if (occupied < 2) {
-            host.appendChild(makeEl('div', 'hint', 'Both sides need at least one player before the round can start.'));
+                'The round cannot start yet: ' + refusal));
         }
     }
 
@@ -2254,6 +2319,7 @@
         var onlyHost = (cfg().match || {}).onlyHostCanStart !== false;
         var mayStart = inMatch && (isHost || !onlyHost);
         var minPlayers = int((cfg().match || {}).minPlayers, 1);
+        var teamRefusal = teamStartBlocker(match);
         var blocked = null;
         if (!inMatch) blocked = 'you are watching this match, not in it.';
         else if (!mayStart) blocked = 'only the host can start it.';
@@ -2274,6 +2340,11 @@
                 ? 'the arena is shut -- it opens at ' + opensAtStart + '.'
                 : 'the arena is shut at this hour.';
         }
+        /* THE TEAM RULES, LAST, because every term above it is about
+           whether this player may ask at all and these are about whether
+           the lobby is fit to start. Everything here is a refusal
+           ArenaMatch.Begin already makes; see teamStartBlocker. */
+        else if (teamRefusal !== null) blocked = teamRefusal;
 
         var start = byId('btn-start');
         if (has(start)) {
@@ -3031,10 +3102,25 @@
                 + 'What each tier is holding is drawn when the round starts, so it is not the '
                 + 'same ladder twice.'));
 
+            /* THREE ANSWERS, NOT TWO, and the difference is the whole
+               point of them. shared/arena.lua sends `startingKit` as a list
+               when the mode names one, as an EMPTY list when the mode names
+               "nothing at all", and not at all when the mode has no opinion
+               -- in which case server/match.lua's kitFor falls through and
+               the server hands out whatever this server's own supply
+               defaults are, a plate and a couple of bandages on the shipped
+               config. Collapsing the last two into one sentence made the
+               screen say nobody is issued anything while the round handed
+               out three items. */
             var issued = startingKitText(ladderMode);
+            var noOpinion = ladderMode.startingKit === undefined
+                || ladderMode.startingKit === null;
             host.appendChild(makeEl('div', 'hint', issued !== ''
                 ? 'You are issued ' + issued + ' with it.'
-                : 'No supplies are issued in this mode.'));
+                : noOpinion
+                    ? 'This mode issues no kit of its own, so you carry whatever this server '
+                        + 'hands out by default.'
+                    : 'No supplies are issued in this mode.'));
 
             renderRestoreNote(host);
             return;
@@ -4212,6 +4298,32 @@
             textAlign: 'center',
             color: won ? 'var(--success)' : 'var(--accent-bright)'
         }));
+
+        /* WHICH SIDE TOOK IT, in the operator's own words and colour.
+
+           ABOVE THE REASON because it is the answer to the question the
+           board is opened for, and in a team mode it is a fact no other line
+           on the card carries: "You Won" is about the reader, the placement
+           is about the reader, and the rows are individuals. A spectator got
+           none of the three -- they are shown this board and nothing else at
+           the end of a round -- so the fight they had just watched finished
+           with the panel declining to say who had won it.
+
+           Only ever drawn in a team mode: the server sends this field for
+           those and leaves it off everywhere else, so a free-for-all and an
+           older server both look exactly as they did. */
+        var winningTeam = teamByKey(keyOr(results.winningTeam, null));
+        if (winningTeam) {
+            root.appendChild(styled(makeEl('div', null,
+                String(winningTeam.label || winningTeam.key) + ' takes it'), {
+                marginTop: '0.3rem',
+                textAlign: 'center',
+                fontFamily: 'var(--font-display)',
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                color: teamColor(winningTeam)
+            }));
+        }
 
         /* HOW THE ROUND ENDED, in words, above the numbers. The server
            renders the sentence -- the panel has no locale file -- and it is

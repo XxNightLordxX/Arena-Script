@@ -56,6 +56,13 @@ function snapshot(options) {
         crimson: 1,
         ash: 1,
         inMatch: true,
+        allowUnequal: true,
+        maxTeamSizeDifference: 1,
+        requireBothTeamsOccupied: true,
+        /* The roster rows. Only the Start-button tests below need them --
+           the team term that reads them is "who has not picked a side" --
+           so everything else leaves them empty, as it always has. */
+        players: [],
     }, options || {});
 
     return {
@@ -71,14 +78,21 @@ function snapshot(options) {
             loadouts: { allowChoose: false, chooser: 'player', weapons: [], armor: { allowChoose: false, options: [], default: 100 } },
             teams: {
                 allowChoose: true,
-                allowUnequal: true,
-                maxTeamSizeDifference: 1,
+                allowUnequal: o.allowUnequal,
+                maxTeamSizeDifference: o.maxTeamSizeDifference,
                 maxTeamSize: o.maxTeamSize,
                 autoAssignIfUnchosen: o.autoAssignIfUnchosen,
-                list: [
-                    { key: 'crimson', label: 'Crimson', color: '#c81020', enabled: true },
-                    { key: 'ash', label: 'Ash', color: '#8a8a8a', enabled: true },
-                ],
+                requireBothTeamsOccupied: o.requireBothTeamsOccupied,
+                list: o.thirdTeam
+                    ? [
+                        { key: 'crimson', label: 'Crimson', color: '#c81020', enabled: true },
+                        { key: 'ash', label: 'Ash', color: '#8a8a8a', enabled: true },
+                        { key: 'ember', label: 'Ember', color: '#d07010', enabled: true },
+                    ]
+                    : [
+                        { key: 'crimson', label: 'Crimson', color: '#c81020', enabled: true },
+                        { key: 'ash', label: 'Ash', color: '#8a8a8a', enabled: true },
+                    ],
             },
             ui: {},
         },
@@ -97,10 +111,17 @@ function snapshot(options) {
         matches: [{
             id: 'm1', arenaKey: 'a', arenaLabel: 'Arena',
             modeKey: 'tdm', modeLabel: 'Team Deathmatch', state: o.state,
-            teams: true, playerCount: o.crimson + o.ash, hostName: 'You',
+            /* THE ROSTER SIZE, which is not always the two side counts added
+               up: a lobby where nobody has picked has bodies in it and zero
+               on each side, and the minPlayers term reads this. */
+            teams: true,
+            playerCount: o.playerCount === undefined ? o.crimson + o.ash : o.playerCount,
+            hostName: 'You',
             pot: 0, entryFee: 0,
-            teamCounts: { crimson: o.crimson, ash: o.ash },
-            players: [],
+            teamCounts: o.thirdTeam
+                ? { crimson: o.crimson, ash: o.ash, ember: o.ember || 0 }
+                : { crimson: o.crimson, ash: o.ash },
+            players: o.players,
         }],
         leaderboard: [],
     };
@@ -298,6 +319,115 @@ test('and zero means unlimited, the way it does everywhere else', () => {
     const panel = board(9, 0);
     assert.strictEqual(panel.node('create-submit').disabled, false,
         'maxConcurrentMatches 0 was read as "no matches allowed"');
+});
+
+console.log('==> a lobby the server would refuse is not offered a green button');
+
+/** The Start button, after the panel has drawn `options`. */
+function startButton(options) {
+    return opened(options).node('btn-start');
+}
+
+test('a legal lobby still lights Start', () => {
+    const start = startButton({ crimson: 1, ash: 1 });
+    assert.strictEqual(start.disabled, false,
+        'a startable lobby was refused: ' + start.title);
+    assert.ok(/send everyone into the arena/i.test(String(start.title)),
+        'the tooltip changed on a lobby nothing is wrong with: ' + start.title);
+});
+
+test('THE BUG: one side empty was offered a full-strength Start', () => {
+    /* Arena.TeamsAreStartable refuses `occupied < 2` with
+       'error.need_two_teams', and the host clicked a green button whose
+       tooltip promised the round would start. */
+    const start = startButton({ crimson: 2, ash: 0 });
+    assert.strictEqual(start.disabled, true, 'Start was lit on a lobby with one side empty');
+    assert.ok(/both sides/i.test(String(start.title)),
+        'and it did not say why: ' + start.title);
+});
+
+test('and sides further apart than the server allows', () => {
+    const start = startButton({ allowUnequal: false, maxTeamSizeDifference: 1, crimson: 3, ash: 1 });
+    assert.strictEqual(start.disabled, true, 'Start was lit on a 3v1 the server refuses');
+    assert.ok(/3 against 1|1 against 3/.test(String(start.title)),
+        'and it did not say what the sides are: ' + start.title);
+});
+
+test('and a side over its cap, which had no text anywhere on the screen', () => {
+    const start = startButton({ maxTeamSize: 2, crimson: 3, ash: 1 });
+    assert.strictEqual(start.disabled, true, 'Start was lit on a side over its cap');
+    assert.ok(/limit/i.test(String(start.title)), 'and it did not say why: ' + start.title);
+});
+
+test('and a player with no side on a server that will not pick for them', () => {
+    /* The sharpest miss: the panel already reads autoAssignIfUnchosen and
+       greys out READY UP for this exact rule, and Start was left out of the
+       same pass. */
+    const start = startButton({
+        autoAssignIfUnchosen: false,
+        crimson: 1, ash: 1,
+        players: [
+            { id: 1, team: 'crimson' },
+            { id: 2, team: 'ash' },
+            { id: 3, team: false },
+        ],
+    });
+    assert.strictEqual(start.disabled, true, 'Start was lit with somebody still without a side');
+    assert.ok(/without a side/i.test(String(start.title)),
+        'and it did not say why: ' + start.title);
+});
+
+test('and the picker says the same thing the button does', () => {
+    /* Two hand-written warnings used to live in the picker and the button
+       consulted neither, so the screen and the control could disagree. They
+       read one answer now. */
+    const panel = opened({ maxTeamSize: 2, crimson: 3, ash: 1 });
+    assert.ok(/limit/i.test(panel.text('team-picker')),
+        'the picker said nothing about a side over its cap: ' + panel.text('team-picker'));
+});
+
+test('and an all-unpicked lobby the server WOULD split is not warned about', () => {
+    /* The opposite sign, and it was there too: with autoAssign ON and
+       nobody having picked, assignMissingTeams splits the roster and Begin
+       starts it -- while the picker printed "Both sides need at least one
+       player before the round can start." */
+    const panel = opened({
+        autoAssignIfUnchosen: true,
+        crimson: 0, ash: 0,
+        playerCount: 2,
+        requireBothTeamsOccupied: false,
+        players: [
+            { id: 1, team: false },
+            { id: 2, team: false },
+        ],
+    });
+    assert.strictEqual(panel.node('btn-start').disabled, false,
+        'Start was refused on a lobby the server would have split and started: '
+            + panel.node('btn-start').title);
+    assert.ok(!/both sides/i.test(panel.text('team-picker')),
+        'the picker warned about sides the server does not care about: ' + panel.text('team-picker'));
+});
+
+test('an EMPTY third side is not counted into how far apart the sides are', () => {
+    /* Arena.TeamsAreStartable measures the spread across OCCUPIED sides.
+       Counting an empty third team as a 0 would report every two-sided lobby
+       on a three-team server as wildly uneven -- 2v2 read as "0 against 2"
+       -- and refuse a round the server starts happily. */
+    const start = startButton({
+        thirdTeam: true,
+        allowUnequal: false,
+        maxTeamSizeDifference: 0,
+        crimson: 2, ash: 2, ember: 0,
+        playerCount: 4,
+    });
+    assert.strictEqual(start.disabled, false,
+        'a level 2v2 was refused because a third side was empty: ' + start.title);
+});
+
+test('and a server that does not require both sides occupied is not told to level them', () => {
+    const start = startButton({ requireBothTeamsOccupied: false, crimson: 2, ash: 0 });
+    assert.strictEqual(start.disabled, false,
+        'Start was refused for a rule this server has switched off: ' + start.title);
 });
 
 console.log('');

@@ -93,8 +93,13 @@
                     <span class="field-label">Lives Each</span>
                     <input id="create-lives" type="number" min="1" step="1">
                     <p id="create-lives-hint" class="hint"></p>
-                    <div id="create-lives-note" class="hint hidden"></div>
                 </div>
+
+                <!-- OUTSIDE THE ROW, because it is what REPLACES the row. It
+                     sat inside it, and the one thing that hides the row is a
+                     mode with no lives -- so the sentence explaining where
+                     the row went was hidden by the row going. -->
+                <div id="create-lives-note" class="hint hidden"></div>
 
                 <!-- THE RADAR, here beside Lives Each rather than in the
                      lobby, because it is the same kind of thing: a rule of

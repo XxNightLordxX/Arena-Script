@@ -735,4 +735,129 @@ t.test("and a drop that lands once the round has ENDED is left to RecordMatch", 
         'a drop after the round ended was recorded here as well as by RecordMatch')
 end)
 
+-- ======================================================================
+-- WHICH SIDE TOOK IT
+-- ======================================================================
+
+t.test('a team round says on the card which side won it', function()
+    -- THE ONE FACT THE BOARD DID NOT CARRY. Everything on the results card
+    -- is about the reader -- "You Won", their placement, their kills -- and
+    -- the rows are individuals. A spectator is sent this board and nothing
+    -- else at the end of a round, so the fight they had just watched
+    -- finished with the panel declining to say who had won it.
+    local server = newServer(function(config)
+        config.Match.winCondition = 'score_limit'
+        config.Match.scoreLimit = 2
+        config.Match.lives = 9
+    end)
+    -- 1 and 3 are crimson, 2 and 4 are ash.
+    server.play(4, true)
+
+    server.kill(2, 1)
+    server.revive(2)
+    server.kill(4, 3)
+    server.revive(4)
+    server.settle(3)
+
+    t.equals(listed(server.winners()), '1,3', 'the fixture did not produce a crimson win')
+
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        local card = server.resultOf(src)
+        t.isTrue(card ~= nil, ('fighter %d was sent no results card at all'):format(src))
+        t.equals(card.winningTeam, 'crimson',
+            ('fighter %d was not told which side took the round'):format(src))
+    end
+end)
+
+t.test('and a free-for-all is told nothing, because there is no side to name', function()
+    -- `winningPick` answers the winning FIGHTER's src in a free-for-all,
+    -- which is a different fact and one the card already carries twice over.
+    -- Sending it under a field the panel reads as a team key would have the
+    -- panel looking up team "3" and drawing whatever it found.
+    local server = newServer()
+    server.play(3)
+
+    server.kill(2, 1)
+    server.kill(3, 1)
+    server.settle(3)
+
+    local card = server.resultOf(1)
+    t.isTrue(card ~= nil, 'the winner was sent no results card at all')
+    t.isNil(card.winningTeam, 'a free-for-all put something in the winning-side field')
+end)
+
+t.test('and no winner in a team round is not a side either', function()
+    -- A draw has no winners, so there is nothing to name -- and naming one
+    -- would be the card asserting a result the server did not reach.
+    local server = newServer(function(config) config.Match.lives = 1 end)
+    server.play(4, true)
+
+    -- Both sides wiped in the same tick: `evaluate` finds no side standing.
+    server.kill(1, 2)
+    server.kill(3, 4)
+    server.kill(2, 1)
+    server.kill(4, 3)
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_draw', 'the fixture did not produce a draw')
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        local card = server.resultOf(src)
+        if card then
+            t.isNil(card.winningTeam,
+                ('fighter %d was told a side won a drawn round'):format(src))
+        end
+    end
+end)
+
+t.test('and a winner is never handed a placement below somebody who lost', function()
+    -- The round is decided on the SIDE's total kills and the board was
+    -- ranked on the individual's, so the two asked different questions: a
+    -- winner on the side that out-fragged the other could sit below the
+    -- losing side's top fragger. "You Won · Placed #3" on one card, over a
+    -- board whose top row is somebody who lost.
+    --
+    -- It cannot be ranked away: a team win has two or more winners and only
+    -- one of them can be #1. Sorting the winning side to the top is what
+    -- makes the placement mean "you were on the side that won, and here is
+    -- where you came within it".
+    local server = newServer(function(config) config.Match.lives = 9 end)
+    server.play(4, true)
+
+    -- Ash's fighter 2 out-frags everybody: three kills on fighter 1.
+    for _ = 1, 3 do
+        server.kill(1, 2)
+        server.revive(1)
+    end
+    -- Crimson takes the round 4-3 between them, on two fighters.
+    server.kill(4, 1)
+    server.revive(4)
+    server.kill(4, 1)
+    server.revive(4)
+    server.kill(4, 3)
+    server.revive(4)
+    server.kill(4, 3)
+    server.revive(4)
+
+    server.expire()
+    server.settle(3)
+
+    t.equals(listed(server.winners()), '1,3', 'the fixture did not produce a crimson win')
+
+    local best = nil
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        local card = server.resultOf(src)
+        t.isTrue(card ~= nil, ('fighter %d was sent no results card'):format(src))
+        if card.won ~= true then
+            if best == nil or card.placement < best then best = card.placement end
+        end
+    end
+
+    for _, src in ipairs({ 1, 3 }) do
+        local card = server.resultOf(src)
+        t.isTrue(card.won == true, ('fighter %d should be a winner'):format(src))
+        t.isTrue(card.placement < best,
+            ('a winner was placed #%d, below a loser at #%d'):format(card.placement, best))
+    end
+end)
+
 os.exit(t.summary())

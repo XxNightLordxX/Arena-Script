@@ -314,6 +314,7 @@ files['client/'] = {
         -- it. See OUTLINE_TECHNIQUE in client/match.lua.
         'SetEntityDrawOutlineRenderTechnique',
         'ResetEntityDrawOutlineRenderTechnique',
+        'GetPlayerTeam',
         'SetPlayerTeam',
         'NetworkSetFriendlyFireOption',
         'SetCanAttackFriendly',

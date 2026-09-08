@@ -416,4 +416,108 @@ t.test('the scoreboard on the wire carries the side each fighter is on', functio
     t.isTrue(entered[1] ~= entered[2], 'and two on opposite sides were sent the same one')
 end)
 
+-- ======================================================================
+-- THE NEGATIVE ALLOWANCE THAT MADE EVERY TEAM MATCH UNSTARTABLE
+-- ======================================================================
+
+--- A roster of `perSide` fighters on each of the first two enabled teams.
+--- @param env table
+--- @param perSide integer
+--- @return table[] players
+local function levelRoster(env, perSide)
+    local teams = env.Arena.GetEnabledTeams()
+    local players, src = {}, 0
+    for index = 1, 2 do
+        for _ = 1, perSide do
+            src = src + 1
+            players[#players + 1] = { src = src, team = teams[index].key }
+        end
+    end
+    return players
+end
+
+t.test('a negative maxTeamSizeDifference does not make level sides unstartable', function()
+    -- `largest - smallest` is never below zero, so a raw negative allowance
+    -- refuses `0 > -1` -- which is EVERY team match, at every roster size,
+    -- for ever, while free-for-all carries on working. The typo is a
+    -- plausible one: two lines below it in config.lua, `maxTeamSize = 0`
+    -- means "no limit", so an operator reaching for "no limit" here has
+    -- already been taught to try a number that is not a real allowance.
+    for _, junk in ipairs({ -1, -5, '-1', -0.5 }) do
+        local env = Sandbox.newArenaEnv({})
+        env.Config.Teams.allowUnequal = false
+        env.Config.Teams.maxTeamSizeDifference = junk
+
+        for _, perSide in ipairs({ 1, 3, 5 }) do
+            local ok, reason = env.Arena.TeamsAreStartable(levelRoster(env, perSide))
+            t.isTrue(ok, ('%dv%d with maxTeamSizeDifference = %s was refused: %s')
+                :format(perSide, perSide, tostring(junk), tostring(reason)))
+        end
+
+        -- AND IT STILL REFUSES WHAT IT SHOULD. A clamp that let everything
+        -- through would pass the loop above and mean nothing.
+        local teams = env.Arena.GetEnabledTeams()
+        local lopsided = {
+            { src = 1, team = teams[1].key },
+            { src = 2, team = teams[1].key },
+            { src = 3, team = teams[2].key },
+        }
+        local ok, reason = env.Arena.TeamsAreStartable(lopsided)
+        t.isTrue(ok == false and reason == 'error.teams_unbalanced',
+            ('2v1 should still be refused at an allowance of %s -- got %s / %s')
+                :format(tostring(junk), tostring(ok), tostring(reason)))
+    end
+end)
+
+t.test('and the number the panel is told is the number the rule uses', function()
+    -- THE ACTUAL DEFECT was the disagreement, not the value. server/lobby.lua
+    -- has always clamped its snapshot field to 0; the rule read the raw
+    -- number -- so the host saw two level sides, no warning on the screen,
+    -- a lit Start button, and a toast saying the sides were too lopsided.
+    -- There was nothing on screen to act on because there was nothing wrong.
+    for _, junk in ipairs({ -1, -4 }) do
+        local env = Sandbox.newArenaEnv({})
+        env.Config.Teams.allowUnequal = false
+        env.Config.Teams.maxTeamSizeDifference = junk
+
+        local onTheWire = math.max(0, env.Arena.ToInt(env.Config.Teams.maxTeamSizeDifference) or 1)
+        t.equals(onTheWire, 0, 'the fixture is not reproducing the snapshot clamp')
+
+        -- The rule agreeing with it means a gap of exactly `onTheWire` is
+        -- allowed and one of `onTheWire + 1` is not.
+        local teams = env.Arena.GetEnabledTeams()
+        local ok = env.Arena.TeamsAreStartable({
+            { src = 1, team = teams[1].key },
+            { src = 2, team = teams[2].key },
+        })
+        t.isTrue(ok, ('a gap of 0 must be allowed when the panel is told 0 (allowance %s)')
+            :format(tostring(junk)))
+    end
+end)
+
+t.test('and the operator is told the negative number is being read as zero', function()
+    local env = Sandbox.newArenaEnv({})
+    env.Config.Teams.allowUnequal = false
+    env.Config.Teams.maxTeamSizeDifference = -1
+
+    local said = table.concat(env.Arena.ValidateConfig() or {}, '\n')
+    t.isTrue(said:find('maxTeamSizeDifference', 1, true) ~= nil,
+        ('the complaint should name the setting -- got: %s'):format(said))
+    t.isTrue(said:find('read as 0', 1, true) ~= nil,
+        ('and say what the resource does with it -- got: %s'):format(said))
+    t.isTrue(said:find('allowUnequal', 1, true) ~= nil,
+        ('and name the switch that really means "no limit" -- got: %s'):format(said))
+
+    -- QUIET ON A CONFIG THAT IS RIGHT, including 0 -- which is a real
+    -- allowance ("sides must be exactly equal") and not a typo.
+    for _, fine in ipairs({ 0, 1, 3 }) do
+        local clean = Sandbox.newArenaEnv({})
+        clean.Config.Teams.allowUnequal = false
+        clean.Config.Teams.maxTeamSizeDifference = fine
+        local quiet = table.concat(clean.Arena.ValidateConfig() or {}, '\n')
+        t.isTrue(quiet:find('maxTeamSizeDifference', 1, true) == nil,
+            ('an allowance of %d raised a complaint: %s'):format(fine, quiet))
+    end
+end)
+
 os.exit(t.summary())

@@ -1272,19 +1272,23 @@ end)
 -- 24-29. THE PATHS NOTHING REACHED
 -- ======================================================================
 
-t.test('the mode still ships OFF, and its ladder is a real one', function()
-    -- THE GUARD THAT WAS DELETED. Every test in this file runs a config
-    -- nobody has -- gun game switched on -- and that is only defensible
-    -- while the shipped config really does ship it off. Without this,
-    -- flipping one word in config.lua turns the mode on for every operator
-    -- and all 86 spec files pass.
+t.test('the mode ships ON, and its ladder is a real one', function()
+    -- IT USED TO SHIP OFF, and this test used to be the guard on that: every
+    -- test in this file switches gun game on, which was only defensible
+    -- while the shipped config really did ship it off, so the assertion here
+    -- was `enabled == false`.
+    --
+    -- The operator has turned it on. That makes the guard's original job
+    -- disappear -- the config every test in this file runs is now the config
+    -- operators actually have, which is strictly better -- and leaves the
+    -- second half, which matters more than it did: a mode that is ON and
+    -- broken is broken for everybody, immediately, rather than the first
+    -- time somebody opts in.
     local shipped = Sandbox.shippedConfig()
-    t.equals(shipped.Modes.gungame.enabled, false,
-        'gun game now ships ON -- every other test in this file runs a config nobody has')
+    t.equals(shipped.Modes.gungame.enabled, true,
+        'gun game was switched back off -- if that is deliberate, this test is the place to say so')
 
-    -- AND WHAT SHIPS IS PLAYABLE. A mode that is off and broken is a mode
-    -- that breaks the first time an operator turns it on, which is the whole
-    -- reason this file exists.
+    -- AND WHAT SHIPS IS PLAYABLE, which is now the whole of this test's job.
     t.isTrue(type(shipped.Modes.gungame.gunGameTiers) == 'table'
         and #shipped.Modes.gungame.gunGameTiers > 1,
         'the shipped ladder needs more than one tier')

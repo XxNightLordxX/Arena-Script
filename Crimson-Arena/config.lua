@@ -22,15 +22,15 @@
       219   Match         Lives, timers, player counts, win condition
       476   Teams         The sides, and whether they may be uneven
       631   Modes         Free-for-all and team deathmatch
-      835   DefaultMode   Which of them a new lobby opens on
-      854   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1064  UI            Panel colours, logo and title
-      1122  Permissions   Who may open a match, who may force-stop one
-      1203  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1775   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2242   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2252   Webhook       Optional: a Discord line per finished match
-     2289   Dispatch      Optional: keeping police and EMS out of the arena
+      837   DefaultMode   Which of them a new lobby opens on
+      856   Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1066  UI            Panel colours, logo and title
+      1124  Permissions   Who may open a match, who may force-stop one
+      1205  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1777   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2244   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2254   Webhook       Optional: a Discord line per finished match
+     2291   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -664,14 +664,16 @@ Config.Modes = {
     -- pool when the round starts. The shape of the climb is the same every
     -- time; the guns on it are not.
     --
-    -- SHIPPED OFF. Nothing about it is broken; turning it on is this one
-    -- word. It is off because a server should choose its modes rather than
-    -- inherit them.
+    -- SHIPPED ON, at the operator's own instruction. It ran switched off for
+    -- a long time -- a server should choose its modes rather than inherit
+    -- them -- and everything below was built and tested against that. The
+    -- one word is here; setting it back to false is the whole of turning it
+    -- off again.
     -- ==================================================================
     ['gungame'] = {
         label = 'Gun Game',
         description = 'Climb the tiers. Every kill is a better weapon, every death costs you one.',
-        enabled = false,
+        enabled = true,
         -- A ladder is climbed by one player, so it is won by one player.
         teams = false,
         icon = 'fas fa-arrow-up-9-1',

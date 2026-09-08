@@ -72,11 +72,27 @@ function ArenaUI.Notify(description, notifyType)
     end
 end
 
+--- Whether the admin tablet is on screen. Declared here rather than beside
+--- its own section below because both ArenaUI.Open and ArenaUI.Close have to
+--- be able to shut it, and both are defined above that section.
+local adminOpen = false
+
+--- Shuts the tablet, if it is up. Assigned further down, next to the rest of
+--- the tablet; forward-declared so the two functions below can call it.
+local closeAdmin
+
 --- Fetches the snapshot first and only then takes focus: a panel that opens
 --- before it has anything to render shows an empty frame with the mouse
 --- already captured, and a failed fetch would leave that frame permanent.
 function ArenaUI.Open()
     if isOpen or isOpening then return end
+
+    -- ONE SCREEN AT A TIME, and the tablet gives way here for the same reason
+    -- the panel gives way to it: SetNuiFocus is global state with no stack.
+    -- Without this, pressing E at the lobby ped with the tablet up drew the
+    -- panel underneath an opaque full-screen modal.
+    closeAdmin()
+
     isOpening = true
 
     local token = closeToken
@@ -106,7 +122,21 @@ end
 --- ONE FOCUS, SHARED. SetNuiFocus is global state with no stack, so the
 --- tablet closes the panel rather than layering on top of it -- see the note
 --- at the top of this file.
-local adminOpen = false
+---
+--- SHUT BY ANYTHING THAT SHUTS THE PANEL, and that is not tidiness.
+--- ArenaUI.Close releases NUI focus unconditionally and the round start calls
+--- it on every fighter -- so an admin who was queued for a match with the
+--- tablet up was dropped into a live round behind an opaque full-screen
+--- modal, with no mouse to press its Close button and no key that reached it.
+--- The only way out was to run /arenaadmin again.
+--- ASSIGNED, NOT DECLARED, because it is a LOCAL forward-declared above --
+--- `function closeAdmin()` here would read as a new top-level function, and
+--- REFERENCE.md's function tables (and the spec that checks them) count those.
+closeAdmin = function()
+    if not adminOpen then return end
+    adminOpen = false
+    ArenaUI.Send('adminClose')
+end
 
 --- @param payload table -- the first snapshot, so the screen has something
 ---        to draw before its own refresh comes back
@@ -136,6 +166,10 @@ end)
 --- releasing focus we do not hold costs nothing and failing to release
 --- focus we do hold costs the player their character.
 function ArenaUI.Close()
+    -- THE TABLET GOES WITH IT. The focus release below is unconditional, so a
+    -- tablet left drawn here is one nothing can click.
+    closeAdmin()
+
     -- Nothing to say if it was not open. Without this guard every ESC press
     -- outside the arena, and every defensive Close() on a path that may or
     -- may not have opened anything, would send the server a message.
@@ -362,8 +396,11 @@ register('spectatorBet', function(data)
 end)
 
 register('adminClose', function()
-    adminOpen = false
-    ArenaUI.Send('adminClose')
+    -- THROUGH closeAdmin, so the screen is shut in one place. The release is
+    -- unconditional and outside it: letting go of focus we do not hold costs
+    -- nothing, and failing to let go of focus we DO hold costs the player
+    -- their character.
+    closeAdmin()
     SetNuiFocus(false, false)
 end)
 

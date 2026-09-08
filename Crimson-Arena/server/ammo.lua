@@ -2702,10 +2702,19 @@ function ArenaAmmo.AllStashes(cb, scanned)
         return finish(names, #names)
     end
 
+    -- THE PREFIX IS BEING USED AS A PATTERN, NOT AS TEXT. In a LIKE, `_`
+    -- matches any single character and `%` matches any run of them -- and the
+    -- shipped prefix is `crimson_arena_`, which is three wildcards. So the
+    -- query also matched names like `crimsonXarenaY...`, and any such row was
+    -- then treated as an arena stash: re-registered under an owner sliced out
+    -- of its name, and its contents shown on the tablet. Escaped so the
+    -- comment above -- "finds them all and nothing else" -- is true.
+    local pattern = prefix:gsub('([%%_\\])', '\\%1') .. '%'
+
     local sent = pcall(function()
         exports.oxmysql:query(
             'SELECT name, owner FROM ox_inventory WHERE name LIKE ? ORDER BY lastupdated DESC',
-            { prefix .. '%' },
+            { pattern },
             function(result)
                 if type(result) ~= 'table' then
                     local names = fromMemory()
@@ -2718,10 +2727,23 @@ function ArenaAmmo.AllStashes(cb, scanned)
                     if Arena.IsKey(stash) then
                         local citizenid = Arena.IsKey(row.owner) and row.owner
                             or stash:sub(#prefix + 1)
-                        local remembered = known[stash] ~= nil
-                        known[stash] = nil
-
+                        -- FORGOTTEN FROM `known` ONLY WHEN IT IS ACTUALLY
+                        -- APPENDED, and that ordering is the whole of a real
+                        -- bug. The line below drops rows past the read limit;
+                        -- clearing `known` before it meant such a row was
+                        -- taken off the memory list AND left off the answer,
+                        -- so the backstop a few lines down could no longer
+                        -- put it back.
+                        --
+                        -- Which cost exactly the person this screen exists
+                        -- for: a player whose kit is stuck in escrow, on a
+                        -- server with sixty more recently-touched stashes,
+                        -- was not listed at all -- and the counters did not
+                        -- hint at it either, because from here it looked like
+                        -- everything picked had been opened.
                         if #names < STASH_SCAN_LIMIT then
+                            local remembered = known[stash] ~= nil
+                            known[stash] = nil
                             names[#names + 1] = {
                                 citizenid = citizenid,
                                 stash = stash,
@@ -2789,7 +2811,25 @@ end
 function ArenaAmmo.QueueReturn(citizenid, stash)
     if not (Arena.IsKey(citizenid) and Arena.IsKey(stash)) then return false end
 
-    owed[citizenid] = stash
+    -- AND IT IS THE STASH THIS RESOURCE WOULD HAVE MADE FOR THEM.
+    --
+    -- The name is derived from the citizen id, so the caller's copy of it is
+    -- not information -- it is only a chance to be wrong. Unchecked, an admin
+    -- payload naming any inventory in the database put that inventory on the
+    -- sweep's list, and the tablet's next refresh re-registered it as an
+    -- 'Arena Belongings' stash under a caller-chosen owner and printed its
+    -- contents. Nothing was ever MOVED -- ArenaAmmo.ReturnLeftovers works out
+    -- the stash name for itself and ignores the stored one -- but a foreign
+    -- stash being re-registered and read is not something an arena should do
+    -- at all, and it happened on every refresh from then on.
+    local expected = stashFor(citizenid)
+    if stash ~= expected then
+        ArenaLog('door: refused to queue %s as %s\'s belongings -- that is not the stash this ' ..
+            'arena would have made for them.', tostring(stash), tostring(citizenid))
+        return false
+    end
+
+    owed[citizenid] = expected
     ArenaLog('door: %s\'s stash (%s) is queued -- it will be handed over the next time they are seen.',
         tostring(citizenid), tostring(stash))
     return true

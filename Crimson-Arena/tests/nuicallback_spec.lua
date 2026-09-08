@@ -536,4 +536,96 @@ t.test('while a real one reaches the page', function()
     t.equals(last.data.label, 'GET READY')
 end)
 
+-- ========================================================================
+-- THE ADMIN TABLET IS A SCREEN YOU CAN GET OUT OF
+--
+-- ONE FOCUS, NO STACK. SetNuiFocus is global state, so the tablet and the
+-- panel take turns rather than layering -- and the tablet is a fixed opaque
+-- modal covering most of the viewport. A tablet still drawn after focus has
+-- been released is not a screen with a bug in it; it is a blindfold over
+-- somebody standing in a live round.
+-- ========================================================================
+
+local OPEN_ADMIN = 'crimson_arena:client:openAdmin'
+local CLOSE_PANEL = 'crimson_arena:client:closePanel'
+
+--- Every NUI message of one action, oldest first.
+local function messages(f, action)
+    local out = {}
+    for _, message in ipairs(f.sent) do
+        if message.action == action then out[#out + 1] = message end
+    end
+    return out
+end
+
+t.test('opening the tablet takes focus and shuts the panel', function()
+    local f = newPanel()
+    f.UI.Open()
+    t.isTrue(f.lastFocus().hasFocus, 'the panel never took focus, so this proves nothing')
+
+    f.fire(OPEN_ADMIN, { matches = {} })
+
+    t.equals(#messages(f, 'adminOpen'), 1, 'the tablet was never drawn')
+    t.isTrue(f.lastFocus().hasFocus, 'the tablet was opened without focus to click it with')
+end)
+
+t.test('THE BUG: the round starting left the tablet drawn with no focus', function()
+    -- An admin can be QUEUED for the round they are watching, and
+    -- server/match.lua sends every fighter a closePanel the moment it starts.
+    -- That releases NUI focus unconditionally -- and the tablet had no part
+    -- in it, so the admin was dropped into a live round behind a full-screen
+    -- modal, with no mouse to press its Close button. Running /arenaadmin
+    -- again was the only way out.
+    local f = newPanel()
+    f.fire(OPEN_ADMIN, { matches = {} })
+    t.equals(#messages(f, 'adminClose'), 0, 'the tablet closed itself on the way up')
+
+    f.fire(CLOSE_PANEL)
+
+    t.isFalse(f.lastFocus().hasFocus, 'focus was not released, so this proves nothing')
+    t.equals(#messages(f, 'adminClose'), 1,
+        'focus went away and the tablet stayed on screen over a live round')
+end)
+
+t.test('and opening the panel does not draw it underneath the tablet', function()
+    -- The same rule pointed the other way. style.css says the two are never
+    -- on screen together, and only one direction was actually enforced --
+    -- so pressing E at the lobby ped with the tablet up put the panel
+    -- behind an opaque modal.
+    local f = newPanel()
+    f.fire(OPEN_ADMIN, { matches = {} })
+
+    f.UI.Open()
+
+    t.equals(#messages(f, 'adminClose'), 1, 'the panel opened underneath the tablet')
+    t.isTrue(f.lastFocus().hasFocus, 'and the panel was left without focus')
+end)
+
+t.test('and closing a tablet that is not up says nothing at all', function()
+    -- ArenaUI.Close runs defensively on paths that may never have opened
+    -- anything. A close that announces itself every time would send a message
+    -- at every one of them.
+    local f = newPanel()
+    f.UI.Open()
+    f.UI.Close()
+
+    t.equals(#messages(f, 'adminClose'), 0,
+        'an ordinary panel close sent an adminClose for a tablet that was never up')
+end)
+
+t.test('and the page\'s own Close button still works', function()
+    local f = newPanel()
+    f.fire(OPEN_ADMIN, { matches = {} })
+
+    t.isTrue(f.post('adminClose', {}), 'no callback is registered for adminClose')
+    t.isFalse(f.lastFocus().hasFocus, 'the tablet was closed with focus still held')
+
+    -- And the screen is not left half-shut: a second close is a no-op rather
+    -- than a second message.
+    local before = #messages(f, 'adminClose')
+    f.UI.Close()
+    t.equals(#messages(f, 'adminClose'), before,
+        'the tablet was closed twice, so one of the two shut nothing')
+end)
+
 os.exit(t.summary())

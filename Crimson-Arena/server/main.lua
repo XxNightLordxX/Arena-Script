@@ -56,6 +56,20 @@ local RATE = {
     admin = 500,
 }
 
+--- The refresh each admin is currently waiting on, by server id.
+---
+--- THE STASH SWEEP IS ASYNCHRONOUS AND CAN TAKE SECONDS. Nothing sequenced
+--- two of them, and the tablet applies every payload it is sent -- so an
+--- admin who refreshed against a slow database and then clicked into a match
+--- had the first scan answer afterwards and throw them back out to the match
+--- list, drawn from rows several seconds old. A match aborted in between
+--- still showed as live, and still offered a Stop button for it.
+---
+--- UP HERE rather than beside pushAdmin, because the disconnect handler --
+--- which is the only thing that drops an entry -- sits between the two.
+--- @type table<number, number>
+local adminScan = {}
+
 -- ======================================================================
 -- ARGUMENT READERS
 --
@@ -577,6 +591,12 @@ AddEventHandler('playerDropped', function()
     -- costs nothing.
     ArenaAmmo.Reclaim(src, 'disconnected')
 
+    -- The tablet's refresh ticket is keyed by source too, and only an admin
+    -- who has opened the screen ever has one. Dropping it also means a scan
+    -- still in flight for them is discarded on arrival rather than sent to
+    -- whoever holds that id next.
+    adminScan[src] = nil
+
     -- Last, and always: the rate-limit history is keyed by source and
     -- nothing else drops it, so skipping this leaks a table per player who
     -- has ever connected.
@@ -806,8 +826,17 @@ local function pushAdmin(src, matchId)
     local matches = adminMatches()
     local focused = Arena.IsKey(matchId) and adminMatch(matchId) or nil
 
+    -- STAMPED BEFORE THE READ, CHECKED AFTER IT. Only the newest ask for
+    -- this admin is allowed to draw; an older one that answers late is
+    -- dropped where it stands rather than painting a stale screen over a
+    -- fresh one.
+    local ticket = (adminScan[src] or 0) + 1
+    adminScan[src] = ticket
+
     local total, read = 0, 0
     ArenaAmmo.AllStashes(function(rows)
+        if adminScan[src] ~= ticket then return end
+
         TriggerClientEvent('crimson_arena:client:adminState', src, {
             matches = matches,
             focused = focused,
@@ -913,9 +942,42 @@ onClient('crimson_arena:server:adminRevive', RATE.admin, function(src, data)
     if not match then return refuse(src, 'error.not_in_match') end
 
     local row = match.players[target]
-    if row then row.alive = true end
+
+    -- A REVIVE IS NOT A RESURRECTION INTO THE ROUND, and `alive` used to be
+    -- flipped with no look at either.
+    --
+    -- Arena.IsEliminated is exactly `alive ~= true and lives <= 0`, so
+    -- setting the flag put a fighter the round had already finished with back
+    -- into every winner-selection path in server/match.lua. Two things
+    -- followed, both silent. The round could no longer END by last-man-
+    -- standing, because somebody who is not in the arena and cannot be shot
+    -- was being counted as standing -- and with roundTimeSeconds = 0 there is
+    -- no clock to break the deadlock either, so the match simply ran for
+    -- ever. Then, once the real fighters had eliminated each other, that
+    -- spectator was the last one standing: crowned, recorded as the winner,
+    -- and paid the pot out of everybody else's stakes.
+    --
+    -- SO THE TWO HALVES ARE SPLIT. The medical revive happens for anybody --
+    -- that is what the button says, and picking somebody up off the floor is
+    -- never the wrong thing to do. The ROUND standing is restored only for a
+    -- fighter the round has lives left for, and only while it is still being
+    -- fought.
+    local eliminated = Arena.IsEliminated(row)
+    if row and not eliminated and match.state == 'live' then
+        row.alive = true
+    end
+
     ArenaDispatch.Revive(target)
-    ArenaLog('%s revived %s from the admin tablet', ArenaPlayerName(src), ArenaPlayerName(target))
+    ArenaLog('%s revived %s from the admin tablet%s', ArenaPlayerName(src), ArenaPlayerName(target),
+        eliminated and ' -- they are out of the round and stay out' or '')
+
+    -- SAID TO THE ADMIN, because a button that does half of what its label
+    -- says and reports nothing is a button nobody can trust. They pressed
+    -- Revive on somebody the round is done with; they are entitled to know
+    -- that is what happened.
+    if eliminated then
+        ArenaNotifyKey(src, 'notify.revived_but_out', 'inform', ArenaPlayerName(target))
+    end
 
     pushAdmin(src, match.id)
 end)

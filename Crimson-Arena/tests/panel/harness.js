@@ -109,6 +109,8 @@ function loadPanel(root) {
     const nodes = {};
     const posted = [];
     const listeners = {};
+    /** Handlers app.js binds to the document itself -- keydown, pointerdown. */
+    const docListeners = {};
 
     const context = {
         document: {
@@ -138,7 +140,18 @@ function loadPanel(root) {
                 });
                 return node;
             },
-            addEventListener() {},
+            /*
+             * REAL, and it used to be a no-op.
+             *
+             * app.js binds ESC and the audio unlock to the DOCUMENT rather
+             * than to a node, so every one of those handlers was registered
+             * into nothing: a test could not press a key, and the ESC path --
+             * the only way out of a screen whose Close button is unreachable
+             * -- had no coverage at all.
+             */
+            addEventListener(type, fn) {
+                (docListeners[type] = docListeners[type] || []).push(fn);
+            },
             activeElement: null,
             body: makeNode('body'),
             /* THE ROOT ELEMENT, because a REAL snapshot has a theme on it.
@@ -201,6 +214,20 @@ function loadPanel(root) {
         /** Delivers a NUI message in the shape FiveM sends it. */
         send(action, data) {
             (listeners.message || []).forEach((fn) => fn({ data: { action, data } }));
+        },
+        /**
+         * Presses a key, the way a player does. Dispatched to the DOCUMENT,
+         * because that is where app.js listens for them.
+         * @returns {boolean} whether anything was listening at all
+         */
+        key(name) {
+            const handlers = docListeners.keydown || [];
+            let prevented = false;
+            handlers.forEach((fn) => fn({
+                key: name,
+                preventDefault() { prevented = true; },
+            }));
+            return prevented;
         },
         /** @returns {object} the node, created on demand like the real DOM lookup */
         node(id) { return nodes[id] || (nodes[id] = makeNode(id)); },

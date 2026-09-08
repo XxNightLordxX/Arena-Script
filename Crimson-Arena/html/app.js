@@ -5091,6 +5091,23 @@
 
     document.addEventListener('keydown', function (event) {
         if (event.key !== 'Escape' && event.key !== 'Esc') return;
+
+        /* THE TABLET FIRST, because it is the screen on top when it is up --
+           and because it used to have no key at all. This handler returned
+           early on `!state.open`, which is the PANEL's flag, so ESC did
+           nothing whatever while the tablet was drawn. Its Close button was
+           the only way out, and a tablet that had lost NUI focus had no way
+           out at all.
+
+           Posted rather than hidden here: Lua owns the focus release, and a
+           screen that hides itself while the mouse stays captured costs the
+           player their character. */
+        if (admin.open) {
+            event.preventDefault();
+            post('adminClose', {});
+            return;
+        }
+
         if (!state.open) return;
         event.preventDefault();
         closePanel();

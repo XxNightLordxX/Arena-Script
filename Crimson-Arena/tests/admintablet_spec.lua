@@ -56,7 +56,7 @@ local function newArena(admins, mutate)
     --- HELD IN A BOX RATHER THAN AS A BARE LOCAL, so `server.owe` can replace
     --- the list. Assigning a field on the returned table looks like it works
     --- and changes nothing: the double closes over the local, not the field.
-    local owedBox, returned, queued = { rows = {} }, {}, {}
+    local owedBox, returned, queued = { rows = {}, pending = {} }, {}, {}
 
     local env = Sandbox.newArenaEnv({
         exports = qbx.exports,
@@ -69,7 +69,7 @@ local function newArena(admins, mutate)
             sent[#sent + 1] = { event = event, target = target, payload = payload }
         end,
         RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
-        AddEventHandler = function() end,
+        AddEventHandler = function(name, fn) netEvents['on:' .. name] = fn end,
         RegisterCommand = function(name, fn) netEvents['cmd:' .. name] = fn end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         -- Well past every rate bucket on every call: a throttled event looks
@@ -108,6 +108,18 @@ local function newArena(admins, mutate)
                 -- callback never running -- with no error to catch, because
                 -- the query was ACCEPTED. `stall` is that state.
                 if owedBox.stall then return end
+
+                -- HELD, NOT ANSWERED, when the test wants two scans in
+                -- flight at once. The real one goes to a database: a second
+                -- ask can overtake the first, and which of them draws the
+                -- screen is the whole question.
+                if owedBox.defer then
+                    owedBox.pending[#owedBox.pending + 1] = function()
+                        if scanned then scanned(owedBox.found or #owedBox.rows, #owedBox.rows) end
+                        cb(owedBox.rows)
+                    end
+                    return
+                end
 
                 -- SYNCHRONOUS OTHERWISE, ASYNCHRONOUS IN PRODUCTION. The real
                 -- one goes to the database; this answers straight away, which
@@ -171,6 +183,14 @@ local function newArena(admins, mutate)
     end
 
     function server.step() threads.step(); threads.step() end
+
+    --- Drops one player the way FiveM does, through the real handler.
+    function server.dropPlayer(src)
+        local handler = netEvents['on:playerDropped']
+        if not handler then error('nothing handles playerDropped', 2) end
+        env.source = src
+        handler()
+    end
     function server.revived() return netEvents.revived or {} end
     function server.returned() return returned end
     function server.queued() return queued end
@@ -187,6 +207,23 @@ local function newArena(admins, mutate)
     function server.stallStashes()
         owedBox.stall = true
     end
+
+    --- Holds every stash scan open instead of answering it, so a test can
+    --- decide the order they come back in.
+    function server.deferStashes()
+        owedBox.defer = true
+    end
+
+    --- Answers one held scan, oldest first.
+    --- @return boolean whether there was one to answer
+    function server.answerStash(index)
+        local waiting = table.remove(owedBox.pending, index or 1)
+        if not waiting then return false end
+        waiting()
+        return true
+    end
+
+    function server.pendingStashes() return #owedBox.pending end
     function server.log() return table.concat(console, '\n') end
 
     --- Every client event of one name, newest last.
@@ -685,6 +722,129 @@ t.test('and a player who is not an admin still gets neither half', function()
     t.isNil(s.lastNamed('openAdmin'), 'the command opened the tablet for a non-admin')
     t.equals(#s.sentNamed('adminState'), before,
         'a non-admin got the stash sweep pushed at them anyway')
+end)
+
+-- ======================================================================
+-- A REVIVE IS NOT A RESURRECTION INTO THE ROUND
+-- ======================================================================
+
+t.test('THE BUG: reviving an ELIMINATED fighter put them back in the running', function()
+    -- Arena.IsEliminated is exactly `alive ~= true and lives <= 0`, so
+    -- flipping the flag alone put a fighter the round had already finished
+    -- with back into every winner-selection path in server/match.lua -- while
+    -- standing outside the arena, unkillable, and not fighting.
+    --
+    -- Two things followed. The round could no longer END by last-man-
+    -- standing, because a spectator was being counted as standing; and once
+    -- the real fighters had eliminated each other, that spectator was the
+    -- last one left, crowned, and paid the pot.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    s.step()
+
+    local row = s.lobby.Get(id).players[2]
+    row.alive = false
+    row.lives = 0
+    t.isTrue(s.env.Arena.IsEliminated(row), 'fighter 2 is not eliminated, so this proves nothing')
+
+    s.fire('adminRevive', 1, { target = 2 })
+
+    t.isTrue(s.env.Arena.IsEliminated(s.lobby.Get(id).players[2]),
+        'an eliminated fighter was put back into the running from the tablet -- they can now '
+        .. 'be crowned and paid the pot without firing a shot')
+end)
+
+t.test('and is still picked up off the floor, because that is what the button says', function()
+    -- The two halves are separate on purpose. Standing somebody up medically
+    -- is never the wrong thing to do; putting them back into a round that has
+    -- finished with them is.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    s.step()
+
+    local row = s.lobby.Get(id).players[2]
+    row.alive = false
+    row.lives = 0
+
+    s.fire('adminRevive', 1, { target = 2 })
+    t.equals(s.revived()[1], 2, 'the medical script was never told')
+end)
+
+t.test('and a fighter with lives LEFT is still put back into the round', function()
+    -- The control. A fix that simply stopped touching `alive` would pass the
+    -- test above and turn the button into a no-op for everybody it is for.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    s.step()
+    s.match.OnDeath(2, 1)
+
+    local row = s.lobby.Get(id).players[2]
+    t.isFalse(row.alive, 'fighter 2 is not down, so this proves nothing')
+    t.isTrue((row.lives or 0) > 0, 'and they are out of lives, which is the other test')
+
+    s.fire('adminRevive', 1, { target = 2 })
+    t.isTrue(s.lobby.Get(id).players[2].alive, 'the roster still says they are down')
+end)
+
+-- ======================================================================
+-- AND A SLOW REFRESH DOES NOT PAINT OVER A NEW ONE
+-- ======================================================================
+
+t.test('THE BUG: a stash scan that answered late threw the admin out of the match', function()
+    -- The stash sweep is a database read and can take seconds. Nothing
+    -- sequenced two of them and the tablet applies every payload it is sent
+    -- -- so an admin who refreshed against a slow database and then clicked
+    -- into a match had the first scan answer afterwards, with `focused` nil
+    -- and match rows several seconds old. A match aborted in between still
+    -- showed as live, and still offered a Stop button for it.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.deferStashes()
+
+    s.fire('adminState', 1, {})              -- scan 1: the match list
+    s.fire('adminState', 1, { matchId = id }) -- scan 2: one match, opened
+    t.equals(s.pendingStashes(), 2, 'the fixture did not hold both scans')
+
+    s.answerStash(2)   -- the NEWER one draws
+    t.isNotNil(s.lastNamed('adminState').payload.focused, 'the newer scan drew nothing')
+
+    s.answerStash(1)   -- and the older one, arriving late, must not
+
+    t.isNotNil(s.lastNamed('adminState').payload.focused,
+        'a stale scan threw the admin back out to the match list')
+end)
+
+t.test('and an ordinary refresh still draws', function()
+    -- The control: a ticket that refused everything would pass the test above
+    -- and leave the screen permanently frozen on its first draw.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.deferStashes()
+
+    s.fire('adminState', 1, {})
+    t.isTrue(s.answerStash(1), 'there was no scan to answer')
+    t.isNotNil(s.lastNamed('adminState'), 'the refresh drew nothing at all')
+end)
+
+t.test('and a scan still in flight when its admin leaves is dropped', function()
+    -- The ticket is keyed by server id, and server ids are recycled. A scan
+    -- answering after its admin has gone would otherwise be sent to whoever
+    -- holds that id next.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.deferStashes()
+
+    s.fire('adminState', 1, {})
+    local before = #s.sentNamed('adminState')
+
+    s.dropPlayer(1)
+    s.answerStash(1)
+
+    t.equals(#s.sentNamed('adminState'), before,
+        'a scan was pushed at a server id whose admin had already left')
 end)
 
 os.exit(t.summary())

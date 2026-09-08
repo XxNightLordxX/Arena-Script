@@ -1,3 +1,5 @@
+// Crimson Arena: how the panel behaves. Screens, forms, live updates.
+
 /*
     crimson_arena/html/app.js
 
@@ -52,18 +54,6 @@
 (function () {
     'use strict';
 
-    /* THE FOLDER NAME, ASKED FOR RATHER THAN ASSUMED. Every NUI callback
-       below posts to https://<resource>/<name>, and the host has to be the
-       name of the folder this resource is actually installed under -- not
-       the name it was written under. Those differ the moment anyone renames
-       the folder, and downloading the repository as a zip renames it for
-       you. GetParentResourceName() is the page asking the game which
-       resource is serving it, so the panel works under any folder name.
-
-       The fallback is for opening this page outside the game (a browser, a
-       screenshot); there the fetches go nowhere either way, and a defined
-       string keeps the rest of the file running instead of throwing on the
-       first click. */
     var RESOURCE = (typeof GetParentResourceName === 'function')
         ? GetParentResourceName()
         : 'crimson_arena';
@@ -87,49 +77,21 @@
 
     var TABS = ['matches', 'lobby', 'loadout', 'bets', 'board'];
 
-    /* Long enough to read a refusal, short enough that a burst of them
-       clears before the player wants the screen back. */
     var TOAST_MS = 5000;
     var TOAST_MAX = 4;
 
-    /* The overlay board is capped in CSS too; trimming here as well keeps a
-       forty-player match from building forty nodes every second. */
     var HUD_SCORE_ROWS = 10;
 
-    /* How long the end-of-match board stays up. It is drawn over gameplay
-       with NUI focus released, so there is no button on it and nobody to
-       press one: long enough to read a scoreboard, gone before the next
-       round starts. */
     var RESULTS_MS = 12000;
 
-    // ==================================================================
-    // STATE
-    //
-    // `config`, `player`, `matches` and `leaderboard` are the server's.
-    // Everything below them is this page's own: which tab is open, what
-    // the player has typed but not yet sent. A snapshot never clears the
-    // second group, or every broadcast would wipe a half-built loadout.
-    // ==================================================================
-
     var state = {
-        /* The host's radar choice for the match they are creating or
-           editing. null until they touch it, so the operator default applies
-           until then rather than 'off' pretending to be a choice. Seeded
-           from the match itself once a lobby is open, beside createLives. */
         createRadar: null,
-        /* Which account the player has chosen to pay from -- the entry fee
-           and their bets both. null until they pick, which the server reads
-           as "no preference" and answers with the operator's own order. */
         payAccount: null,
         open: false,
         config: null,
         player: null,
         matches: [],
         leaderboard: [],
-        /* Opening hours, as the server last sent them. Declared here and not
-           only assigned in applySnapshot: an undeclared key reads as
-           `undefined`, and every guard in this file is written to treat an
-           absent verdict as "offer it and let the server decide". */
         schedule: null,
 
         tab: 'matches',
@@ -138,39 +100,16 @@
         createMode: null,
         createFee: null,
 
-        /* Declared, and that is not a formality: without the key here it is
-           `undefined` rather than null, the `=== null` guard that seeds it
-           from config never fires, and every match is created with the
-           fallback -- one life -- whatever the operator's default says and
-           whatever the host picked before touching the box. */
         createLives: null,
-        /* The win condition the host has picked, or null until the snapshot
-           tells us what this server's default is. Same shape as createLives
-           and createRound beside it: null means "not seeded yet", not "none". */
         createWin: null,
-        /* The gun-game ladder the host is building, as { [classKey]: rungs }.
-           Empty means "every class on its own default", which is what a host
-           who never touches the rows runs -- and what the server reads a nil
-           plan as, so the two agree without either having to know the
-           numbers. */
         createTiers: {},
-        /* The kill limit the host has named, or null until the snapshot says
-           what this server opens on. Same shape as createLives beside it. */
         createLimit: null,
         createRound: null,
 
-        /* The match the create form was last seeded from. Keyed on the id so
-           the seed happens once on becoming host, not on every broadcast --
-           re-seeding each push would overwrite the host mid-edit. */
         seededFromMatch: null,
 
-        /* The match the browser has highlighted. Bets and spectating read
-           it, so it survives a re-render of the list. */
         selectedMatchId: null,
 
-        /* The FIREARMS filter, and only that -- melee is its own section on
-           that screen and has no tabs of its own. A key that is no longer on
-           offer reads as 'all' rather than as an empty list. */
         loadoutCategory: 'all',
         /* [{ key, ammo, ammoType }] -- the unsaved draft, in SEND ORDER,
            which is the order Arena.ResolveLoadout walks it in. Firearms and
@@ -188,40 +127,17 @@
         draftWeapons: [],
         draftSupplies: null,
         loadoutDirty: false,
-        /* Posted and not yet answered. The server's answer is the next
-           snapshot -- it pushes one whether it accepted the loadout or
-           refused it -- so this is cleared there and nowhere else. */
         loadoutSaving: false,
 
         betPick: null,
-        /* WHICH MATCH THE PICK WAS MADE FOR. The Bets tab follows the
-           focused match, and the focus moves on its own -- clicking another
-           card, being placed in a match, starting to watch one -- while the
-           pick stayed put. Backing fighter #7 on one match and then looking
-           at another left the chips with nothing highlighted and Place Bet
-           lit anyway, posting a pick that match has never heard of; the
-           server refuses it, so no money moved, but the player was handed a
-           rejection with nothing on screen to explain it. In a team mode the
-           key exists in BOTH matches, so it did not even look wrong -- the
-           carried pick simply became the selection for a match nobody had
-           chosen it for.
-           Paired with the pick rather than reset by the two places that move
-           the focus, because a third does not touch selectedMatchId at all. */
         betPickMatchId: null,
         betAmount: null,
 
         hud: null,
         hudVisible: false,
 
-        /* What the last snapshot said about the state of the match this
-           player is in. Only the sound reads it: it is how a start is heard
-           once rather than on every snapshot that repeats the same word. */
         lastMatchState: null
     };
-
-    // ==================================================================
-    // SMALL HELPERS
-    // ==================================================================
 
     function byId(id) {
         return document.getElementById(id);
@@ -243,8 +159,6 @@
         while (node.firstChild) node.removeChild(node.firstChild);
     }
 
-    /* The one place a string from the wire becomes a node. Everything
-       player-authored goes through here or through .textContent. */
     function makeEl(tag, className, text) {
         var node = document.createElement(tag);
         if (className) node.className = className;
@@ -269,15 +183,10 @@
         return Array.isArray(value) ? value : [];
     }
 
-    /* Lua's `false` for "no match" / "no team" arrives as boolean false,
-       not null, so an ordinary falsy check is the right one everywhere a
-       key is read out of the player block. */
     function keyOr(value, fallback) {
         return (typeof value === 'string' && value !== '') ? value : fallback;
     }
 
-    /* '1 player' and '2 players', because '1 player(s)' is a form, not a
-       sentence, and this panel is read by somebody who has never seen it. */
     function plural(count, one, many) {
         var n = int(count, 0);
         return String(n) + ' ' + (n === 1 ? one : (many || (one + 's')));
@@ -288,16 +197,6 @@
         return value === '' ? '' : value.charAt(0).toUpperCase() + value.slice(1);
     }
 
-    /* ------------------------------------------------------------------
-       PLAIN ENGLISH FOR THE KEYS ON THE WIRE
-
-       `winner_takes_all`, `last_standing` and `countdown` are how config and
-       the server spell these; they are not how a player reads them. An
-       unknown key falls back to ITSELF rather than to a blank -- a mode an
-       operator added after this file was written should look unpolished, not
-       invisible.
-       ------------------------------------------------------------------ */
-
     function labelFor(map, key, fallback) {
         if (typeof key === 'string' && Object.prototype.hasOwnProperty.call(map, key)) {
             return map[key];
@@ -306,7 +205,6 @@
         return fallback === undefined ? '' : fallback;
     }
 
-    /* Short enough for the badge on a match card. */
     var STATE_BADGE = {
         lobby: 'Open',
         countdown: 'Starting',
@@ -314,7 +212,6 @@
         ended: 'Finished'
     };
 
-    /* The same four states with room to say what they mean. */
     var STATE_TEXT = {
         lobby: 'Waiting for players',
         countdown: 'Starting now',
@@ -322,26 +219,16 @@
         ended: 'Finished'
     };
 
-    /* Written as a clause so it can be dropped into a sentence about the
-       pot: 'It all goes into the pot: the winner takes it.' */
     var PAYOUT_TEXT = {
         winner_takes_all: 'the winner takes the lot',
         per_kill: 'it is split by kills scored'
     };
 
-    /* The same rule again, short enough for the big figure it sits under in
-       the bets summary. */
     var PAYOUT_SHORT = {
         winner_takes_all: 'Winner takes all',
         per_kill: 'Split by kills'
     };
 
-    /* The rung dropdown built for each weapon class, by class key.
-       HELD RATHER THAN LOOKED UP. These are built by the panel and have no
-       ids of their own, so the alternative is querySelector -- which couples
-       the panel to a DOM feature its own test harness does not implement, and
-       made the whole picker untestable. A map is what the code wanted anyway:
-       the rows are rebuilt in one place and read in one place. */
     var tierSelects = {};
 
     var WIN_CONDITION_TEXT = {
@@ -350,59 +237,25 @@
         score_limit: 'first to the kill limit'
     };
 
-    /* THE SAME THREE RULES, SAID IN TEAM WORDS. Nothing about the round
-       changes between these two maps: the server has always scored a team
-       mode by SIDE -- Config.Match.winCondition is read through the same
-       three evaluators either way, and each of them sums the side's kills and
-       counts the sides still standing rather than the players. What the
-       wording changes is whether a host can tell that from the dropdown.
-
-       "Last one standing" in a 4v4 is actively misleading -- it reads as a
-       rule about the last PLAYER alive, which is not what happens: a side is
-       out when its last member is, and the other side wins with three of
-       them still on their feet. */
     var WIN_CONDITION_TEAM_TEXT = {
         last_standing: 'last team standing',
         most_kills: 'team with the most kills when the clock runs out',
         score_limit: 'first team to the kill limit'
     };
 
-    /* Which of the two a given mode is described in. `teams` comes off the
-       mode entry in the snapshot (Arena.GetEnabledModes sends it), so this
-       answers for a mode being CREATED as well as for one being played. */
     function winWords(teamed) {
         return teamed === true ? WIN_CONDITION_TEAM_TEXT : WIN_CONDITION_TEXT;
     }
 
-    /* THE CONDITIONS THAT SPEND NO LIVES, which is Arena.WinConditionSpendsLives
-       said again on this side of the wire. Both rounds that end on a COUNT --
-       first to the kill limit, and most kills when the clock runs out -- have
-       to keep everybody in the fight until the count decides it: eliminate
-       people and the round ends on the last one standing with the count never
-       read. Only "last one standing" spends a life.
-
-       Kept as a list, and not as `!== 'score_limit'`, because that is the
-       exact test both ends used and it is what quietly answered "spends
-       lives" for most kills. */
     var WIN_CONDITIONS_WITHOUT_LIVES = {
         score_limit: true,
         most_kills: true
     };
 
-    /* @param key string -- a win condition key
-       @return boolean */
     function winSpendsLives(key) {
         return WIN_CONDITIONS_WITHOUT_LIVES[key] !== true;
     }
 
-    /* " · 3 lives", or nothing at all where the round does not spend them.
-       A gun game, a kill limit and most kills all leave that number exactly
-       where it started, so an admin reading it to decide who is nearly out
-       is reading a constant. The server resolves the rule onto the match and
-       sends it; absent, the number is shown as it always was.
-       @param match object -- the admin match detail
-       @param fighter object
-       @return string */
     function livesFact(match, fighter) {
         if (match && match.livesSpent === false) return '';
         return ' · ' + int(fighter.lives, 0) + ' lives';
@@ -425,10 +278,6 @@
         return String(mins) + ':' + (secs < 10 ? '0' : '') + String(secs);
     }
 
-    /* Team colours are operator-authored config, but they are still text
-       arriving in a style property. Only a plain hex literal is honoured;
-       anything else falls back to the theme border so a typo in config
-       cannot smuggle a value into CSS. */
     function teamColor(team) {
         var color = team && team.color;
         if (typeof color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(color)) return color;
@@ -452,14 +301,8 @@
                 body: JSON.stringify(body || {})
             }).catch(function () {});
         } catch {
-            /* fetch missing entirely means this page is not running inside
-               NUI (a browser preview). The panel still renders. */
         }
     }
-
-    // ==================================================================
-    // THEME
-    // ==================================================================
 
     function applyTheme(theme) {
         if (!theme || typeof theme !== 'object') return;
@@ -471,14 +314,6 @@
             }
         });
     }
-
-    // ==================================================================
-    // SNAPSHOT ACCESSORS
-    //
-    // The snapshot is trusted to exist but never trusted to be complete:
-    // the first message can arrive before anything else, and a match can
-    // disappear between the render that listed it and the click on it.
-    // ==================================================================
 
     function cfg() {
         return state.config || {};
@@ -496,24 +331,14 @@
         return state.player || {};
     }
 
-    /* OPENING HOURS, as the server last sent them. Its own block and not
-       part of `config`, because the config block is memoised on the server
-       and this is the one thing that changes with nobody doing anything. */
     function schedule() {
         return state.schedule || {};
     }
 
-    /* SHUT ONLY ON AN EXPLICIT `false`, never on `!== true`. A server
-       running an older panel, or a snapshot assembled before this field
-       existed, must go on OFFERING every control and let the server be the
-       one to refuse -- the same rule this file follows for match.betsOpen. */
     function doorsShut() {
         return schedule().open === false;
     }
 
-    /* The one sentence, so the three chains below cannot word it three ways.
-       Capitalised where a sentence is wanted and lowercased by its caller
-       where a fragment is. */
     function shutSentence() {
         var opensAt = schedule().opensAt;
         return typeof opensAt === 'string' && opensAt
@@ -529,10 +354,6 @@
         return keyOr(player().spectating, null);
     }
 
-    /* The match this player may edit the settings of, or null.
-       Only a host, and only while the lobby is still a lobby -- a round being
-       fought is not a form, and the server refuses it on both counts too.
-       This is the panel agreeing with that rather than deciding it. */
     function editableMatch() {
         if (player().isHost !== true) return null;
 
@@ -554,9 +375,6 @@
         return null;
     }
 
-    /* The match every screen other than the browser talks about: the one
-       the player is in, else the one they are watching, else whatever they
-       highlighted in the list. */
     function focusedMatch() {
         return matchById(playerMatchId())
             || matchById(spectatingMatchId())
@@ -592,10 +410,6 @@
        a bat and nothing else being made to carry two guns as well.
        ------------------------------------------------------------------ */
 
-    /* How many weapons in total, ZERO MEANING NO LIMIT -- the same reading
-       Arena.SlotsPerPlayer takes, including that junk and negative fall back
-       to two rather than clamping to zero, because clamping now means
-       unlimited and `slots = -1` is a typo. */
     function slotLimit() {
         var raw = (cfg().loadouts || {}).slots;
         if (raw === undefined || raw === null) return 2;
@@ -603,12 +417,6 @@
         return value < 0 ? 2 : value;
     }
 
-    /* WHETHER A KIND IS OFFERED AT ALL, which is the half that stayed the
-       operator's. ABSENT IS PERMISSIVE for both, the same reading the
-       resolver takes: a field nobody wrote means nobody has thought about
-       it, and silently removing every blade -- or every gun -- from an
-       arena whose catalogue still lists them is the wrong guess. Only an
-       explicit false switches a kind off. */
     function allowFirearms() {
         return (cfg().loadouts || {}).allowFirearms !== false;
     }
@@ -621,26 +429,14 @@
         return melee ? allowMelee() : allowFirearms();
     }
 
-    /* How many DIFFERENT rounds one loadout may carry. 0 -- and a snapshot
-       that does not carry the field at all -- means no cap, and every
-       control this file draws for it stays off. */
     function ammoTypeSlots() {
         return Math.max(0, int((cfg().loadouts || {}).ammoTypeSlots, 0));
     }
 
-    /* 'host' means one loadout for the whole match, picked by the host and
-       carried by everybody. Anything unrecognised falls back to 'host', the
-       same way the server's reader does -- the two must agree or the panel
-       offers a picker whose every request comes back refused. */
     function hostPicksLoadout() {
         return (cfg().loadouts || {}).chooser !== 'player';
     }
 
-    /* The mode this player's OWN match is playing, or null.
-
-       Their own match and not the selected one: this answers "what am I
-       about to be handed", and the card a player happens to have clicked on
-       the Matches tab has nothing to do with that. */
     function playerMode() {
         var id = playerMatchId();
         if (!id) return null;
@@ -648,28 +444,15 @@
         return match ? modeByKey(match.modeKey) : null;
     }
 
-    /* Whether a mode hands out its own loadout, leaving nothing to pick.
-       A ladder is the only one that does today; the question is asked of
-       the mode rather than of its key so a second such mode needs no
-       second answer here. */
     function modeIssuesLoadout(mode) {
         return !!mode && int(mode.tiers, 0) > 0;
     }
 
-    /* 'Body Armour and 5 Bandages', or '' when the mode issues no kit.
-
-       BUILT FROM THE WIRE, never spelled out here. The counts and the
-       labels are the operator's -- an operator who renamed 'Body Armour' or
-       changed 1 to 3 gets a panel that says so, and one who did not gets a
-       panel that cannot drift from the server. */
     function startingKitText(mode) {
         var parts = arrayOf(mode && mode.startingKit).map(function (entry) {
             var count = int(entry && entry.count, 0);
             var label = String((entry && entry.label) || '');
             if (count <= 0 || label === '') return '';
-            /* PLURALISED, because the label is the operator's singular noun
-               and five of them is not "5 Bandage". `plural` leaves a count
-               of one alone, which is what "1 Body Armour" needs. */
             return plural(count, label);
         }).filter(function (text) { return text !== ''; });
 
@@ -678,23 +461,7 @@
         return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
     }
 
-    /* WHY THIS PLAYER MAY NOT PICK RIGHT NOW, or null.
-       Every reason here is one server/lobby.lua's SetLoadout already
-       enforces; the panel is agreeing with it rather than deciding it, the
-       way editableMatch() above does for the create form. */
     function loadoutLockReason() {
-        /* A MODE THAT ISSUES ITS OWN LOADOUT, FIRST, because it outranks
-           every other reason here: in a ladder mode NOBODY picks -- not the
-           other players, not the host, not on a server where the host
-           normally would. ArenaLobby.SetLoadout refuses the request from
-           anybody for the same reason, and this is the panel agreeing with
-           it rather than deciding it.
-
-           SAYS WHAT THEY GET INSTEAD, in the same breath. A greyed-out
-           screen that does not say what replaced it is the panel taking
-           something away and explaining nothing -- and the two facts a
-           player wants here are exactly the two this can state: the ladder
-           is drawn fresh every round, and everybody starts level. */
         var mode = playerMode();
         if (modeIssuesLoadout(mode)) {
             var text = String(mode.label || 'This mode') + ' hands out its own weapons: a '
@@ -707,27 +474,12 @@
             return text;
         }
 
-        /* In host mode the picker belongs to the host alone. Everyone else
-           gets this instead of the sections -- Into The Round still shows
-           them exactly what they will be handed, which is the part worth
-           seeing when the choice is not theirs. */
         if (hostPicksLoadout() && player().isHost !== true) {
             return 'The host picks one loadout and everyone in the match fights with it, so every '
                 + 'player carries the same weapons. Into The Round below is exactly what you will '
                 + 'be handed when the round starts. Host a match yourself to choose it.';
         }
 
-        /* ONCE THE MATCH HAS KICKED OFF. SetLoadout accepts nothing but a
-           lobby, and the lobby countdown -- ten seconds on a fresh install --
-           leaves this panel open for the whole of it, so every save in that
-           window came back "That match has already kicked off." while the
-           picker went on offering the change. Ready Up and the team tiles
-           beside it have both made this check for a while; this tab was the
-           one that was missed.
-
-           NOT IN A MATCH IS NOT LOCKED. There is nothing to refuse yet and
-           nothing to get wrong by picking early: the lists stay, and it is
-           the note and the Save row below that say what is missing. */
         var id = playerMatchId();
         if (id) {
             var match = matchById(id);
@@ -754,41 +506,26 @@
         return loadoutLockReason() === null;
     }
 
-    /* What the money in this panel is called -- 'cash', 'bank', whatever the
-       operator's account is named. */
     function accountName() {
         return keyOr(betting().account, 'cash');
     }
 
-    /* THE ACCOUNTS A PLAYER MAY PAY FROM, in the operator's own order.
-       The names are the framework's -- 'cash', 'bank', whatever this server
-       calls them -- so they come from the snapshot and are never guessed. */
     function payAccounts() {
         return arrayOf(betting().accounts).filter(function (name) {
             return typeof name === 'string' && name.length > 0;
         });
     }
 
-    /* Whether there is a choice to make at all. One account is not a choice,
-       and a picker with a single option on it is a control that answers
-       nothing. */
     function accountChoiceOffered() {
         return payAccounts().length > 1;
     }
 
-    /* The account the player is paying from: their own pick where they have
-       made one and it is still on offer, the first otherwise -- which is what
-       the server would do with no preference, so the panel and the server
-       agree about what is about to happen. */
     function chosenAccount() {
         var list = payAccounts();
         if (list.indexOf(state.payAccount) >= 0) return state.payAccount;
         return list[0] || accountName();
     }
 
-    /* What this player holds in one account. Falls back to the single `money`
-       figure for the account the operator settles in, so a server that sends
-       no wallet still shows a number rather than zero. */
     function balanceIn(account) {
         var wallet = player().wallet;
         if (wallet && typeof wallet === 'object' && wallet[account] !== undefined) {
@@ -830,47 +567,18 @@
         return word.charAt(0).toUpperCase() + word.slice(1);
     }
 
-    /* Whether the entry pot and the side-bets settle as ONE pool. When they
-       do, Config.Betting.payout never runs at all: ArenaBetting.Settle folds
-       the entry stakes into the bet pool and returns before
-       Arena.ComputePayouts -- the only thing that reads that setting -- ever
-       sees them. */
     function poolsAreShared() {
         var block = betting().betPayout || {};
         return block.includeEntryPot === true;
     }
 
     function payoutPhrase() {
-        /* THE RULE THAT ACTUALLY RUNS. This quoted Config.Betting.payout
-           unconditionally -- "the winner takes the lot" -- on a server where
-           that code path is never reached, so the create form, the bet note
-           and the "Pot goes to" line all described a settlement that does
-           not happen. */
         if (poolsAreShared()) {
             return 'it is split between everyone who backed the winning side, in proportion to what they staked';
         }
         return labelFor(PAYOUT_TEXT, betting().payout, 'it is paid out at the end');
     }
 
-    // ------------------------------------------------------------------
-    // AMMO TYPES
-    //
-    // The snapshot carries, per weapon, `ammoTypes` -- [{ key, label }] --
-    // and `defaultAmmoType`. THE EMPTY LIST IS MEANINGFUL: it is melee, or a
-    // weapon an operator switched types off for, and it means the panel
-    // shows no type control at all. A disabled dropdown reading 'none' is
-    // worse than no dropdown, which is the same rule the ammo AMOUNT chips
-    // already follow.
-    //
-    // An empty Lua table crosses as `{}` rather than `[]`, so every read
-    // goes through arrayOf() and no caller may assume an array.
-    // ------------------------------------------------------------------
-
-    /* Whether this weapon lets a player type their own amount.
-
-       Mirrors Arena.AllowsCustomAmmo on the server, per weapon first and then
-       the global switch, so the box is never offered for a value the server
-       would refuse. */
     function allowsCustomAmmo(weapon) {
         if (weapon && weapon.allowCustomAmmo !== undefined && weapon.allowCustomAmmo !== null) {
             return weapon.allowCustomAmmo === true;
@@ -884,8 +592,6 @@
         });
     }
 
-    /* The key this weapon opens on: the server's own default when it is
-       really on offer, else the first type it lists. */
     function defaultAmmoType(weapon) {
         var types = ammoTypesOf(weapon);
         if (types.length === 0) return null;
@@ -897,8 +603,6 @@
         return types[0].key;
     }
 
-    /* The label to show for a chosen key, or null when this weapon does not
-       offer it -- which is also how callers test that a key is legal. */
     function ammoTypeLabel(weapon, key) {
         if (keyOr(key, null) === null) return null;
         var types = ammoTypesOf(weapon);
@@ -908,10 +612,6 @@
         return null;
     }
 
-    /* A key off the wire or out of a stored loadout, kept only if this
-       weapon still offers it. Same posture as the server's own
-       Arena.ResolveAmmoType: an unknown key falls back to the default
-       rather than being guessed at. */
     function resolveAmmoType(weapon, requested) {
         if (ammoTypeLabel(weapon, keyOr(requested, null)) !== null) return requested;
         return defaultAmmoType(weapon);
@@ -935,22 +635,11 @@
         return int(ammo.max, 0) <= 1;
     }
 
-    // ==================================================================
-    // DRAFT LOADOUT
-    //
-    // Seeded from the server's resolved loadout so the picker opens on
-    // what the player is actually holding.
-    // ==================================================================
-
     function seedDraft() {
         if (state.loadoutDirty) return;
 
         var loadout = player().loadout || {};
         var picks = [];
-        /* Against the shared pool, and against the kind switches -- the two
-           questions the resolver asks in that order. Seeding past either
-           would open the picker holding more than the server would give
-           back, which is the one state this screen must never show. */
         var limit = slotLimit();
         var used = 0;
 
@@ -966,9 +655,6 @@
             picks.push({
                 key: weapon.key,
                 ammo: int(entry.ammo, int(weapon.ammo && weapon.ammo.default, 0)),
-                /* The server sends back the type it resolved, so the picker
-                   opens on the round the player is actually holding rather
-                   than on the catalogue default. */
                 ammoType: resolveAmmoType(weapon, entry.ammoType)
             });
         });
@@ -1012,9 +698,6 @@
         if (index >= 0) {
             state.draftWeapons.splice(index, 1);
         } else {
-            /* AGAINST ITS OWN POOL, never against a total. An eleventh gun
-               is refused; a blade at that same moment is not, and the server
-               would have said the same. */
             var melee = isMelee(weapon);
             if (poolIsFull(melee)) {
                 toast(poolFullMessage(melee), 'warning');
@@ -1031,25 +714,10 @@
         render();
     }
 
-    /* @param quiet -- true to update the draft WITHOUT re-rendering.
-
-       Typing needs it. render() rebuilds the weapon cards from scratch, and
-       the ammo box is one of them -- so a render between keystrokes destroys
-       the element being typed into and takes the focus and the caret with
-       it. That is why the box used to accept exactly one digit before
-       needing another click: it was not the same box any more.
-
-       Safe to skip precisely here: the amount changes nothing else on the
-       screen. The slot counters read which weapons are picked, not how much
-       ammunition they carry, and the box is only drawn on a weapon that is
-       already picked. Everything that DOES change layout -- the preset
-       chips, picking a weapon -- still renders. */
     function setWeaponAmmo(key, ammo, quiet) {
         if (!canChooseLoadout()) return;
         var index = draftIndexOf(key);
         if (index < 0) {
-            /* Picking an ammo amount is a clear enough statement of intent
-               to count as picking the weapon. */
             toggleWeapon(key);
             index = draftIndexOf(key);
             if (index < 0) return;
@@ -1057,24 +725,15 @@
         state.draftWeapons[index].ammo = int(ammo, 0);
         state.loadoutDirty = true;
         if (quiet) {
-            /* The save button still has to notice. It is a static element,
-               so updating it does not disturb anything being typed into. */
             renderLoadoutSaveRow();
             return;
         }
         render();
     }
 
-    /* The type is per weapon and not global: two guns in one loadout may
-       carry different rounds, so this writes into that weapon's own draft
-       entry and nothing else. Picking a type counts as picking the weapon,
-       the same way picking an amount does. */
     function setWeaponAmmoType(key, typeKey) {
         if (!canChooseLoadout()) return;
         var weapon = weaponByKey(key);
-        /* An unknown type is a stale render clicked after a config change,
-           not a choice. Dropped rather than stored: the server would refuse
-           it anyway, and refuse it silently. */
         if (!weapon || ammoTypeLabel(weapon, typeKey) === null) return;
 
         var index = draftIndexOf(key);
@@ -1108,33 +767,20 @@
     // the exact failure the file header forbids.
     // ==================================================================
 
-    /* One entry per event, as a list of notes. `at` offsets a note from the
-       start of the sound, `to` slides the pitch across it, `len` is seconds.
-       Open rises and close falls because that is the pair a player learns
-       without being told which is which. */
     var SOUNDS = {
         open: [{ freq: 196, len: 0.07 }, { at: 0.055, freq: 294, len: 0.10 }],
         close: [{ freq: 294, len: 0.06 }, { at: 0.050, freq: 175, len: 0.11 }],
-        /* The most frequent sound in the panel, so the quietest and shortest
-           of them: a tick, not a note. */
         tab: [{ freq: 330, len: 0.045, peak: 0.022 }],
         ready: [{ freq: 392, len: 0.09 }],
         confirm: [{ freq: 262, len: 0.07 }, { at: 0.070, freq: 349, len: 0.07 }, { at: 0.140, freq: 440, len: 0.16 }],
-        /* The only one that is not a clean tone: a low sagging triangle,
-           which reads as refusal without being loud about it. */
         error: [{ freq: 155, to: 110, len: 0.20, type: 'triangle' }]
     };
 
-    /* Peak gain of one note unless it names its own. */
     var SOUND_PEAK = 0.045;
 
-    /* `blocked` is remembered so a build with no audio at all is asked
-       once rather than on every click for the rest of the session. */
     var audio = { ctx: null, blocked: false };
 
     function soundsOn() {
-        /* Absent reads as on, like every other `!== false` switch in the
-           snapshot. Only an operator writing `sounds = false` silences it. */
         return (cfg().ui || {}).sounds !== false;
     }
 
@@ -1150,29 +796,18 @@
         try {
             audio.ctx = new Ctor();
         } catch {
-            /* No output device, or a policy this build enforces at
-               construction. Either way there is no second answer to get. */
             audio.blocked = true;
         }
         return audio.ctx;
     }
 
-    /* A context is born suspended and only a gesture inside THIS PAGE may
-       resume it -- and the keypress or target interaction that opens the
-       panel goes to the game, not here. So the unlock hangs off the first
-       click or key the page itself sees, which is also why the very first
-       open of a session can be silent. Re-checked on every gesture rather
-       than once, because a browser may suspend a context again later. */
     function unlockAudio() {
         var ctx = audioContext();
         if (!ctx || ctx.state !== 'suspended') return;
         try {
             var pending = ctx.resume();
-            /* resume() rejects when the gesture was not accepted. There is
-               nothing to do about that and nowhere to report it. */
             if (pending && typeof pending.catch === 'function') pending.catch(function () {});
         } catch {
-            /* Older shapes of resume() throw where newer ones reject. */
         }
     }
 
@@ -1185,8 +820,6 @@
         osc.frequency.setValueAtTime(note.freq, start);
         if (note.to) osc.frequency.exponentialRampToValueAtTime(note.to, start + note.len);
 
-        /* An envelope rather than a raw gate: a tone switched on and off at
-           full amplitude clicks, and the click is louder than the note. */
         var gain = ctx.createGain();
         gain.gain.setValueAtTime(0.0001, start);
         gain.gain.exponentialRampToValueAtTime(peak, start + 0.012);
@@ -1204,23 +837,14 @@
         if (!notes) return;
 
         var ctx = audioContext();
-        /* A suspended context does not drop what is scheduled on it -- it
-           queues it and fires the lot the moment it resumes. Silence now
-           beats every click the player made before their first click
-           arriving as one chord. */
         if (!ctx || ctx.state !== 'running') return;
 
         try {
             for (var i = 0; i < notes.length; i++) playNote(ctx, notes[i]);
         } catch {
-            /* A closed or exhausted context is not worth a dead panel. */
         }
     }
 
-    /* A match starting is worth one confirm, at the moment it starts. Every
-       snapshot afterwards repeats the same state, and the panel is usually
-       closed by then, so this hangs off the change rather than off anything
-       on screen. */
     function announceMatchState() {
         var match = matchById(playerMatchId());
         var now = match ? keyOr(match.state, null) : null;
@@ -1228,23 +852,14 @@
         state.lastMatchState = now;
 
         if (now === was) return;
-        /* A round that went straight to live is still a start; one that came
-           through its countdown has already been announced. */
         if (now === 'countdown' || (now === 'live' && was !== 'countdown')) play('confirm');
     }
-
-    // ==================================================================
-    // TOASTS
-    // ==================================================================
 
     function toast(message, kind) {
         var host = byId('arena-toast');
         if (!has(host) || typeof message !== 'string' || message === '') return;
 
         var level = (kind === 'success' || kind === 'error' || kind === 'warning') ? kind : 'info';
-        /* Every refusal a player can see arrives here -- the server's, as a
-           'notify' relay, and this file's own -- so this is the one place
-           the error tone has to be wired to catch all of them. */
         if (level === 'error' || level === 'warning') play('error');
 
         var node = makeEl('div', 'toast ' + level, message);
@@ -1257,18 +872,7 @@
         }, TOAST_MS);
     }
 
-    // ==================================================================
-    // OPEN / CLOSE
-    //
-    // Closing ALWAYS tells Lua, whichever way it was triggered. A panel
-    // that hides itself without posting 'close' leaves the resource
-    // holding NUI focus for a menu that is no longer on screen -- the
-    // player keeps their mouse captured with nothing to click.
-    // ==================================================================
-
     function openPanel(snapshot) {
-        /* After the snapshot, not before: the switch that decides whether
-           this panel makes a sound at all arrives in it. */
         applySnapshot(snapshot);
         play('open');
         state.open = true;
@@ -1277,9 +881,6 @@
     }
 
     function hidePanel() {
-        /* Only when there was a panel to close. This also runs once at load
-           to put the page in its resting state, and a panel that greets the
-           player by closing itself is not the impression to make. */
         if (state.open) play('close');
         state.open = false;
         show(byId('arena-root'), false);
@@ -1301,12 +902,6 @@
         if (snapshot.player) state.player = snapshot.player;
         if (Array.isArray(snapshot.matches)) state.matches = snapshot.matches;
         if (Array.isArray(snapshot.leaderboard)) state.leaderboard = snapshot.leaderboard;
-        /* Copied like the four above it and NOT hoisted into `config`: the
-           server memoises its config block precisely because it never
-           changes under a running resource, and this is the one thing that
-           changes with nobody doing anything at all. A snapshot without it
-           leaves the last one standing, which is right -- an older server
-           that never sends one leaves it null, and null is "no verdict". */
         if (snapshot.schedule) state.schedule = snapshot.schedule;
 
         var config = cfg();
@@ -1316,11 +911,6 @@
             state.createArena = arenas.length > 0 ? arenas[0].key : null;
         }
         if (!state.createMode) {
-            /* THE OPERATOR'S DEFAULT FIRST, and the first enabled mode only
-               when they have not named one or have named one this server does
-               not have. The panel always sends a mode, so the server-side
-               fallback to Config.DefaultMode never fired and the setting did
-               nothing at all. */
             var modes = arrayOf(config.modes);
             var wanted = (config.match || {}).defaultMode;
             var found = null;
@@ -1332,36 +922,19 @@
         if (state.createFee === null) {
             state.createFee = int(((config.betting || {}).entryFee || {}).default, 0);
         }
-        /* Its own guard, not the fee's. Sharing one meant a server with
-           betting off never seeded the lives box at all, and coupling two
-           unrelated fields to one flag is how the second one quietly stops
-           being initialised when the first changes. */
         if (state.createLives === null) {
             state.createLives = int((config.match || {}).lives, 1);
         }
-        /* Its own guard for the same reason the lives one has its own: the
-           server sends the resolved default, which is the number a host who
-           touches nothing is going to run. */
         if (state.createRound === null) {
             state.createRound = int((config.match || {}).roundTimeSeconds, 0);
         }
-        /* Its own guard, for the same reason the two above have theirs. The
-           server sends the RESOLVED default -- a string, never the config
-           block -- so this is the rule a host who touches nothing will run. */
         if (state.createWin === null) {
             state.createWin = keyOr((config.match || {}).winCondition, 'last_standing');
         }
-        /* Its own guard, for the same reason the others have theirs: the
-           server sends the resolved default, which is the number a host who
-           touches nothing will play to. */
         if (state.createLimit === null) {
             state.createLimit = int((config.match || {}).scoreLimit, 25);
         }
         if (state.betAmount === null) {
-            /* Whichever kind of bet this server actually offers. Seeding
-               from the spectator minimum on a server that only lets fighters
-               bet opened the box at 0 -- under the minimum, so the button was
-               dead until the player found the number themselves. */
             var betCfg = (config.betting || {});
             var seedFrom = ((betCfg.spectatorBets || {}).enabled === true)
                 ? betCfg.spectatorBets
@@ -1369,15 +942,6 @@
             state.betAmount = int(seedFrom.min, 0);
         }
 
-        /* SEEDED FROM THE MATCH, ONCE PER MATCH. Becoming the host of a lobby
-           turns the create form into that lobby's settings, so it has to
-           start out showing what the match actually is rather than whatever
-           was last typed into it.
-
-           Keyed on the match id so it happens on the transition and not on
-           every server push -- re-seeding each broadcast would overwrite the
-           host mid-edit, which is the same class of bug as the input being
-           rewritten while focused. */
         var editable = editableMatch();
         /* THE LOBBY, AND HOW MANY TIMES THE SERVER HAS SAID NO.
            Seeding is keyed on the match id so a broadcast in the middle of
@@ -1397,51 +961,17 @@
             state.createLives = int(editable.lives, int(state.createLives, 1));
             state.createRound = int(editable.roundTimeSeconds, int(state.createRound, 0));
             state.createWin = keyOr(editable.winCondition, state.createWin);
-            /* SEEDED EITHER WAY, and the `else` is the half that was
-               missing. The server sends `tierPlan` only once a plan has been
-               ACCEPTED -- nil while the host has never had one through -- so
-               guarding the seed on its presence left the ladder as the one
-               field a push-back could not reach. Which made it the one field
-               that mattered: a gun-game lobby's most likely refusal IS the
-               ladder ("a gun game needs at least two tiers to climb"), and
-               the host was handed their rejected ladder back, unchanged,
-               with their unrelated edits reverted around it. Pressing Apply
-               again produced the same refusal for ever. */
             state.createTiers = (editable.tierPlan && typeof editable.tierPlan === 'object')
                 ? editable.tierPlan
                 : {};
             state.createLimit = int(editable.scoreLimit, int(state.createLimit, 25));
             state.createRadar = editable.radar === true;
         } else if (!editable && state.seededFromMatch !== null) {
-            /* ON THE TRANSITION ONLY, keyed the same way the seeding above
-               is, and for the same reason.
-
-               Unkeyed, this ran on EVERY render -- and a render happens on
-               every server broadcast, which is every join, ready, bet, match
-               start and match end anywhere on the server. So a player
-               sitting in the browser who pressed the radar toggle had their
-               choice quietly reset to the operator default the moment
-               anybody else did anything at all, and Create Match then posted
-               the default they had just changed. Nothing on screen said so;
-               the button simply went back.
-
-               What this branch is FOR is forgetting the settings of a match
-               the host has stopped editing, so the form does not carry one
-               lobby's choices into a different one. That is a transition,
-               and it happens once. */
             state.seededFromMatch = null;
             state.createRadar = null;
-            /* AND THE LADDER, for the reason this branch exists at all: not
-               carrying one lobby's choices into a different one. It was left
-               out, so a ladder shaped for a gun game rode out of that lobby
-               and into the next createMatch payload -- on whatever mode the
-               host picked next. */
             state.createTiers = {};
         }
 
-        /* Joining a match is the moment the lobby screen becomes the
-           interesting one; landing back on the browser after a join reads
-           as the click having done nothing. */
         var current = playerMatchId();
         if (current && state.selectedMatchId !== current) {
             state.selectedMatchId = current;
@@ -1455,22 +985,10 @@
         announceMatchState();
     }
 
-    // ==================================================================
-    // RENDER
-    //
-    // Each section is guarded on its own: a snapshot missing one block
-    // costs that panel, not the whole menu.
-    // ==================================================================
-
-    /* Hands back whatever fn returned, so a renderer can report that it took
-       the screen over -- and undefined when it threw, which reads as "no" at
-       every call site. */
     function guarded(fn) {
         try {
             return fn();
         } catch {
-            /* Swallowed for the reason in the file header: the alternative
-               is a dead panel the player cannot close. */
         }
     }
 
@@ -1506,16 +1024,6 @@
 
         guarded(renderHeader);
 
-        /* A SHUT ARENA IS ONE SCREEN, and everything below it is skipped.
-           Matches, Loadout and Bets are all things a player cannot do right
-           now, so offering them is offering five ways to find that out one at
-           a time.
-
-           A FIGHTER MID-ROUND KEEPS THEIR PANEL. Closing the arena stops
-           people coming IN and leaves the round already being fought to
-           finish -- so for somebody still in one, every tab is still true and
-           taking them away would strand them behind a wall with no Leave
-           Match button. */
         if (guarded(renderShut)) return;
 
         guarded(renderTabs);
@@ -1533,20 +1041,7 @@
         }
     }
 
-    /* @returns {boolean} whether the shut screen took over the panel */
     function renderShut() {
-        /* ANYBODY THE ROUND STILL CONCERNS KEEPS THEIR PANEL, and that is
-           two kinds of person, not one.
-
-           A FIGHTER, because closing the arena leaves the round already being
-           fought to finish -- every tab is still true for them, and taking
-           them away strands a live fighter with no Leave Match button.
-
-           AND A SPECTATOR, because Stop Watching is built inside the body
-           this screen replaces. Somebody watching a round that is still
-           legally being fought would have been told "the arena is closed",
-           which is not true of what they are doing, and left with no way out
-           of the camera but a key nothing on screen mentions. */
         var shut = doorsShut()
             && playerMatchId() === null
             && spectatingMatchId() === null;
@@ -1556,10 +1051,6 @@
         show(byId('arena-body'), !shut);
         if (!shut) return false;
 
-        /* WHO SHUT IT. `forced` is the admin's standing decision, and it is
-           on the wire for players as well as for the tablet: "an admin closed
-           it" and "it is four in the morning" are different answers, and only
-           one of them has a time to come back at. */
         var forced = schedule().forced;
         byId('arena-shut-why').textContent = forced === 'shut'
             ? 'An admin has closed it. It stays closed until they open it again.'
@@ -1578,10 +1069,6 @@
     function renderHeader() {
         var ui = cfg().ui || {};
 
-        /* A finished logo already carries the server's name. Printing the
-           title beside it says the same thing twice, in two sizes, one of
-           them too small to read -- so banner mode hands the header over to
-           the image and draws no text of its own. */
         var banner = ui.logoStyle === 'banner';
 
         var header = byId('arena-header');
@@ -1599,15 +1086,6 @@
             show(subtitle, !banner);
         }
 
-        /* THE WHOLE SCHEDULE, UNPROMPTED. A player who has just missed a
-           window needs the list to plan around; without it the only way to
-           find out when the arena opens is to keep walking back to the NPC.
-
-           Its own element rather than appended to the subtitle, which is
-           Config.UI.subtitle and belongs to the operator.
-
-           `line` is sent ONLY when the server is genuinely enforcing hours,
-           so the panel can never advertise a schedule nobody is keeping. */
         var hoursEl = byId('arena-hours');
         if (has(hoursEl)) {
             var line = schedule().line;
@@ -1628,9 +1106,6 @@
             var src = typeof ui.logo === 'string' && ui.logo !== '' ? ui.logo : 'images/logo.png';
             if (logo.getAttribute('src') !== src) logo.setAttribute('src', src);
 
-            /* The title is gone in banner mode, so the logo becomes the only
-               thing naming the panel. An empty alt would leave a screen
-               reader with nothing at all to announce. */
             logo.setAttribute('alt', banner
                 ? (typeof ui.title === 'string' ? ui.title : 'CRIMSON') + ' arena'
                 : '');
@@ -1638,14 +1113,9 @@
 
         var wallet = byId('arena-money');
         if (has(wallet)) {
-            /* With betting off there is no wallet to speak of in this
-               panel, and showing one implies a fee that will never exist. */
             show(wallet, bettingOn());
             clear(wallet);
             if (bettingOn()) {
-                /* Labelled: a lone figure in the corner of a panel with a
-                   pot in it reads as the pot just as easily as it reads as
-                   the player's own money. */
                 wallet.appendChild(makeEl('span', 'wallet-label', 'Your ' + accountName()));
                 wallet.appendChild(makeEl('span', 'wallet-value', money(player().money)));
             }
@@ -1661,13 +1131,6 @@
         });
     }
 
-    // ------------------------------------------------------------------
-    // MATCHES
-    // ------------------------------------------------------------------
-
-    /* Why this player cannot join this match, or null when they can. The
-       server owns the real answer; this exists so the button is never
-       silently inert -- a disabled control with no reason reads as broken. */
     function joinBlockedReason(match) {
         var mine = playerMatchId();
         if (mine === match.id) return 'You are already in this match.';
@@ -1675,9 +1138,6 @@
         if (match.state === 'ended') return 'This match has finished.';
         if (match.state !== 'lobby') return 'This match has already started. Watch it, or start your own.';
 
-        /* Before the full and the entry-fee checks, so a shut arena is named
-           rather than telling somebody they cannot afford a match they could
-           afford perfectly well an hour from now. */
         if (doorsShut()) return shutSentence();
 
         var max = int((cfg().match || {}).maxPlayers, 0);
@@ -1685,22 +1145,10 @@
             return 'This match is full (' + plural(max, 'player') + ').';
         }
 
-        /* MONEY ON IT ALREADY. server/lobby.lua refuses this join -- a bet
-           whose holder can cancel it by taking a seat and walking straight
-           out again is a bet with no risk in it -- and the panel had no way
-           to know, so the button stayed lit and the refusal arrived after
-           the click. `player().bet` cannot answer it: that is the bet on the
-           match they are IN or WATCHING, and a side-bet is placed from the
-           Bets tab on a match they are doing neither with. */
         if (arrayOf(player().backing).indexOf(match.id) !== -1) {
             return 'You have money on this match. Watch it or fight it, not both.';
         }
 
-        /* THE ACCOUNT THAT WILL ACTUALLY PAY. `player().money` is a single
-           figure from the operator's settlement account, so a player with the
-           fee in the bank and nothing in their pocket was told they could not
-           afford a match they could -- and one with it in cash, paying from a
-           near-empty bank, was let through to a refusal. */
         if (bettingOn() && int(match.entryFee, 0) > balanceIn(chosenAccount())) {
             return accountChoiceOffered()
                 ? 'You cannot cover the ' + money(match.entryFee) + ' entry fee from '
@@ -1765,9 +1213,6 @@
 
         var reason = joinBlockedReason(match);
         var join = makeEl('button', 'btn btn-primary', 'Join');
-        /* Named after the match it joins, the same way the weapon cards are
-           named after their weapon: a control the panel builds is otherwise
-           unaddressable, by a test and by anything else that has to find it. */
         join.id = 'match-join-' + String(match.id);
         join.type = 'button';
         if (reason) {
@@ -1784,9 +1229,6 @@
         }
         actions.appendChild(join);
 
-        /* Offered to anyone not already fighting, which is the only state
-           in which a player has a camera to spare. A finished match has
-           nothing left to watch. */
         if (!playerMatchId() && stateName !== 'ended') {
             var watching = spectatingMatchId() === match.id;
 
@@ -1833,12 +1275,8 @@
 
         card.appendChild(actions);
 
-        /* The tooltip on a disabled button is the answer nobody hovers to
-           find, so the reason is written on the card as well. */
         if (reason) card.appendChild(makeEl('div', 'match-card-reason', 'Cannot join: ' + reason));
 
-        /* Clicking a card also points the Bets tab at it, which is not a
-           thing a highlight on its own says out loud. */
         if (match.id === state.selectedMatchId && bettingOn()
             && (betting().spectatorBets || {}).enabled === true) {
             card.appendChild(makeEl('div', 'match-card-meta', 'Picked — the Bets tab is showing this match.'));
@@ -1856,47 +1294,11 @@
         fillSelect(byId('create-arena'), arrayOf(cfg().arenas), state.createArena);
         fillSelect(byId('create-mode'), arrayOf(cfg().modes), state.createMode);
 
-        /* LIVES, when the operator lets the host pick. `livesChoice` is
-           absent when they have fixed it, and the row goes with it -- a
-           control that cannot change anything invites a host to try.
-
-           AND THE MODE HAS A SAY, for exactly that reason. A ladder mode
-           spends no lives at all: the host set this to 1, watched twelve
-           deaths eliminate nobody, and had no way to tell whether the
-           setting or the mode was broken. The value really did ride all the
-           way through -- validated, stored on the match, echoed back on the
-           wire -- and changed nothing about the round.
-
-           Read off the mode being CREATED, not the one they are in: this is
-           the box where the mode is chosen, so it has to follow the select
-           above it rather than a match that may not exist yet. */
         var creating = modeByKey(state.createMode);
 
-        /* WIN CONDITION, ABOVE LIVES, because the answer here decides whether
-           Lives Each is read at all. Hidden when the operator has fixed it,
-           and hidden for a ladder mode as well: a gun game is won by topping
-           the ladder or by its own clock whatever is set, so offering the
-           choice there would be a control that changes nothing. */
         var laddered = modeIssuesLoadout(creating);
         var offered = (cfg().match || {}).winConditionChoice;
 
-        /* AND MOST KILLS NEEDS A CLOCK TO RUN OUT. Nobody is eliminated
-           under it, so the clock is the only thing that can end the round --
-           and on a server whose round length resolves to 0 the server
-           refuses it at creation. Offering it here would be the panel
-           holding out a rule the server always says no to, with the refusal
-           ("set a round length") pointing at a box that is not on screen
-           because there is no round length to set.
-
-           THE CLOCK THIS MATCH WOULD REALLY RUN: the host's own number if
-           they named one, then the mode's own, which the server resolves and
-           sends per mode. Same order Arena.RoundSecondsFor reads them in. */
-        /* AND THE HOST'S OWN NUMBER ONLY COUNTS WHERE THE SERVER TAKES ONE.
-           `state.createRound` keeps whatever was last seeded into it, so a
-           panel that had a clock and then lost the setting would still be
-           holding 600 -- and post it, to a server that reads a fixed
-           roundTimeSeconds and treats the number as "the host did not
-           choose". The box is not on screen in that case either. */
         var roundOffered = !!(cfg().match || {}).roundTimeChoice;
         var wouldRun = roundOffered && int(state.createRound, 0) > 0
             ? int(state.createRound, 0)
@@ -1909,10 +1311,6 @@
         var winUsed = Array.isArray(winChoice) && winChoice.length > 1 && !laddered;
         show(byId('create-win-row'), winUsed);
 
-        /* AND THE HOST IS NOT LEFT HOLDING ONE THAT IS NO LONGER OFFERED.
-           They can pick most kills, then switch to a clockless mode: the
-           dropdown loses the option, and without this the form would keep
-           posting it and the server would keep refusing. */
         if (Array.isArray(winChoice) && winChoice.length > 0
             && winChoice.indexOf(state.createWin) === -1) {
             state.createWin = winChoice[0];
@@ -1920,18 +1318,8 @@
 
         var winSelect = byId('create-win');
         if (has(winSelect) && winUsed) {
-            /* Rebuilt only when the options have actually changed, so the
-               select is not torn out from under an open dropdown on every
-               server push. */
-            /* THE MODE IS PART OF THE SIGNATURE, not just the key list.
-               The three keys are the same in a team mode and a solo one and
-               only the WORDS differ, so a signature built from the keys alone
-               left "last one standing" on screen after the host switched the
-               mode select to team deathmatch. */
             var teamed = !!(creating && creating.teams === true);
             var words = winWords(teamed);
-            /* The list itself is part of the signature, so an option
-               dropped for want of a clock really leaves the dropdown. */
             var wanted = winChoice.join(',') + (teamed ? '|teams' : '');
             if (winSelect.getAttribute('data-options') !== wanted) {
                 winSelect.setAttribute('data-options', wanted);
@@ -1950,9 +1338,6 @@
 
         var winHint = byId('create-win-hint');
         if (has(winHint)) {
-            /* WHAT THE CHOICE ACTUALLY COSTS, said before it is made. A score
-               limit spends no lives, and a host who picks it and then finds
-               the Lives Each box gone would reasonably read that as a bug. */
             var teamedHint = !!(creating && creating.teams === true);
             winHint.textContent = !winUsed ? ''
                 : (state.createWin === 'score_limit'
@@ -1976,20 +1361,8 @@
                             : 'Last one standing takes it. Run out of lives and you are out.')));
         }
 
-        /* AND NEITHER OF THE TWO COUNTING CONDITIONS SPENDS LIVES, which is
-           the same reason a ladder mode does not show the lives row: the
-           number would be on screen, editable, and read by nothing. */
         var livesSpent = winSpendsLives(state.createWin);
 
-        /* THE FINISH LINE ITSELF, and only where the host has chosen to play
-           to one. Under every other condition the number is not read, so a
-           box for it would be a control that changes nothing.
-
-           ASKED OF THE CONDITION DIRECTLY, not of `livesSpent`. The two were
-           the same question while a score limit was the only condition
-           without lives; now that most kills is one too, reading `livesSpent`
-           here would put the kill-limit box on a round that ends on a
-           clock. */
         var limitChoice = (cfg().match || {}).scoreLimitChoice;
         var limitUsed = !!limitChoice && winUsed && state.createWin === 'score_limit';
         show(byId('create-limit-row'), limitUsed);
@@ -2011,22 +1384,12 @@
                 : '';
         }
 
-        /* THE LADDER ROWS, for a gun game and nothing else. One per weapon
-           class the mode declares, each a dropdown of how many rungs of that
-           class the climb has -- 0 leaves the class out altogether, which is
-           a legal ladder: pistols and rifles and nothing else is a mode
-           somebody will want. */
         var tierClasses = arrayOf(creating && creating.tierClasses);
         var tiersUsed = laddered && tierClasses.length > 0;
         show(byId('create-tiers-row'), tiersUsed);
 
         var tierBox = byId('create-tiers');
         if (has(tierBox)) {
-            /* Rebuilt only when the classes themselves change, so an open
-               dropdown is not torn out from under the host on every server
-               push. The signature carries the ceilings as well as the keys:
-               an operator switching weapons off changes what a row may
-               offer without changing which rows there are. */
             var signature = tierClasses.map(function (row) {
                 return String(row.key) + ':' + int(row.maxTiers, 0);
             }).join(',');
@@ -2044,11 +1407,6 @@
                     line.appendChild(makeEl('span', 'tier-name', String(row.label || row.key)));
 
                     var select = makeEl('select');
-                    /* A REAL ID, the way every other control in this panel is
-                       addressable. The rows are built rather than written into
-                       index.html, so without one they are reachable only by
-                       querySelector -- which couples the panel to a DOM
-                       feature and made the picker untestable. */
                     select.id = 'create-tier-' + String(row.key);
                     select.setAttribute('data-class', String(row.key));
                     for (var count = 0; count <= int(row.maxTiers, 0); count += 1) {
@@ -2064,10 +1422,6 @@
                         });
                         next[key] = int(event.target.value, 0);
                         state.createTiers = next;
-                        /* Re-rendered because the hint below counts the whole
-                           ladder, and a total that only catches up on the
-                           next server push reads as a control that did
-                           nothing. */
                         render();
                     });
                     tierSelects[String(row.key)] = select;
@@ -2076,8 +1430,6 @@
                 });
             }
 
-            /* The values, every render, whether or not the rows were
-               rebuilt -- and never into the one the host has open. */
             if (tiersUsed) {
                 tierClasses.forEach(function (row) {
                     var select = tierSelects[String(row.key)];
@@ -2098,11 +1450,6 @@
                     var chosen = state.createTiers[row.key];
                     rungs += (chosen === undefined ? int(row.tiers, 0) : int(chosen, 0));
                 });
-                /* THE TOTAL, AND THE FLOOR IT HAS TO CLEAR. A one-rung ladder
-                   is topped by the first kill of the round, so the server
-                   refuses it -- and a host who has just dialled every row to
-                   zero should read that here rather than meet it as a
-                   refusal on the Create button. */
                 tierHint.textContent = rungs < 2
                     ? 'A ladder needs at least two tiers — this one has '
                       + rungs + '.'
@@ -2132,14 +1479,6 @@
                 : '';
         }
 
-        /* ROUND LENGTH, on the same rule as Lives Each -- absent when the
-           operator has fixed it -- but shown for EVERY mode rather than
-           hidden for a ladder.
-           
-           A ladder mode is exactly where it matters most: it spends no
-           lives, so this clock is the only thing that ends the round, and
-           until now it was the one rule of gun game a host could not set
-           without editing config.lua and restarting. */
         var roundChoice = (cfg().match || {}).roundTimeChoice;
         var roundUsed = !!roundChoice;
         show(byId('create-round-row'), roundUsed);
@@ -2155,34 +1494,20 @@
 
         var roundHint = byId('create-round-hint');
         if (has(roundHint)) {
-            /* IN BOTH UNITS. The box takes seconds because that is what the
-               server stores and what config.lua is written in, and nobody
-               reads 900 as fifteen minutes without being told. */
             roundHint.textContent = roundUsed
                 ? 'How long a round runs, in seconds — ' + clock(int(state.createRound, 0))
                   + '. ' + int(roundChoice.min, 1) + ' to ' + int(roundChoice.max, 1) + '.'
                 : '';
         }
 
-        /* SAID, NOT JUST HIDDEN. A row that disappears when the mode changes
-           looks like a bug unless the reason goes in its place. */
         var livesNote = byId('create-lives-note');
         if (has(livesNote)) {
-            /* TWO REASONS THE ROW CAN GO, and they are not the same sentence.
-               A ladder mode has no lives by its own design; a score limit has
-               none because of the rule the host just picked one line above,
-               and telling them "gun game has no lives" about a free-for-all
-               would be nonsense. */
             show(livesNote, laddered || !livesSpent);
             if (laddered) {
                 livesNote.textContent = String(creating.label || 'This mode')
                     + ' has no lives — everyone respawns until the clock stops, '
                     + 'and a death costs you a tier instead.';
             } else if (!livesSpent) {
-                /* AND THE TWO OF THEM ARE NOT THE SAME SENTENCE EITHER. One
-                   round ends when somebody gets there, the other when the
-                   clock stops, and a host told the wrong one would go looking
-                   for a finish line that is not in this round. */
                 livesNote.textContent = state.createWin === 'most_kills'
                     ? 'Most kills has no lives — everyone respawns until the clock stops, '
                       + 'and the highest count when it does takes it.'
@@ -2192,8 +1517,6 @@
         }
 
         var fee = (betting().entryFee) || {};
-        /* A free arena has no fee to set. Leaving a blank number input on
-           screen would still read as one that could be filled in. */
         var feeUsed = bettingOn() && fee.enabled === true;
         show(byId('create-fee-row'), feeUsed);
 
@@ -2226,11 +1549,6 @@
 
         var feeHint = byId('create-fee-hint');
         if (has(feeHint)) {
-            /* What the money buys, in the words of this server's own payout
-               rule rather than an assumed one. */
-            /* AND WHAT HAPPENS TO IT AT CLOSING TIME, said BEFORE the money
-               moves rather than only as a toast afterwards. This is the last
-               screen a host sees before the stake is escrowed. */
             var hoursNote = typeof schedule().line === 'string' && schedule().line !== ''
                 ? ' A round already being fought finishes. A lobby that has not started when the '
                     + 'arena shuts is closed and every stake goes back.'
@@ -2244,11 +1562,6 @@
         var submit = byId('create-submit');
         var hint = byId('create-hint');
 
-        /* HOSTING A LOBBY TURNS THIS FORM INTO AN EDIT FORM. Picking the
-           wrong arena used to mean closing the lobby and opening another --
-           which refunds and re-takes every stake, drops everybody who had
-           joined, and costs the host their own place, for a mistake that
-           takes one click to make. */
         var editing = editableMatch();
 
         var blocked = null;
@@ -2265,20 +1578,12 @@
            host of one that already exists is only changing its settings. */
         if (!blocked && !editing && doorsShut()) blocked = shutSentence();
 
-        /* THE CEILING ON ROUNDS AT ONCE. ArenaLobby.Create refuses over it,
-           and the panel had no idea, so Create Match stayed lit at the limit
-           and answered with a toast. Editing an existing match is never
-           blocked by it -- that match is already one of the ones counted. */
         var ceiling = int((cfg().match || {}).maxConcurrentMatches, 0);
         if (!blocked && !editing && ceiling > 0 && state.matches.length >= ceiling) {
             blocked = 'This server runs ' + plural(ceiling, 'match', 'matches')
                 + ' at a time and they are all going. Join one, or wait for one to finish.';
         }
 
-        /* The fee is the one thing an open lobby cannot change: everybody in
-           it paid what was advertised when they joined. The server refuses
-           it too -- this only stops the panel offering something that would
-           come back rejected. */
         if (editing) show(byId('create-fee-row'), false);
 
         /* AND THE MODE LOCKS ONCE ANYBODY HAS BACKED THE MATCH.
@@ -2324,16 +1629,9 @@
                         : 'Anyone in the lobby can start the round.');
         }
 
-        /* Last, because it needs `blocked`. A radar button that still looks
-           live to somebody who cannot submit this form is the same lie as a
-           control on a server that has no radar -- worse, because pressing
-           it appears to work right up until nothing happens. */
         renderRadarToggle(blocked);
     }
 
-    /* Options are rebuilt from config every render and the selection is
-       restored from state, so a broadcast landing between two clicks
-       cannot reset a half-configured match. */
     function fillSelect(select, entries, selected) {
         if (!has(select)) return;
         clear(select);
@@ -2345,10 +1643,6 @@
         });
         if (selected) select.value = selected;
     }
-
-    // ------------------------------------------------------------------
-    // LOBBY
-    // ------------------------------------------------------------------
 
     function renderLobby() {
         var match = matchById(playerMatchId()) || matchById(spectatingMatchId());
@@ -2380,13 +1674,6 @@
         renderLobbyActions(match);
     }
 
-    /* One enabled mode by key, as the server describes it.
-
-       THE MODE CARRIES FACTS THE MATCH BLOCK DOES NOT. A ladder mode runs on
-       its own clock, never eliminates anybody and is won by topping the
-       ladder rather than by Config.Match.winCondition -- and the card below
-       stated all three off the shared match config, so every one of them was
-       wrong on a gun game. */
     function modeByKey(key) {
         var wanted = keyOr(key, null);
         if (wanted === null) return null;
@@ -2405,17 +1692,8 @@
         var matchCfg = cfg().match || {};
         var max = int(matchCfg.maxPlayers, 0);
 
-        /* THE MODE'S OWN CLOCK FIRST. Gun game runs a shorter round than the
-           server default and says so in its own config; reading only the
-           shared number told every player in a gun-game lobby the wrong
-           length of the round they were about to play. */
         var mode = modeByKey(match.modeKey);
         var tiers = mode ? int(mode.tiers, 0) : 0;
-        /* THE MATCH'S OWN NUMBER FIRST, now that a host can set one. The
-           server resolves it before sending -- host's pick, then the mode's
-           clock, then the server default -- so this is the number the round
-           will really count down from, and reading the mode's config here
-           would tell a lobby whose host chose 900 that it was playing 480. */
         var roundTime = match.roundTimeSeconds !== undefined && match.roundTimeSeconds !== null
             ? int(match.roundTimeSeconds, 0)
             : (mode && mode.roundTimeSeconds !== undefined && mode.roundTimeSeconds !== null
@@ -2436,21 +1714,10 @@
            and always was. This line simply asked the wrong object for it. */
         var lives = int(match.lives, int(matchCfg.lives, 1));
 
-        /* WHETHER THIS ROUND SPENDS THEM AT ALL. The server resolves it on
-           the match and has sent it all along -- nothing on this side read
-           it, so the card announced "3 lives each" over a round nobody can be
-           eliminated from, which is the plain untruth the server-side comment
-           beside the field was written to prevent.
-
-           Defaulted from the condition rather than to `true`, so a snapshot
-           that predates the field still says the right thing. */
         var spendsLives = match.livesSpent !== undefined && match.livesSpent !== null
             ? match.livesSpent === true
             : winSpendsLives(keyOr(match.winCondition, matchCfg.winCondition));
 
-        /* The rules of the round, spelled out here because this is the last
-           screen before it starts and none of it is guessable from the
-           weapons list. */
         var bits = [
             String(match.modeLabel || match.modeKey || ''),
             String(match.arenaLabel || match.arenaKey || ''),
@@ -2460,18 +1727,9 @@
                 : plural(match.playerCount, 'player') + ' in',
             'Starts at ' + plural(int(matchCfg.minPlayers, 1), 'player'),
             'Host: ' + String(match.hostName || ''),
-            /* A LADDER SPENDS NO LIVES AND IGNORES THE WIN CONDITION, so the
-               card does not quote either at a player about to play one. What
-               it says instead is the two rules that actually decide the
-               round: you respawn until the clock stops, and the ladder is
-               how tall. */
             tiers > 0
                 ? 'Respawn until the clock stops'
                 : (!spendsLives
-                    /* WHAT ACTUALLY ENDS IT, not just "no lives". The two
-                       conditions without lives finish on different things --
-                       one on the clock, one on the count -- and a player
-                       reading the card is deciding whether to join. */
                     ? (keyOr(match.winCondition, matchCfg.winCondition) === 'score_limit'
                         ? 'No lives — respawn until somebody reaches the limit'
                         : 'No lives — respawn until the clock stops')
@@ -2479,11 +1737,6 @@
                         ? 'One life — first death is elimination'
                         : plural(lives, 'life', 'lives') + ' each')),
             roundTime > 0 ? 'Round lasts ' + clock(roundTime) : 'No round clock',
-            /* THE MATCH'S OWN RULE, not the server's default. This read
-               `matchCfg.winCondition` -- the same wrong object `lives` above
-               was read from, for the same reason -- so a host who picked
-               "most kills when the clock runs out" had their lobby card
-               announce the server default to everybody looking at it. */
             tiers > 0
                 ? 'Win by topping the ' + tiers + '-tier ladder — a kill climbs, a death drops'
                 : 'Win by ' + labelFor(winWords(match.teams === true),
@@ -2494,7 +1747,6 @@
             bits.push('Pot ' + money(match.pot));
         }
         bits.forEach(function (text) {
-            /* A blank fact still costs a gap in the strip. */
             if (typeof text === 'string' && text !== '') host.appendChild(makeEl('span', null, text));
         });
     }
@@ -2505,33 +1757,11 @@
         return int(counts[key], 0);
     }
 
-    /* WHY THE SERVER WOULD REFUSE TO START THIS TEAM MATCH, lowercase, or
-       null when it would not.
-
-       ONE ANSWER FOR TWO SCREENS. The picker printed two loose warnings and
-       the Start button consulted none of them, so a lobby the server was
-       always going to turn down was offered with a full-strength green
-       button whose tooltip said "Send everyone into the arena": one side
-       empty, sides three against one, a side over its cap, or somebody who
-       had not picked on a server that will not pick for them. Two of those
-       four had no text anywhere on the screen at all -- the host clicked,
-       got a red toast, and had nothing to act on.
-
-       IN THE SERVER'S OWN ORDER, and it matters: ArenaMatch.Begin runs
-       assignMissingTeams first and Arena.TeamsAreStartable after it, so the
-       reason a host is shown is the reason they would actually be given.
-       Every term reads a number server/lobby.lua already puts on the wire.
-       This is the panel agreeing with the server, never deciding for it --
-       Begin refuses all of it again. */
     function teamStartBlocker(match) {
         if (!match || match.teams !== true) return null;
 
         var teams = cfg().teams || {};
         var list = arrayOf(teams.list);
-        /* NONE, not "fewer than two". Arena.TeamsAreStartable refuses only
-           `#teams == 0`; a server down to one enabled side with
-           requireBothTeamsOccupied off starts perfectly happily, and
-           refusing it here was the panel inventing a rule. */
         if (list.length === 0) return 'this server has no sides switched on.';
 
         var cap = int(teams.maxTeamSize, 0);
@@ -2552,9 +1782,6 @@
             return !keyOr(entry && entry.team, null);
         }).length;
 
-        /* THE THREE TERMS THAT READ THE ROSTER AS IT STANDS, before the
-           split below -- each is about somebody the server would refuse to
-           place at all rather than about the sides they end up on. */
         if (teams.autoAssignIfUnchosen === false && sideless > 0) {
             return plural(sideless, 'player') + ' still without a side, and this server '
                 + 'will not pick one for them.';
@@ -2604,10 +1831,6 @@
             }
         }
 
-        /* OCCUPIED SIDES ONLY for the spread, which is what
-           Arena.TeamsAreStartable measures. Counting an empty third side as
-           a 0 would report every two-sided lobby on a three-team server as
-           wildly uneven. */
         var occupied = 0;
         var smallest = null;
         var largest = null;
@@ -2639,8 +1862,6 @@
 
         var teams = cfg().teams || {};
         if (match.teams !== true) {
-            /* A free-for-all has no sides; an empty picker is hidden
-               rather than left as a blank strip above the roster. */
             show(host, false);
             return;
         }
@@ -2671,8 +1892,6 @@
             } else if (playerMatchId() !== match.id) {
                 locked = 'You are not in this match.';
             } else if (match.state !== 'lobby') {
-                /* The lobby countdown still has the panel open, and the
-                   picker went on offering sides through the whole of it. */
                 locked = 'This match has already kicked off — sides are locked.';
             } else if (team.key !== mine && int(teams.maxTeamSize, 0) > 0
                        && count >= int(teams.maxTeamSize, 0)) {
@@ -2752,10 +1971,6 @@
         });
     }
 
-    /* The sentence under the three buttons. READY UP AND START MATCH NOW ARE
-       DIFFERENT THINGS and pressing the wrong one during a countdown is a
-       real mistake a player makes once, so the difference is written out
-       rather than left to the labels. */
     function lobbyHintText(match, inMatch, isHost, blocked) {
         if (!inMatch) {
             return 'You are watching this match, not fighting in it. Join one from the Matches tab to fight.';
@@ -2768,10 +1983,6 @@
         if (match.state === 'live' || match.state === 'ended') {
             return 'The round is under way. Leaving now gives up your place in it.';
         }
-        /* WHAT READYING UP ACTUALLY DOES ON THIS SERVER. The second half was
-           said unconditionally and is false wherever autoStartWhenAllReady
-           is on -- which is how it ships. It is the last sentence a player
-           reads before pressing the button it is wrong about. */
         var autoStart = (cfg().match || {}).autoStartWhenAllReady === true;
         var lead = player().ready === true
             ? 'You are marked ready. '
@@ -2783,23 +1994,6 @@
             : lead + 'Start Match Now is unavailable: ' + blocked;
     }
 
-    /* THE RADAR, A MATCH SETTING THE HOST PICKS.
-
-       This lived in the lobby and belonged to each player: their own toggle,
-       answered on their own client, never sent anywhere. That made a round
-       only as dark as its least patient fighter -- anyone who wanted enemies
-       on their map simply switched them on for themselves, and the sweep
-       interval the setting exists for was a formality.
-
-       So it moved up here beside Lives Each, into the box that creates and
-       edits a match, and it travels with the rest of the match rules. That
-       box is only ever an editor for a match you host, which is what makes
-       the setting host-only without a second permission check to keep in
-       step with the first.
-
-       Nothing is posted on the click. Like the arena, the mode and the
-       lives, it is applied by Create Match or Apply Changes -- so a host can
-       change their mind twice before committing to either. */
     function radarSettings() {
         return (cfg().match || {}).radar || null;
     }
@@ -2813,16 +2007,11 @@
         return state.createRadar === true;
     }
 
-    /* @param blocked string|null -- why this form cannot be submitted, if
-       it cannot. Anything but null and the toggle is dead: whoever is
-       looking at it is not the host of an open lobby. */
     function renderRadarToggle(blocked) {
         var host = byId('create-radar-row');
         if (!has(host)) return;
 
         var settings = radarSettings();
-        /* Drawn only where the operator allows one. A dead control is worse
-           than no control -- it reads as a broken feature. */
         show(host, !!settings);
         if (!settings) return;
 
@@ -2861,28 +2050,13 @@
         var ready = byId('btn-ready');
         var isReady = player().ready === true;
         if (has(ready)) {
-            /* PICK A SIDE FIRST, on a server that says so. With
-               Config.Teams.autoAssignIfUnchosen off, server/lobby.lua
-               refuses a ready from somebody who has not chosen -- and the
-               panel could not see the setting, so the button was lit and
-               answered with a toast, on the one screen where the picker is
-               sitting directly above it. Taking a ready BACK is never
-               refused for this. */
             var teamRules = cfg().teams || {};
             var needsSide = !isReady
                 && match.teams === true
                 && teamRules.autoAssignIfUnchosen === false
                 && !keyOr(player().team, null);
 
-            /* The label says what pressing it makes you, which is the only
-               reading that survives being read in a hurry. */
             ready.textContent = isReady ? 'Not Ready' : 'Ready Up';
-            /* WHAT READYING UP ACTUALLY DOES ON THIS SERVER. The last
-               branch used to say "This does not start the round." flatly,
-               with no config read at all -- while lobbyHintText one screen
-               below reads autoStartWhenAllReady and says the opposite.
-               Both sentences were on the same screen, and the shipped
-               setting makes the tooltip the wrong one. */
             var startsOnReady = (cfg().match || {}).autoStartWhenAllReady === true;
             ready.title = needsSide
                 ? 'Pick a side above first — this server will not put you on one for you.'
@@ -2899,10 +2073,6 @@
             };
         }
 
-        /* Cancel lives on the start button during the countdown because
-           that is the only window where "stop the start" is a thing a host
-           can still ask for -- the server refuses it once the round is
-           live. */
         var onlyHost = (cfg().match || {}).onlyHostCanStart !== false;
         var mayStart = inMatch && (isHost || !onlyHost);
         var minPlayers = int((cfg().match || {}).minPlayers, 1);
@@ -2914,23 +2084,12 @@
             blocked = 'the round needs ' + plural(minPlayers, 'player')
                 + ' and has ' + plural(match.playerCount, 'player') + '.';
         }
-        /* OPENING HOURS, and this chain is the one that is easy to miss. It
-           is hand-written and never calls Arena.CanStartMatch, so it can
-           carry the term safely -- ArenaMatch.Begin refuses the same thing
-           server-side, and without this the host of a full, readied lobby
-           clicks a lit button and gets a toast. Lowercase: the caller runs
-           it through capitalise() for the tooltip and splices it into
-           'Start Match Now is unavailable: ...' for the hint. */
         else if (doorsShut()) {
             var opensAtStart = schedule().opensAt;
             blocked = typeof opensAtStart === 'string' && opensAtStart
                 ? 'the arena is shut -- it opens at ' + opensAtStart + '.'
                 : 'the arena is shut at this hour.';
         }
-        /* THE TEAM RULES, LAST, because every term above it is about
-           whether this player may ask at all and these are about whether
-           the lobby is fit to start. Everything here is a refusal
-           ArenaMatch.Begin already makes; see teamStartBlocker. */
         else if (teamRefusal !== null) blocked = teamRefusal;
 
         var start = byId('btn-start');
@@ -2941,10 +2100,6 @@
                 start.title = isHost
                     ? 'Hold the start. Everybody stays in the lobby and nobody loses their place.'
                     : 'Only the host can stop the countdown.';
-                /* holdCountdown, NOT cancelMatch. The tooltip above promises
-                   the lobby survives and nobody loses their place; the cancel
-                   destroys the match, evicts the room, and on a server with
-                   refundOnCancel off burns every stake in it. */
                 start.onclick = function () { post('holdCountdown'); };
             } else {
                 start.disabled = blocked !== null;
@@ -2975,9 +2130,6 @@
            there. Two steps, each labelled honestly. */
         var close = byId('btn-close');
         if (has(close)) {
-            /* isHost above is already `inMatch && player().isHost`, so a
-               watcher is excluded by it and a second inMatch term here would
-               be a no-op dressed as a guard. */
             var mayClose = isHost && String(match.state) === 'lobby';
             show(close, mayClose);
             if (mayClose) {
@@ -2992,10 +2144,6 @@
                             : 'Entry fees are NOT handed back on this server.'));
                 close.onclick = function () { post('cancelMatch'); };
             } else {
-                /* Dropped rather than left behind. A hidden button cannot be
-                   clicked in a browser, but the handler outlives the render
-                   that hid it, and a control that closes the room is not one
-                   to leave armed on the strength of a CSS class. */
                 close.onclick = null;
             }
         }
@@ -3038,11 +2186,6 @@
                     : 'Stop watching and put the camera back on you.');
             leave.disabled = stuck;
             leave.onclick = function () {
-                /* Checked again in the handler, not only in the disabled
-                   flag: the handler outlives the render that disabled it, and
-                   a control the server will refuse is not one to leave armed
-                   on the strength of an attribute. Close Lobby directly above
-                   is guarded the same way and says the same thing. */
                 if (stuck) return;
                 if (inMatch) post('leaveMatch');
                 else post('stopSpectate');
@@ -3052,29 +2195,6 @@
         var hint = byId('lobby-hint');
         if (has(hint)) hint.textContent = lobbyHintText(match, inMatch, isHost, blocked);
     }
-
-    // ------------------------------------------------------------------
-    // LOADOUT
-    //
-    // ONE POOL, TWO LISTS, and the difference between those two sentences is
-    // the whole design of this screen.
-    //
-    // THE POOL is Config.Loadouts.slots: guns and blades together, spent by
-    // Arena.ResolveLoadout against one count. So there is ONE counter, and it
-    // says the same thing wherever it appears -- 'I am full' is now the true
-    // sentence, which it was not when this screen was last rebuilt.
-    //
-    // THE LISTS are only a way of reading ninety weapons. Merging them into
-    // one filtered grid was tempting and is wrong twice over: an operator
-    // with thirty guns and twenty blades gets one endless list instead of two
-    // readable ones, and the category tabs -- which sit over the firearms
-    // list -- would pick up a 'Melee' tab that duplicates the second list.
-    // Each list scrolls inside its own box and nothing ever pushes the page.
-    //
-    // WHICH KINDS ARE OFFERED is still the operator's, through allowFirearms
-    // and allowMelee. A kind switched off loses its whole section rather than
-    // standing there greyed out, because that is what the operator meant.
-    // ------------------------------------------------------------------
 
     /* The catalogue split by kind for the two lists, in config order -- an
        operator who arranged their weapons deliberately keeps that order.
@@ -3102,27 +2222,18 @@
         return draftCount(undefined);
     }
 
-    /* Whether another weapon of this kind can be taken. TWO DIFFERENT NOES,
-       and the message below tells them apart: the kind is switched off for
-       the whole server, or the pool is spent. */
     function poolIsFull(melee) {
         if (!kindAllowed(melee)) return true;
         var limit = slotLimit();
         return limit > 0 && draftTotal() >= limit;
     }
 
-    /* '3 of 4 weapons', or just '3 weapons' where there is no limit to count
-       against. Count first, because that is the half that moves. */
     function poolCounterText() {
         var limit = slotLimit();
         if (limit <= 0) return plural(draftTotal(), 'weapon');
         return String(draftTotal()) + ' of ' + plural(limit, 'weapon');
     }
 
-    /* WHY THE CLICK DID NOTHING. This is the only explanation a player gets,
-       and it has to name the actual reason: a kind switched off is not the
-       same as a full loadout, and telling someone to drop something when
-       there is nothing to drop reads as the panel being broken. */
     function poolFullMessage(melee) {
         if (!kindAllowed(melee)) {
             return melee
@@ -3134,35 +2245,10 @@
             + '. Guns and melee share one count, so drop something before picking another.';
     }
 
-    // ------------------------------------------------------------------
-    // DISTINCT AMMO TYPES -- `ammoTypeSlots`
-    //
-    // The cap is on how many DIFFERENT rounds one loadout carries, not on
-    // the weapons. The server does not refuse a weapon over it -- losing a
-    // gun because of an ammunition preference would be a surprising way to
-    // be told about a limit -- it quietly swaps that weapon onto its own
-    // default round instead.
-    //
-    // QUIETLY IS THE PROBLEM. A player who picked armour-piercing, saved,
-    // and is handed standard when the round starts has been told nothing.
-    // So the panel works out the same answer the server will, in the same
-    // order (the draft is sent in order and Arena.ResolveLoadout walks it in
-    // order), and names the round that will ACTUALLY be loaded.
-    //
-    // The default a weapon falls back to counts towards the cap too, exactly
-    // as it does on the server -- which is why the count is taken after the
-    // fallback and not before.
-    // ------------------------------------------------------------------
-
-    /* Bare maps: an ammo type key is operator-authored text, and a key like
-       '__proto__' landing on an object literal is a silent wrong answer. */
     function bareMap() {
         return Object.create(null);
     }
 
-    /* @param override {key, ammoType}|null -- a hypothetical pick, so a chip
-       can be asked "what would happen if I were pressed" without the draft
-       being changed to find out. */
     function ammoTypePlan(override) {
         var cap = ammoTypeSlots();
         var taken = bareMap();
@@ -3177,8 +2263,6 @@
             var chosen = keyOr(resolveAmmoType(weapon, requested), null);
             var loaded = chosen;
 
-            /* A round this loadout has not already spent a slot on, with no
-               slots left to spend. */
             if (chosen !== null && cap > 0 && taken[chosen] !== true && distinct >= cap) {
                 loaded = keyOr(defaultAmmoType(weapon), null);
             }
@@ -3198,17 +2282,10 @@
         return { cap: cap, taken: taken, distinct: distinct, byKey: byKey };
     }
 
-    /* Whether pressing this type chip on a weapon ALREADY in the draft would
-       get the player that round, or the default instead. Re-run rather than
-       read off the current plan: changing a weapon's round can free the slot
-       its old round was holding, so the standing plan would say 'no' where
-       the truthful answer is 'yes'. */
     function wouldSwap(weaponKey, typeKey) {
         var entry = ammoTypePlan({ key: weaponKey, ammoType: typeKey }).byKey[weaponKey];
         return entry !== undefined && entry.swapped === true;
     }
-
-    // ------------------------------------------------------------------
 
     function renderLoadout() {
         /* Worked out once and handed down: the cards and the summary have to
@@ -3226,15 +2303,11 @@
         guarded(renderLoadoutSaveRow);
     }
 
-    /* The one sentence that is true of both lists, said once above them. */
     function renderLoadoutNote() {
         var host = byId('loadout-note');
         if (!has(host)) return;
         clear(host);
 
-        /* THE REASON, WHICHEVER ONE IT IS. This used to print the
-           host-picks sentence unconditionally, so a player in no match was
-           told a host they did not have had chosen for them. */
         var locked = loadoutLockReason();
         if (locked !== null) {
             host.appendChild(makeEl('div', 'hint', locked));
@@ -3263,8 +2336,6 @@
         var carry = limit > 0 ? plural(limit, 'weapon') : 'as many weapons as you like';
         var text = 'Click a weapon to carry it, and click it again to drop it. ';
 
-        /* THE RULE THIS SCREEN EXISTS TO MAKE OBVIOUS, and it is now the
-           opposite of the one it was rebuilt for. */
         if (allowFirearms() && allowMelee()) {
             text += 'You carry ' + carry + ' in total and the mix is yours — '
                 + 'all guns, all melee, or any combination.';
@@ -3287,59 +2358,19 @@
     }
 
     function renderWeaponSections(plan) {
-        /* THE PICKER GOES ENTIRELY for anybody who may not use it.
-
-           It used to be drawn and disabled, on the reasoning that seeing the
-           lists is worth something even when they cannot be touched. It is
-           not: on a host-picks server somebody who joined a match was handed
-           ninety-odd greyed-out weapon cards to scroll past, and the one
-           thing they actually wanted -- what they will be carrying -- was
-           underneath all of it. renderLoadoutNote says why the lists are
-           gone and renderLoadoutSlots says what was chosen.
-
-           DECIDED HERE, and only here. The first version of this put the
-           check in renderLoadout and skipped the call, which worked and was
-           a trap: this function shows `loadout-lists` too, so with the call
-           restored the guard upstream would be silently overruled -- two
-           places answering one question, later one wins. */
-        /* THE EMPTY CATALOGUE IS THE MECHANISM, and it is the whole of it.
-           Everything below reads from these two lists: the sections are
-           shown only when their list has something in it, the grids are only
-           built inside those same guards, and nothing else here touches the
-           DOM. So a player who may not choose produces exactly the same
-           render as an arena with no weapons enabled -- minus the "no
-           weapons enabled" notice, which would be a fault report and this
-           is not a fault.
-
-           There was an `if (!choosing) return` under this as well. It never
-           did anything -- by the time it was reached both lists were already
-           empty -- and a guard that cannot be observed is a guard nobody can
-           maintain. */
         var choosing = canChooseLoadout();
 
         var firearms = choosing ? weaponCatalogue(false) : [];
         var blades = choosing ? weaponCatalogue(true) : [];
 
-        /* allowMelee = false is an operator switching melee off, and the
-           panel should look like that was the intention: the section goes
-           altogether rather than standing there empty or greyed out. The
-           same reading applies to firearms.
-
-           A pool of zero does NOT hide anything now -- zero means no limit,
-           so it is the most generous setting there is, not the meanest. */
         var gunsOn = allowFirearms() && firearms.length > 0;
         var meleeOn = allowMelee() && blades.length > 0;
 
         show(byId('loadout-firearms'), gunsOn);
         show(byId('loadout-melee'), meleeOn);
-        /* The box that holds them goes too, or it would sit in the same grid
-           cell as the empty state below and stack on top of it. */
         show(byId('loadout-lists'), gunsOn || meleeOn);
 
         var empty = byId('loadout-empty');
-        /* Not for somebody who was never offered a picker: "No weapons are
-           enabled on this server" is a fault report, and being handed a
-           loadout by the host is not a fault. */
         var sayEmpty = choosing && !gunsOn && !meleeOn;
         show(empty, sayEmpty);
         if (has(empty)) {
@@ -3363,9 +2394,6 @@
 
         if (meleeOn) {
             renderSectionCount('melee-count');
-            /* NO TABS HERE. Melee is one section already; a filter over one
-               short list is a control that costs a click and answers
-               nothing. */
             renderWeaponGrid('melee-grid', blades, plan);
         }
     }
@@ -3390,17 +2418,6 @@
             + 'Fill it with whichever you like.';
     }
 
-    // ------------------------------------------------------------------
-    // CATEGORY TABS -- FIREARMS ONLY
-    //
-    // They still earn their place: an operator with thirty guns wants
-    // Sidearms and Precision apart, and the list is long enough that
-    // scrolling alone is not an answer. They are built from the FIREARMS
-    // only, so the old 'Melee' tab -- which now filters a list melee is not
-    // in -- cannot appear, and they are dropped entirely when there is only
-    // one group to choose between.
-    // ------------------------------------------------------------------
-
     function firearmCategories(firearms) {
         var declared = arrayOf((cfg().loadouts || {}).categories).slice().sort(function (a, b) {
             return int(a.order, 999) - int(b.order, 999);
@@ -3424,17 +2441,10 @@
                 cats.push({ key: entry.key, label: entry.label || entry.key });
             }
         });
-        /* A weapon whose category an operator never declared still has to be
-           reachable, so it collects under 'Other' -- but only when one
-           actually exists. */
         if (hasOther) cats.push({ key: '__other', label: 'Other' });
         return cats;
     }
 
-    /* The filter the firearms list is really under. A category that has gone
-       -- an operator edit, or the old shared grid's 'Melee' tab still sitting
-       in state -- reads as 'All' rather than as an empty list with no way
-       back to a full one. */
     function activeCategory(cats) {
         for (var i = 0; i < cats.length; i++) {
             if (cats[i].key === state.loadoutCategory) return state.loadoutCategory;
@@ -3457,8 +2467,6 @@
         if (!has(host)) return;
         clear(host);
 
-        /* One group is not a filter, and neither is a picker nobody may
-           touch. */
         if (!canChooseLoadout() || cats.length < 2) {
             show(host, false);
             return;
@@ -3477,16 +2485,12 @@
         });
     }
 
-    // ------------------------------------------------------------------
-
     function renderWeaponGrid(id, weapons, plan) {
         var host = byId(id);
         if (!has(host)) return;
         clear(host);
 
         if (weapons.length === 0) {
-            /* Only reachable from a filter that outlived the weapons under
-               it. Says so, rather than leaving a blank box. */
             host.appendChild(makeEl('div', 'muted', 'Nothing in this group.'));
             return;
         }
@@ -3500,18 +2504,11 @@
         var index = draftIndexOf(weapon.key);
         var picked = index >= 0;
         var melee = isMelee(weapon);
-        /* The weapon's own pool, not a total. This is the whole change. */
         var poolFull = !picked && poolIsFull(melee);
 
         var card = makeEl('div', 'weapon-card');
-        /* Addressable, so a test can click the control a player clicks
-           rather than reaching past the panel into its internals -- and so
-           the box below can name what it belongs to. */
         card.id = 'weapon-card-' + weapon.key;
         if (picked) card.classList.add('active');
-        /* Dimmed rather than hidden or disabled: the weapon is still on
-           offer, it is the allowance that is spent, and clicking it says
-           which allowance in words. */
         if (poolFull && canChooseLoadout()) card.classList.add('blocked');
 
         card.appendChild(makeEl('div', 'weapon-name', weapon.label || weapon.key));
@@ -3522,8 +2519,6 @@
 
         if (options.length > 0) {
             var row = makeEl('div', 'weapon-ammo');
-            /* Named, because a bare row of numbers on a weapon card is a
-               riddle to anyone who has not used this panel before. */
             row.appendChild(makeEl('span', 'weapon-field-label', 'Rounds'));
             var chosen = picked ? state.draftWeapons[index].ammo : int(ammo.default, 0);
             options.forEach(function (value) {
@@ -3539,19 +2534,6 @@
                 row.appendChild(chip);
             });
 
-            /* THE TYPED AMOUNT, when the operator allows one.
-
-               The presets stay -- they are what most people will click --
-               and this sits beside them for anyone who wants a number that
-               is not on the list.
-
-               `max` is the ceiling and the server enforces it on every
-               request whatever this box says, so the input is capped here
-               only to tell the player where the limit is, never to be the
-               thing that holds it. */
-            /* UNDER THE WEAPON YOU CHOSE, and only then.
-               A box on a weapon nobody has taken is asking how much
-               ammunition they want for a gun they are not carrying. */
             if (allowsCustomAmmo(weapon) && picked) {
                 var box = makeEl('input', 'weapon-ammo-custom');
                 box.id = 'weapon-ammo-custom-' + weapon.key;
@@ -3569,21 +2551,11 @@
                 box.addEventListener('input', function (event) {
                     event.stopPropagation();
                     var wanted = clampInt(event.target.value, 0, int(ammo.max, 0));
-                    /* Quiet: see setWeaponAmmo. Re-rendering here is what
-                       made this box accept one digit at a time. */
                     setWeaponAmmo(weapon.key, wanted, true);
                 });
 
-                /* Clicking away is the end of typing, so the panel catches
-                   up then -- the chips re-light against whatever was typed,
-                   and a value the box clamped is written back visibly. */
                 box.addEventListener('blur', function () { render(); });
 
-                /* ENTER LOCKS IT IN.
-                   Typing already updates the draft, so Enter is not what
-                   makes the number count -- it is what SAVES, so a player
-                   can set an amount and commit without hunting for the save
-                   button at the bottom of the panel. */
                 box.addEventListener('keydown', function (event) {
                     if (event.key !== 'Enter' && event.keyCode !== 13) return;
                     event.stopPropagation();
@@ -3599,42 +2571,18 @@
         } else if (melee) {
             card.appendChild(makeEl('div', 'weapon-fixed', 'Melee — nothing to load'));
         } else {
-            /* No options means no choice to make, not no ammo -- the server
-               hands out the default. Rendering an empty chip row would read
-               as a broken picker. */
             card.appendChild(makeEl('div', 'weapon-fixed',
                 'Always ' + plural(int(ammo.default, 0), 'round')));
         }
 
-        /* THE AMMO TYPE. An empty list means this weapon offers no choice of
-           round -- melee, or a weapon the operator switched types off for --
-           and it gets no control at all, not a dead one reading 'none'. */
         var types = ammoTypesOf(weapon);
-        /* ONE ROUND IS NOT A CHOICE, so it gets no control.
-           
-           Every weapon in a config generated from the server's own
-           ox_inventory data carries exactly one ammo type -- the round that
-           weapon's `ammoname` names -- so the picker was a row of one button,
-           permanently selected, asking a question with a single answer. The
-           correlation is already done; showing it as a choice only invites
-           the player to look for one that is not there.
-
-           A weapon an operator has genuinely given two or more rounds still
-           gets the full picker. */
         if (types.length > 1) {
             var typeRow = makeEl('div', 'weapon-ammo');
             typeRow.appendChild(makeEl('span', 'weapon-field-label', 'Ammo type'));
 
             var entry = picked ? plan.byKey[weapon.key] : undefined;
-            /* Lit only once the weapon is actually in the loadout, exactly
-               like the amount chips above: highlighting a type on a weapon
-               nobody has picked would claim a choice that was never made. */
             var chosenType = entry !== undefined ? entry.chosen : null;
             var defaultLabel = ammoTypeLabel(weapon, defaultAmmoType(weapon));
-            /* With no weapon in the draft to re-plan around, the honest test
-               for an unpicked weapon is the standing one: adding a weapon
-               never frees a type slot, so a round the loadout is not already
-               carrying would be swapped. */
             var capSpent = plan.cap > 0 && plan.distinct >= plan.cap;
 
             types.forEach(function (type) {
@@ -3645,9 +2593,6 @@
                 var swaps = picked
                     ? wouldSwap(weapon.key, type.key)
                     : (capSpent && plan.taken[type.key] !== true);
-                /* MARKED, NOT DISABLED. The server takes the weapon either
-                   way, so a chip that cannot be pressed says less than one
-                   that says what pressing it would get you. */
                 if (swaps) {
                     chip.classList.add('spent');
                     chip.title = 'This loadout is already carrying its '
@@ -3664,8 +2609,6 @@
             });
             card.appendChild(typeRow);
 
-            /* The swap, said on the card it happened to, so nobody meets it
-               for the first time at the start of a round. */
             if (entry !== undefined && entry.swapped === true) {
                 var loadedLabel = ammoTypeLabel(weapon, entry.loaded);
                 var wantedLabel = ammoTypeLabel(weapon, entry.chosen);
@@ -3693,15 +2636,6 @@
         return card;
     }
 
-    // ------------------------------------------------------------------
-    // THE SUMMARY
-    //
-    // The last thing a player reads before a round locks the choice in, so
-    // it carries all of it: both counters, and per weapon the weapon, the
-    // amount and the round -- the round the SERVER will load, which is not
-    // always the one that was clicked.
-    // ------------------------------------------------------------------
-
     function renderLoadoutSlots(plan) {
         var host = byId('loadout-slots');
         if (!has(host)) return;
@@ -3709,15 +2643,6 @@
 
         host.appendChild(makeEl('div', 'panel-heading', 'Into The Round'));
 
-        /* IN A LADDER MODE THE DRAFT IS NOT WHAT THEY WILL BE HANDED, and
-           this heading promises that it is. `state.draftWeapons` is the last
-           thing this player saved on some other mode; the server throws it
-           away and issues the ladder instead. Drawing it here would put the
-           one lie the loadout screen must never tell directly under the
-           sentence that has just explained why the picker is shut.
-
-           The round-type allowance goes with it: the ladder picks each
-           tier's own default round, so there is no allowance being spent. */
         var ladderMode = playerMode();
         if (modeIssuesLoadout(ladderMode)) {
             host.appendChild(makeEl('div', 'hint',
@@ -3725,22 +2650,7 @@
                 + 'What each tier is holding is drawn when the round starts, so it is not the '
                 + 'same ladder twice.'));
 
-            /* THREE ANSWERS, NOT TWO, and the difference is the whole
-               point of them. shared/arena.lua sends `startingKit` as a list
-               when the mode names one, as an EMPTY list when the mode names
-               "nothing at all", and not at all when the mode has no opinion
-               -- in which case server/match.lua's kitFor falls through and
-               the server hands out whatever this server's own supply
-               defaults are, a plate and a couple of bandages on the shipped
-               config. Collapsing the last two into one sentence made the
-               screen say nobody is issued anything while the round handed
-               out three items. */
             var issued = startingKitText(ladderMode);
-            /* AND ONLY WHERE THIS SERVER DOES SUPPLIES AT ALL. With the
-               section switched off Arena.GetEnabledSupplies answers nothing,
-               so the server's own fallback resolves to an empty list and the
-               fighter really is issued nothing -- promising them the
-               defaults there is the same lie in the other direction. */
             var noOpinion = (ladderMode.startingKit === undefined
                     || ladderMode.startingKit === null)
                 && supplyConfig().enabled !== false;
@@ -3757,14 +2667,6 @@
 
         slotGroup(host, plan);
 
-        /* Only when there is a cap to report against.
-
-           OVER THE ALLOWANCE IS A REAL STATE, not an arithmetic slip. When a
-           weapon falls back to its own default round, the server counts that
-           default towards the cap as well -- so a loadout that spent its one
-           type on FMJ and then fell a rifle back to Standard is genuinely
-           carrying two. '2 of 1 kind' would read as a broken sum, so the
-           over case is written out as a sentence instead. */
         if (plan.cap > 0) {
             var line = makeEl('div', 'slot-types');
             line.appendChild(makeEl('span', 'slot-group-title', 'Round types'));
@@ -3849,7 +2751,6 @@
         var slot = makeEl('div', 'slot');
 
         if (!pick) {
-            /* No kind is named: the slot takes either, which is the point. */
             slot.appendChild(makeEl('span', 'muted', canChooseLoadout()
                 ? 'Empty — click a weapon to fill it'
                 : 'Empty'));
@@ -3863,9 +2764,6 @@
         main.appendChild(makeEl('div', 'slot-name',
             (weapon && (weapon.label || weapon.key)) || pick.key));
 
-        /* WEAPON, AMOUNT AND TYPE. A number on its own does not say what is
-           in the magazine, and the round type is the one of the three that
-           cannot be guessed from the weapon's name. */
         var detail = [];
         if (melee) detail.push('Melee');
         else detail.push(plural(int(pick.ammo, 0), 'round'));
@@ -3900,24 +2798,12 @@
     }
 
     function renderLoadoutSaveRow() {
-        /* The whole row goes, not just the button: a lone status line under
-           a picker nobody may touch explains nothing. */
         show(byId('loadout-save-row'), canChooseLoadout());
 
-        /* A SAVE ONLY REACHES THE SERVER FROM A LOBBY YOU ARE IN.
-           ArenaLobby.SetLoadout refuses a player in no match with
-           error.not_in_match, exactly as it refuses one whose round has
-           started -- so offering the button there was offering a refusal. */
         var saveable = loadoutIsSaveable();
 
         var save = byId('loadout-save');
         if (has(save)) {
-            /* UNSAVED CHANGES WIN OVER AN ANSWER STILL IN FLIGHT. Greying
-               the button out while waiting would be tidier and is a trap:
-               an answer that never arrives -- a dropped event, a resource
-               restart -- would leave the player unable to save at all, and
-               they have edits in front of them that they can see are not
-               sent. */
             save.disabled = !state.loadoutDirty || !saveable;
             save.title = !saveable
                 ? 'Join a match first — there is nothing to save this to yet.'
@@ -3928,17 +2814,6 @@
                         : 'Nothing has changed since your last save.'));
         }
 
-        /* THREE STATES, NOT TWO, and the third is why. This used to flip
-           straight from "Unsaved" to "Saved." the instant the button was
-           pressed -- before anything had left the machine. A save the
-           server refused (the host picks the loadout on this server, a
-           weapon that has since been switched off, a request that arrived
-           malformed) put a red toast on screen while the picker underneath
-           it went on showing the rejected weapons and calling them saved.
-
-           "Saved." is now only ever printed about a picker that is showing
-           the server's OWN answer: the draft re-seeds from player().loadout
-           on every snapshot, and a snapshot is what clears `loadoutSaving`. */
         var status = byId('loadout-save-status');
         if (has(status)) {
             if (!saveable) {
@@ -3953,7 +2828,6 @@
         }
     }
 
-    /* The supplies block as the server sent it, or an empty stand-in. */
     function supplyConfig() {
         return (cfg().loadouts || {}).supplies || {};
     }
@@ -3962,9 +2836,6 @@
         return arrayOf(supplyConfig().items);
     }
 
-    /* How many items the draft asks for across every supply, for the shared
-       ceiling. Counted rather than tracked, so it cannot drift out of step
-       with the draft it describes. */
     function suppliesTaken(exceptKey) {
         var total = 0;
         var draft = state.draftSupplies || {};
@@ -3980,15 +2851,6 @@
         if (!has(host)) return;
         clear(host);
 
-        /* A LADDER MODE ISSUES ITS OWN KIT, so the chips below are not what
-           this player will carry -- they are the last thing they saved on
-           some other mode, and the server throws them away. Drawn under a
-           caption reading "Set by the server." that made it a specific claim
-           about the wrong numbers: the screen said 1 plate and 2 bandages
-           and the round handed out 1 and 5.
-
-           Drawn from the mode instead, as plain rows, so the block says the
-           true thing rather than the plausible one. */
         var issuing = playerMode();
         if (modeIssuesLoadout(issuing)) {
             var kit = arrayOf(issuing.startingKit);
@@ -4008,9 +2870,6 @@
 
         var config = supplyConfig();
         var catalogue = supplyCatalogue();
-        /* Off, or nothing switched on: the section is not drawn at all
-           rather than drawn empty. An empty box with a heading reads as
-           something broken. */
         if (config.enabled !== true || catalogue.length === 0) return;
 
         host.appendChild(makeEl('span', 'field-label', 'Supplies'));
@@ -4024,10 +2883,6 @@
             row.appendChild(makeEl('span', 'supply-name', supply.label || supply.key));
 
             if (!picking) {
-                /* WHAT THEY WILL ACTUALLY BE HANDED, which on a host-picks
-                   server is the host's choice and not the operator's default
-                   -- reading the default told a player they were carrying two
-                   bandages while the host had set them none. */
                 row.appendChild(makeEl('span', 'muted', String(int(draft[supply.key], 0))));
                 host.appendChild(row);
                 return;
@@ -4045,10 +2900,6 @@
                 chip.type = 'button';
                 if (amount === int(draft[supply.key], -1)) chip.classList.add('active');
 
-                /* THE SHARED CEILING IS SHOWN, NOT JUST ENFORCED. The server
-                   clamps the total either way; a chip that silently gives
-                   less than it says is how a player learns to distrust the
-                   panel. */
                 var wouldTotal = suppliesTaken(supply.key) + amount;
                 if (ceiling > 0 && wouldTotal > ceiling) {
                     chip.classList.add('disabled');
@@ -4086,62 +2937,29 @@
         post('setLoadout', {
             weapons: state.draftWeapons.map(function (pick) {
                 var entry = { key: pick.key, ammo: int(pick.ammo, 0) };
-                /* ONLY WHEN THERE IS ONE TO SEND. A weapon with no types has
-                   no key to name, and the server reads a missing field as
-                   "whatever this weapon loads normally" -- which is the
-                   right answer for melee and the wrong one to invent a
-                   value for. */
                 var type = keyOr(pick.ammoType, null);
                 if (type !== null) entry.ammoType = type;
                 return entry;
             }),
-            /* NAMED, and only the ones with a count. The server reads a
-               missing entry as "the operator's default for that supply",
-               which is the right answer for a panel that never drew the
-               section -- and the wrong one to invent for a player who chose
-               none, so a zero is sent rather than left out. */
             supplies: supplyCatalogue().map(function (supply) {
                 return { key: supply.key, count: int((state.draftSupplies || {})[supply.key], 0) };
             })
         });
-        /* The draft stops being dirty because the next snapshot has to be
-           allowed to re-seed it -- that snapshot is the server's answer,
-           and it carries what the player was actually given. Until it
-           arrives this is neither unsaved nor saved, which is what
-           `loadoutSaving` is for. */
         state.loadoutDirty = false;
         state.loadoutSaving = true;
         render();
     }
 
-    // ------------------------------------------------------------------
-    // BETS
-    // ------------------------------------------------------------------
-
-    /* The pick a side-bet names: a team key in team modes, the fighter's
-       server id as a string in a free-for-all. Matches what
-       server/betting.lua's canonicalPick accepts. */
-    /* WHETHER THIS PLAYER IS FIGHTING IN THE MATCH THEY ARE LOOKING AT.
-       The whole bet screen branches on it: a fighter and a spectator are
-       betting under different rules, out of different bands, on a different
-       set of picks. */
     function betAsFighter(match) {
         return !!match && playerMatchId() === match.id;
     }
 
-    /* The band and the switch that apply to THIS player on THIS match.
-       Reading spectatorBets for a fighter is how a fighter came to be told
-       the biggest bet was a number that was never theirs. */
     function betRules(match) {
         return betAsFighter(match)
             ? (betting().fighterBets || {})
             : (betting().spectatorBets || {});
     }
 
-    /* The one side a fighter is allowed to back, or null where they may back
-       anybody. Computed exactly as ownSideOf does on the server -- their team
-       in a team mode, their own server id otherwise -- because a panel that
-       computes it differently offers a chip the server then refuses. */
     function ownSide(match) {
         if (!betAsFighter(match)) return null;
         if ((betting().fighterBets || {}).ownSideOnly === false) return null;
@@ -4183,7 +3001,6 @@
         return live;
     }
 
-    /* The pick, but only for the match it was actually made on. */
     function currentPick(match) {
         if (!match || state.betPickMatchId !== match.id) return null;
         return state.betPick;
@@ -4216,8 +3033,6 @@
 
         show(disabled, !enabled);
         if (has(disabled) && !enabled) {
-            /* Switched off is a decision an operator made, and it should
-               read as one. A bare 'disabled' reads as a fault. */
             clear(disabled);
             disabled.appendChild(makeEl('div', null, 'No money in this arena'));
             disabled.appendChild(makeEl('div', 'bet-disabled-sub',
@@ -4238,25 +3053,15 @@
         renderBetList(match);
     }
 
-    /* Where the money on this screen comes from and where it goes. Two
-       pools, and a player who thinks they are the same one will think a
-       side-bet is changing what the winner takes home. */
     function renderBetNote() {
         var host = byId('bet-note');
         if (!has(host)) return;
 
         var spectator = betting().spectatorBets || {};
         var fighter = betting().fighterBets || {};
-        /* True whichever payout rule this server runs: the stake stays in
-           the pot, and what the pot then does is the clause above. */
         var text = 'Every fighter pays the entry fee into the pot, and at the end of the round '
             + payoutPhrase() + '. Being eliminated ends your round and your fee stays in the pot.';
         if (spectator.enabled === true && poolsAreShared()) {
-            /* ONE POOL, WHICH IS HOW IT SHIPS. betPayout.sharedPool makes
-               fighters and spectators settle together and includeEntryPot
-               folds every entry fee in with them, so a bystander's stake
-               really does reach the winner. The sentence below claimed the
-               exact opposite to every player on every screen. */
             text += ' A side-bet below goes into that same pot: back the winning side and you take '
                 + 'a share of it, and what you stake is part of what the winners are paid.';
         } else if (spectator.enabled === true) {
@@ -4264,10 +3069,6 @@
                 + 'winners take.';
         }
         if (fighter.enabled === true) {
-            /* Said plainly because it is the part people get wrong: a
-               winning bet is a share of what everybody staked, so it is
-               bigger when more people were wrong and smaller when they
-               were not. Nothing is created to pay it. */
             text += ' You can also back yourself'
                 + (fighter.ownSideOnly === false ? '' : ' — and only yourself')
                 + ' in a match you are fighting in. Winning bets share out the whole betting pool '
@@ -4289,37 +3090,16 @@
             host.appendChild(box);
         }
 
-        /* The account they are actually paying from, and what is in it. The
-           strip used to name the operator's settlement account and show its
-           balance whatever the player had picked, so somebody paying from the
-           bank was reading their cash. */
         var from = chosenAccount();
         stat('Your ' + titleCase(from), money(balanceIn(from)));
         stat('Pot', match ? money(match.pot) : money(0));
         stat('Entry fee', match ? money(match.entryFee) : money(0));
-        /* `winner_takes_all` is how config spells it, not how anybody reads
-           it. The whole rule is a sentence in the note below this strip;
-           this is the two words that fit under the heading.
-
-           GATED LIKE ITS TWO SIBLINGS, which it was not. payoutPhrase's own
-           comment names all three lines that quoted Config.Betting.payout on
-           a server where Arena.ComputePayouts is never reached -- and only
-           two of them were converted. So on the shipped default this strip
-           said "Winner takes all" at the exact moment a player was choosing
-           an account and typing a stake, while the sentence two boxes below
-           it correctly said the pot is split between everyone who backed the
-           winning side. In a team win that is the whole winning team plus
-           every spectator who backed it, which is not "the winner". */
         stat('Pot goes to', poolsAreShared()
             ? 'Backers of the winner'
             : labelFor(PAYOUT_SHORT, betting().payout, 'The winner'));
 
         var spectator = betting().spectatorBets || {};
         if (spectator.enabled === true || (betting().fighterBets || {}).enabled === true) {
-            /* 'x2' is only true under the fixed-odds rule. Under the pool
-               rule the figure does not exist yet -- it depends on who else
-               backs what -- and printing one anyway is the panel promising
-               something nothing pays. */
             stat('Bets pay', betMode(match) === 'odds'
                 ? 'x' + String(Number(spectator.oddsMultiplier) || 2)
                 : 'Share of pool');
@@ -4346,9 +3126,6 @@
         }
         if (!match) return;
 
-        /* A FIGHTER HELD TO THEIR OWN SIDE IS OFFERED ONLY THAT SIDE. The
-           other chips are not disabled, they are absent: a row of names you
-           may not click, on a screen about money, reads as a bug. */
         var own = ownSide(match);
         var options = betPickOptions(match).filter(function (option) {
             return own === null || String(option.pick) === own;
@@ -4359,9 +3136,6 @@
             return;
         }
 
-        /* The chips are names and team labels with nothing above them
-           otherwise -- and a name on a chip does not say what clicking it
-           means. */
         host.appendChild(makeEl('span', 'field-label', 'Backing'));
 
         options.forEach(function (option) {
@@ -4378,25 +3152,12 @@
         });
     }
 
-    /* Why this player cannot place a side-bet on this match right now, or
-       null. Same courtesy as the join button: the server decides, this
-       explains. */
     function betBlockedReason(match) {
         if (!match) return 'Pick a match on the Matches tab first.';
 
         var fighting = betAsFighter(match);
         var rules = betRules(match);
 
-        /* THE LINE THAT USED TO BE HERE:
-
-               if (playerMatchId() === match.id)
-                   return 'You are fighting in this match. You cannot bet on yourself.'
-
-           It was true when it was written and stopped being true when
-           fighterBets shipped. server/betting.lua takes a fighter's bet,
-           holds it to their own side, settles it out of the pool and pays it
-           like any other -- and this refused every one before it reached the
-           wire. The feature was on, correct and unreachable. */
         if (rules.enabled !== true) {
             return fighting
                 ? 'Fighters cannot bet on this server. Your entry fee is already on the line.'
@@ -4405,36 +3166,8 @@
 
         if (match.state === 'ended') return 'This match has finished.';
 
-        /* THE BOOK SHUTS PART-WAY INTO A LIVE ROUND, and this panel had no
-           idea. server/betting.lua stops taking side-bets
-           `closeAfterStartSeconds` after the fighting starts -- thirty
-           seconds on the shipped config -- and the only thing that knew was
-           the refusal on the way in, so a spectator watching a running match
-           saw a lit Place Bet button, clicked it, and got "Book is closed on
-           this one." The snapshot carries the answer now, and the server
-           broadcasts once at the instant it changes.
-
-           Read as `=== false` rather than `!== true`: a server running an
-           older panel, or a snapshot assembled before this field existed,
-           should keep offering the bet rather than refuse every one. */
-        /* Whether the READER is fighting in this match, which is the panel's
-           own existing test -- playerMatchId() is the match the server says
-           they are a fighter in, and it is nil while they are only watching
-           one. */
         var fighting = playerMatchId() === match.id;
 
-        /* A FIGHTER'S BOOK AND A WATCHER'S BOOK SHUT AT DIFFERENT MOMENTS, so
-           the snapshot carries both answers and this picks the one that is
-           about the reader. A fighter's shuts the instant the round goes live
-           -- betting on a round you can already see the shape of, at a
-           fighter's ceiling, with the first kills banked, is not a wager --
-           while a watcher keeps the grace window.
-
-           Without this the panel read the WATCHER's answer to everybody, so
-           every fighter in a live round saw a lit Place Bet button and got
-           "Book is closed on this one." on the way back. Same `=== false`
-           benefit of the doubt as below: an older server that sends neither
-           field keeps offering the bet rather than refusing every one. */
         if (fighting && match.fighterBetsOpen === false) {
             return 'The book closed when this round went live.';
         }
@@ -4442,15 +3175,6 @@
             return 'The book closed shortly after this round started.';
         }
 
-        /* ONE BET PER MATCH, WHERE THE OPERATOR SAYS SO. PlaceSpectatorBet
-           refuses a second bet while the first is unsettled, and the button
-           stayed lit through every one of those refusals -- "One side-bet
-           per match. Yours is down." The rule ships on.
-
-           `backing` is the same list the Join gate reads, and it counts only
-           UNSETTLED bets: a bet handed back by a mode change drops off it,
-           so the player may back the replacement, which is exactly what
-           ArenaLobby.UpdateMatch promises them. */
         if (rules.oneBetPerMatch !== false
             && arrayOf(player().backing).indexOf(match.id) !== -1) {
             return 'Your bet on this match is already down — one per match.';
@@ -4488,9 +3212,6 @@
     }
 
     function renderBetControls(match) {
-        /* Whichever rule applies to this player. A server with spectator
-           bets off and fighter bets on used to draw no form at all, so the
-           fighters it was switched on for could not see it. */
         var rules = betRules(match);
         var usable = rules.enabled === true;
 
@@ -4507,9 +3228,6 @@
 
         var reason = betBlockedReason(match);
 
-        /* The reason is written under the control rather than hidden in a
-           tooltip: a bet that cannot be placed and does not say why is the
-           panel looking broken. */
         var hint = byId('bet-hint');
         show(hint, usable);
         if (has(hint) && usable) {
@@ -4520,15 +3238,6 @@
                 hint.textContent = 'If they win you are paid ' + money(int(state.betAmount, 0) * odds)
                     + '. If they lose, the stake is gone.';
             } else if (betAsFighter(match)) {
-                /* "THE STAKE IS GONE" IS ONLY TRUE OF FIXED ODDS, and saying
-                   it here was the panel promising a loss the settlement does
-                   not take. A pool has no house behind it: a losing stake is
-                   paid to whoever backed the winner, and where nobody did --
-                   nobody bet against you, or nobody backed the side that won
-                   -- there is nobody to pay it to and it comes back. A player
-                   told their money was gone and then handed it back does not
-                   read that as generosity, they read it as the arena being
-                   broken, which is the same complaint from the other end. */
                 hint.textContent = 'Backing yourself with ' + money(int(state.betAmount, 0))
                     + ' on top of your entry fee. If you win you take a share of the whole betting '
                     + 'pool, in proportion to what you staked — so you only profit if somebody '
@@ -4543,11 +3252,6 @@
             }
         }
 
-        /* THE BET THEY ALREADY HAVE DOWN. Without this the screen looked
-           identical before and after placing one -- the entry pot does not
-           move for a side-bet, by design, so there was nothing else to
-           change and no way to tell a bet that was taken from one that was
-           refused. */
         var mine = player().bet;
         if (has(hint) && usable && mine && int(mine.amount, 0) > 0) {
             var backed = null;
@@ -4576,9 +3280,6 @@
         }
     }
 
-    /* The snapshot carries no list of placed side-bets -- betting.lua keeps
-       those to itself -- so this shows what the panel can prove: who is in
-       the pot and what each of them staked. */
     function renderBetList(match) {
         var host = byId('bet-list');
         if (!has(host)) return;
@@ -4609,14 +3310,8 @@
             host.appendChild(row);
         });
 
-        /* The dimmed rows mean something. Said once, and only when there is
-           a dimmed row to explain. */
         if (anyOut) host.appendChild(makeEl('div', 'hint', 'Dimmed names are out of the round.'));
     }
-
-    // ------------------------------------------------------------------
-    // LEADERBOARD
-    // ------------------------------------------------------------------
 
     function renderBoard() {
         var body = byId('leaderboard-body');
@@ -4669,9 +3364,6 @@
         var alive = byId('hud-alive');
         var kills = byId('hud-kills');
 
-        /* The overlay can be switched on before any numbers exist -- the
-           sweep that fills it runs once a second. Blank fields say "not
-           yet"; zeros would claim an empty arena. */
         if (!state.hud) {
             if (has(timer)) timer.textContent = '';
             if (has(alive)) alive.textContent = '';
@@ -4685,18 +3377,10 @@
 
         if (has(timer)) {
             var left = hud.timeLeft;
-            /* A round with no time limit has nothing to count down; an
-               empty clock beats a frozen 0:00. */
             timer.textContent = (left === null || left === undefined) ? '' : clock(left);
         }
 
         if (has(alive)) {
-            /* "REMAINING 6 / 6" ALL ROUND IS NOT A COUNT, IT IS A PROMISE
-               THE ROUND DOES NOT KEEP. Under a ladder, a kill limit or most
-               kills nobody is eliminated, so the left-hand number never
-               moves -- and a header shaped like a countdown says people are
-               being knocked out when none can be. The server resolves which
-               kind of round this is; absent, it counts as it always did. */
             alive.textContent = hud.livesSpent === false
                 ? plural(int(hud.total, 0), 'fighter')
                 : 'Remaining ' + int(hud.remaining, 0) + ' / ' + int(hud.total, 0);
@@ -4714,25 +3398,11 @@
         renderHudScoreboard(arrayOf(hud.scoreboard));
     }
 
-    /* One row: the ladder tier where there is one, then the name. `entry.name`
-       is another player's, so it is a
-       text node and never markup. Shared with the end-of-match board below:
-       the class is styled by a bare `.hud-score-row` rule, not by anything
-       scoped to the overlay, so it draws the same in both places. */
     function scoreRow(entry, me) {
         var row = makeEl('div', 'hud-score-row');
         if (int(entry.id, -1) === me) row.classList.add('self');
         if (entry.alive === false) row.classList.add('dead');
 
-        /* THE TIER, BEFORE THE NAME, BECAUSE IN A LADDER IT IS THE STANDING.
-
-           The server has put `tier` and `tiers` on every scoreboard row of a
-           gun game for as long as the mode has existed and this file drew
-           neither -- a grep for the field across the whole panel returned
-           nothing. So the one number the mode is played for reached the
-           player only as a toast that scrolled away, and a demoted player
-           could not tell a rule from a bug. The server sends both as null in
-           every other mode, which is how this knows not to draw a column. */
         var tiers = int(entry.tiers, 0);
         if (tiers > 0) {
             row.classList.add('tiered');
@@ -4763,11 +3433,6 @@
         });
     }
 
-    /* The countdown hides ITSELF when its own clock runs out rather than
-       waiting to be told to. The lobby countdown's last push is "1" and the
-       round starts a second later -- there is no zero on the wire, and a
-       stuck number burnt over live gameplay is not something a player can
-       clear. The grace covers a late push arriving just after the tick. */
     var countdownTimer = null;
 
     function hideCountdown() {
@@ -4788,9 +3453,6 @@
             return;
         }
 
-        /* A new round is starting, so the last one's board has had its say --
-           and a countdown drawn through it would be two overlays arguing over
-           the same screen. */
         hideResults();
 
         var digits = byId('countdown-value');
@@ -4805,65 +3467,19 @@
         show(root, true);
     }
 
-    // ==================================================================
-    // THE ADMIN TABLET
-    //
-    // Opened by /arenaadmin and by nothing else. It draws three screens in
-    // one panel -- the live matches, one match's fighters, one fighter's
-    // escrow -- and every button on it posts to a server handler that
-    // re-checks ArenaIsAdmin on arrival. Nothing here is a permission check;
-    // this is a view, and a view that is wrong about who is looking at it
-    // costs nothing because the server is not asking it.
-    // ==================================================================
-
     var admin = {
         open: false,
         matches: [],
-        /* The match this tablet has open, as the server last described it --
-           id, state, pot and the fighters in it. Null on the list screen. */
         focused: null,
-        /* The fighter's server id, or null. Kept as an ID rather than as the
-           row itself so a refresh redraws them from the new snapshot instead
-           of showing a fighter frozen at the moment they were clicked. */
         player: null,
-        /* Stashes nobody has had back yet, by citizen id. Empty on a healthy
-           server, which is the point: a row here is somebody who is short.
-
-           EVERY STASH THIS SERVER HAS EVER MADE, not only the ones this RUN
-           remembers: the in-memory records die with a restart and the stashes
-           do not, so a player left outstanding when the server went down was
-           somebody nothing could name afterwards. */
         owed: [],
         stashesFound: 0,
         stashesRead: 0,
-        /* Whether the arena is letting anybody in right now, and whether that
-           is the schedule's doing or an admin's. Two facts rather than one:
-           "open" at four in the morning means something different depending
-           on which of them said so.
-
-           `hoursForced` is 'open', 'shut', or null for the schedule -- null
-           being the ABSENCE of a decision rather than a third kind of shut. */
         hoursOpen: true,
         hoursForced: null,
-        /* The schedule this server keeps, and the next time it opens. Both
-           null where no hours are enforced at all -- which is not the same as
-           "open all day" said badly: there is simply no window to quote. */
         hoursLine: null,
         hoursOpensAt: null,
-        /* Which of the tablet's two subjects is on screen: 'matches' or
-           'stashes'. Each tab has its own depth below it -- a match and then
-           a fighter, or a stash -- and those are screens WITHIN a tab rather
-           than tabs of their own.
-
-           NULL UNTIL THE ADMIN PICKS ONE, which is how the tablet knows to
-           land on the closed screen rather than on a tab -- and how a second
-           /arenaadmin lands on the matches rather than wherever the last one
-           was left. */
         tab: null,
-        /* The stash the Stashes tab has open, by citizen id, or null for the
-           list. An ID rather than the row itself, for the same reason
-           admin.player is: a refresh redraws it from the new snapshot instead
-           of showing a stash frozen at the moment it was clicked. */
         stash: null,
     };
 
@@ -4871,7 +3487,6 @@
         post('adminState', { matchId: admin.focused ? admin.focused.id : null });
     }
 
-    /* The fighter admin.player names, out of the CURRENT snapshot. */
     function adminPlayerRow() {
         if (!admin.focused || admin.player === null) return null;
         var rows = arrayOf(admin.focused.players);
@@ -4887,13 +3502,8 @@
         show(root, admin.open);
         if (!admin.open) return;
 
-        /* ---- the doors ---- */
         var doorState = byId('admin-doors-state');
         if (has(doorState)) {
-            /* WHAT IS TRUE, AND WHO DECIDED IT. "Open" is two different facts
-               -- the schedule says so, or somebody did -- and an operator who
-               cannot tell them apart cannot tell what pressing anything here
-               will do. */
             doorState.textContent = admin.hoursForced === 'open'
                 ? 'Held OPEN past the schedule. Anyone can start or join a match.'
                 : (admin.hoursForced === 'shut'
@@ -4904,9 +3514,6 @@
                         : 'Shut, on the schedule — nobody can start or join a match.'));
         }
 
-        /* THE ONE IN FORCE IS LIT and cannot be pressed again. A button that
-           re-asks for the state the arena is already in is a button whose
-           only possible effect is a wasted round trip. */
         var doorButtons = [
             { id: 'admin-doors-schedule', mode: null },
             { id: 'admin-doors-open', mode: 'open' },
@@ -4944,12 +3551,6 @@
         show(byId('admin-shut'), shut);
 
         if (shut) {
-            /* PUT AWAY BY NAME, because the block below that normally decides
-               which screen is up is skipped entirely here -- and a screen
-               left alone keeps whatever it was last given. The match list is
-               the one that bites: it is the DEFAULT screen and carries no
-               `hidden` class in the markup, so it is on screen from the first
-               frame unless something takes it away. */
             show(byId('admin-list'), false);
             show(byId('admin-detail'), false);
             show(byId('admin-player'), false);
@@ -4975,9 +3576,6 @@
         var onStashes = admin.tab === 'stashes';
         var onMatches = !onStashes && !shut;
 
-        /* The stash admin.stash names, out of the CURRENT snapshot -- so a
-           stash that has since been handed back falls out to the list rather
-           than leaving an admin looking at a manifest of nothing. */
         var stash = null;
         if (onStashes && admin.stash !== null) {
             arrayOf(admin.owed).forEach(function (entry) {
@@ -4986,10 +3584,6 @@
         }
 
         var row = onStashes ? null : adminPlayerRow();
-        /* A fighter who has left the match while their card was open falls
-           back to the match, and a match that has ended falls back to the
-           list -- rather than leaving an admin looking at a screen about
-           somebody who is no longer there. */
         var onPlayer = row !== null;
         var onMatch = !onStashes && !onPlayer && admin.focused !== null;
         var onStash = stash !== null;
@@ -5000,15 +3594,11 @@
         show(byId('admin-stashes'), onStashes && !onStash);
         show(byId('admin-stash-detail'), onStashes && onStash);
 
-        /* WHICH TAB IS LIT. The screens below each list are a depth within
-           their tab, not tabs of their own, so the tab stays lit while an
-           admin is two screens down inside it. */
         var matchesTab = byId('admin-tab-matches');
         var stashesTab = byId('admin-tab-stashes');
         if (has(matchesTab)) matchesTab.classList.toggle('active', onMatches);
         if (has(stashesTab)) stashesTab.classList.toggle('active', onStashes);
 
-        /* ---- the list ---- */
         var list = byId('admin-matches');
         if (has(list)) {
             clear(list);
@@ -5022,18 +3612,7 @@
                         + ' · pot ' + money(int(match.pot, 0))));
                 card.addEventListener('click', function () {
                     admin.player = null;
-                    /* CLICKING INTO A MATCH IS CHOOSING THE MATCHES TAB, and
-                       saying so here is what stops the closed screen eating
-                       it. `tab` starts null, and the closed screen is drawn
-                       whenever the doors are shut AND no tab is chosen -- so
-                       an admin who opened the tablet, clicked into a live
-                       round, and then shut the arena watched the Stop and
-                       Revive buttons vanish at the exact moment they are
-                       most likely to want them. */
                     admin.tab = 'matches';
-                    /* Asked for rather than assumed: the list row carries a
-                       head count, and the detail screen needs the fighters
-                       themselves. */
                     post('adminState', { matchId: match.id });
                 });
                 list.appendChild(card);
@@ -5041,7 +3620,6 @@
         }
         show(byId('admin-empty'), arrayOf(admin.matches).length === 0);
 
-        /* ---- the stashes tab ---- */
         var owed = arrayOf(admin.owed);
 
         /* THE ONE BUTTON, BUILT ONCE, because the row and the opened stash
@@ -5057,37 +3635,22 @@
             var give = makeEl('button', className,
                 online > 0 ? 'Hand it back' : 'Queue for when they return');
             give.type = 'button';
-            /* The only thing that makes this button pointless is an empty
-               stash. Being offline does not. */
             give.disabled = items.length === 0;
             give.addEventListener('click', function (event) {
-                /* The row itself opens the stash, and this button sits inside
-                   it: without this, sending somebody their things also walked
-                   the admin one screen deeper for no reason. */
                 if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
                 post('adminReturn', {
                     target: online,
                     citizenid: entry.citizenid,
                     stash: entry.stash,
-                    /* THE MATCH THIS TABLET HAS OPEN, like every other ask.
-                       The server answers with `focused` built from it, and
-                       leaving it out answered null -- so handing somebody
-                       their belongings quietly closed the match an admin had
-                       open behind the Stashes tab. */
                     matchId: admin.focused ? admin.focused.id : null,
                 });
             });
             return give;
         }
 
-        /* What one stash holds, as a line a person reads. */
         function stashSummary(entry) {
             var items = arrayOf(entry.items);
             if (items.length === 0) {
-                /* AN EMPTY STASH ON THIS LIST IS ITS OWN ANSWER: something is
-                   recorded as being in there and the stash reads empty, which
-                   is the shape of the bug that lost people their belongings.
-                   Said plainly rather than drawn as a blank row. */
                 return 'the stash reads EMPTY — nothing to hand over';
             }
             var total = 0;
@@ -5114,19 +3677,10 @@
 
         var stashLine = byId('admin-stash-line');
         if (has(stashLine)) {
-            /* HOW MANY WERE OPENED, out of how many exist. Four stashes with
-               things in them means something different depending on whether
-               that is all of them or the first sixty of nine hundred, and an
-               admin cannot tell those apart from the list alone. */
             var found = int(admin.stashesFound, 0);
             var read = int(admin.stashesRead, 0);
             var unread = Math.max(0, found - read);
 
-            /* HOW MANY OF THEM NOBODY CAN BE HANDED, which is the number an
-               operator came here for. A stash whose owner is in a live round
-               is the arena doing its job; one whose owner is not on the
-               server is somebody who cannot get their things back without
-               this screen. */
             var away = 0;
             owed.forEach(function (entry) {
                 if (int(entry.src, 0) <= 0) away += 1;
@@ -5149,11 +3703,6 @@
             owed.forEach(function (entry) {
                 var card = makeEl('div', 'admin-stash-row');
 
-                /* WHOSE IT IS, and whether they are here to be handed it.
-                   `src` is the server id of whoever holds that character now,
-                   and its absence is a real answer rather than a row to leave
-                   out: a stash whose owner is offline is exactly the one
-                   nothing else in this resource can do anything about. */
                 var online = int(entry.src, 0);
                 var open = makeEl('button', 'admin-stash-open');
                 open.type = 'button';
@@ -5171,7 +3720,6 @@
             });
         }
 
-        /* ---- one stash ---- */
         if (onStash) {
             var whose = int(stash.src, 0);
             byId('admin-stash-title').textContent = String(stash.citizenid)
@@ -5179,10 +3727,6 @@
             byId('admin-stash-detail-line').textContent = String(stash.stash)
                 + ' · ' + stashSummary(stash)
                 + (stash.remembered === false
-                    /* FOUND BY NAME rather than remembered, which is the
-                       whole reason this screen goes to the database: the
-                       in-memory records die with a restart and the stashes do
-                       not. */
                     ? ' · found in the database, not from this run'
                     : '');
 
@@ -5207,7 +3751,6 @@
             }
         }
 
-        /* ---- one match ---- */
         if (onMatch) {
             byId('admin-detail-title').textContent = String(admin.focused.label || admin.focused.id);
             byId('admin-detail-line').textContent = String(admin.focused.state)
@@ -5233,7 +3776,6 @@
             }
         }
 
-        /* ---- one fighter ---- */
         if (onPlayer) {
             byId('admin-player-title').textContent = String(row.name);
             byId('admin-player-line').textContent =
@@ -5242,9 +3784,6 @@
                 + livesFact(admin.focused, row)
                 + (row.team ? ' · ' + titleCase(String(row.team)) : '');
 
-            /* A REVIVE IS FOR SOMEBODY WHO IS DOWN. Offering it on a fighter
-               who is already up is a button that does nothing, which reads as
-               a broken button rather than as a no-op. */
             var revive = byId('admin-revive');
             if (has(revive)) revive.disabled = row.alive === true;
 
@@ -5278,10 +3817,6 @@
         }
     }
 
-    // ==================================================================
-    // MESSAGES FROM LUA
-    // ==================================================================
-
     window.addEventListener('message', function (event) {
         var payload = event.data;
         if (!payload || typeof payload !== 'object') return;
@@ -5294,23 +3829,13 @@
                     break;
 
                 case 'close':
-                    /* Lua already knows -- this IS its close. Posting back
-                       would bounce a second close at a closed panel. */
                     hidePanel();
                     break;
 
                 case 'state':
-                    /* THE SERVER HAS ANSWERED. Cleared before the snapshot
-                       is applied, so the render below draws the picker's
-                       new contents with the right word under them. Both
-                       outcomes land here: server/main.lua pushes a snapshot
-                       when it refuses a loadout as well as when it takes
-                       one. */
                     state.loadoutSaving = false;
                     applySnapshot(data);
                     render();
-                    /* The overlay reads config for the pot line, so a
-                       snapshot that changes it must reach the HUD too. */
                     renderHud();
                     break;
 
@@ -5330,21 +3855,12 @@
                         : null;
                     admin.focused = null;
                     admin.player = null;
-                    /* AND THE TAB, which this used to leave alone. Opening
-                       the tablet, pressing Stashes, closing it and opening it
-                       again landed back on the stash list -- drawn from an
-                       `owed` array this very payload had just emptied, so it
-                       greeted the operator with "the arena is holding nothing
-                       for anybody". A fresh open starts at the front. */
                     admin.tab = null;
                     admin.stash = null;
                     renderAdmin();
                     break;
 
                 case 'adminState':
-                    /* Dropped when the tablet is not open: a push that
-                       arrives after it was closed would otherwise draw over
-                       whatever the player is looking at now. */
                     if (!admin.open) break;
                     admin.matches = arrayOf(data.matches);
                     admin.owed = arrayOf(data.owed);
@@ -5378,10 +3894,6 @@
 
                 case 'hud':
                     state.hudVisible = data.visible === true;
-                    /* client/match.lua nests the match payload under `hud`;
-                       ArenaUI.UpdateHud sends visibility on its own. Both
-                       shapes are read, and a bare visibility message leaves
-                       the numbers alone instead of blanking them. */
                     if (data.hud && typeof data.hud === 'object') state.hud = data.hud;
                     else if (data.scoreboard !== undefined || data.remaining !== undefined) state.hud = data;
                     if (!state.hudVisible) state.hud = null;
@@ -5402,16 +3914,7 @@
         });
     });
 
-    /* The end-of-match board. It is built here and thrown away again rather
-       than declared in index.html, because it is on screen for twelve
-       seconds a match and an element that exists the rest of the time is one
-       more thing that can be left showing. Styled inline from the same
-       custom properties applyTheme writes, so recolouring the panel
-       recolours this with it. */
     var resultsTimer = null;
-    /* Held rather than looked up again: this node is the page's only one that
-       is not in index.html, and the reference is what guarantees the board
-       being replaced is the board that gets removed. */
     var resultsNode = null;
 
     function styled(node, styles) {
@@ -5428,29 +3931,16 @@
         resultsNode = null;
     }
 
-    /* Placement, kills, deaths and earnings as one line -- and only the
-       parts this payload actually carries. A spectator's block has no
-       placement and no kill count, and '0 kill(s), 0 death(s)' would be a
-       claim about them rather than a blank. */
     function resultsSummary(results) {
         var bits = [];
         if (results.placement) bits.push('Placed #' + int(results.placement, 0));
         if (results.kills !== undefined || results.deaths !== undefined) {
             bits.push(plural(results.kills, 'kill') + ', ' + plural(results.deaths, 'death'));
         }
-        /* Read off the number rather than off the betting switch: earnings
-           only exist when there was a pot, and the switch lives in a
-           snapshot this client may never have fetched. */
         if (int(results.earnings, 0) > 0) bits.push('Won ' + money(results.earnings));
         return bits.join('  ·  ');
     }
 
-    /* The round is over: the live overlay and the countdown come down with
-       it, and the board goes up in their place. It is inert and under the
-       panel, like every other thing drawn over gameplay -- a scoreboard that
-       took NUI focus would take the controls of a player who has just been
-       dropped back at the lobby ped, and one drawn over the modal would be
-       the failure the HUD's own z-index note is written against. */
     function showResults(results) {
         state.hudVisible = false;
         state.hud = null;
@@ -5475,8 +3965,6 @@
             borderLeft: '3px solid ' + (won ? 'var(--success)' : 'var(--accent)'),
             boxShadow: '0 1rem 3rem rgba(0, 0, 0, 0.75)',
             zIndex: '7',
-            /* Inherited by every node below, so a click on the board goes
-               into the game the way one on the HUD does. */
             pointerEvents: 'none'
         });
         root.id = 'arena-results';
@@ -5490,19 +3978,6 @@
             color: won ? 'var(--success)' : 'var(--accent-bright)'
         }));
 
-        /* WHICH SIDE TOOK IT, in the operator's own words and colour.
-
-           ABOVE THE REASON because it is the answer to the question the
-           board is opened for, and in a team mode it is a fact no other line
-           on the card carries: "You Won" is about the reader, the placement
-           is about the reader, and the rows are individuals. A spectator got
-           none of the three -- they are shown this board and nothing else at
-           the end of a round -- so the fight they had just watched finished
-           with the panel declining to say who had won it.
-
-           Only ever drawn in a team mode: the server sends this field for
-           those and leaves it off everywhere else, so a free-for-all and an
-           older server both look exactly as they did. */
         var winningTeam = teamByKey(keyOr(results.winningTeam, null));
         if (winningTeam) {
             root.appendChild(styled(makeEl('div', null,
@@ -5516,12 +3991,6 @@
             }));
         }
 
-        /* HOW THE ROUND ENDED, in words, above the numbers. The server
-           renders the sentence -- the panel has no locale file -- and it is
-           the only thing on this screen that tells a spectator what they
-           just watched finish, because they are sent no notification at the
-           end of a round. Absent on an older server, and then the board
-           looks exactly as it did. */
         if (typeof results.reason === 'string' && results.reason !== '') {
             root.appendChild(styled(makeEl('div', null, results.reason), {
                 marginTop: '0.3rem',
@@ -5556,9 +4025,6 @@
         document.body.appendChild(root);
         resultsTimer = window.setTimeout(hideResults, RESULTS_MS);
 
-        /* The board sits under the panel, so a player who still has the menu
-           open would see nothing at all. The toast rail is inside the panel
-           and is exactly what they are looking at. */
         if (state.open) {
             var reason = (typeof results.reason === 'string' && results.reason !== '')
                 ? results.reason
@@ -5568,30 +4034,12 @@
         }
     }
 
-    // ==================================================================
-    // INPUT
-    // ==================================================================
-
-    /* The audio unlock, on the capture phase so a handler that stops the
-       event does not also silence the panel. Both are cheap enough to leave
-       registered for the life of the page: unlockAudio does nothing at all
-       unless there is a suspended context to resume. */
     document.addEventListener('pointerdown', unlockAudio, true);
     document.addEventListener('keydown', unlockAudio, true);
 
     document.addEventListener('keydown', function (event) {
         if (event.key !== 'Escape' && event.key !== 'Esc') return;
 
-        /* THE TABLET FIRST, because it is the screen on top when it is up --
-           and because it used to have no key at all. This handler returned
-           early on `!state.open`, which is the PANEL's flag, so ESC did
-           nothing whatever while the tablet was drawn. Its Close button was
-           the only way out, and a tablet that had lost NUI focus had no way
-           out at all.
-
-           Posted rather than hidden here: Lua owns the focus release, and a
-           screen that hides itself while the mouse stays captured costs the
-           player their character. */
         if (admin.open) {
             event.preventDefault();
             post('adminClose', {});
@@ -5616,10 +4064,6 @@
             if (TABS.indexOf(name) < 0) return;
             if (name !== state.tab) play('tab');
             state.tab = name;
-            /* Every other block of the snapshot is pushed when it changes.
-               The leaderboard is the one that goes stale on a timer, so
-               opening it is the one place worth asking for a fresh one --
-               and the server rate-limits the ask anyway. */
             if (name === 'board') post('refresh');
             render();
         });
@@ -5635,8 +4079,6 @@
         render();
     });
 
-    /* Tracked on every keystroke so render() never has to write back into
-       an input the player is still typing in. */
     bind('create-lives', 'input', function (event) {
         var choice = (cfg().match || {}).livesChoice || {};
         state.createLives = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
@@ -5647,19 +4089,10 @@
         state.createRound = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
     });
 
-    /* ---- the admin tablet ---- */
-
     bind('admin-close', 'click', function () {
-        /* Lua owns the focus release, so the close goes THERE rather than
-           being handled here: a screen that hides itself and leaves NUI focus
-           held costs the player their character. */
         post('adminClose', {});
     });
 
-    /* The server decides and answers; the screen redraws from that answer
-       rather than from what it hoped would happen. A control that shows
-       itself flipped when the server refused is the one thing worse than a
-       control that does nothing. */
     function askDoors(mode) {
         post('adminHours', {
             forced: mode,
@@ -5683,9 +4116,6 @@
 
     bind('admin-tab-stashes', 'click', function () {
         admin.tab = 'stashes';
-        /* Arriving on the tab means arriving at the LIST. Anything else would
-           drop an admin back inside whichever stash they last looked in,
-           which may not even be held any more. */
         admin.stash = null;
         renderAdmin();
 
@@ -5738,10 +4168,6 @@
 
     bind('admin-stop', 'click', function () {
         if (!admin.focused) return;
-        /* STOPPING A MATCH REFUNDS EVERYBODY AND HANDS EVERY KIT BACK -- it
-           is ArenaMatch.Abort, the same call the text command makes, and the
-           same one the idle sweep and a resource restart make. The round is
-           unwound as though it had not happened. */
         post('adminStop', { matchId: admin.focused.id });
     });
 
@@ -5753,18 +4179,11 @@
     bind('create-limit', 'input', function (event) {
         var band = (cfg().match || {}).scoreLimitChoice || {};
         state.createLimit = clampInt(event.target.value, int(band.min, 1), int(band.max, 1));
-        /* Re-rendered because the sentence above the box quotes the number:
-           a hint that only catches up on the next server push reads as a
-           control that did nothing. */
         render();
     });
 
     bind('create-win', 'change', function (event) {
         state.createWin = keyOr(event.target.value, state.createWin);
-        /* Re-rendered because the choice moves more than itself: picking a
-           kill limit takes the Lives Each row away and puts a sentence in its
-           place. A control whose consequences appear only on the next server
-           push reads as a control that did nothing. */
         render();
     });
 
@@ -5787,9 +4206,6 @@
                 winCondition: keyOr(state.createWin, ''),
                 scoreLimit: int(state.createLimit, 0),
             tierPlan: state.createTiers,
-                /* radarIsOn(), not state.createRadar: an untouched toggle is
-                   null, and null on the wire means "leave it alone" -- which
-                   is not what the host sees on a button reading Radar Off. */
                 radar: radarIsOn()
             });
             return;
@@ -5805,9 +4221,6 @@
             scoreLimit: int(state.createLimit, 0),
             tierPlan: state.createTiers,
             radar: radarIsOn(),
-            /* The host joins their own match through the same door as
-               everybody else, so their entry fee comes out of the account
-               they picked here. */
             account: chosenAccount()
         });
     });
@@ -5815,22 +4228,10 @@
     bind('loadout-save', 'click', saveLoadout);
 
     bind('bet-amount', 'input', function (event) {
-        /* The ceiling that applies to THIS player on the match in front of
-           them: a fighter's band is not the spectators'. The floor stays 0
-           rather than the minimum, so the box can be cleared and retyped --
-           betBlockedReason is what refuses an amount under the minimum, with
-           a sentence saying what it is.
-
-           Unlike the weapon ammo box this one may re-render: it is a static
-           element in index.html, so nothing rebuilds it under the caret, and
-           renderBetControls will not write back into it while it has focus. */
         var rules = betRules(focusedMatch());
         state.betAmount = clampInt(event.target.value, 0, int(rules.max, 0));
         render();
     });
 
-    /* Nothing is drawn until Lua sends `open`; the page is loaded the whole
-       time the resource is running, and an unopened panel must be invisible
-       rather than an empty frame over the game. */
     hidePanel();
 }());

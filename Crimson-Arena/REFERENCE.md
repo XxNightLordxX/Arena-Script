@@ -59,7 +59,7 @@ instancing really happened rather than assuming it did.
 
 - **Player-run lobbies.** Any player who passes `Config.Permissions.createJobs`
   opens a match from the panel; others browse and join. No admin has to be online.
-- **Free-for-all and team deathmatch.** A mode decides whether teams exist,
+- **Free-for-all, team deathmatch and gun game**, all three enabled. A mode decides whether teams exist,
   whether friendly fire lands, and what ends the round.
 - **Uneven teams are allowed on purpose.** The startability rule is that every
   enabled team has somebody in it, not that the sides are equal.
@@ -99,7 +99,7 @@ instancing really happened rather than assuming it did.
 
 ### Weapons, ammunition and inventory
 
-- **96 weapons catalogued, 77 enabled**, in categories. A player carries
+- **96 weapons catalogued and all 96 enabled** -- the `heavy` category included, so explosives are pickable. In categories. A player carries
   `Config.Loadouts.slots` of them — guns and melee against one count, so the mix
   is theirs.
 - **The host or the player picks**, per `Config.Loadouts.chooser`.
@@ -176,12 +176,10 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **77 spec files** covering the shared, server and client logic, run with `lua5.4`
-  against a fake-native harness, plus **21 panel suites** that load the real
-  `html/app.js` under Node. Two of the specs are property-based: they generate
-  thousands of configs, requests and damage packets and assert invariants
-  rather than chosen answers, which is what found the self-damage hole in the
-  friendly-fire guard.
+- **The test suite is not in this release.** 78 Lua specs and 21 panel
+  suites ran green against the code in this folder, comments and all, and
+  again after they were stripped -- and were then removed for shipping.
+  They are in the repository's history if you want them back.
 
 ---
 
@@ -288,7 +286,7 @@ line-number map that is regenerated whenever the file changes.
 | `Config.Lobby` | The lobby ped, the ground marker, the blip, how players interact with it, and where they are returned to. |
 | `Config.Match` | Player counts, lives, countdowns, win conditions, respawn timing, spawn scatter, the keep-out barrier, the crossfire guard, the radar, the server-side position and death checks, and the rules about being dead or in a vehicle. |
 | `Config.Teams` | The team list, their colours and their order. |
-| `Config.Modes`, `Config.DefaultMode` | Free-for-all and team deathmatch: whether teams exist, what ends a round. |
+| `Config.Modes`, `Config.DefaultMode` | Free-for-all, team deathmatch and gun game: whether teams exist, what ends a round, and the gun-game ladder. |
 | `Config.Betting` | Entry fees, spectator bets, fighter bets, payout mode, house cut, which accounts may be used, and every refund rule. |
 | `Config.UI` | Panel title, subtitle, logo, theme, sounds, and whether the in-match HUD is drawn. |
 | `Config.Permissions` | Admin groups, and the jobs allowed to create or join matches. |

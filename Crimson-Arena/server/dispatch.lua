@@ -1,97 +1,18 @@
---[[
-    crimson_arena/server/dispatch.lua
-
-    The authoritative answer to "is this player in the arena right now",
-    published for any other resource to read.
-
-    WHY THIS LIVES ON THE SERVER. A dispatch script asking that question is
-    deciding whether to suppress an alert, which makes the answer worth
-    lying about: a replicated state bag written from the client can be
-    written by ANY client, so a player who has never been near the arena
-    could pin the flag on themselves and have your dispatch script quietly
-    ignore them shooting up a bank. Only the server knows who is genuinely
-    in a match, so only the server writes it.
-
-    THREE FORMS OF THE SAME FACT, because dispatch scripts are written
-    differently and none of these is more correct than the others:
-
-      EVENTS -- this resource tells you, so you can keep your own ignore
-      list without polling anything:
-          AddEventHandler('crimson_arena:dispatch:enter', function(src, matchId) ... end)
-          AddEventHandler('crimson_arena:dispatch:exit',  function(src, matchId) ... end)
-      Names are Config.Dispatch.custom.enterEvent / exitEvent, and either can
-      be set to nil to fire nothing. Both are SERVER events and are never
-      sent to a client.
-
-
-      STATE BAG -- replicated, readable from both realms with no call:
-          -- server
-          if Player(src).state.crimsonArena then return end
-          -- client, about yourself
-          if LocalPlayer.state.crimsonArena then return end
-
-      EXPORTS -- for scripts that would rather ask:
-          exports.crimson_arena:IsPlayerInArena(src)
-          exports.crimson_arena:GetPlayerMatchId(src)
-          exports.crimson_arena:GetArenaPlayers()
-
-    The key is Config.Dispatch.custom.stateBagKey, renameable for a server that
-    already uses `crimsonArena` for something else.
-
-    AND ONE THING IT DOES ENFORCE: ROUTING BUCKET ISOLATION. Everything above
-    asks another resource to decline. The bottom half of this file does not
-    ask anybody anything -- it moves every player in a match into a private
-    network instance, where the arena is not replicated to anyone outside it.
-    A dispatch or ambulance script running on some other player's client
-    cannot see arena gunfire, arena bodies or arena entities, because that
-    client is never sent them. See ROUTING BUCKET ISOLATION below.
-
-    THE LIMIT OF THAT, PLAINLY: a bucket hides the arena from OTHER people's
-    clients. It cannot hide an arena player's gunfire from their OWN client,
-    so a dispatch script polling IsPedShooting on the shooter's machine still
-    sees it. That is the case the flag above exists for, and it is why both
-    halves of this file ship on.
-
-    WHAT THIS FILE DOES NOT DO: suppress anything on somebody else's behalf.
-    Resurrecting an arena casualty inside the frame they died -- the trick
-    that stops a medical script's polling loop ever seeing a dead player --
-    is client-side, in client/dispatch.lua.
-
-    WHAT IT DOES DO, beyond reporting: it clears the medical script's own
-    down metadata at the death and holds it down (ClearDownState and
-    HoldDownState below), and it carries the best-effort cancel and retract
-    layer. The reporting half exists so that the alerts THIS resource cannot
-    reach can be declined at their source, by the resource that owns them, on
-    the strength of a fact it can trust.
-]]
+-- Crimson Arena: keeping arena gunfire off the city call system.
 
 ArenaDispatch = {}
 
---- Mirrors what has been written to each player's bag, so Clear() can be
---- called unconditionally without a bag read, and so GetArenaPlayers() does
---- not have to walk every connected player asking.
---- @type table<number, string>
 local active = {}
 
---- @return table
 local function customConfig()
     return (Config.Dispatch and Config.Dispatch.custom) or {}
 end
 
---- @return string
 local function stateKey()
     local key = customConfig().stateBagKey
     return type(key) == 'string' and key ~= '' and key or 'crimsonArena'
 end
 
---- Fires one of the two announcement events, if the operator has named it.
----
---- SERVER events, never sent to a client: "who may be ignored by dispatch"
---- is not a decision a client gets a say in, and an event carrying that fact
---- to every player would be handing them the answer.
---- @param eventName any -- whatever the operator put in config; validated here
---- @param src number
---- @param matchId string
 local function announce(eventName, src, matchId)
     if type(eventName) ~= 'string' or eventName == '' then return end
 
@@ -104,16 +25,6 @@ local function announce(eventName, src, matchId)
     end
 end
 
--- ======================================================================
--- WRITING THE FACT
--- ======================================================================
-
---- Marks a player as being in `matchId`. Called when they are placed in the
---- arena, not when they join the lobby -- somebody sitting in a menu
---- choosing a rifle is not in a fight, and suppressing their alerts would
---- be a hole rather than a feature.
---- @param src number
---- @param matchId string
 function ArenaDispatch.Set(src, matchId)
     if type(src) ~= 'number' or src <= 0 then return end
     if not Arena.IsKey(matchId) then return end
@@ -136,19 +47,6 @@ function ArenaDispatch.Clear(src)
     local matchId = active[src]
     active[src] = nil
 
-    -- THE BAG GOES FIRST, and the order is the contract rather than the
-    -- tidier of two arrangements. Set() writes the flag and THEN announces,
-    -- so a handler on the entry event that reads the bag -- the obvious way
-    -- for a third-party script to find out which match -- sees it. Announce
-    -- the exit before clearing and that same handler reads a player who is
-    -- still flagged, concludes they are still fighting, and leaves whatever
-    -- it was suppressing suppressed: the flag outliving its match, which is
-    -- the one failure this function exists to prevent.
-    --
-    -- Guarded because a player who has already dropped has no state bag to
-    -- write to, and the disconnect path reaches here after they are gone.
-    -- The announcement below runs either way -- a bag that cannot be
-    -- written is no reason to leave somebody muted.
     local ok = pcall(function()
         Player(src).state:set(stateKey(), nil, true)
     end)
@@ -156,10 +54,6 @@ function ArenaDispatch.Clear(src)
         ArenaDebug('dispatch: could not clear the arena flag for %s -- they are most likely already gone.', tostring(src))
     end
 
-    -- Announced even when nothing was set, so a dispatch script that missed
-    -- the enter -- it restarted, it was not running yet -- still gets told to
-    -- drop this player rather than keeping them ignored forever. A clear for
-    -- somebody who was never flagged is a harmless no-op on its side.
     announce(customConfig().exitEvent, src, matchId)
 end
 
@@ -175,31 +69,14 @@ end
 -- reaches for the permission natives.
 -- ======================================================================
 
---- @return table -- Config.Dispatch.downState, or an empty table
 local function downStateConfig()
     return (Config.Dispatch or {}).downState or {}
 end
 
---- Clears the medical script's own down-state metadata for one player.
----
---- The keys come from Config.Dispatch.downState.keys, so an operator whose
---- script uses different names says so rather than being guessed at -- and
---- an empty list switches this off entirely. The two shipped names are the
---- QB-family convention and are the ones the catalogue in
---- shared/compat/dispatch.lua already documents sc-ambulance setting.
----
---- WRITES NOTHING IT DOES NOT HAVE TO. A key that is already false or absent
---- is left alone, so on a server using neither name this costs two lookups
---- and touches nobody's data.
---- @param src number
---- @return integer cleared -- how many keys were really changed
 local function clearDownMetadata(src)
     local keys = downStateConfig().keys
     if type(keys) ~= 'table' or #keys == 0 then return 0 end
 
-    -- Guarded rather than assumed: this file is loaded on its own by
-    -- tests/dispatch_spec.lua, and a framework that does not expose a player
-    -- object at all is a framework this simply has nothing to say to.
     if type(ArenaGetPlayer) ~= 'function' then return 0 end
 
     local player = ArenaGetPlayer(src)
@@ -210,10 +87,6 @@ local function clearDownMetadata(src)
     local cleared = 0
     for _, key in ipairs(keys) do
         if Arena.IsKey(key) then
-            -- READ FIRST. GetMetaData is not on every build of every
-            -- framework, so a missing reader means "write it anyway" rather
-            -- than "do nothing" -- the write is the point and it is
-            -- idempotent. What the reader buys is silence on the common case.
             local current = true
             if type(functions.GetMetaData) == 'function' then
                 local ok, value = pcall(functions.GetMetaData, key)
@@ -254,10 +127,6 @@ end
 --- @param src number
 --- @return integer cleared
 function ArenaDispatch.ClearDownState(src)
-    -- NO TYPE GUARD OF ITS OWN. clearDownMetadata already answers 0 for a
-    -- source no framework can resolve, and a second guard saying the same
-    -- thing in a second place is one more thing that can drift out of step
-    -- with the first.
     return clearDownMetadata(src)
 end
 
@@ -299,9 +168,6 @@ function ArenaDispatch.HoldDownState()
 end
 
 CreateThread(function()
-    -- READ ONCE. `0` switches the hold off and ends the thread rather than
-    -- parking it -- an operator changing this is changing config, and config
-    -- changes here take a restart like every other one in this file.
     local interval = Arena.ToInt(downStateConfig().holdIntervalMs) or 0
     if interval <= 0 then return end
 
@@ -311,28 +177,6 @@ CreateThread(function()
     end
 end)
 
-
---- Tells whatever handles death on this server that a player is alive again.
----
---- WHY THIS IS NEEDED AT ALL. The arena stands its own players back up with
---- NetworkResurrectLocalPlayer, and for the PED that is the whole job. It is
---- not the whole job for the SERVER: an ambulance or medical script keeps its
---- own death state -- metadata, a table, a state bag -- and nothing about
---- resurrecting a ped tells it anything. So a player who died in a match
---- walks out of the arena on their feet and their medical script still has
---- them dead: downed on the next check, or refused a respawn, or simply
---- unable to do anything until someone revives them.
----
---- NOTHING IS GUESSED HERE, and nothing is configured either. Every revive
---- event this sends comes from the catalogue in shared/compat/dispatch.lua,
---- read out of the medical script's own source, and only for a resource this
---- box is really running. A guessed event name is worse than none, because
---- it detects as wired up and then silently does nothing.
----
---- It also sends this resource's own `crimson_arena:client:holdVitals`, and
---- clears the down metadata itself -- see the body.
---- @param src number
---- @return nil
 function ArenaDispatch.Revive(src)
     if type(src) ~= 'number' or src <= 0 then return end
 
@@ -352,20 +196,6 @@ function ArenaDispatch.Revive(src)
     -- What this function does is the half the arena genuinely cannot: reach a
     -- MEDICAL SCRIPT's own records, which it cannot see and will not guess at.
 
-    -- THE MEDICAL SCRIPT'S OWN REVIVE, for every one this box is really
-    -- running, without the operator naming a thing.
-    --
-    -- This is the half the arena cannot do by resurrecting: a medical script
-    -- keeps its own list of who is down, nothing outside it can reach that
-    -- list, and a player still on it is up and walking while everything that
-    -- script does to a casualty is still being done to them. It is the exact
-    -- state reported as "the revive is not working" -- and the ped genuinely
-    -- is standing up, which is what makes it read as a lie.
-    --
-    -- The names come from shared/compat/dispatch.lua's catalogue and only for
-    -- resources actually detected. An event no running resource listens for
-    -- is a no-op, so this cannot do harm; a WRONG name would, which is why
-    -- every one in that catalogue was read out of the script's own source.
     if type(ArenaCompat) == 'table' and type(ArenaCompat.ReviveClientEvents) == 'function' then
         for _, name in ipairs(ArenaCompat.ReviveClientEvents()) do
             TriggerClientEvent(name, src)
@@ -373,72 +203,12 @@ function ArenaDispatch.Revive(src)
         end
     end
 
-    -- AND THE PLAYER'S CLIENT IS TOLD TO INSIST ON THE ARENA'S NUMBERS FOR
-    -- A MOMENT, because everything above this line is a request to another
-    -- script to do something to this player's body.
-    --
-    -- A medical revive does not only clear a death record: it sets health,
-    -- and most of them set ARMOUR TO ZERO doing it. The arena has just put
-    -- this fighter back on full health and a full plate for their next life,
-    -- and two seconds later asks a script to revive them -- so without this
-    -- the plate a player is promised every life is taken off them by the
-    -- arena's own handoff, on every respawn of every round.
-    --
-    -- Its own event, named for the one thing it does: open a short window in
-    -- which the client re-asserts the arena's numbers over anything another
-    -- script writes.
     TriggerClientEvent('crimson_arena:client:holdVitals', src)
 
-    -- THE MEDICAL SCRIPT'S OWN RECORD OF WHO IS DOWN, cleared where it
-    -- actually lives.
-    --
-    -- This file has always said it cannot reach that record. One part of it
-    -- it can: the QB-family scripts keep the down state as PLAYER METADATA
-    -- on the framework object -- `inlaststand` and `isdead` -- and that is
-    -- qbx_core's data, not theirs, so the arena can write it.
-    --
-    -- It is the lever that does not depend on winning a race. The start-order
-    -- fight upstream is about stopping the flag being SET; this clears it
-    -- again a moment later, and everything downstream reads the flag rather
-    -- than the event:
-    --
-    --   sc-dispatch's client polls this metadata every 500ms and raises
-    --   PlayerDown / PlayerDead by itself when it goes up. Cleared before the
-    --   next poll, those two are never raised at all -- not cancelled, not
-    --   withdrawn, never sent.
-    --
-    --   sc-ambulance's own EMSDownAlert handler admits the call ONLY for a
-    --   player carrying `inlaststand`. Cleared, the alert is refused by that
-    --   script's own guard rather than by anything here.
-    --
-    -- AND IT IS TRUE, which is the part that makes it safe rather than a
-    -- trick. The arena has just stood this player up: they are not dead and
-    -- not in a last stand, and the metadata saying otherwise is the thing
-    -- that is wrong. Nothing is written for a player the arena is not
-    -- currently holding, and nothing is written for a key that is not already
-    -- set -- on a server that does not use these names this is a no-op that
-    -- costs two table lookups.
     clearDownMetadata(src)
 
-    -- THAT IS THE WHOLE HANDOFF. There is nothing to configure and nothing
-    -- to name by hand: the catalogue above already carries the revive event
-    -- for every medical script this box runs, verified out of that script's
-    -- own source. A script it has never heard of is one more line THERE, not
-    -- a list of names here.
 end
 
--- ======================================================================
--- TESTING THE REVIVE WITHOUT PLAYING A MATCH
---
--- The revive has been the hardest thing here to get right, and the reason is
--- the feedback loop rather than the code: every attempt cost a full round --
--- open a lobby, join, start, die, wait for the end -- to learn one bit of
--- information. That is a terrible way to test a one-line integration.
---
--- /arenarevive <id> fires exactly the same path ArenaDispatch.Revive takes at
--- the end of a match, on demand, against any player. Lie on the floor, run
--- it, and the console says what it did.
--- ======================================================================
 RegisterCommand('arenarevive', function(src, args)
     if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
         if src ~= 0 and type(ArenaNotifyKey) == 'function' then
@@ -447,17 +217,12 @@ RegisterCommand('arenarevive', function(src, args)
         return
     end
 
-    -- Defaults to whoever ran it, because the common case is an admin lying
-    -- on the floor testing this on themselves.
     local target = Arena.ToInt(args and args[1]) or (src > 0 and src or nil)
     if not target or target <= 0 then
         ArenaLog('arenarevive: give a server id -- /arenarevive 3.')
         return
     end
 
-    -- NOT GATED ON ANYTHING. The handoff is whatever the catalogue detected
-    -- on this box, so what this command does is exactly what a real match
-    -- does -- which is the only property that makes it worth having.
     ArenaLog('arenarevive: running the end-of-match revive against %d. Everything below is what a real match would do.',
         target)
     ArenaDispatch.Revive(target)
@@ -482,38 +247,12 @@ function ArenaDispatch.IsPlayerInArena(src)
     return ArenaDispatch.GetPlayerMatchId(src) ~= nil
 end
 
---- The match a player is in, or nil.
----
---- A STRING ID IS A REAL ID. `active` is keyed by number -- Set refuses
---- anything else -- and in Lua active[5] and active["5"] are two different
---- keys, so a caller holding '5' got "not in a match" for somebody standing
---- in the arena.
----
---- That caller is the whole point of these two functions. They are exported
---- for third-party police, medical and dispatch scripts to ask before they
---- raise an alert, and the ordinary way such a script walks the server is
---- FiveM's own GetPlayers(), which hands back an array of STRINGS. So an
---- integrator doing the obvious thing was told every arena fighter was out
---- in the world, and every shot fired in the arena raised the alert the
---- export exists to suppress.
----
---- Coerced here rather than at the two exports so the internal callers --
---- the bucket sweep among them -- get the same answer as an outside one.
----
---- The nil check is for the reader, not for the engine: indexing a table
---- with nil is a legal READ in Lua and answers nil, so removing it changes
---- no behaviour. It is here so that nobody has to know that.
---- @param src number|string
---- @return string|nil
 function ArenaDispatch.GetPlayerMatchId(src)
     local id = tonumber(src)
     if not id then return nil end
     return active[id]
 end
 
---- Every player currently in a match, as a server-id -> match-id map. A
---- copy, so a caller cannot edit this file's own record.
---- @return table<number, string>
 function ArenaDispatch.GetArenaPlayers()
     local out = {}
     for src, matchId in pairs(active) do out[src] = matchId end
@@ -547,13 +286,8 @@ exports('GetArenaPlayers', function() return ArenaDispatch.GetArenaPlayers() end
 -- and a griefing tool in the same request.
 -- ======================================================================
 
---- Which instance each match is being fought in. matchId -> bucket number.
---- @type table<string, integer>
 local matchBuckets = {}
 
---- network id -> server id, for the crossfire guard. Rebuilt whenever a
---- lookup cannot be confirmed; see ownerOfNetId.
---- @type table<integer, number>
 local netIdOwners = {}
 
 --- The network id of a player's ped right now, or nil for a player who has
@@ -574,28 +308,14 @@ local function netIdOf(src)
     return netId
 end
 
---- Everyone this file has moved, and -- the load-bearing half -- the bucket
---- they were in BEFORE it moved them.
---- @type table<number, table>
 local held = {}
 
---- Bucket 0 is the default world. A base below 1 would instance the entire
---- server into the arena rather than the other way round.
 local DEFAULT_FIRST_BUCKET = 4210
 
---- @return table
 local function isolationConfig()
     return (Config.Dispatch and Config.Dispatch.isolation) or {}
 end
 
---- What an operator typed, read as a yes or a no.
----
---- Convar booleans are free text: `set onesync_enabled 1`, `true`, `yes` and
---- `on` all mean the same thing to the server and arrive here as four
---- different strings. Case is not normalised by the server either, so it is
---- normalised here.
---- @param value any
---- @return boolean
 local function isTruthy(value)
     value = tostring(value):lower()
     return value == 'true' or value == '1' or value == 'yes' or value == 'on'
@@ -655,8 +375,6 @@ local function oneSyncMode()
     return 'off'
 end
 
---- Said once, not once per match. An operator restarting into a misconfigured
---- server should see this; they should not have it printed at every round.
 local warnedNoOneSync = false
 
 --- SET WHEN THE SERVER HAS BEEN CAUGHT NOT HONOURING A BUCKET, and never
@@ -674,17 +392,7 @@ local warnedNoOneSync = false
 --- learn it is to set one and read it back.
 local provenInert = false
 
---- Whether routing buckets actually work here.
----
---- ONLY A DEFINITE 'off' REFUSES. Anything unrecognised is treated as
---- working, because it is far more likely to be a build newer than this file
---- than a mode that lacks buckets -- and guessing wrong in that direction
---- would switch off a layer that was doing its job.
---- @return boolean
 local function bucketsAvailable()
-    -- WHAT THE SERVER PROVED BEATS WHAT THE SERVER SAID. A convar is a
-    -- statement of intent; a move that did not land is a measurement. See
-    -- moveTo below for how one is taken.
     if provenInert then return false end
 
     local mode = oneSyncMode()
@@ -700,31 +408,11 @@ local function bucketsAvailable()
     return false
 end
 
---- Opt-OUT rather than opt-in: an operator upgrading from a config that
---- predates this block gets the isolation, because it is the setting that
---- protects them without their dispatch script agreeing to anything.
----
---- AND IT ASKS THE SERVER, NOT ONLY THE CONFIG. Reading the setting alone
---- answered "is isolation wanted"; what every caller needs is "is isolation
---- HAPPENING". Returning true on a server whose routing natives are inert
---- told server/match.lua the arena was safe to share, and it let a second
---- match start on top of a live one. With this false, GetBucket returns nil
---- and that same code refuses the second match instead -- which is the
---- fallback it was written for.
---- @return boolean
 local function isolationEnabled()
     if isolationConfig().enabled == false then return false end
     return bucketsAvailable()
 end
 
---- Whether a bucket number is spoken for -- by a match, or by a player still
---- standing in one whose match has already gone.
----
---- The second half is the one that matters: handing a number out while
---- somebody is still in it drops a fresh match into the room they are
---- stranded in, which is the one failure a bucket allocator can have.
---- @param bucket integer
---- @return boolean
 local function bucketInUse(bucket)
     for _, allocated in pairs(matchBuckets) do
         if allocated == bucket then return true end
@@ -735,28 +423,12 @@ local function bucketInUse(bucket)
     return false
 end
 
---- Which instance the SERVER says this player is in, right now.
----
---- ASKED RATHER THAN REMEMBERED, and guarded, because both halves matter. A
---- player who dropped between the roster being read and this line is an
---- error thrown inside a loop that is holding everybody else's instancing
---- together, and the answer for them is the default world either way.
---- @param src number
---- @return integer
 local function currentBucket(src)
     local ok, bucket = pcall(GetPlayerRoutingBucket, src)
     if not ok then return 0 end
     return Arena.ToInt(bucket) or 0
 end
 
---- Whether the server still has this player, so a bucket that did not take
---- can be told apart from a player who left while it was being set.
----
---- Answered conservatively: anything other than a positively returned name
---- is read as "cannot tell", and a move is never held against the server on
---- a reading this function could not take.
---- @param src number
---- @return boolean
 local function stillConnected(src)
     if type(GetPlayerName) ~= 'function' then return false end
     local ok, name = pcall(GetPlayerName, src)
@@ -787,12 +459,6 @@ end
 --- @param bucket integer
 --- @return boolean landed
 local function moveTo(src, bucket)
-    -- GUARDED, BUT THE RESULT IS NOT THE ANSWER. Whether the call returned
-    -- is a fact about this Lua runtime; whether the player moved is a fact
-    -- about the server, and only the second one is being asked. The read
-    -- below settles it either way, so the pcall is here to keep a native
-    -- that throws from taking the rest of a match start down with it and
-    -- for nothing else.
     pcall(SetPlayerRoutingBucket, src, bucket)
 
     if currentBucket(src) == bucket then return true end
@@ -803,12 +469,6 @@ local function moveTo(src, bucket)
     -- alibi.
     if not stillConnected(src) then return false end
 
-    -- SAID ONCE, and by arithmetic rather than by a flag checked here.
-    -- moveTo is only ever reached through EnterBucket, which reaches it only
-    -- after GetBucket handed back a number -- and GetBucket answers nil for
-    -- every match from the moment the line below runs. So the second player
-    -- into a broken server never gets this far, and a guard against saying
-    -- it twice would be a guard against something that cannot happen.
     provenInert = true
     ArenaLog('ISOLATION IS NOT IN FORCE, AND THIS SERVER JUST PROVED IT: %s was put into routing ' ..
         'bucket %d and the server still reports them in %d. The routing natives are not doing anything ' ..
@@ -820,30 +480,16 @@ local function moveTo(src, bucket)
     return false
 end
 
---- Applies the bucket's own rules. Called ONCE, when the number is
---- allocated: these are properties of the instance and not of the players in
---- it, so re-applying them per join would be two native calls a player for
---- no change at all.
---- @param bucket integer
 local function configureBucket(bucket)
     local config = isolationConfig()
 
-    -- Off by default. An NPC that does not exist cannot witness a firefight,
-    -- panic in front of one, or be run over into somebody's report.
     SetRoutingBucketPopulationEnabled(bucket, config.populationEnabled == true)
 
-    -- 'relaxed' unless the operator has said otherwise, and config.lua says
-    -- why next to the setting: a 'strict' bucket refuses client-created
-    -- entities, and a weapon or prop being handed out IS one.
     local mode = config.lockdownMode
     if mode ~= 'strict' and mode ~= 'inactive' then mode = 'relaxed' end
     SetRoutingBucketEntityLockdownMode(bucket, mode)
 end
 
---- The instance a match is fought in, allocating and configuring one the
---- first time it is asked for.
---- @param matchId string
---- @return integer|nil bucket -- nil when isolation is off, or the id is not one
 function ArenaDispatch.GetBucket(matchId)
     if not isolationEnabled() then return nil end
     if not Arena.IsKey(matchId) then return nil end
@@ -855,10 +501,6 @@ function ArenaDispatch.GetBucket(matchId)
     local bucket = math.max(1, Arena.ToInt(config.firstBucket) or DEFAULT_FIRST_BUCKET)
 
     if config.perMatch ~= false then
-        -- Counted up from the base to the first free number rather than
-        -- taken from a counter that only ever climbs. A counter cannot reuse
-        -- what finished matches gave back, so a server that runs for a week
-        -- walks off into whatever range the rest of the box is using.
         while bucketInUse(bucket) do bucket = bucket + 1 end
     end
 
@@ -868,18 +510,6 @@ function ArenaDispatch.GetBucket(matchId)
     return bucket
 end
 
---- Moves a player into their match's instance, remembering what they were in
---- beforehand.
----
---- CAPTURING THE CURRENT BUCKET IS THE POINT OF THIS FUNCTION. Restoring to
---- a hard-coded 0 on the way out is right only on a server that instances
---- nobody. On one that does -- an apartment interior, a heist, a per-job
---- world -- it would silently reassign the player to the default world when
---- they left the arena, and nothing would tell them or the operator that it
---- had happened.
---- @param src number
---- @param matchId string
---- @return boolean moved
 function ArenaDispatch.EnterBucket(src, matchId)
     if type(src) ~= 'number' or src <= 0 then return false end
 
@@ -914,17 +544,11 @@ function ArenaDispatch.EnterBucket(src, matchId)
             end
             return true
         end
-        -- In some other match's instance. Restore first, so `previous` below
-        -- is the bucket they originally came from rather than one of ours.
         ArenaDispatch.ExitBucket(src)
     end
 
     local previous = currentBucket(src)
 
-    -- A bucket this resource is running a match in is not somewhere anybody
-    -- can legitimately have been beforehand: finding one means an earlier
-    -- exit never ran. Sending them "back" there afterwards would strand them
-    -- in an arena nobody is fighting in.
     if bucketInUse(previous) then
         ArenaDebug('dispatch: %s was already sitting in arena bucket %d -- they will be restored to the default world instead.',
             tostring(src), previous)
@@ -933,21 +557,9 @@ function ArenaDispatch.EnterBucket(src, matchId)
 
     held[src] = { bucket = bucket, previous = previous, matchId = matchId }
 
-    -- RECORDED BEFORE THE MOVE, AND KEPT EVEN IF THE MOVE IS REFUSED. The
-    -- record is what ExitBucket reads to put this player back where they
-    -- came from; dropping it on a failed move would strand anyone the server
-    -- HAD moved before it started refusing.
     return moveTo(src, bucket)
 end
 
---- Puts a player back in exactly the bucket EnterBucket found them in, and
---- hands the match's number back once the last person has left it.
----
---- Idempotent, like Clear above and for the same reason: it is called from
---- every exit path there is, several of which can happen to one player in
---- quick succession.
---- @param src number
---- @return boolean restored
 function ArenaDispatch.ExitBucket(src)
     if type(src) ~= 'number' or src <= 0 then return false end
 
@@ -968,16 +580,6 @@ function ArenaDispatch.ExitBucket(src)
     return true
 end
 
---- Gives a match's bucket number back to the pool.
----
---- REFUSES WHILE ONE OF THAT MATCH'S PLAYERS IS STILL IN IT, so a number is
---- never handed to a second match while somebody is standing in the room.
---- Called from ExitBucket on every leave -- so the common case frees itself
---- as the last player walks out -- and again by server/match.lua when a
---- match ends, which is what collects the bucket of a match everybody
---- disconnected from.
---- @param matchId string
---- @return boolean freed
 function ArenaDispatch.ReleaseBucket(matchId)
     local bucket = matchBuckets[matchId]
     if not bucket then return false end
@@ -1011,23 +613,6 @@ function ArenaDispatch.IsolationState()
     }
 end
 
--- ======================================================================
--- /arenaisolation -- THE ANSWER TO "IS IT ROUTING THE BUCKET?"
---
--- WHY A COMMAND AND NOT ANOTHER LOG LINE. Isolation failing looks, from the
--- console, exactly like isolation working: the allocation runs, the moves
--- run, and every line this file prints is about what it decided rather than
--- about what the server did with it. An operator standing in an arena
--- watching another match happen on top of theirs had no way to turn that
--- into a fact, and neither did anybody they reported it to.
---
--- This prints the measurement instead of the intent: the mode the server
--- reports, whether a move has ever been caught not landing, the bucket each
--- live match was allocated, and -- the line that settles it -- the bucket the
--- server says each of those players is standing in RIGHT NOW, read back one
--- at a time. Two rows with the same number and two different match ids is
--- the whole diagnosis.
--- ======================================================================
 RegisterCommand('arenaisolation', function(src, _args)
     if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
         if src ~= 0 and type(ArenaNotifyKey) == 'function' then
@@ -1052,8 +637,6 @@ RegisterCommand('arenaisolation', function(src, _args)
         ArenaLog('arenaisolation:   no match holds a bucket at the moment.')
     end
 
-    -- READ BACK FROM THE SERVER, not from this file's own record. The record
-    -- is the claim under investigation.
     local players = 0
     for player, record in pairs(held) do
         players = players + 1
@@ -1066,8 +649,6 @@ RegisterCommand('arenaisolation', function(src, _args)
         ArenaLog('arenaisolation:   nobody is being held in an arena bucket.')
     end
 end, false)
-
-
 
 -- THE HANDLER THAT MATTERS MOST IN THIS FILE.
 --
@@ -1090,10 +671,6 @@ end, false)
 AddEventHandler('onResourceStop', function(resource)
     if resource ~= GetCurrentResourceName() then return end
 
-    -- Buckets before flags: a flag left set is a bug in somebody else's
-    -- script for one restart, a bucket left set is a player who cannot play.
-    -- Assigning nil to a key that exists is defined during traversal, which
-    -- is what lets ExitBucket clear its own entry as this walks.
     local restored = 0
     for src in pairs(held) do
         if ArenaDispatch.ExitBucket(src) then restored = restored + 1 end
@@ -1106,7 +683,6 @@ AddEventHandler('onResourceStop', function(resource)
         ArenaDispatch.Clear(src)
     end
 end)
-
 
 -- ======================================================================
 -- BEST-EFFORT EVENT CANCELLING (Config.Dispatch.custom.cancelEvents)
@@ -1147,31 +723,11 @@ end)
 -- clients, is at the RegisterNetEvent call itself further down.
 -- ======================================================================
 
---- The operator's list, from the one place it is written.
---- @return table
 local function cancelConfig()
-    -- ONE PLACE, AND NOT A SECOND ONE FOR A KEY NOBODY SHIPS.
-    --
-    -- This used to fall back to Config.Dispatch.cancelEvents -- one level
-    -- too high -- for an operator who nested the key wrong. Nothing ships
-    -- that shape, and quietly accepting it is worse than refusing it: a
-    -- config that works by accident teaches the wrong structure, and the
-    -- next thing the operator writes at that level is read by nothing at
-    -- all with no warning either.
     local list = customConfig().cancelEvents
     return type(list) == 'table' and list or {}
 end
 
---- Reads one config entry into { event = string, playerArg = integer|nil }.
----
---- Accepts the three shapes an operator plausibly writes -- a bare event
---- name, a table carrying `event`, or a set keyed by event name -- because
---- these are exactly the three shared/compat/dispatch.lua's report counts. A
---- shape it counted and this refused would be a report promising a handler
---- that was never registered.
---- @param key any -- the table key, which IS the event name in the set shape
---- @param entry any
---- @return table|nil
 local function readCancelEntry(key, entry)
     if Arena.IsKey(entry) then return { event = entry } end
 
@@ -1179,10 +735,6 @@ local function readCancelEntry(key, entry)
         local coordsIndex = Arena.ToInt(entry.coordsArg)
         if coordsIndex and coordsIndex < 1 then coordsIndex = nil end
 
-        -- Lua counts arguments from 1. A zero or negative index is not a
-        -- smaller mistake than a missing one, so it is dropped rather than
-        -- clamped -- an entry with no usable index cancels nothing, which is
-        -- the safe direction.
         local index = Arena.ToInt(entry.playerArg)
         if index and index < 1 then index = nil end
         return { event = entry.event, playerArg = index, coordsArg = coordsIndex }
@@ -1193,25 +745,6 @@ local function readCancelEntry(key, entry)
     return nil
 end
 
---- Is a point inside an arena that has a match being fought in it RIGHT NOW?
----
---- WHY THIS EXISTS. Some alert events carry no player at all -- a resource
---- raises them on the server with a payload describing WHERE something
---- happened and nothing about who. `source` is meaningless for those and
---- there is no argument holding a server id, so the player-based pin has
---- nothing to work with and the alert goes out.
----
---- The location is the one thing such a payload does have, and an arena is a
---- place. If the alert is about a spot inside an arena with a live match in
---- it, it is an arena alert.
----
---- REQUIRING A LIVE MATCH IS THE WHOLE SAFETY OF IT. An arena can sit on a
---- real map location that ordinary play uses the rest of the time, which the
---- trailer park does. Suppressing every alert that ever happens there would
---- silence real crimes, which is a worse failure than the one this is fixing.
---- With no match running, nothing here suppresses anything.
---- @param point any -- a vector3, or any table carrying x/y/z
---- @return boolean
 local function insideLiveArena(point)
     if type(point) ~= 'table' and type(point) ~= 'vector3' then return false end
 
@@ -1229,28 +762,11 @@ local function insideLiveArena(point)
         if boundary and boundary.center then
             local cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
 
-            -- SCALED, LIKE THE FENCE IN server/lobby.lua, and for the reason
-            -- its comment already spells out. The fighters' edge is not the
-            -- config number: server/match.lua's boundaryPayload multiplies it
-            -- by the match's size factor so the floor and the spawn ring --
-            -- which also grow -- never end up outside it. This copy took the
-            -- raw number, so everything outside it was treated as not-arena.
-            --
-            -- What that leaves unguarded is the OUTER RING of a grown round:
-            -- 35 m at the trailer park's twenty-player ceiling (100 m radius,
-            -- 1.35 growth), up to 70 m at the skydome. An outsider's
-            -- explosion landing in that ring was not cancelled and the
-            -- fighters standing there took it -- the one thing this handler
-            -- exists to stop -- and a location-pinned alert raised there was
-            -- not suppressed either.
             local factor = math.max(1.0, tonumber(match.sizeFactor) or 1.0)
             local radius = (tonumber(boundary.radius) or 0) * factor
 
             if cx and cy and radius and radius > 0 then
                 local dx, dy = px - cx, py - cy
-                -- Compared squared, so no square root and no chance of a
-                -- rounding difference between this and the client's own
-                -- boundary check.
                 if (dx * dx + dy * dy) <= (radius * radius) then return true end
             end
         end
@@ -1259,10 +775,6 @@ local function insideLiveArena(point)
     return false
 end
 
---- Should this firing be cancelled on the strength of WHERE it happened?
---- @param entry table
---- @param ... any
---- @return boolean
 local function pinnedByLocation(entry, ...)
     if not entry.coordsArg then return false end
 
@@ -1277,106 +789,42 @@ local function pinnedByLocation(entry, ...)
 
     if kind == 'vector3' then return insideLiveArena(payload) end
 
-    -- Either the argument IS the point, or it is a table with the point
-    -- under `coords` -- which is the shape a dispatch payload usually takes.
     return insideLiveArena(payload.coords or payload)
 end
 
---- The server id one firing of an alert event can be pinned on, or nil for
---- "cannot tell", which is the answer that leaves the event alone.
---- @param entry table -- a normalised cancelEvents entry
---- @param ... any -- the event's own arguments, exactly as it was raised
---- @return number|nil src
 local function responsibleFor(entry, ...)
-    -- A PLAIN SERVER EVENT another resource raised. There is no player behind
-    -- it, so the only trustworthy answer is the one the operator gave: they
-    -- have said which argument names the player the alert is about.
-    --
-    -- Checked BEFORE `source` rather than as a fallback to it, and that order
-    -- is the point. FiveM leaves `source` set to whoever triggered the
-    -- outermost net event, so a server event raised deep inside an arena
-    -- player's own call chain still carries their id -- even when the alert
-    -- it is carrying is about somebody else entirely. A declared argument is
-    -- a statement about THIS event and beats an ambient one every time.
     if entry.playerArg then
         local declared = Arena.ToInt((select(entry.playerArg, ...)))
         if declared and declared > 0 then return declared end
         return nil
     end
 
-    -- A LOCATION-DECLARED ENTRY IS PINNED BY LOCATION OR NOT AT ALL. Falling
-    -- through to `source` here was a real over-cancel: the caller has already
-    -- decided the point was OUTSIDE every live arena, and FiveM leaves
-    -- `source` set to whoever triggered the outermost net event -- so an
-    -- alert about somewhere else entirely, raised anywhere inside an arena
-    -- player's own call chain, was being cancelled on the strength of who
-    -- happened to be at the top of the stack.
     if entry.coordsArg then return nil end
 
-    -- A NET EVENT a client triggered. FXServer sets `source` to the server id
-    -- of the client that sent it, and that is the one thing in this whole
-    -- file a client cannot lie about -- it is stamped by the server, not
-    -- carried in the payload. Anything that is not a positive integer means
-    -- this was not a net event, and is treated as "cannot tell".
     local fromSource = Arena.ToInt(source)
     if fromSource and fromSource > 0 then return fromSource end
 
     return nil
 end
 
---- Event names already warned about, so the warning below is once per name
---- for the life of the resource.
---- @type table<string, boolean>
 local warnedCancel = {}
 
---- Event names this resource has actually seen fire, so the line above is
---- printed once per name rather than once per alert on a busy server.
---- @type table<string, boolean>
 local sawFiring = {}
 
---- Job lists already reported, so the line below is once per KIND of alert
---- rather than once per alert.
----
---- BOUNDED, because this is the one table here keyed by text a CLIENT
---- chooses. RegisterNetEvent makes every cancelEvents entry firable from any
---- player's machine, and the comment on that registration used to say a
---- forged call "costs nothing: the handler's only power is CancelEvent()".
---- That was true of the handler's POWER and false of its bookkeeping: a
---- distinct `jobs` payload per firing added a permanent key here and printed
---- an unconditional line, so a loop from one keybind grew this table without
---- limit and flooded the console and log at wire speed.
---- @type table<string, boolean>
 local sawJobs = {}
 
---- How many distinct job lists are worth remembering. This is a diagnostic
---- that answers "which KINDS of alert reach us", and a real server has a
---- handful; anything past this is somebody making them up.
 local MAX_JOB_KINDS = 32
 local sawJobCount = 0
 local warnedJobFlood = false
 
---- Bounds on what jobsNamedIn will read out of another resource's payload.
---- The names are concatenated into a string that becomes a key above, so
---- both the COUNT and the resulting LENGTH have to be capped -- one forged
---- packet carrying 300,000 names is otherwise several megabytes, retained
---- for the life of the resource.
 local MAX_JOB_NAMES = 12
 local MAX_JOB_TEXT = 200
 
---- One console line, the first time an entry turns out to be unusable.
----
---- Once, and never per firing: an alert event on a busy server fires
---- constantly, and a warning printed every time would bury the console far
---- more effectively than the alerts it was trying to stop.
---- @param entry table
 local function warnUnpinnable(entry)
     if warnedCancel[entry.event] then return end
     warnedCancel[entry.event] = true
 
     if entry.coordsArg then
-        -- Telling an operator to add the coordsArg they already added is
-        -- worse than saying nothing: it sends them to fix a line that is
-        -- correct.
         ArenaLog('cancelEvents: "%s" fired but its location was not inside any arena with a live match, so it was left alone. That is the normal answer for an alert about somewhere else -- if it should have matched, check argument %d really carries the coordinates.',
             entry.event, entry.coordsArg)
         return
@@ -1386,22 +834,6 @@ local function warnUnpinnable(entry)
         entry.event, entry.event, entry.event)
 end
 
---- Which jobs an alert was aimed at, as text, or nil when it does not say.
----
---- WHY THIS IS WORTH READING. On this family of dispatch scripts police and
---- EMS alerts travel the SAME event and differ only by the jobs named in the
---- payload -- so "the police stopped getting calls but the ambulance did
---- not" is not a thing that event can do. Printing the jobs turns that from
---- a guess into an observation: if EMS alerts are still arriving, this line
---- shows them arriving and being cancelled, and if they never appear then
---- they are coming from somewhere else entirely and no amount of work on
---- this event will ever reach them.
----
---- Read defensively -- it is another resource's payload, in whatever shape
---- that resource felt like, and this is a diagnostic rather than a
---- decision. Nothing is suppressed or allowed on the strength of it.
---- @param ... any
---- @return string|nil
 local function jobsNamedIn(...)
     for index = 1, select('#', ...) do
         local argument = (select(index, ...))
@@ -1412,9 +844,6 @@ local function jobsNamedIn(...)
                 for _, job in ipairs(jobs) do
                     if type(job) == 'string' then
                         names[#names + 1] = job
-                        -- STOP READING. Nothing downstream needs the
-                        -- hundredth job name, and this list arrives from
-                        -- outside.
                         if #names >= MAX_JOB_NAMES then break end
                     end
                 end
@@ -1431,82 +860,20 @@ local function jobsNamedIn(...)
     return nil
 end
 
--- ======================================================================
--- CROSSFIRE
---
--- Nobody outside a round may shoot into it, and nobody in one may shoot
--- out. Reported from the game about the trailer park, which is the arena
--- where it matters: the sky one hangs a kilometre up with nobody near it,
--- and the trailer park is a real place people drive past.
---
--- WHY THE ROUTING BUCKET IS NOT ALREADY THE ANSWER. It is, for the ordinary
--- case -- a player outside the match is in a different network instance and
--- cannot see, hit or be hit by anyone inside. Three cases fall outside that:
---
---   A SPECTATOR IS PUT IN THE MATCH'S OWN BUCKET, because watching requires
---   seeing. Their body is hidden, frozen and collisionless while the camera
---   runs, but the camera stops itself when it runs out of fighters to
---   follow, and the stop hands the body back. Until they leave, they are a
---   player standing in a live round with a gun.
---
---   ISOLATION MAY NOT BE IN FORCE. Buckets need OneSync; an operator can
---   also switch them off. Either way every line of the instancing still
---   runs and nothing is separated.
---
---   AND IT IS THE WRONG PLACE TO REST A SAFETY PROPERTY ANYWAY. "Nobody can
---   shoot across this line" should not be an emergent consequence of a
---   network optimisation that four other things also depend on.
---
--- SO THIS IS THE AUTHORITATIVE LAYER, and it is server-side because only the
--- server knows who is in which match.
---
--- CANCELEVENT REALLY DOES WORK HERE, unlike on the dispatch alerts below --
--- and the two are worth keeping straight. Down there the event is raised by
--- another RESOURCE, and cancelling only raises a flag that a resource which
--- never calls WasEventCanceled() will ignore. weaponDamageEvent and
--- explosionEvent are raised by the SERVER itself from a client's network
--- packet, and the server is what reads the cancellation: cancelled, the
--- damage is never applied and never replicated. There is nobody else to
--- cooperate.
--- ======================================================================
-
---- @return table
 local function crossfireConfig()
     return (Config.Match or {}).crossfireGuard or {}
 end
 
---- Opt-OUT, like the isolation above and for the same reason: an operator
---- upgrading from a config written before this block gets the protection
---- without having to know it exists.
---- @return boolean
 local function crossfireEnabled()
     return crossfireConfig().enabled ~= false
 end
 
---- A damage packet naming more entities than this is not a shot, it is a
---- payload. A shotgun hits a handful; nothing legitimate hits thirty-two.
 local MAX_HITS = 32
 
---- Which player owns a network id right now, or nil.
----
---- CACHED AND THEN VERIFIED, rather than trusted. A ped's network id changes
---- when the player respawns, so a cache alone goes stale in exactly the
---- situation this guard runs in -- and a stale answer here does not fail
---- safe in one direction: resolving a fighter's new id to nobody would let
---- an outsider shoot them, and resolving it to the wrong player would cancel
---- damage inside a legitimate round. So the cached answer is confirmed
---- against the world before it is used, which is two natives rather than a
---- walk of every player on the server.
---- @param netId integer
---- @return number|nil src
---- @param netId integer
---- @param packet table? -- per-packet state; one rebuild is allowed per table
 local function ownerOfNetId(netId, packet)
     local cached = netIdOwners[netId]
     if cached and netIdOf(cached) == netId then return cached end
 
-    -- ALREADY REBUILT FOR THIS PACKET, so the table in hand is the complete
-    -- mapping and a miss is a real answer rather than a reason to look again.
     if packet then
         if packet.rebuilt then return netIdOwners[netId] end
         packet.rebuilt = true
@@ -1621,22 +988,6 @@ local function mayDamage(attacker, victim)
         return false, 'the shooter is out of the round', 'crossfire'
     end
 
-    -- AND THE SHOOTER ONLY. An eliminated TARGET used to be refused here as
-    -- well, and that made a corpse into a shield.
-    --
-    -- With spectateOnElimination on -- the shipped setting -- an eliminated
-    -- fighter's body stays standing where it died, in the middle of the
-    -- arena. One shotgun blast or grenade is ONE damage packet naming
-    -- everybody it touched, and a crossfire refusal cancels the packet
-    -- WHOLE: so a spread that clipped that body did nothing to any of the
-    -- live fighters standing next to it. A weapon that visibly connects and
-    -- does nothing is worse than the thing this was guarding against.
-    --
-    -- Nothing is lost by letting it through. They are already out: their
-    -- health is their own client's business, no kill can be credited for
-    -- them -- resolveKiller refuses an eliminated victim -- and they cannot
-    -- shoot back, which was the actual exploit and is the line above.
-
     if Arena.CanDamage(match.modeKey, shooter.team, target.team) then
         return true
     end
@@ -1658,9 +1009,6 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- the box. config.lua says so beside the switch.
     if not crossfireEnabled() then return end
 
-    -- THE CHEAPEST ANSWER FIRST. With nobody in an arena there is nothing to
-    -- separate, which is how a server spends almost all of its time -- and
-    -- this handler is on the path of every shot fired anywhere on it.
     if next(active) == nil then return end
 
     local attacker = tonumber(sender)
@@ -1669,52 +1017,14 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     local hits = type(data) == 'table' and data.hitGlobalIds or nil
     if type(hits) ~= 'table' then return end
 
-    -- A list this long is a crafted packet rather than a shot. Refused
-    -- rather than scanned: the scan is what it is trying to buy.
     if #hits > MAX_HITS then
         ArenaDebug('crossfire: refused a damage packet from %s naming %d entities.', tostring(attacker), #hits)
         CancelEvent()
         return
     end
 
-    -- RESOLVE THE WHOLE PACKET FIRST, THEN DECIDE, because CancelEvent kills
-    -- the whole packet and one packet can name several people.
-    --
-    -- This used to refuse and return on the first bad hit, which was right
-    -- while the only refusal was crossfire: two people in the same round
-    -- never reached that branch, so a packet could only ever be all-legal or
-    -- part-illegal-across-the-line. Adding the friendly-fire refusal broke
-    -- that. A shotgun names every ped its spread touched in ONE event, so a
-    -- crimson firing at an ash standing next to a crimson teammate produced a
-    -- packet with one legal victim and one refused one -- and cancelling it
-    -- took the enemy hit down too. Standing next to a teammate made you
-    -- immune to every spread weapon in the arena, which is a worse bug than
-    -- the one the friendly-fire check fixed.
     local allowed, refusal, crossfire = 0, nil, false
 
-    -- AT MOST ONE WALK OF THE PLAYER LIST FOR THE WHOLE PACKET.
-    --
-    -- ownerOfNetId's cache is positive-only: on a miss it WIPES the table and
-    -- rebuilds it over every player on the server, two natives each, then
-    -- returns nil without recording that nil. So the next entry naming an
-    -- unowned id took the identical path, and the one after that. MAX_HITS
-    -- bounds the LIST at 32, not the number of walks -- and the gate above
-    -- says exactly what it is refusing to buy: "the scan is what it is trying
-    -- to buy." A crafted 32-entry packet that passes the gate bought 32
-    -- complete walks, on the main thread, from an engine-raised event with no
-    -- rate limit in front of it, repeatable as fast as a client cares to
-    -- send. It also fires in ordinary play once per bullet whenever a shot's
-    -- hit list names a vehicle, a prop or an NPC.
-    --
-    -- WHY ONE REBUILD IS ENOUGH: it produces the COMPLETE current mapping. An
-    -- id absent from it is owned by nobody, and asking again for the next
-    -- unowned id in the same packet cannot give a different answer -- this is
-    -- one engine event with no yield in it, so nothing can have moved. The
-    -- table is still discarded at the end of the packet, so a net id that
-    -- becomes a player's ped after a respawn or a reconnect is resolved
-    -- normally by the next one; a negative cache kept BETWEEN events would go
-    -- stale and make this loop skip the very victim the crossfire and
-    -- friendly-fire checks exist to protect.
     local packet = {}
 
     for _, entry in ipairs(hits) do
@@ -1723,22 +1033,6 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         if victim then
             local ok, reason, kind = mayDamage(attacker, victim)
             if ok then
-                -- THE SHOOTER'S OWN BODY IS NOT A LAWFUL VICTIM, and counting
-                -- it as one was a hole.
-                --
-                -- Self-damage is always allowed -- a fall or your own grenade
-                -- is not crossfire, and refusing it would make a fighter
-                -- immortal to the one thing the arena does not control. But
-                -- the friendly-fire bend below exists so that a shot at a
-                -- legitimate ENEMY is not lost to a teammate who was standing
-                -- in the spread, and your own body is not that enemy. Counted
-                -- here, a point-blank shotgun that clipped the shooter and
-                -- their own teammate came out as "one lawful hit, one
-                -- refused" and went through, teammate included.
-                --
-                -- Found by damageproperty_spec, from a generated packet that
-                -- named the attacker alongside a teammate -- a shape no
-                -- hand-written case in this suite had.
                 if victim ~= attacker then allowed = allowed + 1 end
             else
                 refusal = refusal or { victim = victim, reason = reason }
@@ -1749,20 +1043,6 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
 
     if refusal == nil then return end
 
-    -- CROSSING THE LINE TAKES THE WHOLE PACKET WITH IT, unchanged. Letting a
-    -- spread through because most of it was legitimate applies the
-    -- illegitimate part too, and the illegitimate part here is somebody who
-    -- is not in this round -- a passer-by, another match, or the spectator
-    -- watching from inside the instance. That is the safety property this
-    -- guard was built for and it does not bend.
-    --
-    -- FRIENDLY FIRE BENDS, and it has to. It is a match rule rather than a
-    -- safety property, and the two refusals cannot be told apart by the
-    -- engine: a packet is cancelled whole or not at all. So a spread that
-    -- caught a teammate on its way to an enemy is allowed -- the teammate
-    -- takes the splash, and server/match.lua's attribution still refuses to
-    -- credit it. A shot with nothing legitimate in it is refused, which is
-    -- the case the report was about: aiming AT your own side.
     if crossfire or allowed == 0 then
         ArenaDebug('crossfire: %s may not damage %s -- %s.',
             tostring(attacker), tostring(refusal.victim), refusal.reason or 'refused')
@@ -1774,10 +1054,6 @@ AddEventHandler('explosionEvent', function(sender, data)
     if not crossfireEnabled() then return end
     if next(active) == nil then return end
 
-    -- Somebody fighting in the round may explode things in it. This is about
-    -- what arrives from OUTSIDE, which is the half a bucket cannot help with
-    -- once isolation is not in force -- and an explosion is the one weapon
-    -- whose reach does not care whether you can see what you are hitting.
     local exploder = tonumber(sender)
     if exploder and active[exploder] then return end
 
@@ -1820,20 +1096,11 @@ end)
 -- timestamp, never the player.
 -- ======================================================================
 
---- @return table
 local function retractConfig()
     local block = customConfig().retract
     return type(block) == 'table' and block or {}
 end
 
---- Withdraws the call this event is about to create, for a player who is in
---- a match right now.
----
---- Every failure here is a console line and never a throw: this runs inside
---- somebody else's event handler, and an error raised in it would surface as
---- that resource misbehaving.
---- @param entry table -- a normalised cancelEvents entry
---- @param src number -- the arena player the alert is about
 local function retractFor(entry, src)
     local config = retractConfig()
     if not Arena.IsKey(config.resource) or not Arena.IsKey(config.export) then return end
@@ -1872,9 +1139,6 @@ local function retractFor(entry, src)
                 exports[config.resource][config.export](nil, id)
             end)
             if not ok then
-                -- Once per resource, not once per alert: a round produces
-                -- these every few seconds and a per-call warning would bury
-                -- the console it is trying to inform.
                 if not sawFiring['retract:err:' .. config.resource] then
                     sawFiring['retract:err:' .. config.resource] = true
                     ArenaLog('retract: %s:%s failed (%s). Check that export name against that resource\'s own documentation.',
@@ -1884,80 +1148,15 @@ local function retractFor(entry, src)
             end
         end
 
-        -- SAYS WHAT IT ASKED FOR, NOT WHAT IT HOPES HAPPENED.
-        --
-        -- ClearNotification called with an id that matches nothing returns
-        -- perfectly normally -- so "withdrew the call" was printed
-        -- identically whether the id shape was right or wrong, which is the
-        -- one thing this line could have told an operator and the one thing
-        -- it did not. The id itself is now in the line: paste it next to
-        -- what the dispatch resource really filed and the answer is
-        -- immediate.
-        --
-        -- AND ONE FAILURE NO LONGER SKIPS THE REST. The loop used to
-        -- `return` on a throw, so an export that failed on offset -1 never
-        -- attempted 0 or +1 -- and the offsets exist precisely because the
-        -- one that matters cannot be known in advance.
         ArenaDebug('retract: asked %s to clear "%s" (+/-%ds) for %s.',
             config.resource, template:format(src, at), slack, tostring(src))
     end)
 end
 
---- Listens on one alert event.
----
---- Registered at LOAD time, which is as early as this resource can be: a
---- handler added later would sit behind the owning resource's own, and a
---- WasEventCanceled() check inside that handler would run before the flag
---- was ever raised. It is still only as early as crimson_arena itself
---- starts, which is why config.lua does not promise this works.
---- @param entry table
 local function registerCancelHandler(entry)
-    -- REGISTERED FOR THE NETWORK, and without this line the whole layer is
-    -- dead for the events that matter most.
-    --
-    -- FXServer routes a network-sourced event only to resources that have
-    -- called RegisterNetEvent for that name. A resource with AddEventHandler
-    -- alone is never delivered it -- no error, no warning, the handler is
-    -- simply never run. Every alert a script raises with TriggerServerEvent
-    -- from a player's own client -- which is how gunfire and deaths are
-    -- reported, because that is where they are detected -- was therefore
-    -- passing this resource without ever touching it.
-    --
-    -- THE OLD REASON FOR NOT DOING THIS WAS WRONG, and worth stating because
-    -- it read convincingly for a long time. It said RegisterNetEvent would
-    -- "open somebody else's server-only event to clients". It does not:
-    -- safe-for-net is per RESOURCE, so this marks the name callable into
-    -- CRIMSON_ARENA's handlers and changes nothing about the resource that
-    -- owns the event -- that one still needs its own RegisterNetEvent to be
-    -- reachable, exactly as before.
-    --
-    -- What it does allow is a client invoking THIS handler with made-up
-    -- arguments. That gains them nothing: the handler's only power is
-    -- CancelEvent(), which applies to the invocation it is running in --
-    -- a forged one that no alert script is listening to. Cancelling a
-    -- pretend alert achieves nothing at all.
-    --
-    -- THAT IS ABOUT ITS POWER, NOT ITS COST, and the two were confused
-    -- here. The diagnostics below write down what they see, and what they
-    -- see is a payload the caller chose: an unbounded job list concatenated
-    -- into a permanent table key, with an unconditional log line each time.
-    -- One forged packet carrying 300,000 names retained several megabytes
-    -- for the life of the resource, and a loop of distinct ones filled the
-    -- console and the log file as fast as the wire allowed. Both are
-    -- bounded now, at MAX_JOB_NAMES / MAX_JOB_TEXT / MAX_JOB_KINDS.
     RegisterNetEvent(entry.event)
 
     AddEventHandler(entry.event, function(...)
-        -- ONE LINE, THE FIRST TIME THIS HANDLER IS REACHED AT ALL.
-        --
-        -- It answers the only question worth asking when alerts keep coming
-        -- through: is the event even being raised? "Nothing was cancelled"
-        -- has two completely different causes and they need completely
-        -- different fixes -- the handler never ran, so the alert script is
-        -- calling an export instead of raising an event and NOTHING here can
-        -- ever reach it; or the handler ran and declined, which is a pinning
-        -- problem this file can solve. Without this line those are the same
-        -- silence, and an operator cannot tell which they are looking at.
         local jobs = jobsNamedIn(...)
 
         if not sawFiring[entry.event] then
@@ -1966,9 +1165,6 @@ local function registerCancelHandler(entry)
                 entry.event)
         end
 
-        -- Once per set of jobs, not once per alert: a busy server raises
-        -- these constantly, and the question this answers -- WHICH kinds of
-        -- alert reach us at all -- is answered by the first of each kind.
         if jobs and not sawJobs[jobs] then
             if sawJobCount < MAX_JOB_KINDS then
                 sawJobs[jobs] = true
@@ -1976,20 +1172,12 @@ local function registerCancelHandler(entry)
                 ArenaLog('cancelEvents: an alert for [%s] came through "%s". Alerts for jobs never listed here are being raised somewhere this resource cannot see.',
                     jobs, entry.event)
             elseif not warnedJobFlood then
-                -- ONCE, AND THEN SILENCE. Past this many distinct job lists
-                -- the diagnostic has stopped being a diagnostic: a real
-                -- server has a handful, so this is either a very strange
-                -- dispatch script or somebody firing the event by hand.
-                -- Either way the answer is to stop writing them down.
                 warnedJobFlood = true
                 ArenaLog('cancelEvents: more than %d different job lists have come through these events, so no more will be recorded. On a normal server there are a handful; this many means either an unusual dispatch script or a player raising the event by hand.',
                     MAX_JOB_KINDS)
             end
         end
 
-        -- LOCATION FIRST, because it is the answer for the firings the player
-        -- pin cannot see at all: an alert raised on the server with a payload
-        -- describing where something happened and nothing about who.
         if pinnedByLocation(entry, ...) then
             CancelEvent()
             ArenaDebug('cancelEvents: cancelled "%s" -- it is about a spot inside a live arena.', entry.event)
@@ -2002,10 +1190,6 @@ local function registerCancelHandler(entry)
             return
         end
 
-        -- The whole safety of this layer is this one line: cancel for a
-        -- player this resource is currently holding in a match, and nobody
-        -- else. Read from the server's own record -- the same one the state
-        -- bag is written from -- and never from anything the event carried.
         if not ArenaDispatch.IsPlayerInArena(src) then
             ArenaDebug('cancelEvents: "%s" fired for %s, who is not in a match -- left alone, which is correct.',
                 entry.event, tostring(src))
@@ -2016,9 +1200,6 @@ local function registerCancelHandler(entry)
         ArenaDebug('dispatch: raised the cancel flag on "%s" for %s, who is in match %s. It only stops the alert if that resource checks WasEventCanceled().',
             entry.event, tostring(src), tostring(active[src]))
 
-        -- And then the layer that does not depend on the other resource
-        -- agreeing to anything. The flag above is free and occasionally
-        -- lands; this is what removes the call on a script that ignores it.
         retractFor(entry, src)
     end)
 end
@@ -2034,8 +1215,6 @@ do
         if not normalised then
             ArenaLog('cancelEvents: skipped an entry that is not an event name, { event = ... } or [event] = true.')
         elseif registered[normalised.event] then
-            -- Two handlers on one name would cancel the same event twice, to
-            -- no extra effect, and double every diagnostic it prints.
             ArenaDebug('dispatch: cancelEvents names "%s" more than once -- the later entry was ignored.', normalised.event)
         else
             registered[normalised.event] = true

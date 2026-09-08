@@ -29,14 +29,15 @@ Everything below is in the shipped code. Where something is off by default, or i
 **Weapons and ammo**
 
 - The weapon list is `Config.Loadouts.weapons`, and it lives in **`config.weapons.lua`** rather than `config.lua` — a thousand lines of weapon blocks that everybody editing a timer or a payout used to scroll past. Delete an entry or set `enabled = false` and it is gone from the arena — the server refuses it even when a modified client asks for it by name.
-- **96 entries ship and 77 of them are enabled**, in six categories: 25 sidearm, 24 automatic, 9 shotgun, 7 precision, 13 heavy and 18 melee. **All eighteen melee weapons are on.** What ships off is the whole `heavy` category — launchers, the minigun, explosives — plus six sidearms.
+- **96 entries ship and every one of them is enabled**, in six categories: 25 sidearm, 24 automatic, 9 shotgun, 7 precision, 13 heavy and 18 melee.
+- **THE HEAVY CATEGORY IS ON, AND THAT MEANS EXPLOSIVES.** The RPG, the homing and grenade launchers, the minigun, the railguns and the flamethrower are all pickable as shipped, and friendly fire cannot stop an explosion — teammates can blow each other up whatever `Config.Teams.friendlyFire` says. Set `enabled = false` on the `heavy` entries in `config.weapons.lua` if that is not the arena you want. This is a deliberate choice, not an oversight, and it is the first thing to look at before opening the doors.
 - **Twelve MK II weapons ship and every one of them is enabled**, Heavy Sniper MK2 included. Each carries its own `ammoTypes` list naming the item that weapon fires.
 - Each weapon carries its own ammo block: `options` is what the picker offers, `max` is the ceiling the server clamps to. A weapon with no `options` (melee) offers no ammo choice and is handed out at `default` — with `max` left as the only limit on the wire for it, so every shipped melee entry sets the two to the same number.
 - **Ammo items ship switched ON** (`Config.Loadouts.ammoItems.enabled = true`), with a real item name on every weapon — `ammo-9`, `ammo-shotgun`, `ammo-heavysniper` — read out of that weapon's own `ammoname` in ox_inventory. The round follows the weapon; the player is never asked to choose one. See [Ammo types](#ammo-types--handing-out-your-own-ammo-items).
 - **The amount is a total**, split between the magazine and the pocket: 60 rounds on a Pistol is 30 loaded and 30 as items.
 - `slots` caps how many weapons one player carries — **guns and melee together**, 4 as shipped. The mix is the player's: four rifles, four bats, or any combination. `0` means no limit. Whether a *kind* is offered at all is still yours — `allowFirearms` and `allowMelee` — so a firearms-only or melee-only arena is one word. Nothing is added on top: a player carries what they picked and nothing else.
 - **Full health and a full plate on every life, always.** That is a rule of the arena and not a setting — there is no `Config.Loadouts.armor` block and no `health` key any more, and neither a config edit nor a crafted client payload reaches it. Both realms read the same two numbers from `Arena.StartingVitals` (200 and 100), and what the client applies is a *floor*, so even a stale loadout starts you on a full plate.
-- **What you *can* pick is the spare kit you carry in.** `Config.Loadouts.supplies` ships on, with body armour (max 4, default 1) and bandages (max 6, default 2) and a shared ceiling of 8 items across everything. They are real `ox_inventory` items, handed over at the start of the round and taken back on the way out with the rest of the arena's kit — and taken back *against what the player still holds*, so somebody who used two of three bandages does not keep the third.
+- **What you *can* pick is the spare kit you carry in.** `Config.Loadouts.supplies` ships on, with body armour (max 25, default 1) and bandages (max 30, default 2) and **no shared ceiling** — `totalItems = 0`, so the per-item maximums are the only limit and one fighter may carry 25 plates and 30 bandages. They are real `ox_inventory` items, handed over at the start of the round and taken back on the way out with the rest of the arena's kit — and taken back *against what the player still holds*, so somebody who used two of three bandages does not keep the third.
 - **The host picks the loadout, not the player.** `Config.Loadouts.chooser` ships as `'host'`: the host chooses once and everyone in that match fights with it. The server *refuses* a loadout request from anybody else rather than merely greying the panel out. Set it to `'player'` for everyone to pick their own.
 
 **Teams**
@@ -50,7 +51,8 @@ Everything below is in the shipped code. Where something is off by default, or i
 **Matches**
 
 - `Config.Match.maxPlayers = 0` — any number of players in one match. Several matches can run side by side (`maxConcurrentMatches = 0` for no ceiling).
-- Modes: **Free For All** and **Team Deathmatch**.
+- Modes: **Free For All**, **Team Deathmatch** and **Gun Game** — all three ship enabled.
+- **Gun Game is a ladder, not a deathmatch.** Nobody is eliminated: every kill moves you one rung up and every death moves you one down, and the round ends on its own clock (`Config.Modes.gungame.roundTimeSeconds`, 480s) or when somebody tops the ladder. It ignores `winCondition` and `lives` entirely, and issues its own kit rather than letting anybody pick one. The rungs are drawn from ordered weapon-class pools, so the shape of the climb is the same every round and the guns on it are not.
 - Win conditions: `last_standing` (default), `most_kills`, `score_limit`. A tie is a draw and refunds rather than picking one of two equal scores.
 - Lives, respawn delay, a round clock (`roundTimeSeconds = 0` for none), a lobby countdown players can still back out of, and a frozen start countdown.
 - Per-arena boundary sphere: a warning, then damage per tick until the player comes back. `boundary.enabled = false` for an open arena.
@@ -61,11 +63,12 @@ Everything below is in the shipped code. Where something is off by default, or i
 **Betting**
 
 - One switch — `Config.Betting.enabled` — hides every bet control and makes the server reject any bet that arrives anyway.
-- Entry fees are held in escrow, not tracked against a balance. Payout is `winner_takes_all` (default) or `per_kill`, with an optional house cut. Anything else is read as `winner_takes_all`, so a typo cannot swallow a pot.
+- Entry fees are held in escrow, not tracked against a balance.
+- **`payout`, `houseCutPercent` and `minPlayersToPayOut` DO NOTHING ON THE SHIPPED CONFIG.** All three are read only when the entry pot settles on its own, and `betPayout.includeEntryPot` ships ON — which turns every entry fee into a bet in the pool, so the pool settles it instead and splits **by stake**, not evenly. The console says so at start-up. Turn `includeEntryPot` off for those three to mean anything.
 - Spectator side-bets on a team or a fighter, on by default. **Parimutuel as shipped**: winners split the pool in proportion to what they staked, funded by the losing bets and never by the server. Fixed odds at `oddsMultiplier` is the alternative, per crowd, in `Config.Betting.betPayout`.
 - **One pot as shipped, not two.** `betPayout.sharedPool` puts the fighters' and the spectators' bets in the same pool, and `betPayout.includeEntryPot` puts the entry fees in it as well — a fighter's fee is a stake on their own side. So a bystander's money *does* reach the winner, on purpose: it is what makes a small arena's pool worth betting into. Turn either off to keep the crowds' money apart.
 - **A pool with nobody on the other side is handed back, not won.** A share of a pool that contains only your own stake is exactly your own stake, so the arena returns it and says so rather than announcing a win that pays nothing.
-- A match fought by fewer than `minPlayersToPayOut` refunds the pot instead of paying it out — judged on the head count the round started with, so a player leaving cannot turn a decided match into a refund.
+- `minPlayersToPayOut` would refund the pot below that head count — but see above: on the shipped config it is never consulted, and a two-player match pays out in full.
 
 **Leaderboard**
 
@@ -373,7 +376,7 @@ Component names are only meaningful on MK II weapons. Adding a `component` to a 
 
 ```lua
 windows = {
-    { from = 0,  to = 2 },   -- midnight to 2am
+    { from = 0,  to = 4 },   -- midnight to 4am
     { from = 5,  to = 7 },   -- 5am to 7am
     { from = 12, to = 14 },  -- noon to 2pm
     { from = 18, to = 20 },  -- 6pm to 8pm
@@ -973,7 +976,7 @@ A refund that fails — almost always because the player has already left — is
 A *payout* that cannot be delivered is different: the pot has already been divided among everyone else, so it cannot be rolled back without changing what they were paid. It is logged for a human to settle by hand, and sent to the webhook if one is configured:
 
 ```
-[crimson_arena] PAYOUT UNDELIVERED: 4000 owed to 12 on match m4f2a1 -- they are not on the server. Settle by hand.
+[crimson_arena] PAYOUT UNDELIVERED: 4000 owed to 12 on match m4f2a1 -- they are not on the server. It is on the unpaid ledger and will be paid when they come back.
 ```
 
 Turn `Config.Webhook.enabled` on and set `logPayouts` if you want these in Discord. Undeliverable-money notices are sent whatever `logPayouts` says — an operator who turned payout logging off still needs to hear about a player who is owed.

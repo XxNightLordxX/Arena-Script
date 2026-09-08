@@ -5,7 +5,7 @@ Read this before the resource goes anywhere near players.
 ## The honest status of this build
 
 Everything that can be checked without a running FiveM server has been checked:
-every Lua file parses, `luacheck` is clean across the resource, and a suite of
+every Lua file parsed, `luacheck` was clean across the resource, and a suite of
 76 specs exercised the real production files under plain Lua 5.4 — the rules,
 the payout arithmetic, the escrow invariants, the locale coverage.
 
@@ -139,10 +139,12 @@ bites — failing to place eight fighters **with growth switched off**, because 
 roster big enough to grow the arena gets the extra room for free and hides the
 problem.
 
-Edit the list, run the suite, and read what it says. Do not trust a layout that
-merely looks right: the numbers in the skydome's `cover` block were arrived at
-by measuring against all four of those, and a denser version of them passed
-three before failing the fourth.
+Edit the list and then go and LOOK at it in game, with a full roster. Do not
+trust a layout that merely looks right: the numbers in the skydome's `cover`
+block were arrived at by measuring against all four of those, and a denser
+version of them passed three before failing the fourth — which is exactly the
+kind of thing an eye does not catch and the suite this release ships without
+did.
 
 ## The smoke test
 

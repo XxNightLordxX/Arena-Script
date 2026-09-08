@@ -21,10 +21,10 @@ models = {
 The last entry is **base game**. It is not in a DLC, it is not behind an
 update, and a stock GTA V install has it — so for a chain to run out
 completely, someone has to have deliberately stripped assets out of the
-server's game files. Every model named in `config.lua` is also checked
-against the game's own object list by `tests/skyarena_spec.lua`, so a name
-that does not exist anywhere cannot be shipped by accident (one was, once —
-that is why the test exists).
+server's game files. Every model named in `config.lua` was checked
+against the game's own object list by a test that is not in this release —
+one invented name shipped once, which is why that test was written. **Nothing
+checks the names now**, so if you add a prop, check it in game yourself.
 
 ## How to tell, on your own server, in ten seconds
 
@@ -52,7 +52,11 @@ lays the floor out on the real footprint, so you do not have to work out
 tile spacing or heights. Prefer a prop that is *large*: the floor is tiled,
 so a small prop means hundreds of pieces (see `maxTiles`).
 
-**2. Stream the props yourself.** Put the asset files in this folder:
+**2. Stream the props yourself.** **There is no `stream/` folder in this
+resource, deliberately** — FiveM registers *every* file in one as a streaming
+asset, so a stray `.md` or `.txt` in there prints an error in every player's
+console on every connect. Make the folder yourself when you have a real model
+to put in it:
 
 ```
 stream/
@@ -75,4 +79,4 @@ Then name your model in `config.lua` like any other.
 are Rockstar's, they belong to the copy of GTA V your server already has, and
 redistributing them inside a resource is both a licensing problem and a
 pointless one — your server has them. If you want to stream a *custom*
-platform, the folder is here and wired up for it.
+platform, make the folder as above and FiveM will pick it up.

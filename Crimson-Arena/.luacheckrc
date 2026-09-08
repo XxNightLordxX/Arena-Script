@@ -450,6 +450,12 @@ files['server/'] = {
         -- Server-side reads of a client-owned entity can legitimately fail,
         -- so the caller treats an unreadable position as one to skip.
         'GetEntityCoords',
+        -- Whether a fighter's body is still standing. Config.Match
+        -- .serverChecks books a death the client never reported, and this is
+        -- the only way the server can see one -- read together with the
+        -- position above, because zero health is also what this answers about
+        -- an entity that does not exist.
+        'GetEntityHealth',
 
         -- Routing buckets (server/dispatch.lua). A match is fought in its
         -- own network instance, which is set server-side and never on a

@@ -98,6 +98,7 @@
         "revived_but_out": "%s is back on their feet, but they are out of the round and stay out.",
         "bet_trimmed": "Out of the fight, so your bet is cut to what a watcher may hold. %s back.",
         "eliminated": "You are out.",
+        "fence_removed": "You were outside the arena and are out of the round.",
         "fighter_dropped": "%s dropped out of the fight.",
         "gungame_demoted": "Down to tier %d of %d. %s in your hands.",
         "gungame_final_tier": "%s is on the top tier. One kill and it is over.",

@@ -274,7 +274,16 @@ local function newServer(mutate, seed, opts)
             -- ped the server cannot see, which resolveKiller is documented
             -- to fail OPEN on -- so the absence has to be reachable too.
             if opts.positions then return opts.positions[tonumber(ped) or -1] end
-            return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
+            -- INSIDE THE TRAILER PARK, which is the arena every match in
+            -- this file is opened at. It used to answer a point 1,450m
+            -- away -- nothing read it until Config.Match.serverChecks did,
+            -- and that reads a fighter outside the fence as one who has
+            -- walked out of the round.
+            return {
+                x = 2344.4 + ((tonumber(ped) or 0) % 16) * 3.0,
+                y = 2565.1,
+                z = 46.7,
+            }
         end,
         GetVehiclePedIsIn = function() return 0 end,
         IsPlayerAceAllowed = function() return false end,
@@ -2034,30 +2043,39 @@ t.test('a kill claimed from across the map is not credited', function()
     end, nil, { positions = places })
     s.play(3)
 
+    -- IT IS THE KILLER WHO MOVES, AND THAT IS NOT ARBITRARY. Two guards read
+    -- these positions now and they ask different people: this ceiling
+    -- measures the gap between the pair, while Config.Match.serverChecks
+    -- asks whether the DYING player was anywhere near the arena at all. Park
+    -- the victim across the map and the death is refused before the ceiling
+    -- is ever reached -- so the victim stays in the Trailer Park, where an
+    -- honest fighter would be, and the accomplice is the one who is nowhere
+    -- near. Which is also the shape of the exploit.
+    --
     -- NOT THE ORIGIN for either of them: positionOf treats 0,0 as "this ped
     -- has not streamed in" and answers nil, which fails open -- so a test
     -- that parked a body there would be measuring the fail-open path while
     -- believing it was measuring the ceiling.
-    places[1] = { x = 1000.0, y = 2000.0, z = 30.0 }
-    places[2] = { x = 1040.0, y = 2000.0, z = 30.0 }
+    places[2] = { x = 2344.4, y = 2565.1, z = 46.7 }
+    places[1] = { x = 2384.4, y = 2565.1, z = 46.7 }
     s.trade(2, 1)
     t.equals(s.row(1).kills, 1, 'a kill from 40m is an ordinary kill')
 
-    places[2] = { x = 5000.0, y = 2000.0, z = 30.0 }
+    places[1] = { x = 7000.0, y = 2565.1, z = 46.7 }
     s.trade(2, 1)
     t.equals(s.row(1).kills, 1, 'a kill claimed from 4km away is not credited')
     t.equals(s.row(2).deaths, 2, 'though the death still counted -- only the credit is refused')
 
     -- HEIGHT COUNTS. The sky arena is a platform above the world, so a flat
     -- measurement would read a player who has fallen off it as next door.
-    places[2] = { x = 1000.0, y = 2000.0, z = 4030.0 }
+    places[1] = { x = 2344.4, y = 2565.1, z = 4046.7 }
     s.trade(2, 1)
     t.equals(s.row(1).kills, 1, 'nor one from 4km straight down')
 
     -- IT FAILS OPEN. A ped the server cannot see has no position, and
     -- refusing a real kill because one body had not streamed in would take a
     -- fought kill off an honest player.
-    places[2] = nil
+    places[1] = nil
     s.trade(2, 1)
     t.equals(s.row(1).kills, 2, 'a position the server cannot read credits the kill')
 
@@ -2066,8 +2084,8 @@ t.test('a kill claimed from across the map is not credited', function()
         config.Match.maxKillDistance = 0
     end, nil, { positions = places })
     off.play(2)
-    places[1] = { x = 1000.0, y = 2000.0, z = 30.0 }
-    places[2] = { x = 9000.0, y = 9000.0, z = 30.0 }
+    places[2] = { x = 2344.4, y = 2565.1, z = 46.7 }
+    places[1] = { x = 9000.0, y = 9000.0, z = 30.0 }
     off.trade(2, 1)
     t.equals(off.row(1).kills, 1, 'with the ceiling off, distance decides nothing')
 end)

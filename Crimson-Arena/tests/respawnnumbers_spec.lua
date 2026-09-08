@@ -49,6 +49,10 @@ print('respawnnumbers_spec')
 --- @param mutate fun(config: table)?
 --- @return table server
 local function newServer(mutate, opts)
+    -- Where the fixture stands every body. Replaced by `standIn` once the
+    -- round names an arena.
+    local centre = { x = 2344.4, y = 2565.1, z = 46.7 }
+
     opts = opts or {}
     local qbx = Sandbox.newQbxCore({
         [1] = { citizenid = 'AAA11111', name = 'Host',  money = { cash = 50000, bank = 0 } },
@@ -93,8 +97,25 @@ local function newServer(mutate, opts)
         GetPlayerPed = function(src) return src end,
         -- Spread apart by server id, so the respawn picker's "furthest from
         -- the nearest threat" has a real answer rather than a tie.
+        -- INSIDE WHICHEVER ARENA THIS ROUND IS BEING FOUGHT IN, which this
+        -- file cannot write down: `anArena` below deliberately asks the
+        -- config which arena ships first rather than naming one, so the
+        -- fixture has to follow it. `standIn` fills this in once the round
+        -- is opened; until then it is the Trailer Park.
+        --
+        -- Nothing read these coordinates until Config.Match.serverChecks
+        -- did, and that reads a fighter outside the fence as one who has
+        -- walked out of the round -- so a fixture standing the whole roster
+        -- in the wrong arena stopped every death in this file being booked.
+        --
+        -- Spread three metres apart, so they are also close enough for the
+        -- kill-distance ceiling -- the other thing that reads this.
         GetEntityCoords = function(ped)
-            return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
+            return {
+                x = centre.x + ((tonumber(ped) or 0) % 16) * 3.0,
+                y = centre.y,
+                z = centre.z,
+            }
         end,
         GetVehiclePedIsIn = function() return 0 end,
         IsPlayerAceAllowed = function() return false end,
@@ -213,6 +234,17 @@ local function newServer(mutate, opts)
         return nil
     end
 
+    --- Stand every body in the middle of a named arena, so the server's own
+    --- position reads agree with the round these fighters are in.
+    function server.standIn(arenaKey)
+        local arena = server.env.Arena.GetArenaByKey(arenaKey)
+        local boundary = arena and server.env.Arena.BoundaryOf(arena)
+        local point = boundary and boundary.center
+        t.isNotNil(point, ('arena "%s" has no boundary centre to stand in')
+            :format(tostring(arenaKey)))
+        centre = { x = point.x, y = point.y, z = point.z }
+    end
+
     return server
 end
 
@@ -238,7 +270,12 @@ end
 --- @return table server, string matchId
 local function liveRound(fee, mutate, count, opts)
     local s = newServer(mutate, opts)
-    local matchId, err = s.lobby.Create(1, anArena(s), nil, fee or 0, nil, nil, nil)
+    local arenaKey = anArena(s)
+    -- BEFORE THE ROUND STARTS, not after: the fence reads a position on the
+    -- very first sweep, and a death is only booked for somebody the server
+    -- can see inside the arena they are fighting in.
+    s.standIn(arenaKey)
+    local matchId, err = s.lobby.Create(1, arenaKey, nil, fee or 0, nil, nil, nil)
     t.isNotNil(matchId, 'the host could not create a match: ' .. tostring(err))
 
     for src = 2, (count or 2) do

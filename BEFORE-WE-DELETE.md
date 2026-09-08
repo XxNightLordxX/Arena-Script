@@ -105,6 +105,19 @@ touched. Results:
 | 3. Dependency surface | **PASS** — 973 entries before, 973 after, 0 lost |
 | 4. Tests against stripped code | 95 of 96 spec files pass — see below |
 
+**Run again, on the real strip.** The table above is the first dry run, which
+removed *every* comment. Re-run against the strip you actually chose — the
+one that keeps warning blocks — checks 1, 2 and 3 pass identically, and check
+4 comes back **95 of 96 with a different single failure**: `configmap_spec`,
+because `config.lua` carries a line-numbered map of itself at the top and
+stripping moves those lines. That map is regenerated as part of the strip and
+the spec passes again.
+
+`unrestorable_spec` — the one failure in the table above, the test that
+asserts a particular comment still exists — **now passes**, because the
+warning-block rule kept the comment it guards. That is the clearest evidence
+I have that the rule is drawing the line in the right place.
+
 **Check 1 was wrong, and running it is how I found out.** My first version
 compared the compiled files byte for byte. That reports a difference for a
 *pure comment removal*, because Lua records the line range each function was
@@ -137,6 +150,13 @@ ships; the history is what makes even a missed one recoverable.
 
 ## What I am NOT sure about — please decide
 
+> **DECIDED.** You said: *do all your recommendations in before we delete
+> md.* So every option marked **recommended** below is what was built. The
+> six doubts are left as they were written, each with a note underneath
+> saying what actually happened. One of them did not land where I said it
+> would, and that note says so.
+
+
 ### Doubt 1 — the warnings inside the code (my biggest one)
 
 There are about **609 comment lines** outside `config.lua` that are not
@@ -168,8 +188,15 @@ open. They do not affect the running server at all.
 of the current commentary and it is the only part that protects the work.
 
 - [ ] Remove them too — I want the code files completely bare
-- [ ] Keep them — recommended
+- [x] **Keep them** — done
 - [ ] Keep them, but move them out into a separate `NOTES.md` instead
+
+**How that is enforced, since "keep the warnings" is not something a text
+search can do.** `tools/strip_prod.py` treats a *run of comment lines* as one
+unit and keeps or drops the whole run on whether anything in it warns. That
+matters: a warning is usually one sentence inside a paragraph, and keeping
+that sentence while deleting the six lines around it leaves a fragment worse
+than either answer.
 
 ### Doubt 2 — `REFERENCE.md`
 
@@ -182,8 +209,7 @@ it honest is one of the tests being deleted, so from that moment on it can
 quietly drift out of date and mislead.
 
 - [ ] Delete it
-- [ ] Keep it — recommended, but only if I add a line saying it is a
-      snapshot and may drift
+- [x] **Keep it, with a line saying it is a snapshot and may drift** — done
 - [ ] Keep it and I will maintain it
 
 ### Doubt 3 — one line at the top of each code file
@@ -193,8 +219,11 @@ Something like `-- Crimson Arena: the match itself. Rounds, kills, endings.`
 Nine words per file. Not for the game — for whoever opens the folder and
 wants to know which file does what.
 
-- [ ] Yes, keep a one-line header on each file — recommended
+- [x] **Yes, keep a one-line header on each file** — done
 - [ ] No, strip them completely bare
+
+They are written out by hand in `tools/strip_all.sh`, one per file, because
+no rule derived from a filename can say what a file is for.
 
 ### Doubt 4 — `config.weapons.lua`
 
@@ -205,7 +234,8 @@ how to regenerate it when you add a weapon**.
 That is operator information, not developer information — but it sits in a
 file that looks like code.
 
-- [ ] Keep that header — recommended
+- [x] **Keep that header** — done. `config.weapons.lua` lost 22 lines out of
+      1,137; the regeneration instructions survived intact.
 - [ ] Strip it like the rest
 
 ### Doubt 5 — `fxmanifest.lua`
@@ -213,7 +243,10 @@ file that looks like code.
 110 comment lines in the file FiveM itself reads. Some explain load order,
 which matters if you ever add a file.
 
-- [ ] Cut it right down to a few practical lines — recommended
+- [x] **Cut it right down to a few practical lines** — done, 167 lines to 85.
+      Rewritten by hand rather than stripped, because what is practical here
+      (load order, why oxmysql is deliberately absent, why there is no
+      `stream/` folder) is not what a warning-matching rule would have kept.
 - [ ] Strip it completely
 - [ ] Leave it as it is
 
@@ -239,9 +272,33 @@ Example of the change:
 
 That would take `config.lua` from roughly 3,117 lines to about 1,100.
 
-- [ ] That is the right level — recommended
+- [x] **That is the right level** — done, but it landed at **2,293 lines,
+      not 1,100**, and you should know why before you decide it is wrong.
 - [ ] Go shorter still — one sentence each
 - [ ] Keep more than that
+
+**Where the estimate went wrong.** 1,100 was measured against a *full* strip
+of `config.lua` — every comment gone. What you chose in Doubt 1 is the
+opposite of that for anything carrying a warning, and `config.lua` is where
+most of the warnings live: don't put valuables in `neverStash`, keep the two
+bet ceilings level, `default` must be one of the `options`, a boundary must
+contain its own floor. Those are the paragraphs an operator most needs and
+the ones a shorter file would have lost.
+
+So the rewrite did what Doubt 6 describes — every setting now says what it
+does and what you may write, and the history of why a number changed is
+gone — and the warnings stayed. The file is 689 lines of actual settings and
+187 blank; the rest is that.
+
+If you want it shorter, the next thing to cut is the warnings, and that is
+Doubt 1 again rather than this one. Say the word and I will do it — but I
+would be cutting the part I recommended keeping.
+
+**One thing about this file is proven rather than claimed.** Its compiled
+instructions were compared before and after, and the only difference in the
+whole file is the bet ceiling in decision 6 of `EXPLOITS-YOUR-CALL.md` —
+50,000 to 25,000, which was a deliberate change. Nothing else about how the
+arena behaves moved by so much as a constant.
 
 ---
 

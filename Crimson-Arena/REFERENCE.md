@@ -1,5 +1,14 @@
 # Crimson Arena — Feature and Function Reference
 
+> **A SNAPSHOT, AND IT MAY DRIFT.** This file was kept honest by a test —
+> `tests/checklist_spec.lua` compared every table below against the real
+> files and failed the build when they disagreed. That test has been removed
+> with the rest of the suite for release, so from this point on nothing
+> checks this document. It was accurate on the day it was written; treat it
+> as a map rather than as the territory, and trust the code where the two
+> disagree.
+
+
 *Everything this resource does, and every function it does it with.*
 
 `README.md` explains how to run the arena and `DEPLOYMENT.md` is the checklist for
@@ -150,6 +159,13 @@ instancing really happened rather than assuming it did.
 - **The arena does not revive players itself.** It stopped: two resources writing to one body is a flicker with a winner, not a revive. Its own death handling stands the ped up in the frame it dies, and the medical script's revive — fired automatically for every script the catalogue detects — is what clears that script's casualty list.
 - **A crossfire guard**, so a shot fired inside the arena cannot hurt somebody
   outside it and vice versa.
+- **The server checks two things for itself**, once a second, because they used
+  to be taken from the player's own game on trust: whether a fighter is
+  standing anywhere near the arena, and whether one whose body reads as dead
+  ever reported it. Both act only on something seen several checks *in a row*
+  and never on a body the server cannot see, so a player still streaming the
+  world in is not mistaken for a cheat. A death booked this way credits
+  nobody. `Config.Match.serverChecks`.
 
 ### Operator surface
 
@@ -160,7 +176,7 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **75 spec files** covering the shared, server and client logic, run with `lua5.4`
+- **76 spec files** covering the shared, server and client logic, run with `lua5.4`
   against a fake-native harness, plus **21 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
@@ -270,7 +286,7 @@ line-number map that is regenerated whenever the file changes.
 |---|---|
 | `Config.ResourceLabel`, `Config.Debug`, `Config.NotifyTitle` | Naming and the debug channel. |
 | `Config.Lobby` | The lobby ped, the ground marker, the blip, how players interact with it, and where they are returned to. |
-| `Config.Match` | Player counts, lives, countdowns, win conditions, respawn timing, spawn scatter, the keep-out barrier, the crossfire guard, the radar, and the rules about being dead or in a vehicle. |
+| `Config.Match` | Player counts, lives, countdowns, win conditions, respawn timing, spawn scatter, the keep-out barrier, the crossfire guard, the radar, the server-side position and death checks, and the rules about being dead or in a vehicle. |
 | `Config.Teams` | The team list, their colours and their order. |
 | `Config.Modes`, `Config.DefaultMode` | Free-for-all and team deathmatch: whether teams exist, what ends a round. |
 | `Config.Betting` | Entry fees, spectator bets, fighter bets, payout mode, house cut, which accounts may be used, and every refund rule. |

@@ -1686,6 +1686,162 @@ local function livePositions(match, player, sameSideWanted)
     return out
 end
 
+--- The three numbers Config.Match.serverChecks is read through, with the
+--- shipped values as the fallback.
+---
+--- ONE READ, ONE PLACE. Four call sites ask these questions -- the fence, the
+--- unreported death, the death report itself and the log line -- and a block
+--- an operator deleted wholesale must answer the same thing at all four.
+--- @return boolean enabled
+--- @return number outsideMetres
+--- @return integer outsideTicks
+--- @return integer deadTicks
+local function serverChecks()
+    local block = (Config.Match or {}).serverChecks
+    if type(block) ~= 'table' or block.enabled ~= true then return false, 0.0, 0, 0 end
+
+    return true,
+        math.max(0.0, tonumber(block.outsideMetres) or 60.0),
+        math.max(1, Arena.ToInt(block.outsideTicks) or 8),
+        math.max(0, Arena.ToInt(block.deadTicks) or 4)
+end
+
+--- How far outside this match's fence a player is standing, or nil when the
+--- question cannot be answered.
+---
+--- NIL IS NOT ZERO, and every caller here treats it as "no evidence" rather
+--- than "inside". Three different things produce it -- an arena with no
+--- boundary, a boundary whose centre cannot be read, and a body the server
+--- cannot see -- and none of them is grounds for taking a player's round off
+--- them.
+---
+--- THE FENCE IT MEASURES IS THE ARENA'S OWN, grown with the roster exactly as
+--- the floor, the spawn ring and the client's own boundary are. Measuring
+--- against the unscaled radius would put the edge of a twenty-player arena
+--- outside its own fence.
+--- @param match table
+--- @param src any
+--- @return number|nil metres past the fence
+local function metresOutside(match, src)
+    local arena = Arena.GetArenaByKey(match.arenaKey)
+    local boundary = Arena.BoundaryOf(arena)
+    if not boundary then return nil end
+
+    local centre = toPoint(boundary.center)
+    if not centre then return nil end
+
+    local radius = (tonumber(boundary.radius) or 0.0)
+        * math.max(1.0, tonumber(match.sizeFactor) or 1.0)
+    if radius <= 0 then return nil end
+
+    local far = metresBetween(centre, positionOf(src))
+    if not far then return nil end
+    return far - radius
+end
+
+--- Is this body reading as dead, with enough certainty to act on?
+---
+--- BOTH FACTS OR NEITHER. A health of zero is also what the native answers
+--- about an entity that does not exist, so a position the server cannot read
+--- disqualifies the health beside it -- otherwise every player mid-stream
+--- would look like a corpse.
+--- @param src any
+--- @return boolean
+local function readsAsDead(src)
+    if type(GetEntityHealth) ~= 'function' then return false end
+    if positionOf(src) == nil then return false end
+
+    local ped = GetPlayerPed(Arena.ToInt(src) or -1)
+    if not ped or ped == 0 then return false end
+
+    local health = tonumber(GetEntityHealth(ped))
+    return health ~= nil and health <= 0
+end
+
+--- Counts a sighting for one player and answers whether it has now happened
+--- often enough in a row to act on.
+---
+--- CONSECUTIVE, AND THAT IS THE ENTIRE POINT. A sighting that is not repeated
+--- next tick resets the count to nothing, so a hitch, a teleport or a second
+--- of unstreamed world costs a player one tick of suspicion rather than their
+--- place in a paid round.
+--- @param store table
+--- @param src any
+--- @param sighted boolean
+--- @param needed integer
+--- @return boolean act
+local function strike(store, src, sighted, needed)
+    if not sighted then
+        store[src] = nil
+        return false
+    end
+
+    local count = (Arena.ToInt(store[src]) or 0) + 1
+    store[src] = count
+    if count < needed then return false end
+
+    -- Cleared on the way out so a player who somehow survives being acted on
+    -- has to earn the next one from scratch.
+    store[src] = nil
+    return true
+end
+
+--- The half of a round the server checks for itself, once a second.
+---
+--- WHY IT EXISTS AT ALL. Where a fighter is standing and whether they died
+--- are the two facts this resource takes from the player's own game, and both
+--- were taken on trust. A client that skipped the boundary thread could park
+--- outside the arena and win the round; a client that never reported a death
+--- could not be eliminated at all. Neither needed a modified server, only a
+--- modified client, and both were measured winning rounds with money on them.
+---
+--- WHAT IT DOES NOT DO. It does not decide who killed anybody. A death booked
+--- here credits nobody, because the server did not see a kill -- it only
+--- spends the life the silent client was refusing to spend. Handing the kill
+--- to a guess would be a worse hole than the one being closed.
+--- @param match table
+local function runServerChecks(match)
+    local on, outsideMetres, outsideTicks, deadTicks = serverChecks()
+    if not on then return end
+
+    match.fenceStrikes = match.fenceStrikes or {}
+    match.deadStrikes = match.deadStrikes or {}
+
+    -- A snapshot, because acting on a player removes them from match.players
+    -- and walking a table you are deleting from is only safe for the key in
+    -- hand -- and RemovePlayer can end the whole match underneath this loop.
+    local roster = {}
+    for src, player in pairs(match.players or {}) do
+        if player.alive == true and player.leftArena ~= true then roster[#roster + 1] = src end
+    end
+
+    for _, src in ipairs(roster) do
+        -- Re-read every pass: the match may have ended, or this player been
+        -- removed, by an earlier iteration of this same loop.
+        local player = (match.players or {})[src]
+        if player and player.alive == true and match.state == 'live' then
+            local past = metresOutside(match, src)
+            if strike(match.fenceStrikes, src, past ~= nil and past > outsideMetres, outsideTicks) then
+                ArenaLog('FENCE: %s has been %.0fm outside match %s for %d checks running -- removed from the round.',
+                    tostring(src), past, tostring(match.id), outsideTicks)
+                ArenaNotifyKey(src, 'notify.fence_removed', 'error')
+                -- `dropped` -- the server is taking them out, they are not
+                -- choosing to leave. It is also what gets past
+                -- ArenaLobby.MayLeave, which refuses a voluntary exit from a
+                -- live round: a fence that the fence's own target could veto
+                -- would be no fence at all.
+                ArenaMatch.RemovePlayer(src, 'notify.fence_removed', true)
+            elseif deadTicks > 0
+                and strike(match.deadStrikes, src, readsAsDead(src), deadTicks)
+            then
+                ArenaLog('DEATH: %s has read as dead in match %s for %d checks running with nothing reported -- booking it.',
+                    tostring(src), tostring(match.id), deadTicks)
+                ArenaMatch.OnDeath(src, nil)
+            end
+        end
+    end
+end
+
 --- Everyone still alive who is allowed to shoot the player coming back.
 --- @param match table
 --- @param player table
@@ -2510,6 +2666,32 @@ function ArenaMatch.OnDeath(src, killerSrc)
     -- itself or someone farming eliminations. Either way there is nothing to
     -- score, which also makes a spammed report cost one table lookup.
     if not player or player.alive ~= true then return false end
+
+    -- AND WERE THEY EVEN IN THE ARENA. A death is reported by the dying
+    -- player's own game, and until this line the server asked only whether
+    -- the reporter was in a live match and currently alive -- never whether
+    -- a death could have happened where they are standing. So a client sat
+    -- outside the fight could report a death every respawn delay and hand an
+    -- accomplice a kill for each one.
+    --
+    -- IT IS THE SAME LINE THE FENCE DRAWS, deliberately: a player far enough
+    -- outside to be removed from the round is a player far enough outside to
+    -- have nothing to die of. Anything closer is passed through -- an
+    -- honest fighter bleeding to death a step past the boundary is exactly
+    -- the death this must not refuse.
+    --
+    -- FAILS OPEN. metresOutside answers nil for an arena with no boundary and
+    -- for a body the server cannot see, and neither is grounds for calling a
+    -- player a liar.
+    local on, outsideMetres = serverChecks()
+    if on then
+        local past = metresOutside(match, id)
+        if past ~= nil and past > outsideMetres then
+            ArenaDebug('death refused on match %s: %s reported dying %.0fm outside the arena.',
+                tostring(match.id), tostring(id), past)
+            return false
+        end
+    end
 
     player.alive = false
     player.deaths = (Arena.ToInt(player.deaths) or 0) + 1
@@ -3502,6 +3684,14 @@ CreateThread(function()
         -- which removes it from the registry -- cannot disturb this loop.
         for _, match in ipairs(ArenaLobby.All()) do
             if match.state == 'live' then
+                -- BEFORE THE WIN CHECK, and that ordering is the whole value
+                -- of it. A fighter parked outside the arena, or one whose
+                -- client never reported the death that took their last life,
+                -- is exactly the player `evaluate` would otherwise hand the
+                -- round to -- so the two facts the server checks for itself
+                -- have to be settled before anybody asks who won.
+                runServerChecks(match)
+
                 local winners, reason = evaluate(match)
                 if winners then
                     ArenaMatch.End(match.id, reason, winners)

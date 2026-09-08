@@ -25,6 +25,15 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 
 print('concurrent_spec')
 
+--- The middle of each shipped arena, out of config.lua. A test that
+--- invented its own numbers would pass against ground this resource does not
+--- ship.
+local PLACES = {
+    trailerpark = { x = 2344.4, y = 2565.1, z = 46.7 },
+    skydome = { x = 1500.0, y = 3000.0, z = 1201.0 },
+    atlantis = { x = 2344.4, y = 2565.1, z = 46.7 },
+}
+
 --- @param wallets table<integer, table> -- [src] = { cash = n, bank = n }
 local function newServer(wallets, mutate)
     local players = {}
@@ -43,6 +52,9 @@ local function newServer(wallets, mutate)
     -- Who has actually been teleported into the arena, which is a different
     -- question to what the match calls its own state.
     local bucketOf = {}
+    -- And WHERE, which is a third question again. GetEntityCoords below
+    -- answers from this.
+    local at = {}
     local clock = 0
 
     local env = Sandbox.newArenaEnv({
@@ -67,8 +79,20 @@ local function newServer(wallets, mutate)
         GetGameTimer = function() clock = clock + 60000 return clock end,
         GetPlayerName = function(src) return (players[src] or {}).name or '' end,
         GetPlayerPed = function(src) return src end,
+        -- IN WHICHEVER ARENA THIS FIGHTER WAS PUT, and this file is the one
+        -- that needs the distinction: it is the only spec that runs matches
+        -- at BOTH shipped arenas, and they are a kilometre apart vertically.
+        -- A fixture answering one fixed point puts every skydome fighter
+        -- 1,150m outside the fence they are standing inside, which
+        -- Config.Match.serverChecks reads -- correctly -- as having walked
+        -- out of the round. `runMatch` records where it sent people.
         GetEntityCoords = function(ped)
-            return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
+            local point = at[tonumber(ped) or -1] or PLACES.trailerpark
+            return {
+                x = point.x + ((tonumber(ped) or 0) % 16) * 3.0,
+                y = point.y,
+                z = point.z,
+            }
         end,
         GetVehiclePedIsIn = function() return 0 end,
         IsPlayerAceAllowed = function() return false end,
@@ -130,6 +154,14 @@ local function newServer(wallets, mutate)
         for _ = 1, (times or 1) do threads.step() end
     end
 
+    --- Stands these players in the middle of a named arena, so the server's
+    --- own position reads agree with the round they are in.
+    function server.placeIn(arenaKey, ids)
+        local point = PLACES[arenaKey]
+        if not point then error('no fixture coordinates for arena ' .. tostring(arenaKey), 2) end
+        for _, src in ipairs(ids) do at[src] = point end
+    end
+
     --- Which instance of the world one player is standing in.
     function server.bucket(src) return bucketOf[src] or 0 end
 
@@ -167,6 +199,12 @@ local function runMatch(server, arenaKey, ids)
         server.fire('joinMatch', ids[index], { matchId = match.id })
         t.isNotNil(match.players[ids[index]], ('player %d could not join'):format(ids[index]))
     end
+
+    -- WHERE THE SERVER WILL SEE THEIR BODIES, recorded before the round
+    -- goes live rather than after: the fence reads a position on the very
+    -- first sweep, and a fighter still standing at the last arena's
+    -- coordinates is a fighter who has left this one.
+    server.placeIn(arenaKey, ids)
 
     server.fire('startMatch', ids[1])
     server.step(6)

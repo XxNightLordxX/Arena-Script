@@ -208,9 +208,17 @@ end
 --- measures. A spec that is ABOUT position overrides both, as gungame_spec
 --- and the respawn specs do. Not the origin -- both readers in match.lua
 --- treat 0,0,0 as "this ped has not streamed in" and answer nil for it.
+---
+--- AND IT IS INSIDE AN ARENA THIS RESOURCE REALLY SHIPS. It used to be a
+--- point in open water 1,450m from the Trailer Park, which nothing read and
+--- nothing minded until Config.Match.serverChecks began asking whether a
+--- fighter is standing in the round they are fighting in. Against that, the
+--- old default said every fixture's whole roster had walked out. "A distance
+--- of zero" is still the property that matters; being somewhere real is what
+--- makes it a default a new guard can trust.
 local NATIVE_DEFAULTS = {
     GetPlayerPed = function(src) return tonumber(src) or 1 end,
-    GetEntityCoords = function() return { x = 1000.0, y = 2000.0, z = 30.0 } end,
+    GetEntityCoords = function() return { x = 2344.4, y = 2565.1, z = 46.7 } end,
     -- -1 IS "NO TEAM", the state a player on a server that does not use
     -- network teams is really in. client/match.lua reads this before it moves
     -- anybody, so a fixture that does not model teams still gets a truthful

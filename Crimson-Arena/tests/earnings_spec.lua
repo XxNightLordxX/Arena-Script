@@ -76,7 +76,20 @@ local function newServer(mutate)
         GetPlayerName = function(src) return (players[src] or {}).name or '' end,
         GetPlayerPed = function(src) return src end,
         GetEntityCoords = function(ped)
-            return { x = 1000.0 + (tonumber(ped) or 0) * 25.0, y = 2000.0, z = 30.0 }
+            -- INSIDE THE ARENA THESE FIGHTERS ARE SUPPOSED TO BE IN, which
+            -- this used to be nowhere near: it answered a point 1,450m from
+            -- the Trailer Park, so every fighter in every one of these specs
+            -- was standing well outside the fence they were fighting inside.
+            -- Nothing read it until Config.Match.serverChecks did, and then
+            -- it read as the whole roster having walked out of the round.
+            --
+            -- Spread three metres apart, so they are also close enough for
+            -- the kill-distance ceiling -- the other thing that reads this.
+            return {
+                x = 2344.4 + ((tonumber(ped) or 0) % 16) * 3.0,
+                y = 2565.1,
+                z = 46.7,
+            }
         end,
         GetVehiclePedIsIn = function() return 0 end,
         IsPlayerAceAllowed = function() return false end,

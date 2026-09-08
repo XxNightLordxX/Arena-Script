@@ -602,6 +602,47 @@ t.test('THE REQUEST: and can close an arena its own hours say is open', function
     t.equals(reason, 'error.arena_shut')
 end)
 
+t.test('THE REQUEST: closing it shuts the lobbies that are still waiting', function()
+    -- A lobby is people standing about waiting to be let in, and the doors
+    -- have just been shut on them. Leaving it open would be a queue for a
+    -- round that cannot start -- and its host would be left holding an entry
+    -- fee for it.
+    --
+    -- DESTROY, NEVER CANCEL. Cancel is the one way of closing a lobby an
+    -- operator can make cost something, and an operator who chose to punish a
+    -- host for calling their own match off has not asked to punish a lobby the
+    -- SERVER closed. Destroy refunds every stake unconditionally.
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    t.isNotNil(s.lobby.Get(id), 'the lobby never opened, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+    s.step()
+
+    t.isNil(s.lobby.Get(id),
+        'the arena was closed and a lobby was left queueing for a round that cannot start')
+end)
+
+t.test('and hands every stake back when it does', function()
+    local s = arenaWithHours(openNow(), { [1] = 5000, [2] = 5000, [3] = 5000 }, { [1] = true })
+    s.config.Betting.enabled = true
+    s.config.Betting.entryFee = { enabled = true, min = 0, max = 5000, default = 500 }
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 500, nil, nil, 'cash')
+    t.isNotNil(id, 'the lobby never opened')
+    s.lobby.Join(2, id, nil, 'cash')
+
+    local paid = s.cash(1)
+    t.isTrue(paid < 5000, 'no entry fee was taken, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+    s.step()
+
+    t.equals(s.cash(1), 5000, 'the host was left out of pocket for a lobby the SERVER closed')
+    t.equals(s.cash(2), 5000, 'and so was everybody who had joined it')
+end)
+
 t.test('and closing it does NOT end a round already being fought', function()
     -- Shutting the arena is about who may come IN. A fight already happening
     -- is fought to the end -- the same rule the schedule itself keeps when a

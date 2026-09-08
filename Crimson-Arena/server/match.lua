@@ -3063,6 +3063,42 @@ end
 -- QUERIES
 -- ======================================================================
 
+--- Shuts every lobby that is still waiting to start, refunding as it goes.
+---
+--- ONLY LOBBIES, AND ONLY LOBBIES. A round already being fought is fought to
+--- the end -- the doors being shut is about who may come in, not about who is
+--- already inside. Widening this to `~= 'ended'` is the mutation that would
+--- abort live rounds at the stroke of the hour.
+---
+--- DESTROY, NEVER CANCEL. Cancel is the one way of closing a lobby an
+--- operator can make cost something, and an operator who chose to punish a
+--- host for calling their own match off has not asked to punish a lobby the
+--- SERVER closed. Destroy refunds every stake unconditionally.
+---
+--- CALLED FROM TWO PLACES, WHICH IS WHY IT IS A FUNCTION. The sweep runs it
+--- when a schedule window closes; server/main.lua runs it the instant an admin
+--- closes the arena from the tablet. Leaving the second to the first was the
+--- shape of a real defect: the sweep only acts on the EDGE it notices for
+--- itself, so an admin pressing Close watched a lobby go on queueing for a
+--- round that could never start, with its host still out of pocket for the
+--- entry fee.
+--- @param reasonKey string
+--- @return integer closed
+function ArenaMatch.CloseWaitingLobbies(reasonKey)
+    -- Ids collected before destroying, the pattern the idle sweep already
+    -- uses, because Destroy removes from the very registry All() was read
+    -- from.
+    local waiting = {}
+    for _, match in ipairs(ArenaLobby.All()) do
+        if match.state == 'lobby' then waiting[#waiting + 1] = match.id end
+    end
+
+    for _, id in ipairs(waiting) do
+        ArenaLobby.Destroy(id, reasonKey)
+    end
+    return #waiting
+end
+
 --- @param matchId string
 --- @return boolean
 function ArenaMatch.IsLive(matchId)
@@ -3254,28 +3290,7 @@ CreateThread(function()
         local hoursOpen = ArenaHoursOpen()
         if hoursWereOpen ~= nil and hoursWereOpen ~= hoursOpen then
             if not hoursOpen then
-                -- ONLY LOBBIES, and only lobbies. A round already being
-                -- fought is fought to the end -- the doors being shut is
-                -- about who may come in, not about who is already inside.
-                -- Widening this to `~= 'ended'` is the mutation that would
-                -- abort live rounds at the stroke of the hour.
-                --
-                -- Ids collected before destroying, the pattern the idle
-                -- sweep already uses, because Destroy removes from the very
-                -- registry All() was read from.
-                local waiting = {}
-                for _, match in ipairs(ArenaLobby.All()) do
-                    if match.state == 'lobby' then waiting[#waiting + 1] = match.id end
-                end
-
-                -- DESTROY, NEVER CANCEL. Cancel is the one way of closing a
-                -- lobby an operator can make cost something, and an operator
-                -- who chose to punish a host for calling their own match off
-                -- has not asked to punish a lobby the SERVER closed. Destroy
-                -- refunds every stake unconditionally.
-                for _, id in ipairs(waiting) do
-                    ArenaLobby.Destroy(id, 'notify.hours_lobby_closed')
-                end
+                ArenaMatch.CloseWaitingLobbies('notify.hours_lobby_closed')
             end
 
             ArenaLobby.Broadcast()

@@ -19,18 +19,18 @@
     ------------------------------------------------------------------------------
        84   Lobby         The NPC players walk up to
       181   Schedule      Opening hours: when the door is actually open
-      225   Match         Lives, timers, player counts, win condition
-      567   Teams         The sides, and whether they may be uneven
-      722   Modes         Free-for-all and team deathmatch
-      1074  DefaultMode   Which of them a new lobby opens on
-      1093  Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1311  UI            Panel colours, logo and title
-      1369  Permissions   Who may open a match, who may force-stop one
-      1450  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2022   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2525   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2535   Webhook       Optional: a Discord line per finished match
-     2572   Dispatch      Optional: keeping police and EMS out of the arena
+      227   Match         Lives, timers, player counts, win condition
+      569   Teams         The sides, and whether they may be uneven
+      724   Modes         Free-for-all and team deathmatch
+      1076  DefaultMode   Which of them a new lobby opens on
+      1095  Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1313  UI            Panel colours, logo and title
+      1371  Permissions   Who may open a match, who may force-stop one
+      1452  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2024   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2527   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2537   Webhook       Optional: a Discord line per finished match
+     2574   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -181,12 +181,14 @@ Config.Lobby = {
 Config.Schedule = {
     -- Off, the arena never shuts and nothing below is read.
     --
-    -- OFF FOR TESTING. The windows below are kept exactly as they were, so
-    -- turning this back to `true` restores the shipped schedule with nothing
-    -- to retype. While it is off the arena opens at any hour, which is the
-    -- only way to test a mode whose round is longer than the window it would
-    -- have to start in.
-    enabled = false,
+    -- ON, AND THERE IS NOW A WAY ROUND IT WITHOUT EDITING THIS FILE.
+    -- /arenaadmin holds the doors open past the schedule, or closes them
+    -- inside it, for as long as the server is up -- so testing a mode whose
+    -- round is longer than the window it would have to start in no longer
+    -- means switching the whole feature off and remembering to switch it
+    -- back. That override is deliberately not stored anywhere: a restart
+    -- hands the hours below their say again.
+    enabled = true,
 
     -- WHOLE HOURS, 24-hour clock. `from` is the minute the doors open and
     -- `to` is the minute they shut: 05:00-07:00 is open at 06:59 and shut

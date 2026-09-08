@@ -953,6 +953,28 @@ onClient('crimson_arena:server:adminHours', RATE.admin, function(src, data)
         mode == 'open' and 'HELD OPEN past the schedule'
             or (mode == 'shut' and 'CLOSED inside the schedule' or 'follow the schedule'))
 
+    -- AND THE LOBBIES GO WITH THEM, HERE, RATHER THAN ON THE NEXT SWEEP.
+    --
+    -- The sweep in server/match.lua closes the waiting lobbies when it
+    -- NOTICES the doors change, which is the right thing for a schedule
+    -- window quietly closing at the top of the hour. It is not enough for a
+    -- person pressing a button: an admin who shuts the arena and watches a
+    -- lobby go on queueing for a round that cannot start -- with its host
+    -- still out of pocket for the entry fee -- has no way to tell that from a
+    -- button that did nothing.
+    --
+    -- ASKED THROUGH ArenaHoursOpen RATHER THAN OFF `mode`, so this cannot
+    -- disagree with the gate: what closes the lobbies is the doors being
+    -- shut, which is a different question from what an admin just clicked.
+    -- Handing the arena back to a schedule that is mid-window closes nothing;
+    -- handing it back to one that is not closes them, and should.
+    if not ArenaHoursOpen() then
+        local closed = ArenaMatch.CloseWaitingLobbies('notify.hours_lobby_closed')
+        if closed > 0 then
+            ArenaLog('door: %d lobby(s) closed and every stake handed back.', closed)
+        end
+    end
+
     -- EVERYBODY, NOT JUST THIS ADMIN. The doors decide what the lobby NPC
     -- says, whether the ground marker is drawn and what line the panel puts
     -- under Create Match -- so a change nobody else is told about is an arena

@@ -569,7 +569,7 @@ listed; the source documents them where they are.
 | `ArenaLobby.AddSpectator(src, matchId)` | Attaches a watcher to a match and puts them in its instance. |
 | `ArenaLobby.RemoveSpectator(src)` | Detaches a watcher and sends them back out. |
 
-#### `server/match.lua` — 7 functions
+#### `server/match.lua` — 8 functions
 
 | Function | What it does |
 |---|---|
@@ -579,6 +579,7 @@ listed; the source documents them where they are.
 | `ArenaMatch.End(matchId, reasonKey, winners)` | Ends a round that was actually fought: decides the winners, settles the money, records it, and sends everybody home with a result. |
 | `ArenaMatch.Abort(matchId, reasonKey)` | The refund-everything path: a resource stop, an admin force-stop, a lobby that emptied out, a round that could not start. |
 | `ArenaMatch.RemovePlayer(src, reasonKey)` | One player out, mid-round: they left, they were dropped, or an admin pulled them. |
+| `ArenaMatch.CloseWaitingLobbies(reasonKey)` | Shuts every lobby still waiting to start and hands back every stake. Live rounds are left to finish. Run when a schedule window closes and when an admin closes the arena. |
 | `ArenaMatch.IsLive(matchId)` | Whether a match is in its live phase. |
 
 #### `client/ui.lua` — 9 functions

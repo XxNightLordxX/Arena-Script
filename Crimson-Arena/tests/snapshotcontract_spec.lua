@@ -1231,4 +1231,30 @@ t.test('and the two that were actually lost are named, so a failure says which',
         'the Bets tab cannot tell whether a side-bet reaches the winner, so it guesses')
 end)
 
+t.test('the supply ceiling on the wire is the one the server really enforces', function()
+    -- THE PANEL DRAWS ITS PICKER AGAINST THIS NUMBER, and every reader on
+    -- the server floors it at 0 -- where 0 means NO ceiling. Sending the raw
+    -- value would tell the panel a negative allowance and leave it deciding
+    -- what that meant, which is the same class of disagreement as the team
+    -- allowance one screen over: the screen enforcing one rule and the
+    -- server another.
+    for _, junk in ipairs({ -1, -20, 'lots' }) do
+        local server = newArena(function(config)
+            config.Loadouts.supplies.totalItems = junk
+        end)
+        local supplies = (server.loadouts() or {}).supplies or {}
+        t.equals(supplies.totalItems, 0,
+            ('totalItems = %s reached the panel as %s')
+                :format(tostring(junk), tostring(supplies.totalItems)))
+    end
+
+    -- AND A REAL CEILING IS SENT AS ITSELF, so the clamp above is not simply
+    -- flattening the field.
+    local real = newArena(function(config)
+        config.Loadouts.supplies.totalItems = 4
+    end)
+    t.equals((((real.loadouts() or {}).supplies) or {}).totalItems, 4,
+        'a ceiling the operator really set did not reach the panel')
+end)
+
 os.exit(t.summary())

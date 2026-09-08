@@ -240,17 +240,45 @@ local friendlyFireHeld = false
 --- rather than a hidden one.
 local priorTeam = nil
 
+--- The ped SetCanAttackFriendly was last written to, so the per-frame loop
+--- can tell "still the body that holds it" from "a new one that does not".
+local heldPed = nil
+
+--- Forward-declared so holdFriendlyFire's bails below can call it.
+---
+--- A LOCAL, NOT `function releaseFriendlyFire`. A top-level `function Name(`
+--- is what REFERENCE.md's per-file tables are counted from, and this is not a
+--- new function -- it is the same one, declared a few lines earlier.
+local releaseFriendlyFire
+
 --- @param ped integer
 local function holdFriendlyFire(ped)
-    if not currentMatch then return end
-    -- A free-for-all has no sides, and putting everybody on one would make
-    -- the whole round harmless.
-    if not Arena.ModeUsesTeams(currentMatch.modeKey) then return end
-    -- The operator asked for teammates to be able to hurt each other.
-    if Config.Teams.friendlyFire == true then return end
+    -- EVERY BAIL RELEASES, and they used to simply return.
+    --
+    -- This is the one place that knows whether the hold should be on, so a
+    -- bail is not "nothing to do" -- it is "whatever is held should not be".
+    -- Returning instead meant a player who went from a team round into a
+    -- free-for-all without an exit between them fought the whole of it with
+    -- their side's engine team still on, friendly fire still off, and
+    -- everybody who happened to share that team index unable to hurt them.
+    -- releaseFriendlyFire is itself a no-op unless something is held, so on
+    -- an ordinary free-for-all this costs a branch.
+    if not currentMatch
+        -- A free-for-all has no sides, and putting everybody on one would
+        -- make the whole round harmless.
+        or not Arena.ModeUsesTeams(currentMatch.modeKey)
+        -- The operator asked for teammates to be able to hurt each other.
+        or Config.Teams.friendlyFire == true
+    then
+        releaseFriendlyFire(ped)
+        return
+    end
 
     local index = Arena.TeamIndex(currentMatch.teamKey)
-    if not index then return end
+    if not index then
+        releaseFriendlyFire(ped)
+        return
+    end
 
     -- READ BEFORE THE WRITE, and only on the call that actually holds -- a
     -- respawn calls this again on the new ped, and re-reading there would
@@ -261,13 +289,19 @@ local function holdFriendlyFire(ped)
     NetworkSetFriendlyFireOption(false)
     SetCanAttackFriendly(ped, false, false)
     friendlyFireHeld = true
+    heldPed = ped
 end
 
 --- Puts back what holdFriendlyFire changed, and only that.
 --- @param ped integer
-local function releaseFriendlyFire(ped)
+releaseFriendlyFire = function(ped)
     if not friendlyFireHeld then return end
     friendlyFireHeld = false
+    -- TIDINESS, NOT BEHAVIOUR, and nothing below asserts on it because
+    -- nothing can: the per-frame re-hold is gated on `friendlyFireHeld`,
+    -- which is now false, and the next hold overwrites this anyway. It is
+    -- here so a stale ped handle does not outlive the thing it described.
+    heldPed = nil
 
     -- WHAT WAS THERE, falling back to -1. "No team" is where a player on an
     -- ordinary RP server starts, and for a long time putting that back was
@@ -779,7 +813,26 @@ local function startArenaThread()
             -- earlier; this catches a death no CEventNetworkEntityDamage was
             -- raised for at all -- drowning, a fall, the boundary bleed --
             -- and every case where the hook lost the ordering race.
-            handleDeath(PlayerPedId())
+            -- THE HOLD FOLLOWS THE BODY, and this is the only line that can
+            -- promise it.
+            --
+            -- SetCanAttackFriendly is PER-PED and the arena is not the only
+            -- thing that hands this player a new one: the respawn handler
+            -- does, ArenaDispatch.ClearDeadState does, and so does the
+            -- medical revive the SERVER schedules two seconds after every
+            -- respawn -- which arrives as some other resource's event and
+            -- reaches no handler in this file at all. Re-applying it at each
+            -- of those sites individually is a list that goes stale the next
+            -- time somebody adds a resurrect; asking once a frame whether
+            -- the ped still holds it cannot.
+            --
+            -- Costs a PlayerPedId() per frame in a loop that already calls
+            -- it, and nothing at all in a free-for-all or on a server that
+            -- wants friendly fire, where the hold never starts.
+            local current = PlayerPedId()
+            if friendlyFireHeld and current ~= heldPed then holdFriendlyFire(current) end
+
+            handleDeath(current)
 
             -- HOLD THE TEAM OUTLINE AGAINST THE OTHER RESOURCES ON THE BOX.
             --

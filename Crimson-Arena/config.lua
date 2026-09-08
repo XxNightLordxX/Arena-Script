@@ -28,9 +28,9 @@
       1122  Permissions   Who may open a match, who may force-stop one
       1203  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1775   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2233   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2243   Webhook       Optional: a Discord line per finished match
-     2280   Dispatch      Optional: keeping police and EMS out of the arena
+     2242   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2252   Webhook       Optional: a Discord line per finished match
+     2289   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -2139,6 +2139,15 @@ Config.Loadouts = {
         -- no ceiling. Without it a server with six supplies lets one player
         -- carry every entry's own maximum at once, which is a different
         -- match to the one the per-item numbers describe.
+        --
+        -- THREE THINGS ARE BOUND BY IT, and it reads as one: what a player
+        -- picks in the loadout screen, what a mode hands everybody with
+        -- `startingKit`, and what ONE KILL pays through `killReward`. The
+        -- last of those is per payment rather than per round -- a gun game
+        -- with a ceiling of 4 pays at most four items for each kill, not
+        -- four for the whole round -- because the alternative is a reward
+        -- that quietly stops arriving halfway through a match with nothing
+        -- to tell the player why.
         --
         -- OFF, so the per-item numbers below are the ONLY limit.
         --

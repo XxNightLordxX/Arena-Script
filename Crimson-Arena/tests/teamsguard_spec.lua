@@ -420,6 +420,58 @@ end)
 -- THE NEGATIVE ALLOWANCE THAT MADE EVERY TEAM MATCH UNSTARTABLE
 -- ======================================================================
 
+--- The real server/lobby.lua, loaded, so a test can read what it really puts
+--- on the wire rather than working the number out again in the test body.
+---
+--- ONE MORE HARNESS AND NOT A SHARED ONE, deliberately: the fixture two
+--- hundred lines above is built around a live match and this needs only a
+--- snapshot, and the whole point of these tests is that a second copy of an
+--- expression is where the two answers come apart.
+--- @param mutate fun(config: table)?
+--- @return table
+local function newLobbyServer(mutate)
+    local threads = Sandbox.newThreadRunner()
+    local qbx = Sandbox.newQbxCore({
+        [1] = {
+            citizenid = 'CID001', name = 'Fighter 1',
+            money = { cash = 50000, bank = 0 },
+            job = { name = 'unemployed', grade = { level = 0 } },
+        },
+    })
+    local env = Sandbox.newArenaEnv({
+        exports = qbx.exports,
+        lib = Sandbox.newOxLib(),
+        CreateThread = threads.CreateThread,
+        Wait = threads.Wait,
+        SetTimeout = threads.SetTimeout,
+        TriggerClientEvent = function() end,
+        RegisterNetEvent = function() end,
+        AddEventHandler = function() end,
+        RegisterCommand = function() end,
+        GetPlayerName = function(src) return ('Fighter %s'):format(tostring(src)) end,
+        GetVehiclePedIsIn = function() return 0 end,
+        IsPlayerAceAllowed = function() return false end,
+        PerformHttpRequest = function() end,
+        ArenaStats = {
+            GetLeaderboard = function(cb) cb({}) end,
+            EnsureSchema = function() end, RecordMatch = function() end,
+            Flush = function() end, Record = function() return true end,
+        },
+        ArenaDispatch = {
+            Set = function() end, Clear = function() end, Revive = function() end,
+            IsPlayerInArena = function() return true end,
+            ClearDownState = function() return 0 end,
+            EnterBucket = function() end, ExitBucket = function() end,
+            GetBucket = function() end, ReleaseBucket = function() end,
+        },
+    })
+    if mutate then mutate(env.Config) end
+    for _, file in ipairs({ 'util', 'betting', 'lobby' }) do
+        Sandbox.loadInto('../server/' .. file .. '.lua', env)
+    end
+    return { env = env }
+end
+
 --- A roster of `perSide` fighters on each of the first two enabled teams.
 --- @param env table
 --- @param perSide integer
@@ -475,23 +527,41 @@ t.test('and the number the panel is told is the number the rule uses', function(
     -- number -- so the host saw two level sides, no warning on the screen,
     -- a lit Start button, and a toast saying the sides were too lopsided.
     -- There was nothing on screen to act on because there was nothing wrong.
+    --
+    -- READ OFF THE REAL SNAPSHOT, and the first version of this test did
+    -- not: it recomputed `math.max(0, ToInt(...) or 1)` in the test body and
+    -- compared that to itself, so server/lobby.lua could have sent anything
+    -- at all and this would still have passed. The clamp it claims to be
+    -- about was bound nowhere in the suite.
     for _, junk in ipairs({ -1, -4 }) do
-        local env = Sandbox.newArenaEnv({})
-        env.Config.Teams.allowUnequal = false
-        env.Config.Teams.maxTeamSizeDifference = junk
+        local server = newLobbyServer(function(config)
+            config.Teams.allowUnequal = false
+            config.Teams.maxTeamSizeDifference = junk
+        end)
 
-        local onTheWire = math.max(0, env.Arena.ToInt(env.Config.Teams.maxTeamSizeDifference) or 1)
-        t.equals(onTheWire, 0, 'the fixture is not reproducing the snapshot clamp')
+        local snapshot = server.env.ArenaLobby.BuildState(1)
+        local onTheWire = ((snapshot.config or {}).teams or {}).maxTeamSizeDifference
+        t.equals(onTheWire, 0,
+            ('server/lobby.lua sent %s to the panel for an allowance of %s')
+                :format(tostring(onTheWire), tostring(junk)))
 
-        -- The rule agreeing with it means a gap of exactly `onTheWire` is
-        -- allowed and one of `onTheWire + 1` is not.
-        local teams = env.Arena.GetEnabledTeams()
-        local ok = env.Arena.TeamsAreStartable({
+        -- AND THE RULE AGREES WITH IT: a gap of exactly `onTheWire` is
+        -- allowed, and one of `onTheWire + 1` is not.
+        local teams = server.env.Arena.GetEnabledTeams()
+        local level = server.env.Arena.TeamsAreStartable({
             { src = 1, team = teams[1].key },
             { src = 2, team = teams[2].key },
         })
-        t.isTrue(ok, ('a gap of 0 must be allowed when the panel is told 0 (allowance %s)')
-            :format(tostring(junk)))
+        t.isTrue(level, ('a gap of %d must be allowed when the panel is told %d')
+            :format(onTheWire, onTheWire))
+
+        local uneven = server.env.Arena.TeamsAreStartable({
+            { src = 1, team = teams[1].key },
+            { src = 2, team = teams[1].key },
+            { src = 3, team = teams[2].key },
+        })
+        t.isFalse(uneven, ('a gap of %d must be refused when the panel is told %d')
+            :format(onTheWire + 1, onTheWire))
     end
 end)
 

@@ -936,4 +936,45 @@ t.test('and the eliminated keep the order they went out in', function()
             :format(out4, out2))
 end)
 
+t.test('and the board under the placement is in the same order as it', function()
+    -- TWO RANKINGS ON ONE CARD. scoreboardOf ranks on tier, then kills, then
+    -- deaths -- right for the LIVE board, where there is no placement to
+    -- rank by. The end-of-round board is a different one: it is drawn under
+    -- "Placed #N", and a winner reading "Placed #2" over a board whose top
+    -- row is somebody who lost has been handed two answers to one question.
+    local server = newServer(function(config) config.Match.lives = 9 end)
+    server.play(4, true)
+
+    -- Ash's fighter 2 out-frags everybody; crimson takes it 4-3 between two.
+    for _ = 1, 3 do
+        server.kill(1, 2)
+        server.revive(1)
+    end
+    for _ = 1, 2 do
+        server.kill(4, 1)
+        server.revive(4)
+        server.kill(4, 3)
+        server.revive(4)
+    end
+
+    server.expire()
+    server.settle(3)
+
+    local card = server.resultOf(1)
+    t.isTrue(card ~= nil and type(card.scoreboard) == 'table',
+        'the winner was sent no board at all')
+
+    local order, places = {}, {}
+    for _, src in ipairs({ 1, 2, 3, 4 }) do places[src] = server.resultOf(src).placement end
+    for _, row in ipairs(card.scoreboard) do order[#order + 1] = places[row.id] end
+
+    for index = 2, #order do
+        t.isTrue(order[index - 1] < order[index],
+            ('the board is ordered %s, and the placements printed over it are not')
+                :format(table.concat({ table.unpack(order) }, ',')))
+    end
+
+    t.equals(order[1], 1, 'the top row of the board is not the player placed first')
+end)
+
 os.exit(t.summary())

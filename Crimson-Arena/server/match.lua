@@ -2590,6 +2590,26 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     ArenaBetting.Clear(match.id)
 
     local board = scoreboardOf(players, #ladderOf(match))
+
+    -- THE SAME ORDER AS THE NUMBER PRINTED OVER IT.
+    --
+    -- scoreboardOf ranks on tier, then kills, then deaths -- which is the
+    -- right order for the LIVE board, where there is no placement to rank by
+    -- and the question is who is ahead. This board is a different one: it is
+    -- drawn under "Placed #N", and the two were being worked out by
+    -- different rules. Measured on a 4-man team round: a winner told
+    -- "Placed #2" over a board whose top row was somebody who lost.
+    local placeOf = {}
+    for _, player in ipairs(players) do placeOf[player.src] = player.placement end
+    table.sort(board, function(a, b)
+        local first = placeOf[a.id] or math.huge
+        local second = placeOf[b.id] or math.huge
+        if first ~= second then return first < second end
+        -- A row with no placement at all cannot happen -- every fighter is
+        -- numbered by the line above this block -- but two of them sorting
+        -- as equal would leave the order down to pairs(), so id breaks it.
+        return a.id < b.id
+    end)
     local returnCoords = toPoint(Config.Lobby.returnCoords)
     local names = {}
 

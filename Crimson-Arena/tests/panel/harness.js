@@ -141,6 +141,23 @@ function loadPanel(root) {
             addEventListener() {},
             activeElement: null,
             body: makeNode('body'),
+            /* THE ROOT ELEMENT, because a REAL snapshot has a theme on it.
+               server/lobby.lua puts Config.UI on the wire verbatim and
+               config.lua's `ui.theme` is a table of CSS variables, so
+               applyTheme writes to document.documentElement.style on the
+               first `state` push of any genuine ArenaLobby.BuildState
+               payload. Without this it threw -- and the throw was SWALLOWED
+               by the panel's own guarded() wrapper, so the page simply
+               rendered nothing: an empty picker, an empty roster, an empty
+               title, and a Start button left at its default. A suite driven
+               by hand-written payloads never noticed, and one driven by a
+               real one would have measured a blank screen and called it a
+               finding about whatever it was looking at. */
+            documentElement: (function () {
+                const node = makeNode('html');
+                node.style.setProperty = function (name, value) { this[name] = value; };
+                return node;
+            })(),
         },
         window: {
             addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },

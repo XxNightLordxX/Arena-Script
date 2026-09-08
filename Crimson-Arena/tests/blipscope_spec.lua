@@ -71,6 +71,7 @@ local function newFixture(mutate)
         nextBlip = 1,
         streamed = { [MATE] = true, [FOE] = true, [FOE2] = true },
         printed = {},      -- every console line, so a silent failure is testable
+        dead = false,      -- what IsEntityDead answers for this client
         -- THE ENGINE'S OWN NETWORK TEAM, remembered rather than assumed.
         --
         -- The getter below reads THIS and the setter writes it, so the
@@ -122,7 +123,10 @@ local function newFixture(mutate)
 
         PlayerPedId = function() return f.ped end,
         PlayerId = function() return 0 end,
-        IsEntityDead = function() return false end,
+        -- SETTABLE, because a death is a thing that HAPPENS to this client
+        -- rather than a constant -- and the countdown branch of handleDeath
+        -- can only be reached by one.
+        IsEntityDead = function() return f.dead == true end,
         GetEntityCoords = function() return { x = 0.0, y = 0.0, z = 0.0 } end,
         GetEntityHeading = function() return 0.0 end,
         GetEntityHealth = function() return 200 end,
@@ -1300,6 +1304,116 @@ t.test('and leaving puts back the network team the player was already on', funct
     f.fire('crimson_arena:client:exitArena', {})
     t.equals(f.team, 7, 'the player was left on no team instead of the one they walked in on')
     t.equals(f.engineTeam, 7, 'and the engine still has them on the arena\'s side')
+end)
+
+t.test('and the hold follows the body however it changed hands', function()
+    -- THE RESPAWN HANDLER IS NOT THE ONLY THING THAT HANDS OUT A NEW PED.
+    -- ArenaDispatch.ClearDeadState resurrects on elimination, and the SERVER
+    -- schedules a medical revive two seconds after every respawn which
+    -- arrives as some OTHER resource's event and reaches no handler in this
+    -- file at all. Re-applying the hold at each known site is a list that
+    -- goes stale; the per-frame loop asking whether the ped still holds it
+    -- cannot.
+    --
+    -- Modelled here as the bluntest version of the problem: the body simply
+    -- changes under the client, with nothing this file listens for.
+    local f = newFixture()
+    f.enterLive()
+    local entered = f.ped
+
+    f.ped = f.ped + 5
+    for _ = 1, 3 do f.step() end
+
+    local held = false
+    for _, call in ipairs(f.friendlyCalls) do
+        if call.ped == f.ped and call.on == false then held = true end
+    end
+    t.isTrue(f.ped ~= entered, 'the fixture never changed the ped, so this measures nothing')
+    t.isTrue(held,
+        ('a ped handed to the player by something this file does not listen for was left able '
+            .. 'to shoot its own side -- trail: %s'):format(listedCalls(f.friendlyCalls)))
+end)
+
+t.test('and a death during the COUNTDOWN does not cost a frame of it', function()
+    -- handleDeath's countdown branch resurrects on the spot -- there is no
+    -- round for the death to have happened in -- and that resurrect hands
+    -- back a new ped like any other. The per-frame loop would catch it, but
+    -- not until the NEXT frame, and a frame with the hold dropped is a frame
+    -- the engine will let a teammate's bullet through. So this one is
+    -- re-applied on the spot, and this test is what says the loop is not
+    -- quietly doing the work for it.
+    local f = newFixture()
+
+    -- INTO THE ARENA BUT NOT LIVE: enterArena without matchLive, which is
+    -- exactly the window handleDeath's first branch exists for.
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'tdm',
+        teamKey = 'crimson',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        radar = false,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    local entered = f.ped
+
+    f.dead = true
+    f.step()
+
+    t.isTrue(f.ped ~= entered, 'the countdown revive never handed back a new ped')
+
+    local held = false
+    for _, call in ipairs(f.friendlyCalls) do
+        if call.ped == f.ped and call.on == false then held = true end
+    end
+    t.isTrue(held,
+        ('the ped the countdown revive handed back was left able to shoot its own side for a '
+            .. 'frame -- trail: %s'):format(listedCalls(f.friendlyCalls)))
+end)
+
+t.test('and it is not re-applied every frame to a ped that already holds it', function()
+    -- The loop is per-frame, so a re-hold that did not check would call two
+    -- natives on every frame of every team round for ever.
+    local f = newFixture()
+    f.enterLive()
+    local afterEntry = #f.friendlyCalls
+
+    for _ = 1, 10 do f.step() end
+
+    t.equals(#f.friendlyCalls, afterEntry,
+        'the hold was re-applied to a ped that was already holding it')
+end)
+
+t.test('and entering a free-for-all straight from a team round puts it back', function()
+    -- holdFriendlyFire is the one place that knows whether the hold SHOULD
+    -- be on, so its bails are not "nothing to do" -- they are "whatever is
+    -- held should not be". Returning instead left a player who went from a
+    -- team round into a free-for-all with no exit between them on their old
+    -- side's engine team, friendly fire off, for the whole of it.
+    local f = newFixture()
+    f.enterLive()
+    t.isFalse(f.friendlyFire, 'the hold never started, so this proves nothing')
+
+    f.enterLive({ modeKey = 'ffa', teamKey = nil })
+
+    t.isTrue(f.friendlyFire, 'a free-for-all inherited the team round\'s friendly-fire hold')
+    t.isTrue(f.canAttackFriendly, 'and its ped was left unable to attack its own side')
+    t.equals(f.team, -1, 'and the player was left on the previous round\'s engine team')
+end)
+
+t.test('and so does a server that wants friendly fire, mid-session', function()
+    -- The same bail, reached by the other route: an operator flipping
+    -- Config.Teams.friendlyFire and the client re-entering.
+    local f = newFixture()
+    f.enterLive()
+    t.isFalse(f.friendlyFire, 'the hold never started')
+
+    f.env.Config.Teams.friendlyFire = true
+    f.enterLive()
+
+    t.isTrue(f.friendlyFire,
+        'a round the operator wants friendly fire in kept the previous hold')
 end)
 
 t.test('THE CAUSE: the outline mask is drawn with a group ped shaders implement', function()

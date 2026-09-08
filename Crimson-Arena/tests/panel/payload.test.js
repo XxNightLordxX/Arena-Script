@@ -123,6 +123,34 @@ test('a fixed-lives server offers no box and still posts a usable number', () =>
         'a server that fixed the count had it overridden by the panel');
 });
 
+test('a snapshot carrying the operator\'s THEME still renders the page', () => {
+    /* server/lobby.lua puts Config.UI on the wire verbatim, and config.lua's
+       `ui.theme` is a table of CSS variables -- so applyTheme writes to
+       document.documentElement.style on the first `state` push of any
+       genuine ArenaLobby.BuildState payload.
+
+       The harness had no documentElement, so that threw -- and the throw was
+       swallowed by the panel's own guarded() wrapper. The page rendered
+       NOTHING: empty picker, empty roster, empty title, buttons at their
+       defaults. Every suite here drove hand-written payloads with no theme
+       on them and never noticed; one driven by a real payload would have
+       measured a blank screen and reported a finding about whatever it was
+       looking at. */
+    const panel = loadPanel(ROOT);
+    const snap = snapshot();
+    snap.config.ui = {
+        title: 'CRIMSON',
+        subtitle: 'ROLEPLAY ARENA',
+        theme: { accent: '#c81020', accentBright: '#ff2038', surface: '#12100f' },
+    };
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.ok(/Airfield/.test(panel.text('create-arena') + panel.text('matches')),
+        'the page rendered nothing at all with a theme on the wire: '
+            + JSON.stringify(panel.text('matches')));
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 if (failures.length > 0) {

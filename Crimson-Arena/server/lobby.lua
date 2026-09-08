@@ -1771,6 +1771,31 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
     -- does; without this line, walking out cancels a wager that was going
     -- badly and hands the money back. fighterBets ships on.
     --
+    -- AND ONLY BEFORE THE ROUND IS FOUGHT. This is the whole of it, and
+    -- returning a live round's bets was a FREE OPTION with somebody else's
+    -- money in it.
+    --
+    -- The rule reads fairly: your pick vanished through no fault of yours,
+    -- so you get your stake back. Split the two roles and it stops being
+    -- fair. A colluder backs an accomplice for the ceiling. The accomplice
+    -- holds no bet, so MayLeave -- which refuses a fighter who HOLDS one --
+    -- never looks at them. If the accomplice is winning they play on and the
+    -- pair take a share; if the accomplice is losing they press Leave and
+    -- the whole stake comes back, unjudged, at any moment of the round,
+    -- INCLUDING after they have already been eliminated and long after the
+    -- book has shut. Never a loss, on a free-entry lobby costing nothing,
+    -- and holdable on every open match at once.
+    --
+    -- So a departure from a round being fought settles the bets on that pick
+    -- the way it settles the leaver's own stake: kept. Which is the rule the
+    -- entry fee has always had, for the reason written above it -- and it
+    -- deliberately does not separate a quit from a crash, because charging
+    -- only the genuine disconnects takes money from the player whose game
+    -- died and hands it to the one who quit on purpose.
+    --
+    -- Before the round is live, nothing has been fought and the return is
+    -- exactly right: the pick left a queue, not a fight.
+    --
     -- AND IN A LOBBY TOO, WHICH LOOKS HARSH AND IS NOT. It was put behind
     -- `started` for a while on the reasoning that nothing can be going badly
     -- in a round nobody has fought -- but the wager is on the FIELD, and the
@@ -1796,7 +1821,7 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
         -- map is right. Same trap as the slot-keyed inventory read in
         -- server/ammo.lua, sprung the same way, one file over.
         local remaining = Arena.CountTeams(ArenaLobby.PlayerArray(match))
-        if (remaining[leftTeam] or 0) == 0 then
+        if (remaining[leftTeam] or 0) == 0 and not started then
             local returned, owed = ArenaBetting.ReturnBetsOn(match.id, leftTeam)
             if returned > 0 then
                 ArenaLog('betting: the last player on "%s" left match %s, so %d side-bet(s) on that side were returned unjudged.',
@@ -1807,7 +1832,7 @@ function ArenaLobby.Leave(src, reasonKey, dropped)
                     owed, tostring(leftTeam), tostring(match.id))
             end
         end
-    else
+    elseif not started then
         local returned, owed = ArenaBetting.ReturnBetsOn(match.id, tostring(target))
         if returned > 0 then
             ArenaLog('betting: %s left match %s, so %d side-bet(s) backing them were returned unjudged.',

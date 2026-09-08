@@ -808,4 +808,57 @@ t.test('and a team is unbackable once its last player is out', function()
     t.isFalse(ok, ('a bet was sold on "%s" after every player on it was eliminated'):format(sideA))
 end)
 
+-- ========================================================================
+-- THE BAIL-OUT: A BET THAT COULD NOT LOSE
+-- ========================================================================
+--
+-- MayLeave refuses a fighter who HOLDS a bet, because a wager its owner can
+-- cancel by standing up is a wager with no risk in it. Split the two roles
+-- and the same free option comes back with somebody else's name on it:
+--
+--   a colluder backs an accomplice for the ceiling;
+--   the accomplice holds NO bet, so MayLeave never looks at them;
+--   winning, they play on and the pair take a share;
+--   losing, they press Leave and the whole stake comes back, unjudged --
+--   at any moment of the round, including after they are already out.
+--
+-- Never a loss. On a free-entry lobby it costs nothing to run, and one
+-- colluder can hold the position on every open match at once.
+
+t.test('THE FREE OPTION: a pick walking out of a LIVE round does not refund', function()
+    local s, matchId = withWatcher(0)
+    local function cash(id) return s.qbx.players[id].money.cash end
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 5000, 'cash'),
+        'the watcher could not back a fighter')
+    local staked = cash(3)
+
+    s.match.Start(matchId)
+    s.step()
+    t.isTrue(s.lobby.Get(matchId).state ~= 'lobby', 'the round did not start')
+
+    -- The accomplice bails out of a round being fought.
+    s.lobby.Leave(1, 'match.left')
+
+    t.equals(cash(3), staked,
+        'the bet came back unjudged, so backing a friend who can quit is a bet that never loses')
+end)
+
+t.test('and a pick leaving the LOBBY still does, because nothing was fought', function()
+    -- The other half, and the reason the rule is not simply "never refund".
+    -- A pick that leaves a queue took nothing away from the person who
+    -- backed them; a pick that leaves a fight did.
+    local s, matchId = withWatcher(0)
+    local function cash(id) return s.qbx.players[id].money.cash end
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 5000, 'cash'))
+    local staked = cash(3)
+    t.equals(s.lobby.Get(matchId).state, 'lobby', 'the round already started')
+
+    s.lobby.Leave(1, 'match.left')
+
+    t.equals(cash(3), staked + 5000,
+        'a watcher whose pick left the queue was not given their stake back')
+end)
+
 os.exit(t.summary())

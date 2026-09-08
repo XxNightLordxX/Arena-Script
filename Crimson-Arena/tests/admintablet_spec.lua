@@ -101,9 +101,17 @@ local function newArena(admins, mutate)
             OnLoan = function() return 0 end,
             HeldFor = function(src) return held[src] end,
             AllStashes = function(cb, scanned)
-                -- SYNCHRONOUS HERE, ASYNCHRONOUS IN PRODUCTION. The real one
-                -- goes to the database; this answers straight away, which is
-                -- the shape a callback API is allowed to take and the one
+                -- NEVER ANSWERING IS A REAL OUTCOME, and it is the one this
+                -- API's shape makes invisible: the production version issues
+                -- an oxmysql query, and a database that is down, has no
+                -- ox_inventory table, or is simply wedged leaves that
+                -- callback never running -- with no error to catch, because
+                -- the query was ACCEPTED. `stall` is that state.
+                if owedBox.stall then return end
+
+                -- SYNCHRONOUS OTHERWISE, ASYNCHRONOUS IN PRODUCTION. The real
+                -- one goes to the database; this answers straight away, which
+                -- is the shape a callback API is allowed to take and the one
                 -- that keeps these tests readable.
                 if scanned then scanned(owedBox.found or #owedBox.rows, #owedBox.rows) end
                 cb(owedBox.rows)
@@ -172,6 +180,12 @@ local function newArena(admins, mutate)
     function server.owe(list, found)
         owedBox.rows = list
         owedBox.found = found
+    end
+
+    --- Makes ArenaAmmo.AllStashes accept every ask and answer none of them,
+    --- which is what a wedged database looks like from in here.
+    function server.stallStashes()
+        owedBox.stall = true
     end
     function server.log() return table.concat(console, '\n') end
 
@@ -591,6 +605,86 @@ t.test('and a player who is not an admin cannot queue one either', function()
         target = 0, citizenid = 'CID777', stash = 'crimson_arena_CID777',
     })
     t.equals(#s.queued(), 0, 'a non-admin queued a return')
+end)
+
+-- ======================================================================
+-- AND THE SCREEN GOES UP EVEN WHEN THE DATABASE DOES NOT ANSWER
+-- ======================================================================
+
+t.test('THE BUG: a stash sweep that never answered meant /arenaadmin did NOTHING', function()
+    -- The whole screen used to be opened from INSIDE the sweep's callback, on
+    -- the reasoning that a first draw without the stash list would tell an
+    -- operator "nothing outstanding" when somebody is short. Right about the
+    -- lie, wrong about the cure: the sweep is a database read, and a database
+    -- that never answers is not an error anybody can catch -- the query was
+    -- accepted, so the pcall around it succeeded and the callback simply
+    -- never ran.
+    --
+    -- What that looked like from a seat: type /arenaadmin, and nothing
+    -- happens. No screen, no refusal, nothing in the console.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.stallStashes()
+
+    s.command('arenaadmin', 1, {})
+
+    local opened = s.lastNamed('openAdmin')
+    t.isNotNil(opened, 'the command put no screen up at all')
+    t.equals(opened.target, 1, 'the screen was opened for the wrong person')
+    t.equals(#opened.payload.matches, 1, 'and it opened without the live matches on it')
+end)
+
+t.test('and the screen it puts up does not claim nobody is short', function()
+    -- The first draw is honest about what it does not know yet: an EMPTY
+    -- owed list draws no "not handed back yet" section at all, rather than an
+    -- empty one captioned as good news. The counts say the same thing -- zero
+    -- found, zero read, which is "not looked yet" rather than "looked and
+    -- found none".
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.stallStashes()
+
+    s.command('arenaadmin', 1, {})
+
+    local payload = s.lastNamed('openAdmin').payload
+    t.equals(#payload.owed, 0, 'the first draw invented a stash list it had not read')
+    t.equals(payload.stashesFound, 0, 'it claimed to know how many stashes exist')
+    t.equals(payload.stashesRead, 0, 'and how many it had opened')
+end)
+
+t.test('and the stash list follows on its own once the sweep DOES answer', function()
+    -- The command opens the screen and then asks for exactly the refresh the
+    -- screen's own button asks for, so an admin never has to press anything
+    -- to see the half of it they opened it for.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.owe({
+        { citizenid = 'CID002', stash = 'crimson_arena_CID002',
+          items = { { name = 'phone', count = 1 } } },
+    })
+
+    s.command('arenaadmin', 1, {})
+
+    t.isNotNil(s.lastNamed('openAdmin'), 'the screen never went up')
+    local pushed = s.lastNamed('adminState')
+    t.isNotNil(pushed, 'the stash sweep was never asked for')
+    t.equals(pushed.target, 1, 'it was pushed to the wrong person')
+    t.equals(#pushed.payload.owed, 1, 'and it arrived without the outstanding stash on it')
+    t.equals(pushed.payload.owed[1].citizenid, 'CID002')
+end)
+
+t.test('and a player who is not an admin still gets neither half', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.owe({ { citizenid = 'CID002', stash = 'crimson_arena_CID002', items = {} } })
+
+    s.fire('adminState', 1, {})   -- one legitimate push, so `lastNamed` has a floor
+    local before = #s.sentNamed('adminState')
+
+    s.command('arenaadmin', 2, {})
+    t.isNil(s.lastNamed('openAdmin'), 'the command opened the tablet for a non-admin')
+    t.equals(#s.sentNamed('adminState'), before,
+        'a non-admin got the stash sweep pushed at them anyway')
 end)
 
 os.exit(t.summary())

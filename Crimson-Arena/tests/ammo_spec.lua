@@ -2300,4 +2300,88 @@ t.test('and a player who really walked in with nothing still exits cleanly', fun
     t.isFalse(s.ammo.IsHolding(1), 'and the record was kept for a return that had nothing to return')
 end)
 
+-- ========================================================================
+-- A RESPAWN IS ANOTHER ISSUE OF THE SAME KIT
+--
+-- ArenaAmmo.Refresh stands a fighter back up with a full magazine and their
+-- supplies topped up. It is the entry door run again -- so every rule the
+-- entry door applies has to survive it, or the rule lasts exactly one death.
+-- ========================================================================
+
+t.test('DEFECT: the first respawn handed back a weapon the door had confiscated', function()
+    -- allowWeaponWithoutAmmoItem = false means this server does not arm a gun
+    -- it cannot feed, and ArenaAmmo.Issue honours it by taking the weapon
+    -- straight back off them. Refresh re-issued every weapon in the loadout
+    -- unconditionally -- so the setting was undone by the first death, and
+    -- the fighter respawned holding exactly the loaded-looking empty gun it
+    -- exists to prevent, with nothing in the console saying so.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+    end)
+
+    s.breakOn('ammoItem')
+    local loadout = loadoutOf('ammo-rifle', 60)
+    s.ammo.Issue(1, 'm1', loadout)
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') == nil,
+        'the door did not confiscate, so this proves nothing')
+
+    s.ammo.Refresh(1, 'm1', loadout)
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') == nil,
+        ('the respawn re-armed a weapon the door had taken away: %s'):format(s.carrying(1)))
+end)
+
+t.test('and a server that DOES arm an empty gun still gets one back', function()
+    -- The control. A fix that simply stopped re-issuing would pass the test
+    -- above and leave every fighter on every ordinary server permanently
+    -- unarmed from their first death onward.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = true
+    end)
+
+    s.breakOn('ammoItem')
+    local loadout = loadoutOf('ammo-rifle', 60)
+    s.ammo.Issue(1, 'm1', loadout)
+    s.ammo.Refresh(1, 'm1', loadout)
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') ~= nil,
+        ('a respawn left the fighter with no weapon at all: %s'):format(s.carrying(1)))
+end)
+
+-- ========================================================================
+-- AND A KILL REWARD IS STILL AN ISSUE OF AMMUNITION
+-- ========================================================================
+
+t.test('DEFECT: kill ammo ignored the switch that turns ammo items off', function()
+    -- Every other issue path goes through splitRounds, which returns a spare
+    -- of nothing when Config.Loadouts.ammoItems.enabled is false -- so no ammo
+    -- item ever reaches a player on such a server. GrantRounds read only the
+    -- item NAME, and Arena.ResolveWeaponEntry fills that in from the weapon
+    -- catalogue whatever the switch says. On a server that switched ammo items
+    -- off because those items do not exist in its ox_inventory data, every
+    -- single kill fired a refused AddItem and the reward silently did nothing.
+    local s = newServer({ [1] = {} }, function(c)
+        c.Loadouts.ammoItems.enabled = false
+    end)
+
+    local granted = s.ammo.GrantRounds(1, 'm1', 'ammo-rifle', 100)
+
+    t.isFalse(granted, 'a server with ammo items switched off still paid a kill in them')
+    t.isTrue(s.carrying(1):find('ammo%-rifle') == nil,
+        ('ammunition reached a player on a server that hands out none: %s'):format(s.carrying(1)))
+end)
+
+t.test('and a server that DOES use ammo items is still paid', function()
+    local s = newServer({ [1] = {} }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+    end)
+
+    t.isTrue(s.ammo.GrantRounds(1, 'm1', 'ammo-rifle', 100),
+        'the kill reward was refused on a server that hands out ammunition')
+    t.isTrue(s.carrying(1):find('ammo%-rifle') ~= nil,
+        ('the rounds never arrived: %s'):format(s.carrying(1)))
+end)
+
 os.exit(t.summary())

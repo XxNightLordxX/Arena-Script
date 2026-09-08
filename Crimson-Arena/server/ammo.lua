@@ -1369,6 +1369,25 @@ function ArenaAmmo.Refresh(src, matchId, loadout)
         if Arena.IsKey(name) then
             local metadata = weaponMetadata(entry)
 
+            -- THE ROUNDS FIRST, BECAUSE THEIR OUTCOME DECIDES THE WEAPON.
+            --
+            -- Config.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+            -- means this server does not arm a gun it cannot feed, and the
+            -- entry door honours it: ArenaAmmo.Issue confiscates any weapon
+            -- whose rounds would not go out. This loop re-issued every weapon
+            -- in the loadout unconditionally, so the FIRST DEATH handed the
+            -- setting straight back -- the fighter respawned holding exactly
+            -- the loaded-looking empty gun it exists to prevent, and no log
+            -- anywhere said so.
+            --
+            -- Ordered ahead of the weapon rather than gated after it because
+            -- the two are independent items: the magazine rides in the
+            -- weapon's own metadata, and issueSpareRounds reads live pockets
+            -- for the shortfall either way.
+            local handed = issueSpareRounds(ox, src, matchId, entry, pass)
+            local armed = handed
+                or (Config.Loadouts.ammoItems or {}).allowWeaponWithoutAmmoItem ~= false
+
             -- OFF AND ON AGAIN, ONE COPY. There is no way to refill a
             -- magazine that already exists -- the rounds ride in the item's
             -- metadata and ox_inventory owns that -- so the only honest full
@@ -1377,23 +1396,33 @@ function ArenaAmmo.Refresh(src, matchId, loadout)
             -- not list, and it removes exactly one.
             local taken = takeRungBack(ox, src, record, name)
 
-            -- A WEAPON THEY NO LONGER HOLD IS STILL RE-ISSUED. Losing the gun
-            -- itself is the case this exists for as much as an empty
-            -- magazine is: a death under an ox_inventory configured to drop
-            -- on death leaves the fighter unarmed, and standing them back up
-            -- empty-handed in a live round is not a respawn.
-            local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
-            if ok and accepted ~= false then
-                record[#record + 1] = { name = name, metadata = metadata }
+            if not armed then
+                -- TAKEN AND NOT PUT BACK, which is the confiscation the
+                -- setting asks for -- the same one the entry door performs,
+                -- performed again because a respawn is another issue of the
+                -- same kit. Said out loud: a weapon vanishing at a respawn
+                -- with nothing in the console reads as a bug, and the
+                -- operator who set this switch is the one person who can act
+                -- on it.
+                ArenaLog('weapons: %s was not re-issued to %s on respawn -- their rounds could not be '
+                    .. 'issued and this server does not arm an empty gun.', tostring(name), tostring(src))
             else
-                -- PUT BACK WHAT WE TOOK, so a refusal costs them a full
-                -- magazine rather than the weapon.
-                if taken then putRungsBack(ox, src, record, { taken }, name) end
-                ArenaLog('weapons: could not refresh %s for %s -- ox_inventory refused it. They keep what they had.',
-                    tostring(name), tostring(src))
+                -- A WEAPON THEY NO LONGER HOLD IS STILL RE-ISSUED. Losing the
+                -- gun itself is the case this exists for as much as an empty
+                -- magazine is: a death under an ox_inventory configured to
+                -- drop on death leaves the fighter unarmed, and standing them
+                -- back up empty-handed in a live round is not a respawn.
+                local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
+                if ok and accepted ~= false then
+                    record[#record + 1] = { name = name, metadata = metadata }
+                else
+                    -- PUT BACK WHAT WE TOOK, so a refusal costs them a full
+                    -- magazine rather than the weapon.
+                    if taken then putRungsBack(ox, src, record, { taken }, name) end
+                    ArenaLog('weapons: could not refresh %s for %s -- ox_inventory refused it. They keep what they had.',
+                        tostring(name), tostring(src))
+                end
             end
-
-            issueSpareRounds(ox, src, matchId, entry, pass)
         end
     end
 
@@ -1473,6 +1502,17 @@ function ArenaAmmo.GrantRounds(src, matchId, item, count)
 
     local amount = Arena.ToInt(count) or 0
     if amount <= 0 then return false end
+
+    -- THE SAME SWITCH EVERY OTHER ISSUE PATH IS BEHIND, and this is the only
+    -- one that reached ox_inventory without it. Every sibling goes through
+    -- splitRounds, which returns a spare of nothing when ammo items are off,
+    -- so no ammo item ever reaches a player on such a server. This one read
+    -- only the item NAME -- and Arena.ResolveWeaponEntry fills that in from
+    -- the weapon catalogue whatever the switch says. On a server that turned
+    -- ammo items off because those items do not exist in its ox_inventory
+    -- data, every kill fired a refused AddItem into the debug log and the
+    -- reward silently did nothing.
+    if not ArenaAmmo.IsEnabled() then return false end
 
     -- WHAT THEY WALKED IN WITH, read before the arena adds to it. Guarded to
     -- once per match per item inside rememberHeld, so a reward paid on the
@@ -1756,17 +1796,34 @@ function ArenaAmmo.Issue(src, matchId, loadout)
         if not Arena.IsKey(citizenid) then
             ArenaLog('door: no citizen id for %s -- they keep their own kit.', tostring(src))
         else
+            -- WHAT THE STASH IS ALREADY HOLDING FOR THIS CHARACTER.
+            --
+            -- CARRIED FORWARD RATHER THAN REPLACED, and the difference is
+            -- somebody's belongings. A record is KEPT on purpose when an exit
+            -- could not empty the stash -- that is what the sweep works from
+            -- -- and this line used to write the new entry's count straight
+            -- over it. Re-entering with empty pockets therefore set it to
+            -- ZERO, which disarmed restore()'s "read empty is not empty"
+            -- guard for exactly the player it was written for: the next exit
+            -- read nothing, called it a clean return, and forgot a stash that
+            -- still had everything they own in it.
+            local carried = 0
+            if held ~= nil and held.citizenid == citizenid then
+                carried = math.max(0, Arena.ToInt(held.stowedCount) or 0)
+            end
+
             local put, count = stow(src, citizenid)
             if put then
                 stashed[src] = {
                     stash = stashFor(citizenid),
                     matchId = matchId,
                     citizenid = citizenid,
-                    -- HOW MANY ITEMS WENT IN. The exit compares this against
-                    -- what came out -- see restore() -- because "the stash was
-                    -- empty" and "the stash READ empty" are the same answer
-                    -- from ox_inventory and very different things to a player.
-                    stowedCount = count,
+                    -- HOW MANY ITEMS ARE IN THERE. The exit compares this
+                    -- against what came out -- see restore() -- because "the
+                    -- stash was empty" and "the stash READ empty" are the same
+                    -- answer from ox_inventory and very different things to a
+                    -- player.
+                    stowedCount = carried + count,
                 }
                 ArenaDebug('door: stashed %d item(s) of %s\'s for match %s',
                     count, tostring(src), tostring(matchId))
@@ -2265,6 +2322,42 @@ local function midMatch(src)
     return true
 end
 
+--- The stash record sitting on `src`, but only when it belongs to whoever
+--- holds that server id NOW.
+---
+--- `stashed` IS KEYED BY SERVER ID AND SERVER IDS ARE RECYCLED, and those two
+--- facts are only safe together because a record is normally dropped the
+--- moment its exit succeeds. A record whose exit could NOT finish is kept on
+--- purpose -- it is what the sweep and the debt list work from -- so it
+--- outlives its owner's disconnect, and FiveM will hand that id to the next
+--- person who connects.
+---
+--- What that cost, before this existed: the swapItems guard reads this table
+--- to decide who is "in the arena", so the new holder of that id was refused
+--- every inventory move they made anywhere on the map -- their own house
+--- stash, a glovebox, a shop, handing a friend an item -- for as long as they
+--- stayed connected, with the arena's own "you fight with what you were
+--- issued" notification explaining it. Nothing cleared it, because the sweep
+--- that would have is itself gated on this table.
+---
+--- A MISSING PLAYER IS NOT A MISMATCH. Between a drop and the next connect
+--- there is no character on that id at all, and answering "not theirs" then
+--- would quietly switch the guard off for the seconds a player is loading in.
+--- @param src number
+--- @return table|nil
+local function ownRecord(src)
+    local record = stashed[src]
+    if record == nil then return nil end
+    if not Arena.IsKey(record.citizenid) then return record end
+
+    local player = ArenaGetPlayer(src)
+    local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
+    if not Arena.IsKey(citizenid) then return record end
+
+    if citizenid ~= record.citizenid then return nil end
+    return record
+end
+
 --- Whether this player's stash is worth opening on this pass.
 ---
 --- NOT WHETHER IT IS SAFE TO HAND ANYTHING OVER -- that is asked once, in
@@ -2288,7 +2381,12 @@ local function worthTrying(src, citizenid)
     -- exit is about to clear. midMatch above catches that in every ordinary
     -- case; this catches the gap between the dispatch flag being cleared and
     -- the exit reclaiming.
-    return stashed[src] == nil
+    --
+    -- THROUGH ownRecord, so a record left behind by a PREVIOUS holder of this
+    -- server id does not speak for the person on it now. Without that, the
+    -- one character who most needed a look -- the new arrival inheriting a
+    -- stranded id -- was the one character the sweep would never take.
+    return ownRecord(src) == nil
 end
 
 --- Hands back anything of this player's still sitting in their arena stash.
@@ -2322,8 +2420,46 @@ function ArenaAmmo.ReturnLeftovers(src)
         return false, 0, false
     end
 
+    -- WHAT THE RECORD SAYS IS IN THERE, found by citizen id because the
+    -- record may well be under an OLDER server id -- the reconnect this
+    -- whole section exists for.
+    local stowedCount = 0
+    for _, record in pairs(stashed) do
+        if record.citizenid == citizenid then
+            stowedCount = math.max(stowedCount, Arena.ToInt(record.stowedCount) or 0)
+        end
+    end
+
     local readable, failures, returned = handBack(ox, src, stash)
     if not readable then return false, 0, false end
+
+    -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY -- and this is
+    -- the same guard restore() applies, standing here because THIS is the
+    -- function that actually retries.
+    --
+    -- Without it the guard lasted about thirty seconds. restore() would
+    -- correctly refuse to call an empty read a clean return, keep the record,
+    -- write the debt and tell the player their kit was safe and still being
+    -- chased -- and then the very next pass of the sweep came through here,
+    -- got the same empty read, found no such check, and ran the SETTLED block
+    -- below: `owed` cleared, every record for that character deleted, the
+    -- weapons forgotten. The retry then had nothing left to work from, which
+    -- is the exact failure the guard was written to end, rebuilt inside the
+    -- fix and on the one path guaranteed to run.
+    --
+    -- Bigger now than when it was written, too: `neverStash` ships empty, so
+    -- what is in that stash is the player's cash as well as their things.
+    if returned == 0 and failures == 0 and stowedCount > 0 then
+        ArenaLog('door: %s\'s stash (%s) READ EMPTY on a retry, and %d item(s) are recorded as being ' ..
+            'in it. Nothing has been handed back and the debt is being kept -- the stash is a real ' ..
+            'one and /arenaadmin can open it.',
+            tostring(src), stash, stowedCount)
+        owed[citizenid] = stash
+        -- NOT `answered`. Marking this character as looked-at would spend
+        -- their one look on a read nobody can trust; `owed` brings the sweep
+        -- back regardless, and this keeps the two agreeing.
+        return false, 0, false
+    end
 
     if returned > 0 then
         ArenaLog('door: handed %d item(s) back to %s out of stash %s -- a return that had not gone through.',
@@ -2437,6 +2573,16 @@ end
 --- no explanation.
 local STASH_SCAN_LIMIT = 60
 
+--- HOW LONG THE NAME QUERY IS GIVEN TO ANSWER, in milliseconds.
+---
+--- NOT A PERFORMANCE KNOB. `pcall` around exports.oxmysql:query returns true
+--- the instant oxmysql ACCEPTS the query, which says nothing about whether it
+--- will ever answer it: a database that is down, a connection pool that is
+--- exhausted, a schema with no ox_inventory table -- each of those leaves the
+--- callback simply never running. Without this, everything waiting on that
+--- callback waited for ever with nothing in the console to read.
+local STASH_SCAN_TIMEOUT = 8000
+
 local warnedNoStashTable = false
 
 --- Every arena stash this server has ever made, whether or not this run
@@ -2480,7 +2626,17 @@ function ArenaAmmo.AllStashes(cb, scanned)
     end
 
     --- Reads the contents of each stash we are going to open, and answers.
+    ---
+    --- ANSWERS EXACTLY ONCE, whatever the database does. Four paths reach it
+    --- -- the query's callback, the two fallbacks either side of it, and the
+    --- watchdog at the bottom -- and a second answer would redraw a screen
+    --- the admin has since moved on inside, as well as opening every stash a
+    --- second time to say the same thing.
+    local answered = false
     local function finish(names, total)
+        if answered then return end
+        answered = true
+
         local ox = inventory()
         local rows = {}
 
@@ -2588,8 +2744,24 @@ function ArenaAmmo.AllStashes(cb, scanned)
 
     if not sent then
         local names = fromMemory()
-        finish(names, #names)
+        return finish(names, #names)
     end
+
+    -- A QUERY THAT NEVER ANSWERS IS THE WORST OF THE THREE OUTCOMES because it
+    -- is the silent one. The other two say something: a stopped oxmysql logs a
+    -- line, a refused query fails the pcall. This one leaves every caller
+    -- holding a callback that never runs -- which is exactly what made
+    -- /arenaadmin do nothing at all rather than report a problem, since the
+    -- whole screen was opened from inside that callback.
+    SetTimeout(STASH_SCAN_TIMEOUT, function()
+        if answered then return end
+        ArenaLog('door: the stash scan did not answer within %d seconds, so this look is '
+            .. 'listing only what THIS RUN remembers. The stashes it cannot name are still '
+            .. 'real and still hold what they hold -- it is the database that did not answer.',
+            STASH_SCAN_TIMEOUT / 1000)
+        local names = fromMemory()
+        finish(names, #names)
+    end)
 end
 
 
@@ -2700,7 +2872,15 @@ CreateThread(function()
             -- every other guard in this file keeps one -- server/dispatch.lua
             -- loads after this file, so the function is asked for rather
             -- than assumed.
-            local inArena = stashed[src] ~= nil
+            --
+            -- THROUGH ownRecord, because this table is keyed by server id and
+            -- a record is kept on purpose when an exit could not finish. Read
+            -- raw, a record left behind by a player who then disconnected
+            -- made the NEXT holder of that server id "in the arena": refused
+            -- every inventory move anywhere on the map, their own house stash
+            -- and glovebox included, with nothing able to clear it -- the
+            -- sweep that would have is gated on the same table.
+            local inArena = ownRecord(src) ~= nil
             if not inArena and type(ArenaDispatch) == 'table'
                 and type(ArenaDispatch.IsPlayerInArena) == 'function'
             then

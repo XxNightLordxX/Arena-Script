@@ -933,21 +933,34 @@ RegisterCommand('arenaadmin', function(src, args)
     -- everybody.
     if action == 'tablet' then
         if src == 0 then return tell(src, locale('cmd.usage')) end
-        -- THE SAME READ THE REFRESH DOES, rather than a lighter first
-        -- payload: the stash list is the half of this screen an operator
-        -- opened it for, and a first draw without it would show "nothing
-        -- outstanding" to somebody whose whole reason for looking is that
-        -- somebody is short.
-        local opening = adminMatches()
-        local total, read = 0, 0
-        ArenaAmmo.AllStashes(function(rows)
-            TriggerClientEvent('crimson_arena:client:openAdmin', src, {
-                matches = opening,
-                owed = withHolders(rows),
-                stashesFound = total,
-                stashesRead = read,
-            })
-        end, function(found, opened) total, read = found, opened end)
+        -- THE SCREEN GOES UP FIRST, on what memory can answer this instant.
+        --
+        -- It used to be opened from INSIDE the stash sweep's callback, on the
+        -- reasoning that a first draw without the stash list would tell an
+        -- operator "nothing outstanding" when the whole reason they opened it
+        -- is that somebody is short. That reasoning was right about the lie
+        -- and wrong about the cure: the sweep is a database read, and a
+        -- database that answers slowly opened the screen late while one that
+        -- never answered at all meant /arenaadmin did nothing whatsoever --
+        -- no screen, no error, nothing in the console to read.
+        --
+        -- The screen does not lie in the meantime either: an empty `owed`
+        -- list draws no "not handed back yet" section at all, rather than an
+        -- empty one captioned as good news.
+        TriggerClientEvent('crimson_arena:client:openAdmin', src, {
+            matches = adminMatches(),
+            owed = {},
+            stashesFound = 0,
+            stashesRead = 0,
+        })
+
+        -- AND THEN THE SWEEP, exactly as the screen's own refresh button asks
+        -- for it. It lands behind the open in this client's own event queue,
+        -- and the client drops it outright if the tablet has been closed by
+        -- the time it arrives.
+        pushAdmin(src, nil)
+
+        ArenaLog('%s opened the admin tablet', ArenaPlayerName(src))
         return
     end
 

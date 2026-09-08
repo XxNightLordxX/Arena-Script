@@ -347,7 +347,7 @@
 <div id="arena-admin" class="hidden">
     <header id="admin-head">
         <h1 id="admin-title">Arena Control</h1>
-        <button id="admin-close" type="button">Close</button>
+        <button id="admin-close" class="btn" type="button">Close</button>
     </header>
 
     <!-- THE LIST. Live matches and nothing else -- this screen is not a
@@ -359,10 +359,10 @@
 
     <!-- ONE MATCH, opened by clicking it. -->
     <section id="admin-detail" class="hidden">
-        <button id="admin-back" type="button">Back to matches</button>
+        <button id="admin-back" class="btn" type="button">Back to matches</button>
         <h2 id="admin-detail-title"></h2>
         <p id="admin-detail-line" class="hint"></p>
-        <button id="admin-stop" type="button">Stop this match</button>
+        <button id="admin-stop" class="btn btn-danger" type="button">Stop this match</button>
         <div id="admin-players"></div>
     </section>
 
@@ -380,10 +380,10 @@
     <!-- ONE FIGHTER, opened by clicking them: what the arena is holding for
          them, and the one control that acts on them. -->
     <section id="admin-player" class="hidden">
-        <button id="admin-player-back" type="button">Back to the match</button>
+        <button id="admin-player-back" class="btn" type="button">Back to the match</button>
         <h2 id="admin-player-title"></h2>
         <p id="admin-player-line" class="hint"></p>
-        <button id="admin-revive" type="button">Revive</button>
+        <button id="admin-revive" class="btn btn-primary" type="button">Revive</button>
         <h3>Held by the arena</h3>
         <p id="admin-escrow-line" class="hint"></p>
         <div id="admin-escrow"></div>

@@ -1692,3 +1692,262 @@ option {
     opacity: 0.35;
     cursor: not-allowed;
 }
+
+
+/* ======================================================================
+   THE ADMIN TABLET
+
+   Its own modal, not a tab of the panel: #arena-admin and #arena-root are
+   never on screen together -- client/ui.lua closes the panel before it
+   opens this. So the two can share the same centred box shape without
+   fighting over it, and this one is narrower because it holds lists rather
+   than a weapon catalogue.
+
+   THIS BLOCK SHIPPED MISSING, and the screen was the proof of what that
+   costs: every element in it fell back to the browser's own defaults, so
+   /arenaadmin put up a column of grey operating-system buttons in the
+   top-left corner of the screen and nothing that read as a tablet at all.
+   Structure without style is not a smaller version of the design; on a
+   transparent page composited over a running game it is barely a screen.
+   ====================================================================== */
+
+#arena-admin {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: grid;
+    /* Header, then everything else in one scrolling column. Only one of the
+       three sections below is ever shown at a time, so they share the row
+       rather than each claiming one. */
+    grid-template-rows: auto 1fr;
+    width: min(56rem, 92vw);
+    height: min(44rem, 88vh);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.75);
+    /* Above the panel's own z-index, so a tablet opened while a stray HUD is
+       still drawn sits over it rather than under. */
+    z-index: 20;
+}
+
+/* Dims the game behind it, exactly as the panel does. */
+#arena-admin::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: -1;
+}
+
+#admin-head {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0.9rem 1.2rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+
+#admin-title {
+    flex: 1 1 auto;
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 1.8rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* The three screens. Each is the whole body when it is the one showing, and
+   each scrolls inside itself so the page never does. */
+#admin-list,
+#admin-detail,
+#admin-player {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    min-height: 0;
+    padding: 1.2rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* The outstanding-stash section is drawn UNDER the match list rather than
+   instead of it, so it takes the same row and sits after it. */
+#admin-owed-row {
+    /* NO grid-row OF ITS OWN. A hidden element is not a grid item at all, so
+       the rows this box actually has are decided by which of the four
+       sections below the header are on screen -- and on the list screen those
+       are the match list (the 1fr row) and this. Pinning this one to row 2
+       would stack it on top of the list it is meant to sit under. */
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    min-height: 0;
+    /* Capped so a server with forty outstanding stashes does not push the
+       match list -- the reason the screen is usually opened -- off the top. */
+    max-height: 45%;
+    padding: 0 1.2rem 1.2rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+#admin-owed-row h3,
+#admin-player h3 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    /* This heading is a warning on a healthy server: nothing should be under
+       it. Coloured so an operator reads it before the rows. */
+    color: var(--accent-bright);
+}
+
+#admin-player h3 {
+    color: var(--text);
+}
+
+/* By id rather than by descendant tag, so tests/panel/stylesheet.test.js can
+   see that these two are dressed -- and so an element cannot lose its styling
+   by being moved into a different section. */
+#admin-detail-title,
+#admin-player-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+/* One live match, and one fighter in it. Same card shape, because they are
+   the same gesture: click the row to go one level deeper. */
+#admin-matches,
+#admin-players {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.admin-match,
+.admin-player-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 0.2rem 1rem;
+    padding: 0.8rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent-dim);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 1rem;
+    text-align: left;
+    cursor: pointer;
+}
+
+.admin-match:hover,
+.admin-player-row:hover {
+    background: var(--surface-raised);
+    border-left-color: var(--accent);
+}
+
+.admin-match-name,
+.admin-player-name {
+    font-family: var(--font-display);
+    font-size: 1.2rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.admin-match-facts,
+.admin-player-facts {
+    grid-column: 2;
+    grid-row: 1;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* WHAT THE ARENA IS HOLDING, and the row of people it has not handed back
+   to. Plain rows rather than cards: this is a manifest, and a manifest that
+   looks like a list of buttons invites clicking things that do nothing. */
+#admin-escrow,
+#admin-owed {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.admin-escrow-row {
+    padding: 0.4rem 0.7rem;
+    background: var(--surface);
+    border-left: 2px solid var(--border);
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.admin-owed-entry {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 0.2rem 1rem;
+    padding: 0.7rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    /* Crimson down the edge: every row here is somebody who is short. */
+    border-left: 3px solid var(--accent);
+}
+
+.admin-owed-who {
+    font-weight: 600;
+    letter-spacing: 0.03em;
+}
+
+.admin-owed-what {
+    grid-column: 1;
+    grid-row: 2;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    /* A long item list wraps rather than pushing the button off the row. */
+    overflow-wrap: anywhere;
+}
+
+.admin-owed-give {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+}
+
+/* The escrow total, said once above the manifest. */
+#admin-escrow-line,
+#admin-detail-line,
+#admin-player-line {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Under about 900px the box gives up its margins rather than its content. */
+@media (max-width: 56rem) {
+    #arena-admin {
+        width: 96vw;
+        height: 92vh;
+    }
+
+    .admin-match,
+    .admin-player-row,
+    .admin-owed-entry {
+        grid-template-columns: 1fr;
+    }
+
+    .admin-match-facts,
+    .admin-player-facts,
+    .admin-owed-what,
+    .admin-owed-give {
+        grid-column: 1;
+        grid-row: auto;
+    }
+}

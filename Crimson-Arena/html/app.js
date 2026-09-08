@@ -350,6 +350,30 @@
         score_limit: 'first to the kill limit'
     };
 
+    /* THE SAME THREE RULES, SAID IN TEAM WORDS. Nothing about the round
+       changes between these two maps: the server has always scored a team
+       mode by SIDE -- Config.Match.winCondition is read through the same
+       three evaluators either way, and each of them sums the side's kills and
+       counts the sides still standing rather than the players. What the
+       wording changes is whether a host can tell that from the dropdown.
+
+       "Last one standing" in a 4v4 is actively misleading -- it reads as a
+       rule about the last PLAYER alive, which is not what happens: a side is
+       out when its last member is, and the other side wins with three of
+       them still on their feet. */
+    var WIN_CONDITION_TEAM_TEXT = {
+        last_standing: 'last team standing',
+        most_kills: 'team with the most kills when the clock runs out',
+        score_limit: 'first team to the kill limit'
+    };
+
+    /* Which of the two a given mode is described in. `teams` comes off the
+       mode entry in the snapshot (Arena.GetEnabledModes sends it), so this
+       answers for a mode being CREATED as well as for one being played. */
+    function winWords(teamed) {
+        return teamed === true ? WIN_CONDITION_TEAM_TEXT : WIN_CONDITION_TEXT;
+    }
+
     function money(amount) {
         var symbol = '$';
         if (state.config && state.config.betting && typeof state.config.betting.currencySymbol === 'string') {
@@ -1744,13 +1768,20 @@
             /* Rebuilt only when the options have actually changed, so the
                select is not torn out from under an open dropdown on every
                server push. */
-            var wanted = winChoice.join(',');
+            /* THE MODE IS PART OF THE SIGNATURE, not just the key list.
+               The three keys are the same in a team mode and a solo one and
+               only the WORDS differ, so a signature built from the keys alone
+               left "last one standing" on screen after the host switched the
+               mode select to team deathmatch. */
+            var teamed = !!(creating && creating.teams === true);
+            var words = winWords(teamed);
+            var wanted = winChoice.join(',') + (teamed ? '|teams' : '');
             if (winSelect.getAttribute('data-options') !== wanted) {
                 winSelect.setAttribute('data-options', wanted);
                 clear(winSelect);
                 winChoice.forEach(function (key) {
                     var option = makeEl('option', null,
-                        titleCase(labelFor(WIN_CONDITION_TEXT, key, key)));
+                        titleCase(labelFor(words, key, key)));
                     option.value = key;
                     winSelect.appendChild(option);
                 });
@@ -1765,14 +1796,24 @@
             /* WHAT THE CHOICE ACTUALLY COSTS, said before it is made. A score
                limit spends no lives, and a host who picks it and then finds
                the Lives Each box gone would reasonably read that as a bug. */
+            var teamedHint = !!(creating && creating.teams === true);
             winHint.textContent = !winUsed ? ''
                 : (state.createWin === 'score_limit'
-                    ? 'First to ' + int(state.createLimit, int((cfg().match || {}).scoreLimit, 25))
+                    ? (teamedHint ? 'First side to ' : 'First to ')
+                      + int(state.createLimit, int((cfg().match || {}).scoreLimit, 25))
                       + ' kills takes it. Nobody is eliminated — everyone respawns until '
-                      + 'somebody gets there, so lives are not spent.'
+                      + (teamedHint ? 'one side gets there' : 'somebody gets there')
+                      + ', so lives are not spent.'
                     : (state.createWin === 'most_kills'
-                        ? 'Highest kill count when the clock runs out takes it.'
-                        : 'Last one standing takes it. Run out of lives and you are out.'));
+                        ? (teamedHint
+                            ? 'The side with the most kills between them when the clock runs '
+                              + 'out takes it.'
+                            : 'Highest kill count when the clock runs out takes it.')
+                        : (teamedHint
+                            ? 'The last side with anybody still standing takes it — the whole '
+                              + 'side wins it, fallen team-mates included. Run out of lives and '
+                              + 'you are out for the round.'
+                            : 'Last one standing takes it. Run out of lives and you are out.')));
         }
 
         /* AND A SCORE LIMIT SPENDS NO LIVES, which is the same reason a
@@ -2247,7 +2288,8 @@
             roundTime > 0 ? 'Round lasts ' + clock(roundTime) : 'No round clock',
             tiers > 0
                 ? 'Win by topping the ' + tiers + '-tier ladder — a kill climbs, a death drops'
-                : 'Win by ' + labelFor(WIN_CONDITION_TEXT, matchCfg.winCondition, 'the mode rules')
+                : 'Win by ' + labelFor(winWords(match.teams === true),
+                    matchCfg.winCondition, 'the mode rules')
         ];
         if (bettingOn()) {
             bits.push('Entry ' + money(match.entryFee));
@@ -4605,6 +4647,7 @@
             clear(list);
             arrayOf(admin.matches).forEach(function (match) {
                 var card = makeEl('button', 'admin-match');
+                    card.type = 'button';
                 card.type = 'button';
                 card.appendChild(makeEl('span', 'admin-match-name',
                     String(match.label || match.id)));
@@ -4679,7 +4722,7 @@
                    list, and a stash found by name after a restart is on
                    nobody's list at all. Queuing is what puts it back on one. */
                 var online = int(entry.src, 0);
-                var give = makeEl('button', 'admin-owed-give',
+                var give = makeEl('button', 'btn admin-owed-give',
                     online > 0 ? 'Hand it back' : 'Queue for when they return');
                 give.type = 'button';
                 /* The only thing that makes this button pointless is an empty
@@ -4708,6 +4751,7 @@
                 clear(people);
                 arrayOf(admin.focused.players).forEach(function (fighter) {
                     var card = makeEl('button', 'admin-player-row');
+                    card.type = 'button';
                     card.type = 'button';
                     card.appendChild(makeEl('span', 'admin-player-name', String(fighter.name)));
                     card.appendChild(makeEl('span', 'admin-player-facts',

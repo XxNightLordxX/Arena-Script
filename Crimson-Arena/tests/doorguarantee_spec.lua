@@ -68,10 +68,25 @@ local function newServer(ids, mutate, extra)
         return stashes[id]
     end
 
+    --- Stash ids ox_inventory will answer an EMPTY LIST for, whatever is
+    --- really in them.
+    ---
+    --- THIS IS NOT A FAILURE ox_inventory REPORTS. A stash it has forgotten
+    --- -- because the resource restarted, or the row was re-registered under
+    --- a different name -- reads exactly like a stash with nothing in it, and
+    --- that ambiguity is the whole subject of the tests that use this.
+    local forgotten = {}
+
+    --- The swapItems hook the resource registers, so these can drive it. The
+    --- stub used to throw it away, which made every question about who the
+    --- guard applies to unanswerable from in here.
+    local hook
+
     local ox = {
         RegisterStash = function() return true end,
         GetInventoryItems = function(_self, id)
             local out = {}
+            if forgotten[id] then return out end
             for _, item in ipairs(bucket(id)) do
                 out[#out + 1] = { name = item.name, count = item.count, metadata = item.metadata }
             end
@@ -111,7 +126,10 @@ local function newServer(ids, mutate, extra)
             if type(id) == 'number' then inv[id] = left else stashes[id] = left end
             return true
         end,
-        registerHook = function() return true end,
+        registerHook = function(_self, name, fn)
+            if name == 'swapItems' then hook = fn end
+            return true
+        end,
     }
 
     local env = Sandbox.newArenaEnv({
@@ -227,6 +245,44 @@ local function newServer(ids, mutate, extra)
     end
 
     function server.log() return table.concat(console, '\n') end
+
+    --- Makes one player's arena stash read EMPTY without emptying it.
+    --- @param src integer
+    --- @param on boolean?  -- default true
+    function server.forgetStash(src, on)
+        forgotten['crimson_arena_CID' .. src] = (on ~= false) or nil
+    end
+
+    --- Puts an item straight into a stash, the way an earlier run of this
+    --- resource left one behind.
+    function server.stashItem(stash, name, count)
+        stashes[stash] = stashes[stash] or {}
+        stashes[stash][#stashes[stash] + 1] = { name = name, count = count }
+    end
+
+    --- Hands a server id to a different character, the way FiveM does when a
+    --- player disconnects and the next one to connect inherits their slot.
+    --- @param src integer
+    --- @param citizenid string
+    function server.reseat(src, citizenid)
+        qbx.players[src] = {
+            citizenid = citizenid,
+            name = 'Newcomer' .. tostring(src),
+            money = { cash = 50000, bank = 0 },
+        }
+        inv[src] = {}
+    end
+
+    --- Asks the swapItems hook whether one move by `src` is allowed.
+    ---
+    --- `source` IS THE ACTOR, and the hook reads nothing else to find them --
+    --- leave it out and the hook returns true before asking any question at
+    --- all, which is a green test that has driven nothing.
+    --- @return boolean
+    function server.mayMove(src, from, to)
+        if hook == nil then error('the resource registered no swapItems hook', 2) end
+        return hook({ source = src, fromInventory = from, toInventory = to, count = 1 }) ~= false
+    end
 
     return server
 end
@@ -594,4 +650,163 @@ t.test('two rounds in a row leave them exactly as they started', function()
 end)
 
 print('doorguarantee_spec')
+-- ========================================================================
+-- A STASH THAT READS EMPTY IS NOT A STASH THAT WAS EMPTY
+--
+-- ox_inventory answers the same empty list for both, and the second is what
+-- a forgotten or re-registered stash looks like: a resource restart, a
+-- database hiccup, a row that came back under a different name. So an exit
+-- that trusted the answer reported a clean return of nothing, dropped the
+-- record, cleared the debt and left the player with empty pockets while every
+-- log in the file said the exit had gone perfectly.
+--
+-- The exit learned to tell them apart by counting what went IN. These are
+-- about everything that happens AFTER it does.
+-- ========================================================================
+
+t.test('THE BUG: the retry undid the exit\'s guard about thirty seconds later', function()
+    -- restore() refuses to call an empty read a clean return, keeps the
+    -- record, writes the debt and tells the player their kit is safe and
+    -- still being chased. ArenaAmmo.ReturnLeftovers is the only thing that
+    -- chases it -- and it had no such check, so the very next pass of the
+    -- sweep read the same nothing, called it settled, and deleted every
+    -- record the retry works from. The promise lasted one sweep interval.
+    local server, matchId = liveMatch({ 1, 2 })
+    t.isTrue(server.ammo.IsHolding(1), 'nothing was stashed, so this proves nothing')
+
+    server.forgetStash(1)
+    server.match.End(matchId, 'match.ended')
+
+    t.equals(server.ammo.Owed(), 1, 'the exit did not record the debt it could not settle')
+
+    -- The sweep, over and over, exactly as the retry thread runs it.
+    for _ = 1, 5 do server.ammo.SweepReturns() end
+
+    t.equals(server.ammo.Owed(), 1,
+        'the retry declared the debt settled off a read that returned nothing')
+    t.isTrue(server.ammo.IsHolding(1),
+        'the retry dropped the record, so nothing is left pointing at the stash')
+end)
+
+t.test('and the moment the stash can be read again, everything comes back', function()
+    -- The point of keeping the debt: the stash is a REAL one and its contents
+    -- were never in doubt. Nothing is lost, it is only unreachable -- and the
+    -- retry has to still be trying when it stops being.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.forgetStash(1)
+    server.match.End(matchId, 'match.ended')
+    for _ = 1, 3 do server.ammo.SweepReturns() end
+
+    server.forgetStash(1, false)
+    server.ammo.SweepReturns()
+
+    t.equals(server.carrying(1), INTACT, 'their own things did not come back')
+    t.equals(server.ammo.Owed(), 0, 'the debt was not settled once it actually could be')
+    t.isFalse(server.ammo.IsHolding(1), 'and the record was not dropped afterwards')
+end)
+
+t.test('and a stash that really IS empty still settles cleanly', function()
+    -- The guard must not turn every ordinary exit into a permanent debt. A
+    -- player who walked in owning nothing stashes nothing, so there is no
+    -- count to disagree with the empty read and nothing to keep chasing.
+    local server = newServer({ 1, 2 })
+    server.env.Config.Loadouts.inventory.stripOnEntry = true
+    -- Emptied before they ever go near the door.
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+
+    for _ = 1, 4 do server.ammo.SweepReturns() end
+    t.equals(server.ammo.Owed(), 0, 'somebody who owns nothing was recorded as owed something')
+end)
+
+t.test('THE BUG: re-entering with empty pockets erased the debt outright', function()
+    -- The record's count is the one fact that can tell the two empties apart,
+    -- and ArenaAmmo.Issue wrote the NEW entry's count straight over it. A
+    -- player whose exit failed walks back in carrying nothing -- because the
+    -- failed exit is exactly why they have nothing -- so the count went to
+    -- zero, the guard was disarmed for the one player it was written for, and
+    -- the next exit read empty, called it clean, and forgot the lot.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.forgetStash(1)
+    server.match.End(matchId, 'match.ended')
+    t.equals(server.ammo.Owed(), 1, 'the first exit did not leave a debt to erase')
+
+    -- STRAIGHT BACK IN, with the pockets the failed exit left them: empty.
+    -- The stash can be read again by now, but it does not matter -- what is
+    -- being asserted is that the second round cannot erase the first round's
+    -- debt on its way past.
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local second = server.lobby.All()[1]
+    t.isNotNil(second, 'the second lobby never opened')
+    server.fire('joinMatch', 2, { matchId = second.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.match.End(second.id, 'match.ended')
+
+    t.equals(server.ammo.Owed(), 1,
+        'a second round erased a debt from the first -- their belongings are in a '
+        .. 'real stash with nothing in this resource left pointing at it')
+end)
+
+-- ========================================================================
+-- A SERVER ID IS NOT A PERSON
+--
+-- `stashed` is keyed by server id, and a record is KEPT on purpose when an
+-- exit could not finish -- so it outlives its owner's disconnect, and FiveM
+-- hands that id to whoever connects next.
+-- ========================================================================
+
+t.test('THE BUG: a stranded record froze the NEXT player on that id out of every stash', function()
+    -- The swapItems guard reads that table to decide who is "in the arena".
+    -- Read raw, the newcomer was refused every inventory move they made
+    -- anywhere on the map -- their own house stash, a glovebox, a shop, an
+    -- item handed to a friend -- with the arena's own "you fight with what
+    -- you were issued" line explaining it, and nothing able to clear it: the
+    -- sweep that would have is gated on the same table.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.forgetStash(1)
+    server.match.End(matchId, 'match.ended')
+    t.isTrue(server.ammo.IsHolding(1), 'the record was not kept, so there is nothing stranded')
+
+    server.drop(1)
+    server.reseat(1, 'CID_NEWCOMER')
+
+    t.isTrue(server.mayMove(1, 1, 'house_stash_newcomer'),
+        'the newcomer cannot put anything into their own stash')
+    t.isTrue(server.mayMove(1, 'house_stash_newcomer', 1),
+        'the newcomer cannot take anything out of their own stash')
+end)
+
+t.test('and the sweep will still look at that newcomer', function()
+    -- worthTrying reads the same table for the same reason, so the one player
+    -- who most needed a look -- the new arrival inheriting a stranded id --
+    -- was the one player it would never take.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.forgetStash(1)
+    server.match.End(matchId, 'match.ended')
+    server.drop(1)
+    server.reseat(1, 'CID_NEWCOMER')
+
+    -- Something of theirs really is in their own arena stash, from an earlier
+    -- life this run knows nothing about.
+    server.stashItem('crimson_arena_CID_NEWCOMER', 'phone', 1)
+    server.ammo.SweepReturns()
+
+    t.isTrue(server.carrying(1):find('phone', 1, true) ~= nil,
+        'the sweep skipped the newcomer because somebody else\'s record sat on their id')
+end)
+
+t.test('and a fighter who is genuinely mid-round is still refused', function()
+    -- The narrowing must not switch the guard off. The record belongs to the
+    -- person sitting on that id, so it still speaks for them.
+    local server = liveMatch({ 1, 2 })
+    t.isFalse(server.mayMove(1, 1, 'some_other_stash'),
+        'a fighter can empty the arena kit into a stash mid-round')
+    t.isFalse(server.mayMove(1, 'a_corpse', 1),
+        'a fighter can loot into their own pockets mid-round')
+end)
+
 os.exit(t.summary())

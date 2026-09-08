@@ -393,6 +393,14 @@ local function newServer(pockets, mutate, opts)
             inv[src][#inv[src] + 1] = { name = name, count = count }
         end,
         breakOn = function(what, value) fail[what] = value == nil and true or value end,
+        --- Empties a stash behind the resource's back, without touching the
+        --- record that says something was put in it.
+        ---
+        --- WHAT A FORGOTTEN STASH LOOKS LIKE. ox_inventory drops its stashes
+        --- on a restart, and a stash it has been re-registered for is a stash
+        --- it reads as empty -- indistinguishable, from the outside, from one
+        --- that never had anything in it.
+        forgetStash = function(id) stashes[id] = {} end,
         --- Runs the retry sweep's thread one pass. Two steps is one pass:
         --- the loop's Wait is its first statement, so the first resume only
         --- primes the coroutine. Needs opts.retry.
@@ -2234,6 +2242,62 @@ t.test('and an empty-handed player is still stripped and restored cleanly', func
 
     t.equals(s.ammo.Reclaim(1, 'match ended'), 1, 'an empty-handed exit was not reported clean')
     t.equals(s.carrying(1), '', 'and they were handed something that was never theirs')
+end)
+
+-- ======================================================================
+-- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY
+-- ======================================================================
+
+t.test('THE HOLE: a stash that reads empty is not reported as a clean return', function()
+    -- THE REPORT: "it didn't give people their phone back, so it is not
+    -- giving everything back after a match ends."
+    --
+    -- handBack cannot tell "nothing was in there" from "nothing came back":
+    -- ox_inventory answers an empty list for both, and the second is what a
+    -- forgotten or re-registered stash looks like -- a resource restart, a
+    -- database hiccup, a stash id that came back namespaced differently.
+    --
+    -- So a return of NOTHING was reported as a clean return of nothing: the
+    -- record was dropped, `owed` was cleared, the retry had nothing left to
+    -- work from, and the player walked out empty-handed while every log in
+    -- the file said the exit had gone perfectly. Their belongings may well
+    -- still be in the stash -- it is a real one -- but nothing in this
+    -- resource remembered to go back for them.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(s.ammo.IsHolding(1), 'the door did not run, so this proves nothing')
+    t.isTrue(s.stashContents(1) ~= '', 'the fixture stashed nothing')
+
+    -- The stash goes out from under it, exactly as a restart does.
+    s.forgetStash(s.ammo.StashOf(1))
+    t.equals(s.stashContents(1), '', 'the fixture did not really empty the stash')
+
+    t.equals(s.ammo.Reclaim(1, 'match ended'), 0,
+        'an empty read was reported as a clean return')
+
+    -- THE RECORD IS KEPT, which is what any retry works from and what
+    -- StashOf answers with when a player asks where their things went.
+    t.isTrue(s.ammo.IsHolding(1),
+        'the arena forgot it was holding anything, so nothing can go back for it')
+    t.isTrue(type(s.ammo.StashOf(1)) == 'string' and s.ammo.StashOf(1) ~= '',
+        'and it can no longer say which stash to look in')
+
+    -- AND IT SAYS SO, loudly, with the number that proves the two apart.
+    t.isTrue(s.log():find('READ EMPTY', 1, true) ~= nil,
+        'nothing in the console says the stash came back empty: ' .. s.log())
+end)
+
+t.test('and a player who really walked in with nothing still exits cleanly', function()
+    -- THE OTHER SIDE OF IT, and the reason the guard counts rather than
+    -- simply refusing every empty return: somebody who owns nothing has an
+    -- empty stash legitimately, and holding their exit open for ever over it
+    -- would be the same bug pointed the other way.
+    local s = newServer({ [1] = {} })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.ammo.Reclaim(1, 'match ended'), 1,
+        'an empty-handed player was held back over a stash that was correctly empty')
+    t.isFalse(s.ammo.IsHolding(1), 'and the record was kept for a return that had nothing to return')
 end)
 
 os.exit(t.summary())

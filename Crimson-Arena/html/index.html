@@ -99,6 +99,17 @@
                     <p id="create-win-hint" class="hint"></p>
                 </div>
 
+                <!-- THE FINISH LINE, and only where the host has actually
+                     chosen a kill limit. It is meaningless under every other
+                     win condition, so it is not merely greyed there -- it is
+                     not drawn. Hidden as well where the operator has fixed
+                     the number. -->
+                <div id="create-limit-row" class="field">
+                    <span class="field-label">Kill Limit</span>
+                    <input id="create-limit" type="number" min="1" step="1">
+                    <p id="create-limit-hint" class="hint"></p>
+                </div>
+
                 <!-- Hidden when the operator has fixed the number: a control
                      that cannot change anything is worse than no control,
                      because it invites a host to try. -->

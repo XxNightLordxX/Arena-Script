@@ -347,7 +347,8 @@ onClient('crimson_arena:server:createMatch', RATE.create, function(src, data)
     local matchId, reason = ArenaLobby.Create(src, arenaKey, keyArg(payload.modeKey),
         intArg(payload.entryFee), intArg(payload.lives), boolArg(payload.radar),
         keyArg(payload.account), intArg(payload.roundTimeSeconds),
-        keyArg(payload.winCondition), tableArg(payload.tierPlan))
+        keyArg(payload.winCondition), tableArg(payload.tierPlan),
+        intArg(payload.scoreLimit))
     if not matchId then return refuse(src, reason) end
 
     ArenaNotifyKey(src, 'notify.match_created', 'success')

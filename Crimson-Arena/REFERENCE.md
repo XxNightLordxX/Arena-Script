@@ -161,7 +161,7 @@ instancing really happened rather than assuming it did.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
 - **73 spec files** covering the shared, server and client logic, run with `lua5.4`
-  against a fake-native harness, plus **15 panel suites** that load the real
+  against a fake-native harness, plus **16 panel suites** that load the real
   `html/app.js` under Node. Two of the specs are property-based: they generate
   thousands of configs, requests and damage packets and assert invariants
   rather than chosen answers, which is what found the self-damage hole in the
@@ -317,7 +317,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 93 functions
+#### `shared/arena.lua` — 97 functions
 
 | Function | What it does |
 |---|---|
@@ -350,6 +350,10 @@ listed; the source documents them where they are.
 | `Arena.WinConditionSpendsLives(condition)` | Whether a death costs a life under this condition. |
 | `Arena.GunGameClasses(modeKey)` | The weapon classes a ladder is built from, with each one's playable pool and ceiling. |
 | `Arena.ResolveTierPlan(modeKey, requested)` | A host's requested ladder shape, refused rather than clamped. |
+| `Arena.ScoreLimitDefault()` | The server-wide kill limit, out of a setting that takes a number or a range. |
+| `Arena.ScoreLimitChoice()` | The band a host may name a kill limit within, or nil where the server fixes it. |
+| `Arena.ResolveScoreLimit(requested)` | One host's requested kill limit, refused rather than clamped. |
+| `Arena.ScoreLimitFor(chosen)` | The limit a match is played to: the host's, falling back to the server's. |
 | `Arena.KillCeilingFor(arenaKey, factor)` | How far apart two players may be for one to have killed the other, in this arena. |
 | `Arena.RoundTimeDefault()` | The server-wide round length, out of a setting that takes a number or a range. |
 | `Arena.RoundTimeChoice()` | The range a host may set a round length within, or nil when the choice is not offered. |

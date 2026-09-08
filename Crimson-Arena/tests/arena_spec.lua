@@ -1618,4 +1618,63 @@ t.test('the shipped gun game hands its tiers two hundred rounds', function()
         'the shipped tier ammunition is no longer 200')
 end)
 
+-- ======================================================================
+-- WHAT A ROUND IS PLAYED TO
+-- ======================================================================
+
+t.test('the kill limit reads both shapes the setting takes', function()
+    -- ONE READER FOR BOTH, because there were three places doing
+    -- `Arena.ToInt(Config.Match.scoreLimit) or 1` -- and Arena.ToInt of a
+    -- TABLE is nil, so the moment the setting grew a range every one of them
+    -- would have read the limit as ONE and every score-limit round would have
+    -- ended on the first kill.
+    local fixed = tweaked(function(config) config.Match.scoreLimit = 40 end)
+    t.equals(fixed.ScoreLimitDefault(), 40, 'a plain number stopped being read')
+    t.isNil(fixed.ScoreLimitChoice(), 'a fixed limit still offered the host a band')
+
+    local ranged = tweaked(function(config)
+        config.Match.scoreLimit = { allowChoose = true, min = 5, max = 100, default = 25 }
+    end)
+    t.equals(ranged.ScoreLimitDefault(), 25, 'the range default stopped being read')
+    t.equals(ranged.ScoreLimitChoice().min, 5)
+    t.equals(ranged.ScoreLimitChoice().max, 100)
+end)
+
+t.test('and a host is refused a number outside it, rather than clamped', function()
+    -- REFUSED, NOT CLAMPED, like the lives and the round length: a host who
+    -- asked for something this server does not allow is told so, rather than
+    -- dropped into a match with a different finish line from the one they set.
+    local arena = tweaked(function(config)
+        config.Match.scoreLimit = { allowChoose = true, min = 5, max = 100, default = 25 }
+    end)
+
+    t.equals((arena.ResolveScoreLimit(60)), 60, 'a legal number was refused')
+    t.isNil((arena.ResolveScoreLimit(4)), 'a number under the floor was accepted')
+    t.isNil((arena.ResolveScoreLimit(101)), 'a number over the ceiling was accepted')
+    t.equals(select(2, arena.ResolveScoreLimit(101)), 'error.score_limit_out_of_range',
+        'the refusal did not say why')
+
+    -- NOTHING ASKED FOR IS 0, which the match stores as "did not choose".
+    t.equals((arena.ResolveScoreLimit(nil)), 0, 'an untouched box was treated as a request')
+    t.equals((arena.ResolveScoreLimit(0)), 0, 'zero was treated as a request')
+end)
+
+t.test('and a host who asks on a server that fixes it is ignored, not refused', function()
+    -- A stale panel is not a tampered payload, and the round runs the
+    -- operator's number.
+    local arena = tweaked(function(config) config.Match.scoreLimit = 40 end)
+    local limit, why = arena.ResolveScoreLimit(90)
+    t.equals(limit, 0, 'a request on a server that does not offer the choice was honoured')
+    t.isNil(why, 'and it must not be reported as an error')
+end)
+
+t.test('and the match plays to the host\'s number, falling back to the server\'s', function()
+    local arena = tweaked(function(config)
+        config.Match.scoreLimit = { allowChoose = true, min = 5, max = 100, default = 25 }
+    end)
+    t.equals(arena.ScoreLimitFor(60), 60, 'the host\'s number was ignored')
+    t.equals(arena.ScoreLimitFor(0), 25, '0 should mean "the server\'s own"')
+    t.equals(arena.ScoreLimitFor(nil), 25, 'and so should nothing at all')
+end)
+
 os.exit(t.summary())

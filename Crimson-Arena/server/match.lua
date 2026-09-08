@@ -951,7 +951,16 @@ end
 --- @param teamMode boolean
 --- @return boolean
 local function reachedScoreLimit(match, teamMode)
-    local limit = math.max(1, Arena.ToInt(Config.Match.scoreLimit) or 1)
+    -- THE MATCH'S OWN NUMBER, not the config's. The host names it when they
+    -- create the round and it is stored on the match, so re-reading the
+    -- config here would let an operator's mid-session edit move the finish
+    -- line under a round already being fought.
+    --
+    -- AND THROUGH THE RESOLVER, because the setting now takes two shapes:
+    -- Arena.ToInt of a table is nil, so a plain read would have made every
+    -- score-limit round on a server that offers the choice end on the FIRST
+    -- kill.
+    local limit = Arena.ScoreLimitFor(match.scoreLimit)
 
     if teamMode then
         for _, score in pairs(teamKills(match)) do

@@ -373,6 +373,7 @@ end
 --- @param src number
 --- @param citizenid string
 --- @return boolean stowed
+--- @return integer count -- how many items went into the stash
 local function stow(src, citizenid)
     local ox = inventory()
     if not ox then return false end
@@ -386,13 +387,13 @@ local function stow(src, citizenid)
     end)
     if not registered then
         ArenaLog('door: could not register the stash for %s -- they keep their own kit.', tostring(src))
-        return false
+        return false, 0
     end
 
     local ok, items = pcall(function() return ox:GetInventoryItems(src) end)
     if not ok or type(items) ~= 'table' then
         ArenaLog('door: could not read %s\'s inventory -- they keep their own kit.', tostring(src))
-        return false
+        return false, 0
     end
 
     -- Nothing to put away is a success, not a failure: an empty-handed player
@@ -419,7 +420,7 @@ local function stow(src, citizenid)
             for _, done in ipairs(stowed) do
                 pcall(function() return ox:RemoveItem(stash, done.name, done.count, done.metadata) end)
             end
-            return false
+            return false, 0
         end
         stowed[#stowed + 1] = item
         end
@@ -434,10 +435,13 @@ local function stow(src, citizenid)
         for _, item in ipairs(stowed) do
             pcall(function() return ox:RemoveItem(stash, item.name, item.count, item.metadata) end)
         end
-        return false
+        return false, 0
     end
 
-    return true
+    -- HOW MANY WENT IN, so the exit can tell "the stash was empty" from "the
+    -- stash READ empty". See restore(): those two are the same answer from
+    -- ox_inventory and very different things to a player.
+    return true, #stowed
 end
 
 --- Hands one stash's contents back, taking each item OUT of the stash only
@@ -571,8 +575,31 @@ local function restore(src, record)
         record.cleared = true
     end
 
-    local readable, failures = handBack(ox, src, record.stash)
+    local readable, failures, returned = handBack(ox, src, record.stash)
     if not readable then return false, wiped end
+
+    -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY.
+    --
+    -- handBack cannot tell those apart: ox_inventory answers an empty list
+    -- for both, and the second is what a forgotten or re-registered stash
+    -- looks like -- a resource restart, a database hiccup, a stash id that
+    -- came back namespaced differently. So a return of nothing was reported
+    -- as a clean return of nothing: the record was dropped, `owed` was
+    -- cleared, the retry had nothing to work from, and the player walked out
+    -- with empty pockets while every log in the file said the exit had gone
+    -- perfectly. Their belongings may well still be in the stash -- it is a
+    -- real one, and ArenaAmmo.StashOf still names it -- but nothing in this
+    -- resource remembered to go back for them.
+    --
+    -- The record knows how many items went IN. That is the one fact that can
+    -- tell the two apart, and it is why stow() counts them.
+    if returned == 0 and failures == 0 and (Arena.ToInt(record.stowedCount) or 0) > 0 then
+        ArenaLog('door: %s\'s stash (%s) READ EMPTY, and %d item(s) were put into it. ' ..
+            'NOTHING has been handed back and the record is being kept so the sweep can try again -- ' ..
+            'the stash is a real one and can be opened.',
+            tostring(src), record.stash, Arena.ToInt(record.stowedCount) or 0)
+        return false, wiped
+    end
 
     if failures > 0 then
         -- Deliberately NOT cleared. Anything that would not go back is still
@@ -1728,9 +1755,22 @@ function ArenaAmmo.Issue(src, matchId, loadout)
 
         if not Arena.IsKey(citizenid) then
             ArenaLog('door: no citizen id for %s -- they keep their own kit.', tostring(src))
-        elseif stow(src, citizenid) then
-            stashed[src] = { stash = stashFor(citizenid), matchId = matchId, citizenid = citizenid }
-            ArenaDebug('door: stashed %s\'s kit for match %s', tostring(src), tostring(matchId))
+        else
+            local put, count = stow(src, citizenid)
+            if put then
+                stashed[src] = {
+                    stash = stashFor(citizenid),
+                    matchId = matchId,
+                    citizenid = citizenid,
+                    -- HOW MANY ITEMS WENT IN. The exit compares this against
+                    -- what came out -- see restore() -- because "the stash was
+                    -- empty" and "the stash READ empty" are the same answer
+                    -- from ox_inventory and very different things to a player.
+                    stowedCount = count,
+                }
+                ArenaDebug('door: stashed %d item(s) of %s\'s for match %s',
+                    count, tostring(src), tostring(matchId))
+            end
         end
     end
 

@@ -635,7 +635,13 @@ local function snapshotConfig()
             winConditionChoice = Arena.WinConditionChoice(),
             -- WHAT A SCORE LIMIT IS, so the picker can say "first to 25"
             -- rather than "first to the number on the server you cannot see".
-            scoreLimit = math.max(1, Arena.ToInt(Config.Match.scoreLimit) or 1),
+            -- Resolved, because the setting takes two shapes and a panel
+            -- handed the TABLE would print nothing at all.
+            scoreLimit = Arena.ScoreLimitDefault(),
+            -- The band a host may name one within, absent on a server that
+            -- fixes it -- the same shape, and the same silence, as
+            -- `livesChoice` and `roundTimeChoice` above.
+            scoreLimitChoice = Arena.ScoreLimitChoice(),
             onlyHostCanStart = Config.Match.onlyHostCanStart ~= false,
             -- WHETHER READYING UP IS WHAT STARTS THE ROUND. It ships ON, and
             -- the panel told every player the opposite in as many words --
@@ -816,6 +822,11 @@ local function snapshotMatches()
             -- all, and a card showing "3 lives" over a round nobody can be
             -- eliminated from is the panel telling a plain untruth.
             livesSpent = Arena.WinConditionSpendsLives(match.winCondition),
+            -- WHAT THIS ROUND IS ACTUALLY PLAYED TO. Resolved the same way:
+            -- 0 on the match means the host did not name one, and a player
+            -- deciding whether to join wants the number the round will really
+            -- finish on.
+            scoreLimit = Arena.ScoreLimitFor(match.scoreLimit),
             -- WHAT A WINNER IS ACTUALLY PLAYING FOR. GetPot is the entry
             -- pot alone; with betPayout.includeEntryPot on -- the shipped
             -- default -- the side-bets settle in the same pool, so a
@@ -1119,11 +1130,14 @@ end
 ---        Config.Match.winCondition. After `roundTime`, because this list is
 ---        POSITIONAL and the only safe place to add to it is the end.
 --- @param tierPlan any -- the host's gun-game ladder, as { [classKey] = rungs }.
----        LAST, for the same reason.
+---        After `winCondition`, for the same reason.
+--- @param scoreLimit any -- the host's kill limit, resolved against
+---        Config.Match.scoreLimit. LAST: this list is POSITIONAL and the only
+---        safe place to add to it is the end.
 --- @return string|nil matchId
 --- @return string|nil reasonKey
 function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account, roundTime,
-    winCondition, tierPlan)
+    winCondition, tierPlan, scoreLimit)
     local host = tonumber(src)
     if not host then return nil, 'error.invalid_request' end
     if not ArenaCanCreate(host) then return nil, 'error.no_permission' end
@@ -1182,6 +1196,12 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
     local resolvedTiers, tierReason = Arena.ResolveTierPlan(wantedMode, tierPlan)
     if tierReason then return nil, tierReason end
 
+    -- REFUSED, NOT CLAMPED, like everything above it. 0 back means the host
+    -- did not name one -- they left the box alone, or this server fixes it --
+    -- and Arena.ScoreLimitFor then reads the server's own.
+    local resolvedLimit, limitReason = Arena.ResolveScoreLimit(scoreLimit)
+    if not resolvedLimit then return nil, limitReason end
+
     local id = ArenaNewId()
     local hostName = ArenaPlayerName(host)
 
@@ -1221,6 +1241,10 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
         -- same reason `lives` is: an operator switching a weapon class off
         -- mid-session must not reshape a lobby that is already open.
         tierPlan = resolvedTiers,
+        -- 0 MEANS "THE HOST DID NOT NAME ONE". Stored for the same reason
+        -- `lives` is: re-reading the config when the round is decided would
+        -- move the finish line under a match already being fought.
+        scoreLimit = resolvedLimit,
         createdAt = os.time(),
         -- 0, not nil, until server/match.lua schedules them: a nil field
         -- would simply be absent from the snapshot the panel receives.
@@ -2032,6 +2056,7 @@ function ArenaLobby.UpdateMatch(src, data)
     local roundTime = Arena.ToInt(match.roundTimeSeconds) or 0
     local winCondition = Arena.IsKey(match.winCondition) and match.winCondition or ''
     local tierPlan = match.tierPlan
+    local scoreLimit = Arena.ToInt(match.scoreLimit) or 0
 
     if data.arenaKey ~= nil then
         local arena = Arena.GetArenaByKey(data.arenaKey)
@@ -2061,6 +2086,12 @@ function ArenaLobby.UpdateMatch(src, data)
         local resolved, reason = Arena.ResolveWinCondition(data.winCondition)
         if not resolved then return false, reason end
         winCondition = resolved
+    end
+
+    if data.scoreLimit ~= nil then
+        local resolved, reason = Arena.ResolveScoreLimit(data.scoreLimit)
+        if not resolved then return false, reason end
+        scoreLimit = resolved
     end
 
     if data.tierPlan ~= nil then
@@ -2127,6 +2158,7 @@ function ArenaLobby.UpdateMatch(src, data)
     match.roundTimeSeconds = roundTime
     match.winCondition = winCondition
     match.tierPlan = tierPlan
+    match.scoreLimit = scoreLimit
     match.label = locale('match.label', match.hostName,
         (Arena.GetModeByKey(modeKey) or {}).label or modeKey)
 

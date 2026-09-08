@@ -858,6 +858,82 @@ function Arena.WinConditionFor(chosen)
     return Arena.WinConditionDefault()
 end
 
+--- The server-wide kill limit, out of a setting that takes two shapes.
+---
+--- Config.Match.scoreLimit is a plain NUMBER on a server that fixes it, and a
+--- TABLE -- { allowChoose, min, max, default } -- on one that lets the host
+--- name it. The same two shapes `lives` and `roundTimeSeconds` already take,
+--- and for the same reason: an operator takes the decision away by writing a
+--- number and hands it over by writing a range, with no second setting to
+--- find.
+---
+--- ONE READER FOR BOTH SHAPES. There were three places doing
+--- `Arena.ToInt(Config.Match.scoreLimit) or 1` -- and Arena.ToInt of a table
+--- is nil, so the moment the setting grew a range every one of them would
+--- have read the limit as ONE, and every score-limit round would have ended
+--- on the first kill.
+--- @return integer
+function Arena.ScoreLimitDefault()
+    local setting = (Config.Match or {}).scoreLimit
+
+    if type(setting) ~= 'table' then
+        return math.max(1, Arena.ToInt(setting) or 1)
+    end
+
+    local minimum = math.max(1, Arena.ToInt(setting.min) or 1)
+    local maximum = math.max(minimum, Arena.ToInt(setting.max) or minimum)
+    return Arena.ClampInt(setting.default, minimum, maximum) or minimum
+end
+
+--- The band a host may name a kill limit within, or nil where this server
+--- fixes it.
+---
+--- NIL RATHER THAN A ZERO-WIDTH BAND, and the panel reads it that way: a box
+--- that can only hold the number already in it invites a host to type, and
+--- then to wonder why nothing changed.
+--- @return table|nil -- { min, max }
+function Arena.ScoreLimitChoice()
+    local setting = (Config.Match or {}).scoreLimit
+    if type(setting) ~= 'table' or setting.allowChoose ~= true then return nil end
+
+    local minimum = math.max(1, Arena.ToInt(setting.min) or 1)
+    local maximum = math.max(minimum, Arena.ToInt(setting.max) or minimum)
+    if maximum <= minimum then return nil end
+    return { min = minimum, max = maximum }
+end
+
+--- One host's requested kill limit, checked.
+---
+--- REFUSES RATHER THAN CLAMPS, like the lives and the round length: a host who
+--- asked for a number this server does not allow is told so, rather than
+--- dropped into a match with a different finish line from the one they set.
+---
+--- 0 MEANS "DID NOT CHOOSE" and is what the match stores for a host who left
+--- the box alone or who is on a server that does not offer it --
+--- Arena.ScoreLimitFor then falls through to the server's own.
+--- @param requested any
+--- @return integer|nil limit -- 0 when the host did not choose
+--- @return string|nil reasonKey
+function Arena.ResolveScoreLimit(requested)
+    local band = Arena.ScoreLimitChoice()
+    if not band then return 0, nil end
+
+    local wanted = Arena.ToInt(requested)
+    if not wanted or wanted <= 0 then return 0, nil end
+    if wanted < band.min or wanted > band.max then return nil, 'error.score_limit_out_of_range' end
+    return wanted, nil
+end
+
+--- The kill limit one match is played to: the host's, falling back to the
+--- server's.
+--- @param chosen any -- what the match stored
+--- @return integer
+function Arena.ScoreLimitFor(chosen)
+    local picked = Arena.ToInt(chosen)
+    if picked and picked > 0 then return picked end
+    return Arena.ScoreLimitDefault()
+end
+
 --- Whether a death costs a life under this win condition.
 ---
 --- A SCORE LIMIT DOES NOT SPEND LIVES, at the operator's own instruction, and

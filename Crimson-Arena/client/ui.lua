@@ -209,6 +209,7 @@ register('createMatch', function(data)
         lives = data.lives,
         roundTimeSeconds = data.roundTimeSeconds,
         winCondition = data.winCondition,
+        scoreLimit = data.scoreLimit,
         radar = data.radar,
         account = data.account,
     })
@@ -234,6 +235,7 @@ register('updateMatch', function(data)
         lives = data.lives,
         roundTimeSeconds = data.roundTimeSeconds,
         winCondition = data.winCondition,
+        scoreLimit = data.scoreLimit,
         radar = data.radar,
     })
 end)

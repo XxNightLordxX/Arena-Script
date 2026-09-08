@@ -49,6 +49,7 @@
         "win_condition_unavailable": "This server does not offer that win condition.",
         "tier_count_out_of_range": "This server does not have that many weapons in that tier.",
         "ladder_too_short": "A gun game needs at least two tiers to climb.",
+        "score_limit_out_of_range": "This server does not allow a kill limit that size.",
         "no_permission": "You are not cleared for that.",
         "no_team_chosen": "Somebody still has not picked a side.",
         "no_teams_enabled": "No sides are enabled.",

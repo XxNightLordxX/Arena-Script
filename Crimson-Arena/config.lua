@@ -20,17 +20,17 @@
        84   Lobby         The NPC players walk up to
       181   Schedule      Opening hours: when the door is actually open
       225   Match         Lives, timers, player counts, win condition
-      557   Teams         The sides, and whether they may be uneven
-      712   Modes         Free-for-all and team deathmatch
-      1064  DefaultMode   Which of them a new lobby opens on
-      1083  Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1301  UI            Panel colours, logo and title
-      1359  Permissions   Who may open a match, who may force-stop one
-      1440  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2012   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2515   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2525   Webhook       Optional: a Discord line per finished match
-     2562   Dispatch      Optional: keeping police and EMS out of the arena
+      567   Teams         The sides, and whether they may be uneven
+      722   Modes         Free-for-all and team deathmatch
+      1074  DefaultMode   Which of them a new lobby opens on
+      1093  Betting       Entry fees, self-bets, side-bets, how the pot is split
+      1311  UI            Panel colours, logo and title
+      1369  Permissions   Who may open a match, who may force-stop one
+      1450  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2022   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2525   Database      Optional: all-time leaderboard. Off, no SQL to import
+     2535   Webhook       Optional: a Discord line per finished match
+     2572   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers are checked by tests/configmap_spec.lua, so a map
@@ -324,6 +324,11 @@ Config.Match = {
 
     -- FIRST TO THIS MANY KILLS, under 'score_limit' and ignored otherwise.
     --
+    -- TWO SHAPES, like `lives` and `winCondition` above it. A plain number --
+    -- `scoreLimit = 25` -- fixes it for every match on this server; the block
+    -- below puts a box in the match-creation menu, shown only when the host
+    -- has actually chosen a kill limit, and `default` is what it opens on.
+    --
     -- LIVES ARE NOT SPENT UNDER A SCORE LIMIT, and that is arithmetic rather
     -- than taste: the round is meant to end when somebody reaches this
     -- number, and a roster that can be eliminated runs out of players first
@@ -331,7 +336,12 @@ Config.Match = {
     -- round is decided by last-man-standing every single time and this number
     -- was decorative. So a score-limit round respawns for ever, exactly as a
     -- gun game does, and `lives` above is not read.
-    scoreLimit = 25,
+    scoreLimit = {
+        allowChoose = true,
+        min = 1,
+        max = 200,
+        default = 25,
+    },
 
     -- Metres a player may be scattered from the spawn point they drew, so
     -- more players than spawn points never stack inside each other.

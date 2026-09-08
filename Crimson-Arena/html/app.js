@@ -148,6 +148,9 @@
            tells us what this server's default is. Same shape as createLives
            and createRound beside it: null means "not seeded yet", not "none". */
         createWin: null,
+        /* The kill limit the host has named, or null until the snapshot says
+           what this server opens on. Same shape as createLives beside it. */
+        createLimit: null,
         createRound: null,
 
         /* The match the create form was last seeded from. Keyed on the id so
@@ -1276,6 +1279,12 @@
         if (state.createWin === null) {
             state.createWin = keyOr((config.match || {}).winCondition, 'last_standing');
         }
+        /* Its own guard, for the same reason the others have theirs: the
+           server sends the resolved default, which is the number a host who
+           touches nothing will play to. */
+        if (state.createLimit === null) {
+            state.createLimit = int((config.match || {}).scoreLimit, 25);
+        }
         if (state.betAmount === null) {
             /* Whichever kind of bet this server actually offers. Seeding
                from the spectator minimum on a server that only lets fighters
@@ -1305,6 +1314,7 @@
             state.createLives = int(editable.lives, int(state.createLives, 1));
             state.createRound = int(editable.roundTimeSeconds, int(state.createRound, 0));
             state.createWin = keyOr(editable.winCondition, state.createWin);
+            state.createLimit = int(editable.scoreLimit, int(state.createLimit, 25));
             state.createRadar = editable.radar === true;
         } else if (!editable && state.seededFromMatch !== null) {
             /* ON THE TRANSITION ONLY, keyed the same way the seeding above
@@ -1740,7 +1750,7 @@
                the Lives Each box gone would reasonably read that as a bug. */
             winHint.textContent = !winUsed ? ''
                 : (state.createWin === 'score_limit'
-                    ? 'First to ' + int((cfg().match || {}).scoreLimit, 25)
+                    ? 'First to ' + int(state.createLimit, int((cfg().match || {}).scoreLimit, 25))
                       + ' kills takes it. Nobody is eliminated — everyone respawns until '
                       + 'somebody gets there, so lives are not spent.'
                     : (state.createWin === 'most_kills'
@@ -1748,11 +1758,36 @@
                         : 'Last one standing takes it. Run out of lives and you are out.'));
         }
 
-        var livesChoice = (cfg().match || {}).livesChoice;
         /* AND A SCORE LIMIT SPENDS NO LIVES, which is the same reason a
-           ladder mode does not show this row: the number would be on screen,
-           editable, and read by nothing. */
+           ladder mode does not show the lives row: the number would be on
+           screen, editable, and read by nothing. */
         var livesSpent = state.createWin !== 'score_limit';
+
+        /* THE FINISH LINE ITSELF, and only where the host has chosen to play
+           to one. Under every other condition the number is not read, so a
+           box for it would be a control that changes nothing. */
+        var limitChoice = (cfg().match || {}).scoreLimitChoice;
+        var limitUsed = !!limitChoice && winUsed && !livesSpent;
+        show(byId('create-limit-row'), limitUsed);
+
+        var limitInput = byId('create-limit');
+        if (has(limitInput) && limitUsed) {
+            limitInput.min = String(int(limitChoice.min, 1));
+            limitInput.max = String(int(limitChoice.max, 1));
+            if (document.activeElement !== limitInput) {
+                limitInput.value = String(int(state.createLimit, 25));
+            }
+        }
+
+        var limitHint = byId('create-limit-hint');
+        if (has(limitHint)) {
+            limitHint.textContent = limitUsed
+                ? 'The first fighter to this many kills takes the round. '
+                  + int(limitChoice.min, 1) + ' to ' + int(limitChoice.max, 1) + '.'
+                : '';
+        }
+
+        var livesChoice = (cfg().match || {}).livesChoice;
         var livesUsed = !!livesChoice && !laddered && livesSpent;
         show(byId('create-lives-row'), livesUsed);
 
@@ -4676,6 +4711,15 @@
         state.createRound = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
     });
 
+    bind('create-limit', 'input', function (event) {
+        var band = (cfg().match || {}).scoreLimitChoice || {};
+        state.createLimit = clampInt(event.target.value, int(band.min, 1), int(band.max, 1));
+        /* Re-rendered because the sentence above the box quotes the number:
+           a hint that only catches up on the next server push reads as a
+           control that did nothing. */
+        render();
+    });
+
     bind('create-win', 'change', function (event) {
         state.createWin = keyOr(event.target.value, state.createWin);
         /* Re-rendered because the choice moves more than itself: picking a
@@ -4702,6 +4746,7 @@
                 lives: int(state.createLives, 1),
                 roundTimeSeconds: int(state.createRound, 0),
                 winCondition: keyOr(state.createWin, ''),
+                scoreLimit: int(state.createLimit, 0),
                 /* radarIsOn(), not state.createRadar: an untouched toggle is
                    null, and null on the wire means "leave it alone" -- which
                    is not what the host sees on a button reading Radar Off. */
@@ -4717,6 +4762,7 @@
             lives: int(state.createLives, 1),
             roundTimeSeconds: int(state.createRound, 0),
             winCondition: keyOr(state.createWin, ''),
+            scoreLimit: int(state.createLimit, 0),
             radar: radarIsOn(),
             /* The host joins their own match through the same door as
                everybody else, so their entry fee comes out of the account

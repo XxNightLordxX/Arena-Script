@@ -138,11 +138,20 @@ local env = Sandbox.newArenaEnv({
     server.fire = fire
 
     --- Opens a match with `count` fighters and starts it.
-    function server.play(count, teams)
+    --- @param count integer
+    --- @param teams boolean|nil
+    --- @param rules table|nil -- what the HOST picks in the creation menu:
+    ---        winCondition and scoreLimit. Passed through the real create
+    ---        event rather than written onto the match afterwards, so these
+    ---        tests walk the same validation a panel does.
+    function server.play(count, teams, rules)
+        rules = rules or {}
         fire('createMatch', 1, {
             arenaKey = 'trailerpark',
             modeKey = teams and 'tdm' or 'ffa',
             entryFee = 0, account = 'cash',
+            winCondition = rules.winCondition,
+            scoreLimit = rules.scoreLimit,
         })
         matchId = server.lobby.All()[1].id
         for src = 2, count do fire('joinMatch', src, { matchId = matchId, account = 'cash' }) end
@@ -1022,6 +1031,69 @@ t.test('and the board under the placement is in the same order as it', function(
     end
 
     t.equals(order[1], 1, 'the top row of the board is not the player placed first')
+end)
+
+-- ======================================================================
+-- THE HOST NAMES THE FINISH LINE
+-- ======================================================================
+
+t.test('a host can name the kill limit, and the round is played to theirs', function()
+    -- "on the win condition kill limit, ability to name the kill limit".
+    --
+    -- The number was the operator's alone: a host could pick the CONDITION
+    -- and not the line it finishes on, which is most of the decision.
+    local server = newServer(function(config)
+        config.Match.winCondition = { allowChoose = true, default = 'last_standing' }
+        config.Match.scoreLimit = { allowChoose = true, min = 1, max = 200, default = 25 }
+    end)
+    server.play(3, false, { winCondition = 'score_limit', scoreLimit = 2 })
+
+    server.kill(2, 1)
+    server.settle(3)
+    t.equals(server.endedWith(), nil, 'one kill against a limit of two ended the round')
+
+    server.kill(3, 1)
+    server.settle(3)
+    t.equals(server.endedWith(), 'match.ended_score_limit',
+        'the host\'s own limit of 2 was not what the round was played to')
+    t.equals(listed(server.winners()), '1', 'the fighter who reached it did not take it')
+end)
+
+t.test('and the server\'s own number is what a host who names none plays to', function()
+    local server = newServer(function(config)
+        config.Match.winCondition = { allowChoose = true, default = 'score_limit' }
+        config.Match.scoreLimit = { allowChoose = true, min = 1, max = 200, default = 3 }
+    end)
+    server.play(3)
+
+    server.kill(2, 1)
+    server.kill(3, 1)
+    server.settle(3)
+    t.equals(server.endedWith(), nil, 'two kills against the default of three ended the round')
+
+    server.kill(2, 1)
+    server.settle(3)
+    t.equals(server.endedWith(), 'match.ended_score_limit',
+        'the server\'s own default was not what the round was played to')
+end)
+
+t.test('and a limit outside the band is refused, so no match opens on it', function()
+    -- REFUSED, NOT CLAMPED. A host dropped into a round with a different
+    -- finish line from the one they set would have no way of knowing.
+    local server = newServer(function(config)
+        config.Match.winCondition = { allowChoose = true, default = 'last_standing' }
+        config.Match.scoreLimit = { allowChoose = true, min = 5, max = 50, default = 25 }
+    end)
+
+    -- nil for the round length, not 0: on a server that offers a range, 0 is
+    -- BELOW the floor and is refused on its own -- which would make this test
+    -- pass on the wrong refusal. nil is "the host left the box alone".
+    local ok, reason = server.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash', nil,
+        'score_limit', nil, 500)
+    t.isNil(ok, 'a limit over the ceiling opened a match anyway')
+    t.equals(reason, 'error.score_limit_out_of_range', 'and the host was not told why')
+
+    t.equals(#server.lobby.All(), 0, 'a refused create left a match behind')
 end)
 
 os.exit(t.summary())

@@ -126,11 +126,12 @@ function panelFor(modeKey, scoreboard) {
    tests at the bottom of this file: a list is "here is the kit", an empty
    list is "nothing at all, deliberately", and no field is "this mode has no
    opinion -- hand out whatever this server hands out". */
-function panelWithKit(kit) {
+function panelWithKit(kit, suppliesEnabled) {
     const panel = loadPanel(ROOT);
     const snap = snapshot('gungame', []);
     const mode = snap.config.modes.find((m) => m.key === 'gungame');
     if (kit === null) delete mode.startingKit; else mode.startingKit = kit;
+    if (suppliesEnabled !== undefined) snap.config.loadouts.supplies.enabled = suppliesEnabled;
     panel.send('open', snap);
     panel.send('state', snap);
     return panel;
@@ -325,6 +326,21 @@ test('and one that names an EMPTY kit still says exactly that', () => {
         'a mode that deliberately issues nothing should say so: ' + slots);
     assert.ok(!/by default/.test(slots),
         'and must not promise a fallback the server will not apply: ' + slots);
+});
+
+test('and on a server with supplies switched off, nobody is issued anything', () => {
+    /* The fallback the sentence above promises is the SERVER's own supply
+       defaults — and with Config.Loadouts.supplies.enabled off there are
+       none: Arena.GetEnabledSupplies answers an empty list, so the server's
+       fallback resolves to nothing and the fighter really does carry
+       nothing. Promising them a default kit there is the same lie in the
+       other direction. */
+    const slots = panelWithKit(null, false).text('loadout-slots');
+
+    assert.ok(!/by default/.test(slots),
+        'the screen promised a default kit a supplies-off server never issues: ' + slots);
+    assert.ok(/No supplies are issued in this mode/.test(slots),
+        'and should say plainly that nothing is carried: ' + slots);
 });
 
 console.log('');

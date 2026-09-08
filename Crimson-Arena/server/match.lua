@@ -1043,10 +1043,25 @@ end
 --- @param winners table|nil -- the srcs the round was decided for, so the
 ---        order agrees with the result instead of being worked out again
 local function assignFinalPlacements(match, winners)
-    local unplaced = {}
-    for _, player in pairs(match.players) do
-        if not player.placement then unplaced[#unplaced + 1] = player end
-    end
+    -- EVERYBODY, NOT ONLY THE SURVIVORS, and this used to skip anyone who
+    -- already carried a number.
+    --
+    -- That was fine while the only thing this decided was where the
+    -- survivors slotted in above the eliminated. It stopped being fine the
+    -- moment the winners had to sort first: a team win crowns the WHOLE side
+    -- -- membersOfTeam returns its corpses too -- and every one of those has
+    -- already been numbered from the bottom up by placementFor on the way
+    -- out. So the sort below could not reach exactly the players it exists
+    -- to lift. Measured on the shipped config: a last_standing 2v2 where
+    -- crimson's fighter 1 dies first and fighter 3 survives hands fighter 1
+    -- "You Won", "Crimson takes it" and "Placed #4", under two ash players
+    -- who lost at #2 and #3.
+    --
+    -- Renumbering the whole roster is what makes one scheme cover everybody;
+    -- ranking a subset against numbers another rule wrote is what produced
+    -- two schemes that could contradict each other.
+    local ordered = {}
+    for _, player in pairs(match.players) do ordered[#ordered + 1] = player end
 
     -- WHO ACTUALLY WON, FIRST, ahead of every score term below.
     --
@@ -1076,9 +1091,19 @@ local function assignFinalPlacements(match, winners)
     -- took two for nothing and was six tiers below them.
     local ladder = #ladderOf(match)
 
-    table.sort(unplaced, function(a, b)
+    table.sort(ordered, function(a, b)
         local aWon, bWon = won[a.src] == true, won[b.src] == true
         if aWon ~= bWon then return aWon end
+
+        -- HOW FAR THEY GOT, ahead of every score term below it. A fighter
+        -- still in the round when it stopped finished above one who was
+        -- eliminated, whatever their kills -- and among the eliminated the
+        -- bottom-up number placementFor already wrote IS the order they went
+        -- out in, so a LOWER stored number means they lasted LONGER.
+        local aOut, bOut = a.placement ~= nil, b.placement ~= nil
+        if aOut ~= bOut then return bOut end
+        if aOut and a.placement ~= b.placement then return a.placement < b.placement end
+
         if ladder > 0 then
             local aTier, bTier = tierScore(a), tierScore(b)
             if aTier ~= bTier then return aTier > bTier end
@@ -1090,7 +1115,7 @@ local function assignFinalPlacements(match, winners)
         return a.src < b.src
     end)
 
-    for index, player in ipairs(unplaced) do player.placement = index end
+    for index, player in ipairs(ordered) do player.placement = index end
 end
 
 --- The live scoreboard, sorted the way the panel renders it.
@@ -2508,6 +2533,28 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     local won, earned = {}, {}
     for _, id in ipairs(winners) do won[id] = true end
 
+    -- A SIDE, OR NOTHING, and `pick` is not always one.
+    --
+    -- `pick` answers "which side is this round settled against" -- the
+    -- question the spectator side-bets ask, and the right answer for them.
+    -- The results card asks a different one: "did a SIDE take this round".
+    -- A team mode running a ladder settles on one climber (decideOnLadder
+    -- crowns the fighter who topped it, not their team), and naming their
+    -- side here would tell their team-mates their side had won on the same
+    -- card that tells them they had not.
+    --
+    -- So the card's field is derived from `won`: a side is named only when
+    -- every one of its members is a winner.
+    local wonSide = pick
+    if wonSide ~= nil then
+        for _, src in ipairs(membersOfTeam(match, wonSide)) do
+            if not won[src] then
+                wonSide = nil
+                break
+            end
+        end
+    end
+
     -- WHAT THE SIDE-BET POOL PAID, folded in before the pot's own list --
     -- because on the shipped config the pot's own list is empty and this is
     -- the whole of it. Refunds are already excluded on the other side.
@@ -2577,7 +2624,7 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             -- The KEY, not a label: the panel has the team list on the wire
             -- already and draws it in the operator's own words and colour,
             -- the same rule the scoreboard rows follow.
-            winningTeam = teamMode and pick or nil,
+            winningTeam = teamMode and wonSide or nil,
             placement = player.placement,
             kills = math.max(0, Arena.ToInt(player.kills) or 0),
             deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
@@ -2621,7 +2668,7 @@ function ArenaMatch.End(matchId, reasonKey, winners)
                 -- fighter, only more so: this board is the whole of what
                 -- they are told, and "who won" is the one thing somebody
                 -- who just watched a round wants off it.
-                winningTeam = teamMode and pick or nil,
+                winningTeam = teamMode and wonSide or nil,
                 earnings = 0,
                 scoreboard = board,
             }

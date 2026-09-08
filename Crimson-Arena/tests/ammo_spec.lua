@@ -301,6 +301,21 @@ local function newServer(pockets, mutate, opts)
             table.sort(names)
             return table.concat(names, ',')
         end,
+        --- HOW MANY OF ONE ITEM A PLAYER HOLDS, ADDED UP ACROSS STACKS.
+        ---
+        --- `itemNamed` below answers the FIRST matching row, which is the
+        --- right shape for asking about a weapon's metadata and the wrong
+        --- one for asking how much ammunition somebody has: AddItem appends
+        --- a row rather than merging, so two issues of thirty rounds are two
+        --- rows of thirty and reading the first says thirty. A test that did
+        --- that measured a shortfall the resource had not applied.
+        countOf = function(src, name)
+            local total = 0
+            for _, item in ipairs(inv[src] or {}) do
+                if item.name == name then total = total + (tonumber(item.count) or 0) end
+            end
+            return total
+        end,
         --- One item as it actually sits in the inventory, metadata and all.
         --- `carrying` flattens to names, which is the right shape for asking
         --- WHAT somebody holds and useless for asking what state it is in --
@@ -1991,6 +2006,72 @@ t.test('but a weapon it DID issue is still taken back when the rounds fail', fun
     t.isTrue(s.carrying(1):find('WEAPON_TEST') == nil,
         ('a weapon the arena issued and could not load stayed in the fighter\'s hands: %s')
             :format(s.carrying(1)))
+end)
+
+t.test('two weapons taking the same round are two entitlements, not one', function()
+    -- THE SHORTFALL, AIMED AT THE WRONG CALLER. issueSpareRounds subtracts
+    -- what a player is already holding, so a tier climber who bounces one
+    -- boundary cannot collect another full batch each way. It runs on the
+    -- once-per-round issue path too -- and there a magazine rides in item
+    -- METADATA rather than as an ammo item, so the pockets start empty, the
+    -- first 9mm weapon's loose rounds land in them, and the SECOND 9mm
+    -- weapon reads them as rounds the player already had and hands over
+    -- nothing.
+    --
+    -- Silent, and paid for: the picker shows the full number, the entry fee
+    -- is charged against it, and nothing is logged. Fourteen shipped weapons
+    -- take ammo-9 and twelve take ammo-rifle, so any two-gun loadout of one
+    -- family trips it.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = {
+        { key = 'pistol', ammo = 60 },
+        { key = 'combatpistol', ammo = 60 },
+    } })
+    t.equals(#loadout.weapons, 2, 'the fixture did not resolve both sidearms')
+    t.equals(loadout.weapons[1].ammoTypeItem, loadout.weapons[2].ammoTypeItem,
+        'the two weapons do not share a round, so this test measures nothing')
+
+    s.ammo.Issue(1, 'm1', loadout)
+
+    --- Magazines plus loose items, which is what the player actually has.
+    local function carried(item)
+        local total = 0
+        for _, entry in ipairs(loadout.weapons) do
+            if entry.ammoTypeItem == item then
+                local weapon = s.itemNamed(1, entry.weapon)
+                total = total + ((weapon and weapon.metadata and weapon.metadata.ammo) or 0)
+            end
+        end
+        return total + s.countOf(1, item)
+    end
+
+    t.equals(carried(loadout.weapons[1].ammoTypeItem), 120,
+        ('two sidearms picked at 60 rounds each should carry 120, and carry %d')
+            :format(carried(loadout.weapons[1].ammoTypeItem)))
+end)
+
+t.test('and the farm the shortfall exists to close is still closed', function()
+    -- THE OTHER HALF, because a fix that just deleted the check would pass
+    -- the test above. ArenaAmmo.SwapWeapon issues one weapon on its own and
+    -- passes no pass-ledger, so it still measures against live inventory:
+    -- a climber who bounces a tier boundary without firing collects nothing
+    -- the second time.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'bat' } } })
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local entry = s.env.Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 60 } } }).weapons[1]
+    t.isNotNil(entry, 'the fixture could not resolve a tier weapon')
+
+    local seen = {}
+    for round = 1, 4 do
+        s.ammo.SwapWeapon(1, 'm1', round > 1 and entry.weapon or nil, entry)
+        seen[#seen + 1] = tostring(s.countOf(1, entry.ammoTypeItem))
+    end
+
+    t.equals(table.concat(seen, ','), '30,30,30,30',
+        ('four promotions onto the same weapon handed out %s loose rounds')
+            :format(table.concat(seen, ',')))
 end)
 
 os.exit(t.summary())

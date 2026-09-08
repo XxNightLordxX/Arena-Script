@@ -860,4 +860,80 @@ t.test('and a winner is never handed a placement below somebody who lost', funct
     end
 end)
 
+t.test('and an ELIMINATED member of the winning side is not left below the losers', function()
+    -- THE HALF THE FIRST FIX COULD NOT REACH. A team win crowns the whole
+    -- side, corpses included, and every corpse was numbered from the bottom
+    -- up by placementFor on the way out -- while the winners-first sort only
+    -- ever saw players who had NO number yet. So the one case the fix was
+    -- written for, an ordinary last_standing round, still produced
+    -- "You Won" + "Crimson takes it" + "Placed #4" under two losers.
+    --
+    -- lives = 1 and a last_standing finish, which is the shipped shape of
+    -- the mode rather than a contrived one.
+    local server = newServer(function(config) config.Match.lives = 1 end)
+    -- 1 and 3 are crimson, 2 and 4 are ash.
+    server.play(4, true)
+
+    server.kill(1, 2)   -- crimson's 1 out first
+    server.kill(2, 3)   -- ash's 2 out
+    server.kill(4, 3)   -- ash's 4 out; crimson left standing
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_last_standing',
+        'the fixture did not produce a last-one-standing finish')
+    t.equals(listed(server.winners()), '1,3', 'crimson should have taken it as a side')
+
+    local cards = {}
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        cards[src] = server.resultOf(src)
+        t.isTrue(cards[src] ~= nil, ('fighter %d was sent no results card'):format(src))
+    end
+
+    local worstWinner, bestLoser = nil, nil
+    for src, card in pairs(cards) do
+        if card.won == true then
+            if worstWinner == nil or card.placement > worstWinner then worstWinner = card.placement end
+        elseif bestLoser == nil or card.placement < bestLoser then
+            bestLoser = card.placement
+        end
+        t.isTrue(card.placement ~= nil, ('fighter %d was sent no placement'):format(src))
+    end
+
+    t.isTrue(worstWinner < bestLoser,
+        ('a winner was placed #%d, below a loser at #%d -- fighter 1 (eliminated first, on the '
+            .. 'winning side) is the one this is about'):format(worstWinner, bestLoser))
+
+    -- AND NO TWO PEOPLE SHARE A NUMBER. Renumbering only some of the roster
+    -- against numbers another rule wrote is how a board comes to have two
+    -- #2s, which reads as a bug to anybody looking at it.
+    local seen = {}
+    for src, card in pairs(cards) do
+        t.isNil(seen[card.placement],
+            ('fighters %s and %d were both placed #%d')
+                :format(tostring(seen[card.placement]), src, card.placement))
+        seen[card.placement] = src
+    end
+end)
+
+t.test('and the eliminated keep the order they went out in', function()
+    -- placementFor numbers from the bottom up as each player is eliminated,
+    -- so among the losers a LOWER stored number means they lasted LONGER --
+    -- and that ordering is real information the board should keep rather
+    -- than re-derive from kills.
+    local server = newServer(function(config) config.Match.lives = 1 end)
+    server.play(4, true)
+
+    server.kill(1, 2)
+    server.kill(2, 3)
+    server.kill(4, 3)
+    server.settle(3)
+
+    local out2 = server.resultOf(2).placement   -- ash, out second
+    local out4 = server.resultOf(4).placement   -- ash, out third (lasted longer)
+
+    t.isTrue(out4 < out2,
+        ('the fighter who lasted longer was placed #%d, below the one who went out before them at #%d')
+            :format(out4, out2))
+end)
+
 os.exit(t.summary())

@@ -59,11 +59,30 @@ function snapshot(options) {
         allowUnequal: true,
         maxTeamSizeDifference: 1,
         requireBothTeamsOccupied: true,
-        /* The roster rows. Only the Start-button tests below need them --
-           the team term that reads them is "who has not picked a side" --
-           so everything else leaves them empty, as it always has. */
-        players: [],
+        /* HOW MANY BODIES ARE IN THE LOBBY WITHOUT A SIDE. The roster rows
+           below are BUILT from the side counts plus this, so `teamCounts`
+           and `players` cannot disagree the way they would if each test
+           wrote both by hand -- and a lobby with unpicked players in it is
+           the case the Start gate was wrong about, so it has to be as easy
+           to write as any other. */
+        sideless: 0,
+        /* Pass a roster explicitly only to say something the counts cannot. */
+        players: null,
     }, options || {});
+
+    if (o.players === null) {
+        o.players = [];
+        [['crimson', o.crimson], ['ash', o.ash], ['ember', o.thirdTeam ? (o.ember || 0) : 0]]
+            .forEach(function (pair) {
+                for (var i = 0; i < pair[1]; i += 1) {
+                    o.players.push({ id: o.players.length + 1, team: pair[0] });
+                }
+            });
+        for (var j = 0; j < o.sideless; j += 1) {
+            o.players.push({ id: o.players.length + 1, team: false });
+        }
+    }
+    if (o.playerCount === undefined) o.playerCount = o.players.length;
 
     return {
         config: {
@@ -115,7 +134,7 @@ function snapshot(options) {
                up: a lobby where nobody has picked has bodies in it and zero
                on each side, and the minPlayers term reads this. */
             teams: true,
-            playerCount: o.playerCount === undefined ? o.crimson + o.ash : o.playerCount,
+            playerCount: o.playerCount,
             hostName: 'You',
             pot: 0, entryFee: 0,
             teamCounts: o.thirdTeam
@@ -363,15 +382,7 @@ test('and a player with no side on a server that will not pick for them', () => 
     /* The sharpest miss: the panel already reads autoAssignIfUnchosen and
        greys out READY UP for this exact rule, and Start was left out of the
        same pass. */
-    const start = startButton({
-        autoAssignIfUnchosen: false,
-        crimson: 1, ash: 1,
-        players: [
-            { id: 1, team: 'crimson' },
-            { id: 2, team: 'ash' },
-            { id: 3, team: false },
-        ],
-    });
+    const start = startButton({ autoAssignIfUnchosen: false, crimson: 1, ash: 1, sideless: 1 });
     assert.strictEqual(start.disabled, true, 'Start was lit with somebody still without a side');
     assert.ok(/without a side/i.test(String(start.title)),
         'and it did not say why: ' + start.title);
@@ -391,16 +402,7 @@ test('and an all-unpicked lobby the server WOULD split is not warned about', () 
        nobody having picked, assignMissingTeams splits the roster and Begin
        starts it -- while the picker printed "Both sides need at least one
        player before the round can start." */
-    const panel = opened({
-        autoAssignIfUnchosen: true,
-        crimson: 0, ash: 0,
-        playerCount: 2,
-        requireBothTeamsOccupied: false,
-        players: [
-            { id: 1, team: false },
-            { id: 2, team: false },
-        ],
-    });
+    const panel = opened({ autoAssignIfUnchosen: true, crimson: 0, ash: 0, sideless: 2 });
     assert.strictEqual(panel.node('btn-start').disabled, false,
         'Start was refused on a lobby the server would have split and started: '
             + panel.node('btn-start').title);
@@ -418,7 +420,6 @@ test('an EMPTY third side is not counted into how far apart the sides are', () =
         allowUnequal: false,
         maxTeamSizeDifference: 0,
         crimson: 2, ash: 2, ember: 0,
-        playerCount: 4,
     });
     assert.strictEqual(start.disabled, false,
         'a level 2v2 was refused because a third side was empty: ' + start.title);
@@ -428,6 +429,74 @@ test('and a server that does not require both sides occupied is not told to leve
     const start = startButton({ requireBothTeamsOccupied: false, crimson: 2, ash: 0 });
     assert.strictEqual(start.disabled, false,
         'Start was refused for a rule this server has switched off: ' + start.title);
+});
+
+test('THE REGRESSION: a lobby where nobody has picked is one the server SPLITS and starts', () => {
+    /* ArenaMatch.Begin runs assignMissingTeams BEFORE Arena.CanStartMatch, so
+       everybody who never touched the picker is dropped onto the smallest
+       side with room and the round starts. The first version of this gate
+       measured the roster as it STOOD, so on the shipped defaults it greyed
+       out Start on any team lobby holding one un-picked player — which is
+       precisely the lobby autoAssignIfUnchosen exists to allow.
+
+       This ran green for a while because the test below it switched
+       requireBothTeamsOccupied OFF in its own fixture, disabling the very
+       term that fires. Twelfth fixture lie in this project, and mine. */
+    const start = startButton({ crimson: 0, ash: 0, sideless: 2 });
+    assert.strictEqual(start.disabled, false,
+        'Start was dead on a lobby the server splits and starts: ' + start.title);
+});
+
+test('and one where a single player has not picked, on the shipped defaults', () => {
+    /* crimson 2, ash 0, one unpicked: the split puts them on ash, both sides
+       are occupied, and Begin returns ok. Measured pre-split it reads as one
+       empty side. */
+    const start = startButton({ crimson: 2, ash: 0, sideless: 1 });
+    assert.strictEqual(start.disabled, false,
+        'Start was dead on a 2v0 the split levels: ' + start.title);
+});
+
+test('and the spread is measured AFTER the split, not before it', () => {
+    /* 3v1 with one unpicked and an allowance of 1. Pre-split that is 1
+       against 3 and refused; the split puts the fifth on ash, making it 3v2,
+       which is within the allowance and which Begin starts. */
+    const start = startButton({
+        allowUnequal: false, maxTeamSizeDifference: 1,
+        crimson: 3, ash: 1, sideless: 1,
+    });
+    assert.strictEqual(start.disabled, false,
+        'Start was dead on a 3v1+1 the split turns into a legal 3v2: ' + start.title);
+});
+
+test('and a roster that only becomes uneven after the split is NOT offered', () => {
+    /* The other direction, which the same omission got wrong: 2v2 plus one
+       unpicked at an allowance of 0 is level right up until the split lands
+       the fifth player, and then it is 3v2 and Arena.TeamsAreStartable
+       refuses it. The old gate lit Start and the host got a toast. */
+    const start = startButton({
+        allowUnequal: false, maxTeamSizeDifference: 0,
+        crimson: 2, ash: 2, sideless: 1,
+    });
+    assert.strictEqual(start.disabled, true,
+        'Start was lit on a roster the split makes uneven');
+    assert.ok(/2 against 3|3 against 2/.test(String(start.title)),
+        'and it did not say what the sides become: ' + start.title);
+});
+
+test('and a one-team server is not refused a rule the server does not have', () => {
+    /* Arena.TeamsAreStartable refuses only `#teams == 0`. A server down to
+       one enabled side with requireBothTeamsOccupied off starts happily; the
+       gate was inventing "fewer than two sides" as a refusal of its own. */
+    const panel = loadPanel(ROOT);
+    const snap = snapshot({ requireBothTeamsOccupied: false, crimson: 2, ash: 0 });
+    snap.config.teams.list = [snap.config.teams.list[0]];
+    snap.matches[0].teamCounts = { crimson: 2 };
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.strictEqual(panel.node('btn-start').disabled, false,
+        'a one-team server was refused a start the server allows: '
+            + panel.node('btn-start').title);
 });
 
 console.log('');

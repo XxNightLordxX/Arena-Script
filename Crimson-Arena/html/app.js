@@ -1996,42 +1996,97 @@
 
         var teams = cfg().teams || {};
         var list = arrayOf(teams.list);
-        if (list.length < 2) return 'this server has fewer than two sides switched on.';
+        /* NONE, not "fewer than two". Arena.TeamsAreStartable refuses only
+           `#teams == 0`; a server down to one enabled side with
+           requireBothTeamsOccupied off starts perfectly happily, and
+           refusing it here was the panel inventing a rule. */
+        if (list.length === 0) return 'this server has no sides switched on.';
 
         var cap = int(teams.maxTeamSize, 0);
-        var occupied = 0;
-        var smallest = null;
-        var largest = null;
+        var counts = [];
+        var overCap = false;
         var freeSeats = 0;
 
-        /* OCCUPIED SIDES ONLY for the spread, which is what
-           Arena.TeamsAreStartable measures. Counting an empty third side as
-           a 0 would report every two-sided lobby on a three-team server as
-           wildly uneven. */
         list.forEach(function (team) {
             var count = teamCountOf(match, team.key);
-            if (count > 0) {
-                occupied += 1;
-                if (smallest === null || count < smallest) smallest = count;
-                if (largest === null || count > largest) largest = count;
+            counts.push(count);
+            if (cap > 0) {
+                if (count > cap) overCap = true;
+                freeSeats += Math.max(0, cap - count);
             }
-            if (cap > 0) freeSeats += Math.max(0, cap - count);
         });
 
         var sideless = arrayOf(match.players).filter(function (entry) {
             return !keyOr(entry && entry.team, null);
         }).length;
 
+        /* THE THREE TERMS THAT READ THE ROSTER AS IT STANDS, before the
+           split below -- each is about somebody the server would refuse to
+           place at all rather than about the sides they end up on. */
         if (teams.autoAssignIfUnchosen === false && sideless > 0) {
             return plural(sideless, 'player') + ' still without a side, and this server '
                 + 'will not pick one for them.';
         }
-        if (cap > 0 && largest !== null && largest > cap) {
+        if (overCap) {
             return 'a side is over its ' + plural(cap, 'player') + ' limit.';
         }
         if (cap > 0 && sideless > freeSeats) {
             return 'more players are without a side than the sides have seats left for them.';
         }
+
+        /* THE SPLIT THE SERVER MAKES FIRST, and leaving it out was the whole
+           of this function's first version being wrong.
+           ArenaMatch.Begin runs assignMissingTeams BEFORE Arena.CanStartMatch
+           -- everybody who never touched the picker is dropped onto the
+           smallest side with room -- and this measured the roster as it stood
+           instead. On the SHIPPED defaults that greyed out Start on any team
+           lobby holding one player who had not picked, which is exactly the
+           lobby autoAssignIfUnchosen exists to allow: a differential over
+           18,432 rosters found 907 lobbies the panel refused and the server
+           starts, and 225 it lit that the server refuses (rosters that only
+           become uneven once the split lands).
+
+           Arena.SuggestTeam's rule, in the same order: the smallest side that
+           still has room, one player at a time, so the next unplaced player
+           counts the last one. Its random tie-break is not modelled and does
+           not need to be -- tied sides carry equal counts, so whichever wins,
+           the multiset of counts is the same and occupancy and spread are all
+           that is read off it.
+
+           THE `cap` TERM AND THE `break` BELOW CANNOT CHANGE AN ANSWER, and
+           are here because SuggestTeam has them rather than because a roster
+           reaches them: the smallest side can only be AT the cap when every
+           side is, which means no free seats at all, and the free-seats term
+           above has already refused any roster with somebody left to place.
+           Removing them is not observable -- so nothing below asserts on
+           them, rather than a test being written that pretends to. */
+        if (teams.autoAssignIfUnchosen !== false) {
+            for (var placed = 0; placed < sideless; placed += 1) {
+                var pick = -1;
+                for (var i = 0; i < counts.length; i += 1) {
+                    if (cap > 0 && counts[i] >= cap) continue;
+                    if (pick === -1 || counts[i] < counts[pick]) pick = i;
+                }
+                if (pick === -1) break;
+                counts[pick] += 1;
+            }
+        }
+
+        /* OCCUPIED SIDES ONLY for the spread, which is what
+           Arena.TeamsAreStartable measures. Counting an empty third side as
+           a 0 would report every two-sided lobby on a three-team server as
+           wildly uneven. */
+        var occupied = 0;
+        var smallest = null;
+        var largest = null;
+        counts.forEach(function (count) {
+            if (count > 0) {
+                occupied += 1;
+                if (smallest === null || count < smallest) smallest = count;
+                if (largest === null || count > largest) largest = count;
+            }
+        });
+
         if (teams.requireBothTeamsOccupied !== false && occupied < 2) {
             return 'both sides need a body in them.';
         }
@@ -3113,8 +3168,14 @@
                screen say nobody is issued anything while the round handed
                out three items. */
             var issued = startingKitText(ladderMode);
-            var noOpinion = ladderMode.startingKit === undefined
-                || ladderMode.startingKit === null;
+            /* AND ONLY WHERE THIS SERVER DOES SUPPLIES AT ALL. With the
+               section switched off Arena.GetEnabledSupplies answers nothing,
+               so the server's own fallback resolves to an empty list and the
+               fighter really is issued nothing -- promising them the
+               defaults there is the same lie in the other direction. */
+            var noOpinion = (ladderMode.startingKit === undefined
+                    || ladderMode.startingKit === null)
+                && supplyConfig().enabled !== false;
             host.appendChild(makeEl('div', 'hint', issued !== ''
                 ? 'You are issued ' + issued + ' with it.'
                 : noOpinion

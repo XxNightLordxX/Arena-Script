@@ -385,7 +385,7 @@ local function snapshotConfig()
     local supplies = {
         enabled = supplyConfig.enabled == true,
         allowChoose = supplyConfig.allowChoose ~= false,
-        totalItems = math.max(0, Arena.ToInt(supplyConfig.totalItems) or 0),
+        totalItems = Arena.SupplyTotalCap(),
         items = {},
     }
     for _, entry in ipairs(Arena.GetEnabledSupplies()) do

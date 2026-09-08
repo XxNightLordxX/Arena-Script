@@ -2245,4 +2245,214 @@ t.test('and the operator is told when a mode names more than the ceiling allows'
         ('a ceiling of 0 raised a complaint: %s'):format(quiet))
 end)
 
+t.test('the kit ceiling is not spent on a supply the server cannot hand over', function()
+    -- A CATALOGUE ENTRY WITH NO `item` NAME is dropped by ArenaAmmo before
+    -- ox_inventory is asked for anything -- both siblings guard for it, and
+    -- Arena.StartingKitFor did not. So the ceiling was debited for a phantom
+    -- and the mode's real kit got what was left, which was nothing.
+    local s = newServer(function(config)
+        config.Loadouts.supplies.totalItems = 3
+        for _, entry in ipairs(config.Loadouts.supplies.items) do
+            if entry.key == 'armour' then entry.item = nil end
+        end
+        config.Modes.gungame.startingKit = {
+            { key = 'armour', count = 3 },
+            { key = 'bandage', count = 3 },
+        }
+    end)
+    s.play(3)
+
+    local bandage
+    for _, entry in ipairs(s.config.Loadouts.supplies.items) do
+        if entry.key == 'bandage' then bandage = entry.item end
+    end
+    assert(bandage, 'the fixture cannot find the bandage item')
+
+    t.equals(s.ox.count(1, bandage), 3,
+        'the whole ceiling was spent on a supply that is never handed over')
+end)
+
+t.test('a duplicated kit key is reported as last-wins, not as a shared ceiling', function()
+    -- THE TWO FIELDS DO NOT AGREE ABOUT WHAT A REPEAT COSTS, and one
+    -- sentence for both was wrong for one of them: payKillReward shares one
+    -- ceiling between the lines, while Arena.StartingKitFor keys the kit
+    -- first and walks the catalogue second, so the LAST line simply wins.
+    local kit = newServer(function(config)
+        config.Modes.gungame.startingKit = {
+            { key = 'bandage', count = 5 },
+            { key = 'bandage', count = 5 },
+        }
+    end)
+    local said = table.concat(kit.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(said:find('Only the last line counts', 1, true) ~= nil,
+        ('the kit complaint should say the earlier line is thrown away -- got: %s'):format(said))
+    t.isTrue(said:find('share that supply', 1, true) == nil,
+        ('and must not describe an addition the kit never does -- got: %s'):format(said))
+
+    -- AND THE REWARD KEEPS ITS OWN, TRUE, SENTENCE.
+    local reward = newServer(function(config)
+        config.Modes.gungame.killReward = {
+            { key = 'bandage', count = 5 },
+            { key = 'bandage', count = 5 },
+        }
+    end)
+    local paid = table.concat(reward.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(paid:find('share that supply', 1, true) ~= nil,
+        ('the reward complaint should say the lines share one ceiling -- got: %s'):format(paid))
+end)
+
+t.test('and the ceiling total counts a repeated key the way its own reader does', function()
+    -- Summing every line reported a kit of two 20-bandage entries as 40
+    -- against a ceiling of 30 while the server issues 20 -- a boot complaint
+    -- about a config that fits, which is the same cost as silence on one
+    -- that does not.
+    local s = newServer(function(config)
+        config.Loadouts.supplies.totalItems = 30
+        config.Modes.gungame.startingKit = {
+            { key = 'bandage', count = 20 },
+            { key = 'bandage', count = 20 },
+        }
+        config.Modes.gungame.killReward = {
+            { key = 'bandage', count = 20 },
+            { key = 'bandage', count = 20 },
+        }
+    end)
+    local said = table.concat(s.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(said:find('adds up to', 1, true) == nil,
+        ('neither list is over the ceiling and both were reported: %s'):format(said))
+
+    -- A LIST THAT REALLY IS OVER IT STILL FIRES, so the check above is not
+    -- measuring a validator that has stopped looking.
+    local over = newServer(function(config)
+        config.Loadouts.supplies.totalItems = 3
+        config.Modes.gungame.startingKit = {
+            { key = 'armour', count = 2 },
+            { key = 'bandage', count = 5 },
+        }
+    end)
+    local loud = table.concat(over.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(loud:find('adds up to 7 items', 1, true) ~= nil,
+        ('a genuinely over-ceiling kit was not reported: %s'):format(loud))
+    t.isTrue(loud:find('in catalogue order', 1, true) ~= nil,
+        ('and the kit is read in catalogue order, which the message should say: %s'):format(loud))
+end)
+
+t.test('and a kill reward that can never pay costs nothing against the ceiling', function()
+    -- `chance = 0` is the documented way to switch one reward line off, and
+    -- payKillReward's own roll refuses it -- so counting it at full value
+    -- complained about items nobody is ever handed.
+    local s = newServer(function(config)
+        config.Loadouts.supplies.totalItems = 3
+        -- THE KIT OUT OF THE WAY. The shipped one is six items and would
+        -- raise its own, correct, complaint against a ceiling of three --
+        -- which is a different sentence about a different field, and a test
+        -- that matched it would pass whatever the reward did.
+        config.Modes.gungame.startingKit = {}
+        config.Modes.gungame.killReward = {
+            { key = 'bandage', count = 3 },
+            { key = 'armour', count = 25, chance = 0 },
+        }
+    end)
+    local said = table.concat(s.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(said:find('killReward adds up to', 1, true) == nil,
+        ('a line at chance = 0 was counted against the ceiling: %s'):format(said))
+
+    -- AND A LINE THAT CAN PAY IS STILL COUNTED, so the guard above is not
+    -- simply switching the check off for the whole field.
+    local live = newServer(function(config)
+        config.Loadouts.supplies.totalItems = 3
+        config.Modes.gungame.startingKit = {}
+        config.Modes.gungame.killReward = {
+            { key = 'bandage', count = 3 },
+            { key = 'armour', count = 25, chance = 50 },
+        }
+    end)
+    local loud = table.concat(live.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(loud:find('killReward adds up to', 1, true) ~= nil,
+        ('a reward that really is over the ceiling was not reported: %s'):format(loud))
+    t.isTrue(loud:find('in the order the entries are written', 1, true) ~= nil,
+        ('and the reward is read in written order, which the message should say: %s'):format(loud))
+end)
+
+t.test('and the operator is told about a ceiling that is not one', function()
+    -- MATCHED ON THE SENTENCE'S OWN OPENING ("totalItems is"), because the
+    -- per-mode complaint one screen above says "over ... totalItems of" and
+    -- a looser match would pass on either.
+    for _, junk in ipairs({ -1, 'lots', true }) do
+        local s = newServer(function(config)
+            config.Loadouts.supplies.totalItems = junk
+        end)
+        local said = table.concat(s.arena.ValidateConfig() or {}, '\n')
+        t.isTrue(said:find('supplies.totalItems is', 1, true) ~= nil,
+            ('totalItems = %s raised no complaint: %s'):format(tostring(junk), said))
+        t.isTrue(said:find('NO ceiling', 1, true) ~= nil,
+            ('and did not say what it is really read as: %s'):format(said))
+    end
+
+    -- 0 IS A DELIBERATE CHOICE, not a typo, and nil is the shipped default.
+    for _, fine in ipairs({ 0, 50 }) do
+        local clean = newServer(function(config)
+            config.Loadouts.supplies.totalItems = fine
+        end)
+        local quiet = table.concat(clean.arena.ValidateConfig() or {}, '\n')
+        t.isTrue(quiet:find('supplies.totalItems is', 1, true) == nil,
+            ('totalItems = %d raised a complaint: %s'):format(fine, quiet))
+    end
+end)
+
+t.test('and about a supply nobody can ever be handed', function()
+    local s = newServer(function(config)
+        for _, entry in ipairs(config.Loadouts.supplies.items) do
+            if entry.key == 'armour' then entry.max = 0 end
+        end
+    end)
+    local said = table.concat(s.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(said:find('max of 0', 1, true) ~= nil,
+        ('a supply with a max of 0 raised no complaint: %s'):format(said))
+    t.isTrue(said:find('enabled = false', 1, true) ~= nil,
+        ('and was not told how to switch it off properly: %s'):format(said))
+
+    local clean = newServer()
+    local quiet = table.concat(clean.arena.ValidateConfig() or {}, '\n')
+    t.isTrue(quiet:find('max of 0', 1, true) == nil,
+        ('the shipped catalogue raised the complaint: %s'):format(quiet))
+end)
+
+t.test('a ladder round crowns a climber, not a side, so no side is named', function()
+    -- `winningPick` answers "which side is this round settled against" --
+    -- the question the spectator side-bets ask, and the right answer for
+    -- them. The results card asks a different one, and a team mode running a
+    -- ladder settles on ONE climber: naming their side on the card told
+    -- their team-mates their side had taken it, on the same card that tells
+    -- them they had not.
+    local s = newServer(function(config)
+        -- A LADDER MODE WITH SIDES, which is the shape the two answers come
+        -- apart in and which nothing else in this file builds.
+        config.Modes.gungame.teams = true
+    end)
+    s.play(4)
+    for src = 1, 4 do
+        s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+    end
+
+    -- ONE CLIMBER, ENDED ON THE CLOCK. decideOnLadder crowns the highest
+    -- tier when the round stops, which is one player -- fighter 3 is on
+    -- crimson with them and has climbed nothing.
+    s.trade(2, 1)
+    s.trade(4, 1)
+    s.match_().endsAt = os.time() - 1
+    s.settle(3)
+
+    local card = s.resultFor(1)
+    t.isTrue(card ~= nil, 'the climber was sent no results card at all')
+    t.isTrue(card.won == true, 'the highest climber should have taken the round')
+    t.isTrue(s.resultFor(3) ~= nil and s.resultFor(3).won ~= true,
+        'their team-mate climbed nothing and must not be a winner -- otherwise this proves nothing')
+
+    t.isNil(card.winningTeam,
+        'a ladder round crowned one climber and told their whole side they had won it')
+    t.isNil(s.resultFor(3).winningTeam,
+        'and told the team-mate who lost that their side had taken it')
+end)
+
 os.exit(t.summary())

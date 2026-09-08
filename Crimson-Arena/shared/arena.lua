@@ -893,12 +893,14 @@ end
 --- The most supply items of every kind together a player may carry in, or 0
 --- when the operator set no ceiling at all.
 ---
---- ONE READER, because three places need this number and two of them did not
---- have it. Arena.ResolveSupplies read `totalItems` inline and enforced it;
---- Arena.StartingKitFor and the gun game's kill reward never looked at it, so
---- a ceiling of three admitted a fifty-five-item kit and paid out past it
---- every kill. A setting two of its three consumers ignore is not a ceiling,
---- it is a suggestion the picker happens to honour.
+--- ONE READER, because five places need this number and four of them had
+--- their own answer or none. Arena.ResolveSupplies read `totalItems` inline
+--- and enforced it; Arena.StartingKitFor, the gun game's kill reward and the
+--- validator never looked at it at all, and server/lobby.lua's snapshot spelt
+--- the same clamp out a second time -- so a ceiling of three admitted a
+--- fifty-five-item kit and paid out past it every kill. A setting most of its
+--- consumers ignore is not a ceiling, it is a suggestion the picker happens
+--- to honour.
 ---
 --- 0 IS "NO CEILING" and is returned as 0 rather than as nil, because every
 --- caller has to ask "is there one" before subtracting anyway -- and a nil
@@ -991,7 +993,15 @@ function Arena.StartingKitFor(modeKey)
             -- any left" stops clamping the moment it runs out, and the
             -- supply after the one that spent it is unbounded.
             if capped and count > remaining then count = remaining end
-            if count > 0 then
+            -- AND ONLY FOR A SUPPLY THIS SERVER CAN ACTUALLY HAND OVER, the
+            -- same guard Arena.ResolveSupplies has three screens below and
+            -- payKillReward has on the server. A catalogue entry with no
+            -- `item` name is dropped by ArenaAmmo before ox_inventory is
+            -- asked for anything -- so debiting the ceiling for it spent the
+            -- whole allowance on a phantom and issued the mode's real kit
+            -- nothing. Measured: a ceiling of 3 against a kit naming a
+            -- nameless armour and 3 bandages issued zero bandages.
+            if count > 0 and Arena.IsKey(supply.item) then
                 if capped then remaining = remaining - count end
                 out[#out + 1] = {
                     key = supply.key,
@@ -3592,6 +3602,17 @@ function Arena.ValidateConfig()
         local maximum = Arena.SupplyMax(supply)
         local default = Arena.ClampInt(supply.default, 0, maximum) or 0
 
+        -- A SUPPLY NOBODY CAN EVER BE HANDED. Every clamp in the resource
+        -- runs against `max`, so a max of 0 means the picker, the mode kit
+        -- and the kill reward all resolve this entry to nothing -- and the
+        -- row is still drawn, with every chip on it reading None. It is
+        -- switched off in effect and switched on in the file, which is the
+        -- one state an operator cannot tell apart by reading either.
+        if maximum <= 0 then
+            complain(('Config.Loadouts.supplies.items["%s"] has a max of 0, so it can never be handed to anybody -- the picker still draws its row with every chip reading None. Give it a max, or switch the entry off with enabled = false.')
+                :format(tostring(supply.key)))
+        end
+
         -- THE PANEL'S OWN FALLBACK, not a separate rule: with no options at
         -- all the picker draws None and the maximum, so a default between
         -- them is just as unreachable as one missing from a written ladder.
@@ -3802,13 +3823,35 @@ function Arena.ValidateConfig()
         end
     end
 
+    -- A SUPPLY CEILING THAT IS NOT A CEILING. Arena.SupplyTotalCap floors it
+    -- at 0 and 0 means "no limit at all", so both of these read as the exact
+    -- opposite of what somebody reaching for a stricter number intended --
+    -- and the picker, the mode kit and the kill reward then hand out as much
+    -- as their own per-item maxima allow.
+    local ceilingRaw = ((Config.Loadouts or {}).supplies or {}).totalItems
+    local carryCeiling = Arena.ToInt(ceilingRaw)
+    if ceilingRaw ~= nil and carryCeiling == nil then
+        complain(('Config.Loadouts.supplies.totalItems is a %s, not a number -- it is read as 0, and 0 here means NO ceiling across all supplies together.')
+            :format(type(ceilingRaw)))
+    elseif carryCeiling ~= nil and carryCeiling < 0 then
+        complain(('Config.Loadouts.supplies.totalItems is %d. A negative ceiling is read as 0, and 0 here means NO ceiling across all supplies together -- write the number of items you want carried, or 0 to remove the limit deliberately.')
+            :format(carryCeiling))
+    end
+
     -- A NEGATIVE TEAM ALLOWANCE. Both readers clamp it to 0 now, so nothing
     -- breaks -- but 0 and -1 mean very different things to whoever typed it,
     -- and the operator who typed -1 almost certainly meant "no limit". Left
     -- unsaid they get "sides must be exactly equal" and never find out why.
     if Config.Teams.allowUnequal == false then
-        local allowance = Arena.ToInt(Config.Teams.maxTeamSizeDifference)
-        if allowance ~= nil and allowance < 0 then
+        local rawAllowance = Config.Teams.maxTeamSizeDifference
+        local allowance = Arena.ToInt(rawAllowance)
+        -- `nil` IS THE DOCUMENTED DEFAULT and falls back to 1 on purpose, so
+        -- only a value that was WRITTEN and cannot be read is worth saying
+        -- anything about.
+        if rawAllowance ~= nil and allowance == nil then
+            complain(('Config.Teams.maxTeamSizeDifference is a %s, not a number -- it has fallen back to 1, so the sides may differ by one however wide or narrow you meant it to be.')
+                :format(type(rawAllowance)))
+        elseif allowance ~= nil and allowance < 0 then
             complain(('Config.Teams.maxTeamSizeDifference is %d. A negative allowance is read as 0 -- sides must be exactly equal. For no limit at all, set Config.Teams.allowUnequal = true.')
                 :format(allowance))
         end
@@ -3946,7 +3989,12 @@ function Arena.ValidateConfig()
                             -- different ones at their own maxima, and be told
                             -- nothing while the server quietly handed over a
                             -- fraction of it.
-                            local seen, total = {}, 0
+                            -- `seen` HOLDS HOW MUCH EACH KEY HAS COUNTED,
+                            -- and `named` merely that it appeared -- because
+                            -- a first line can legitimately count zero (a
+                            -- kill reward at `chance = 0`) and "0 is falsy"
+                            -- is not a language this file gets to rely on.
+                            local seen, named, total = {}, {}, 0
 
                             for index, reward in ipairs(list) do
                                 if type(reward) ~= 'table' then
@@ -3967,12 +4015,61 @@ function Arena.ValidateConfig()
                                                 :format(mode.key, field, count, tostring(reward.key), Arena.SupplyMax(supply)))
                                         end
 
-                                        if seen[supply.key] then
-                                            complain(('Config.Modes["%s"].%s names the supply "%s" more than once. The two lines share that supply\'s max of %d rather than getting one each -- write the amount you want on a single line.')
-                                                :format(mode.key, field, supply.key, Arena.SupplyMax(supply)))
+                                        -- WHAT A REPEATED KEY REALLY COSTS,
+                                        -- and it is not the same in the two
+                                        -- fields this loop validates.
+                                        -- payKillReward shares one ceiling
+                                        -- between the lines; Arena.StartingKitFor
+                                        -- keys the kit first and walks the
+                                        -- catalogue second, so the LAST line
+                                        -- naming a supply is simply the one
+                                        -- that survives. Saying "they share
+                                        -- the max" of a kit sends an operator
+                                        -- looking for an addition that never
+                                        -- happened.
+                                        local capped = math.max(0, math.min(count or 0, Arena.SupplyMax(supply)))
+                                        if named[supply.key] then
+                                            if field == 'killReward' then
+                                                complain(('Config.Modes["%s"].%s names the supply "%s" more than once. The lines share that supply\'s max of %d rather than getting one each -- write the amount you want on a single line.')
+                                                    :format(mode.key, field, supply.key, Arena.SupplyMax(supply)))
+                                            else
+                                                complain(('Config.Modes["%s"].%s names the supply "%s" more than once. Only the last line counts -- the earlier ones are read and thrown away, so write the amount you want on a single line.')
+                                                    :format(mode.key, field, supply.key))
+                                            end
                                         end
-                                        seen[supply.key] = true
-                                        total = total + math.max(0, math.min(count or 0, Arena.SupplyMax(supply)))
+                                        named[supply.key] = true
+
+                                        -- COUNTED THE WAY THE FIELD'S OWN
+                                        -- READER COUNTS IT. Summing every
+                                        -- line reported a kit of
+                                        -- {bandage 20, bandage 20} as 40
+                                        -- against a ceiling of 30 while the
+                                        -- server issued 20 -- a boot
+                                        -- complaint about a config that
+                                        -- fits.
+                                        --
+                                        -- A LINE THAT CAN NEVER PAY COSTS
+                                        -- NOTHING either: `chance = 0` is the
+                                        -- documented way to switch one kill
+                                        -- reward off and `rolled` refuses it.
+                                        -- killReward alone reads `chance` --
+                                        -- a kit entry carrying one is issued
+                                        -- regardless, and skipping it here
+                                        -- would hide a kit that really is
+                                        -- over the ceiling.
+                                        if field == 'killReward' then
+                                            local pays = reward.chance == nil
+                                                or (Arena.ToInt(reward.chance) or 0) > 0
+                                            if pays then
+                                                local room = math.max(0, Arena.SupplyMax(supply) - (seen[supply.key] or 0))
+                                                local paid = math.min(capped, room)
+                                                seen[supply.key] = (seen[supply.key] or 0) + paid
+                                                total = total + paid
+                                            end
+                                        else
+                                            total = total - (seen[supply.key] or 0) + capped
+                                            seen[supply.key] = capped
+                                        end
                                     end
 
                                     -- A CHANCE THAT WILL NOT PARSE IS NOT
@@ -3987,8 +4084,16 @@ function Arena.ValidateConfig()
 
                             local ceiling = Arena.SupplyTotalCap()
                             if ceiling > 0 and total > ceiling then
-                                complain(('Config.Modes["%s"].%s adds up to %d items, over Config.Loadouts.supplies.totalItems of %d -- everything past the ceiling is dropped, in catalogue order.')
-                                    :format(mode.key, field, total, ceiling))
+                                -- WHICH ENTRIES SURVIVE, and the two fields
+                                -- answer differently: the kit is read in
+                                -- catalogue order and the reward in the order
+                                -- the lines are written, so one sentence for
+                                -- both was wrong for one of them.
+                                complain(('Config.Modes["%s"].%s adds up to %d items, over Config.Loadouts.supplies.totalItems of %d -- everything past the ceiling is dropped, %s.')
+                                    :format(mode.key, field, total, ceiling,
+                                        field == 'killReward'
+                                            and 'in the order the entries are written'
+                                            or 'in catalogue order'))
                             end
                         end
                     end

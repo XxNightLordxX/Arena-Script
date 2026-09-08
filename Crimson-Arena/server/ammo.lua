@@ -711,9 +711,13 @@ end
 --- @param src number
 --- @param matchId string
 --- @param entry table -- one Arena.ResolveLoadout weapon entry
+--- @param pass table|nil -- what THIS issue pass has already handed over, as
+---        item -> count. ArenaAmmo.Issue walks a whole loadout and passes one
+---        table through the lot; ArenaAmmo.SwapWeapon issues one weapon and
+---        passes nothing.
 --- @return boolean ok -- false only when ox_inventory refused the rounds
 --- @return integer count -- items actually handed over
-local function issueSpareRounds(ox, src, matchId, entry)
+local function issueSpareRounds(ox, src, matchId, entry, pass)
     local item = entry.ammoTypeItem
     -- THE REMAINDER, not the whole pick. The magazine already carries the
     -- rest of it; issuing the full amount here as well is what doubled
@@ -738,6 +742,24 @@ local function issueSpareRounds(ox, src, matchId, entry)
     local counted, answer = pcall(function() return ox:GetItemCount(src, item) end)
     if counted then
         local held = math.max(0, Arena.ToInt(answer) or 0)
+
+        -- MINUS WHAT THIS PASS HAS ALREADY HANDED OVER, and leaving that out
+        -- was the shortfall taking rounds off a loadout nobody had farmed.
+        --
+        -- A magazine rides in item METADATA, not as an ammo item, so a
+        -- player walks in holding 0 of everything -- and then the first 9mm
+        -- weapon's own spare rounds land in the pockets and the SECOND 9mm
+        -- weapon reads them as rounds the player already had. Measured: four
+        -- sidearms, three of them 9mm, at the shipped 500-round ceiling --
+        -- 1500 rounds picked and paid for, 560 carried. Silent: the picker
+        -- shows the full number and nothing is logged.
+        --
+        -- The farm this check exists to close is a SwapWeapon phenomenon --
+        -- climb, step off a roof, climb again, collect another batch each
+        -- way -- and SwapWeapon issues one weapon and passes no table, so it
+        -- still measures against live inventory and is still closed.
+        held = math.max(0, held - (Arena.ToInt(pass and pass[item]) or 0))
+
         count = count - held
         if count <= 0 then return true, 0 end
     end
@@ -766,6 +788,10 @@ local function issueSpareRounds(ox, src, matchId, entry)
     local byName = issuedAmmo[matchId][src] or {}
     issuedAmmo[matchId][src] = byName
     byName[item] = (byName[item] or 0) + count
+
+    -- GUARDED, because SwapWeapon has no pass table and indexing nil throws
+    -- out of the middle of a tier promotion.
+    if pass then pass[item] = (pass[item] or 0) + count end
 
     issued[matchId] = issued[matchId] or {}
     issued[matchId][src] = (issued[matchId][src] or 0) + count
@@ -1345,10 +1371,16 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     -- also adding to `issued`, doing both would count every round twice --
     -- and ArenaAmmo.OnLoan, which is what tells an operator what the arena
     -- still owes, would have reported double.
+    -- WHAT THIS PASS HAS HANDED OVER, threaded through the whole loadout.
+    -- Two weapons taking the same round are two entitlements, not one, and
+    -- without this the second read the first one's rounds as the player's
+    -- own and handed over nothing.
+    local pass = {}
+
     for _, entry in ipairs(loadout.weapons or {}) do
         -- ONE ISSUER, TWO CALLERS. The tier swap hands out the same rounds
         -- through the same function, so neither can drift from the other.
-        local handed = issueSpareRounds(ox, src, matchId, entry)
+        local handed = issueSpareRounds(ox, src, matchId, entry, pass)
         if not handed then failed[#failed + 1] = entry.key or entry.weapon end
     end
 

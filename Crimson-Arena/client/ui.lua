@@ -416,6 +416,17 @@ register('adminRevive', function(data)
     TriggerServerEvent('crimson_arena:server:adminRevive', { target = data.target })
 end)
 
+register('adminHours', function(data)
+    TriggerServerEvent('crimson_arena:server:adminHours', {
+        -- Passed through as it arrives rather than narrowed here: the
+        -- server reads exactly two words and treats everything else as
+        -- "follow the schedule", so narrowing it twice would only give the
+        -- two ends a chance to disagree about what a third value means.
+        forced = data.forced,
+        matchId = data.matchId,
+    })
+end)
+
 register('adminReturn', function(data)
     TriggerServerEvent('crimson_arena:server:adminReturn', {
         -- ALL THREE. `target` is a live source and is what hands items over

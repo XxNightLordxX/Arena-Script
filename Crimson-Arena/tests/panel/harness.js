@@ -47,6 +47,27 @@ function makeNode(id) {
             remove(n) { this._set.delete(n); },
             contains(n) { return this._set.has(n); },
         },
+        /*
+         * THE SAME CLASSES classList REPORTS, which they were not.
+         *
+         * app.js dresses everything it BUILDS by assigning className -- one
+         * string, often several classes -- while it toggles state through
+         * classList. Here those were two unrelated properties: a card the
+         * panel had just labelled `admin-owed-give` answered false to
+         * classList.contains('admin-owed-give'), so no test could find an
+         * element by the class it visibly has, and any that tried passed or
+         * failed for a reason unrelated to the panel.
+         *
+         * Backed by the same set, the way a real element is. `hidden` toggled
+         * through classList therefore shows up in className too, which is
+         * also what a real element does.
+         */
+        get className() { return Array.from(this.classList._set).join(' '); },
+        set className(value) {
+            this.classList._set = new Set(
+                String(value).split(/\s+/).filter(Boolean),
+            );
+        },
         style: {},
         get firstChild() { return this.children.length ? this.children[0] : null; },
         addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },

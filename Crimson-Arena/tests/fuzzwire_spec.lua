@@ -437,7 +437,7 @@ t.test('the surface this file fuzzes is the whole surface, not just net events',
         counts[point.kind] = counts[point.kind] + 1
     end
 
-    t.equals(counts.net, 21, 'the number of client events changed -- update this file with it')
+    t.equals(counts.net, 22, 'the number of client events changed -- update this file with it')
     t.isTrue(counts.callback >= 1, 'the ox_lib callback surface vanished')
     t.isTrue(counts.handler >= 8,
         ('only %d AddEventHandler entry points found'):format(counts.handler))
@@ -456,6 +456,10 @@ t.test('the surface this file fuzzes is the whole surface, not just net events',
         -- command that draws the screen.
         'crimson_arena:server:adminState', 'crimson_arena:server:adminStop',
         'crimson_arena:server:adminRevive', 'crimson_arena:server:adminReturn',
+        -- The doors. It decides whether anybody at all may start or join a
+        -- round, which makes it the one admin event whose abuse is felt by
+        -- every player on the server at once.
+        'crimson_arena:server:adminHours',
     }) do
         t.isTrue(byName[required] == true, ('%s is no longer being fuzzed'):format(required))
     end

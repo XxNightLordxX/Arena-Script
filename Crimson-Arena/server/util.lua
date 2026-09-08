@@ -382,6 +382,44 @@ function ArenaHoursNow()
     return math.floor(minutes / 60), minutes % 60
 end
 
+--- An admin's standing decision about the doors, overriding the schedule.
+---
+--- THREE STATES, NOT TWO: 'open' holds them open past the schedule, 'shut'
+--- closes them inside it, and nil hands the question back to the clock. Nil
+--- is not a third kind of shut -- it is the absence of a decision, which is
+--- why it is nil rather than a string.
+---
+--- IN MEMORY AND DELIBERATELY SO. It is a decision about tonight, not a
+--- setting: a restart puts the schedule back in charge, which is the safe
+--- direction to be wrong in. An override forgotten about is an arena that
+--- quietly never opens -- or never shuts -- with nothing on any screen to
+--- say why, and a restart is the one thing certain to be tried.
+--- @type string|nil
+local hoursOverride = nil
+
+--- Sets, or clears, the standing decision.
+---
+--- ONE SWITCH, READ IN ONE PLACE. Everything that asks whether the arena is
+--- open goes through ArenaHoursOpen below -- creating a match, joining one,
+--- the sweep that shuts the waiting lobbies when the doors close, the NPC,
+--- the marker and the panel's own line -- so this cannot be honoured by some
+--- of them and not others.
+---
+--- ANYTHING THAT IS NOT 'open' OR 'shut' CLEARS IT. A typo must hand the
+--- arena back to its schedule rather than invent a fourth state that nothing
+--- downstream knows how to read.
+--- @param mode any -- 'open', 'shut', or anything else to follow the schedule
+--- @return string|nil state
+function ArenaSetHoursOverride(mode)
+    hoursOverride = (mode == 'open' or mode == 'shut') and mode or nil
+    return hoursOverride
+end
+
+--- @return string|nil -- 'open', 'shut', or nil for the schedule
+function ArenaHoursOverride()
+    return hoursOverride
+end
+
 --- Whether the doors are open right now.
 ---
 --- FAILS OPEN, ALWAYS. Every path that cannot produce a schedule -- no
@@ -391,6 +429,20 @@ end
 --- an arena wrongly open is a round somebody got to fight.
 --- @return boolean
 function ArenaHoursOpen()
+    -- AN ADMIN'S DECISION BEATS THE CLOCK, and is asked first so the schedule
+    -- is not even consulted. That ordering matters for the sweep in
+    -- server/match.lua: it shuts every waiting lobby the moment this turns
+    -- false, and an override read second would let a window closing mid-round
+    -- tear down the lobbies an admin had just opened the doors for.
+    --
+    -- 'shut' DOES NOT END A ROUND ALREADY BEING FOUGHT. That is not a promise
+    -- made here -- it is the sweep's, which only ever tears down lobbies --
+    -- but it is the reason this is safe to point in both directions: closing
+    -- the arena stops people coming IN, and the fight already happening is
+    -- fought to the end.
+    if hoursOverride == 'open' then return true end
+    if hoursOverride == 'shut' then return false end
+
     local status = Arena.ScheduleStatus(ArenaHoursNow())
 
     -- SHUT ONLY ON AN EXPLICIT `false`, and written that way on purpose.
@@ -419,6 +471,21 @@ function ArenaHoursSnapshot()
     local line = Arena.ScheduleLine()
 
     local block = { open = status.open == true, now = Arena.ClockText(hour * 60 + minute) }
+
+    -- THE SAME ANSWER THE SERVER IS ACTING ON. This block is what the panel,
+    -- the lobby NPC and the ground marker are all drawn from, so an override
+    -- the server honours and this does not is an arena letting people in
+    -- through a door every screen calls locked -- or turning them away from
+    -- one every screen calls open.
+    --
+    -- `line` is kept rather than dropped: the ordinary hours are still worth
+    -- telling somebody, and `forced` is what says they are not being kept
+    -- right now.
+    if hoursOverride ~= nil then
+        block.open = hoursOverride == 'open'
+        block.forced = hoursOverride
+    end
+
     if line then block.line = line end
     if status.opensAt then block.opensAt = Arena.ClockText(status.opensAt) end
     if status.closesAt then block.closesAt = Arena.ClockText(status.closesAt) end
@@ -444,6 +511,11 @@ function ArenaHoursState()
         arenaClock = Arena.ClockText(hour * 60 + minute),
         line = Arena.ScheduleLine(),
         open = ArenaHoursOpen(),
+        -- SAID APART FROM `open`, for the reason the whole of this function
+        -- keeps its facts apart: an operator reading "open" at four in the
+        -- morning needs to know whether that is the schedule or somebody's
+        -- decision.
+        forced = hoursOverride,
         snapshot = ArenaHoursSnapshot(),
     }
 end

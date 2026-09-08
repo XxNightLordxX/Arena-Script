@@ -347,12 +347,14 @@ files['server/'] = {
         -- The opening-hours clock. server/util.lua is the one place the
         -- clock is read, and it reads the SERVER's -- os.date and nothing
         -- else -- so no native and no state bag is declared for it here.
+        'ArenaHoursOverride',
         'ArenaHoursNow',
         'ArenaHoursOpen',
         'ArenaHoursSnapshot',
         'ArenaHoursState',
         'ArenaIsAdmin',
         'ArenaLog',
+        'ArenaSetHoursOverride',
         'ArenaNewId',
         'ArenaNotify',
         'ArenaNotifyKey',

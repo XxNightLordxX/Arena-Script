@@ -4607,6 +4607,25 @@
         owed: [],
         stashesFound: 0,
         stashesRead: 0,
+        /* Whether the arena is letting anybody in right now, and whether that
+           is the schedule's doing or an admin's. Two facts rather than one:
+           "open" at four in the morning means something different depending
+           on which of them said so.
+
+           `hoursForced` is 'open', 'shut', or null for the schedule -- null
+           being the ABSENCE of a decision rather than a third kind of shut. */
+        hoursOpen: true,
+        hoursForced: null,
+        /* Which of the tablet's two subjects is on screen: 'matches' or
+           'stashes'. Each tab has its own depth below it -- a match and then
+           a fighter, or a stash -- and those are screens WITHIN a tab rather
+           than tabs of their own. */
+        tab: 'matches',
+        /* The stash the Stashes tab has open, by citizen id, or null for the
+           list. An ID rather than the row itself, for the same reason
+           admin.player is: a refresh redraws it from the new snapshot instead
+           of showing a stash frozen at the moment it was clicked. */
+        stash: null,
     };
 
     function adminRefresh() {
@@ -4629,17 +4648,73 @@
         show(root, admin.open);
         if (!admin.open) return;
 
-        var row = adminPlayerRow();
+        var onStashes = admin.tab === 'stashes';
+
+        /* The stash admin.stash names, out of the CURRENT snapshot -- so a
+           stash that has since been handed back falls out to the list rather
+           than leaving an admin looking at a manifest of nothing. */
+        var stash = null;
+        if (onStashes && admin.stash !== null) {
+            arrayOf(admin.owed).forEach(function (entry) {
+                if (String(entry.citizenid) === String(admin.stash)) stash = entry;
+            });
+        }
+
+        var row = onStashes ? null : adminPlayerRow();
         /* A fighter who has left the match while their card was open falls
            back to the match, and a match that has ended falls back to the
            list -- rather than leaving an admin looking at a screen about
            somebody who is no longer there. */
         var onPlayer = row !== null;
-        var onMatch = !onPlayer && admin.focused !== null;
+        var onMatch = !onStashes && !onPlayer && admin.focused !== null;
+        var onStash = stash !== null;
 
-        show(byId('admin-list'), !onPlayer && !onMatch);
+        show(byId('admin-list'), !onStashes && !onPlayer && !onMatch);
         show(byId('admin-detail'), onMatch);
         show(byId('admin-player'), onPlayer);
+        show(byId('admin-stashes'), onStashes && !onStash);
+        show(byId('admin-stash-detail'), onStash);
+
+        /* WHICH TAB IS LIT. The screens below each list are a depth within
+           their tab, not tabs of their own, so the tab stays lit while an
+           admin is two screens down inside it. */
+        var matchesTab = byId('admin-tab-matches');
+        var stashesTab = byId('admin-tab-stashes');
+        if (has(matchesTab)) matchesTab.classList.toggle('active', !onStashes);
+        if (has(stashesTab)) stashesTab.classList.toggle('active', onStashes);
+
+        /* ---- the doors ---- */
+        var doorState = byId('admin-doors-state');
+        if (has(doorState)) {
+            /* WHAT IS TRUE, AND WHO DECIDED IT. "Open" is two different facts
+               -- the schedule says so, or somebody did -- and an operator who
+               cannot tell them apart cannot tell what pressing anything here
+               will do. */
+            doorState.textContent = admin.hoursForced === 'open'
+                ? 'Held OPEN past the schedule. Anyone can start or join a match.'
+                : (admin.hoursForced === 'shut'
+                    ? 'CLOSED by an admin. Rounds already being fought are '
+                      + 'finishing; nobody new can come in.'
+                    : (admin.hoursOpen
+                        ? 'Open, on the schedule.'
+                        : 'Shut, on the schedule — nobody can start or join a match.'));
+        }
+
+        /* THE ONE IN FORCE IS LIT and cannot be pressed again. A button that
+           re-asks for the state the arena is already in is a button whose
+           only possible effect is a wasted round trip. */
+        var doorButtons = [
+            { id: 'admin-doors-schedule', mode: null },
+            { id: 'admin-doors-open', mode: 'open' },
+            { id: 'admin-doors-shut', mode: 'shut' },
+        ];
+        doorButtons.forEach(function (entry) {
+            var node = byId(entry.id);
+            if (!has(node)) return;
+            var current = admin.hoursForced === entry.mode;
+            node.classList.toggle('active', current);
+            node.disabled = current;
+        });
 
         /* ---- the list ---- */
         var list = byId('admin-matches');
@@ -4647,7 +4722,6 @@
             clear(list);
             arrayOf(admin.matches).forEach(function (match) {
                 var card = makeEl('button', 'admin-match');
-                    card.type = 'button';
                 card.type = 'button';
                 card.appendChild(makeEl('span', 'admin-match-name',
                     String(match.label || match.id)));
@@ -4666,16 +4740,61 @@
         }
         show(byId('admin-empty'), arrayOf(admin.matches).length === 0);
 
-        /* ---- what never made it back ----
-           Drawn on the LIST screen, because it is a fact about the server
-           rather than about any one match: the people on it are usually not
-           in a round at all, which is exactly why the sweep cannot finish
-           for them. */
+        /* ---- the stashes tab ---- */
         var owed = arrayOf(admin.owed);
-        show(byId('admin-owed-row'), !onPlayer && !onMatch && owed.length > 0);
 
-        var owedLine = byId('admin-owed-line');
-        if (has(owedLine)) {
+        /* THE ONE BUTTON, BUILT ONCE, because the row and the opened stash
+           carry the same one and they must not drift. There is no live
+           inventory to put items into for somebody who is not on the server,
+           so for them the server QUEUES the return instead -- which is not a
+           consolation prize: the retry only ever tries the people it has on
+           its list, and a stash found by name after a restart is on nobody's
+           list at all. Queuing is what puts it back on one. */
+        function returnButton(entry, className) {
+            var online = int(entry.src, 0);
+            var items = arrayOf(entry.items);
+            var give = makeEl('button', className,
+                online > 0 ? 'Hand it back' : 'Queue for when they return');
+            give.type = 'button';
+            /* The only thing that makes this button pointless is an empty
+               stash. Being offline does not. */
+            give.disabled = items.length === 0;
+            give.addEventListener('click', function (event) {
+                /* The row itself opens the stash, and this button sits inside
+                   it: without this, sending somebody their things also walked
+                   the admin one screen deeper for no reason. */
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                post('adminReturn', {
+                    target: online,
+                    citizenid: entry.citizenid,
+                    stash: entry.stash,
+                });
+            });
+            return give;
+        }
+
+        /* What one stash holds, as a line a person reads. */
+        function stashSummary(entry) {
+            var items = arrayOf(entry.items);
+            if (items.length === 0) {
+                /* AN EMPTY STASH ON THIS LIST IS ITS OWN ANSWER: something is
+                   recorded as being in there and the stash reads empty, which
+                   is the shape of the bug that lost people their belongings.
+                   Said plainly rather than drawn as a blank row. */
+                return 'the stash reads EMPTY — nothing to hand over';
+            }
+            var total = 0;
+            items.forEach(function (item) { total += int(item.count, 0); });
+            return plural(items.length, 'kind') + ' of thing, ' + plural(total, 'item') + ' in all';
+        }
+
+        /* AN EMPTY TAB SAYS SO. It is a whole screen rather than a section
+           that could be left out of another one, and a blank screen reads as
+           a screen that failed to load. */
+        show(byId('admin-stash-empty'), onStashes && !onStash && owed.length === 0);
+
+        var stashLine = byId('admin-stash-line');
+        if (has(stashLine)) {
             /* HOW MANY WERE OPENED, out of how many exist. Four stashes with
                things in them means something different depending on whether
                that is all of them or the first sixty of nine hundred, and an
@@ -4684,60 +4803,89 @@
             var read = int(admin.stashesRead, 0);
             var unread = Math.max(0, found - read);
 
-            owedLine.textContent = owed.length === 0 ? ''
-                : plural(owed.length, 'stash') + ' still holding somebody\'s belongings. '
-                  + 'The server retries on its own for anyone who is online; '
-                  + 'this is for the ones who are not.'
+            /* HOW MANY OF THEM NOBODY CAN BE HANDED, which is the number an
+               operator came here for. A stash whose owner is in a live round
+               is the arena doing its job; one whose owner is not on the
+               server is somebody who cannot get their things back without
+               this screen. */
+            var away = 0;
+            owed.forEach(function (entry) {
+                if (int(entry.src, 0) <= 0) away += 1;
+            });
+
+            stashLine.textContent = owed.length === 0 ? ''
+                : plural(owed.length, 'stash') + ' holding somebody\'s belongings'
+                  + (away > 0
+                      ? ', ' + away + ' of them for somebody who is not on the server.'
+                      : '. Everyone they belong to is here.')
                   + (unread > 0
                       ? ' ' + plural(unread, 'older stash', 'older stashes')
                         + ' were not opened this time — the newest ' + read + ' were.'
                       : '');
         }
 
-        var owedBox = byId('admin-owed');
-        if (has(owedBox)) {
-            clear(owedBox);
+        var stashBox = byId('admin-stash-list');
+        if (has(stashBox)) {
+            clear(stashBox);
             owed.forEach(function (entry) {
-                var card = makeEl('div', 'admin-owed-entry');
-                card.appendChild(makeEl('span', 'admin-owed-who', String(entry.citizenid)));
+                var card = makeEl('div', 'admin-stash-row');
 
-                var items = arrayOf(entry.items);
-                card.appendChild(makeEl('span', 'admin-owed-what',
-                    items.length === 0
-                        /* AN EMPTY STASH ON THIS LIST IS ITS OWN ANSWER: the
-                           record says something is owed and the stash reads
-                           empty, which is the shape of the bug that lost
-                           people their belongings. Said plainly rather than
-                           drawn as a blank row. */
-                        ? 'the stash reads EMPTY — nothing to hand over'
-                        : items.map(function (item) {
-                            return String(item.name) + ' ×' + int(item.count, 0);
-                        }).join(', ')));
-
-                /* ONE BUTTON, TWO THINGS, and it says which it is about to
-                   do. There is no live inventory to put items into for
-                   somebody who is not on the server, so for them the server
-                   QUEUES the return instead -- which is not a consolation
-                   prize: the retry only ever tries the people it has on its
-                   list, and a stash found by name after a restart is on
-                   nobody's list at all. Queuing is what puts it back on one. */
+                /* WHOSE IT IS, and whether they are here to be handed it.
+                   `src` is the server id of whoever holds that character now,
+                   and its absence is a real answer rather than a row to leave
+                   out: a stash whose owner is offline is exactly the one
+                   nothing else in this resource can do anything about. */
                 var online = int(entry.src, 0);
-                var give = makeEl('button', 'btn admin-owed-give',
-                    online > 0 ? 'Hand it back' : 'Queue for when they return');
-                give.type = 'button';
-                /* The only thing that makes this button pointless is an empty
-                   stash. Being offline does not. */
-                give.disabled = items.length === 0;
-                give.addEventListener('click', function () {
-                    post('adminReturn', {
-                        target: online,
-                        citizenid: entry.citizenid,
-                        stash: entry.stash,
-                    });
+                var open = makeEl('button', 'admin-stash-open');
+                open.type = 'button';
+                open.appendChild(makeEl('span', 'admin-stash-who',
+                    String(entry.citizenid) + (online > 0 ? '' : ' · offline')));
+                open.appendChild(makeEl('span', 'admin-stash-facts', stashSummary(entry)));
+                open.addEventListener('click', function () {
+                    admin.stash = entry.citizenid;
+                    renderAdmin();
                 });
-                card.appendChild(give);
-                owedBox.appendChild(card);
+
+                card.appendChild(open);
+                card.appendChild(returnButton(entry, 'btn admin-owed-give'));
+                stashBox.appendChild(card);
             });
+        }
+
+        /* ---- one stash ---- */
+        if (onStash) {
+            var whose = int(stash.src, 0);
+            byId('admin-stash-title').textContent = String(stash.citizenid)
+                + (whose > 0 ? '' : ' · offline');
+            byId('admin-stash-detail-line').textContent = String(stash.stash)
+                + ' · ' + stashSummary(stash)
+                + (stash.remembered === false
+                    /* FOUND BY NAME rather than remembered, which is the
+                       whole reason this screen goes to the database: the
+                       in-memory records die with a restart and the stashes do
+                       not. */
+                    ? ' · found in the database, not from this run'
+                    : '');
+
+            var doReturn = byId('admin-stash-return');
+            if (has(doReturn)) {
+                doReturn.textContent = whose > 0
+                    ? 'Hand it back' : 'Queue for when they return';
+                doReturn.disabled = arrayOf(stash.items).length === 0;
+            }
+
+            var itemBox = byId('admin-stash-items');
+            if (has(itemBox)) {
+                clear(itemBox);
+                arrayOf(stash.items).forEach(function (item) {
+                    itemBox.appendChild(makeEl('div', 'admin-escrow-row',
+                        String(item.name) + ' ×' + int(item.count, 0)));
+                });
+                if (arrayOf(stash.items).length === 0) {
+                    itemBox.appendChild(makeEl('div', 'admin-escrow-row',
+                        'The stash reads EMPTY — nothing to hand over.'));
+                }
+            }
         }
 
         /* ---- one match ---- */
@@ -4751,7 +4899,6 @@
                 clear(people);
                 arrayOf(admin.focused.players).forEach(function (fighter) {
                     var card = makeEl('button', 'admin-player-row');
-                    card.type = 'button';
                     card.type = 'button';
                     card.appendChild(makeEl('span', 'admin-player-name', String(fighter.name)));
                     card.appendChild(makeEl('span', 'admin-player-facts',
@@ -4854,6 +5001,10 @@
                     admin.owed = arrayOf(data.owed);
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
+                    admin.hoursOpen = data.hoursOpen !== false;
+                    admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
+                        ? data.hoursForced
+                        : null;
                     admin.focused = null;
                     admin.player = null;
                     renderAdmin();
@@ -4868,6 +5019,10 @@
                     admin.owed = arrayOf(data.owed);
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
+                    admin.hoursOpen = data.hoursOpen !== false;
+                    admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
+                        ? data.hoursForced
+                        : null;
                     admin.focused = (data.focused && typeof data.focused === 'object')
                         ? data.focused
                         : null;
@@ -5164,6 +5319,73 @@
            being handled here: a screen that hides itself and leaves NUI focus
            held costs the player their character. */
         post('adminClose', {});
+    });
+
+    /* The server decides and answers; the screen redraws from that answer
+       rather than from what it hoped would happen. A control that shows
+       itself flipped when the server refused is the one thing worse than a
+       control that does nothing. */
+    function askDoors(mode) {
+        post('adminHours', {
+            forced: mode,
+            matchId: admin.focused ? admin.focused.id : null,
+        });
+    }
+
+    bind('admin-doors-schedule', 'click', function () { askDoors(null); });
+    bind('admin-doors-open', 'click', function () { askDoors('open'); });
+    bind('admin-doors-shut', 'click', function () { askDoors('shut'); });
+
+    bind('admin-tab-matches', 'click', function () {
+        /* `admin.stash` is deliberately NOT cleared here. renderAdmin only
+           reads it on the stashes tab, and the stashes tab clears it on the
+           way back in -- so clearing it a second time here is a line no
+           behaviour can tell apart from its absence, which is the kind of
+           line that survives every mutation and reassures nobody. */
+        admin.tab = 'matches';
+        renderAdmin();
+    });
+
+    bind('admin-tab-stashes', 'click', function () {
+        admin.tab = 'stashes';
+        /* Arriving on the tab means arriving at the LIST. Anything else would
+           drop an admin back inside whichever stash they last looked in,
+           which may not even be held any more. */
+        admin.stash = null;
+        renderAdmin();
+
+        /* ASKED FOR ON ARRIVAL. The stash list is a database read the server
+           does not repeat on its own, so a tablet left open while somebody's
+           return finally went through would show a stash that is no longer
+           held. Drawing first and asking second means the tab appears at once
+           with what it already had, rather than blank while the disk answers.
+
+           Deliberately NOT `adminRefresh()`, which sends the focused match
+           along: arriving here does not close whatever match was open behind
+           it, and the ask must not tell the server otherwise. */
+        post('adminState', { matchId: admin.focused ? admin.focused.id : null });
+    });
+
+    bind('admin-stash-back', 'click', function () {
+        admin.stash = null;
+        renderAdmin();
+    });
+
+    bind('admin-stash-return', 'click', function () {
+        /* Read out of the CURRENT snapshot rather than captured when the
+           screen was drawn: a stash handed back by somebody else in the
+           meantime is one this button must not ask about again. */
+        var open = null;
+        arrayOf(admin.owed).forEach(function (entry) {
+            if (String(entry.citizenid) === String(admin.stash)) open = entry;
+        });
+        if (!open) return;
+
+        post('adminReturn', {
+            target: int(open.src, 0),
+            citizenid: open.citizenid,
+            stash: open.stash,
+        });
     });
 
     bind('admin-back', 'click', function () {

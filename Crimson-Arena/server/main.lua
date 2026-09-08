@@ -840,6 +840,12 @@ local function pushAdmin(src, matchId)
         TriggerClientEvent('crimson_arena:client:adminState', src, {
             matches = matches,
             focused = focused,
+            -- THE DOORS, on every push. The tablet has a switch for them and
+            -- a switch that does not show its own state is a switch nobody
+            -- can trust -- especially this one, where the wrong answer is an
+            -- arena that quietly never shuts again.
+            hoursOpen = ArenaHoursOpen(),
+            hoursForced = ArenaHoursOverride(),
             owed = withHolders(rows),
             -- HOW MANY ROWS EXIST AND HOW MANY WERE OPENED. An admin looking
             -- at four stashes needs to know whether that is all of them or
@@ -923,6 +929,35 @@ onClient('crimson_arena:server:adminReturn', RATE.admin, function(src, data)
     ArenaLog('%s queued %s\'s stash (%s) from the admin tablet -- it goes back the next time they are seen.',
         ArenaPlayerName(src), citizenid, stash)
     ArenaNotifyKey(src, 'notify.return_queued', 'success', citizenid)
+
+    pushAdmin(src, keyArg(payload.matchId))
+end)
+
+onClient('crimson_arena:server:adminHours', RATE.admin, function(src, data)
+    if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
+
+    local payload = tableArg(data) or {}
+
+    -- THREE STATES: held open past the schedule, closed inside it, or handed
+    -- back to the clock. ArenaSetHoursOverride treats anything that is not
+    -- one of the two words as "follow the schedule", so a malformed payload
+    -- gives the arena back its own hours rather than inventing a state.
+    --
+    -- CLOSING DOES NOT END A ROUND ALREADY BEING FOUGHT. The sweep in
+    -- server/match.lua tears down waiting LOBBIES when the doors shut and
+    -- leaves live rounds alone -- shutting the arena is about who may come
+    -- in, not about who is already inside.
+    local mode = ArenaSetHoursOverride(keyArg(payload.forced))
+
+    ArenaLog('%s set the arena doors to %s', ArenaPlayerName(src),
+        mode == 'open' and 'HELD OPEN past the schedule'
+            or (mode == 'shut' and 'CLOSED inside the schedule' or 'follow the schedule'))
+
+    -- EVERYBODY, NOT JUST THIS ADMIN. The doors decide what the lobby NPC
+    -- says, whether the ground marker is drawn and what line the panel puts
+    -- under Create Match -- so a change nobody else is told about is an arena
+    -- that lets people in through a door every other screen still calls shut.
+    ArenaLobby.Broadcast()
 
     pushAdmin(src, keyArg(payload.matchId))
 end)
@@ -1014,6 +1049,8 @@ RegisterCommand('arenaadmin', function(src, args)
             owed = {},
             stashesFound = 0,
             stashesRead = 0,
+            hoursOpen = ArenaHoursOpen(),
+            hoursForced = ArenaHoursOverride(),
         })
 
         -- AND THEN THE SWEEP, exactly as the screen's own refresh button asks

@@ -1717,10 +1717,10 @@ option {
     left: 50%;
     transform: translate(-50%, -50%);
     display: grid;
-    /* Header, then everything else in one scrolling column. Only one of the
-       three sections below is ever shown at a time, so they share the row
-       rather than each claiming one. */
-    grid-template-rows: auto 1fr;
+    /* Header, tab bar, then everything else in one scrolling row. Only one
+       screen below is ever shown at a time, so they share that row rather
+       than each claiming one. */
+    grid-template-rows: auto auto 1fr;
     width: min(56rem, 92vw);
     height: min(44rem, 88vh);
     background: var(--bg);
@@ -1763,11 +1763,41 @@ option {
     text-transform: uppercase;
 }
 
-/* The three screens. Each is the whole body when it is the one showing, and
-   each scrolls inside itself so the page never does. */
+/* THE DOORS, at the top of the match list because it is a fact about the
+   whole arena rather than about any one round. Its own strip rather than a
+   card: it is not a thing to click INTO. */
+#admin-doors {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.7rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent-dim);
+}
+
+#admin-doors-state {
+    flex: 1 1 auto;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* THE TAB BAR. Two subjects: what is happening now, and what the arena is
+   holding. Borrowing .arena-tab from the panel deliberately -- an operator
+   who knows one of these screens should not have to learn the other's
+   furniture. */
+#admin-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+}
+
+/* The screens. Each is the whole body when it is the one showing, and each
+   scrolls inside itself so the page never does. */
 #admin-list,
 #admin-detail,
-#admin-player {
+#admin-player,
+#admin-stashes,
+#admin-stash-detail {
     display: flex;
     flex-direction: column;
     gap: 0.8rem;
@@ -1779,45 +1809,20 @@ option {
 
 /* The outstanding-stash section is drawn UNDER the match list rather than
    instead of it, so it takes the same row and sits after it. */
-#admin-owed-row {
-    /* NO grid-row OF ITS OWN. A hidden element is not a grid item at all, so
-       the rows this box actually has are decided by which of the four
-       sections below the header are on screen -- and on the list screen those
-       are the match list (the 1fr row) and this. Pinning this one to row 2
-       would stack it on top of the list it is meant to sit under. */
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    min-height: 0;
-    /* Capped so a server with forty outstanding stashes does not push the
-       match list -- the reason the screen is usually opened -- off the top. */
-    max-height: 45%;
-    padding: 0 1.2rem 1.2rem;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-}
-
-#admin-owed-row h3,
 #admin-player h3 {
     margin: 0;
     font-family: var(--font-display);
     font-size: 1.1rem;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    /* This heading is a warning on a healthy server: nothing should be under
-       it. Coloured so an operator reads it before the rows. */
-    color: var(--accent-bright);
-}
-
-#admin-player h3 {
-    color: var(--text);
 }
 
 /* By id rather than by descendant tag, so tests/panel/stylesheet.test.js can
    see that these two are dressed -- and so an element cannot lose its styling
    by being moved into a different section. */
 #admin-detail-title,
-#admin-player-title {
+#admin-player-title,
+#admin-stash-title {
     margin: 0;
     font-family: var(--font-display);
     font-size: 1.4rem;
@@ -1828,14 +1833,16 @@ option {
 /* One live match, and one fighter in it. Same card shape, because they are
    the same gesture: click the row to go one level deeper. */
 #admin-matches,
-#admin-players {
+#admin-players,
+#admin-stash-list {
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
 }
 
 .admin-match,
-.admin-player-row {
+.admin-player-row,
+.admin-stash-open {
     display: grid;
     grid-template-columns: 1fr auto;
     align-items: center;
@@ -1852,13 +1859,15 @@ option {
 }
 
 .admin-match:hover,
-.admin-player-row:hover {
+.admin-player-row:hover,
+.admin-stash-open:hover {
     background: var(--surface-raised);
     border-left-color: var(--accent);
 }
 
 .admin-match-name,
-.admin-player-name {
+.admin-player-name,
+.admin-stash-who {
     font-family: var(--font-display);
     font-size: 1.2rem;
     letter-spacing: 0.05em;
@@ -1866,7 +1875,8 @@ option {
 }
 
 .admin-match-facts,
-.admin-player-facts {
+.admin-player-facts,
+.admin-stash-facts {
     grid-column: 2;
     grid-row: 1;
     color: var(--text-muted);
@@ -1878,7 +1888,7 @@ option {
    to. Plain rows rather than cards: this is a manifest, and a manifest that
    looks like a list of buttons invites clicking things that do nothing. */
 #admin-escrow,
-#admin-owed {
+#admin-stash-items {
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
@@ -1892,41 +1902,33 @@ option {
     font-variant-numeric: tabular-nums;
 }
 
-.admin-owed-entry {
+/* ONE STASH ON THE LIST: the card that opens it, and the button that sends
+   it back, side by side. Two controls rather than one, because they are two
+   different things to want and neither should cost the other's click. */
+.admin-stash-row {
     display: grid;
     grid-template-columns: 1fr auto;
-    align-items: center;
-    gap: 0.2rem 1rem;
-    padding: 0.7rem 1rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    /* Crimson down the edge: every row here is somebody who is short. */
-    border-left: 3px solid var(--accent);
+    align-items: stretch;
+    gap: 0.6rem;
 }
 
-.admin-owed-who {
-    font-weight: 600;
-    letter-spacing: 0.03em;
-}
-
-.admin-owed-what {
-    grid-column: 1;
-    grid-row: 2;
-    color: var(--text-muted);
-    font-size: 0.85rem;
-    /* A long item list wraps rather than pushing the button off the row. */
-    overflow-wrap: anywhere;
+/* The card half fills its cell, so the row reads as one object rather than
+   as a card with a button floating beside it. */
+.admin-stash-open {
+    width: 100%;
 }
 
 .admin-owed-give {
-    grid-column: 2;
-    grid-row: 1 / span 2;
+    align-self: center;
+    white-space: nowrap;
 }
 
-/* The escrow total, said once above the manifest. */
+/* Counts and stash ids line up down the screen. */
 #admin-escrow-line,
 #admin-detail-line,
-#admin-player-line {
+#admin-player-line,
+#admin-stash-line,
+#admin-stash-detail-line {
     font-variant-numeric: tabular-nums;
 }
 
@@ -1939,14 +1941,14 @@ option {
 
     .admin-match,
     .admin-player-row,
-    .admin-owed-entry {
+    .admin-stash-open,
+    .admin-stash-row {
         grid-template-columns: 1fr;
     }
 
     .admin-match-facts,
     .admin-player-facts,
-    .admin-owed-what,
-    .admin-owed-give {
+    .admin-stash-facts {
         grid-column: 1;
         grid-row: auto;
     }

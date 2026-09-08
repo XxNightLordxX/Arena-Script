@@ -350,9 +350,45 @@
         <button id="admin-close" class="btn" type="button">Close</button>
     </header>
 
+    <!-- TWO SUBJECTS, NOT ONE SCREEN WITH A SECTION BOLTED UNDER IT.
+         The matches are what is happening now; the escrow is what the arena
+         is holding, which outlives every one of them -- a stash from a run
+         that ended months ago is still somebody's belongings, and the tab is
+         where you go to look for it rather than something you scroll past on
+         the way to a live round.
+
+         BY ID, NOT BY CLASS. app.js reaches these with getElementById the
+         way it reaches every other control it drives; the panel's own tab bar
+         uses querySelectorAll, which its test harness does not implement --
+         so those tabs cannot be pressed by a test and these can. -->
+    <nav id="admin-tabs">
+        <button id="admin-tab-matches" class="arena-tab" type="button">Matches</button>
+        <button id="admin-tab-stashes" class="arena-tab" type="button">Stashes</button>
+    </nav>
+
     <!-- THE LIST. Live matches and nothing else -- this screen is not a
          second lobby browser. -->
     <section id="admin-list">
+        <!-- THE DOORS. Config.Schedule can have the arena shut at four in the
+             morning, and an operator running an event at four in the morning
+             needs a way in that is not editing config and restarting the
+             resource -- and the same operator needs to be able to close it
+             mid-afternoon without one either.
+
+             THREE BUTTONS RATHER THAN A TOGGLE, because there are three
+             states and only one of them is "whatever the schedule says". A
+             two-way switch would have to pick which of open and shut counts
+             as "off", and neither of them does.
+
+             CLOSING DOES NOT END A ROUND ALREADY BEING FOUGHT: it stops
+             people coming in, and the fight already happening is fought to
+             the end. -->
+        <div id="admin-doors">
+            <span id="admin-doors-state"></span>
+            <button id="admin-doors-schedule" class="btn" type="button">Follow the schedule</button>
+            <button id="admin-doors-open" class="btn" type="button">Hold open</button>
+            <button id="admin-doors-shut" class="btn btn-danger" type="button">Close the arena</button>
+        </div>
         <p id="admin-empty" class="hint hidden">No matches are running.</p>
         <div id="admin-matches"></div>
     </section>
@@ -366,15 +402,37 @@
         <div id="admin-players"></div>
     </section>
 
-    <!-- WHAT NEVER MADE IT BACK. Somebody whose belongings are still in a
-         stash because a return failed and the sweep has not been able to
-         finish -- usually because they have not been on the server since.
-         Empty on a healthy server, which is the point: a row here is
-         somebody who is short. -->
-    <section id="admin-owed-row" class="hidden">
-        <h3>Not handed back yet</h3>
-        <p id="admin-owed-line" class="hint"></p>
-        <div id="admin-owed"></div>
+    <!-- EVERY STASH THIS ARENA IS HOLDING SOMETHING IN, on a tab of its own
+         because it is a different question from "what is happening now". A
+         live match ends within the hour; a stash outlives every run of this
+         resource, and a character whose belongings were outstanding when the
+         server went down is somebody nothing else here can even name.
+
+         WHO IT IS FOR, AND A BUTTON, ON THE ROW. Those are the two things an
+         operator came to this screen to do, so neither of them costs a click
+         first. What is IN it is one level down, because a manifest of every
+         item in forty stashes is a wall rather than a list.
+
+         IT DOES NOT NEED ITS OWNER TO BE ONLINE. The list is built from the
+         ox_inventory rows themselves rather than from who is connected. There
+         is no live inventory to put things into for somebody who is not here,
+         so their button QUEUES the return instead -- which is the only thing
+         that ever brings it back to them: the retry sweep works from a list,
+         and a stash found by name after a restart is on nobody's list. -->
+    <section id="admin-stashes" class="hidden">
+        <p id="admin-stash-line" class="hint"></p>
+        <p id="admin-stash-empty" class="hint hidden">The arena is holding nothing for anybody.</p>
+        <div id="admin-stash-list"></div>
+    </section>
+
+    <!-- ONE STASH, OPENED BY CLICKING IT: everything in it, and the same
+         button the row carries. -->
+    <section id="admin-stash-detail" class="hidden">
+        <button id="admin-stash-back" class="btn" type="button">Back to stashes</button>
+        <h2 id="admin-stash-title"></h2>
+        <p id="admin-stash-detail-line" class="hint"></p>
+        <button id="admin-stash-return" class="btn btn-primary" type="button">Hand it back</button>
+        <div id="admin-stash-items"></div>
     </section>
 
     <!-- ONE FIGHTER, opened by clicking them: what the arena is holding for

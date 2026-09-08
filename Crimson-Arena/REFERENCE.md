@@ -431,7 +431,7 @@ listed; the source documents them where they are.
 | `ArenaCompat.Mute(src, active)` | Calls every detected adapter's mute, if it has one. |
 | `ArenaCompat.Report()` | The startup block, as lines. |
 
-#### `server/util.lua` — 17 functions
+#### `server/util.lua` — 19 functions
 
 | Function | What it does |
 |---|---|
@@ -448,6 +448,8 @@ listed; the source documents them where they are.
 | `ArenaForgetPlayer(src)` | Drops one player's rate-limit history; main.lua calls it from playerDropped. |
 | `ArenaWebhook(title, description, fields)` | Posts one embed to the configured Discord webhook. |
 | `ArenaHoursNow()` | The hour and minute the schedule is judged against -- the server's own clock, plus `offsetHours`. |
+| `ArenaSetHoursOverride(mode)` | An admin's standing decision about the doors: `'open'`, `'shut'`, or anything else to follow the schedule. In memory, so a restart gives the clock its say back. |
+| `ArenaHoursOverride()` | That decision, or nil where there is none. |
 | `ArenaHoursOpen()` | Whether the doors are open right now. Fails OPEN on every path that cannot produce a schedule. |
 | `ArenaHoursSnapshot()` | The opening-hours block the panel, the NPC and the marker are all drawn from. |
 | `ArenaHoursState()` | The same facts kept apart, for `/arenahours`. |

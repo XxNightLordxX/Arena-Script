@@ -163,7 +163,12 @@ test('and every button on it wears the panel\'s own button class', () => {
     const bare = [];
     elements().forEach(function (element) {
         if (element.tag !== 'button') return;
-        if (element.classes.indexOf('btn') < 0) {
+        /* `arena-tab` counts too: a tab is a button wearing the panel's
+           tab dressing rather than its push-button dressing, and both are
+           real styling. What this refuses is a button wearing NEITHER. */
+        var dressed = element.classes.indexOf('btn') >= 0
+            || element.classes.indexOf('arena-tab') >= 0;
+        if (!dressed) {
             bare.push(element.id || '(unnamed)');
         }
     });

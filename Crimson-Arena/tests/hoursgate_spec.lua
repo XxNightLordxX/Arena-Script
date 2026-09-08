@@ -83,7 +83,12 @@ end
 --- @param mutate fun(config: table)? -- applied before any file that reads config at LOAD time
 --- @param jobs table<integer, string>?
 --- @return table server
-local function newArena(wallets, mutate, jobs)
+--- @param wallets table<integer, integer>
+--- @param mutate fun(config: table)?
+--- @param jobs table<integer, string>?
+--- @param admins table<integer, boolean>? -- who IsPlayerAceAllowed says yes for
+local function newArena(wallets, mutate, jobs, admins)
+    admins = admins or {}
     local qbx = Sandbox.newQbxCore(roster(wallets, jobs))
     local oxlib = Sandbox.newOxLib()
     local threads = Sandbox.newThreadRunner()
@@ -132,7 +137,15 @@ local function newArena(wallets, mutate, jobs)
         GetVehiclePedIsIn = function() return 0 end,
         -- Nobody holds an ACE here. Source 0 -- the server console -- is an
         -- admin without one, which is what the admin test leans on.
-        IsPlayerAceAllowed = function() return false end,
+        IsPlayerAceAllowed = function(src) return admins[tonumber(src)] == true end,
+        -- Needed by the admin tablet's stash view, which the doors switch
+        -- pushes a fresh copy of.
+        GetPlayers = function()
+            local out = {}
+            for id in pairs(wallets) do out[#out + 1] = tostring(id) end
+            table.sort(out)
+            return out
+        end,
 
         ArenaStats = {
             GetLeaderboard = function(callback) callback({}) end,
@@ -152,6 +165,14 @@ local function newArena(wallets, mutate, jobs)
             -- THROWS inside the respawn thread -- so leaving it out here
             -- breaks every spec that lets a fighter come back to life.
             Refresh = function() return true end,
+            -- THE ADMIN TABLET'S STASH SWEEP. The doors switch pushes a fresh
+            -- tablet payload, and a stub missing this throws out of the
+            -- handler rather than failing an assertion.
+            AllStashes = function(cb, scanned)
+                if scanned then scanned(0, 0) end
+                cb({})
+            end,
+            HeldFor = function() return nil end,
             Issue = function() return {} end,
             Reclaim = function() return 0 end,
             ReclaimAll = function() return 0 end,
@@ -274,10 +295,10 @@ end
 --- @param windows table
 --- @param wallets table?
 --- @return table
-local function arenaWithHours(windows, wallets)
+local function arenaWithHours(windows, wallets, admins)
     return newArena(wallets or { [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
         config.Schedule = { enabled = true, windows = windows, offsetHours = 0 }
-    end)
+    end, nil, admins)
 end
 
 -- ======================================================================
@@ -540,6 +561,155 @@ t.test('and carries NO window line when hours are not being enforced', function(
     local built = s.lobby.BuildState(1)
     t.isTrue(built.schedule.open)
     t.isNil(built.schedule.line, 'a server keeping no hours advertised a schedule')
+end)
+
+-- ======================================================================
+-- AND AN ADMIN DECIDES THE DOORS, EITHER WAY
+--
+-- Config.Schedule can have the arena shut at four in the morning, and an
+-- operator running something at four in the morning needs a way in that is
+-- not editing config and restarting the resource. The same operator needs to
+-- be able to close it mid-afternoon without one either.
+--
+-- THREE STATES, AND THE THIRD IS THE ABSENCE OF A DECISION: held open,
+-- closed, or handed back to the clock.
+-- ======================================================================
+
+t.test('THE REQUEST: an admin can open a shut arena from the tablet', function()
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    t.isNil((s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'the arena is not shut, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'open' })
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNotNil(id, 'the doors were held open and a match still could not be created')
+    t.isTrue((s.lobby.Join(2, id, nil, nil)), 'and nobody could join it')
+end)
+
+t.test('THE REQUEST: and can close an arena its own hours say is open', function()
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    t.isNotNil((s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'the arena is not open, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    -- A DIFFERENT PLAYER, because the one above is now in the match they
+    -- just opened and would be refused for that instead -- which would pass
+    -- this test without the doors having done anything.
+    local id, reason = s.lobby.Create(3, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNil(id, 'the arena was closed and a match could still be created')
+    t.equals(reason, 'error.arena_shut')
+end)
+
+t.test('and closing it does NOT end a round already being fought', function()
+    -- Shutting the arena is about who may come IN. A fight already happening
+    -- is fought to the end -- the same rule the schedule itself keeps when a
+    -- window closes mid-round.
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    s.match.Start(id)
+    s.step()
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+    s.step()
+
+    t.isNotNil(s.lobby.Get(id), 'closing the arena tore down a round being fought in it')
+end)
+
+t.test('and the panel is told, so it does not call the arena shut', function()
+    -- This block is what the panel, the lobby NPC and the ground marker are
+    -- all drawn from. An override the server honours and the snapshot does
+    -- not is an arena letting people in through a door every screen calls
+    -- locked.
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    t.isFalse(s.env.ArenaHoursSnapshot().open, 'the arena is not shut, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'open' })
+
+    local block = s.env.ArenaHoursSnapshot()
+    t.isTrue(block.open, 'the snapshot still says the arena is shut')
+    t.equals(block.forced, 'open', 'and does not say the doors are being HELD open')
+end)
+
+t.test('and told the other way round too', function()
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    local block = s.env.ArenaHoursSnapshot()
+    t.isFalse(block.open, 'the snapshot still says an arena an admin closed is open')
+    t.equals(block.forced, 'shut', 'and does not say who closed it')
+end)
+
+t.test('and the ordinary hours are still on the snapshot to be read', function()
+    -- `line` is the schedule this server keeps. Overriding it for one evening
+    -- does not make it untrue, and a player still deserves to be told when
+    -- the arena normally runs.
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    s.fire('adminHours', 1, { forced = 'open' })
+    t.isNotNil(s.env.ArenaHoursSnapshot().line,
+        'overriding the doors threw away the hours the server actually keeps')
+end)
+
+t.test('and handing it back gives the clock its say', function()
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    s.fire('adminHours', 1, { forced = 'open' })
+    t.isNotNil((s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'the doors never opened, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = nil })
+
+    -- A different player, for the reason given in the closing test above.
+    local id, reason = s.lobby.Create(3, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNil(id, 'the schedule did not get its say back')
+    t.equals(reason, 'error.arena_shut')
+    t.isNil(s.env.ArenaHoursOverride(), 'the override was not actually cleared')
+end)
+
+t.test('and a word the server does not know follows the schedule', function()
+    -- A malformed payload must hand the arena back to its own hours rather
+    -- than invent a fourth state nothing downstream knows how to read.
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    s.fire('adminHours', 1, { forced = 'open' })
+
+    s.fire('adminHours', 1, { forced = 'ajar' })
+
+    t.isNil(s.env.ArenaHoursOverride(), 'a word nobody knows was stored as a door state')
+    t.isNil((s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'and the arena was left open on it')
+end)
+
+t.test('and a player who is not an admin cannot touch it', function()
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+
+    s.fire('adminHours', 2, { forced = 'open' })
+
+    t.isNil(s.env.ArenaHoursOverride(), 'a player who is not an admin opened the arena')
+    t.isNil((s.lobby.Create(2, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'and got a match out of it')
+end)
+
+t.test('and nor can they close one', function()
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+
+    s.fire('adminHours', 2, { forced = 'shut' })
+
+    t.isNil(s.env.ArenaHoursOverride(), 'a player who is not an admin closed the arena')
+    t.isNotNil((s.lobby.Create(2, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'and shut everybody else out of it')
+end)
+
+t.test('and everybody is told, not just the admin who pressed it', function()
+    -- The doors decide what the lobby NPC says, whether the ground marker is
+    -- drawn and what line the panel puts under Create Match.
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    local before = #s.sent()
+
+    s.fire('adminHours', 1, { forced = 'open' })
+
+    t.isTrue(#s.sent() > before,
+        'the doors opened and nobody was told -- every other screen still says shut')
 end)
 
 os.exit(t.summary())

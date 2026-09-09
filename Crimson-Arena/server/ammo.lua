@@ -1678,7 +1678,9 @@ end
 --- IT DOES NOT CLEAR `issuedWeapons`; the caller does that with
 --- forgetWeapons, and it must not be done here -- this reads those rows and
 --- would be dropping them from under itself.
-local function queueOwedKit(citizenid, src)
+--- @param counted table|nil -- item counts read BEFORE anything was handed
+---        back to this player. See the call in ReturnLeftovers.
+local function queueOwedKit(citizenid, src, counted)
     if not Arena.IsKey(citizenid) then return 0 end
 
     -- THE CAP IS DECIDED FIRST, BEFORE A SINGLE ROW IS WRITTEN ANYWHERE.
@@ -1836,7 +1838,35 @@ local function queueOwedKit(citizenid, src)
             end
 
             for item, issued in pairs(given) do
-                local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
+                -- MEASURED BEFORE THEIR OWN BELONGINGS CAME BACK, where a
+                -- caller took the trouble to do that.
+                --
+                -- ReturnLeftovers empties the stash into the player and only
+                -- then calls this. The floor for a stripped fighter is zero,
+                -- because it was captured after the door cleared them -- so
+                -- reading their pockets HERE counted the whole of their own
+                -- returned stock as the arena's. Fire two hundred and forty
+                -- of the two hundred and fifty you were issued, own a
+                -- thousand of that calibre, and the slate said you owed the
+                -- full two hundred and fifty; the chase then took it out of
+                -- your own ammunition with the floor at zero.
+                --
+                -- An honest player charged for the rounds they shot, by the
+                -- ledger written to stop people walking off with kit. DO NOT
+                -- drop the snapshot and read live on that path.
+                -- A MISSING ENTRY FALLS BACK TO THE LIVE READ rather than
+                -- counting as zero. The snapshot is built from the catalogue
+                -- of things this server is configured to issue, and an item
+                -- that was issued and has since left that list would
+                -- otherwise read as "they hold none" and quietly forgive the
+                -- whole debt. Absent is NOT the same as none. DO NOT collapse
+                -- these two branches into `counted[item] or 0`.
+                local ok, answer
+                if type(counted) == 'table' and counted[item] ~= nil then
+                    ok, answer = true, counted[item]
+                else
+                    ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
+                end
                 if not ok then
                     ArenaLog('weapons: could not read how much %s %s has, so the arena is not '
                         .. 'writing any down against %s. It would rather lose the rounds than '
@@ -2835,6 +2865,19 @@ function ArenaAmmo.ReturnLeftovers(src)
         end
     end
 
+    -- READ BEFORE THE HAND-BACK, and used by queueOwedKit far below.
+    --
+    -- Everything past this line puts the player's own belongings into their
+    -- pockets, so a count taken after it CANNOT tell their property from the
+    -- arena's. The set is bounded -- only what this server is configured to
+    -- issue -- and it is the last honest moment to ask. DO NOT move this
+    -- below handBack.
+    local beforeHandBack = {}
+    for item in pairs(Arena.AllIssuedItems() or {}) do
+        local read, answer = pcall(function() return ox:GetItemCount(src, item) end)
+        if read then beforeHandBack[item] = math.max(0, Arena.ToInt(answer) or 0) end
+    end
+
     local readable, failures, returned = handBack(ox, src, stash)
     if not readable then return false, 0, false end
 
@@ -2896,7 +2939,7 @@ function ArenaAmmo.ReturnLeftovers(src)
             -- help somebody quietly forgave whatever they were still holding
             -- of the arena's. DO NOT drop this and leave forgetWeapons
             -- standing here on its own.
-            queueOwedKit(citizenid, other)
+            queueOwedKit(citizenid, other, other == src and beforeHandBack or nil)
             stashed[other] = nil
             forgetWeapons(other)
         end

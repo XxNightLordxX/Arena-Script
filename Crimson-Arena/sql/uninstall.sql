@@ -13,3 +13,9 @@
 -- Run this only when you have decided the history itself is unwanted.
 
 DROP TABLE IF EXISTS crimson_arena_stats;
+
+-- AND THE SLATE. This one is not history, it is a debt: dropping it forgives
+-- every arena weapon and every round that players walked off with and have
+-- not yet handed back. That is usually what you want when removing the
+-- resource, and never what you want while it is still running.
+DROP TABLE IF EXISTS crimson_arena_owed_kit;

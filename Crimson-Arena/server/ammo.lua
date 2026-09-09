@@ -937,16 +937,32 @@ end
 --- @param src number
 --- @param item string
 --- @param count integer -- how much was issued
+--- @return integer taken, integer short -- `short` is the arena's, still with them
 local function takeBack(ox, src, item, count, floor)
     local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
     local held = ok and (Arena.ToInt(answer) or 0) or count
 
     local mine = math.max(0, held - math.max(0, Arena.ToInt(floor) or 0))
 
-    local take = math.min(Arena.ToInt(count) or 0, mine)
-    if take > 0 then
-        pcall(function() return ox:RemoveItem(src, item, take) end)
+    local take = math.min(math.max(0, Arena.ToInt(count) or 0), mine)
+    if take <= 0 then return 0, 0 end
+
+    -- THE ANSWER IS READ AND HANDED BACK, and the caller needs both halves.
+    -- This was a bare pcall whose result went in the bin, so a refused
+    -- removal was indistinguishable from a clean one: the arena's rounds
+    -- stayed in a player's pockets, the record was dropped a line later, and
+    -- nothing anywhere remembered they had been issued.
+    --
+    -- WHAT IS SHORT IS THE ARENA'S, NOT THEIRS. `mine` has already taken
+    -- their own floor off, so anything this could not collect is a real debt
+    -- and safe to write down. DO NOT throw the result away again.
+    if oxDid(('taking back %d %s'):format(take, item),
+        function() return ox:RemoveItem(src, item, take) end)
+    then
+        return take, 0
     end
+
+    return 0, take
 end
 
 local function takeRungBack(ox, src, record, name)
@@ -1303,13 +1319,205 @@ local owedKit = {}
 
 local OWED_KIT_LIMIT = 200
 
+--- Arena AMMUNITION AND SUPPLIES that left with a character:
+--- { [citizenid] = { [itemName] = amount } }.
+---
+--- A SEPARATE LEDGER BECAUSE IT IS A DIFFERENT KIND OF DEBT. A weapon is an
+--- object with a serial and the arena takes back THAT ONE. A round of 9mm is
+--- fungible: there is no telling the arena's from the player's, and there is
+--- no need to -- what is owed is a NUMBER, and any two hundred rounds settle
+--- a debt of two hundred rounds.
+---
+--- WHAT MAKES IT SAFE TO COLLECT LATER is that the amount is worked out at
+--- the moment the kit walks, while `heldBefore` still remembers what that
+--- fighter came in carrying. takeBack subtracts that floor, so the figure
+--- written down here is what the ARENA issued and did not get back, never a
+--- share of somebody's own stock. Reading their pockets a week later could
+--- not tell the difference; this does not have to.
+---
+--- IT USED TO BE NOTHING AT ALL. The rounds, plates and bandages simply went
+--- with whoever walked off, unrecorded -- and with kill rewards paying per
+--- kill, a farmed round plus a logout was an open tap. DO NOT let this fall
+--- back to being forgotten.
+local owedItems = {}
+
+local OWED_ITEM_LIMIT = 40
+
 local OWED_KIT_CHARACTERS = 200
 
+-- ----------------------------------------------------------------------
+-- THE SLATE, WRITTEN DOWN SOMEWHERE THAT SURVIVES A RESTART
+--
+-- WHY THIS TABLE EXISTS WHEN THE STASHES NEED NONE. A stash is a real
+-- ox_inventory row: `AllStashes` finds one again after any restart by
+-- scanning for the name prefix, which is why `owed` can live in memory
+-- and lose nothing. A weapon debt has no such artefact -- the serial is
+-- the only fact that identifies it and it exists nowhere but this Lua
+-- table. So a restart wrote every outstanding debt off, and "wait for the
+-- nightly restart" was a way to keep an arena loadout. This must not go
+-- back to being memory-only.
+--
+-- OFF BY DEFAULT, LIKE EVERY OTHER DATABASE FEATURE HERE. With
+-- Config.Database.enabled false the ledgers still work exactly as before
+-- for the length of one uptime; nothing is required, and no SQL has to be
+-- imported, and nothing here is required. Turning it on is what makes them
+-- outlive the process -- DO NOT read the default as "this is optional
+-- polish".
+--
+-- ONE ROW PER THING OWED. `ledger_key` is the serial for a weapon and the
+-- item name for a stack, so a weapon can never be written down twice and
+-- a stack accumulates instead. That is the whole reason for the column --
+-- MySQL cannot put a UNIQUE index on "the serial, or the name when there
+-- is no serial", so the key is composed here instead. DO NOT drop the
+-- column and index the serial directly.
+-- ----------------------------------------------------------------------
+local KIT_SCHEMA_SQL = [[
+    CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
+        citizenid VARCHAR(64) NOT NULL,
+        ledger_key VARCHAR(191) NOT NULL,
+        kind VARCHAR(16) NOT NULL,
+        name VARCHAR(191) NOT NULL,
+        serial VARCHAR(128) NULL,
+        amount INT NOT NULL DEFAULT 1,
+        written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (citizenid, ledger_key)
+    )
+]]
+
+local KIT_WRITE_SQL = [[
+    INSERT INTO crimson_arena_owed_kit
+        (citizenid, ledger_key, kind, name, serial, amount)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE amount = VALUES(amount)
+]]
+
+local KIT_ADD_SQL = [[
+    INSERT INTO crimson_arena_owed_kit
+        (citizenid, ledger_key, kind, name, serial, amount)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)
+]]
+
+local KIT_DROP_SQL =
+    'DELETE FROM crimson_arena_owed_kit WHERE citizenid = ? AND ledger_key = ?'
+
+local KIT_READ_SQL =
+    'SELECT citizenid, ledger_key, kind, name, serial, amount FROM crimson_arena_owed_kit'
+
+local warnedNoKitDatabase = false
+
+local function kitDbOn()
+    if Config.Database.enabled ~= true then return false end
+
+    if GetResourceState('oxmysql') ~= 'started' then
+        -- SAID ONCE, NOT EVERY WRITE. An operator who turned the database on
+        -- and has not started oxmysql needs telling; they do not need telling
+        -- per weapon per exit.
+        if not warnedNoKitDatabase then
+            warnedNoKitDatabase = true
+            ArenaLog('Config.Database.enabled is true but oxmysql is not started, so the arena '
+                .. 'CANNOT remember what players still owe it. The slate works for this run only '
+                .. 'and a restart forgets it. Start oxmysql, or set Config.Database.enabled = false.')
+        end
+        return false
+    end
+
+    return true
+end
+
+local function kitDb(sql, params, cb)
+    if not kitDbOn() then
+        if cb then cb(nil) end
+        return false
+    end
+
+    -- WRAPPED, because a database that is up is not a database that answers.
+    -- Losing the durable copy must never take the round down with it: the
+    -- in-memory slate is the live one and this is the backup of it.
+    local ok, err = pcall(function() exports.oxmysql:query(sql, params, cb) end)
+    if not ok then
+        ArenaLog('the outstanding-kit slate could not be written (%s). It is still kept in memory '
+            .. 'for this run.', tostring(err))
+        if cb then cb(nil) end
+        return false
+    end
+
+    return true
+end
+
+local function weaponKey(serial) return 'w:' .. tostring(serial) end
+
+local function itemKey(name) return 'i:' .. tostring(name) end
+
+local function saveOwedWeapon(citizenid, row)
+    kitDb(KIT_WRITE_SQL,
+        { citizenid, weaponKey(row.serial), 'weapon', row.name, row.serial, 1 })
+end
+
+local function saveOwedItem(citizenid, name, amount)
+    kitDb(KIT_ADD_SQL, { citizenid, itemKey(name), 'item', name, nil, amount })
+end
+
+--- Writes a stack's CURRENT total, rather than adding to it -- used after a
+--- partial collection, where the remainder is already known.
+local function setOwedItem(citizenid, name, amount)
+    if amount <= 0 then
+        kitDb(KIT_DROP_SQL, { citizenid, itemKey(name) })
+        return
+    end
+    kitDb(KIT_WRITE_SQL, { citizenid, itemKey(name), 'item', name, nil, amount })
+end
+
+local function dropOwedWeapon(citizenid, serial)
+    kitDb(KIT_DROP_SQL, { citizenid, weaponKey(serial) })
+end
+
+--- How many characters owe the arena ANYTHING -- a weapon, an item, or both.
+---
+--- COUNTED ACROSS BOTH LEDGERS, and counted as CHARACTERS rather than rows.
+--- One cap over the pair is the honest bound: two tables each allowed two
+--- hundred names is four hundred, and a player who owes a rifle and some
+--- rounds is still one debtor. It is also why this is declared here rather
+--- than beside the first table that happened to need it -- both do, and a
+--- forward reference to it from the other is a nil call. DO NOT move it
+--- back down beside one of them.
 local function owedKitCharacters()
-    local total = 0
-    for _ in pairs(owedKit) do total = total + 1 end
+    local seen, total = {}, 0
+    for citizenid in pairs(owedKit) do
+        seen[citizenid] = true
+        total = total + 1
+    end
+    for citizenid in pairs(owedItems) do
+        if not seen[citizenid] then total = total + 1 end
+    end
     return total
 end
+
+--- Puts a number of one stackable item on a character's slate.
+local function oweItem(citizenid, name, amount)
+    local count = math.max(0, Arena.ToInt(amount) or 0)
+    if not (Arena.IsKey(citizenid) and Arena.IsKey(name)) or count <= 0 then return false end
+
+    local rows = owedItems[citizenid]
+    if rows == nil then
+        if owedKitCharacters() >= OWED_KIT_CHARACTERS then return false end
+        rows = {}
+        owedItems[citizenid] = rows
+    end
+
+    -- ONE ROW PER ITEM NAME, so this cannot grow with the number of rounds
+    -- owed -- only with the number of distinct things. The cap is on names.
+    if rows[name] == nil then
+        local names = 0
+        for _ in pairs(rows) do names = names + 1 end
+        if names >= OWED_ITEM_LIMIT then return false end
+    end
+
+    rows[name] = (rows[name] or 0) + count
+    saveOwedItem(citizenid, name, count)
+    return true
+end
+
 
 --- Writes this player's issued weapons down against the character that owes
 --- them.
@@ -1341,6 +1549,7 @@ local function queueOwedKit(citizenid, src)
                 -- cannot prove is its own. DO NOT queue a row with no serial.
                 if Arena.IsKey(item.serial) then
                     rows[#rows + 1] = { name = item.name, serial = item.serial }
+                    saveOwedWeapon(citizenid, item)
                     added = added + 1
                 else
                     unchaseable = unchaseable + 1
@@ -1348,6 +1557,34 @@ local function queueOwedKit(citizenid, src)
             end
         end
     end
+
+    -- AND THE CONSUMABLES, which walked off completely unrecorded and must
+    -- NEVER do so again. The
+    -- mismatch branch calls forgetWeapons a few lines after this, and that
+    -- drops issuedAmmo and issuedSupplies outright -- so on the one path this
+    -- ledger exists for, every round and every plate the arena handed out
+    -- left free while the weapons were carefully written down.
+    --
+    -- CLAMPED AGAINST THE FLOOR HERE, WHERE IT IS STILL KNOWN. `heldBefore`
+    -- remembers what this fighter walked in carrying and is dropped when the
+    -- match is cleared; reading their pockets when they next appear could
+    -- never tell the arena's rounds from their own. Working the figure out
+    -- now is the whole reason it is safe to collect later. DO NOT move this
+    -- clamp to collection time.
+    local function oweStock(store)
+        for matchId, byPlayer in pairs(store) do
+            for item, count in pairs(byPlayer[src] or {}) do
+                local floor = floorFor(matchId, src, item)
+                local owing = math.max(0, (Arena.ToInt(count) or 0) - floor)
+                if owing > 0 and oweItem(citizenid, item, owing) then
+                    added = added + 1
+                end
+            end
+        end
+    end
+
+    oweStock(issuedAmmo)
+    oweStock(issuedSupplies)
 
     if unchaseable > 0 then
         ArenaLog('weapons: %d weapon(s) of %s\'s were issued without a readable serial and CANNOT be '
@@ -1448,6 +1685,7 @@ local function chaseOwedKit(src, citizenid)
             ArenaDebug('weapons: %s is not carrying the arena\'s %s (%s) right now -- still owed.',
                 tostring(citizenid), row.name, tostring(row.serial))
         elseif takeWeaponBack(ox, src, row) then
+            dropOwedWeapon(citizenid, row.serial)
             taken = taken + 1
             ArenaLog('weapons: took the arena\'s %s (%s) back off %s.',
                 row.name, tostring(row.serial or 'no serial'), tostring(citizenid))
@@ -1456,6 +1694,32 @@ local function chaseOwedKit(src, citizenid)
         end
 
         ::continue::
+    end
+
+    -- AND THE CONSUMABLES. Fungible, so this asks only for a NUMBER back and
+    -- does not care which rounds it gets. What it must not do is take more
+    -- than is owed, so a partial collection leaves the remainder on the
+    -- slate rather than rounding it away.
+    local stock = owedItems[citizenid]
+    if stock ~= nil then
+        local rest = nil
+        for item, amount in pairs(stock) do
+            local got = takeBack(ox, src, item, amount, 0)
+            local still = math.max(0, amount - got)
+
+            if got > 0 then
+                taken = taken + 1
+                ArenaLog('weapons: took back %d %s the arena issued %s.', got, item, tostring(citizenid))
+            end
+
+            if got > 0 then setOwedItem(citizenid, item, still) end
+
+            if still > 0 then
+                rest = rest or {}
+                rest[item] = still
+            end
+        end
+        owedItems[citizenid] = rest
     end
 
     -- MERGED, NOT ASSIGNED, for the reason given above the loop.
@@ -1475,10 +1739,12 @@ local function oweWeapon(citizenid, row)
     rows[#rows + 1] = { name = row.name, serial = row.serial }
     while #rows > OWED_KIT_LIMIT do table.remove(rows, 1) end
     owedKit[citizenid] = rows
+    saveOwedWeapon(citizenid, row)
     return true
 end
 
-local function reclaimWeapons(ox, src)
+--- @param fallbackOwner string? -- whose kit this is when nobody is on the id
+local function reclaimWeapons(ox, src, fallbackOwner)
     -- WHO IS ACTUALLY STANDING HERE, asked once and compared against every
     -- row below.
     --
@@ -1493,6 +1759,13 @@ local function reclaimWeapons(ox, src)
     -- the same whether a stash was ever made or not.
     local holder = ArenaGetPlayer(src)
     local liveId = holder and holder.PlayerData and holder.PlayerData.citizenid or nil
+
+    -- WHO TO CHARGE WHEN NOBODY IS THERE. On a disconnect the player object
+    -- is already gone, so there is no live citizen id to compare or to bill
+    -- -- and without this the shortfall below had nowhere to go and was
+    -- simply dropped. The caller knows whose round it was, and must not stop
+    -- saying so.
+    local owner = Arena.IsKey(fallbackOwner) and fallbackOwner or liveId
 
     for _, byPlayer in pairs(issuedWeapons) do
         local given = byPlayer[src]
@@ -1568,25 +1841,32 @@ local function reclaimWeapons(ox, src)
         end
     end
 
-    for matchId, byPlayer in pairs(issuedAmmo) do
-        local given = byPlayer[src]
-        if given then
-            for item, count in pairs(given) do
-                takeBack(ox, src, item, count, floorFor(matchId, src, item))
+    -- WHAT COULD NOT BE COLLECTED IS WRITTEN DOWN, not shrugged off. These
+    -- two loops threw takeBack's answer away and dropped the row regardless,
+    -- so every round and every plate the arena could not reach left free and
+    -- unrecorded -- the same hole the weapons had, one level down, and the
+    -- one that pays best because kill rewards keep topping it up. DO NOT
+    -- throw takeBack's answer away again.
+    local function reclaimStock(store)
+        for matchId, byPlayer in pairs(store) do
+            local given = byPlayer[src]
+            if given then
+                for item, count in pairs(given) do
+                    local _, short = takeBack(ox, src, item, count, floorFor(matchId, src, item))
+                    if short > 0 and Arena.IsKey(owner) then
+                        oweItem(owner, item, short)
+                        ArenaDebug('weapons: %d %s did not come back off %s -- put on %s\'s slate.',
+                            short, item, tostring(src), tostring(owner))
+                    end
+                end
+                byPlayer[src] = nil
             end
-            byPlayer[src] = nil
         end
     end
 
-    for matchId, byPlayer in pairs(issuedSupplies) do
-        local given = byPlayer[src]
-        if given then
-            for item, count in pairs(given) do
-                takeBack(ox, src, item, count, floorFor(matchId, src, item))
-            end
-            byPlayer[src] = nil
-        end
-    end
+    reclaimStock(issuedAmmo)
+
+    reclaimStock(issuedSupplies)
 end
 
 local function forgetWeapons(src)
@@ -1921,7 +2201,7 @@ function ArenaAmmo.Reclaim(src, reasonKey)
 
     if record.cleared then
         local ox = inventory()
-        if ox then reclaimWeapons(ox, src) end
+        if ox then reclaimWeapons(ox, src, record.citizenid) end
     end
 
     local ok, wiped = restore(src, record)
@@ -1947,7 +2227,7 @@ function ArenaAmmo.Reclaim(src, reasonKey)
             forgetWeapons(src)
         else
             local ox = inventory()
-            if ox then reclaimWeapons(ox, src) end
+            if ox then reclaimWeapons(ox, src, record.citizenid) end
         end
     elseif Arena.IsKey(record.citizenid) then
         owed[record.citizenid] = record.stash
@@ -2250,6 +2530,62 @@ function ArenaAmmo.SweepReturns()
     return handed
 end
 
+--- Reads the slate back off the database at start.
+---
+--- WITHOUT THIS THE TABLE IS A WRITE-ONLY LOG. Every debt was written down
+--- faithfully and never read again, so a restart still forgot the lot -- the
+--- rows just sat there proving it. This is the half that makes the column
+--- worth having.
+---
+--- NOTHING IS CLOBBERED. It merges rather than assigns: `onResourceStart`
+--- can land after a match has already begun on a busy server, and a debt
+--- incurred in those first seconds must not be wiped by the read that
+--- follows it.
+function ArenaAmmo.LoadOwedKit()
+    if not kitDbOn() then return false end
+
+    kitDb(KIT_SCHEMA_SQL, {}, function()
+        kitDb(KIT_READ_SQL, {}, function(rows)
+            if type(rows) ~= 'table' then return end
+
+            local weapons, stacks = 0, 0
+            for _, row in ipairs(rows) do
+                local citizenid = row.citizenid
+                if Arena.IsKey(citizenid) then
+                    if row.kind == 'weapon' and Arena.IsKey(row.serial) then
+                        local held = owedKit[citizenid] or {}
+                        local already = false
+                        for _, have in ipairs(held) do
+                            if have.serial == row.serial then already = true break end
+                        end
+                        if not already then
+                            held[#held + 1] = { name = row.name, serial = row.serial }
+                            owedKit[citizenid] = held
+                            weapons = weapons + 1
+                        end
+                    elseif row.kind == 'item' and Arena.IsKey(row.name) then
+                        local amount = math.max(0, Arena.ToInt(row.amount) or 0)
+                        local held = owedItems[citizenid] or {}
+                        if amount > 0 and held[row.name] == nil then
+                            held[row.name] = amount
+                            owedItems[citizenid] = held
+                            stacks = stacks + 1
+                        end
+                    end
+                end
+            end
+
+            if weapons > 0 or stacks > 0 then
+                ArenaLog('weapons: read back %d outstanding weapon(s) and %d item stack(s) that '
+                    .. 'players still owe the arena. They are collected the next time each '
+                    .. 'character is seen.', weapons, stacks)
+            end
+        end)
+    end)
+
+    return true
+end
+
 function ArenaAmmo.Owed()
     local total = 0
     for _ in pairs(owed) do total = total + 1 end
@@ -2269,15 +2605,45 @@ end
 --- imply it is. A stash is a real ox_inventory row that AllStashes can find
 --- again after a restart. This lives in memory and nowhere else.
 --- @return table[] -- { { citizenid, count, weapons = { { name, serial } } } }
+--- Whether the slate is being written somewhere that survives a restart.
+--- @return boolean
+function ArenaAmmo.OwedKitIsSaved()
+    return Config.Database.enabled == true and GetResourceState('oxmysql') == 'started'
+end
+
 function ArenaAmmo.OwedKit()
-    local rows = {}
-    for citizenid, weapons in pairs(owedKit) do
-        local out = {}
-        for _, row in ipairs(weapons) do
-            out[#out + 1] = { name = row.name, serial = row.serial }
+    local byCitizen = {}
+
+    local function slate(citizenid)
+        local row = byCitizen[citizenid]
+        if not row then
+            row = { citizenid = citizenid, count = 0, weapons = {}, items = {} }
+            byCitizen[citizenid] = row
         end
-        rows[#rows + 1] = { citizenid = citizenid, count = #out, weapons = out }
+        return row
     end
+
+    for citizenid, weapons in pairs(owedKit) do
+        local row = slate(citizenid)
+        for _, weapon in ipairs(weapons) do
+            row.weapons[#row.weapons + 1] = { name = weapon.name, serial = weapon.serial }
+            row.count = row.count + 1
+        end
+    end
+
+    -- ONE SLATE PER CHARACTER, not one per ledger. A player who owes a rifle
+    -- and two hundred rounds is one debtor and reads as one line; two lists
+    -- for the same person would have an operator counting them twice. DO NOT
+    -- split this back into two lists.
+    for citizenid, stock in pairs(owedItems) do
+        local row = slate(citizenid)
+        for name, amount in pairs(stock) do
+            row.items[#row.items + 1] = { name = name, amount = amount }
+        end
+    end
+
+    local rows = {}
+    for _, row in pairs(byCitizen) do rows[#rows + 1] = row end
     return rows
 end
 

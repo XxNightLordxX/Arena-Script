@@ -28,9 +28,9 @@
       1150  Permissions   Who may open a match, who may force-stop one
       1231  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1665   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     1997   Database      Optional: all-time leaderboard. Off, no SQL to import
-     2007   Webhook       Optional: a Discord line per finished match
-     2039   Dispatch      Optional: keeping police and EMS out of the arena
+     2010   Database      Optional: leaderboard, and what players still owe the arena
+     2020   Webhook       Optional: a Discord line per finished match
+     2052   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1976,23 +1976,36 @@ Config.Loadouts = {
 }
 
 -- ======================================================================
--- DATABASE -- the all-time leaderboard, and nothing else.
+-- DATABASE -- the all-time leaderboard, and the arena's slate.
 --
 -- SHIPPED OFF, so the install is drag and drop: no SQL to import, no table
 -- to create, no database user to grant anything to.
 --
--- WHAT YOU LOSE IS ONE THING: the leaderboard resets when the server
--- restarts. Wins, kills and earnings are still counted and shown during a
--- session; they are simply not written down. Matches, teams, weapons,
--- betting, escrow, payouts and refunds never touch the database.
+-- WHAT YOU LOSE IS TWO THINGS, and the second one matters more than the
+-- first.
 --
--- TURNING IT ON is one word here and a restart. The table creates itself;
--- sql/install.sql is only for a database user not allowed to do that.
+-- The leaderboard resets when the server restarts. Wins, kills and earnings
+-- are still counted and shown during a session; they are simply not written
+-- down. Matches, teams, betting, escrow, payouts and refunds never touch the
+-- database at all.
+--
+-- AND THE ARENA FORGETS WHAT PLAYERS STILL OWE IT. There is one way out of a
+-- round the exit cannot cover: the player on that server id is no longer the
+-- character the arena armed -- a mid-round character switch, or a disconnect
+-- whose kit ox_inventory has already saved into somebody who is not here.
+-- The arena writes that down against the CHARACTER and takes it back the
+-- next time they are seen. With this off, that slate lives in memory, so a
+-- restart writes off every outstanding weapon and every round -- and "wait
+-- for the nightly restart" becomes a way to keep an arena loadout.
+--
+-- TURNING IT ON is one word here and a restart. Both tables create
+-- themselves; sql/install.sql is only for a database user not allowed to do
+-- that.
 --
 -- OFF MEANS OFF, INCLUDING THE DEPENDENCY -- oxmysql is not required, so the
--- resource starts on a server with no database at all. Switch this on
--- without oxmysql running and the console says so once and falls back to
--- counting this server run.
+-- resource starts on a server with no database at all. Everything still
+-- works; it works for the length of one uptime. Switch this on without
+-- oxmysql running and the console says so once and falls back to memory.
 -- ======================================================================
 Config.Database = {
     enabled = false,

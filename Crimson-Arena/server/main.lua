@@ -341,6 +341,13 @@ AddEventHandler('onResourceStart', function(resourceName)
     Arena.ReportConfigProblems()
     ArenaStats.EnsureSchema()
 
+    -- AND WHAT PLAYERS STILL OWE THE ARENA, read back before anybody can
+    -- queue. Without this the table was a write-only log: every debt
+    -- faithfully recorded and never looked at again, so a restart still
+    -- forgot the lot and the rows just sat there proving it. DO NOT drop
+    -- this call.
+    ArenaAmmo.LoadOwedKit()
+
     local hours = ArenaHoursState()
     if hours.line then
         ArenaLog('hours: %s (server clock %s, offset %+dh -> %s) -- %s',
@@ -530,6 +537,7 @@ local function pushAdmin(src, matchId)
             -- is the player's debt to the arena, and an operator who cannot
             -- see it cannot tell a quiet server from one being farmed.
             owedKit = withHolders(ArenaAmmo.OwedKit()),
+            owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
             stashesFound = total,
             stashesRead = read,
         })

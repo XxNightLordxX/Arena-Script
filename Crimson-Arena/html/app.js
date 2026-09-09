@@ -3474,6 +3474,7 @@
         player: null,
         owed: [],
         owedKit: [],
+        owedKitSaved: false,
         stashesFound: 0,
         stashesRead: 0,
         hoursOpen: true,
@@ -3732,9 +3733,11 @@
         var kitLine = byId('admin-kit-line');
         if (has(kitLine)) {
             var guns = 0;
+            var stacks = 0;
             var hereNow = 0;
             kit.forEach(function (entry) {
                 guns += int(entry.count, 0);
+                stacks += arrayOf(entry.items).length;
                 if (int(entry.src, 0) > 0) hereNow += 1;
             });
 
@@ -3742,12 +3745,24 @@
                collecting needs the character on the server, and when they are
                the door and the sweep already do it. A button here would only
                invite an admin to reach into somebody's inventory by hand. */
+            /* SAYS WHICH OF THE TWO IS TRUE about durability, rather than
+               picking one and being wrong half the time. Whether the slate
+               outlives a restart is the operator's own setting, and it is the
+               single most useful thing this line can tell them. */
+            var what = guns > 0 ? plural(guns, 'arena weapon') : '';
+            if (stacks > 0) {
+                what += (what ? ' and ' : '') + plural(stacks, 'item stack');
+            }
+
             kitLine.textContent = kit.length === 0 ? ''
-                : plural(guns, 'arena weapon') + ' left with '
-                  + plural(kit.length, 'character')
+                : what + ' left with ' + plural(kit.length, 'character')
                   + (hereNow > 0 ? ', ' + hereNow + ' of them on the server now' : '')
                   + '. Each is taken back the next time that character is seen \u2014 '
-                  + 'nothing has to be pressed. This list is in memory: a restart forgets it.';
+                  + 'nothing has to be pressed. '
+                  + (admin.owedKitSaved
+                      ? 'It is written to the database, so a restart does not lose it.'
+                      : 'It is held in memory only: a restart forgets it. Turn '
+                        + 'Config.Database.enabled on to keep it.');
         }
 
         var kitBox = byId('admin-kit-list');
@@ -3758,11 +3773,14 @@
                 card.appendChild(makeEl('span', 'admin-stash-who',
                     String(entry.citizenid)
                     + (int(entry.src, 0) > 0 ? ' \u00b7 here now' : ' \u00b7 offline')));
-                card.appendChild(makeEl('span', 'admin-stash-facts',
-                    arrayOf(entry.weapons).map(function (row) {
-                        return String(row.name)
-                            + (row.serial ? ' (' + String(row.serial) + ')' : ' (no serial)');
-                    }).join(', ')));
+                var facts = arrayOf(entry.weapons).map(function (row) {
+                    return String(row.name)
+                        + (row.serial ? ' (' + String(row.serial) + ')' : ' (no serial)');
+                }).concat(arrayOf(entry.items).map(function (row) {
+                    return String(row.name) + ' \u00d7' + int(row.amount, 0);
+                }));
+
+                card.appendChild(makeEl('span', 'admin-stash-facts', facts.join(', ')));
                 kitBox.appendChild(card);
             });
         }
@@ -3891,6 +3909,7 @@
                     admin.matches = arrayOf(data.matches);
                     admin.owed = arrayOf(data.owed);
                     admin.owedKit = arrayOf(data.owedKit);
+                    admin.owedKitSaved = data.owedKitSaved === true;
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
                     admin.hoursOpen = data.hoursOpen !== false;
@@ -3913,6 +3932,7 @@
                     admin.matches = arrayOf(data.matches);
                     admin.owed = arrayOf(data.owed);
                     admin.owedKit = arrayOf(data.owedKit);
+                    admin.owedKitSaved = data.owedKitSaved === true;
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
                     admin.hoursOpen = data.hoursOpen !== false;

@@ -53,14 +53,18 @@ missing.
    need them, so a server missing one still starts -- though `ox_inventory`
    is the one you will notice: without it nobody is issued a weapon at all,
    because the arena hands weapons over as items. Without `ox_target` no
-   lobby NPC is spawned, and without `oxmysql` the leaderboard covers the
-   server run. Each says so once in the console.
+   lobby NPC is spawned, and without `oxmysql` neither the leaderboard nor the
+   record of what players still owe the arena survives a restart. Each says so
+   once in the console, and says it again if the database goes away later.
 3. Optionally import `sql/install.sql`. **`Config.Database.enabled` ships
    `false`**, so on a default install there is no table and no query at all —
-   the leaderboard keeps its numbers in memory for the server run. If you turn
-   the database on, the resource creates its one table itself on first start;
-   import the SQL only if your database user cannot `CREATE TABLE` at runtime,
-   which is a reasonable way to run a production server.
+   the leaderboard and the outstanding-kit slate both keep their numbers in
+   memory for the server run. If you turn the database on, the resource
+   creates both of its tables itself on first start; import the SQL only if
+   your database user cannot `CREATE TABLE` at runtime, which is a reasonable
+   way to run a production server. That user needs `DELETE` as well as
+   `INSERT` and `UPDATE` — a settled debt is removed by deleting its row, and
+   the resource cannot see that failure.
 4. Start the server and read the console. The resource prints its own config
    validation and, a few seconds later, the dispatch detection report.
 
@@ -506,8 +510,11 @@ arena keeps a slate at all. It is worth ten minutes.
       are written down against them.` **Nothing is taken off the character
       they switched to** — that is the whole point. Reaching into whoever
       holds that server id now would take a stranger's guns.
-- [ ] `/arenaadmin` shows that citizen id under **Arena kit still out**, with
-      the weapon and its serial, reading `offline`.
+- [ ] `/arenaadmin` shows that citizen id with the weapon and its serial,
+      reading `offline`. The heading names what is actually outstanding:
+      **Arena weapons still out** for a weapon alone, **Arena kit still out**
+      once the rounds and supplies they were issued are on the slate beside
+      it, which is the usual case for a fighter who was mid-round.
 - [ ] They switch back. Within one sweep — `returnRetrySeconds`, thirty
       seconds by default — or at the door of their next round, whichever
       comes first, the console says `weapons: took the arena's <weapon>
@@ -518,9 +525,13 @@ arena keeps a slate at all. It is worth ten minutes.
       components, not just the item name.
 - [ ] With `Config.Database.enabled` on, do the last two steps **across a
       `restart crimson_arena`**. The debt must still be there afterwards, and
-      the console must say `weapons: read back N outstanding weapon(s)...` on
-      the way up. No such line with rows in the table means this resource was
-      ensured before oxmysql.
+      the console must say `weapons: read back N outstanding weapon(s)...`.
+      It no longer has to appear at start: if this resource was ensured above
+      oxmysql the first read finds no database and the sweep retries, so the
+      line arrives within one `returnRetrySeconds` instead. Rows in the table
+      and no line at all within a minute is the real symptom — and with
+      `returnRetrySeconds = 0` the retry is off entirely, so there the line
+      must appear at start or not at all.
 
 **A disconnect does not keep it**
 

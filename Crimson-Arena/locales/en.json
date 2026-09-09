@@ -92,7 +92,6 @@
         "left": "You walked out of the match."
     },
     "meta": {
-        "locale_probe": "en",
         "unknown_player": "Unknown"
     },
     "notify": {

@@ -196,8 +196,8 @@ instancing really happened rather than assuming it did.
 | Weapons | 77 | 19 |
 
 Other shipped defaults worth knowing: betting **on** (entry fees, spectator bets
-and fighter bets all on), the leaderboard database **off** (so the board covers the
-current server run), webhooks **off**, `Config.Debug` **on**, loadouts chosen by
+and fighter bets all on), the database **off** (so the board, and the record of what
+players still owe the arena, both cover the current server run only), webhooks **off**, `Config.Debug` **on**, loadouts chosen by
 the **host**, ammunition items **on**, the inventory door **on**, minimum 2 players,
 no maximum, no cap on concurrent matches, and `last_standing` as the win condition.
 

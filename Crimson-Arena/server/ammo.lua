@@ -1264,23 +1264,6 @@ local function takeWeaponBack(ox, src, record)
     return false, false
 end
 
---- The two answers back into one, for the callers that genuinely cannot use
---- the second and must not silently get the wrong half of it.
----
---- WHAT THIS DECIDES IS WHO PAYS FOR A WEAPON THAT DIED WITH ITS OWNER, and
---- it is one word. `taken or absent` settles the row: nothing is billed, and
---- a weapon parked out of reach before a disconnect is free. `taken` alone
---- bills it: the parked weapon goes on the slate, and so does every gun a
---- corpse dropped -- and chaseOwedKit will NEVER write those off, because it
---- refuses on purpose to delete a row that is not in front of it, so they sit
---- on the ledger until the cap forgets them and crowd out real debts. This is
---- the arena's answer today and changing it is the owner's call, not an
---- editor's.
-local function settledWeapon(ox, src, record)
-    local took, absent = takeWeaponBack(ox, src, record)
-    return took or absent
-end
-
 local function issueSpareRounds(ox, src, matchId, entry, pass)
     local item = entry.ammoTypeItem
     local _, spare = splitRounds(entry)
@@ -1764,8 +1747,9 @@ function ArenaAmmo.Refresh(src, matchId, loadout)
             -- rather than by the player, so `refused` stays false for it and
             -- the skip below does not fire -- a fighter whose weapon died
             -- with them is armed again on the next life, and DO NOT put that
-            -- skip back in the way of it. See settledWeapon for the half of
-            -- this decision that is the owner's.
+            -- skip back in the way of it. See reclaimWeapons for the half of
+            -- this decision that is the owner's -- there, an absent weapon is
+            -- billed; here it must NEVER be.
             local taken, refused = takeRungBack(ox, src, record, name, false)
 
             if refused then
@@ -2063,6 +2047,37 @@ local KIT_READ_SQL =
     'SELECT citizenid, ledger_key, kind, name, serial, amount FROM crimson_arena_owed_kit '
     .. 'ORDER BY written_at DESC LIMIT ' .. KIT_READ_LIMIT
 
+--- How long a debt stays chaseable before the arena gives up on it.
+---
+--- SOMETHING HAS TO EXPIRE A ROW, and until now nothing did. There are debts
+--- nothing can EVER collect: a weapon destroyed on death is not in anybody's
+--- pockets, and the chase keeps it on purpose rather than pretend it can prove
+--- otherwise. Every one of those is permanent, so the table only grows, the
+--- read-back skips what it has no room for, and the skipped rows are never
+--- looked at again by anything. Two hundred stale characters is also what
+--- pushes real, collectable debts off the slate at the cap.
+---
+--- A MONTH, because the debt this exists to collect is settled the next time
+--- the player is seen and that is usually the same evening. A weapon parked in
+--- a trunk to dodge the exit comes back out long before this. DO NOT shorten
+--- it to something a holiday could outlast.
+local OWED_KIT_MAX_DAYS = 30
+
+--- THE ONLY THING THAT EVER TAKES A ROW OUT OF THE TABLE ON AGE, and it runs
+--- ONCE per process, ahead of the read-back, so a debt older than the limit is
+--- never read into memory in the first place.
+---
+--- WRITTEN AS THE CLOCK THE ROW WAS STAMPED BY -- the database's, through
+--- `written_at` -- and NOT the server's. This is the one place the two can be
+--- compared, and comparing them anywhere else would need the column read back
+--- and parsed by a Lua that has no date type. The number is inlined for the
+--- same reason KIT_READ_LIMIT is: it is a constant of this file, never input.
+--- DO NOT turn it into a placeholder -- an INTERVAL will not take one on every
+--- MySQL a server might be running.
+local KIT_PURGE_SQL =
+    'DELETE FROM crimson_arena_owed_kit WHERE written_at < (NOW() - INTERVAL '
+    .. OWED_KIT_MAX_DAYS .. ' DAY)'
+
 --- Set only from inside a callback that actually ran -- see LoadOwedKit.
 ---
 --- MEASURED, NOT INFERRED, and the difference is a screen that lies. Whether
@@ -2090,6 +2105,53 @@ local kitSchemaConfirmed = false
 --- answer is enough to stop claiming the slate is durable. DO NOT report a
 --- read as proof of a write.
 local kitWriteRefused = false
+
+--- Whether a write to the slate has ever been PROVEN to land.
+---
+--- THE ABSENCE OF A REFUSAL IS NOT PROOF OF A WRITE, and reading it as one
+--- costs a player their own stock exactly once per process. `kitWriteRefused`
+--- can only be set by a write that has already been sent and refused -- so on
+--- a database user with SELECT and no DELETE, the FIRST fungible collection of
+--- every run goes ahead, takes the rounds, and only then learns that the
+--- settlement could not be recorded. The row survives, the next start reads it
+--- back, and the same debt is collected a second time. Measured: 10 taken on a
+--- debt of 5, once per restart, out of stock the player bought themselves.
+---
+--- So the fungible half now waits for evidence rather than for a refusal. This
+--- is set by any kit-slate statement whose callback comes back with an answer,
+--- which on a working database is the first thing that happens at start.
+--- CANNOT be answered from Config or from the read: a SELECT is exactly what
+--- that user has. DO NOT set this anywhere but a write's own callback.
+local kitWriteLanded = false
+
+--- Ledger keys whose settlement has NOT been written down yet.
+---
+--- A SETTLEMENT IS A DELETE, AND ArenaDb THROWS AWAY A STATEMENT IT CANNOT
+--- SEND. There is no queue behind it. So with oxmysql stopped the chase takes
+--- the arena's rifle back off a player, clears the row in memory, and the
+--- DELETE evaporates: the table still says the debt is open, the next start
+--- reads it back, and the slate carries a debt for a weapon the arena is
+--- already holding. That row CANNOT ever be collected -- the chase refuses on
+--- purpose to delete a row it cannot see -- and it holds a slate slot until
+--- the cap forgets it. Measured: one settled weapon, one phantom debt on the
+--- next start, and it survives every further sweep.
+---
+--- A DELETE IS THE ONLY STATEMENT SAFE TO REPLAY, which is why this holds
+--- KEYS and NEVER SQL. Sending the same DELETE twice costs nothing; an INSERT
+--- that adds to a stack is a different debt every time it lands. DO NOT put an
+--- adding write in here.
+---
+--- AND A KEY LEAVES THE SET THE MOMENT IT IS OWED AGAIN. A stack settled and
+--- then re-incurred writes a NEW row under the same key, and replaying the old
+--- DELETE would erase it -- so every save clears the key it writes.
+local settledKeys = {}
+local settledCount = 0
+
+--- Bounded like everything else on this slate. Reached only when the database
+--- has been refusing writes for a very long time, at which point the operator
+--- has a much louder problem -- but a set with no bound is a leak whatever
+--- feeds it. DO NOT take the cap off.
+local SETTLED_LIMIT = 4000
 
 --- Whether the read-back has been attempted and succeeded.
 ---
@@ -2134,7 +2196,18 @@ local function itemKey(name) return 'i:' .. tostring(name) end
 --- once, because these fire per weapon per exit. DO NOT make this a counter
 --- that resets.
 local function wrote(answer)
-    if answer ~= nil or kitWriteRefused then return end
+    -- AN ANSWER IS THE PROOF, and it is the only one there is. See
+    -- kitWriteLanded: without it the fungible half treats "nothing has been
+    -- refused yet" as "this user can write", which is true of every process
+    -- until the moment it is expensively false. Only a WRITE's own callback
+    -- may set it; DO NOT set it from a read, which is exactly what the user
+    -- this guards against does have.
+    if answer ~= nil then
+        kitWriteLanded = true
+        return
+    end
+
+    if kitWriteRefused then return end
 
     -- A NIL ANSWER IS ONLY A REFUSAL WHEN THERE WAS SOMETHING TO REFUSE IT.
     -- ArenaDb calls back with nil on every path that does not reach oxmysql,
@@ -2153,12 +2226,76 @@ local function wrote(answer)
         .. 'oxmysql\'s console, not this one.')
 end
 
+--- Takes one key off the replay set, because a debt has just been written
+--- under it again. DO NOT save a row without calling this first: a replayed
+--- DELETE would take the new debt with the old one.
+local function owedAgain(citizenid, key)
+    local keys = settledKeys[citizenid]
+    if keys == nil or keys[key] == nil then return end
+
+    keys[key] = nil
+    settledCount = settledCount - 1
+    if next(keys) == nil then settledKeys[citizenid] = nil end
+end
+
+--- THE ONE PLACE A LEDGER ROW IS DELETED, and it remembers the key until the
+--- database says the row is gone. Every DELETE on this slate comes through
+--- here; see settledKeys for what a dropped one costs. DO NOT send
+--- KIT_DROP_SQL from anywhere else.
+local function dropLedgerRow(citizenid, key)
+    local keys = settledKeys[citizenid]
+    if keys == nil and settledCount < SETTLED_LIMIT then
+        keys = {}
+        settledKeys[citizenid] = keys
+    end
+    if keys ~= nil and keys[key] == nil and settledCount < SETTLED_LIMIT then
+        keys[key] = true
+        settledCount = settledCount + 1
+    end
+
+    ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, key }, function(answer)
+        wrote(answer)
+        if answer ~= nil then owedAgain(citizenid, key) end
+    end)
+end
+
+--- Re-sends the settlements the database never took.
+---
+--- ORDERED AHEAD OF THE READ-BACK BY EVERY CALLER, and that ordering is the
+--- whole of its correctness: LoadOwedKit's SELECT is a photograph of the
+--- table, so a settlement still waiting to be sent when the photograph is
+--- taken comes straight back as an open debt. The merge refuses a pending key
+--- as well, because a statement in flight is not a statement that has landed.
+--- DO NOT call this after a read has been dispatched.
+local function replaySettled()
+    if settledCount == 0 or kitWriteRefused then return 0 end
+    if not ArenaDbReady('the outstanding-kit slate') then return 0 end
+
+    -- LISTED BEFORE ANY OF IT IS SENT. The callback can answer on this very
+    -- line and takes its key out of the table being walked; building the list
+    -- first is what keeps that from being a traversal of a table that is
+    -- changing underneath it. DO NOT dispatch from inside the pairs loop.
+    local flat = {}
+    for citizenid, keys in pairs(settledKeys) do
+        for key in pairs(keys) do flat[#flat + 1] = { citizenid, key } end
+    end
+
+    for _, entry in ipairs(flat) do dropLedgerRow(entry[1], entry[2]) end
+
+    ArenaLog('weapons: %d settlement(s) the database never took have been sent again. They are '
+        .. 'debts the arena has ALREADY collected, and the rows would otherwise be read back as '
+        .. 'open on the next start.', #flat)
+    return #flat
+end
+
 local function saveOwedWeapon(citizenid, row)
+    owedAgain(citizenid, weaponKey(row.serial))
     ArenaDb('the outstanding-kit slate', KIT_WEAPON_SQL,
         { citizenid, weaponKey(row.serial), row.name, row.serial }, wrote)
 end
 
 local function saveOwedItem(citizenid, name, amount)
+    owedAgain(citizenid, itemKey(name))
     ArenaDb('the outstanding-kit slate', KIT_ITEM_ADD_SQL,
         { citizenid, itemKey(name), name, amount }, wrote)
 end
@@ -2169,14 +2306,15 @@ end
 --- a debt or erases one.
 local function setOwedItem(citizenid, name, amount)
     if amount <= 0 then
-        ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, itemKey(name) }, wrote)
+        dropLedgerRow(citizenid, itemKey(name))
         return
     end
+    owedAgain(citizenid, itemKey(name))
     ArenaDb('the outstanding-kit slate', KIT_ITEM_SET_SQL, { citizenid, itemKey(name), name, amount }, wrote)
 end
 
 local function dropOwedWeapon(citizenid, serial)
-    ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(serial) }, wrote)
+    dropLedgerRow(citizenid, weaponKey(serial))
 end
 
 --- Trims a character's weapon slate to the cap, oldest first.
@@ -2242,7 +2380,7 @@ local function dropOwedCharacter(citizenid)
         -- THE STORED ROW GOES WITH THE MEMORY ONE. Dropped from memory alone
         -- it is read straight back in on the next start, and the cap this
         -- serves would be back where it was within a restart.
-        ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, itemKey(name) }, wrote)
+        dropLedgerRow(citizenid, itemKey(name))
     end
     owedKit[citizenid] = nil
     owedItems[citizenid] = nil
@@ -2644,6 +2782,16 @@ end
 local function stockIsCollectable()
     if Config.Database.enabled ~= true then return true end
     if kitWriteRefused then return false end
+
+    -- AND ONE WRITE MUST ACTUALLY HAVE LANDED. `kitWriteRefused` is only ever
+    -- set by a statement that has already been sent and refused, so on a
+    -- SELECT-only database user it is still false for the FIRST collection of
+    -- every run -- which goes ahead, takes the rounds, and learns a moment
+    -- later that it could not be written down. Measured at 10 taken on a debt
+    -- of 5, once per restart, out of stock the player bought. The refusal is
+    -- one collection too late to be the whole gate. DO NOT drop this test.
+    if not kitWriteLanded then return false end
+
     return ArenaDbReady('the outstanding-kit slate')
 end
 
@@ -2722,7 +2870,7 @@ local function chaseOwedKit(src, citizenid)
         if not Arena.IsKey(row.serial) then
             -- AND THE STORED ROW GOES WITH IT. Dropped from memory only, it
             -- is read back on every start for ever and can NEVER be acted on.
-            ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(row.serial) }, wrote)
+            dropLedgerRow(citizenid, weaponKey(row.serial))
             ArenaLog('weapons: a %s owed by %s has no serial and cannot be told from one of their own '
                 .. '-- written off.', tostring(row.name), tostring(citizenid))
             goto continue
@@ -2956,7 +3104,7 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                             .. 'taking a weapon of somebody else\'s.',
                             item.name, tostring(item.citizenid))
                     end
-                elseif not settledWeapon(ox, src, item) then
+                elseif not takeWeaponBack(ox, src, item) then
                     -- IT DID NOT COME BACK, SO IT GOES ON THE SLATE. This is
                     -- the branch every ordinary disconnect takes: nobody has
                     -- taken the server id over yet, so the row still looks
@@ -2966,16 +3114,28 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                     -- line below and the weapons were gone for good -- which
                     -- is the same free loadout by a quieter route.
                     --
-                    -- AND ONLY A REFUSAL REACHES HERE NOW. settledWeapon has
-                    -- already taken "the arena's copy is not in these
-                    -- pockets" off this branch, which is what a weapon
-                    -- destroyed on death looks like -- so what is written
-                    -- down is kit ox_inventory would not give up, not kit
-                    -- that has stopped existing. DO NOT widen it back over
-                    -- the absent case on the reasoning that the chase will
-                    -- sort it out: chaseOwedKit refuses on purpose to delete
-                    -- a row that is not in front of it, so a debt for a gun
-                    -- nobody holds is NEVER collected and NEVER cleared.
+                    -- AND "NOT IN THESE POCKETS" IS ON THIS BRANCH TOO, which
+                    -- is the owner's answer to the second half of the same
+                    -- exploit and NOT an editing tidy-up. `absent` is dropped
+                    -- on purpose here: the arena reads the pockets, finds its
+                    -- serial gone, and had been calling that settled -- so an
+                    -- arena weapon moved out of a fighter's pockets by any
+                    -- route the swapItems hook cannot see (another resource's
+                    -- server-side RemoveItem, a trunk, a friend's hands) left
+                    -- the round free and unrecorded. ox raises no hook on
+                    -- another resource's write, so no number of extra hooks
+                    -- closes it; only billing the absence does. Measured: 0
+                    -- debts and the gun kept, against 1 debt and the gun
+                    -- collected the next time they carried it.
+                    --
+                    -- WHAT IT COSTS is a row for a weapon a corpse dropped,
+                    -- which nothing will ever collect -- and this branch is
+                    -- only reached with the door OFF or after a stash failed,
+                    -- because a stripped exit destroys the pockets wholesale
+                    -- and never comes through here. Those rows now age out of
+                    -- the table; see OWED_KIT_MAX_DAYS, which was written for
+                    -- exactly this. DO NOT narrow this back to a refusal
+                    -- without taking the age-out out with it.
                     -- NAMED APART FROM THE FUNCTION-SCOPE `owner`, which it
                     -- used to shadow. Both were correct, and a reader had to
                     -- prove that twice.
@@ -3192,6 +3352,78 @@ end
 --- @param src integer
 --- @param matchId string
 --- @param why string -- for the console only
+--- Matches whose rows could not be dropped yet, and the ones that have been
+--- shouted about already.
+---
+--- DECLARED HERE RATHER THAN BESIDE ArenaAmmo.Clear, WHICH IS WHERE IT READS
+--- BEST, because the door and the sweep both drive the retry and both are
+--- above that function. A local used above its own definition is not a
+--- forward reference in Lua, it is a GLOBAL -- silently nil at the call and
+--- named in the resource's global scan. DO NOT move these down beside Clear.
+local pendingClear = {}
+local pendingClearSaid = {}
+
+--- Drops one match's five per-match tables, or says who is stopping it.
+--- @return boolean, number|nil, string|nil
+local function dropMatchRows(matchId)
+    -- THE REFUSAL COMES FIRST, AND `heldBefore` GOES WITH THE REST OR NOT AT
+    -- ALL.
+    --
+    -- This dropped the floor before deciding whether to drop anything. When
+    -- the refusal then fired -- somebody's kit still stashed against the
+    -- match -- the issued rows survived, as intended, but the record of what
+    -- each fighter WALKED IN WITH was already gone. `takeBack` reads that as
+    -- a floor of zero, so the exit that followed reclaimed a player's own
+    -- ammunition down to nothing.
+    --
+    -- It bites hardest exactly where the floor is the only protection there
+    -- is: with the door off, or after a stash failed, a fighter's own rounds
+    -- are loose in their pockets beside the arena's. DO NOT hoist this line
+    -- back above the loop.
+    for src, record in pairs(stashed) do
+        if record.matchId == matchId then return false, src, record.stash end
+    end
+
+    heldBefore[matchId] = nil
+    issuedOwner[matchId] = nil
+
+    issuedAmmo[matchId] = nil
+    issuedWeapons[matchId] = nil
+    issuedSupplies[matchId] = nil
+    return true
+end
+
+--- Asks again for every match whose teardown was refused.
+---
+--- A REFUSAL USED TO BE PERMANENT. All three callers of ArenaAmmo.Clear throw
+--- its boolean away and none of them ever asks a second time, so the five
+--- per-match tables for a match with a stranded stash stayed for the life of
+--- the process -- long after the exit that stranded it had settled and taken
+--- the reason away. They are not big: forgetWeapons drops the rows inside
+--- them, so what is left is empty. What is left is also walked, twice, by
+--- every exit that happens afterwards, because queueOwedKit and reclaimWeapons
+--- both iterate every match this process has ever seen. Measured at four table
+--- entries per refused match, for ever: five hundred of them cost one exit two
+--- thousand steps through nothing. DO NOT let a refusal be the last word.
+local function retryPendingClears()
+    if next(pendingClear) == nil then return 0 end
+
+    local cleared = 0
+    -- LISTED FIRST, because the drop below takes its own key out of the table
+    -- this walks. DO NOT drop from inside the pairs loop.
+    local ids = {}
+    for matchId in pairs(pendingClear) do ids[#ids + 1] = matchId end
+
+    for _, matchId in ipairs(ids) do
+        if dropMatchRows(matchId) then
+            pendingClear[matchId] = nil
+            pendingClearSaid[matchId] = nil
+            cleared = cleared + 1
+        end
+    end
+    return cleared
+end
+
 local function warnOwnKit(src, matchId, why)
     ArenaLog('door: %s (%s) enters match %s carrying their own kit -- %s.',
         ArenaPlayerName(src), tostring(src), tostring(matchId), why)
@@ -3235,6 +3467,19 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     -- NO reader at all on that pair of settings: every debt written, none
     -- ever collected. A weapon debt has nothing to do with whether the door
     -- stashes anything. DO NOT move this back inside.
+    -- AND THE SAME THREE THINGS THE SWEEP DOES, IN THE SAME ORDER, because on
+    -- `returnRetrySeconds = 0` there IS no sweep. Config says that number
+    -- switches off the stash retry, which is what an operator setting it
+    -- means -- but the same thread is the only retry the slate read-back has,
+    -- and the only thing that ever re-sends a settlement the database refused.
+    -- On that one setting the slate was never read back at all if oxmysql came
+    -- up second, and no settlement was ever replayed. The door is the other
+    -- place a debtor is certain to be standing. DO NOT tie the ledger's own
+    -- upkeep to a stash setting.
+    replaySettled()
+    ArenaAmmo.LoadOwedKit()
+    retryPendingClears()
+
     if ox then
         local holder = ArenaGetPlayer(src)
         local holderId = holder and holder.PlayerData and holder.PlayerData.citizenid or nil
@@ -3504,35 +3749,28 @@ end
 function ArenaAmmo.Clear(matchId)
     if not Arena.IsKey(matchId) then return false end
 
-    -- THE REFUSAL COMES FIRST, AND `heldBefore` GOES WITH THE REST OR NOT AT
-    -- ALL.
-    --
-    -- This dropped the floor before deciding whether to drop anything. When
-    -- the refusal then fired -- somebody's kit still stashed against the
-    -- match -- the issued rows survived, as intended, but the record of what
-    -- each fighter WALKED IN WITH was already gone. `takeBack` reads that as
-    -- a floor of zero, so the exit that followed reclaimed a player's own
-    -- ammunition down to nothing.
-    --
-    -- It bites hardest exactly where the floor is the only protection there
-    -- is: with the door off, or after a stash failed, a fighter's own rounds
-    -- are loose in their pockets beside the arena's. DO NOT hoist this line
-    -- back above the loop.
-    for src, record in pairs(stashed) do
-        if record.matchId == matchId then
-            ArenaLog('door: refusing to drop match %s -- %s\'s kit is still stashed at %s.',
-                tostring(matchId), tostring(src), record.stash)
-            return false
-        end
+    local dropped, src, stash = dropMatchRows(matchId)
+    if dropped then
+        pendingClear[matchId] = nil
+        pendingClearSaid[matchId] = nil
+        return true
     end
 
-    heldBefore[matchId] = nil
-    issuedOwner[matchId] = nil
+    -- SAID ONCE PER MATCH, NOT ONCE PER ASK. The refusal is now retried at
+    -- every door and every sweep until it goes through, and a line repeating
+    -- the same sentence every thirty seconds is the log an operator stops
+    -- reading -- the rule this file already states over the empty-read
+    -- warning. It is worth saying loudly the first time and worth nothing
+    -- after that. DO NOT move this above the retry and make it per-pass.
+    if not pendingClearSaid[matchId] then
+        pendingClearSaid[matchId] = true
+        ArenaLog('door: refusing to drop match %s -- %s\'s kit is still stashed at %s. The rows '
+            .. 'are kept and it is asked again at every exit and every sweep. Said once.',
+            tostring(matchId), tostring(src), tostring(stash))
+    end
 
-    issuedAmmo[matchId] = nil
-    issuedWeapons[matchId] = nil
-    issuedSupplies[matchId] = nil
-    return true
+    pendingClear[matchId] = true
+    return false
 end
 
 --- THE READER BELOW GOES THROUGH ownRecord, and that is not tidiness. `stashed` is keyed by server id, a record is deliberately KEPT
@@ -3842,7 +4080,13 @@ function ArenaAmmo.SweepReturns()
     -- up. Worse than the noise, the snapshots were taken at different
     -- instants, and a later-landing older one overwrote what a newer one had
     -- already merged. DO NOT move this back inside the loop.
+    --
+    -- AND THE SETTLEMENTS THE DATABASE NEVER TOOK GO FIRST, because the read
+    -- below is a photograph of the table and a settlement still queued is an
+    -- open debt in it. See replaySettled. DO NOT reorder these two.
+    replaySettled()
     ArenaAmmo.LoadOwedKit()
+    retryPendingClears()
 
     if not inventory() then return 0 end
 
@@ -3915,6 +4159,28 @@ function ArenaAmmo.LoadOwedKit()
     SetTimeout(RETRY_TIMEOUT_MS, function() kitLoading = false end)
 
     ArenaDb('the outstanding-kit slate', KIT_SCHEMA_SQL, {}, function()
+        -- THE AGE-OUT, AND IT GOES ABOVE THE READ ON PURPOSE. A row past the
+        -- limit must not come back into memory only to be evicted again by
+        -- the cap; deleting it first is what makes the limit mean anything.
+        --
+        -- ITS ANSWER IS ALSO THE ONE HONEST TEST OF WHETHER THIS DATABASE
+        -- USER MAY DELETE, taken at start instead of out of a player's
+        -- pockets. It is NOT routed through `wrote`: a statement that matches
+        -- no rows is the ordinary case, and latching the loud "slate cannot be
+        -- written" warning on it would shout at every healthy server on any
+        -- build whose driver answers a nothing-to-do DELETE with nil. Proof
+        -- one way only. DO NOT hand this callback to `wrote`.
+        --
+        -- WHICH ALSO MEANS THE TWO JOBS CANNOT BE SEPARATED. Take this
+        -- statement away and nothing else proves a write on a process whose
+        -- only ledger traffic is COLLECTIONS -- every one of them is held, on
+        -- a perfectly healthy database, for ever. Measured at 0 taken of a
+        -- debt of 5. DO NOT remove it without giving kitWriteLanded another
+        -- source first.
+        ArenaDb('the outstanding-kit slate', KIT_PURGE_SQL, {}, function(answer)
+            if answer ~= nil then kitWriteLanded = true end
+        end)
+
         ArenaDb('the outstanding-kit slate', KIT_READ_SQL, {}, function(rows)
             -- CLEARED ON EVERY EXIT FROM HERE, including the failure below.
             -- ArenaDb calls the callback with nil when it cannot send, so both
@@ -3953,6 +4219,21 @@ function ArenaAmmo.LoadOwedKit()
             for i = #rows, 1, -1 do
                 local row = rows[i]
                 local citizenid = type(row) == 'table' and row.citizenid or nil
+
+                -- A ROW ALREADY SETTLED IN MEMORY IS NOT AN OPEN DEBT, and
+                -- this read cannot tell the difference on its own. The SELECT
+                -- is a photograph of the table taken at one instant, and a
+                -- collection that happened either before it (its DELETE not
+                -- yet taken) or while it was on the wire is still in the
+                -- picture. Merging it puts a settled stack back at its old
+                -- total, to be charged again, or re-inserts a weapon the
+                -- arena is already holding. settledKeys is the only record
+                -- that those settlements happened. DO NOT drop this test.
+                local pending = citizenid and settledKeys[citizenid] or nil
+                if pending and type(row) == 'table' and pending[row.ledger_key] then
+                    citizenid = nil
+                end
+
                 if Arena.IsKey(citizenid) then
                     -- THE CAPS APPLY TO WHAT COMES BACK IN, TOO. This read
                     -- was a straight bulk insert with no bound of any kind,

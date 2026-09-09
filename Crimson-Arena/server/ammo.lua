@@ -3056,11 +3056,36 @@ local function reclaimWeapons(ox, src, fallbackOwner)
     -- -- and without this the shortfall below had nowhere to go and was
     -- simply dropped. The caller knows whose round it was, and must not stop
     -- saying so.
-    local owner = Arena.IsKey(fallbackOwner) and fallbackOwner or liveId
+    --
+    -- AND IT NO LONGER ENDS AT WHOEVER IS STANDING THERE. This was
+    -- `or liveId`, which answered by guessing the one question this function
+    -- exists to answer by evidence. Both tests below compare an owner
+    -- against the live holder, so an exit that could not read who it armed
+    -- named the live holder as the owner and then found no mismatch -- the
+    -- guess agreeing with itself -- and settled a departed fighter's round
+    -- against a newcomer's pockets. `fallbackOwner` is a statement about who
+    -- was ARMED; the live holder is a statement about who is HERE, and they
+    -- are only the same person until somebody reconnects onto a freed slot.
+    -- Left unset an unknown owner stays unknown, which is what the tests
+    -- below are written to refuse to act on. DO NOT put `or liveId` back.
+    local owner = Arena.IsKey(fallbackOwner) and fallbackOwner or nil
 
-    for _, byPlayer in pairs(issuedWeapons) do
+    for matchId, byPlayer in pairs(issuedWeapons) do
         local given = byPlayer[src]
         if given then
+            -- WHO THE ARENA ARMED FOR THIS MATCH, read here for the same
+            -- reason the stock loop below reads it: a weapon row carries its
+            -- own citizen id, and that id is empty for exactly one reason --
+            -- the framework could not say who was standing there at the
+            -- instant the kit was handed over. The stamp is a SECOND read of
+            -- the same question, taken again at every consumable handed over
+            -- afterwards, so it is often there when the row's own id is not.
+            --
+            -- This loop was keyed `_, byPlayer` and so had no `matchId` to
+            -- look the stamp up with, which is why it had nothing to fall
+            -- back to and fell open instead. DO NOT drop the key again.
+            local stamped = (issuedOwner[matchId] or {})[src]
+
             -- THE COPY THE ARENA ISSUED, IDENTIFIED BY ITS SERIAL, and this
             -- is a theft guard rather than a tidiness one. Removing by name
             -- alone took whichever slot ox_inventory found first, so a
@@ -3086,23 +3111,71 @@ local function reclaimWeapons(ox, src, fallbackOwner)
             -- that walked off with a CHARACTER, which is a different case
             -- and has its own branch above.
             for _, item in ipairs(given) do
+                -- WHOSE ROW THIS IS, and only the two answers that were
+                -- written down WHILE THE PLAYER WAS BEING ARMED are allowed
+                -- to say: the row's own stamp, then the match stamp.
+                --
+                -- `fallbackOwner` is deliberately not a third one. It names
+                -- the character a STASH RECORD belongs to, and a record is
+                -- kept on purpose when a restore could not finish -- so on
+                -- this path it can be a leftover from an earlier round and
+                -- an earlier character. It is honest enough to bill a
+                -- shortfall to, which is all the stock loop below asks of
+                -- it, and not honest enough to decide whether to take a
+                -- weapon off the person standing here.
+                --
+                -- The live holder is not on the list either, for the
+                -- stronger reason: it is the thing every test here compares
+                -- against, so putting it in the answer makes the test agree
+                -- with itself and take a stranger's weapon. DO NOT widen
+                -- this to anything that is not a record of who was armed.
+                local rowOwner = Arena.IsKey(item.citizenid) and item.citizenid
+                    or (Arena.IsKey(stamped) and stamped)
+                    or nil
+
                 -- NOT THIS PLAYER'S TO GIVE BACK. The arena armed somebody
                 -- else on this server id; taking a weapon off whoever
                 -- inherited it would be taking one of their own. It goes on
                 -- the absent character's slate instead.
-                if Arena.IsKey(item.citizenid) and Arena.IsKey(liveId)
-                    and item.citizenid ~= liveId
-                then
-                    if oweWeapon(item.citizenid, item) then
+                --
+                -- AND A ROW WITH NO OWNER FAILS CLOSED. This opened with
+                -- `Arena.IsKey(item.citizenid)`, so a row the arena could
+                -- not put a name to skipped the ownership test altogether
+                -- and fell through to the removal below -- which, for a row
+                -- that has no serial either, takes the one copy of that name
+                -- it can find. On a server id that has been handed to
+                -- somebody else, that copy is the newcomer's own weapon, and
+                -- they are told nothing.
+                --
+                -- "I cannot tell whose this is" is not permission to take it
+                -- off whoever happens to be standing here; the arena would
+                -- rather write its own weapon off, which is the same
+                -- judgement the serial guard below already makes. DO NOT
+                -- narrow this back to rows that name an owner.
+                if Arena.IsKey(liveId) and rowOwner ~= liveId then
+                    if oweWeapon(rowOwner, item) then
                         ArenaLog('weapons: the arena\'s %s (%s) went with %s, not with %s who holds '
                             .. 'their server id now. It is written down against them.',
                             item.name, tostring(item.serial or 'no serial'),
-                            tostring(item.citizenid), tostring(liveId))
-                    else
+                            tostring(rowOwner), tostring(liveId))
+                    elseif Arena.IsKey(rowOwner) then
                         ArenaLog('weapons: the arena\'s %s went with %s and CANNOT be chased -- it was '
                             .. 'issued without a readable serial, so it is written off rather than risk '
                             .. 'taking a weapon of somebody else\'s.',
-                            item.name, tostring(item.citizenid))
+                            item.name, tostring(rowOwner))
+                    else
+                        -- NAMED SEPARATELY BECAUSE IT IS A DIFFERENT ANSWER.
+                        -- The line above says the arena knows whose weapon
+                        -- walked off and cannot chase it; this one says it
+                        -- does not know, which is an operator's cue that the
+                        -- framework could not identify a player at the door.
+                        -- Both end the same way -- written off, nothing
+                        -- taken -- and a console that says the wrong one of
+                        -- the two sends somebody looking for the wrong fault.
+                        ArenaLog('weapons: the arena\'s %s is written off -- it was issued without a '
+                            .. 'readable owner, and %s holds that server id now. NOTHING is being taken '
+                            .. 'off them for a round they were never in.',
+                            item.name, tostring(liveId))
                     end
                 elseif not takeWeaponBack(ox, src, item) then
                     -- IT DID NOT COME BACK, SO IT GOES ON THE SLATE. This is
@@ -3136,10 +3209,17 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                     -- the table; see OWED_KIT_MAX_DAYS, which was written for
                     -- exactly this. DO NOT narrow this back to a refusal
                     -- without taking the age-out out with it.
-                    -- NAMED APART FROM THE FUNCTION-SCOPE `owner`, which it
-                    -- used to shadow. Both were correct, and a reader had to
-                    -- prove that twice.
-                    local rowOwner = Arena.IsKey(item.citizenid) and item.citizenid or liveId
+                    -- THE SAME `rowOwner` THE TEST ABOVE USED, rather than a
+                    -- second one computed here that ended `or liveId`. That
+                    -- fallback billed whoever held the server id whenever the
+                    -- row could not name its own owner -- so a player who
+                    -- reconnected onto a freed slot appeared on the
+                    -- outstanding-kit screen owing a weapon they have never
+                    -- held, while the character who actually walked off with
+                    -- it owed nothing and was never chased. An owner the
+                    -- arena cannot name is left unnamed and the row written
+                    -- off. DO NOT bill the live holder for a row that does
+                    -- not name them.
                     if Arena.IsKey(rowOwner) and Arena.IsKey(item.serial) then
                         -- SAY WHICH ACTUALLY HAPPENED. This logged "put on
                         -- their slate" whether or not it went on, so a full
@@ -3172,9 +3252,20 @@ local function reclaimWeapons(ox, src, fallbackOwner)
             local given = byPlayer[src]
             if given then
                 -- WHO THE ARENA ARMED FOR THIS MATCH, which the rows
-                -- themselves cannot say. Falling back to the caller's answer,
-                -- then to whoever is on the id, in that order: the stamp is
-                -- the only one of the three that CANNOT be wrong.
+                -- themselves cannot say. The stamp first, then the caller's
+                -- answer, and nothing after those two: both are statements
+                -- about who was ARMED, and the stamp is the one of them that
+                -- CANNOT be wrong.
+                --
+                -- `owner` used to end at whoever holds the server id, and
+                -- the stranger test one line below compares against whoever
+                -- holds the server id -- so on an exit with no stamp and no
+                -- caller's answer the two agreed, the test found no
+                -- stranger, and this loop took the departed fighter's issued
+                -- count of ammunition, plates and bandages out of a
+                -- newcomer's pockets, measured against the departed
+                -- fighter's floor, with no notification and no ledger row.
+                -- An unknown owner must not become the live holder here.
                 local stamped = (issuedOwner[matchId] or {})[src]
                 local billed = Arena.IsKey(stamped) and stamped or owner
 
@@ -3199,10 +3290,18 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                 -- right and refuses before it removes; this is the same test
                 -- in the same order. DO NOT put a removal above this check.
                 if stranger then
+                    -- AN OWNER THE ARENA COULD NOT READ IS SAID AS THAT,
+                    -- not printed as `nil`. This branch now also catches the
+                    -- rows it could not put a name to, and a console line
+                    -- reading "nil's consumables" reads as a bug in the
+                    -- logging rather than as the thing an operator needs to
+                    -- know: the framework could not identify a player at the
+                    -- door.
                     ArenaLog('weapons: %s\'s consumables from match %s are written off -- %s holds '
                         .. 'that server id now, and NOTHING is being taken off them for a round '
                         .. 'they were never in.',
-                        tostring(billed), tostring(matchId), tostring(liveId))
+                        Arena.IsKey(billed) and billed or 'an unidentified fighter',
+                        tostring(matchId), tostring(liveId))
                     byPlayer[src] = nil
                     goto nextStock
                 end

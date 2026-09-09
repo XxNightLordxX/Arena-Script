@@ -504,7 +504,7 @@ listed; the source documents them where they are.
 | `ArenaDbReady(subject)` | Whether a query can be sent right now: `Config.Database.enabled` on and oxmysql started. Says so once per outage, per subject, and re-arms when the database comes back. |
 | `ArenaDb(subject, sql, params, cb)` | Sends one query. Never lets a database failure take the round down, and always calls `cb` — with nil on every path that did not reach oxmysql. |
 
-#### `server/dispatch.lua` — 13 functions
+#### `server/dispatch.lua` — 14 functions
 
 | Function | What it does |
 |---|---|
@@ -516,10 +516,11 @@ listed; the source documents them where they are.
 | `ArenaDispatch.IsPlayerInArena(src)` | Whether the server has this player flagged as being in a match. |
 | `ArenaDispatch.GetPlayerMatchId(src)` | The match a flagged player is in, or nil. |
 | `ArenaDispatch.GetArenaPlayers()` | Every player currently in a match, as a server-id -> match-id map. |
+| `ArenaDispatch.ClearBucket(bucket, matchId)` | Deletes what a finished round left standing in its own instance -- scoped by routing bucket, never by coordinates, and refused outright for a bucket anybody is still in. |
 | `ArenaDispatch.GetBucket(matchId)` | The instance a match is fought in, allocating and configuring one the first time it is asked for. |
 | `ArenaDispatch.EnterBucket(src, matchId)` | Moves a player into their match's instance, remembering what they were in beforehand. |
 | `ArenaDispatch.ExitBucket(src)` | Puts a player back in exactly the bucket EnterBucket found them in, and hands the match's number back once the last person has left it. |
-| `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
+| `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
 #### `server/ammo.lua` — 17 functions

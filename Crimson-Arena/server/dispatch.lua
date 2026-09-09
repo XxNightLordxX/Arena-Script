@@ -491,6 +491,173 @@ local function configureBucket(bucket)
     SetRoutingBucketEntityLockdownMode(bucket, mode)
 end
 
+-- ======================================================================
+-- EMPTYING A BUCKET, WHICH RELEASING ONE HAS NEVER DONE
+--
+-- THE DEFECT. A routing bucket loses its PLAYERS when a match ends and
+-- nothing else. Entities do not follow the people who made them out of an
+-- instance -- they stay in it, unowned and unsimulated, frozen wherever they
+-- had got to when the last client left, and they come back the moment
+-- somebody is routed in again. Nothing in this resource deleted one: the
+-- only entity cleanup that existed anywhere was client/match.lua's
+-- clearArenaScenery, and that removes the arena's OWN non-networked floor
+-- props on the client that built them.
+--
+-- And the allocator hands the same number straight back out. GetBucket
+-- counts up from firstBucket over the numbers currently in use, so on a
+-- server running one round at a time every match at every arena gets 4210 --
+-- allocated, released, allocated again -- which is exactly what an operator's
+-- log showed. A car spawned in round one is therefore not merely still alive
+-- somewhere; it is in the room the next round is instanced into. Reported
+-- from a live server and reproduced.
+--
+-- SCOPED BY BUCKET MEMBERSHIP AND NEVER BY COORDINATES. This is the whole
+-- reason the sweep is here rather than a radius test on the client. The
+-- skydome is a platform a kilometre up: a vehicle put on it rolls off the
+-- edge and falls, and by the end of the round it is hundreds of metres below
+-- the arena centre and well outside the boundary radius -- which is precisely
+-- the case that was tested and has to work. A bucket is not a place, it is an
+-- instance, and the falling car is in 4210 the whole way down. Membership
+-- therefore answers "is this the arena's mess" exactly, in three dimensions,
+-- with no floor height assumed anywhere and no reach outside the arena
+-- possible: an entity in the city is in bucket 0 and is never looked at.
+-- ======================================================================
+
+--- Every player the server currently has, or nil for a server that cannot be
+--- asked. NIL AND EMPTY ARE DIFFERENT ANSWERS on purpose -- "nobody is here"
+--- licenses a sweep and "I do not know who is here" must not.
+--- @return string[]|nil
+local function connectedPlayers()
+    if type(GetPlayers) ~= 'function' then return nil end
+    local ok, list = pcall(GetPlayers)
+    if not ok or type(list) ~= 'table' then return nil end
+    return list
+end
+
+--- @param bucket integer
+--- @return boolean|nil occupied -- nil when the server could not be asked
+local function anybodyStandingIn(bucket)
+    local list = connectedPlayers()
+    if not list then return nil end
+
+    for _, id in ipairs(list) do
+        local src = Arena.ToInt(id)
+        if src and currentBucket(src) == bucket then return true end
+    end
+    return false
+end
+
+--- The ped of every connected player, as a set. Belt to the occupancy
+--- check's braces: a player's own body is NEVER a leftover, whatever bucket
+--- the server thinks it is in.
+--- @return table<integer, boolean>
+local function playerPeds()
+    local peds = {}
+    local list = connectedPlayers()
+    if not list or type(GetPlayerPed) ~= 'function' then return peds end
+
+    for _, id in ipairs(list) do
+        local src = Arena.ToInt(id)
+        if src then
+            local ok, ped = pcall(GetPlayerPed, src)
+            ped = ok and Arena.ToInt(ped) or nil
+            if ped and ped ~= 0 then peds[ped] = true end
+        end
+    end
+    return peds
+end
+
+--- @return function[]
+local function entityPools()
+    local pools = {}
+    if type(GetAllVehicles) == 'function' then pools[#pools + 1] = GetAllVehicles end
+    if type(GetAllObjects) == 'function' then pools[#pools + 1] = GetAllObjects end
+    if type(GetAllPeds) == 'function' then pools[#pools + 1] = GetAllPeds end
+    return pools
+end
+
+--- Whether any match OTHER than this one is using the number.
+---
+--- With `perMatch` off every match shares one bucket, so a finished round's
+--- release names a room another round is still being fought in. Emptying that
+--- would delete a live match's vehicles out from under it, which is far worse
+--- than the leftover this sweep exists to remove. DO NOT drop this check on
+--- the grounds that `perMatch` ships on: it is one line in config.lua.
+--- @param bucket integer
+--- @param matchId any
+--- @return boolean
+local function bucketIsSomebodyElses(bucket, matchId)
+    for otherId, allocated in pairs(matchBuckets) do
+        if allocated == bucket and otherId ~= matchId then return true end
+    end
+    for _, record in pairs(held) do
+        if record.bucket == bucket and record.matchId ~= matchId then return true end
+    end
+    return false
+end
+
+--- Deletes what is left in one arena instance.
+---
+--- REFUSED, NOT ATTEMPTED-AND-HOPED, on every reading that is not a flat yes:
+--- a build with no server-side entity pools, a server that will not say who is
+--- connected, a bucket another match is using, and above all a bucket somebody
+--- is still standing in. Each of those leaves the leftover alone, which is the
+--- safe direction on purpose: a stray car in an instance is a nuisance, and a
+--- deleted entity CANNOT be got back.
+--- @param bucket integer|nil
+--- @param matchId any
+--- @return integer removed
+function ArenaDispatch.ClearBucket(bucket, matchId)
+    bucket = Arena.ToInt(bucket)
+    if not bucket or bucket <= 0 then return 0 end
+    if type(GetEntityRoutingBucket) ~= 'function' or type(DeleteEntity) ~= 'function' then return 0 end
+
+    local pools = entityPools()
+    if #pools == 0 then return 0 end
+
+    if bucketIsSomebodyElses(bucket, matchId) then
+        ArenaDebug('dispatch: bucket %d was left as it is -- another match is using the same number.', bucket)
+        return 0
+    end
+
+    -- NEVER SWEEP A ROOM SOMEBODY IS STANDING IN, and an unanswerable server
+    -- counts as occupied. The one way this could cost a player anything is
+    -- running while they are in there -- in a vehicle, on foot, stranded by a
+    -- restore that did not land -- so it asks the world rather than the
+    -- bookkeeping, which is the same lesson EnterBucket's drift repair learnt.
+    if anybodyStandingIn(bucket) ~= false then
+        ArenaDebug('dispatch: bucket %d was left as it is -- somebody is in it, or the server would not say.', bucket)
+        return 0
+    end
+
+    local protected = playerPeds()
+    local removed, refused = 0, 0
+
+    for _, pool in ipairs(pools) do
+        local gotPool, handles = pcall(pool)
+        if gotPool and type(handles) == 'table' then
+            for _, entity in ipairs(handles) do
+                local handle = Arena.ToInt(entity)
+                local inHere = handle and not protected[handle]
+                    and select(2, pcall(GetEntityRoutingBucket, handle)) == bucket
+
+                if inHere then
+                    pcall(DeleteEntity, handle)
+                    local stillThere = type(DoesEntityExist) == 'function'
+                        and select(2, pcall(DoesEntityExist, handle)) == true
+                    if stillThere then refused = refused + 1 else removed = removed + 1 end
+                end
+            end
+        end
+    end
+
+    if removed > 0 or refused > 0 then
+        ArenaDebug('dispatch: emptied routing bucket %d after match %s -- %d entity(s) removed, %d refused.',
+            bucket, tostring(matchId), removed, refused)
+    end
+    return removed
+end
+
 function ArenaDispatch.GetBucket(matchId)
     if not isolationEnabled() then return nil end
     if not Arena.IsKey(matchId) then return nil end
@@ -507,6 +674,18 @@ function ArenaDispatch.GetBucket(matchId)
 
     matchBuckets[matchId] = bucket
     configureBucket(bucket)
+
+    -- SWEPT ON THE WAY IN AS WELL AS ON THE WAY OUT, and this half is
+    -- deliberately not the redundant one. Release empties a bucket after a
+    -- round this resource saw end; nothing runs after a server crash, a hard
+    -- `stop crimson_arena`, or a script error that took the teardown with it
+    -- -- and the debris from that run is still sitting in 4210 when the
+    -- resource comes back up and allocates 4210 again. This is the only pass
+    -- that can ever reach it. It is safe here for the same reason it is safe
+    -- there: the number was just chosen BECAUSE no match holds it, and the
+    -- occupancy check refuses a room anybody is standing in.
+    ArenaDispatch.ClearBucket(bucket, matchId)
+
     ArenaDebug('dispatch: match %s is instanced in routing bucket %d.', tostring(matchId), bucket)
     return bucket
 end
@@ -593,6 +772,16 @@ function ArenaDispatch.ReleaseBucket(matchId)
     end
 
     matchBuckets[matchId] = nil
+
+    -- THE NUMBER GOES BACK ON THE SHELF EMPTY, and that is the point of
+    -- doing it here rather than in ArenaMatch.End. Every way a round can stop
+    -- arrives at this one function -- End, Abort, the last fighter leaving,
+    -- an admin stop, a disconnect, the countdown-overrun unwind, and
+    -- onResourceStop -- so a sweep on this line runs on all of them and
+    -- CANNOT be forgotten by an exit added later. Above the debug line so the
+    -- console reads in the order the work happened.
+    ArenaDispatch.ClearBucket(bucket, matchId)
+
     ArenaDebug('dispatch: routing bucket %d released by match %s.', bucket, tostring(matchId))
     return true
 end
@@ -678,6 +867,18 @@ AddEventHandler('onResourceStop', function(resource)
     end
     if restored > 0 then
         ArenaLog('stopping: returned %d player(s) to the routing bucket they came from.', restored)
+    end
+
+    -- AND THEN THE ROOMS THEMSELVES, which the loop above only reaches
+    -- through a player. A match whose fighters had all disconnected still
+    -- holds its number with nobody left to release it, and a bucket left
+    -- full is the leftover an operator sees in the NEXT round -- the same
+    -- number is allocated again on the way back up. The players are already
+    -- home by this line, so every one of these rooms is empty of people.
+    -- Assigning nil to a field during pairs() is defined and adding one is
+    -- not, so ReleaseBucket must not grow a path that allocates.
+    for matchId in pairs(matchBuckets) do
+        ArenaDispatch.ReleaseBucket(matchId)
     end
 
     for src in pairs(active) do

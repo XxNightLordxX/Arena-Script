@@ -609,6 +609,115 @@ local function reviveForCountdown(ped)
     FreezeEntityPosition(revived, true)
 end
 
+--- WHY A DEATH NAMED NOBODY. Sent alongside the claim as a NUMBER, never as
+--- text: this is a report from the one client whose report is being doubted,
+--- and the server writes it into the operator's log. A number it maps itself
+--- cannot put a sentence of somebody else's choosing in that log.
+---
+--- ONLY EVER A LOG LINE. None of these four gives anybody a kill, and DO NOT
+--- let one start to: the whole reason this exists is that the answer is
+--- honestly unknown, and a client that can choose the reason would simply
+--- choose the one that pays.
+local WHY_NOTHING = 1
+local WHY_SELF = 2
+local WHY_NOT_A_PLAYER = 3
+local WHY_NOT_NETWORKED = 4
+
+local WHY_TEXT = {
+    [WHY_NOTHING] = 'nothing that hit you was an entity this game could name, which is what a fall, '
+        .. 'a drowning, the arena boundary or a fire looks like',
+    [WHY_SELF] = 'the only thing that hit you was you -- your own explosive, or the boundary bleed',
+    [WHY_NOT_A_PLAYER] = 'what hit you was not a player: an NPC, a prop, or a vehicle with nobody driving it',
+    [WHY_NOT_NETWORKED] = 'a player hit you but their character was not on your game\'s network list '
+        .. 'by the time you went down -- they were too far away, or they left',
+}
+
+--- THE ONE FATAL BLOW THIS CLIENT SAW, kept alive for the frame or two
+--- between the damage and the corpse.
+---
+--- THE DEFECT, IN THE OWNER'S OWN F8: "i was shot and it said nobody was seen
+--- as the killer". handleDeath's first line refuses a ped that is not
+--- IsEntityDead YET -- and the damage hook below runs in the frame the ped
+--- dies, which is the frame before the engine finalises the death state.
+--- That finalisation is the same one that leaves GET_PED_SOURCE_OF_DEATH at
+--- 0, so on the kills where the two coincide the hook handed in a perfectly
+--- good attacker, that first line dropped the whole call unread, and the
+--- watch loop picked the body up a frame later with nothing left to ask but
+--- the source of death -- the reading that had already failed. The attacker
+--- has to OUTLIVE the frame it arrived in, which is all this is.
+---
+--- STAMPED, AND THE STAMP IS THE ENTIRE SAFETY OF IT. A remembered attacker
+--- becomes a KILL CREDIT, and crediting the wrong player is worse than
+--- crediting nobody -- so it is read only while it is fresh enough to belong
+--- to the death being reported. Two seconds is already far longer than the
+--- gap it covers and shorter than any respawn this arena ships. DO NOT widen
+--- it, and DO NOT let it survive a respawn.
+local FATAL_MEMORY_MS = 2000
+local lastFatalEntity
+local lastFatalAt = 0
+
+--- The server id of the PLAYER behind one entity, or nil and the reason why.
+---
+--- A VEHICLE IS AN ANSWER AND NOT A DEAD END. Run down, or killed by a car
+--- somebody else detonated, the engine names the VEHICLE -- and this refused
+--- it for not being a ped, so the death named nobody and the driver was paid
+--- nothing. Following a vehicle to whoever is driving it is not a guess about
+--- who happened to be nearby; it is the chain the game's own kill feed walks.
+--- DO NOT narrow this back to "a ped or nothing".
+---
+--- IT IS THE DRIVER'S SEAT AND NEVER A PASSENGER'S, on purpose. A car that
+--- kills somebody was driven into them by the person steering it; a gunner in
+--- the back is firing a weapon of their own, which the engine reports as that
+--- ped and not as the vehicle. Widening this to "anybody aboard" would start
+--- crediting kills to whoever happened to be sitting in the car, and a wrong
+--- credit is worse than no credit.
+--- @param entity integer|nil
+--- @param victim integer
+--- @return integer|nil serverId
+--- @return integer why
+local function playerBehind(entity, victim)
+    if not entity or entity == 0 then return nil, WHY_NOTHING end
+    if entity == victim then return nil, WHY_SELF end
+    if not DoesEntityExist(entity) then return nil, WHY_NOTHING end
+
+    local ped = entity
+    if not IsEntityAPed(ped) then
+        -- ASKED FOR RATHER THAN ASSUMED, on the one path in this file that
+        -- MUST NOT raise. handleDeath is the whole of how a death is
+        -- reported: throw here and the fighter lies on the floor with no
+        -- report sent, no respawn scheduled, and the fence sweep counting
+        -- down to throwing them out of a round they paid for. These two are
+        -- the only natives this function adds, so they are the only two that
+        -- could be missing from a build.
+        if type(IsEntityAVehicle) ~= 'function' or type(GetPedInVehicleSeat) ~= 'function' then
+            return nil, WHY_NOT_A_PLAYER
+        end
+        if not IsEntityAVehicle(ped) then return nil, WHY_NOT_A_PLAYER end
+
+        ped = GetPedInVehicleSeat(ped, -1)
+        if not ped or ped == 0 then return nil, WHY_NOT_A_PLAYER end
+        if ped == victim then return nil, WHY_SELF end
+        if not DoesEntityExist(ped) then return nil, WHY_NOT_A_PLAYER end
+    end
+
+    if not IsPedAPlayer(ped) then return nil, WHY_NOT_A_PLAYER end
+
+    local index = NetworkGetPlayerIndexFromPed(ped)
+    if not index or index == -1 then return nil, WHY_NOT_NETWORKED end
+
+    -- A SERVER ID OF NOUGHT IS NOT A KILLER, AND IT IS NOT "NOBODY" EITHER.
+    -- GET_PLAYER_SERVER_ID answers 0 for a player index the client CANNOT
+    -- resolve, and 0 went out on the wire as the claim. resolveKiller refuses
+    -- it, which is right -- but the server's "named nobody" branch tests for
+    -- nil, so a 0 fell between the two: no kill paid, and not counted as a
+    -- death that named nobody either. It is the streamed-out case, so it is
+    -- reported as exactly that, and a 0 must not reach the wire again.
+    local id = GetPlayerServerId(index)
+    if not id or id <= 0 then return nil, WHY_NOT_NETWORKED end
+
+    return id, WHY_NOTHING
+end
+
 local function handleDeath(ped, attacker)
     if deathReported or not IsEntityDead(ped) then return end
 
@@ -648,27 +757,62 @@ local function handleDeath(ped, attacker)
     -- reliably it happened.
     --
     -- The damage event carries the attacker in its own payload, so the hook
-    -- hands it in. Everything below is unchanged and still applies to it: it
-    -- has to be a ped, a player, and not the victim.
-    local killerServerId
-    local source = attacker
-    if not (source and source ~= 0 and DoesEntityExist(source)) then
-        source = GetPedSourceOfDeath(ped)
+    -- hands it in. Everything below still applies to it: it has to be a ped,
+    -- a player, and not the victim.
+    --
+    -- THE SECOND DEFECT, AND IT IS THE ONE THE OWNER IS LOOKING AT. The two
+    -- readings were tried in a FIXED ORDER and the first non-empty one was
+    -- committed to: `source = attacker`, and the source of death was
+    -- consulted ONLY when the attacker was missing entirely. So an attacker
+    -- that existed but could not be turned into a player -- an explosion the
+    -- engine blames on the vehicle that carried it, a bullet whose shooter
+    -- streamed out between the shot and the corpse -- ended the search, and
+    -- GET_PED_SOURCE_OF_DEATH, which frequently names the shooter in exactly
+    -- those cases, was never asked. One reading being empty is not a reason
+    -- to stop reading. THEY ARE ASKED IN TURN NOW, and the first that
+    -- actually resolves to a player wins.
+    --
+    -- ORDER IS STILL DELIBERATE, because they can disagree and the least
+    -- second-hand answer must win: the blow that was actually struck, then
+    -- the one this client remembers striking it, then the engine's own
+    -- summary once the death finished settling.
+    local remembered
+    if lastFatalEntity and (GetGameTimer() - lastFatalAt) <= FATAL_MEMORY_MS then
+        remembered = lastFatalEntity
+    end
+    lastFatalEntity = nil
+
+    local ofDeath = GetPedSourceOfDeath(ped)
+
+    local killerServerId, why = playerBehind(attacker, ped)
+    if not killerServerId then
+        local id, second = playerBehind(remembered, ped)
+        killerServerId, why = id, math.max(why, second)
+    end
+    if not killerServerId then
+        local id, third = playerBehind(ofDeath, ped)
+        killerServerId, why = id, math.max(why, third)
     end
 
-    if source and source ~= 0 and source ~= ped and IsEntityAPed(source) and IsPedAPlayer(source) then
-        local index = NetworkGetPlayerIndexFromPed(source)
-        if index and index ~= -1 then
-            killerServerId = GetPlayerServerId(index)
-        end
+    -- DO NOT put this back behind Config.Debug. THE REPORT this whole change
+    -- exists for is a player quoting this line -- "it said nobody was seen as
+    -- the killer in my f8" -- and what it said was two raw entity handles,
+    -- which is nothing anybody can act on. It prints once per death, to the
+    -- dead player alone, and it names the CAUSE: the one fact that separates
+    -- "the arena killed me" from "somebody shot me and got nothing for it".
+    if not killerServerId then
+        local cause = type(GetPedCauseOfDeath) == 'function' and GetPedCauseOfDeath(ped) or nil
+        print(('[crimson_arena] your death could not be pinned on anybody, so nobody was credited '
+            .. 'for it -- %s. Cause of death hash %s, attacker %s, source of death %s. If somebody '
+            .. 'shot you, tell the server owner and quote this line.')
+            :format(WHY_TEXT[why] or 'reason unknown',
+                tostring(cause), tostring(attacker), tostring(ofDeath)))
     end
 
-    if not killerServerId and Config.Debug then
-        print(('[crimson_arena] [debug] death: nobody could be named as the killer -- attacker %s, source of death %s.')
-            :format(tostring(attacker), tostring(GetPedSourceOfDeath(ped))))
-    end
+    local report = { killerServerId = killerServerId }
+    if not killerServerId then report.why = why end
 
-    TriggerServerEvent('crimson_arena:server:reportDeath', { killerServerId = killerServerId })
+    TriggerServerEvent('crimson_arena:server:reportDeath', report)
 
     -- Reported first, cleared second. The server's record of the kill must
     -- not depend on how fast this runs, and this must run before any medical
@@ -684,6 +828,15 @@ AddEventHandler('gameEventTriggered', function(event, data)
     if victimDied ~= 1 and victimDied ~= true then return end
     if not victim or not DoesEntityExist(victim) then return end
     if victim ~= PlayerPedId() then return end
+
+    -- REMEMBERED BEFORE IT IS HANDED OVER, and that order is the fix.
+    -- handleDeath refuses a ped the engine has not finished killing, and on
+    -- the shots where that is still true in this frame the call below did
+    -- nothing at all -- taking the one good attacker in this whole file with
+    -- it. Stored first, the watch loop's later pass finds it waiting. See
+    -- FATAL_MEMORY_MS for why it is stamped and must not outlive the death.
+    lastFatalEntity = attacker
+    lastFatalAt = GetGameTimer()
 
     handleDeath(victim, attacker)
 end)

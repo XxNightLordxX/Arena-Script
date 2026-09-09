@@ -1388,6 +1388,32 @@ local function respawnDelaySeconds()
     return math.max(0, Arena.ToInt(Config.Match.respawnDelaySeconds) or 0)
 end
 
+--- WHAT THE DYING CLIENT SAID WENT WRONG, IN THE OPERATOR'S OWN WORDS.
+---
+--- THE CODE IS A NUMBER AND THE SENTENCE LIVES HERE, ON PURPOSE. The reason
+--- arrives from the one client whose account of the death is already being
+--- doubted, and it lands in the server console. Taking a STRING from there
+--- would let any client write its own line into the operator's log -- fake
+--- warnings, fake match ids, a wall of newlines. A small integer it cannot
+--- do anything with is the whole defence, and these four sentences are this
+--- file's, not theirs.
+---
+--- IT NAMES A SYMPTOM AND NEVER A CULPRIT. Nothing reads this to decide who
+--- gets a kill, and it must not start: a client picks its own reason, so a
+--- reason that paid would simply always be the one that pays.
+local UNATTRIBUTED_REASON = {
+    [1] = 'The client says nothing it could name hit them -- a fall, a drowning, the boundary bleed or a fire.',
+    [2] = 'The client says the only thing that hit them was themselves -- their own explosive, or the boundary.',
+    [3] = 'The client says what hit them was not a player -- an NPC, a prop, or a vehicle with nobody driving.',
+    [4] = 'The client says a player hit them but their character was not on its network list by then -- too far off, or gone.',
+}
+
+local function unattributedReason(why)
+    local code = Arena.ToInt(why)
+    return (code and UNATTRIBUTED_REASON[code])
+        or 'The client gave no reason, which means it is an older client than this resource.'
+end
+
 --- Books one killer-less death against the run this player is on.
 ---
 --- KEPT ON THE ROSTER ROW, NEVER IN A STORE KEYED BY SERVER ID. The server
@@ -1996,8 +2022,9 @@ end
 --- @param src integer -- the reporter; the only identity trusted here
 --- @param killerSrc any -- claimed by the client, verified below
 --- @param serverSaw boolean? -- true ONLY from this file's own dead sweep
+--- @param why any -- why the reporter named nobody; A LOG LINE AND NOTHING ELSE
 --- @return boolean counted
-function ArenaMatch.OnDeath(src, killerSrc, serverSaw)
+function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
     local id = Arena.ToInt(src)
     if not id then return false end
 
@@ -2076,13 +2103,64 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw)
         unwitnessed = priced
 
         if priced then
-            ArenaLog('DEATH: %s reported their own death in match %s and named nobody -- %d of them inside %ds, which is faster than this arena kills people, so it is booked with no resupply and a longer wait.',
+            ArenaLog('DEATH: %s reported their own death in match %s and named nobody -- %d of them inside %ds, which is faster than this arena kills people, so it is booked with no resupply and a longer wait. %s',
                 tostring(id), tostring(match.id), inWindow,
                 UNWITNESSED_FREE_IN_WINDOW * UNWITNESSED_HONEST_PRESS_MULTIPLE
-                    * math.max(1, respawnDelaySeconds()))
+                    * math.max(1, respawnDelaySeconds()),
+                unattributedReason(why))
         else
-            ArenaDebug('death named nobody on match %s: %s, %d in the window -- a fall or the boundary, by the rate of it, so full resupply and the normal wait.',
-                tostring(match.id), tostring(id), inWindow)
+            ArenaDebug('death named nobody on match %s: %s, %d in the window -- a fall or the boundary, by the rate of it, so full resupply and the normal wait. %s',
+                tostring(match.id), tostring(id), inWindow, unattributedReason(why))
+        end
+    end
+
+    -- AND SAY SO WHERE THE OPERATOR WILL SEE IT. Everything above prices the
+    -- press; this reports the FAILURE, which is a different event and until
+    -- now had no line of its own anywhere on this side. THE REPORT that
+    -- started it: "i was shot and it said nobody was seen as the killer in my
+    -- f8" -- one debug line, on the victim's screen, naming two raw entity
+    -- handles. The player who actually did the shooting was paid no kill
+    -- ammo, took no tier, and moved the score not at all, and no line in the
+    -- server's own log recorded that any of it had happened.
+    --
+    -- WHERE THEY DIED IS THE CLASSIFIER, AND IT IS NOT AN ACCUSATION.
+    -- metresOutside is refused as EVIDENCE of a press four hundred lines
+    -- above, and this does not reopen that: nothing here books, prices,
+    -- credits or refuses anything. It picks which of two log levels the line
+    -- goes out at, because the two causes want opposite volumes. On the
+    -- skydome the lethal edge IS the boundary, so a fall reads hundreds of
+    -- metres out and is the ORDINARY way to die there -- one line per fall in
+    -- the operator's log is noise that teaches him to stop reading it. A body
+    -- lying well INSIDE the fence with nobody to name is the anomaly he is
+    -- actually hunting, and that one is worth waking him up for.
+    --
+    -- LADDERS TOO, which the pricing above deliberately skips. A gun game
+    -- kill that cannot be attributed costs the killer their promotion, so it
+    -- is at least as worth reporting there as anywhere else.
+    if serverSaw ~= true and (claimed == nil or claimed == id) then
+        local past = metresOutside(match, id)
+        local where = past and past > 0
+            and ('%.0fm outside the fence, which is what a fall or the boundary looks like'):format(past)
+            or 'inside the arena, where something should have been able to kill them'
+
+        if past ~= nil and past > 0 then
+            ArenaDebug('UNATTRIBUTED: %s died in match %s with nobody named -- %s. %s',
+                tostring(id), tostring(match.id), where, unattributedReason(why))
+        else
+            ArenaLog('UNATTRIBUTED: %s died in match %s with nobody named -- %s. %s Nobody was '
+                .. 'credited, no kill ammo was paid and the score did not move. If this keeps '
+                .. 'happening on ordinary shooting, it is this resource to blame and not the player.',
+                tostring(id), tostring(match.id), where, unattributedReason(why))
+
+            -- ONCE A ROUND AND NOT ONCE A DEATH. A fighter who is being told
+            -- this every five seconds stops reading it, which is the same as
+            -- not having been told. The latch sits on the roster row, which
+            -- ArenaLobby.Join rebuilds per player per match, so it CANNOT be
+            -- inherited through a recycled server id.
+            if player.toldUnattributed ~= true then
+                player.toldUnattributed = true
+                ArenaNotifyKey(id, 'notify.death_unattributed', 'inform')
+            end
         end
     end
 

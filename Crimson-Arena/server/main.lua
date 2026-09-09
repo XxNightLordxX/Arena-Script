@@ -356,7 +356,12 @@ onClient('crimson_arena:server:reportDeath', RATE.death, function(src, data)
     local payload = tableArg(data)
     if not payload then return end
 
-    ArenaMatch.OnDeath(src, intArg(payload.killerServerId))
+    -- `why` IS FOR THE LOG AND FOR NOTHING ELSE. It is a small integer the
+    -- dying client picks; ArenaMatch.OnDeath turns it into one of four fixed
+    -- sentences and never lets it decide anything. DO NOT widen it to a
+    -- string -- that is a client writing its own lines into the operator's
+    -- console.
+    ArenaMatch.OnDeath(src, intArg(payload.killerServerId), nil, intArg(payload.why))
 end)
 
 onClient('crimson_arena:server:spectateMatch', RATE.spectate, function(src, data)

@@ -2865,6 +2865,72 @@ function Arena.ValidateConfig()
         end
     end
 
+    -- CAN EVERY WEAPON THE ARENA WILL HAND OUT ACTUALLY BE LOADED.
+    --
+    -- WHAT THIS IS AND, JUST AS IMPORTANTLY, WHAT IT IS NOT. It reads
+    -- config.weapons.lua and says whether an ENABLED entry describes a gun
+    -- that can be issued with rounds in it. It does not look at
+    -- ox_inventory, it does not correct anything, and nothing at run time
+    -- reads its answer -- a weapon named here is still handed out exactly as
+    -- written. THE OWNER'S VALUES ARE THE OWNER'S; this only says out loud
+    -- what the code is about to do with them.
+    --
+    -- ONLY THE ENABLED ONES, and that is the whole reason it is a second
+    -- loop rather than three more lines inside the one above. A switched-off
+    -- entry is kept on purpose so it can be switched back on with one word --
+    -- config.weapons.lua says so beside all three of them -- and complaining
+    -- about a weapon nobody can be issued would teach an operator that these
+    -- lines are noise. The predicate is GetEnabledWeapons's own, spelled out
+    -- rather than borrowed, because this has to see the entries that function
+    -- silently DROPS as well as the ones it returns.
+    for _, weapon in ipairs(Config.Loadouts.weapons or {}) do
+        if type(weapon) == 'table' and weapon.enabled ~= false and Arena.IsKey(weapon.key) then
+            local name = tostring(weapon.key)
+
+            if not Arena.IsKey(weapon.weapon) then
+                complain(('Config.Loadouts.weapons["%s"] is switched on but names no `weapon`, so it is '
+                    .. 'dropped from the catalogue without a word: it never reaches the loadout panel and '
+                    .. 'nobody can ask for it. Give it the GTA weapon name, or set enabled = false.')
+                    :format(name))
+
+            elseif not Arena.IsMeleeWeapon(weapon) then
+                local types = Arena.GetAmmoTypes(weapon)
+
+                if #types == 0 then
+                    complain(('Config.Loadouts.weapons["%s"] (%s) is switched on and is not a melee weapon, '
+                        .. 'but no ammunition resolves for it -- its `ammoTypes` is empty or switched off and '
+                        .. 'Config.Loadouts.defaultAmmoTypes does not cover it. It will be handed over with '
+                        .. 'nothing to load it with.'):format(name, tostring(weapon.weapon)))
+                elseif (Config.Loadouts.ammoItems or {}).enabled == true then
+                    for _, entry in ipairs(types) do
+                        if not Arena.IsKey(entry.item) then
+                            complain(('Config.Loadouts.weapons["%s"] (%s) offers the ammo type "%s" with no '
+                                .. '`item` on it. Ammo items are switched on, so every other weapon is issued '
+                                .. 'rounds as items and this one is issued none -- a fighter who picks that '
+                                .. 'ammo type gets the gun and an empty magazine. Put the ammo item name from '
+                                .. 'your ox_inventory on it.'):format(name, tostring(weapon.weapon), tostring(entry.key)))
+                        end
+                    end
+                end
+
+            elseif weapon.category ~= 'melee' then
+                -- MELEE IS DECIDED BY THE AMMO CEILING AND NOT ONLY BY THE
+                -- CATEGORY, which is a rule an operator CANNOT guess from the
+                -- file in front of him. Arena.IsMeleeWeapon reads any
+                -- `ammo.max` of 1 or less as "there is nothing to load", so
+                -- one firearm written `max = 1` quietly stops being a firearm
+                -- -- no ammo row on the panel, no rounds issued, no kill ammo
+                -- paid -- and nothing else in this resource would ever say so.
+                -- DO NOT read this as a complaint about the shipped file:
+                -- every enabled entry in it is well clear of the line.
+                complain(('Config.Loadouts.weapons["%s"] (%s) is in category "%s" but its ammo max is 1 or '
+                    .. 'less, so the arena reads it as a MELEE weapon: no ammunition is offered for it and '
+                    .. 'none is issued. If it is meant to fire, raise Config.Loadouts.weapons["%s"].ammo.max.')
+                    :format(name, tostring(weapon.weapon), tostring(weapon.category), name))
+            end
+        end
+    end
+
     for _, supply in ipairs(Arena.GetEnabledSupplies()) do
         local maximum = Arena.SupplyMax(supply)
         local default = Arena.ClampInt(supply.default, 0, maximum) or 0

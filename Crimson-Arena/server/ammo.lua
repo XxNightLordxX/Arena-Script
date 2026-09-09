@@ -1571,6 +1571,22 @@ local KIT_READ_SQL =
 --- query was being refused. DO NOT go back to answering this from Config.
 local kitSchemaConfirmed = false
 
+--- Whether a WRITE to the slate has ever been refused.
+---
+--- A READ IS NOT EVIDENCE OF A WRITE, and the screen was reporting one as
+--- the other. `kitSchemaConfirmed` is set by a successful SELECT, which is
+--- exactly what a least-privilege database user has: import the table from
+--- sql/install.sql, grant SELECT and nothing else, and every INSERT and
+--- DELETE is refused asynchronously on oxmysql's own console while the
+--- tablet tells the operator their slate is safely persisted.
+---
+--- That is the precise operator the DELETE warning in install.sql is aimed
+--- at, and the one this screen was reassuring. Every write now carries a
+--- callback: oxmysql answers nil when a statement did not land, and one such
+--- answer is enough to stop claiming the slate is durable. DO NOT report a
+--- read as proof of a write.
+local kitWriteRefused = false
+
 --- Whether the read-back has been attempted and succeeded.
 ---
 --- ONE ATTEMPT AT START WAS NOT ENOUGH. LoadOwedKit is called from
@@ -1606,12 +1622,41 @@ local function weaponKey(serial) return 'w:' .. tostring(serial) end
 
 local function itemKey(name) return 'i:' .. tostring(name) end
 
+--- Watches whether a write actually landed.
+---
+--- ONE REFUSAL IS ENOUGH and it is never un-said: a user who cannot write
+--- now will not start being able to mid-session, and the operator needs to
+--- see it whether or not the next statement happens to be a SELECT. Said
+--- once, because these fire per weapon per exit. DO NOT make this a counter
+--- that resets.
+local function wrote(answer)
+    if answer ~= nil or kitWriteRefused then return end
+
+    -- A NIL ANSWER IS ONLY A REFUSAL WHEN THERE WAS SOMETHING TO REFUSE IT.
+    -- ArenaDb calls back with nil on every path that does not reach oxmysql,
+    -- which includes the database being switched off and oxmysql being down
+    -- -- neither of which says anything about whether this user may write.
+    -- Latching on those would leave the screen reporting a slate as unsaved
+    -- for the rest of the run after an outage that has since ended. DO NOT
+    -- drop this test.
+    if not ArenaDbReady('the outstanding-kit slate') then return end
+
+    kitWriteRefused = true
+    ArenaLog('weapons: the outstanding-kit slate could NOT be written to the database. The table '
+        .. 'can be read but not changed, which is almost always a database user with SELECT and '
+        .. 'no INSERT, UPDATE or DELETE. The slate still works for this run and a restart forgets '
+        .. 'it; /arenaadmin now says so instead of reporting it as saved. The real error is on '
+        .. 'oxmysql\'s console, not this one.')
+end
+
 local function saveOwedWeapon(citizenid, row)
-    ArenaDb('the outstanding-kit slate', KIT_WEAPON_SQL, { citizenid, weaponKey(row.serial), row.name, row.serial })
+    ArenaDb('the outstanding-kit slate', KIT_WEAPON_SQL,
+        { citizenid, weaponKey(row.serial), row.name, row.serial }, wrote)
 end
 
 local function saveOwedItem(citizenid, name, amount)
-    ArenaDb('the outstanding-kit slate', KIT_ITEM_ADD_SQL, { citizenid, itemKey(name), name, amount })
+    ArenaDb('the outstanding-kit slate', KIT_ITEM_ADD_SQL,
+        { citizenid, itemKey(name), name, amount }, wrote)
 end
 
 --- Writes a stack's CURRENT total, rather than adding to it -- used after a
@@ -1620,14 +1665,14 @@ end
 --- a debt or erases one.
 local function setOwedItem(citizenid, name, amount)
     if amount <= 0 then
-        ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, itemKey(name) })
+        ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, itemKey(name) }, wrote)
         return
     end
-    ArenaDb('the outstanding-kit slate', KIT_ITEM_SET_SQL, { citizenid, itemKey(name), name, amount })
+    ArenaDb('the outstanding-kit slate', KIT_ITEM_SET_SQL, { citizenid, itemKey(name), name, amount }, wrote)
 end
 
 local function dropOwedWeapon(citizenid, serial)
-    ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(serial) })
+    ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(serial) }, wrote)
 end
 
 --- Trims a character's weapon slate to the cap, oldest first.
@@ -2051,7 +2096,7 @@ local function chaseOwedKit(src, citizenid)
         if not Arena.IsKey(row.serial) then
             -- AND THE STORED ROW GOES WITH IT. Dropped from memory only, it
             -- is read back on every start for ever and can NEVER be acted on.
-            ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(row.serial) })
+            ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(row.serial) }, wrote)
             ArenaLog('weapons: a %s owed by %s has no serial and cannot be told from one of their own '
                 .. '-- written off.', tostring(row.name), tostring(citizenid))
             goto continue
@@ -3239,7 +3284,9 @@ function ArenaAmmo.OwedKitIsSaved()
     -- to decide whether their slate is safe could disagree with the code
     -- that actually decides whether to send the write. DO NOT restate the
     -- gate; ask it.
-    return kitSchemaConfirmed and ArenaDbReady('the outstanding-kit slate')
+    return kitSchemaConfirmed
+        and not kitWriteRefused
+        and ArenaDbReady('the outstanding-kit slate')
 end
 
 --- Every arena weapon that left with a character and has not come back.

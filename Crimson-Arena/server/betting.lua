@@ -728,29 +728,46 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
 end
 
 function ArenaBetting.RefundAll(matchId, reasonKey)
-    local refunded, total, owed, kept = 0, 0, 0, 0
+    local refunded, total, owed, restored = 0, 0, 0, 0
 
     for id, stake in pairs(stakesOf(matchId)) do
         if not stake.settled then
             local amount = stake.amount
-            -- READ BEFORE THE CALL, because RefundOne settles it.
-            local forfeited = stake.forfeited == true
+
+            -- NOBODY WON THIS ROUND, SO A FORFEIT HAS NOWHERE TO GO.
+            --
+            -- A stake forfeited by somebody who walked out of a live round is
+            -- kept ON PURPOSE, so that the fighters who stayed win it. That is
+            -- the whole point of it and RefundOne is right to refuse it.
+            --
+            -- But every path that reaches RefundAll is a round with no winner:
+            -- an admin stop, a lobby torn down, or a settle that refunded
+            -- everybody. There is no pot left for the forfeit to be won out of,
+            -- so keeping it here does not pay it to the survivors -- it deletes
+            -- the money. Measured: a lobby where everyone drops out lost its
+            -- whole pot, and the log said the stake "stays in the pot" one line
+            -- before the pot stopped existing.
+            --
+            -- DO NOT put this back without first giving the money a recipient.
+            -- Refusing to refund is only honest while somebody else is being
+            -- paid it.
+            if stake.forfeited == true then
+                stake.forfeited = nil
+                restored = restored + 1
+            end
+
             if ArenaBetting.RefundOne(matchId, id, reasonKey) then
-                if forfeited then
-                    kept = kept + 1
-                else
-                    refunded = refunded + 1
-                    total = total + amount
-                end
+                refunded = refunded + 1
+                total = total + amount
             else
                 owed = owed + amount
             end
         end
     end
 
-    if kept > 0 then
-        ArenaLog('betting: match %s kept %d forfeited stake(s) rather than refunding them (%s).',
-            tostring(matchId), kept, tostring(reasonKey))
+    if restored > 0 then
+        ArenaLog('betting: match %s returned %d forfeited stake(s) because the round ended with nobody to '
+            .. 'win them (%s).', tostring(matchId), restored, tostring(reasonKey))
     end
 
     if owed > 0 then

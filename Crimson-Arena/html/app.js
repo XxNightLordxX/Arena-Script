@@ -3166,7 +3166,7 @@
 
         if (match.state === 'ended') return 'This match has finished.';
 
-        var fighting = playerMatchId() === match.id;
+        var fighting = betAsFighter(match);
 
         if (fighting && match.fighterBetsOpen === false) {
             return 'The book closed when this round went live.';

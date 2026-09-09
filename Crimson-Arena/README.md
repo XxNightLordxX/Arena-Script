@@ -57,6 +57,28 @@ Everything below is in the shipped code. Where something is off by default, or i
 - Lives, respawn delay, a round clock (`roundTimeSeconds = 0` for none), a lobby countdown players can still back out of, and a frozen start countdown.
 - Per-arena boundary sphere: a warning, then damage per tick until the player comes back. `boundary.enabled = false` for an open arena.
 - Optional per-arena weather and time overrides. Both `nil` by default.
+- **The server checks two things for itself**, once a second, because a
+  fighter's own game used to be the only source of them (`Config.Match.serverChecks`):
+  - **Where they are standing.** More than `outsideMetres` past the arena's
+    boundary for `outsideTicks` checks *in a row* and the server takes them
+    out of the round. **Their stake is forfeit and it goes on their record as
+    a loss** — unlike a disconnect, which forfeits the stake but spares the
+    record, because standing outside the arena is something they chose. Tell
+    your players this exists; the eight-second default is generous, but
+    somebody who wanders off during a paid round will lose it.
+  - **Whether they died.** A body that reads as dead for `deadTicks` checks in
+    a row with nothing reported has the death booked by the server, so a
+    client that simply never reports one cannot be immortal. **Nobody is
+    credited with the kill** — the server saw a corpse, not a shot.
+  - Both act only on something seen several checks running, and never on a
+    body the server cannot see, so a player whose game is still loading is not
+    mistaken for a cheat.
+- **Two things a lobby will refuse, and it is worth knowing why before somebody
+  asks you:** the host cannot change the arena, mode, lives, clock, win
+  condition, kill limit or ladder **once anybody has paid to be in the round** —
+  they can only close the lobby, which refunds everyone; and a fighter holding a
+  bet on their own side cannot switch teams, because moving to the other side
+  would hand their stake back unjudged.
 - Eliminated players get an orbiting spectator camera and can cycle between the fighters (`spectateOnElimination`).
 - Players get back the weapons, ammo, armour and health they walked in with (`Config.Match.restoreLoadoutOnExit`, on by default) on every path out of the arena — round end, an aborted match, leaving or disconnecting mid-round, and a resource restart. Health comes back whatever that setting says: nobody leaves the arena as a corpse.
 

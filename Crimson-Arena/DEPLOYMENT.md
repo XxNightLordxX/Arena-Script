@@ -88,6 +88,21 @@ Open `config.lua`. The three things that are certainly wrong for your server:
   The config carries a copy-paste block for adding more.
 - `Config.Betting` — decide whether money is in play at all before players can
   stake it. `Config.Betting.enabled = false` if you are unsure.
+- `Config.Schedule` — **the arena ships SHUT for fourteen hours a day.** Four
+  windows are on by default (00:00-04:00, 05:00-07:00, 12:00-14:00,
+  18:00-20:00, on the SERVER's real clock, not the game's). Outside them
+  nobody can create a match and nobody can join one, so the smoke test below
+  simply fails if you run it at the wrong hour. Set `enabled = false` to open
+  the doors permanently, edit `windows` to suit your players, or use
+  `offsetHours` if your box runs on UTC and they do not. `/arenahours` prints
+  what the server currently thinks the time is, and the start-up console line
+  says `SHUT now, opens at ...` when it is closed.
+- `config.weapons.lua` — **every weapon ships enabled, including the whole
+  `heavy` category**: the RPG, the homing and grenade launchers, the minigun,
+  the railguns and the flamethrower. Explosions are never refused between
+  teammates whatever `Config.Teams.friendlyFire` says, so on a team mode this
+  is a decision, not a detail. Set `enabled = false` on the entries you do not
+  want before you open the doors.
 
 One thing ships **off** and stays off unless you decide otherwise. It is not a
 placeholder you have to fix; it is a switch you have to mean:

@@ -3820,8 +3820,8 @@ end
 
 local RETRY_SECONDS = 30
 
---- How many times a character's stash may read EMPTY before the sweep stops
---- looking at them for the rest of the process.
+--- How many times a character's stash may read EMPTY before the sweep drops
+--- them from the close look to the slow one.
 ---
 --- IT WAS ONE, AND ONE WAS A WAY TO LOSE SOMEBODY'S BELONGINGS FOR EVER.
 ---
@@ -3840,7 +3840,17 @@ local RETRY_SECONDS = 30
 --- So the answer is not one look, it is several, spread over minutes -- and
 --- the moment anything at all comes back, the question is settled properly.
 --- DO NOT make this one again.
-local EMPTY_READS_BEFORE_GIVING_UP = 5
+---
+--- AND IT IS NOT A COUNT OF LOOKS BEFORE GIVING UP. It was, and five was the
+--- same defect as one on a longer fuse: a stash still loading four minutes
+--- after a restart was dropped for the life of the process, exactly as the
+--- single look dropped one that was slow by thirty seconds. Measured against
+--- the sweep's own default cadence -- a stash blind for eight passes came
+--- back, blind for nine never did, and twenty blind passes followed by forty
+--- perfectly readable ones never did either. All this number decides now is
+--- how long the CLOSE looks last; LOOK_AGAIN_SLOWLY_SECONDS says what happens
+--- afterwards. DO NOT turn it back into a give-up.
+local EMPTY_READS_BEFORE_SLOWING_DOWN = 5
 
 --- And how far apart those looks are, which is the other half of the answer.
 ---
@@ -3853,17 +3863,50 @@ local EMPTY_READS_BEFORE_GIVING_UP = 5
 --- is ox_inventory finishing a load, and asking it four more times in the same
 --- breath tells you nothing new.
 ---
---- Spread out, it is one read per player per minute for four minutes and then
---- nothing for the rest of the session. DO NOT tie the look to the sweep's own
---- cadence.
+--- Spread out, it is one read per player per minute for four minutes, and one
+--- per player per LOOK_AGAIN_SLOWLY_SECONDS after that. DO NOT tie the look to
+--- the sweep's own cadence.
 local LOOK_AGAIN_SECONDS = 60
+
+--- How often the sweep looks once the close looks are used up, WHICH IS NOT
+--- NEVER.
+---
+--- NEVER IS WHAT IT WAS, AND IT IS HOW A PHONE GOES MISSING FOR A WHOLE
+--- SESSION. The close looks cover the case they were written for -- an
+--- ox_inventory stash that is slow to load after a restart -- and they cover
+--- it for four minutes of that player's presence. A stash slower than that
+--- fell off the end and was never looked at again: their own phone and their
+--- own cash stayed in a stash nothing would open, and NOT ONE LINE was
+--- printed, because the warning that would have said so lives inside a branch
+--- that needs a memory record which the restart had already erased. Measured
+--- over thirty simulated minutes with a phone and forty-two thousand stranded:
+--- zero log lines, and the stash still full at the end.
+---
+--- THE COST THE GIVE-UP WAS PROTECTING IS WORTH STATING IN FULL, because it is
+--- what makes this affordable rather than merely kind: one stash read per
+--- connected player per five minutes. On a forty-eight slot server that is
+--- forty-eight reads per three hundred seconds, against the sixteen hundred
+--- the same server would spend over the same five minutes if the close look
+--- never slowed down. Roughly a thirtieth of the price the close look already
+--- pays, for the one thing this whole file exists to promise.
+---
+--- DO NOT put a ceiling on the number of slow looks. A ceiling is the give-up
+--- again under another name, and the entire defect is that a stash which
+--- becomes readable AFTER the ceiling is one nobody ever goes back for.
+local LOOK_AGAIN_SLOWLY_SECONDS = 300
 
 local function worthTrying(src, citizenid)
     if owed[citizenid] then return true end
 
+    -- HOW LONG SINCE THE LAST LOOK IS THE ONLY GATE HERE, and the count only
+    -- chooses which of the two waits applies. There is no number of empty
+    -- reads that shuts the door on a character for good: the close looks give
+    -- way to the slow ones and the slow ones do not stop while the player is
+    -- still connected. DO NOT put a `return false` back on the look count.
     local looks = probed[citizenid] or 0
-    if looks >= EMPTY_READS_BEFORE_GIVING_UP then return false end
-    if looks > 0 and (os.time() - (probedAt[citizenid] or 0)) < LOOK_AGAIN_SECONDS then
+    local waitFor = LOOK_AGAIN_SECONDS
+    if looks >= EMPTY_READS_BEFORE_SLOWING_DOWN then waitFor = LOOK_AGAIN_SLOWLY_SECONDS end
+    if looks > 0 and (os.time() - (probedAt[citizenid] or 0)) < waitFor then
         return false
     end
 
@@ -4106,6 +4149,17 @@ function ArenaAmmo.SweepReturns()
             chaseOwedKit(src, citizenid)
 
             if worthTrying(src, citizenid) then
+                -- READ BEFORE THE LOOK, because the look is what changes it.
+                -- A find made on a SLOW look is the one an operator has to be
+                -- told about: it is proof that stashes on this server take
+                -- longer to load than the close looks wait for, which is the
+                -- condition under which somebody who disconnects before the
+                -- slow look comes round is handed nothing at all. Below the
+                -- call it reads the counter the call's own answer has already
+                -- moved, and every find looks like a close one. DO NOT move
+                -- it down.
+                local slowLook = (probed[citizenid] or 0) >= EMPTY_READS_BEFORE_SLOWING_DOWN
+
                 local _, returned, answered = ArenaAmmo.ReturnLeftovers(src)
 
                 -- COUNTED, NOT LATCHED. This wrote `true` on the FIRST
@@ -4116,17 +4170,31 @@ function ArenaAmmo.SweepReturns()
                 -- process. Nothing anywhere cleared this table.
                 --
                 -- Something actually coming back is proof the stash was read
-                -- for real, and settles it. Nothing coming back is only ever
-                -- a vote. DO NOT go back to latching on one.
+                -- for real, and settles it -- meaning it goes straight to the
+                -- slow cadence rather than counting its way up to it. Nothing
+                -- coming back is only ever a vote. DO NOT go back to latching
+                -- on one.
                 if answered then
                     probedAt[citizenid] = os.time()
                     if returned > 0 then
-                        probed[citizenid] = EMPTY_READS_BEFORE_GIVING_UP
+                        probed[citizenid] = EMPTY_READS_BEFORE_SLOWING_DOWN
                     else
                         probed[citizenid] = (probed[citizenid] or 0) + 1
                     end
                 end
-                if returned > 0 then handed = handed + 1 end
+                if returned > 0 then
+                    handed = handed + 1
+                    if slowLook then
+                        ArenaLog('door: %s\'s belongings came back on a SLOW look, out of stash %s. '
+                            .. 'Their stash read empty for the whole of the first %d minute(s) they '
+                            .. 'were looked at, so the close looks had already given out. Nothing was '
+                            .. 'lost -- but stashes on this server load slower than the door expects, '
+                            .. 'and anybody who leaves before the slow look comes round is handed '
+                            .. 'nothing.',
+                            tostring(src), stashFor(citizenid),
+                            math.floor(EMPTY_READS_BEFORE_SLOWING_DOWN * LOOK_AGAIN_SECONDS / 60))
+                    end
+                end
             end
         end
     end

@@ -8,8 +8,6 @@ local owed = {}
 
 local probed = {}
 
-local issued = {}
-
 --- Characters the empty-read warning has already been said for.
 ---
 --- The retry keeps trying for ever by design, and the warning must not: one
@@ -586,7 +584,7 @@ local function restore(src, record)
     -- cleared, the retry had nothing to work from, and the player walked out
     -- with empty pockets while every log in the file said the exit had gone
     -- perfectly. Their belongings may well still be in the stash -- it is a
-    -- real one, and ArenaAmmo.StashOf still names it -- but nothing in this
+    -- real one, and the admin screen still names it -- but nothing in this
     -- resource remembered to go back for them.
     --
     -- The record knows how many items went IN. That is the one fact that can
@@ -927,9 +925,6 @@ local function issueSpareRounds(ox, src, matchId, entry, pass)
     byName[item] = (byName[item] or 0) + count
 
     if pass then pass[item] = (pass[item] or 0) + count end
-
-    issued[matchId] = issued[matchId] or {}
-    issued[matchId][src] = (issued[matchId][src] or 0) + count
 
     ArenaDebug('ammo: gave %s x%d to %s.', item, count, tostring(src))
 
@@ -1354,9 +1349,6 @@ function ArenaAmmo.GrantRounds(src, matchId, item, count)
     local byName = issuedAmmo[matchId][src] or {}
     issuedAmmo[matchId][src] = byName
     byName[item] = (byName[item] or 0) + amount
-
-    issued[matchId] = issued[matchId] or {}
-    issued[matchId][src] = (issued[matchId][src] or 0) + amount
 
     ArenaDebug('kill ammo: gave %s x%d to %s.', item, amount, tostring(src))
     return true
@@ -2752,34 +2744,6 @@ function ArenaAmmo.Reclaim(src, reasonKey)
     return ok and 1 or 0
 end
 
-function ArenaAmmo.ReclaimAll(matchId, reasonKey)
-    if not Arena.IsKey(matchId) then return 0 end
-
-    local sources, seen = {}, {}
-    local function add(src)
-        if seen[src] then return end
-        seen[src] = true
-        sources[#sources + 1] = src
-    end
-
-    for src, record in pairs(stashed) do
-        if record.matchId == matchId then add(src) end
-    end
-    for src in pairs(issuedWeapons[matchId] or {}) do add(src) end
-    for src in pairs(issuedAmmo[matchId] or {}) do add(src) end
-    for src in pairs(issuedSupplies[matchId] or {}) do add(src) end
-
-    for _, src in ipairs(sources) do
-        ArenaAmmo.Reclaim(src, reasonKey)
-    end
-
-    issued[matchId] = nil
-    issuedWeapons[matchId] = nil
-    issuedAmmo[matchId] = nil
-    issuedSupplies[matchId] = nil
-    return #sources
-end
-
 function ArenaAmmo.Clear(matchId)
     if not Arena.IsKey(matchId) then return false end
 
@@ -2808,28 +2772,13 @@ function ArenaAmmo.Clear(matchId)
     heldBefore[matchId] = nil
     issuedOwner[matchId] = nil
 
-    issued[matchId] = nil
     issuedAmmo[matchId] = nil
     issuedWeapons[matchId] = nil
     issuedSupplies[matchId] = nil
     return true
 end
 
-function ArenaAmmo.OnLoan(matchId)
-    if not Arena.IsKey(matchId) then return 0 end
-
-    local total = 0
-    for _, count in pairs(issued[matchId] or {}) do
-        total = total + (Arena.ToInt(count) or 0)
-    end
-    return total
-end
-
---- Whether this resource is currently holding this player's inventory.
---- @param src number
---- @return boolean
--- THE THREE READERS BELOW ALL GO THROUGH ownRecord, and that is not
--- tidiness. `stashed` is keyed by server id, a record is deliberately KEPT
+--- THE READER BELOW GOES THROUGH ownRecord, and that is not tidiness. `stashed` is keyed by server id, a record is deliberately KEPT
 -- when an exit could not finish, and FiveM hands a freed id to whoever
 -- connects next -- so a raw read answers a stranger's question with a
 -- departed player's belongings.
@@ -2844,16 +2793,7 @@ end
 --
 -- The swapItems guard was already asking through ownRecord. This is the rest
 -- of the file agreeing with it, rather than half of it rejecting a record the
--- other half prints.
-function ArenaAmmo.IsHolding(src)
-    return ownRecord(src) ~= nil
-end
-
-function ArenaAmmo.StashOf(src)
-    local record = ownRecord(src)
-    return record and record.stash or nil
-end
-
+-- other half prints. DO NOT read `stashed` directly anywhere.
 function ArenaAmmo.HeldFor(src)
     local record = ownRecord(src)
     if type(record) ~= 'table' then return nil end

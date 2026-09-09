@@ -492,29 +492,25 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 21 functions
+#### `server/ammo.lua` — 17 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaAmmo.IsEnabled()` | Whether ammunition ITEMS are being handed out. |
-| `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry)` | Swaps one issued tier weapon for another, for a gun-game promotion or demotion. |
+| `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear)` | Swaps one issued tier weapon for another, for a gun-game promotion or demotion. |
 | `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies -- or takes the weapon away, where `allowWeaponWithoutAmmoItem` is off and its rounds could not be issued. |
 | `ArenaAmmo.GrantRounds(src, matchId, item, count)` | A flat grant of ammunition onto the arena's ledger, for a kill reward. Hands over nothing where `Config.Loadouts.ammoItems.enabled` is off, like every other issue path. |
 | `ArenaAmmo.GrantSupply(src, matchId, item, count)` | Hands one player one supply mid-round and puts it on the arena's books. |
 | `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
-| `ArenaAmmo.ReclaimAll(matchId, reasonKey)` | Reclaims the kit of every player in one match. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |
-| `ArenaAmmo.OnLoan(matchId)` | How many rounds one match is still on the hook for. |
-| `ArenaAmmo.IsHolding(src)` | Whether this resource is currently holding this player's inventory. |
-| `ArenaAmmo.StashOf(src)` | The stash a player's kit is in, for an admin who needs to point them at it. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server: outstanding stashes handed back, and any arena kit that left with a character taken off them. |
-| `ArenaAmmo.LoadOwedKit()` | Reads the outstanding-kit slate back off the database, merging rather than replacing. Does nothing with `Config.Database.enabled` off, and retries from the sweep until it lands. |
+| `ArenaAmmo.LoadOwedKit()` | Reads the outstanding-kit slate back off the database, merging rather than replacing — weapon rows de-duplicate on serial, and a stack keeps whichever total is higher, so a debt incurred before the database came up is not forgiven. Does nothing with `Config.Database.enabled` off, and retries from the sweep until it lands. |
+| `ArenaAmmo.Owed()` | How many characters this resource still owes belongings to — the stash debt, not the kit debt. |
 | `ArenaAmmo.OwedKitIsSaved()` | Whether the slate is being written somewhere that survives a restart — measured from a query that actually landed, not inferred from the config. |
 | `ArenaAmmo.OwedKit()` | Every arena weapon and item stack that left with a character and has not come back, one row per character. |
-| `ArenaAmmo.Owed()` | How many characters this resource still owes belongings to — the stash debt, not the kit debt. |
 | `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
 | `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
 

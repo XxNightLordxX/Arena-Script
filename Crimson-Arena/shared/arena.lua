@@ -1036,8 +1036,8 @@ end
 --- nobody picked it. It used to hand-build its entry to get past that, and
 --- the hand-built one was missing `ammoTypeItem` -- so every ladder weapon
 --- was issued as though ammo items were switched off, the whole pick sat in
---- the magazine, no loose rounds were ever handed over and ArenaAmmo.OnLoan
---- never learned the arena owed them.
+--- the magazine and no loose rounds were ever handed over -- so nothing was
+--- recorded as issued, and the exit had nothing to take back.
 --- @param weapon table -- a catalogue entry
 --- @param ammoType table|nil -- an Arena.ResolveAmmoType result, already chosen
 --- @param ammo any -- rounds asked for, or nil for this weapon's own default

@@ -30,7 +30,7 @@ That answers most of it cleanly:
 
 | # | Action | Why I am sure |
 |---|---|---|
-| 1 | Delete the whole `tests/` folder (96 spec files) | The game never loads it. It is not shipped, not required, and every version of it stays in the repository's history for ever. |
+| 1 | Delete the whole `tests/` folder (77 spec files) | The game never loads it. It is not shipped, not required, and every version of it stays in the repository's history for ever. |
 | 2 | Delete `.luacheckrc` | It configures a code checker used only while developing. |
 | 3 | Remove every comment from `client/`, `server/`, `shared/`, `html/` | A non-coder never opens these files. |
 | 4 | Rewrite `config.lua`'s comments to operator language | Currently 2,241 lines of comment around 689 lines of settings — 76% of the file. Most of it explains *why a decision was made*, which is a developer's question, not yours. |
@@ -78,8 +78,14 @@ command, every line of player-facing text, every setting name, and every
 element the panel looks up. The two lists are compared line by line.
 
 *Why this is strong:* it is written in your terms, not in code terms. A
-failure reads *"this setting is gone"*, not *"a checksum changed"*. There are
-currently 972 entries.
+failure reads *"this setting is gone"*, not *"a checksum changed"*, and the
+number it counts is only ever compared against itself — a run before and a run
+after, on the same tree. **Against the code as it ships today it is 994
+entries** (`python3 tools/inventory.py Crimson-Arena | wc -l`, run against
+this commit). It was 972 when this paragraph was written and 983 at the strip
+below; the surface has grown since, which is what those three numbers are
+saying. What matters is that a before and an after of the same change agree,
+not that any of them is a round number.
 
 *Tool:* `tools/inventory.py`
 
@@ -90,7 +96,12 @@ stripped resource, and **only then** are the tests removed. So the code that
 ships has been proven working by the very tests being retired, rather than
 by the ones that existed before the change.
 
-*Tool:* the existing `tests/run.sh` — 96 spec files, roughly five minutes.
+*Tool:* the existing `tests/run.sh` — 77 spec files, roughly five minutes.
+(**77 is the count, and it is the most there ever were.** This document said
+96 in four places; no commit in the history has ever carried more than 77
+`*_spec.lua` files. Corrected rather than left, because the number is the
+only thing telling you whether the folder you are about to delete is the
+whole suite.)
 
 ### All four, run for real — before anything was deleted
 
@@ -102,13 +113,13 @@ touched. Results:
 |---|---|
 | 1. Lua instructions | **PASS** — 18 files, 0 changed |
 | 2. Panel tokens | **PASS** — 3 files, 0 changed |
-| 3. Dependency surface | **PASS** — 983 entries before, 983 after, 0 lost |
-| 4. Tests against stripped code | 95 of 96 spec files pass — see below |
+| 3. Dependency surface | **PASS** — 983 entries before, 983 after, 0 lost. *(983 is what the tree held on the day of the strip; it is 994 today. The check is a before against an after of the same change, so the count moving since does not weaken the result above.)* |
+| 4. Tests against stripped code | 76 of 77 spec files pass — see below |
 
 **Run again, on the real strip.** The table above is the first dry run, which
 removed *every* comment. Re-run against the strip you actually chose — the
 one that keeps warning blocks — checks 1, 2 and 3 pass identically, and check
-4 comes back **95 of 96 with a different single failure**: `configmap_spec`,
+4 comes back **76 of 77 with a different single failure**: `configmap_spec`,
 because `config.lua` carries a line-numbered map of itself at the top and
 stripping moves those lines. That map is regenerated as part of the strip and
 the spec passes again.
@@ -274,6 +285,12 @@ That would take `config.lua` from roughly 3,117 lines to about 1,100.
 
 - [x] **That is the right level** — done, but it landed at **2,396 lines,
       not 1,100**, and you should know why before you decide it is wrong.
+      *(2,396 was the count on the day. It is **2,457** now, and every line
+      of the growth is comment — no setting was added or removed. Most of it
+      is corrections: two notes had to go in because the shorter version was
+      actively wrong, an empty `adminGroups` locking you out rather than
+      letting everyone in, and `outsideTicks = 0` reading as the harshest
+      possible setting rather than as off.)*
 - [ ] Go shorter still — one sentence each
 - [ ] Keep more than that
 
@@ -287,7 +304,8 @@ the ones a shorter file would have lost.
 
 So the rewrite did what Doubt 6 describes — every setting now says what it
 does and what you may write, and the history of why a number changed is
-gone — and the warnings stayed. The file is 695 lines of actual settings and 192 blank; the rest is that.
+gone — and the warnings stayed. Of its 2,457 lines, 191 are blank and about seven
+hundred are settings; the rest is that.
 
 If you want it shorter, the next thing to cut is the warnings, and that is
 Doubt 1 again rather than this one. Say the word and I will do it — but I

@@ -127,3 +127,53 @@ Overwrite `Crimson-Arena/html/images/logo.png`. Already in the manifest, nothing
 change. `Config.UI.logoStyle` is `'mark'` (small square) or `'banner'` (spans the top and
 replaces the title text). Use a transparent PNG; square suits `mark`, roughly 4:1 suits
 `banner`.
+
+---
+
+## Late finding, arrived after the rest — and it resolves a disagreement
+
+Two agents had disagreed about whether money was really being destroyed. One said the
+failing `moneyconservation_spec` was stale and the forfeits deliberate. The other now has
+the answer, measured:
+
+**A forfeited entry stake is destroyed whenever the pot is NOT WON.** `betting.lua:679`
+refuses to refund a forfeited stake on *every* teardown, including the ones where nobody
+won it. Everybody dropping out mid-round destroys the whole pot: purse minus 3,000,
+nothing on the unpaid ledger, and the log says "stays in the pot" one line before the pot
+ceases to exist.
+
+This is the **root cause of the `moneyconservation_spec` failure**, so that spec was NOT
+stale after all — all 28 bad seeds are negative deltas. The earlier "stale spec" verdict
+was wrong, and it is recorded here rather than quietly dropped.
+
+The fix is six lines at `betting.lua:679`: refund a forfeited stake on a teardown that has
+no winner. Applied to a copy and measured — `moneyconservation_spec` goes 10 passed 1
+failed to **11 passed 0 failed**, with the whole 77-spec suite byte-identical otherwise
+(both trees run end to end and diffed). That would take the suite to **77 of 77**.
+
+One deliberate half is left alone and is your call: `betting.lua:858` / `:510` carries a
+"DO NOT drop this again" comment.
+
+**How this sits with your ruling.** You decided "forfeit on a quit, refund on an admin
+stop". This is a third case neither of us named: the round collapses and *nobody* wins, so
+there is no pot for the forfeit to go to and the money simply evaporates. Refunding it
+there is closest to the spirit of both your ruling and EXPLOITS decision 7, but it is
+yours to confirm.
+
+### Two corrections to what is written above
+
+* The gun-game climber wedge is real, but **two of its three sub-claims are refuted**: a
+  weapon destroyed on death does *not* refuse, and a refused `giveWeapon` does roll back.
+  The actual latch is a **serial-less record at `ammo.lua:938`** — the row is never pruned,
+  so every later `settleTier` refuses identically, and `match.lua:1236` re-issues nothing
+  on a ladder respawn. Fix the record pruning, not the death path.
+* `ArenaMatch.Abort` lacks `End`'s `state == 'ended'` guard, so a re-entrant Stop pays the
+  pot twice (+2,000). **Not reachable on a stock server** because `End` never yields, but
+  one line closes it.
+
+### Also proven clean by that pass
+
+Database down: nothing hard-errors, money is conserved, kits are returned. Seven of the
+thirteen unhappy-path scenarios are clean in full. Forty-five randomised lifecycles across
+three database modes raised zero errors and left no match behind. `onResourceStop` does
+exactly what it claims.

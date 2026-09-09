@@ -624,8 +624,33 @@ local function floorFor(matchId, src, item)
     return mine and (Arena.ToInt(mine[item]) or 0) or 0
 end
 
+--- Which character the arena issued a match's consumables to:
+--- { [matchId] = { [src] = citizenid } }.
+---
+--- WEAPONS CARRY THEIR OWNER AND ROUNDS CANNOT. An issued weapon is a row
+--- with a serial and a citizen id on it; `issuedAmmo` is `[item] = count`,
+--- a bare number with nowhere to write whose it was. So the one thing the
+--- exit needed to know on a disconnect -- who to bill for what it could not
+--- collect -- was the one thing the stock rows could not say, and the debt
+--- was dropped rather than charged to whoever happened to hold the id.
+---
+--- STAMPED ONCE PER PLAYER PER MATCH, from rememberHeld, which already runs
+--- before every consumable the arena hands over and already early-returns
+--- once it has its answer. It costs one player lookup per fighter per round.
+--- DO NOT read this as "who is on that id now" -- that is the question it
+--- exists to stop being asked.
+local issuedOwner = {}
+
 local function rememberHeld(ox, src, matchId, item)
     if not (Arena.IsKey(matchId) and Arena.IsKey(item)) then return end
+
+    local owners = issuedOwner[matchId] or {}
+    issuedOwner[matchId] = owners
+    if owners[src] == nil then
+        local holder = ArenaGetPlayer(src)
+        local citizenid = holder and holder.PlayerData and holder.PlayerData.citizenid or nil
+        if Arena.IsKey(citizenid) then owners[src] = citizenid end
+    end
 
     heldBefore[matchId] = heldBefore[matchId] or {}
     local mine = heldBefore[matchId][src] or {}
@@ -1526,6 +1551,17 @@ local warnedNoKitDatabase = false
 --- query was being refused. DO NOT go back to answering this from Config.
 local kitSchemaConfirmed = false
 
+--- Whether the read-back has been attempted and succeeded.
+---
+--- ONE ATTEMPT AT START WAS NOT ENOUGH. LoadOwedKit is called from
+--- onResourceStart, and `ensure crimson_arena` above `ensure oxmysql` in a
+--- server.cfg is an ordinary mistake -- at which point the read never
+--- happened, every debt from previous runs sat in the table unread, and new
+--- ones began writing fine the moment oxmysql came up. The operator saw a
+--- working table full of rows nothing would ever collect, and no line saying
+--- why. The sweep retries until it lands. DO NOT make this a one-shot again.
+local kitLoaded = false
+
 local function kitDbOn()
     if Config.Database.enabled ~= true then return false end
 
@@ -1760,8 +1796,34 @@ local function queueOwedKit(citizenid, src)
     -- the arena does not know what is theirs, and a guess here is a guess
     -- with somebody else's property. It would rather lose the rounds -- the
     -- same rule the weapon side follows for a missing serial.
+    -- AND ONLY WHERE THE POCKETS BEING READ ARE THE POCKETS BEING BILLED.
+    --
+    -- The counts below come from `src`, and `src` is only this character
+    -- while nobody else has taken the server id over. On the branch this
+    -- function exists for they often HAVE -- so measuring the newcomer's
+    -- stock and writing it down against the character who left is both a
+    -- debt they never incurred and a free round of consumables for whoever
+    -- inherited the id. The stamp says who the arena actually armed.
+    local holder = ArenaGetPlayer(src)
+    local liveId = holder and holder.PlayerData and holder.PlayerData.citizenid or nil
+
     local function oweStock(store)
         for matchId, byPlayer in pairs(store) do
+            local stamped = (issuedOwner[matchId] or {})[src]
+            local billed = Arena.IsKey(stamped) and stamped or citizenid
+
+            if billed ~= citizenid or citizenid ~= liveId then
+                -- NOT THIS CHARACTER'S TO MEASURE. Either the rows belong to
+                -- somebody else, or the pockets do. Either way the arena
+                -- would rather lose the rounds than guess -- the same rule
+                -- the weapon side follows for a missing serial. DO NOT bill
+                -- a character whose pockets these are not.
+                ArenaLog('weapons: %s\'s consumables from match %s cannot be counted -- that server '
+                    .. 'id no longer answers to them. The rounds are written off rather than '
+                    .. 'charged to the wrong person.', tostring(citizenid), tostring(matchId))
+                goto nextMatch
+            end
+
             for item, issued in pairs(byPlayer[src] or {}) do
                 local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
                 if not ok then
@@ -1778,6 +1840,8 @@ local function queueOwedKit(citizenid, src)
                     end
                 end
             end
+
+            ::nextMatch::
         end
     end
 
@@ -2109,18 +2173,25 @@ local function reclaimWeapons(ox, src, fallbackOwner)
         for matchId, byPlayer in pairs(store) do
             local given = byPlayer[src]
             if given then
+                -- WHO THE ARENA ARMED FOR THIS MATCH, which the rows
+                -- themselves cannot say. Falling back to the caller's answer,
+                -- then to whoever is on the id, in that order: the stamp is
+                -- the only one of the three that CANNOT be wrong.
+                local stamped = (issuedOwner[matchId] or {})[src]
+                local billed = Arena.IsKey(stamped) and stamped or owner
+
                 for item, count in pairs(given) do
                     local _, short, measured = takeBack(ox, src, item, count, floorFor(matchId, src, item))
 
                     -- MEASURED, AND AGAINST THE RIGHT PERSON. A shortfall is
                     -- only a debt when the arena could actually see what they
-                    -- were holding; and `src` is only that person while the
-                    -- live citizen id still matches the one being billed. DO
-                    -- NOT drop either half of that test.
-                    if short > 0 and measured and Arena.IsKey(owner) and owner == liveId then
-                        if oweItem(owner, item, short) then
+                    -- were holding -- and it is only THEIR debt when the
+                    -- pockets it measured are the pockets of the character
+                    -- being billed. DO NOT drop either half of that test.
+                    if short > 0 and measured and Arena.IsKey(billed) and billed == liveId then
+                        if oweItem(billed, item, short) then
                             ArenaDebug('weapons: %d %s did not come back off %s -- put on %s\'s slate.',
-                                short, item, tostring(src), tostring(owner))
+                                short, item, tostring(src), tostring(billed))
                         else
                             ArenaLog('weapons: %d %s did not come back off %s and could NOT be written '
                                 .. 'down -- the ledger is full. They are gone.',
@@ -2579,6 +2650,7 @@ function ArenaAmmo.Clear(matchId)
     end
 
     heldBefore[matchId] = nil
+    issuedOwner[matchId] = nil
 
     issued[matchId] = nil
     issuedAmmo[matchId] = nil
@@ -2795,6 +2867,11 @@ function ArenaAmmo.SweepReturns()
         local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
 
         if Arena.IsKey(citizenid) then
+            -- AND THE SLATE IS READ BACK IF IT NEVER WAS. Cheap when it has
+            -- been -- one boolean -- and the only thing that rescues a server
+            -- whose `ensure` order put this resource above oxmysql.
+            ArenaAmmo.LoadOwedKit()
+
             -- OUTSIDE `worthTrying`, DELIBERATELY. That gate exists to stop
             -- the stash sweep re-reading a database for a character it has
             -- already answered for, and it is never reopened for the rest of
@@ -2827,7 +2904,7 @@ end
 --- incurred in those first seconds must not be wiped by the read that
 --- follows it.
 function ArenaAmmo.LoadOwedKit()
-    if not kitDbOn() then return false end
+    if kitLoaded or not kitDbOn() then return false end
 
     kitDb(KIT_SCHEMA_SQL, {}, function()
         kitDb(KIT_READ_SQL, {}, function(rows)
@@ -2894,6 +2971,9 @@ function ArenaAmmo.LoadOwedKit()
                     end
                 end
             end
+
+            kitLoaded = true
+            kitSchemaConfirmed = true
 
             if weapons > 0 or stacks > 0 then
                 ArenaLog('weapons: read back %d outstanding weapon(s) and %d item stack(s) that '

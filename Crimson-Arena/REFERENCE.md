@@ -169,6 +169,9 @@ instancing really happened rather than assuming it did.
 
 ### Operator surface
 
+- **A record of what players still owe the arena** — kit that left with a
+  character the exit could not reach — taken back the next time they are seen.
+  In memory by default; in MySQL with `Config.Database` on.
 - **A leaderboard**, in memory by default; switch `Config.Database` on and it is
   written to MySQL through oxmysql and survives restarts.
 - **Discord webhooks** for matches and money movements.
@@ -292,7 +295,7 @@ line-number map that is regenerated whenever the file changes.
 | `Config.Permissions` | Admin groups, and the jobs allowed to create or join matches. |
 | `Config.Arenas` | Every arena: where it is, its boundary, its spawn points or spawn area, the floor and cover it builds, and how it scales with the roster. |
 | `Config.Loadouts` | Categories, slots, ammunition amounts and types, the extra supplies a player carries in, the loadout chooser, and the inventory door. The weapons themselves are in `config.weapons.lua`. |
-| `Config.Database` | The oxmysql-backed leaderboard, off by default. |
+| `Config.Database` | The oxmysql-backed leaderboard and the record of what players still owe the arena. Off by default — with it off, both live in memory for one server run. |
 | `Config.Webhook` | Discord embeds for matches and money. |
 | `Config.Dispatch` | Routing-bucket isolation first, then the layers of police/EMS integration and the timing of the medical handoff. |
 
@@ -308,7 +311,7 @@ line-number map that is regenerated whenever the file changes.
 | `shared/compat/dispatch.lua` | shared | The police/EMS catalogue, the detection walk, the mutes and the startup report. |
 | `server/util.lua` | server | Logging, notifications, permissions, rate limiting, webhooks, match ids. |
 | `server/dispatch.lua` | server | The in-arena flag, routing-bucket isolation, the revive, and `/arenarevive` and `/arenaisolation`. |
-| `server/ammo.lua` | server | The inventory door and every ammunition item, issued and reclaimed. |
+| `server/ammo.lua` | server | The inventory door, every weapon and ammunition item issued and reclaimed, and the slate of what players still owe the arena. |
 | `server/stats.lua` | server | The leaderboard, in memory and in MySQL. |
 | `server/betting.lua` | server | Escrow, side bets, refunds and payouts. |
 | `server/lobby.lua` | server | The match registry, joining, leaving, readiness and the state snapshot. |
@@ -321,7 +324,8 @@ line-number map that is regenerated whenever the file changes.
 | `client/spectate.lua` | client | The spectate camera and its target list. |
 | `html/` | — | The panel. |
 | `locales/` | — | Every player-visible string. |
-| `sql/install.sql` | — | The leaderboard table, for operators who import by hand. |
+| `sql/install.sql` | — | Both tables — the leaderboard and the outstanding-kit slate — for operators who import by hand. Needs `DELETE` granted as well as `SELECT`/`INSERT`/`UPDATE`. |
+| `sql/uninstall.sql` | — | Drops both. Dropping the slate forgives every debt it holds. |
 
 ---
 
@@ -488,7 +492,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 18 functions
+#### `server/ammo.lua` — 21 functions
 
 | Function | What it does |
 |---|---|
@@ -506,8 +510,11 @@ listed; the source documents them where they are.
 | `ArenaAmmo.StashOf(src)` | The stash a player's kit is in, for an admin who needs to point them at it. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
-| `ArenaAmmo.SweepReturns()` | One pass over everybody on the server. |
-| `ArenaAmmo.Owed()` | How many characters this resource still owes belongings to. |
+| `ArenaAmmo.SweepReturns()` | One pass over everybody on the server: outstanding stashes handed back, and any arena kit that left with a character taken off them. |
+| `ArenaAmmo.LoadOwedKit()` | Reads the outstanding-kit slate back off the database, merging rather than replacing. Does nothing with `Config.Database.enabled` off, and retries from the sweep until it lands. |
+| `ArenaAmmo.OwedKitIsSaved()` | Whether the slate is being written somewhere that survives a restart — measured from a query that actually landed, not inferred from the config. |
+| `ArenaAmmo.OwedKit()` | Every arena weapon and item stack that left with a character and has not come back, one row per character. |
+| `ArenaAmmo.Owed()` | How many characters this resource still owes belongings to — the stash debt, not the kit debt. |
 | `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
 | `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
 

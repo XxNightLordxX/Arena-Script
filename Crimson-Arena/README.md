@@ -94,8 +94,15 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 **Leaderboard**
 
-- **The database ships off** (`Config.Database.enabled = false`), so out of the box the board keeps its numbers in memory for the length of the server run and resets on restart. Matches, betting and payouts are unaffected either way — nothing else in this resource reads the database.
+- **The database ships off** (`Config.Database.enabled = false`), so out of the box the board keeps its numbers in memory for the length of the server run and resets on restart. Matches, betting and payouts are unaffected either way.
 - Turn it on for an all-time board, in MySQL through oxmysql, in a table the resource creates itself on first start (or that you import from `sql/install.sql` if your database user cannot `CREATE TABLE` at runtime).
+
+**What players still owe the arena**
+
+- **The same switch, and this is the half that matters.** There is one way out of a round the exit cannot cover: the player on that server id is no longer the character the arena armed — a mid-round character switch, or a disconnect whose kit `ox_inventory` has already saved into somebody who is not here. Reaching into whoever holds the id now would take *their* guns, so the arena writes the weapons and the rounds down against the **character** and takes them back the next time that character is seen. A weapon is matched on the serial it was issued with, so a fighter's own gun of the same name is never the one that goes.
+- **With the database off that slate lives in memory only**, so a restart writes off every outstanding weapon and every round. On a server that restarts nightly, "log out mid-round and wait" is a way to keep an arena loadout. Turn it on and it survives, in `crimson_arena_owed_kit`, created alongside the leaderboard table.
+- **Grant `DELETE` as well as `SELECT`/`INSERT`/`UPDATE`.** The leaderboard only ever upserts; this table deletes a row the moment the debt it records is settled. Without that grant a returned weapon is never struck off, and the next restart starts chasing the player for it again. The resource cannot see that failure — the error goes to oxmysql's console, not this one.
+- `/arenaadmin` lists who owes what, and says on the same line which of the two it is doing.
 
 **Operations**
 
@@ -121,7 +128,7 @@ Those two are the whole `dependencies` block in `fxmanifest.lua`, and that list 
 |---|---|---|
 | [ox_target](https://github.com/overextended/ox_target) | the option on the lobby NPC | no NPC is spawned and the console says so. Set `Config.Lobby.interaction` to `'marker'` or `'both'` if you want the ground marker instead |
 | [ox_inventory](https://github.com/overextended/ox_inventory) | **the arena weapons themselves**, [their ammo items](#ammo-types--handing-out-your-own-ammo-items), and the stash that holds a player's own kit during a match | nothing is issued at all — weapons are items, so fighters would stand in the round with only what they walked in carrying, and nobody's own kit is stashed |
-| [oxmysql](https://github.com/overextended/oxmysql) | the all-time leaderboard, and only when `Config.Database.enabled` is on — it ships **off** | the leaderboard covers the current server run |
+| [oxmysql](https://github.com/overextended/oxmysql) | the all-time leaderboard **and the record of what players still owe the arena**, both behind `Config.Database.enabled` — it ships **off** | the leaderboard covers the current server run, **and the arena forgets outstanding kit on every restart** |
 
 None of those three is named in the manifest and none is imported by it, so with the shipped settings this resource starts on a server that has no database resource, no target script and no inventory script at all. Turn a feature on and the resource asks for what it needs at that moment; if the answer is no, it says so in the console once and carries on.
 
@@ -145,7 +152,7 @@ Drag, drop, one line in `server.cfg`, start.
 
    Use whatever the folder is actually called. Nothing else needs adding, and there is no order to get right beyond being after qbx_core.
 
-3. **You do not have to import any SQL.** `Config.Database.enabled` ships `false`, and nothing is created or queried while it is. Turn it on and `crimson_arena_stats` is created on first start; `sql/install.sql` holds the identical statement for the case where your database user cannot `CREATE TABLE` at runtime, which is a reasonable way to run a production server.
+3. **You do not have to import any SQL.** `Config.Database.enabled` ships `false`, and nothing is created or queried while it is. Turn it on and both tables — `crimson_arena_stats` and `crimson_arena_owed_kit` — are created on first start; `sql/install.sql` holds the identical statements for the case where your database user cannot `CREATE TABLE` at runtime, which is a reasonable way to run a production server. If you import by hand, grant `DELETE` too, and **ensure `crimson_arena` after oxmysql** — the owed-kit slate is read back at start.
 4. **Optional, and the arena works before you do any of it.** Edit `config.lua`: move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere that suits your map, and check the two shipped arenas suit you.
 
    They are deliberately different animals. **Trailer Park** (`trailerpark`) is a real place on the map — it has its own trailers and fences to fight around, so it spawns nothing of its own. **The Skydome** (`skydome`) is built rather than found: a floor of props tiled into a disc at 1201 m over open water, walled in by a double-stacked ring of shipping containers so nobody walks off the edge, with cover inside it, spawned per match and deleted when it ends, and it grows with the roster. Nothing is built over the top — it is a wall, not a box. Coordinates are a starting point rather than a finished map.

@@ -107,9 +107,15 @@ Open `config.lua`. The three things that are certainly wrong for your server:
 One thing ships **off** and stays off unless you decide otherwise. It is not a
 placeholder you have to fix; it is a switch you have to mean:
 
-- `Config.Database.enabled` — off, so the leaderboard lives in memory for the
-  length of the server run and resets on restart. Nothing else reads the
-  database. Turn it on for an all-time board.
+- `Config.Database.enabled` — off, so two things live in memory for the length
+  of the server run. The leaderboard resets on restart, which is cosmetic. And
+  the arena forgets what players still owe it, which is not: a fighter who
+  leaves mid-round in a way the exit cannot cover has their weapons and rounds
+  written down against their character and taken back next time they are seen,
+  and with this off a restart writes that off. On a server that restarts
+  nightly that is a way to keep an arena loadout. Turn it on for an all-time
+  board and a slate that survives — and grant the database user `DELETE`, or a
+  settled debt is never struck off and comes back on the next restart.
 
 And one that used to ship off no longer does:
 
@@ -488,6 +494,33 @@ keep the inventory UI open next to you.
       match, fire nothing, and leave. You still have your own. The arena takes
       back what it issued and no more.
 - [ ] Start a match, leave **mid-round** through the panel. Same result.
+
+**A character switch is not a free loadout**
+
+This is the one path the exit cannot cover on its own, and the reason the
+arena keeps a slate at all. It is worth ten minutes.
+
+- [ ] Start a match. Mid-round, have the second player **switch characters**
+      (not disconnect — switch) through your multicharacter script.
+- [ ] The console says `weapons: N arena weapon(s) left with <citizenid> and
+      are written down against them.` **Nothing is taken off the character
+      they switched to** — that is the whole point. Reaching into whoever
+      holds that server id now would take a stranger's guns.
+- [ ] `/arenaadmin` shows that citizen id under **Arena kit still out**, with
+      the weapon and its serial, reading `offline`.
+- [ ] They switch back. Within one sweep — `returnRetrySeconds`, thirty
+      seconds by default — or at the door of their next round, whichever
+      comes first, the console says `weapons: took the arena's <weapon>
+      (<serial>) back off <citizenid>`, and the tablet line clears.
+- [ ] **And their own identical weapon is untouched.** Give them a carbine of
+      their own before they switch back, if the arena issues one. The arena
+      takes its copy by serial and leaves theirs — check the serial and any
+      components, not just the item name.
+- [ ] With `Config.Database.enabled` on, do the last two steps **across a
+      `restart crimson_arena`**. The debt must still be there afterwards, and
+      the console must say `weapons: read back N outstanding weapon(s)...` on
+      the way up. No such line with rows in the table means this resource was
+      ensured before oxmysql.
 
 **A disconnect does not keep it**
 

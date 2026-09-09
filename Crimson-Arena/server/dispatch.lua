@@ -746,42 +746,67 @@ local function readCancelEntry(key, entry)
     return nil
 end
 
-local function insideLiveArena(point)
-    -- THROUGH Arena.IsPoint, WHICH IS THE ONE PLACE THAT KNOWS THE LIST.
-    --
-    -- Written out here it read `table` or `vector3` and nothing else -- so a
-    -- vector4, which is what a dispatch resource hands over when it sends
-    -- coordinates WITH a heading, was refused. In this runtime a vector is
-    -- its own type, so `type()` on one answers 'vector4' and NEVER 'table'.
-    -- The whole point of this function is to recognise that a shot was fired
-    -- inside an arena; refusing the payload means it is not recognised, and
-    -- the alert the arena exists to swallow goes out to the city police
-    -- instead. Silent, and only on the servers whose dispatch sends a
-    -- heading. DO NOT write the types out again.
-    if not Arena.IsPoint(point) then return false end
+--- The x and y of anything shaped like a coordinate, or nil.
+---
+--- THROUGH Arena.IsPoint, WHICH IS THE ONE PLACE THAT KNOWS THE LIST.
+---
+--- Written out here it read `table` or `vector3` and nothing else -- so a
+--- vector4, which is what a dispatch resource hands over when it sends
+--- coordinates WITH a heading, was refused. In this runtime a vector is
+--- its own type, so `type()` on one answers 'vector4' and NEVER 'table'.
+--- The whole point of this is to recognise that a shot was fired inside an
+--- arena; refusing the payload means it is not recognised, and the alert the
+--- arena exists to swallow goes out to the city police instead. Silent, and
+--- only on the servers whose dispatch sends a heading. DO NOT write the
+--- types out again.
+--- @param point any
+--- @return number|nil x
+--- @return number|nil y
+local function pointXY(point)
+    if not Arena.IsPoint(point) then return nil end
 
     local px, py = tonumber(point.x), tonumber(point.y)
-    if not px or not py then return false end
+    if not px or not py then return nil end
+    return px, py
+end
+
+--- Whether ONE live match's arena covers this spot.
+---
+--- SPLIT OUT OF insideLiveArena ON PURPOSE, because the explosion guard has
+--- to ask WHICH round a blast landed in and not merely whether it landed in
+--- one. Two questions off one circle: a second copy of the radius maths is
+--- how the keep-out fence and this file came to disagree about a grown
+--- round in the first place.
+--- @param matchId string
+--- @param px number
+--- @param py number
+--- @return boolean
+local function matchCoversPoint(matchId, px, py)
+    local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(matchId) or nil
+    local arena = match and Arena.GetArenaByKey(match.arenaKey) or nil
+    local boundary = Arena.BoundaryOf(arena)
+    if not boundary or not boundary.center then return false end
+
+    local cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
+
+    local factor = math.max(1.0, tonumber(match.sizeFactor) or 1.0)
+    local radius = (tonumber(boundary.radius) or 0) * factor
+
+    if not cx or not cy or not radius or radius <= 0 then return false end
+
+    local dx, dy = px - cx, py - cy
+    return (dx * dx + dy * dy) <= (radius * radius)
+end
+
+local function insideLiveArena(point)
+    local px, py = pointXY(point)
+    if not px then return false end
 
     -- Which arenas currently have somebody in them. Read from the same
     -- `active` table the player pin uses, so the two layers can never
     -- disagree about whether a match is running.
     for _, matchId in pairs(active) do
-        local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(matchId) or nil
-        local arena = match and Arena.GetArenaByKey(match.arenaKey) or nil
-        local boundary = Arena.BoundaryOf(arena)
-
-        if boundary and boundary.center then
-            local cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
-
-            local factor = math.max(1.0, tonumber(match.sizeFactor) or 1.0)
-            local radius = (tonumber(boundary.radius) or 0) * factor
-
-            if cx and cy and radius and radius > 0 then
-                local dx, dy = px - cx, py - cy
-                if (dx * dx + dy * dy) <= (radius * radius) then return true end
-            end
-        end
+        if matchCoversPoint(matchId, px, py) then return true end
     end
 
     return false
@@ -809,19 +834,42 @@ local function pinnedByLocation(entry, ...)
     return insideLiveArena(payload.coords or payload)
 end
 
+--- Who an alert is about, and the answer has to survive a client saying so.
+---
+--- THE DEFECT. `playerArg` names an argument carrying a server id, and every
+--- one of these events is registered for the network -- so the "server id"
+--- was whatever the sender put in that slot, and the sender can be any
+--- player on the box. A client naming SOMEBODY ELSE's id is the shape of
+--- every server-id bug this project has already fixed, and here it reaches
+--- both halves of the layer at once: the cancel flag is raised over a
+--- stranger's alert, and Form 5 then asks the dispatch script to withdraw a
+--- call filed under that stranger's id. The retract block's own promise --
+--- "the server id in the middle is the arena player's own" -- was true of
+--- the arithmetic and false of the input.
+---
+--- WHAT DECIDES IT. `source` is the server's answer, not the payload's, and
+--- it is set for the whole of an event handler. When it names a player, that
+--- player is who fired this event and a declared id that disagrees is a
+--- claim about somebody else -- refused, which leaves the alert alone. When
+--- it is 0 or absent the firing came from another RESOURCE on the server,
+--- which is the case `playerArg` was written for and the one shape a client
+--- CANNOT produce, so the declared id stands.
+--- @return integer|nil src -- who the alert is about, or nil for "leave it alone"
+--- @return integer|nil impostor -- the player who claimed somebody else's id
 local function responsibleFor(entry, ...)
+    local fromSource = Arena.ToInt(source)
+    if fromSource and fromSource <= 0 then fromSource = nil end
+
     if entry.playerArg then
         local declared = Arena.ToInt((select(entry.playerArg, ...)))
-        if declared and declared > 0 then return declared end
-        return nil
+        if not declared or declared <= 0 then return nil end
+        if fromSource and declared ~= fromSource then return nil, fromSource end
+        return declared
     end
 
     if entry.coordsArg then return nil end
 
-    local fromSource = Arena.ToInt(source)
-    if fromSource and fromSource > 0 then return fromSource end
-
-    return nil
+    return fromSource
 end
 
 local warnedCancel = {}
@@ -1067,16 +1115,123 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     end
 end)
 
+-- ======================================================================
+-- THE SECOND PLACE DAMAGE IS REFUSED, and mayDamage's own comment above
+-- says weaponDamageEvent is the only one. It was wrong about this handler
+-- and this handler enforced nothing.
+--
+-- THE DEFECT. Anybody in ANY match was exempted here, unconditionally: no
+-- same-round test and no team test. So on a team round with friendlyFire
+-- off a grenade killed the thrower's own side, a fighter in one match could
+-- shell the round being fought next door, and a fighter who was already OUT
+-- of the round -- still in `active`, because an eliminated fighter stays to
+-- watch -- could delete whoever was about to win with a launcher while
+-- their bullets were being refused three functions up. All thirteen heavy
+-- weapons ship enabled, at the owner's own instruction, so it is reachable
+-- with the shipped catalogue.
+--
+-- WHAT AN EXPLOSION CANNOT BE ASKED. The packet carries a PLACE and never a
+-- victim list, so the per-victim answer weaponDamageEvent gets is not
+-- available here: who is standing in the blast is read off the fighters'
+-- own positions instead. BLAST_METRES is this file's own number and DO NOT
+-- read it as the game's -- it is how close a team-mate has to be before the
+-- arena treats them as caught.
+--
+-- AND IT BENDS FOR A LAWFUL VICTIM, exactly as the spread rule does.
+-- CancelEvent kills the whole explosion, so refusing one that also caught an
+-- enemy would make standing next to a team-mate a shield against every
+-- launcher in the arena -- the same regression crossfire_spec already
+-- refuses for shotguns.
+-- ======================================================================
+
+local BLAST_METRES = 10.0
+
+--- Where a fighter is standing right now, or nil.
+---
+--- Guarded the way netIdOf is: a server-side read of a client-owned entity
+--- can legitimately fail, and a player who left mid-blast must not take the
+--- handler down with them.
+--- @param src number
+--- @return any|nil coords
+local function positionOf(src)
+    local ok, ped = pcall(GetPlayerPed, src)
+    if not ok or not ped or ped == 0 then return nil end
+
+    local gotIt, coords = pcall(GetEntityCoords, ped)
+    if not gotIt then return nil end
+    return coords
+end
+
+--- Why this fighter may not set off this explosion, or nil for "they may".
+--- @param exploder number
+--- @param matchId string
+--- @param px number
+--- @param py number
+--- @return string|nil reason
+local function explosionRefusal(exploder, matchId, px, py)
+    -- FAILS OPEN ON A LOBBY THAT HAS NOT ANSWERED, deliberately, and for the
+    -- reason mayDamage gives: the thrower is already known to be in the round
+    -- this blast landed in, and freezing a live round over a roster that is
+    -- not there costs more than one unrefused grenade. DO NOT turn this into
+    -- a refusal.
+    local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(matchId)
+    if type(match) ~= 'table' or type(match.players) ~= 'table' then return nil end
+
+    local thrower = match.players[exploder]
+    if thrower == nil then return 'they are watching rather than fighting' end
+    if Arena.IsEliminated(thrower) then return 'the thrower is out of the round' end
+
+    local reach = BLAST_METRES * BLAST_METRES
+    local caught, lawful = false, false
+
+    -- `match.players` is keyed by SERVER ID, so this is pairs and not ipairs.
+    for src, row in pairs(match.players) do
+        if src ~= exploder and not Arena.IsEliminated(row) then
+            local at = positionOf(src)
+            if at then
+                local x, y = pointXY(at)
+                if x then
+                    local dx, dy = x - px, y - py
+                    if (dx * dx + dy * dy) <= reach then
+                        if Arena.CanDamage(match.modeKey, thrower.team, row.team) then
+                            lawful = true
+                        else
+                            caught = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if caught and not lawful then
+        return 'it would land on their own team and friendly fire is off'
+    end
+    return nil
+end
+
 AddEventHandler('explosionEvent', function(sender, data)
     if not crossfireEnabled() then return end
     if next(active) == nil then return end
 
-    local exploder = tonumber(sender)
-    if exploder and active[exploder] then return end
-
     if type(data) ~= 'table' then return end
     local x, y, z = tonumber(data.posX), tonumber(data.posY), tonumber(data.posZ)
     if not x or not y then return end
+
+    local exploder = tonumber(sender)
+    local ownMatch = exploder and active[exploder] or nil
+
+    -- THEIR OWN ROUND, AND NOT MERELY SOME ROUND. "Are they in a match" is
+    -- what this asked, and DO NOT put that test back: it made a fighter at
+    -- one arena free to shell the round being fought at another.
+    if ownMatch and matchCoversPoint(ownMatch, x, y) then
+        local refusal = explosionRefusal(exploder, ownMatch, x, y)
+        if refusal then
+            ArenaDebug('crossfire: refused an explosion from %s -- %s.', tostring(sender), refusal)
+            CancelEvent()
+        end
+        return
+    end
 
     if insideLiveArena({ x = x, y = y, z = z or 0.0 }) then
         ArenaDebug('crossfire: refused an explosion from %s inside a live arena.', tostring(sender))
@@ -1151,7 +1306,30 @@ local function retractFor(entry, src)
 
     SetTimeout(delay, function()
         for offset = -slack, slack do
-            local id = template:format(src, at + offset)
+            -- THE FORMAT IS OPERATOR TEXT AND IT WAS OUTSIDE THE pcall.
+            --
+            -- `idTemplates` is a string typed into config.lua. string.format
+            -- RAISES on a shape it cannot fill -- a stray '%q', a '%d' handed
+            -- something that is not a number, one specifier too many -- and
+            -- this line sat above the guard that was catching the export
+            -- call, inside a SetTimeout body with nothing above it to catch
+            -- anything. One mistyped template therefore threw out of a timer
+            -- rather than printing a line an operator could act on, and it
+            -- did it on every arena alert for the rest of the run.
+            --
+            -- Built the way shared/compat/dispatch.lua's say() builds its
+            -- own: pcall(string.format, ...) and DO NOT put the colon call
+            -- back.
+            local built, id = pcall(string.format, template, src, at + offset)
+            if not built then
+                if not sawFiring['retract:id:' .. entry.event] then
+                    sawFiring['retract:id:' .. entry.event] = true
+                    ArenaLog('retract: the id template for "%s" (%s) cannot be filled in (%s). It wants exactly two placeholders -- the player\'s server id and a unix timestamp, both numbers, as in \'shots_%%d_%%d\'. Nothing is being withdrawn for that event.',
+                        entry.event, tostring(template), tostring(id))
+                end
+                return
+            end
+
             local ok, err = pcall(function()
                 exports[config.resource][config.export](nil, id)
             end)
@@ -1165,15 +1343,79 @@ local function retractFor(entry, src)
             end
         end
 
+        local shown, sample = pcall(string.format, template, src, at)
         ArenaDebug('retract: asked %s to clear "%s" (+/-%ds) for %s.',
-            config.resource, template:format(src, at), slack, tostring(src))
+            config.resource, shown and sample or tostring(template), slack, tostring(src))
     end)
+end
+
+--- The tempo one player may fire one of these events at, in ms.
+---
+--- server/main.lua's loosest bucket on purpose, and for its stated reason:
+--- "this only has to catch a flood, not pace anything." A dispatch alert is
+--- at most as frequent as the death report that number was chosen for.
+local CANCEL_RATE_MS = 200
+
+--- Whether this firing is paced enough to do the work for.
+---
+--- THE DEFECT. Every one of these handlers is registered for the network,
+--- because that is the only way FXServer delivers the client-triggered
+--- alerts they exist for -- and not one of them had a limit of any kind.
+--- Any player on the box could fire one in a loop: each firing walked the
+--- payload for job names, walked the live arenas for the pin, and then
+--- queued a timer whose body makes one call into another resource per second
+--- of clock slack. A thousand firings bought a thousand timers and three
+--- thousand of those calls, from a keybind.
+---
+--- THE HOUSE LIMITER, NOT A NEW ONE. ArenaRateLimit is what every
+--- crimson_arena net event in server/main.lua already sits behind, keyed per
+--- player and per bucket so one spammed event cannot starve another.
+---
+--- KEYED ON `source`, WHICH IS WHY IT IS SAFE. The limit is per PLAYER, so a
+--- flooder can only throttle themselves; nobody can pace anybody else's
+--- alerts by firing these. A firing with no player behind it -- another
+--- resource raising the event on the server, which is the ordinary path -- is
+--- never throttled at all.
+---
+--- WHAT A THROTTLED FIRING COSTS, said plainly rather than left implied: the
+--- flag is not raised, so that one alert is not cancelled. This file's own
+--- note on guessing says which way that error should fall -- "a failure to
+--- suppress costs an operator an unwanted call-out; a wrong suppression costs
+--- somebody a crime nobody was told about" -- and the player who pays is the
+--- one doing the flooding.
+--- @param eventName string
+--- @return boolean
+local function pacedEnough(eventName)
+    local src = Arena.ToInt(source)
+    if not src or src <= 0 then return true end
+
+    -- server/util.lua is first in fxmanifest.lua's server_scripts, so this is
+    -- always there in production; guarded because a file that loads without
+    -- it must degrade rather than throw inside somebody else's event.
+    if type(ArenaRateLimit) ~= 'function' then return true end
+
+    return ArenaRateLimit(src, 'cancelEvents:' .. eventName, CANCEL_RATE_MS) == true
+end
+
+local warnedImpostor = {}
+
+local function warnImpostor(entry, from)
+    if warnedImpostor[entry.event] then return end
+    warnedImpostor[entry.event] = true
+
+    ArenaLog('cancelEvents: "%s" was fired by player %s naming a DIFFERENT server id, so it was left alone. A client CANNOT be taken at its word about who an alert is about -- acting on it would raise the cancel flag over a stranger\'s alert and ask your dispatch script to withdraw a call filed under their id. If your script really raises this from one player\'s client about another, drop playerArg from that entry and let `source` answer.',
+        entry.event, tostring(from))
 end
 
 local function registerCancelHandler(entry)
     RegisterNetEvent(entry.event)
 
     AddEventHandler(entry.event, function(...)
+        -- FIRST, AND BEFORE ANY OF THE BOOKKEEPING BELOW -- that is the
+        -- expensive half and it reads a payload the caller chose, so DO NOT
+        -- move this line down past it.
+        if not pacedEnough(entry.event) then return end
+
         local jobs = jobsNamedIn(...)
 
         if not sawFiring[entry.event] then
@@ -1201,9 +1443,9 @@ local function registerCancelHandler(entry)
             return
         end
 
-        local src = responsibleFor(entry, ...)
+        local src, impostor = responsibleFor(entry, ...)
         if not src then
-            warnUnpinnable(entry)
+            if impostor then warnImpostor(entry, impostor) else warnUnpinnable(entry) end
             return
         end
 

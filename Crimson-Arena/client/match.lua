@@ -93,6 +93,122 @@ end
 
 local outlineTint = nil
 
+--- THE MARKER ABOVE A TEAMMATE'S HEAD, AND WHY IT IS NOT THE OUTLINE AGAIN.
+---
+--- The outline above is the nicer of the two and it is the one that CANNOT
+--- BE RELIED ON: it needs a CFX native from around May 2025, it owns three
+--- client-wide settings any other resource can take from it mid-frame, and
+--- when it fails it fails silently, drawing a mask that emits no geometry
+--- while this file truthfully logs that it drew a teammate.
+---
+--- So this is a second, independent answer to the same question, and every
+--- choice in it is made for reliability rather than for looks:
+---
+---   NOTHING IS ATTACHED TO ANYTHING. There is no flag on a ped, no handle
+---   to keep, no client-wide setting held. Each frame the ally's SERVER ID
+---   is turned back into a ped and a rectangle is drawn. A ped recreated by
+---   a respawn or by re-streaming is a different handle and this does not
+---   care -- the next frame looks it up again. Nothing can be "lost", so
+---   nothing has to be re-attached.
+---
+---   NOTHING TO CLEAN UP. Drawing stops and the marker is gone in the same
+---   frame. It CANNOT follow anybody into the city, because there is no
+---   state anywhere for it to follow them with.
+---
+---   NOTHING ANY OTHER RESOURCE CAN TAKE. DrawRect is a call, not a
+---   setting, so the race the outline loses to a per-frame target script
+---   does not exist here.
+---
+--- THROUGH WALLS, WHICH IS THE WHOLE POINT and also the reason it is
+--- teammates only. A draw origin makes these ordinary 2D interface draws
+--- positioned at a world point: there is no depth test, so cover does not
+--- hide it. On an enemy that would be a wallhack, and nothing here will
+--- ever take an enemy -- see refreshTeamMarks.
+---
+--- These four are base game natives from 2015, present on every build there
+--- is. The check is not defensive padding against a build that lacks them:
+--- one of the two call sites is the per-frame thread that also carries the
+--- death backstop, and an unguarded nil call there does not lose a marker,
+--- it kills the thread and every fighter after it dies unreported.
+local MARKER_NATIVES = SetDrawOrigin ~= nil
+    and ClearDrawOrigin ~= nil
+    and DrawRect ~= nil
+    and IsEntityOnScreen ~= nil
+
+--- SKEL_Head, so the marker sits over the head rather than over the feet
+--- plus a guess -- which matters exactly when it matters most, on somebody
+--- crouched behind cover or lying down.
+local MARKER_HEAD_BONE = 31086
+
+--- Where the marker's point sits above the head, in metres.
+local MARKER_LIFT = 0.42
+
+--- The same lift measured from the FEET, for the fallback below.
+local MARKER_ROOT_LIFT = 1.32
+
+--- The chevron, as { how far ABOVE the point, half its width }. Rows are
+--- screen fractions, so the marker keeps one size at any range -- a
+--- teammate across the arena is as easy to pick out as one beside you,
+--- which is the thing being asked for.
+--- Widest at the top, a point at the bottom, so it reads as an arrow aimed
+--- at the head under it. The rows overlap by design -- each is taller than
+--- the gap to the next -- because three separated bars are three bars.
+local MARKER_ROWS = {
+    { 0.0000, 0.0020 },
+    { 0.0050, 0.0045 },
+    { 0.0100, 0.0070 },
+}
+
+local MARKER_ROW_HEIGHT = 0.0065
+
+--- A dark plate behind each row, this much wider and taller than it. A
+--- bright team colour on a bright sky is not a marker. The two are
+--- different numbers because DrawRect measures width against the screen's
+--- width and height against its height, so one value would be a plate
+--- nearly twice as thick on one axis as the other.
+local MARKER_EDGE_X = 0.0016
+local MARKER_EDGE_Y = 0.0028
+
+--- The head of a ped, already lifted, as three numbers.
+---
+--- Resolved once rather than tested per ped per frame. GET_PED_BONE_COORDS
+--- is as old as the rest, so the second branch is a floor and not a plan.
+local markerHeadCoords
+if GetPedBoneCoords ~= nil then
+    markerHeadCoords = function(ped)
+        local head = GetPedBoneCoords(ped, MARKER_HEAD_BONE, 0.0, 0.0, 0.0)
+        return head.x, head.y, head.z + MARKER_LIFT
+    end
+else
+    markerHeadCoords = function(ped)
+        local at = GetEntityCoords(ped)
+        return at.x, at.y, at.z + MARKER_ROOT_LIFT
+    end
+end
+
+--- The living teammates to mark, as SERVER IDS -- never peds, never blip
+--- handles. A server id is the one thing about a teammate that survives
+--- their ped being destroyed and remade.
+local teamMarks = {}
+
+local teamMarkTint = nil
+
+--- DECLARED HERE, DEFINED FURTHER DOWN, beside the roster scan it reads --
+--- which is several hundred lines BELOW the per-frame thread that calls it.
+---
+--- DO NOT delete this line and make the definition a `local function`. A
+--- local declared after its caller is not the name that caller compiled
+--- against: the call site would read a global that nothing ever assigns,
+--- and calling nil raises INSIDE the per-frame thread that also carries the
+--- death backstop. Every fighter on that client would then die unreported.
+--- Measured, not supposed: it raises on the first frame of the first round.
+---
+--- Keeping it a local rather than letting the definition make a global is
+--- the smaller half of the same decision -- a global here is one more name
+--- every other file in this resource can read and overwrite, for a function
+--- with exactly one caller.
+local drawTeamMarks
+
 local function notify(key, notifyType, ...)
     lib.notify({
         title = Config.NotifyTitle,
@@ -658,6 +774,26 @@ local function startArenaThread()
                 holdOutlineTechnique()
             end
 
+            -- AND THE MARKER, WHICH IS THE HALF THAT HAS TO WORK.
+            --
+            -- Per frame because a rectangle drawn at a world point is not a
+            -- state anybody keeps: it exists for the frame it is drawn in
+            -- and no longer. That is the property being bought -- there is
+            -- nothing to lose when a ped is remade, and nothing to leave
+            -- behind when the round ends.
+            --
+            -- IN THIS THREAD RATHER THAN A NEW ONE, for the reason the
+            -- paragraph above gives about the outline hold, and one more:
+            -- this thread's condition is `currentMatch`, so the marker stops
+            -- in the same frame the match does. A thread of its own would be
+            -- a second lifetime to keep in step with this one, and the round
+            -- must not be able to end with one of them still running.
+            --
+            -- drawTeamMarks is written to be incapable of raising: this loop
+            -- also carries the death backstop, and a fighter whose client
+            -- threw here is a fighter whose death is never reported.
+            drawTeamMarks()
+
             Wait(0)
         end
     end)
@@ -993,6 +1129,132 @@ local function refreshOutlines()
     end
 end
 
+-- ----------------------------------------------------------------------
+-- THE MARKER OVER A TEAMMATE'S HEAD
+--
+-- Two functions: this one decides WHO, once per roster; drawTeamMarks below
+-- draws them, every frame.
+--
+-- ITS OWN SCAN OF THE ROSTER, NOT A SHARE OF refreshOutlines'. Six lines of
+-- gating are repeated here on purpose. The outline and the marker were
+-- asked for as two answers that must not be able to fail together, and a
+-- marker computed inside refreshOutlines would be switched off by
+-- showTeamOutline, skipped by an early return added to it later, and
+-- carried down by anything that ever raises in it. It is the shared
+-- dependency that would make one fault take both, so there is not one.
+--
+-- WHAT IT WILL NOT DO, and neither of these is negotiable:
+--
+--   IT NEVER TAKES AN ENEMY. The marker draws through walls. On the other
+--   side that is a wallhack with a palette, and the only person who would
+--   ever notice is the one it is helping.
+--
+--   IT NEVER RUNS IN A MODE WITHOUT TEAMS. Free-for-all and gun game have
+--   no teammates to mark, so there is nobody this applies to.
+-- ----------------------------------------------------------------------
+
+local function refreshTeamMarks()
+    local marks = {}
+    local tint = nil
+
+    if currentMatch
+        and Config.Teams.showTeamMarker == true
+        and Arena.ModeUsesTeams(currentMatch.modeKey)
+        and Arena.IsKey(currentMatch.teamKey)
+    then
+        local team = Arena.GetTeamByKey(currentMatch.teamKey)
+        local r, g, b = Arena.HexToRgb(team and team.color)
+
+        if r then
+            -- THE SAME HEX THE OUTLINE AND THE PANEL READ, through the same
+            -- helper. `color` is a hex string and `blipColor` is a numbered
+            -- GTA map colour; they are two systems and this must not reach
+            -- for the wrong one, or the marker is one colour and the dot on
+            -- the map is another.
+            tint = { r = r, g = g, b = b }
+
+            local selfId = GetPlayerServerId(PlayerId())
+            for _, row in ipairs(roster) do
+                local serverId = type(row) == 'table' and Arena.ToInt(row.id) or nil
+                if serverId
+                    and serverId ~= selfId
+                    and row.alive == true
+                    and row.team == currentMatch.teamKey
+                then
+                    marks[#marks + 1] = serverId
+                end
+            end
+        end
+    end
+
+    teamMarkTint = tint
+    teamMarks = marks
+end
+
+--- Everything the marker leaves behind when a round ends, which is nothing
+--- -- there is no handle and no engine flag, so emptying the list IS the
+--- teardown. Called anyway on every exit path the blips and outlines use,
+--- because a list this thread reads must not outlive the match that filled
+--- it even by one frame.
+local function clearTeamMarks()
+    teamMarks = {}
+    teamMarkTint = nil
+end
+
+-- ASSIGNED, NOT DECLARED. This fills in the local declared at the top of
+-- the file. DO NOT put `local` in front of it: that declares a second,
+-- different variable, leaves the first one nil, and the per-frame thread
+-- raises on the first frame of the first round -- see that declaration.
+--
+-- Nor `function drawTeamMarks()` in the first column, which would read as
+-- one of this file's public entry points -- to a reader, and to the
+-- checklist that counts them against REFERENCE.md -- and it is not one.
+drawTeamMarks = function()
+    local tint = teamMarkTint
+    if not tint or not MARKER_NATIVES then return end
+
+    for index = 1, #teamMarks do
+        local ped = pedForServerId(teamMarks[index])
+
+        -- ON SCREEN, NOT IN SIGHT, and the difference is the feature.
+        -- IS_ENTITY_ON_SCREEN asks whether the ped is inside the camera's
+        -- view, and answers yes through a wall -- which is what is wanted.
+        -- What it keeps out is a teammate BEHIND the camera: a draw origin
+        -- given a point behind you projects to a mirrored place on screen,
+        -- and the marker would appear over open ground with nobody there.
+        --
+        -- DO NOT replace this with a line-of-sight or shape test to "stop
+        -- it showing through walls". Showing through walls is the whole
+        -- reason it exists, and a marker you can only see when you can
+        -- already see the player tells you nothing you did not know.
+        if ped and IsEntityOnScreen(ped) then
+            local x, y, z = markerHeadCoords(ped)
+
+            SetDrawOrigin(x, y, z, 0)
+
+            -- The dark plate first, then the colour over it. Two passes
+            -- rather than one so the plate can never land on top of the row
+            -- it is behind.
+            for _, row in ipairs(MARKER_ROWS) do
+                DrawRect(0.0, -row[1],
+                    (row[2] + MARKER_EDGE_X) * 2.0, MARKER_ROW_HEIGHT + MARKER_EDGE_Y,
+                    0, 0, 0, 190)
+            end
+            for _, row in ipairs(MARKER_ROWS) do
+                DrawRect(0.0, -row[1], row[2] * 2.0, MARKER_ROW_HEIGHT,
+                    tint.r, tint.g, tint.b, 255)
+            end
+
+            -- A DRAW ORIGIN MUST NOT outlive the draws it was opened for.
+            -- Left open, the next resource to draw an interface element
+            -- this frame draws it at a teammate's head instead of on the
+            -- screen -- somebody else's speedometer or notification,
+            -- floating in the arena, and nothing pointing back to here.
+            ClearDrawOrigin()
+        end
+    end
+end
+
 local function removeAllOutlines()
     for ped in pairs(outlined) do
         if DoesEntityExist(ped) then SetEntityDrawOutline(ped, false) end
@@ -1108,6 +1370,13 @@ local function startBlipThread()
 
     CreateThread(function()
         while matchLive and matchToken == token do
+            -- BEFORE refreshOutlines, on purpose. This loop is the marker's
+            -- SECOND way of learning who is alive -- the matchHud handler is
+            -- the first, and it does not run in here at all -- and a pass
+            -- that raised inside refreshOutlines must still have refreshed
+            -- the marker before it did. One line of ordering, and it is the
+            -- difference between the outline failing and both failing.
+            refreshTeamMarks()
             refreshOutlines()
 
             if permanent then
@@ -1119,6 +1388,7 @@ local function startBlipThread()
 
                 removeAllPlayerBlips()
                 refreshBlips(false)
+                refreshTeamMarks()
                 refreshOutlines()
 
                 local interval = math.max(1000, Arena.ToInt(radarConfig().intervalMs) or 30000)
@@ -1132,6 +1402,7 @@ local function startBlipThread()
                     slept = slept + step
 
                     if slept < dark then
+                        refreshTeamMarks()
                         refreshOutlines()
                         refreshBlips(false)
                     end
@@ -1147,6 +1418,7 @@ local function startBlipThread()
         -- the last one burning until it does.
         removeAllPlayerBlips()
         removeAllOutlines()
+        clearTeamMarks()
     end)
 end
 
@@ -1511,6 +1783,7 @@ local function leaveArena(returnCoords)
 
     removeAllPlayerBlips()
     removeAllOutlines()
+    clearTeamMarks()
     roster = {}
 
     if ArenaSpectate then ArenaSpectate.Stop() end
@@ -1788,6 +2061,18 @@ end)
 RegisterNetEvent('crimson_arena:client:matchHud', function(data)
     roster = (type(data) == 'table' and type(data.scoreboard) == 'table') and data.scoreboard or {}
 
+    -- THE MOMENT THE ANSWER CHANGES, rather than up to a second after it.
+    -- This board is the server saying who is alive and on which side, and
+    -- it is the only message that ever says so -- a teammate who has just
+    -- respawned is marked again on the frame it arrives.
+    --
+    -- ABOVE THE showMatchHud RETURN ON PURPOSE. Below it, an operator who
+    -- switched the scoreboard panel off would also be switching off the
+    -- marker over their teammate's head -- two settings that have nothing
+    -- to do with each other, tied together by a line's position, and
+    -- nothing about the file would look wrong.
+    refreshTeamMarks()
+
     if not Config.UI.showMatchHud then return end
 
     local watching = type(ArenaSpectate) == 'table'
@@ -1856,6 +2141,30 @@ CreateThread(function()
     end
 end)
 
+-- ----------------------------------------------------------------------
+-- WHAT THIS CLIENT CAN AND CANNOT DRAW, SAID WHERE THE OPERATOR IS SITTING
+--
+-- THE WARNING BELOW WAS ALREADY WRITTEN AND IT WAS ALREADY INVISIBLE. Six
+-- print() calls in a client script reach F8 on the machine that ran them
+-- and nowhere else. The operator watches a SERVER console, and what he had
+-- there was refreshOutlines' own line saying it had drawn N teammates --
+-- true about a frame in which nothing was drawn. So the console that could
+-- have ended this said nothing, and the console he reads said success.
+--
+-- It now goes out on crimson_arena:server:outlineReason, which is the route
+-- this file already uses to tell the server why the outline is not drawing,
+-- and which server/main.lua prints through ArenaDebug with the reporting
+-- client's id in front of it.
+--
+-- ONE SEND PER CLIENT PER SESSION. Not per frame, not per round: this asks
+-- a question about the build, and the answer CANNOT change while the client
+-- is running. A line an operator sees once is a line they read.
+--
+-- ONE LINE PER PLAYER IS THE POINT, not noise. The native is resolved by
+-- the client, so two players on the same server can answer differently, and
+-- which of them reported it is the first thing worth knowing.
+-- ----------------------------------------------------------------------
+
 CreateThread(function()
     Wait(2000)
 
@@ -1865,17 +2174,46 @@ CreateThread(function()
     end
     if not teamMode then return end
 
-    if SetEntityDrawOutlineRenderTechnique then
+    local canOutline = SetEntityDrawOutlineRenderTechnique ~= nil
+
+    if canOutline and MARKER_NATIVES then
         if Config.Debug then
             print('[crimson_arena] team outline: this build has SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE, so teammates will be outlined.')
         end
         return
     end
 
-    print('[crimson_arena] TEAM OUTLINE CANNOT WORK ON THIS BUILD. Your FiveM artifact does not have')
-    print('[crimson_arena]   SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE (a CFX native from around May 2025).')
-    print('[crimson_arena] Without it the outline is drawn in the "unlit" technique group, which ped shaders')
-    print('[crimson_arena] do not implement -- so the mask comes out empty and teammates show no colour at all.')
-    print('[crimson_arena] Everything else about teams works: sides, spawns, friendly fire, scoring, payouts.')
-    print('[crimson_arena] The fix is to update the server artifact. Nothing in config.lua can turn this on.')
+    local reported
+
+    if not canOutline then
+        print('[crimson_arena] TEAM OUTLINE CANNOT WORK ON THIS BUILD. Your FiveM artifact does not have')
+        print('[crimson_arena]   SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE (a CFX native from around May 2025).')
+        print('[crimson_arena] Without it the outline is drawn in the "unlit" technique group, which ped shaders')
+        print('[crimson_arena] do not implement -- so the mask comes out empty and teammates show no colour at all.')
+        print('[crimson_arena] Everything else about teams works: sides, spawns, friendly fire, scoring, payouts.')
+        print('[crimson_arena] The fix is to update the server artifact. Nothing in config.lua can turn this on.')
+        print('[crimson_arena] The marker above each teammate\'s head does NOT need that native and is drawing.')
+        print('[crimson_arena]   Config.Teams.showTeamMarker is what switches that one, and it ships on.')
+
+        reported = 'THIS CLIENT CANNOT DRAW THE TEAM OUTLINE -- no SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE on this build. The overhead teammate marker does not need it and is drawing.'
+    end
+
+    if not MARKER_NATIVES then
+        print('[crimson_arena] THE TEAMMATE MARKER CANNOT DRAW ON THIS BUILD: one of SET_DRAW_ORIGIN,')
+        print('[crimson_arena]   CLEAR_DRAW_ORIGIN, DRAW_RECT or IS_ENTITY_ON_SCREEN is missing. These are')
+        print('[crimson_arena]   base game natives, so this is not an old artifact -- something is wrong with')
+        print('[crimson_arena]   this client. Teams themselves are unaffected.')
+
+        reported = canOutline
+            and 'THIS CLIENT CANNOT DRAW THE OVERHEAD TEAMMATE MARKER -- one of SET_DRAW_ORIGIN, CLEAR_DRAW_ORIGIN, DRAW_RECT, IS_ENTITY_ON_SCREEN is missing. The team outline is unaffected.'
+            or 'THIS CLIENT CAN DRAW NEITHER THE TEAM OUTLINE NOR THE OVERHEAD MARKER -- it is missing SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE and one of the four draw natives. Teammates have the map only.'
+    end
+
+    -- STRAIGHT OUT, NOT THROUGH outlineReason. That helper is a per-reason
+    -- latch shared with the running match, and this must not be swallowed
+    -- as a repeat of whatever the round last reported, nor swallow the
+    -- round's next reason itself.
+    if reported then
+        TriggerServerEvent('crimson_arena:server:outlineReason', reported)
+    end
 end)

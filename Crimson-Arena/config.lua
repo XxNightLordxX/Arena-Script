@@ -21,16 +21,16 @@
       158   Schedule      Opening hours: when the door is actually open
       194   Match         Lives, timers, player counts, win condition
       499   Teams         The sides, and whether they may be uneven
-      615   Modes         Free-for-all, team deathmatch and gun game
-      919   DefaultMode   Which of them a new lobby opens on
-      938   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1135   UI            Panel colours, logo and title
-     1193   Permissions   Who may open a match, who may force-stop one
-     1279   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1713   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2058   Database      Optional: leaderboard, and what players still owe the arena
-     2068   Webhook       Optional: a Discord line per finished match
-     2100   Dispatch      Optional: keeping police and EMS out of the arena
+      632   Modes         Free-for-all, team deathmatch and gun game
+      936   DefaultMode   Which of them a new lobby opens on
+      955   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1152   UI            Panel colours, logo and title
+     1210   Permissions   Who may open a match, who may force-stop one
+     1296   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1730   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2075   Database      Optional: leaderboard, and what players still owe the arena
+     2085   Webhook       Optional: a Discord line per finished match
+     2117   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -564,6 +564,23 @@ Config.Teams = {
     -- draws THROUGH walls, which is the point of it for finding a friend and
     -- exactly the problem with it for finding a target.
     showTeamOutline = true,
+
+    -- A COLOURED MARKER OVER EACH TEAMMATE'S HEAD, in that team's own
+    -- colour, drawn through walls and cover like the outline above.
+    --
+    -- A SEPARATE SETTING FROM showTeamOutline ON PURPOSE, and the one to
+    -- keep if you only keep one. The outline needs a FiveM native from
+    -- around May 2025 and on an older build draws NOTHING AT ALL, silently.
+    -- This is drawn from scratch every frame out of natives the game has
+    -- always had, and it is attached to nobody -- so a teammate who dies,
+    -- respawns or walks out of streaming range and back never loses it, and
+    -- nothing can follow anybody out of the arena.
+    --
+    -- Teammates only, and it cannot be turned on for enemies, for the same
+    -- reason the outline cannot: through a wall it would be a wallhack.
+    -- Free-for-all and gun game have no teammates, so nothing is drawn in
+    -- them at all.
+    showTeamMarker = true,
 
     -- PICK COLOURS TO BE TOLD APART AT A GLANCE, not to be tasteful.
     --

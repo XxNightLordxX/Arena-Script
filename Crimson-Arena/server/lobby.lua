@@ -1296,7 +1296,6 @@ function ArenaLobby.Destroy(matchId, reasonKey)
 
     ArenaBetting.RefundAll(match.id, notice)
     ArenaBetting.Clear(match.id)
-    ArenaAmmo.Clear(match.id)
 
     for src in pairs(match.players) do
         if ArenaDispatch.IsPlayerInArena(src) then
@@ -1326,6 +1325,27 @@ function ArenaLobby.Destroy(matchId, reasonKey)
             end
         end
     end
+
+    -- AFTER THE EXITS, WHICH IS THE WHOLE POINT OF WHERE THIS LINE SITS.
+    --
+    -- ArenaAmmo.Clear drops this match's rows from `issuedWeapons`,
+    -- `issuedAmmo` and `issuedSupplies`, and those rows ARE the record of
+    -- what the arena handed out -- the only thing the exit can take the kit
+    -- back BY. This ran FIRST, above the loop, so on every path where the
+    -- record survives being cleared there was nothing left for
+    -- ArenaAmmo.Reclaim to remove and the fighters walked out still holding
+    -- the arena's weapons and their ammunition.
+    --
+    -- It read clean only by accident: Clear REFUSES while anybody's kit is
+    -- still stashed against the match, which on a working door is everybody.
+    -- Turn the door off, or let a stash fail, and the refusal never fires --
+    -- so the free kit landed on exactly the servers with no stash to protect
+    -- them. `heldBefore` was dropped before that refusal either way, taking
+    -- with it the floor that stops the exit reclaiming a player's OWN rounds.
+    --
+    -- server/match.lua does this in the right order and says so at length.
+    -- DO NOT move this back above the loop.
+    ArenaAmmo.Clear(match.id)
 
     if type(ArenaDispatch) == 'table' and type(ArenaDispatch.ReleaseBucket) == 'function' then
         ArenaDispatch.ReleaseBucket(match.id)

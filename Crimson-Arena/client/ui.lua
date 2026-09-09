@@ -26,9 +26,13 @@ end
 --- fighting in must not be swallowed just because they closed the menu.
 --- @param description string
 --- @param notifyType string? 'info'|'success'|'warning'|'error'
-function ArenaUI.Notify(description, notifyType)
+--- @param toast boolean? force ox_lib even while the panel is open
+function ArenaUI.Notify(description, notifyType, toast)
     if type(description) ~= 'string' or description == '' then return end
-    if isOpen then
+    -- FORCED PAST THE PANEL when the caller asks. A message sent in the same
+    -- tick the panel is closed CANNOT be delivered into the panel -- see
+    -- ArenaToast in server/util.lua for the case this exists for.
+    if isOpen and not toast then
         ArenaUI.Send('notify', { message = description, type = notifyType or 'info' })
     else
         local level = notifyType or 'info'
@@ -304,7 +308,7 @@ end)
 
 RegisterNetEvent('crimson_arena:client:notify', function(data)
     if type(data) ~= 'table' then return end
-    ArenaUI.Notify(data.description, data.type)
+    ArenaUI.Notify(data.description, data.type, data.toast == true)
 end)
 
 RegisterNetEvent('crimson_arena:client:closePanel', function()

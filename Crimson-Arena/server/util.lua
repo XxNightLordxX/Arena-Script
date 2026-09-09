@@ -32,7 +32,7 @@ function ArenaDebug(fmt, ...)
     print(('[crimson_arena] [debug] %s'):format(compose(fmt, ...)))
 end
 
-function ArenaNotify(src, description, notifyType)
+function ArenaNotify(src, description, notifyType, toast)
     local target = tonumber(src)
     if not target or target <= 0 then
         ArenaLog('refused to notify invalid source %s: %s', tostring(src), tostring(description))
@@ -42,8 +42,33 @@ function ArenaNotify(src, description, notifyType)
     TriggerClientEvent('crimson_arena:client:notify', target, {
         description = tostring(description or ''),
         type = notifyType or 'info',
+        toast = toast == true,
     })
     return true
+end
+
+--- The same notification, forced into ox_lib's toast instead of the panel.
+---
+--- WHY THIS EXISTS AT ALL. ArenaUI.Notify paints into the arena panel while
+--- that panel is open, which is right for everything said to a player who is
+--- reading it -- and wrong for anything said in the same tick the panel is
+--- torn down. sendEnterArena does exactly that: it notifies, then sends
+--- closePanel a dozen lines later. A warning delivered that way is painted
+--- into a surface that no longer exists, and the players it was written for
+--- -- the ones who sat watching the panel until the match started -- are
+--- precisely the ones who NEVER see it.
+---
+--- Use this only for that case. Everything else belongs in the panel.
+function ArenaToast(src, description, notifyType)
+    return ArenaNotify(src, description, notifyType, true)
+end
+
+function ArenaToastKey(src, localeKey, notifyType, ...)
+    if not Arena.IsKey(localeKey) then
+        ArenaLog('refused to notify %s with an empty locale key', tostring(src))
+        return false
+    end
+    return ArenaToast(src, locale(localeKey, ...), notifyType)
 end
 
 function ArenaNotifyKey(src, localeKey, notifyType, ...)

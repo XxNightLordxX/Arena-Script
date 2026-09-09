@@ -1268,7 +1268,22 @@ local function scheduleRespawn(match, player)
             return
         end
 
-        if type(point) == 'table' then
+        -- WHY THIS IS NOT `type(point) == 'table'`.
+        --
+        -- In this runtime a vector is its OWN type: `type()` on one answers
+        -- 'vector4', NEVER 'table'. Both of the ways a point gets here can be
+        -- a vector -- Arena.PickSpawn returns the operator's hand-written
+        -- `spawns` entry untouched, and those are written as vector4 in
+        -- config; so does PickRespawn's hand-written-list branch. Only the
+        -- spawn-area sampler builds a plain table, which is the single reason
+        -- this read clean: both shipped arenas switch that on.
+        --
+        -- Turn `spawnArea.enabled` off -- documented and supported -- and the
+        -- test was false for every respawn, `recentSpawns` was never written,
+        -- and the same-tick anti-stacking rule this block exists to feed
+        -- quietly did nothing at all. Two fighters materialising inside one
+        -- another is the exact failure it was built to stop.
+        if Arena.IsPoint(point) then
             current.recentSpawns = current.recentSpawns or {}
             current.recentSpawns[src] = {
                 point = { x = point.x, y = point.y, z = point.z },

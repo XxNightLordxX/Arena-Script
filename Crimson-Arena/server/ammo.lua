@@ -86,6 +86,24 @@ local function doorConfig()
     return (Config.Loadouts.inventory or {})
 end
 
+--- Whether a fighter's belongings are actually pinned to them mid-round.
+---
+--- THE ANSWER IS NOT ALWAYS YES, and a message that assumes it is lies on
+--- three real servers. `blockDropsInArena` is a documented switch an operator
+--- may turn off; ox_inventory may never start; ox_inventory may refuse the
+--- hook. In all three the guard is simply absent and anything dropped in an
+--- arena can be picked up by anybody.
+---
+--- NIL IS NOT FALSE. The hook registers on a thread that waits up to thirty
+--- seconds for ox_inventory, so nil means "still starting up", and the
+--- config's intent is the honest answer until the thread says otherwise. No
+--- match can start in that window anyway.
+local dropsHookOn = nil
+local function dropsAreBlocked()
+    if doorConfig().blockDropsInArena == false then return false end
+    return dropsHookOn ~= false
+end
+
 --- Item names the door must not stash and must not clear -- as a lookup for
 --- the stash loop, and as an array for ox_inventory's ClearInventory, whose
 --- second argument is a `keep` list.
@@ -359,7 +377,16 @@ end
 
 local function stow(src, citizenid)
     local ox = inventory()
-    if not ox then return false end
+    if not ox then
+        -- SAID OUT LOUD, because the caller now tells the PLAYER their gear
+        -- was not put away and an operator reading a report needs the other
+        -- half of it. `inventory()` is re-resolved per call on purpose, so
+        -- this fires when ox_inventory stops between the caller's check and
+        -- this one -- a restart, which is exactly when it is worth knowing.
+        -- DO NOT make this silent again.
+        ArenaLog('door: ox_inventory is not running -- %s keeps their own kit.', tostring(src))
+        return false, 0
+    end
 
     local stash = stashFor(citizenid)
 
@@ -373,7 +400,12 @@ local function stow(src, citizenid)
 
     local ok, items = pcall(function() return ox:GetInventoryItems(src) end)
     if not ok or type(items) ~= 'table' then
-        ArenaLog('door: could not read %s\'s inventory -- they keep their own kit.', tostring(src))
+        -- THE THROW IS PRINTED. `items` holds the error when `ok` is false,
+        -- and this discarded it -- leaving an operator a consequence with no
+        -- cause, which is the one thing the exit side never does (handBack
+        -- prints its own). DO NOT drop it again.
+        ArenaLog('door: could not read %s\'s inventory (%s) -- they keep their own kit.',
+            tostring(src), ok and 'it answered with no item list' or tostring(items))
         return false, 0
     end
 
@@ -1143,6 +1175,47 @@ local function removeWeaponsByKey(ox, src, matchId, keys, loadout)
     return removed
 end
 
+--- Says, to the player and to the console, that the door did not shut on
+--- somebody's own belongings.
+---
+--- BOTH DOORS, WHICH IS THE WHOLE POINT. There are two ways to end up
+--- fighting in your own gear -- `stow` failed, or the player had no citizen
+--- id to stash against -- and they leave the player in an identical state.
+--- Only one of them used to say anything, and it was the console it said it
+--- to.
+---
+--- THE WORDING FOLLOWS THE GUARD. Telling a player nothing they drop can be
+--- picked back up is true only while the swapItems hook is actually on; on a
+--- server that turned `blockDropsInArena` off it is a frightening lie. DO NOT
+--- collapse these two keys into one.
+---
+--- FORCED PAST THE PANEL, because sendEnterArena closes it in this same tick.
+--- @param src integer
+--- @param matchId string
+--- @param why string -- for the console only
+local function warnOwnKit(src, matchId, why)
+    ArenaLog('door: %s (%s) enters match %s carrying their own kit -- %s.',
+        ArenaPlayerName(src), tostring(src), tostring(matchId), why)
+
+    -- AND THE EXIT IS TOLD NOT TO CLEAR THEM OUT.
+    --
+    -- A record left over from an EARLIER match can still be sitting under
+    -- this server id -- a restore that could not finish keeps one on purpose.
+    -- restore() opens with an indiscriminate ClearInventory, on the reasoning
+    -- that everything a fighter carries out belongs to the arena. THAT
+    -- REASONING IS FALSE FOR THIS PLAYER: the door did not shut, so what they
+    -- are carrying is their own. Left alone, their next exit destroys the
+    -- very belongings the message above just warned them about.
+    --
+    -- `cleared` is the flag that routes an exit to the by-name reclaim
+    -- instead, and it is the honest answer here: nothing of theirs is in the
+    -- arena's hands, so there is nothing for a wholesale clear to take back.
+    local stale = stashed[src]
+    if stale ~= nil then stale.cleared = true end
+    ArenaToastKey(src, dropsAreBlocked() and 'notify.kit_not_stashed'
+        or 'notify.kit_not_stashed_open', 'error')
+end
+
 function ArenaAmmo.Issue(src, matchId, loadout)
     local failed = {}
     if type(src) ~= 'number' or src <= 0 or not Arena.IsKey(matchId) then return failed end
@@ -1158,7 +1231,7 @@ function ArenaAmmo.Issue(src, matchId, loadout)
         local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
 
         if not Arena.IsKey(citizenid) then
-            ArenaLog('door: no citizen id for %s -- they keep their own kit.', tostring(src))
+            warnOwnKit(src, matchId, 'there is no citizen id to stash against')
         else
             -- WHAT THE STASH IS ALREADY HOLDING FOR THIS CHARACTER.
             --
@@ -1186,6 +1259,15 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                 }
                 ArenaDebug('door: stashed %d item(s) of %s\'s for match %s',
                     count, tostring(src), tostring(matchId))
+            else
+                -- THE PLAYER IS TOLD, ON PURPOSE. `stow` puts back
+                -- everything it had already moved, so nothing is lost at
+                -- this moment -- but it also leaves them carrying their own
+                -- belongings into a round, and dying in one drops the lot on
+                -- the arena floor. Silently that reads as the door having
+                -- worked. The console line inside `stow` says WHY it failed;
+                -- only the operator needs that. DO NOT quieten this.
+                warnOwnKit(src, matchId, 'the door could not put their gear away')
             end
         end
     end
@@ -1828,7 +1910,10 @@ CreateThread(function()
 end)
 
 CreateThread(function()
-    if doorConfig().blockDropsInArena == false then return end
+    if doorConfig().blockDropsInArena == false then
+        dropsHookOn = false
+        return
+    end
 
     -- WAITED FOR, not assumed present. This ran once at load and returned if
     -- ox_inventory was not started YET -- which is not a rare state: resource
@@ -1849,11 +1934,12 @@ CreateThread(function()
     end
 
     if not ox then
+        dropsHookOn = false
         ArenaLog('door: ox_inventory never started, so dropping in an arena cannot be blocked. Anything dropped stays on the floor.')
         return
     end
 
-    local ok = pcall(function()
+    local ok = oxDid('registering the swapItems hook', function()
         return ox:registerHook('swapItems', function(payload)
             local src = payload and payload.source
             if not src then return true end
@@ -1873,9 +1959,12 @@ CreateThread(function()
             -- The flag is the real question: it records who has actually
             -- been teleported into a round, which is what "mid-match" means
             -- here. The stash is kept as the fallback for the same reason
-            -- every other guard in this file keeps one -- server/dispatch.lua
-            -- loads after this file, so the function is asked for rather
-            -- than assumed.
+            -- every other guard in this file keeps one: the function is
+            -- asked for rather than assumed. Not a load-order worry -- the
+            -- manifest puts server/dispatch.lua BEFORE this file, and the
+            -- claim that it came after was simply wrong -- but the hook runs
+            -- on its own thread against whatever is loaded at the time, and
+            -- an export the arena does not own is never assumed present.
             --
             -- THROUGH ownRecord, because this table is keyed by server id and
             -- a record is kept on purpose when an exit could not finish. Read
@@ -1972,6 +2061,17 @@ CreateThread(function()
         end, { print = false })
     end)
 
+    -- WHY THIS DOES NOT JUST ASK WHETHER THE CALL THREW.
+    --
+    -- A bare `pcall` answers "no error was raised", which is NOT the same
+    -- question. ox_inventory refuses a hook by RETURNING false, without
+    -- throwing, and reading the pcall alone recorded that refusal as a
+    -- success -- so `dropsAreBlocked` said yes on a server with no guard at
+    -- all, and every fighter was told their belongings were pinned to them
+    -- when anyone could walk off with them. oxDid is the file's answer to
+    -- exactly this and it treats nil as success and false as refusal, which
+    -- is ox_inventory's own convention. DO NOT put a bare pcall back.
+    dropsHookOn = ok == true
     if not ok then
         ArenaLog('door: ox_inventory would not take a swapItems hook, so dropping cannot be blocked. Anything dropped in an arena stays on the floor.')
     end

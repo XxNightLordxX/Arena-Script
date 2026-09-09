@@ -111,6 +111,8 @@
         "fighter_left": "%s walked out of the fight.",
         "hours_lobby_closed": "The arena shut. Lobby closed, stakes back.",
         "kit_held": "Your own gear could not be handed back yet. It is safe in the arena's hands and it keeps trying.",
+        "kit_not_stashed": "The arena could not put your own gear away, so you are carrying it into the round. Anything that leaves your pockets in here cannot be picked back up -- not even by you.",
+        "kit_not_stashed_open": "The arena could not put your own gear away, so you are carrying it into the round. Look after it -- anything you drop in here is on the floor for anyone.",
         "kit_returned": "Your own gear is back.",
         "loadout_rejected": "Refused from your loadout: %s",
         "lobby_timed_out": "Lobby sat idle too long. Closed, stakes back.",

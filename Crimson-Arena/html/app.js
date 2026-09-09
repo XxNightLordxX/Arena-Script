@@ -3478,6 +3478,7 @@
         databaseOn: false,
         stashesFound: 0,
         stashesRead: 0,
+        stashesReadable: true,
         hoursOpen: true,
         hoursForced: null,
         hoursLine: null,
@@ -3671,10 +3672,23 @@
            opposite of the reason somebody opened it -- for up to the eight
            seconds the sweep is given to answer.
 
-           `stashesRead` is how the two are told apart: zero means "not looked
-           yet", and any positive number means a real answer, including the
-           real answer that there is nothing. */
-        var looked = int(admin.stashesRead, 0) > 0 || int(admin.stashesFound, 0) > 0;
+           A COUNT IS NOT A READ, and this used to settle it with one.
+           `stashesRead` counts stash NAMES, not stashes opened: with
+           ox_inventory stopped the server names every one of them, opens
+           none, and still reports found = read = N. So the number said "we
+           looked" at the exact moment nothing had been looked at, and this
+           screen told an operator the arena was holding nothing for anybody
+           while it was holding everything.
+
+           SO THE MECHANISM ANSWERS, NOT THE TALLY. `stashesReadable` is the
+           server saying whether a stash could be opened AT ALL; the counts
+           then say "not yet" (zero) or "here is the answer, and it is
+           nothing". The same correction the owed-kit line already carries
+           further down, for the same reason. DO NOT go back to inferring a
+           read from a count. */
+        var readable = admin.stashesReadable !== false;
+        var looked = readable
+            && (int(admin.stashesRead, 0) > 0 || int(admin.stashesFound, 0) > 0);
         var kit = arrayOf(admin.owedKit);
         /* AND NO WEAPONS OUT EITHER. "The arena is holding nothing for
            anybody" is about stashes, and read alone it told an operator
@@ -3682,7 +3696,14 @@
            underneath it. */
         show(byId('admin-stash-empty'),
             onStashes && !onStash && owed.length === 0 && kit.length === 0 && looked);
-        show(byId('admin-stash-waiting'), onStashes && !onStash && owed.length === 0 && !looked);
+        show(byId('admin-stash-waiting'),
+            onStashes && !onStash && owed.length === 0 && !looked && readable);
+        /* THE THIRD ANSWER, which this screen did not have. "Nothing is
+           held" and "we could not look" are different things and only one of
+           them is good news. The weapons list below is deliberately NOT
+           hidden with it: that debt is read out of memory rather than out of
+           ox_inventory, so it is still true when the inventory is down. */
+        show(byId('admin-stash-blind'), onStashes && !onStash && !readable);
 
         var stashLine = byId('admin-stash-line');
         if (has(stashLine)) {
@@ -3935,6 +3956,7 @@
                     admin.databaseOn = data.databaseOn === true;
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
+                    admin.stashesReadable = data.stashesReadable !== false;
                     admin.hoursOpen = data.hoursOpen !== false;
                     admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
                         ? data.hoursForced
@@ -3959,6 +3981,7 @@
                     admin.databaseOn = data.databaseOn === true;
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
+                    admin.stashesReadable = data.stashesReadable !== false;
                     admin.hoursOpen = data.hoursOpen !== false;
                     admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
                         ? data.hoursForced

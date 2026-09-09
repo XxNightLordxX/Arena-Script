@@ -197,15 +197,26 @@ onClient('crimson_arena:server:setTeam', RATE.choice, function(src, data)
 end)
 
 onClient('crimson_arena:server:setLoadout', RATE.choice, function(src, data)
+    -- ONLY FOR SOMEBODY WHO HAS A PICKER OPEN, and this is the same guard
+    -- `updateMatch` states at length two handlers down. The push exists to
+    -- put a REFUSED DRAFT back on the screen of somebody who is in a lobby;
+    -- a player with no match has no draft to put back and no picker to put
+    -- it in. Without it, `setLoadout` from a client that has never joined
+    -- anything bought the most expensive thing this file builds -- every
+    -- lobby, every player's own row, the leaderboard -- four times a second,
+    -- before SetLoadout's own membership check ever ran. Measured at ten
+    -- pushes to updateMatch's nought. DO NOT push to a stranger.
+    local drafting = ArenaLobby.GetByPlayer(src) ~= nil
+
     local request = loadoutArg(data)
     if not request then
-        ArenaLobby.PushState(src)
+        if drafting then ArenaLobby.PushState(src) end
         return refuse(src)
     end
 
     local ok, reason = ArenaLobby.SetLoadout(src, request)
     if not ok then
-        ArenaLobby.PushState(src)
+        if drafting then ArenaLobby.PushState(src) end
         return refuse(src, reason)
     end
 end)
@@ -512,6 +523,50 @@ local function withHolders(rows)
     return rows
 end
 
+--- Whether a stash could be OPENED on this look, as against how many were
+--- NAMED.
+---
+--- ArenaAmmo.AllStashes COUNTS NAMES. With ox_inventory stopped it reads
+--- nothing, drops every row, and still reports found = read = N -- and the
+--- screen took that as proof it had looked, so an operator whose inventory
+--- resource was down was told THE ARENA IS HOLDING NOTHING FOR ANYBODY
+--- while it was holding everything. That is the one sentence this screen
+--- must never say when it could not look.
+---
+--- THE SAME MISTAKE THE OWED-KIT LINE MADE, and the same cure: send the
+--- state of the MECHANISM, never a count of what it returned. DO NOT go back
+--- to inferring this from stashesRead.
+---
+--- Asked per push and never cached, exactly as ammo.lua asks it: an operator
+--- restarting their inventory resource must not leave this answering for the
+--- rest of the session.
+---
+--- AND IT ANSWERS "READABLE" WHEN IT CANNOT ASK. This drives a warning on the
+--- operator's screen, and a warning raised because a lookup was unavailable
+--- is a warning they learn to scroll past. Only a definite "ox_inventory is
+--- not running" is worth putting in front of them.
+local function stashesReadable()
+    local asked, state = pcall(GetResourceState, 'ox_inventory')
+    return not asked or state == 'started'
+end
+
+--- Whether server id `target` is still the character the tablet drew.
+---
+--- NO NAME MEANS DO NOT ASK. The tablet always sends one, but /arenaadmin's
+--- own callers and an older panel do not, and a row that names nobody is a
+--- row there is nothing to disagree with -- refusing it would take away the
+--- hand-back rather than aim it.
+--- @param target integer
+--- @param citizenid string|nil
+--- @return boolean
+local function holderIs(target, citizenid)
+    if not Arena.IsKey(citizenid) then return true end
+
+    local player = ArenaGetPlayer(target)
+    local holder = player and player.PlayerData and player.PlayerData.citizenid or nil
+    return holder == citizenid
+end
+
 local function pushAdmin(src, matchId)
     local matches = adminMatches()
     local focused = Arena.IsKey(matchId) and adminMatch(matchId) or nil
@@ -541,6 +596,7 @@ local function pushAdmin(src, matchId)
             databaseOn = Config.Database.enabled == true,
             stashesFound = total,
             stashesRead = read,
+            stashesReadable = stashesReadable(),
         })
     end, function(found, opened) total, read = found, opened end)
 end
@@ -557,6 +613,18 @@ onClient('crimson_arena:server:adminStop', RATE.admin, function(src, data)
     local payload = tableArg(data)
     local matchId = payload and keyArg(payload.matchId)
     if not matchId or not ArenaLobby.Get(matchId) then
+        -- AND THE SCREEN GOES BACK, which is the rule the create/edit form
+        -- and the loadout picker already state at length. This screen holds
+        -- a DRAW rather than a draft, and it is drawn only when the admin
+        -- asks: nothing tells an open tablet that the round it is showing
+        -- has ended. So a match that finished while they were reading it
+        -- left them on a detail page for something that no longer exists,
+        -- with a live-looking roster and a Stop button, and pressing it
+        -- produced a red toast and no change at all. The refusal is the one
+        -- moment this screen knows it is out of date. DO NOT read this push
+        -- as a redundant scan and tidy it away: it is the only thing that
+        -- clears the ghost.
+        pushAdmin(src, nil)
         return refuse(src, 'error.match_not_found')
     end
 
@@ -573,6 +641,8 @@ onClient('crimson_arena:server:adminReturn', RATE.admin, function(src, data)
     if not payload then return refuse(src, 'error.invalid_request') end
 
     local target = intArg(payload.target)
+    local citizenid = keyArg(payload.citizenid)
+    local stash = keyArg(payload.stash)
 
     -- ONLINE: HAND IT OVER NOW.
     --
@@ -582,17 +652,36 @@ onClient('crimson_arena:server:adminReturn', RATE.admin, function(src, data)
     -- -- so an admin pressing this cannot conjure items, cannot reach into
     -- somebody else's stash, and cannot empty one into a player who is
     -- standing in a live round.
-    if target and target > 0 then
+    --
+    -- AND ONLY WHILE THAT SERVER ID IS STILL THE PERSON THE ROW NAMES. A
+    -- server id is whoever holds it NOW: the tablet drew this row when the
+    -- last push went out, and between that draw and the click the owner can
+    -- have disconnected and somebody else arrived on their number.
+    -- ReturnLeftovers works the citizen id out from the LIVE player, so the
+    -- click ran a leftovers return for the newcomer, left the row's real
+    -- stash untouched, queued nothing, and said nothing. Nobody's property
+    -- went anywhere it should not -- and nobody's came back either.
+    if target and target > 0 and holderIs(target, citizenid) then
         local ok, returned = ArenaAmmo.ReturnLeftovers(target)
         ArenaLog('%s handed %s %d item(s) back from the admin tablet (%s)',
             ArenaPlayerName(src), ArenaPlayerName(target), returned or 0,
             ok and 'complete' or 'still outstanding')
 
-        return pushAdmin(src, keyArg(payload.matchId))
+        if ok then return pushAdmin(src, keyArg(payload.matchId)) end
     end
 
-    local citizenid = keyArg(payload.citizenid)
-    local stash = keyArg(payload.stash)
+    -- AND EVERY OTHER WAY THAT CAN GO, INCLUDING THE HAND-BACK THAT DID NOT
+    -- GO THROUGH, ENDS UP ON THE LIST.
+    --
+    -- ReturnLeftovers answers false for a fighter who is mid-round, for a
+    -- stopped ox_inventory, for a stash it could not open -- none of which
+    -- are the admin's mistake and none of which used to leave a trace. The
+    -- button reported nothing, queued nothing, and the sweep only ever
+    -- retries the people already on its list, so a stash found by name after
+    -- a restart stayed on nobody's. Queuing is what puts it back on one.
+    --
+    -- A HAND-BACK THAT DID NOT GO THROUGH MUST NOT END UP ON NOBODY'S LIST.
+    -- DO NOT tidy this fall-through back into an early return.
     if not (citizenid and stash) then return refuse(src, 'error.invalid_request') end
 
     if not ArenaAmmo.QueueReturn(citizenid, stash) then
@@ -652,7 +741,15 @@ onClient('crimson_arena:server:adminRevive', RATE.admin, function(src, data)
     if not target or target <= 0 then return refuse(src, 'error.invalid_request') end
 
     local match = ArenaLobby.GetByPlayer(target)
-    if not match then return refuse(src, 'error.not_in_match') end
+    if not match then
+        -- THE SAME REDRAW THE STOP BUTTON TAKES, and for the same reason: a
+        -- fighter who left, was eliminated out of the roster, or whose match
+        -- ended is one this screen is still showing as revivable, under a
+        -- button that cannot do anything. A refusal here must not only say
+        -- no, it must put the screen right.
+        pushAdmin(src, nil)
+        return refuse(src, 'error.not_in_match')
+    end
 
     local row = match.players[target]
 
@@ -712,11 +809,22 @@ RegisterCommand('arenaadmin', function(src, args)
 
     if action == 'tablet' then
         if src == 0 then return tell(src, locale('cmd.usage')) end
+        -- EVERY FIELD THE SCREEN READS, not the eight this used to send.
+        -- The panel's two reducers are the same reducer: `adminOpen` reads
+        -- twelve keys and this sent eight, so the three the stash tab needs
+        -- -- databaseOn, owedKit, owedKitSaved -- arrived absent and were
+        -- read as "no database, nothing out". An absent field is not an
+        -- empty one, and the first draw is the one an operator opened the
+        -- tablet to look at. DO NOT let the two lists drift apart again.
         TriggerClientEvent('crimson_arena:client:openAdmin', src, {
             matches = adminMatches(),
             owed = {},
+            owedKit = withHolders(ArenaAmmo.OwedKit()),
+            owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
+            databaseOn = Config.Database.enabled == true,
             stashesFound = 0,
             stashesRead = 0,
+            stashesReadable = stashesReadable(),
             hoursOpen = ArenaHoursOpen(),
             hoursForced = ArenaHoursOverride(),
             hoursLine = Arena.ScheduleLine(),

@@ -16,6 +16,40 @@ local index = 1
 --- that undone underneath it.
 local frozeLocalPed = false
 
+--- What the ped looked like before the camera hid it, or nil while nobody is
+--- watching anything.
+---
+--- HANDED BACK AS IT WAS READ, NOT AS A CONSTANT. Stop wrote `visible, solid`
+--- at a watcher whatever they arrived as, so an admin who was deliberately
+--- invisible before they pressed spectate was put on show by stopping. The
+--- same rule client/dispatch.lua's hold follows, and for the same reason: a
+--- round must not decide what a player looks like after it.
+local watcherWas = nil
+
+--- The two readings above, off a build that may not ship the getters.
+--- A missing one falls back to what Stop used to write, so nobody is ever
+--- left invisible by a client that cannot be asked.
+---
+--- A NEAR-COPY OF client/dispatch.lua's, AND DELIBERATELY NOT SHARED. The
+--- one place both files could reach is shared/arena.lua, and that file calls
+--- no native by rule -- boot_spec holds it to that, because it is loaded into
+--- the server realm too. Eight lines twice is the price of not breaking it.
+--- @param ped integer
+--- @return table
+local function readPedState(ped)
+    local function ask(native, fallback)
+        if type(native) ~= 'function' then return fallback end
+        local ok, value = pcall(native, ped)
+        if not ok then return fallback end
+        return value
+    end
+
+    return {
+        visible = ask(IsEntityVisible, true) ~= false,
+        collision = ask(GetEntityCollisionDisabled, false) ~= true,
+    }
+end
+
 local focusPoint = nil
 
 local watchedArena = nil
@@ -295,6 +329,8 @@ function ArenaSpectate.Start(matchIdentifier)
     focusPoint = nil
     waitingSince = nil
 
+    watcherWas = readPedState(ped)
+
     SetEntityVisible(ped, false, false)
     SetEntityCollision(ped, false, false)
     SetLocalPlayerVisibleLocally(false)
@@ -332,14 +368,43 @@ function ArenaSpectate.Stop()
 
     SetLocalPlayerVisibleLocally(true)
 
-    if not ArenaDispatch.IsInArena() then
-        SetEntityVisible(ped, true, false)
-        SetEntityCollision(ped, true, true)
+    -- TWO REASONS TO LEAVE THE PED ALONE, AND BOTH ARE ASKED.
+    --
+    -- THE ROUND, which is the one that was already here: a fighter who is
+    -- still in a match must not be stood up by the camera stopping. An
+    -- eliminated player watching the rest of the round is exactly that, and
+    -- releasing them there put them back on the floor, visible, in a live
+    -- fight. spectate_spec and spectatecam_spec both hold this.
+    --
+    -- AND THE HOLD, which is new, because the round on its own is not enough
+    -- to decide the OTHER case. leaveArena stops the camera before it calls
+    -- ArenaDispatch.Exit -- so on every exit from a round the round question
+    -- answered "yes, still in one" and this branch never ran there. What
+    -- covered it was ReleaseDeadState writing `visible, solid, unfrozen` at
+    -- whatever ped it was handed, held or not, which is the same
+    -- unconditional write that was switching off an admin's god mode. It no
+    -- longer writes what it did not take, so leaveArena now calls Exit BEFORE
+    -- it stops the camera and this branch does the watcher's half itself --
+    -- unless a casualty really is being held, in which case the release owns
+    -- the ped and must be left to finish.
+    --
+    -- DO NOT drop either half. Without the round test an eliminated fighter is
+    -- stood up mid-match; without the hold test a watcher who never died is
+    -- left invisible for the rest of their session.
+    local heldByDispatch = type(ArenaDispatch.IsHoldingDeadState) == 'function'
+        and ArenaDispatch.IsHoldingDeadState()
+
+    if not ArenaDispatch.IsInArena() and not heldByDispatch then
+        local was = watcherWas or { visible = true, collision = true }
+        SetEntityVisible(ped, was.visible, false)
+        SetEntityCollision(ped, was.collision, true)
         if frozeLocalPed then
             FreezeEntityPosition(ped, false)
             frozeLocalPed = false
         end
     end
+
+    watcherWas = nil
 
     if parkedFrom then
         SetEntityCoordsNoOffset(ped, parkedFrom.x, parkedFrom.y, parkedFrom.z, false, false, false)

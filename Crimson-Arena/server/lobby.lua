@@ -587,6 +587,48 @@ local function snapshotMatches()
     return out
 end
 
+--- Who is currently standing behind a keep-out fence this server put up.
+---
+--- THE FENCE IS THE ONE PIECE OF STATE THAT OUTLIVES ITS RECIPIENT SET, and
+--- that is what makes this table necessary rather than tidy. A client is told
+--- about the fence inside a state push, and it holds that list until the next
+--- push replaces it -- so the list has to be taken down by a push as much as
+--- it was put up by one, and a player it was put up for must not stop being
+--- a recipient before that second push.
+---
+--- IN THE OWNER'S WORDS: "after the match is over ... if i jump it immediatly
+--- sends me to the ground ... as its still registering that". He was: the set
+--- below is players with the panel open plus players in a match, and a man
+--- who has just walked out of a round with the panel shut is in neither. So
+--- the last list he was ever sent -- a circle round an arena somebody else
+--- was fighting in -- stayed live on his client for the rest of the session,
+--- and the barrier loop in client/match.lua went on teleporting him to its
+--- rim and dropping him on the ground every time he walked inside it, for a
+--- match that had ended an hour earlier. Measured end to end: after his round
+--- finished, not one further state push reached him, ever.
+---
+--- So anybody the last push actually fenced stays a recipient until a push
+--- tells them the fence is down, and then stops being one. That is at most
+--- one extra snapshot per fenced player per change, and only for players who
+--- really are fenced.
+local fenceHeld = {}
+
+--- Records what the fence the caller is about to send says, so the entry can
+--- be dropped the moment it goes empty.
+---
+--- Called from snapshotKeepOut rather than from the send sites because there
+--- are three of those -- Broadcast, pushState and server/main.lua's answer to
+--- requestState -- and every one of them gets its list from that one
+--- function. A fourth added later cannot forget.
+--- @param id integer
+--- @param zones table[]
+local function rememberFence(id, zones)
+    -- A nil key is a raise in Lua, not a no-op, and snapshotKeepOut is
+    -- reached with whatever src its caller was given.
+    if not id then return end
+    fenceHeld[id] = (#zones > 0) or nil
+end
+
 local function recipients()
     local targets = {}
 
@@ -601,6 +643,16 @@ local function recipients()
     for _, match in pairs(matches) do
         for src in pairs(match.players) do targets[src] = true end
         for src in pairs(match.spectators) do targets[src] = true end
+    end
+
+    -- Pruned the same way panelOpen is, and for the same reason: a player who
+    -- has gone must not be a permanent entry in a table nothing else clears.
+    for src in pairs(fenceHeld) do
+        if Arena.IsKey(GetPlayerName(src)) then
+            targets[src] = true
+        else
+            fenceHeld[src] = nil
+        end
     end
 
     return targets
@@ -628,10 +680,16 @@ end
 --- @param src any
 --- @return table[] zones -- { { x, y, z, radius, label } }
 local function snapshotKeepOut(src)
-    local barrier = (Config.Match or {}).keepOutBarrier
-    if type(barrier) ~= 'table' or barrier.enabled ~= true then return {} end
-
     local id = tonumber(src)
+
+    local barrier = (Config.Match or {}).keepOutBarrier
+    if type(barrier) ~= 'table' or barrier.enabled ~= true then
+        -- An operator who switches the barrier off mid-session has to be able
+        -- to take down the fences already standing on people's clients, so
+        -- this leaves through the same bookkeeping as every other answer.
+        rememberFence(id, {})
+        return {}
+    end
 
     -- WHICH ARENAS THIS PLAYER BELONGS ON, worked out before a single zone
     -- is drawn -- and worked out per ARENA, which is the fix.
@@ -700,6 +758,7 @@ local function snapshotKeepOut(src)
         end
     end
 
+    rememberFence(id, zones)
     return zones
 end
 

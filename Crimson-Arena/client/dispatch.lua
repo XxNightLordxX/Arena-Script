@@ -49,6 +49,43 @@ ArenaDispatch = {}
 
 local restore = nil
 
+--- What the ped's own properties were before ClearDeadState overwrote them,
+--- or nil when no casualty is being held.
+---
+--- THE RECORD IS THE PERMISSION. ReleaseDeadState may only write a property
+--- this table says was taken, so an exit from a round nobody died in writes
+--- nothing at all -- which is the whole of the god-mode fix. DO NOT let a
+--- release write a property that is not in here. See the header on
+--- ReleaseDeadState.
+local deadStateHold = nil
+
+--- The three of the four hold properties a client can actually be asked
+--- about, read through pcall'd existence checks because an older artifact
+--- may not have all of them.
+---
+--- A MISSING GETTER FALLS BACK TO THE VALUE THE HOLD IS ABOUT TO REPLACE,
+--- NEVER to nothing: the release must put a held player back on their feet on
+--- every build there is, and "visible, solid, unfrozen" is exactly what this
+--- function shipped as before it could ask. So a build with the getters
+--- restores what the player had, and one without is no worse than it was.
+--- The fallbacks must not be changed to anything else.
+--- @param ped integer
+--- @return table
+local function readPedState(ped)
+    local function ask(native, fallback)
+        if type(native) ~= 'function' then return fallback end
+        local ok, value = pcall(native, ped)
+        if not ok then return fallback end
+        return value
+    end
+
+    return {
+        visible = ask(IsEntityVisible, true) ~= false,
+        collision = ask(GetEntityCollisionDisabled, false) ~= true,
+        frozen = ask(IsEntityPositionFrozen, false) == true,
+    }
+end
+
 function ArenaDispatch.IsInArena()
     return restore ~= nil
 end
@@ -154,6 +191,17 @@ function ArenaDispatch.ClearDeadState(ped)
     local x, y, z = table.unpack(GetEntityCoords(ped))
     local heading = GetEntityHeading(ped)
 
+    -- READ BEFORE ANYTHING IS WRITTEN, and off the ped as the player had it
+    -- rather than off the one the resurrect hands back. What is being
+    -- recorded is how this player wanted to be -- invisible on purpose, or
+    -- frozen by another resource -- and the resurrect is this file's own
+    -- first change to them.
+    -- NOT RE-READ WHILE A HOLD IS ALREADY STANDING. A second capture would
+    -- record the hold's own settings -- invisible, no collision, frozen -- as
+    -- "what the player had", and hand those back as the restore. The first
+    -- reading is the only one taken off a ped this file has not touched.
+    deadStateHold = deadStateHold or readPedState(ped)
+
     NetworkResurrectLocalPlayer(x, y, z, heading, true, false)
 
     local resurrected = PlayerPedId()
@@ -175,12 +223,59 @@ end
 --- hold on purpose and says so where it decides: releasing there stood an
 --- eliminated player back up, armed, in a live round the moment the
 --- spectator camera stopped.
+---
+--- IT PUTS BACK WHAT WAS THERE, AND IT TOUCHES NOTHING IT DID NOT TAKE.
+---
+--- IN THE OWNER'S WORDS: "It should not be disabling my god mode ... after
+--- the match is over ... It should be reverting me back to what it was
+--- before". This wrote four constants -- not invincible, visible, solid,
+--- unfrozen -- every single time it ran, and leaveArena runs it on EVERY way
+--- out of a round, including the overwhelmingly common one where nobody
+--- died and this file had therefore never touched the ped at all. So an
+--- admin who walked in with god mode on walked out mortal, somebody who was
+--- deliberately invisible was put on show, and a player another resource had
+--- frozen was unfrozen -- off the back of an arena round, by a function
+--- undoing a hold that was never taken.
+---
+--- A hold that was never taken is now nothing to undo, and one that WAS
+--- taken is undone to the reading captured before it was applied. That is
+--- the difference between "back to normal" and "back to what it was", and
+--- only the second is what was asked for.
+---
+--- INVINCIBILITY IS THE ONE THIS CANNOT READ, and it is handled by the rule
+--- at the head of ENTER / EXIT rather than by guessing: CitizenFX ships no
+--- getter for an entity's invincibility, so the only honest statement this
+--- can make is "I set it, therefore I unset it". It must not write `false`
+--- into a flag it never wrote `true` into -- that is the god-mode defect --
+--- and it must not leave `true` behind either, because this file is what put
+--- it there and a fighter who kept it would be untouchable for the rest of
+--- their session.
 --- @param ped integer
 function ArenaDispatch.ReleaseDeadState(ped)
+    local hold = deadStateHold
+    if not hold then return end
+    deadStateHold = nil
+
+    -- Ours, so ours to take back. There is no reading to restore it to.
     SetEntityInvincible(ped, false)
-    SetEntityVisible(ped, true, false)
-    SetEntityCollision(ped, true, true)
-    FreezeEntityPosition(ped, false)
+
+    SetEntityVisible(ped, hold.visible, false)
+    SetEntityCollision(ped, hold.collision, true)
+    FreezeEntityPosition(ped, hold.frozen)
+end
+
+--- Whether this file is currently holding a casualty in the pattern above.
+---
+--- client/spectate.lua asks it. That file used to ask IsInArena() instead --
+--- "am I in a round" as a stand-in for "does somebody else own this ped" --
+--- and the two are not the same question. leaveArena stops the spectator
+--- camera while the round is still notionally on, so the stand-in answered
+--- yes and the camera's own hide was left in place for ReleaseDeadState to
+--- undo. That worked only while ReleaseDeadState undid a hold it had never
+--- taken, which is the defect above. This is the real question.
+--- @return boolean
+function ArenaDispatch.IsHoldingDeadState()
+    return deadStateHold ~= nil
 end
 
 -- A restart mid-match must not leave the operator's dispatch script muted

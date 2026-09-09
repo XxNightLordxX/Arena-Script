@@ -33,6 +33,12 @@ local matchToken = 0
 
 local carried
 
+--- Whether THIS round overrode the client-wide weather and clock. Neither
+--- native has a getter, so the only honest record of what was changed is one
+--- kept here -- see leaveArena.
+local weatherHeld = false
+local clockHeld = false
+
 local roster = {}
 local playerBlips = {}
 
@@ -309,7 +315,27 @@ end
 local function restoreOwnLoadout(ped)
     if not carried then return end
 
+    -- HEALTH AND ARMOUR COME BACK WHATEVER restoreLoadoutOnExit SAYS. DO NOT
+    -- move the armour back inside the branch below with the weapons.
+    --
+    -- THE TWO ARE NOT THE SAME KIND OF THING, and grouping them cost armour
+    -- in one direction and gave it away in the other. applyLoadout writes the
+    -- arena's armour straight onto the ped -- SetPedArmour, no item, nothing
+    -- for the door to reclaim -- so with the setting off nothing on any exit
+    -- path took it off again: a fighter walked out of every round wearing the
+    -- arena's plate, permanently, and could farm it by joining and leaving.
+    -- In the other direction the man who walked in wearing his own never got
+    -- it back.
+    --
+    -- The weapons genuinely do belong in the branch, and the comment on
+    -- stripIssuedWeapons says why: ox_inventory owns those, the item IS the
+    -- weapon, and handing them back on a server that runs with the door off
+    -- duplicates something the player still holds. Armour written with
+    -- SetPedArmour cannot duplicate anything -- putting back the number that
+    -- was read off this same ped on the way in is the definition of leaving
+    -- it as it was found.
     SetEntityHealth(ped, carried.health)
+    SetPedArmour(ped, carried.armor)
 
     if Config.Match.restoreLoadoutOnExit == true then
         for _, weapon in ipairs(carried.weapons) do
@@ -319,7 +345,6 @@ local function restoreOwnLoadout(ped)
         if carried.selected ~= UNARMED then
             SetCurrentPedWeapon(ped, carried.selected, true)
         end
-        SetPedArmour(ped, carried.armor)
     end
 
     carried = nil
@@ -1064,12 +1089,62 @@ local function zoneAt(x, y, z)
     return nil, nil
 end
 
+--- Whether this player is inside a round of their own right now -- fighting
+--- one, or parked at one with the spectator camera on.
+---
+--- THE FENCE MUST NOT BE ENFORCED AGAINST EITHER OF THEM, and the loop below
+--- had no way to tell.
+---
+--- REPORTED FROM THE OWNER'S SEAT: "during the match etc it still keeps
+--- bringing me directly to the ground ... after the intial". The loop below
+--- asks one question -- is this point inside a circle the server sent -- and
+--- teleports whoever is, to the rim and down onto the ground, four times a
+--- second. It never asked whether the ground it is throwing them off is
+--- their own arena floor.
+---
+--- THE SERVER'S EXEMPTION CANNOT COVER THIS ON ITS OWN, which is why the
+--- answer belongs here. server/lobby.lua's snapshotKeepOut is careful never
+--- to send a fighter a fence round the arena he is placed in -- but that
+--- exemption only exists inside a SNAPSHOT, and the snapshot arrives after
+--- the fact: the server sends enterArena, which teleports the player into
+--- the arena, and only then broadcasts the state that drops the fence. A
+--- player who was standing outside a live round at that arena a moment
+--- earlier -- the second match of the evening on the same ground -- is
+--- therefore put down inside a circle his own client still holds, and this
+--- loop throws him straight back out of it. His client is the only party
+--- that knows, in the same frame, that he is in a round; it is now asked.
+---
+--- ArenaSpectate's watcher is the same case one step along: their ped is
+--- parked at the arena on purpose, frozen and hidden, and moving it is how a
+--- watcher ends up somewhere the camera cannot follow.
+---
+--- BOTH ARE ASKED THROUGH type() CHECKS because this file is loaded before
+--- client/spectate.lua and must not care.
+--- @return boolean
+local function inOwnRound()
+    if type(ArenaDispatch) == 'table'
+        and type(ArenaDispatch.IsInArena) == 'function'
+        and ArenaDispatch.IsInArena()
+    then
+        return true
+    end
+
+    if type(ArenaSpectate) == 'table'
+        and type(ArenaSpectate.IsActive) == 'function'
+        and ArenaSpectate.IsActive()
+    then
+        return true
+    end
+
+    return false
+end
+
 CreateThread(function()
     while true do
         local barrier = (Config.Match or {}).keepOutBarrier
         local on = type(barrier) == 'table' and barrier.enabled == true
 
-        if not on or #keepOut == 0 then
+        if not on or #keepOut == 0 or inOwnRound() then
             warnedZone = nil
             Wait(1000)
         else
@@ -1939,12 +2014,34 @@ local function leaveArena(returnCoords)
     clearTeamMarks()
     roster = {}
 
-    if ArenaSpectate then ArenaSpectate.Stop() end
-
+    -- THE FLAG COMES DOWN BEFORE THE CAMERA, and the order is load-bearing.
+    --
+    -- ArenaSpectate.Stop asks ArenaDispatch.IsInArena to decide whether it may
+    -- put the watcher's ped back the way it found it -- a fighter who is still
+    -- in a round must not be stood up by a camera stopping. Stopped first, the
+    -- answer was always "still in one", so the watcher's half never ran on the
+    -- one path where it has to: the way out. DO NOT swap these two back.
     ArenaDispatch.Exit()
 
-    ClearOverrideWeather()
-    NetworkClearClockTimeOverride()
+    if ArenaSpectate then ArenaSpectate.Stop() end
+
+    -- CLEARED ONLY IF THIS ROUND SET THEM.
+    --
+    -- Both of these are ONE setting for the whole client, and neither has a
+    -- getter -- so calling them is not "put the weather back", it is "cancel
+    -- whatever override is currently in force, whoever set it". An arena with
+    -- no weatherOverride and no timeOverride of its own still ran both lines
+    -- on the way out, so every round on such an arena silently cancelled the
+    -- server's own weather or time script for that player until it next
+    -- pushed. They must not be touched by a round that never touched them.
+    if weatherHeld then
+        weatherHeld = false
+        ClearOverrideWeather()
+    end
+    if clockHeld then
+        clockHeld = false
+        NetworkClearClockTimeOverride()
+    end
 
     local ped = PlayerPedId()
     local coords = returnCoords or Config.Lobby.returnCoords
@@ -2135,8 +2232,12 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
     startArenaThread()
 
-    if data.weatherOverride then SetWeatherTypeNowPersist(data.weatherOverride) end
+    if data.weatherOverride then
+        weatherHeld = true
+        SetWeatherTypeNowPersist(data.weatherOverride)
+    end
     if type(data.timeOverride) == 'table' then
+        clockHeld = true
         NetworkOverrideClockTime(data.timeOverride.hour or 12, data.timeOverride.minute or 0, 0)
     end
 
@@ -2191,6 +2292,24 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
         arenaSurfaceZ or Arena.SpawnFloor(currentMatch and currentMatch.arenaKey))
 
     ArenaDispatch.ReleaseDeadState(ped)
+
+    -- THE RESPAWN UNDOES ITS OWN FREEZE, AND DOES NOT LEAVE IT TO THE
+    -- RELEASE ABOVE.
+    --
+    -- placeAt is called with leaveFrozen = true on purpose -- the ped is held
+    -- still while the collision under the new spawn streams in, or it falls
+    -- through the world -- and nothing here ever undid it. What undid it was
+    -- ReleaseDeadState, which used to unfreeze every ped handed to it whether
+    -- it had frozen one or not.
+    --
+    -- It no longer does, because that same unconditional write was switching
+    -- off an admin's god mode on the way out of every round. So the freeze
+    -- this handler asked for is now let go by this handler. WITHOUT THIS LINE
+    -- a server running with Config.Dispatch.clearDeadStateImmediately off --
+    -- where no casualty is ever held, so there is no hold to release --
+    -- respawns its fighters frozen to the spot for the rest of the round.
+    -- Measured, not supposed.
+    FreezeEntityPosition(ped, false)
 
     if not placed or matchToken ~= token or not currentMatch then return end
 

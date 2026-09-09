@@ -2124,34 +2124,52 @@ local kitWriteRefused = false
 --- that user has. DO NOT set this anywhere but a write's own callback.
 local kitWriteLanded = false
 
---- Ledger keys whose settlement has NOT been written down yet.
+--- Ledger keys whose stored row is NOT known to agree with memory.
 ---
---- A SETTLEMENT IS A DELETE, AND ArenaDb THROWS AWAY A STATEMENT IT CANNOT
---- SEND. There is no queue behind it. So with oxmysql stopped the chase takes
---- the arena's rifle back off a player, clears the row in memory, and the
---- DELETE evaporates: the table still says the debt is open, the next start
---- reads it back, and the slate carries a debt for a weapon the arena is
---- already holding. That row CANNOT ever be collected -- the chase refuses on
---- purpose to delete a row it cannot see -- and it holds a slate slot until
---- the cap forgets it. Measured: one settled weapon, one phantom debt on the
---- next start, and it survives every further sweep.
+--- ArenaDb THROWS AWAY A STATEMENT IT CANNOT SEND. There is no queue behind
+--- it, and the slate loses a write in both directions. With oxmysql stopped
+--- the chase takes the arena's rifle back off a player, clears the row in
+--- memory, and the DELETE evaporates: the table still says the debt is open,
+--- the next start reads it back, and the slate carries a debt for a weapon the
+--- arena is already holding. And an exit that fails during the same outage
+--- writes the NEW debt into memory while its INSERT evaporates the same way,
+--- so the table never hears about it and the next start has written off a
+--- rifle and thirty bandages the arena is owed. Measured both ways: one
+--- phantom debt that survives every further sweep, and one real debt gone.
 ---
---- A DELETE IS THE ONLY STATEMENT SAFE TO REPLAY, which is why this holds
---- KEYS and NEVER SQL. Sending the same DELETE twice costs nothing; an INSERT
---- that adds to a stack is a different debt every time it lands. DO NOT put an
---- adding write in here.
+--- SO THIS REMEMBERS KEYS, AND NEVER STATEMENTS. Which statement was dropped
+--- is the wrong question. Memory is the live answer for the whole of a run and
+--- the table is the backup of it, so a key that is out of date is repaired by
+--- writing down WHAT MEMORY SAYS NOW -- an owed weapon, an owed stack at its
+--- current total, or nothing at all. Every statement that can say one of those
+--- is absolute (KIT_WEAPON_SQL sets the amount to 1, KIT_ITEM_SET_SQL assigns
+--- it, the DELETE removes the row), so a replay costs nothing when it repeats
+--- something the database already had.
 ---
---- AND A KEY LEAVES THE SET THE MOMENT IT IS OWED AGAIN. A stack settled and
---- then re-incurred writes a NEW row under the same key, and replaying the old
---- DELETE would erase it -- so every save clears the key it writes.
-local settledKeys = {}
-local settledCount = 0
+--- WHICH IS ALSO WHY THE ADDING STATEMENT IS NEVER REPLAYED. KIT_ITEM_ADD_SQL
+--- is a different debt every time it lands, and it is only ever sent once, by
+--- the writer that has just added the same amount to memory; a stack is
+--- replayed as the SET form carrying the total memory holds. DO NOT replay
+--- from a record of what was sent -- resolve the key against memory instead.
+---
+--- IT IS ALSO WHY NO KEY HAS TO LEAVE THE SET WHEN A DEBT IS OWED AGAIN. A
+--- stack settled and then re-incurred used to need its pending DELETE taken
+--- out by hand, or the replay would erase the new debt; a replay that asks
+--- memory CANNOT do that, because memory is what it is copying.
+---
+--- The value is which of two states the key is in: 'sent' while a statement is
+--- on the wire and its answer still to come, 'unsent' for one the database did
+--- not take. Only 'unsent' is replayed -- re-sending a key whose write is still
+--- in flight is how an absolute total lands ahead of the add it was meant to
+--- follow. Membership is `~= nil`; DO NOT test these values as booleans.
+local pendingKeys = {}
+local pendingCount = 0
 
 --- Bounded like everything else on this slate. Reached only when the database
 --- has been refusing writes for a very long time, at which point the operator
 --- has a much louder problem -- but a set with no bound is a leak whatever
 --- feeds it. DO NOT take the cap off.
-local SETTLED_LIMIT = 4000
+local PENDING_LIMIT = 4000
 
 --- Whether the read-back has been attempted and succeeded.
 ---
@@ -2226,78 +2244,75 @@ local function wrote(answer)
         .. 'oxmysql\'s console, not this one.')
 end
 
---- Takes one key off the replay set, because a debt has just been written
---- under it again. DO NOT save a row without calling this first: a replayed
---- DELETE would take the new debt with the old one.
-local function owedAgain(citizenid, key)
-    local keys = settledKeys[citizenid]
+--- Puts one key into the replay set, or moves one already there.
+local function markPending(citizenid, key, state)
+    local keys = pendingKeys[citizenid]
+    if keys ~= nil and keys[key] ~= nil then
+        keys[key] = state
+        return
+    end
+
+    -- THE CAP REFUSES A NEW KEY RATHER THAN MAKING ROOM FOR IT. Everything
+    -- already in here is a write the database has not taken, so evicting one
+    -- to admit another loses exactly as much as never admitting it, and does
+    -- it to the older debt. DO NOT turn this into an eviction.
+    if pendingCount >= PENDING_LIMIT then return end
+
+    if keys == nil then
+        keys = {}
+        pendingKeys[citizenid] = keys
+    end
+    keys[key] = state
+    pendingCount = pendingCount + 1
+end
+
+--- Takes one key out, because the database has said its row now agrees with
+--- memory.
+local function clearPending(citizenid, key)
+    local keys = pendingKeys[citizenid]
     if keys == nil or keys[key] == nil then return end
 
     keys[key] = nil
-    settledCount = settledCount - 1
-    if next(keys) == nil then settledKeys[citizenid] = nil end
+    pendingCount = pendingCount - 1
+    if next(keys) == nil then pendingKeys[citizenid] = nil end
 end
 
---- THE ONE PLACE A LEDGER ROW IS DELETED, and it remembers the key until the
---- database says the row is gone. Every DELETE on this slate comes through
---- here; see settledKeys for what a dropped one costs. DO NOT send
---- KIT_DROP_SQL from anywhere else.
-local function dropLedgerRow(citizenid, key)
-    local keys = settledKeys[citizenid]
-    if keys == nil and settledCount < SETTLED_LIMIT then
-        keys = {}
-        settledKeys[citizenid] = keys
-    end
-    if keys ~= nil and keys[key] == nil and settledCount < SETTLED_LIMIT then
-        keys[key] = true
-        settledCount = settledCount + 1
-    end
+--- THE ONE PLACE A LEDGER STATEMENT IS SENT, and it remembers the key until
+--- the database answers. Every write on this slate comes through here; see
+--- pendingKeys for what a dropped one costs. DO NOT hand a kit statement to
+--- ArenaDb from anywhere else.
+local function sendLedger(citizenid, key, sql, params)
+    markPending(citizenid, key, 'sent')
 
-    ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, key }, function(answer)
+    ArenaDb('the outstanding-kit slate', sql, params, function(answer)
         wrote(answer)
-        if answer ~= nil then owedAgain(citizenid, key) end
+
+        if answer ~= nil then
+            clearPending(citizenid, key)
+            return
+        end
+
+        -- AND A KEY BECOMES REPLAYABLE ONLY WHEN ITS OWN ANSWER IS IN. A
+        -- statement still on the wire that is sent a second time can land in
+        -- either order, and an absolute total that lands ahead of the add it
+        -- was meant to follow leaves the row wrong until something else
+        -- rewrites it. DO NOT mark a key unsent at dispatch.
+        markPending(citizenid, key, 'unsent')
     end)
 end
 
---- Re-sends the settlements the database never took.
----
---- ORDERED AHEAD OF THE READ-BACK BY EVERY CALLER, and that ordering is the
---- whole of its correctness: LoadOwedKit's SELECT is a photograph of the
---- table, so a settlement still waiting to be sent when the photograph is
---- taken comes straight back as an open debt. The merge refuses a pending key
---- as well, because a statement in flight is not a statement that has landed.
---- DO NOT call this after a read has been dispatched.
-local function replaySettled()
-    if settledCount == 0 or kitWriteRefused then return 0 end
-    if not ArenaDbReady('the outstanding-kit slate') then return 0 end
-
-    -- LISTED BEFORE ANY OF IT IS SENT. The callback can answer on this very
-    -- line and takes its key out of the table being walked; building the list
-    -- first is what keeps that from being a traversal of a table that is
-    -- changing underneath it. DO NOT dispatch from inside the pairs loop.
-    local flat = {}
-    for citizenid, keys in pairs(settledKeys) do
-        for key in pairs(keys) do flat[#flat + 1] = { citizenid, key } end
-    end
-
-    for _, entry in ipairs(flat) do dropLedgerRow(entry[1], entry[2]) end
-
-    ArenaLog('weapons: %d settlement(s) the database never took have been sent again. They are '
-        .. 'debts the arena has ALREADY collected, and the rows would otherwise be read back as '
-        .. 'open on the next start.', #flat)
-    return #flat
+local function dropLedgerRow(citizenid, key)
+    sendLedger(citizenid, key, KIT_DROP_SQL, { citizenid, key })
 end
 
 local function saveOwedWeapon(citizenid, row)
-    owedAgain(citizenid, weaponKey(row.serial))
-    ArenaDb('the outstanding-kit slate', KIT_WEAPON_SQL,
-        { citizenid, weaponKey(row.serial), row.name, row.serial }, wrote)
+    sendLedger(citizenid, weaponKey(row.serial), KIT_WEAPON_SQL,
+        { citizenid, weaponKey(row.serial), row.name, row.serial })
 end
 
 local function saveOwedItem(citizenid, name, amount)
-    owedAgain(citizenid, itemKey(name))
-    ArenaDb('the outstanding-kit slate', KIT_ITEM_ADD_SQL,
-        { citizenid, itemKey(name), name, amount }, wrote)
+    sendLedger(citizenid, itemKey(name), KIT_ITEM_ADD_SQL,
+        { citizenid, itemKey(name), name, amount })
 end
 
 --- Writes a stack's CURRENT total, rather than adding to it -- used after a
@@ -2309,12 +2324,100 @@ local function setOwedItem(citizenid, name, amount)
         dropLedgerRow(citizenid, itemKey(name))
         return
     end
-    owedAgain(citizenid, itemKey(name))
-    ArenaDb('the outstanding-kit slate', KIT_ITEM_SET_SQL, { citizenid, itemKey(name), name, amount }, wrote)
+    sendLedger(citizenid, itemKey(name), KIT_ITEM_SET_SQL,
+        { citizenid, itemKey(name), name, amount })
 end
 
 local function dropOwedWeapon(citizenid, serial)
     dropLedgerRow(citizenid, weaponKey(serial))
+end
+
+--- Writes down again every key the database never took, as memory has it now.
+---
+--- ORDERED AHEAD OF THE READ-BACK BY EVERY CALLER, and that ordering is the
+--- whole of its correctness: LoadOwedKit's SELECT is a photograph of the
+--- table, so a write still waiting to be sent when the photograph is taken
+--- comes back as whatever the table said before it. The merge refuses a
+--- pending key as well, because a statement in flight is not a statement that
+--- has landed. DO NOT call this after a read has been dispatched.
+---
+--- EVERY KEY IS RESOLVED AGAINST MEMORY HERE, and not against a record of
+--- what was sent. A weapon still on the slate is written down again, a stack
+--- is written at the total it stands at now, and anything memory no longer
+--- owes is deleted -- so a debt SETTLED during an outage and a debt INCURRED
+--- during one are repaired by the same pass. Replaying remembered statements
+--- could only ever do the first, which left the table with no record of a
+--- rifle the arena had just handed out and no way to hear about it later.
+--- DO NOT narrow this back to the settlements.
+local function replayPending()
+    if pendingCount == 0 then return 0 end
+
+    -- A DATABASE THAT HAS NEVER TAKEN A WRITE IS NOT WORTH REPLAYING INTO,
+    -- and that is the whole of what this refusal skips. A SELECT-only
+    -- database user refuses every statement asynchronously, so a replay there
+    -- puts the entire slate on oxmysql's own console on every sweep for the
+    -- life of the process, and lands nothing.
+    --
+    -- ONE REFUSAL ON ITS OWN IS NOT THAT CASE, and reading it as one switched
+    -- the replay off in exactly the situation it exists for: a single nil
+    -- answer from an otherwise-healthy oxmysql latches kitWriteRefused for the
+    -- rest of the run, and every write lost after that stayed lost. A write
+    -- that HAS landed on this server is the difference between a user who
+    -- cannot write and a statement that went wrong once. DO NOT bail on the
+    -- refusal alone.
+    if kitWriteRefused and not kitWriteLanded then return 0 end
+    if not ArenaDbReady('the outstanding-kit slate') then return 0 end
+
+    -- LISTED BEFORE ANY OF IT IS SENT. The callback can answer on this very
+    -- line and takes its key out of the table being walked; building the list
+    -- first is what keeps that from being a traversal of a table that is
+    -- changing underneath it. DO NOT dispatch from inside the pairs loop.
+    local flat = {}
+    for citizenid, keys in pairs(pendingKeys) do
+        for key, state in pairs(keys) do
+            if state == 'unsent' then flat[#flat + 1] = { citizenid, key } end
+        end
+    end
+
+    if #flat == 0 then return 0 end
+
+    for _, entry in ipairs(flat) do
+        local citizenid, key = entry[1], entry[2]
+
+        -- SPLIT WITH `sub` AND NEVER A PATTERN. A serial is arbitrary text
+        -- and a magic character in one would make a pattern match some other
+        -- row, or nothing at all -- and the write that follows is aimed at
+        -- whatever comes out of here. DO NOT turn this into a `match`.
+        local kind, tail = key:sub(1, 2), key:sub(3)
+
+        if kind == 'w:' then
+            local row = nil
+            for _, have in ipairs(owedKit[citizenid] or {}) do
+                if type(have) == 'table' and have.serial == tail then row = have break end
+            end
+
+            if row ~= nil then
+                saveOwedWeapon(citizenid, row)
+            else
+                dropOwedWeapon(citizenid, tail)
+            end
+        elseif kind == 'i:' then
+            local amount = (owedItems[citizenid] or {})[tail]
+            setOwedItem(citizenid, tail, type(amount) == 'number' and amount or 0)
+        else
+            -- NOTHING ELSE CAN BE RESOLVED AGAINST MEMORY, so it must not be
+            -- kept: a key matching neither prefix would be listed by every
+            -- pass from here to the restart, and counted in every line the
+            -- log below prints. DO NOT leave one in the set.
+            clearPending(citizenid, key)
+        end
+    end
+
+    ArenaLog('weapons: %d ledger write(s) the database never took have been sent again, as the '
+        .. 'slate has them now. They are debts the arena has already collected, or ones it took '
+        .. 'on while the database was down, and the table would otherwise disagree with the slate '
+        .. 'on the next start.', #flat)
+    return #flat
 end
 
 --- Trims a character's weapon slate to the cap, oldest first.
@@ -3575,9 +3678,37 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     -- up second, and no settlement was ever replayed. The door is the other
     -- place a debtor is certain to be standing. DO NOT tie the ledger's own
     -- upkeep to a stash setting.
-    replaySettled()
+    replayPending()
     ArenaAmmo.LoadOwedKit()
     retryPendingClears()
+
+    -- THE OTHER WAY A FIGHTER WALKS IN CARRYING THEIR OWN THINGS.
+    --
+    -- `warnOwnKit` above covers the door REACHING for their gear and failing.
+    -- This covers the door being switched off, and the two are not the same
+    -- event, which is why they do not share a message: `stripOnEntry = false`
+    -- is an operator running a "keep what you bring" server, so telling this
+    -- player the arena "could not put your own gear away" would be a lie --
+    -- nothing was ever attempted. DO NOT reuse the `kit_not_stashed` pair
+    -- here.
+    --
+    -- WHAT THE PLAYER CANNOT SEE is that the round treats their own
+    -- belongings exactly as it treats an arena kit: die and the lot hits the
+    -- floor, and with drops blocked -- the shipped setting -- not even they
+    -- can pick it back up. Their screen is otherwise identical to a fighter
+    -- whose gear was safely stashed at the door, so the first they learn of
+    -- it is the loss. The same situation on a stashing server DOES warn them;
+    -- the only difference between being warned and being robbed in silence is
+    -- a config switch no player can read.
+    --
+    -- GUARDED ON `ox` the way the stash block is, on purpose: with no
+    -- inventory resource running there is nothing in anybody's pockets to
+    -- lose, and a server that has never had one would be told off for it
+    -- every round.
+    if ox and doorConfig().stripOnEntry == false then
+        ArenaToastKey(src, dropsAreBlocked() and 'notify.kit_kept_blocked'
+            or 'notify.kit_kept_open', 'error')
+    end
 
     if ox then
         local holder = ArenaGetPlayer(src)
@@ -4223,10 +4354,10 @@ function ArenaAmmo.SweepReturns()
     -- instants, and a later-landing older one overwrote what a newer one had
     -- already merged. DO NOT move this back inside the loop.
     --
-    -- AND THE SETTLEMENTS THE DATABASE NEVER TOOK GO FIRST, because the read
+    -- AND THE WRITES THE DATABASE NEVER TOOK GO FIRST, because the read
     -- below is a photograph of the table and a settlement still queued is an
-    -- open debt in it. See replaySettled. DO NOT reorder these two.
-    replaySettled()
+    -- open debt in it. See replayPending. DO NOT reorder these two.
+    replayPending()
     ArenaAmmo.LoadOwedKit()
     retryPendingClears()
 
@@ -4394,10 +4525,13 @@ function ArenaAmmo.LoadOwedKit()
                 -- yet taken) or while it was on the wire is still in the
                 -- picture. Merging it puts a settled stack back at its old
                 -- total, to be charged again, or re-inserts a weapon the
-                -- arena is already holding. settledKeys is the only record
-                -- that those settlements happened. DO NOT drop this test.
-                local pending = citizenid and settledKeys[citizenid] or nil
-                if pending and type(row) == 'table' and pending[row.ledger_key] then
+                -- arena is already holding. pendingKeys is the only record
+                -- that those settlements happened, and it holds the debts
+                -- written down while the database was away for the same
+                -- reason: memory is the live answer for both. DO NOT drop
+                -- this test.
+                local pending = citizenid and pendingKeys[citizenid] or nil
+                if pending and type(row) == 'table' and pending[row.ledger_key] ~= nil then
                     citizenid = nil
                 end
 
@@ -4785,6 +4919,85 @@ CreateThread(function()
     end
 end)
 
+--- Whether this player is inside a round RIGHT NOW.
+---
+--- Asked by both inventory hooks below, which need the same answer to the
+--- same question. NOT `midMatch`, which defaults to "yes" when dispatch is
+--- not loaded because its callers are handing kit BACK and guessing wrong
+--- there costs somebody their belongings. A hook guessing wrong the same
+--- way refuses every player on the server every move and every item they
+--- use, arena or no arena, so this one must not fail closed. DO NOT swap
+--- one for the other.
+--- @param src number
+--- @return boolean
+local function inArenaNow(src)
+    -- IN THE ARENA, not merely STASHED, and the two are not the same
+    -- player set.
+    --
+    -- This asked `stashed[src]`, which is only ever populated when
+    -- the door is shut. With
+    -- Config.Loadouts.inventory.stripOnEntry off -- where a player
+    -- keeps their own inventory and is handed the arena's kit on top
+    -- of it -- nobody is stashed at all, so this returned true for
+    -- every fighter and the guard was off for the whole match. On
+    -- exactly the setting where the arena's weapons are loose in a
+    -- player's own pockets and dropping one is easiest.
+    --
+    -- The flag is the real question: it records who has actually
+    -- been teleported into a round, which is what "mid-match" means
+    -- here. The stash is kept as the fallback for the same reason
+    -- every other guard in this file keeps one: the function is
+    -- asked for rather than assumed. Not a load-order worry -- the
+    -- manifest puts server/dispatch.lua BEFORE this file, and the
+    -- claim that it came after was simply wrong -- but the hook runs
+    -- on its own thread against whatever is loaded at the time, and
+    -- an export the arena does not own is never assumed present.
+    --
+    -- THROUGH ownRecord, because this table is keyed by server id and
+    -- a record is kept on purpose when an exit could not finish. Read
+    -- raw, a record left behind by a player who then disconnected
+    -- made the NEXT holder of that server id "in the arena": refused
+    -- every inventory move anywhere on the map, their own house stash
+    -- and glovebox included, with nothing able to clear it -- the
+    -- sweep that would have is gated on the same table.
+    -- A STASH RECORD IS NOT PRESENCE, and reading it as presence
+    -- was a lockout with no way out of it.
+    --
+    -- A record is KEPT on purpose when an exit could not empty the
+    -- stash -- that is what the retry works from -- and the read-empty
+    -- guard in ReturnLeftovers keeps the debt written, so such a
+    -- record is never settled and never dropped. Read as "this player
+    -- is in the arena", it refused that player every inventory move
+    -- they made anywhere on the map: their own house stash, a
+    -- glovebox, a shop, handing a friend an item. For the rest of the
+    -- session, through a reconnect, while standing nowhere near an
+    -- arena, with the arena's own "you fight with what you were
+    -- issued" line explaining it.
+    --
+    -- THE MATCH IS THE QUESTION. A fighter's record names a match that
+    -- still exists; a stranded one names a round that ended and was
+    -- destroyed long ago. Asked through ArenaLobby because that is the
+    -- registry -- and asked for rather than assumed, since it loads
+    -- after this file, in which case the older and stricter answer is
+    -- kept.
+    local record = ownRecord(src)
+    local inArena = false
+    if record ~= nil then
+        if type(ArenaLobby) == 'table' and type(ArenaLobby.Get) == 'function' then
+            inArena = Arena.IsKey(record.matchId)
+                and ArenaLobby.Get(record.matchId) ~= nil
+        else
+            inArena = true
+        end
+    end
+    if not inArena and type(ArenaDispatch) == 'table'
+        and type(ArenaDispatch.IsPlayerInArena) == 'function'
+    then
+        inArena = ArenaDispatch.IsPlayerInArena(src) == true
+    end
+    return inArena
+end
+
 CreateThread(function()
     if doorConfig().blockDropsInArena == false then
         dropsHookOn = false
@@ -4820,71 +5033,7 @@ CreateThread(function()
             local src = payload and payload.source
             if not src then return true end
 
-            -- IN THE ARENA, not merely STASHED, and the two are not the same
-            -- player set.
-            --
-            -- This asked `stashed[src]`, which is only ever populated when
-            -- the door is shut. With
-            -- Config.Loadouts.inventory.stripOnEntry off -- where a player
-            -- keeps their own inventory and is handed the arena's kit on top
-            -- of it -- nobody is stashed at all, so this returned true for
-            -- every fighter and the guard was off for the whole match. On
-            -- exactly the setting where the arena's weapons are loose in a
-            -- player's own pockets and dropping one is easiest.
-            --
-            -- The flag is the real question: it records who has actually
-            -- been teleported into a round, which is what "mid-match" means
-            -- here. The stash is kept as the fallback for the same reason
-            -- every other guard in this file keeps one: the function is
-            -- asked for rather than assumed. Not a load-order worry -- the
-            -- manifest puts server/dispatch.lua BEFORE this file, and the
-            -- claim that it came after was simply wrong -- but the hook runs
-            -- on its own thread against whatever is loaded at the time, and
-            -- an export the arena does not own is never assumed present.
-            --
-            -- THROUGH ownRecord, because this table is keyed by server id and
-            -- a record is kept on purpose when an exit could not finish. Read
-            -- raw, a record left behind by a player who then disconnected
-            -- made the NEXT holder of that server id "in the arena": refused
-            -- every inventory move anywhere on the map, their own house stash
-            -- and glovebox included, with nothing able to clear it -- the
-            -- sweep that would have is gated on the same table.
-            -- A STASH RECORD IS NOT PRESENCE, and reading it as presence
-            -- was a lockout with no way out of it.
-            --
-            -- A record is KEPT on purpose when an exit could not empty the
-            -- stash -- that is what the retry works from -- and the read-empty
-            -- guard in ReturnLeftovers keeps the debt written, so such a
-            -- record is never settled and never dropped. Read as "this player
-            -- is in the arena", it refused that player every inventory move
-            -- they made anywhere on the map: their own house stash, a
-            -- glovebox, a shop, handing a friend an item. For the rest of the
-            -- session, through a reconnect, while standing nowhere near an
-            -- arena, with the arena's own "you fight with what you were
-            -- issued" line explaining it.
-            --
-            -- THE MATCH IS THE QUESTION. A fighter's record names a match that
-            -- still exists; a stranded one names a round that ended and was
-            -- destroyed long ago. Asked through ArenaLobby because that is the
-            -- registry -- and asked for rather than assumed, since it loads
-            -- after this file, in which case the older and stricter answer is
-            -- kept.
-            local record = ownRecord(src)
-            local inArena = false
-            if record ~= nil then
-                if type(ArenaLobby) == 'table' and type(ArenaLobby.Get) == 'function' then
-                    inArena = Arena.IsKey(record.matchId)
-                        and ArenaLobby.Get(record.matchId) ~= nil
-                else
-                    inArena = true
-                end
-            end
-            if not inArena and type(ArenaDispatch) == 'table'
-                and type(ArenaDispatch.IsPlayerInArena) == 'function'
-            then
-                inArena = ArenaDispatch.IsPlayerInArena(src) == true
-            end
-            if not inArena then return true end
+            if not inArenaNow(src) then return true end
 
             local function theirs(id)
                 if id == nil then return true end
@@ -4950,6 +5099,83 @@ CreateThread(function()
     dropsHookOn = ok == true
     if not ok then
         ArenaLog('door: ox_inventory would not take a swapItems hook, so dropping cannot be blocked. Anything dropped in an arena stays on the floor.')
+    end
+
+    -- AND THE OTHER WAY AN ITEM LEAVES A PLAYER: THEY USE IT.
+    --
+    -- swapItems covers every move a fighter makes BY HAND -- dropping,
+    -- stashing, looting a body, handing a gun to a friend standing next to
+    -- them -- and none of those is the route that needs no move at all.
+    -- Eating a medkit, popping a plate or taking a drug consumes the item
+    -- where it stands, raises no swapItems hook, and the guard above never
+    -- sees it. It is the only other route ox_inventory will tell us about:
+    -- every remaining one is a server-side write by some other resource,
+    -- which raises no hook of any kind and cannot be guarded from in here.
+    --
+    -- ON THE SHIPPED SETTINGS THIS CHANGES NOTHING, and that is the point.
+    -- `stripOnEntry` puts a fighter's own belongings in the stash, so the
+    -- only things in their pockets are the ones the arena issued and every
+    -- one of those is allowed through below. This exists for
+    -- `stripOnEntry = false` -- the documented setting where a fighter keeps
+    -- their own inventory and fights on top of the arena's kit. There,
+    -- nothing anywhere stopped somebody healing to full off their own medkit
+    -- or stacking their own heavy armour mid-round while the man shooting at
+    -- them lived on the two bandages the arena handed out. That is a
+    -- fairness hole rather than an item-loss one, which is why it is worth
+    -- exactly this and no more.
+    --
+    -- WHAT IT MUST NOT BREAK. Drawing a weapon and loading a round come
+    -- through this same hook -- ox_inventory raises `usingItem` for a weapon
+    -- item and for an ammunition item as readily as for a consumable -- so
+    -- refusing on "not a supply" would leave a fighter holding a gun they
+    -- cannot draw. The allowed set is everything this arena can put in
+    -- somebody's hands, which is what Arena.AllIssuedItems answers, plus
+    -- whatever `neverStash` deliberately left in their pockets: an operator
+    -- who said an item belongs on a fighter has already said they may use
+    -- it.
+    --
+    -- NOT GATED SEPARATELY. It rides on `blockDropsInArena` with the guard
+    -- above -- this thread has already returned if that is off -- because an
+    -- operator who took the arena's hands off their players' inventories
+    -- meant all of it, and a second switch for one hook is a second switch
+    -- nobody reads.
+    --
+    -- ITS OWN registerHook, and a refusal here does NOT touch dropsHookOn.
+    -- That flag answers "can things be dropped in here", which this hook has
+    -- no opinion about, and folding the two together would have the arena
+    -- telling fighters their belongings are loose because a different hook
+    -- was refused. DO NOT merge them.
+    local usingHookOn = oxDid('registering the usingItem hook', function()
+        return ox:registerHook('usingItem', function(payload)
+            local src = payload and payload.source
+            if not src then return true end
+            if not inArenaNow(src) then return true end
+
+            -- FAIL OPEN ON A PAYLOAD THIS CANNOT READ, exactly as the guard
+            -- above does on a missing source. An ox_inventory that shapes
+            -- the slot differently must not cost a fighter the use of the
+            -- kit the arena issued them; the cost of the other reading is a
+            -- round nobody can shoot in. NEVER refuse on a name that was
+            -- never read.
+            local item = payload.item
+            local name = type(item) == 'table' and item.name or nil
+            if not Arena.IsKey(name) then return true end
+
+            if Arena.AllIssuedItems()[name] then return true end
+
+            local kept = nameSet(doorConfig().neverStash, DEFAULT_NEVER_STASH)
+            if kept[name] then return true end
+
+            ArenaNotifyKey(src, 'error.no_using_own_kit', 'error')
+            return false
+        end, { print = false })
+    end)
+
+    if not usingHookOn then
+        ArenaLog('door: ox_inventory would not take a usingItem hook, so a fighter carrying '
+            .. 'their own kit can still use it mid-round. Only reachable with '
+            .. '`stripOnEntry` off -- on the shipped setting there is nothing in their '
+            .. 'pockets the arena did not issue.')
     end
 end)
 

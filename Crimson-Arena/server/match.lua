@@ -1273,18 +1273,129 @@ end
 --- things the press was actually buying: the resupply does not happen, and
 --- the wait is long enough that the escape is worse than the fight.
 ---
---- A FLAT MULTIPLE, NEVER AN ESCALATING ONE. Real deaths name nobody all the
---- time -- a fall, the boundary's own bleed, a fire, an explosion -- so an
---- honest player pays this too, and what they pay must not grow the longer
---- they play. The floor is for a server that sets respawnDelaySeconds to 0,
---- where a multiple of nothing is nothing.
+--- A FLAT MULTIPLE, NEVER AN ESCALATING ONE. What a player pays must not grow
+--- the longer they play. The floor is for a server that sets
+--- respawnDelaySeconds to 0, where a multiple of nothing is nothing.
 local UNWITNESSED_RESPAWN_FACTOR = 4
 local UNWITNESSED_RESPAWN_FLOOR_SECONDS = 15
+
+--- THE REGRESSION THIS PRICE CAUSED, AND WHY IT IS NOW A RATE.
+---
+--- IN A PLAYER'S OWN LOG, THREE TIMES IN ONE ROUND, ON THE OWNER'S SERVER:
+--- "1 reported their own death and named nobody -- booked, but with no
+--- resupply and a longer wait." Every one of those was a FALL. The skydome is
+--- an elevated arena whose lethal edge IS its boundary -- step off the floor
+--- and you are hundreds of metres outside it on the way down -- so falling is
+--- the ORDINARY way to die there, and a fall names nobody. Pricing every
+--- killer-less death flat took the resupply off an honest fighter for dying
+--- the way the arena he was in kills people, and it is one of only two arenas
+--- this resource ships. A false positive on honest play is the one thing this
+--- guard may NEVER produce.
+---
+--- SO THE SHAPE IS PRICED, NOT THE CAUSE. Naming nobody is not the exploit.
+--- Naming nobody TWELVE TIMES A MINUTE is: the press is a RATE -- one every
+--- respawn delay, for as long as the round lasts -- and a fall is occasional
+--- and real. An occasional killer-less death is now worth exactly what it was
+--- worth before this price existed: a full resupply and the normal wait.
+---
+--- NO CHEAPER HONEST SIGNAL EXISTS, AND ALL THREE WERE TRIED ON PAPER FIRST.
+--- WAS THE SERVER SEEING THEM OFF THE FLOOR -- metresOutside, already computed
+--- in this file -- reads a skydome fall as ~1,000m outside, but a modified
+--- client that can fire this event can also put its own ped there, and the
+--- respawn drops it back inside before the fence sweep can count to
+--- outsideTicks. It would be a complete bypass. It is also blind to the
+--- trailer park, which is at ground level, where a fire or an explosion is
+--- just as killer-less and reads perfectly inside. WERE THEY FALLING -- there
+--- is no such reading anywhere on this side, and by the time a death is
+--- reported the body is on the ground, not falling. WAS THEIR HEALTH ALREADY
+--- DROPPING -- only readsAsDead exists, an instant, not a trend; the dead
+--- sweep needs deadTicks readings of it because ONE is not trusted, it answers
+--- false for a body the server cannot see, and it races the report. Used as an
+--- accusation it manufactures the exact false positive being removed here.
+---
+--- THE NUMBERS ARE READ OFF THE SHIPPED CONFIG, NEVER INVENTED.
+--- `respawnDelaySeconds` is 5, and ArenaMatch.OnDeath refuses a report from a
+--- player who is not standing up -- so the press CANNOT be made faster than
+--- once per respawn: 120 of them in the 600-second default round, which is the
+--- number that was measured. The rate this assumes for honest play is HALF
+--- that ceiling, one every ten seconds sustained, and the window is six of
+--- those: sixty seconds on the shipped numbers. Six killer-less deaths inside
+--- it are free and the seventh is the first that costs anything.
+---
+--- AND THE ARENA'S OWN NUMBERS SAY THE HONEST SIDE CANNOT REACH IT. A skydome
+--- death by falling is not instant: the floor is at z = 1201 inside a sphere of
+--- radius 110, and the boundary gives `warningSeconds` 5 before it starts
+--- taking `damagePerTick` 20 every `tickMs` 500 -- 40 a second against 200
+--- health. Stepping off the edge is therefore about five seconds of falling to
+--- leave the sphere, five of warning and five of bleed before the death is
+--- reported at all, and only then the respawn delay. FIFTEEN SECONDS IS THE
+--- FLOOR ON A DELIBERATE EDGE-JUMP, and the line sits at one every ten. Nothing
+--- an honest fighter can do on that arena gets near it.
+---
+--- WHAT THAT MEANS AT BOTH ENDS. The log this was written for is three falls
+--- in a 600-second round -- one every 200 seconds, twenty times under the line
+--- -- so an honest skydome fighter never reaches it and their round is now
+--- strictly better than it was before this price shipped. The press reaches it
+--- thirty seconds in, and 114 of the round's 120 go unpaid.
+---
+--- WHAT IT DOES NOT BUY, SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED: a
+--- patient client that presses only once every eleven seconds stays under the
+--- line for the whole round. That is the trade a rate makes, and it is the
+--- right one -- the thing the press was worth was an escape from whoever was
+--- shooting, available AGAIN before they could close the distance, and a
+--- button with a ten-second cooldown is not that. Tightening the line far
+--- enough to catch the patient version would put it under the edge-jump floor
+--- above, which is to say back on top of the honest player.
+---
+--- max(1, delay) IS THE FLOOR AND IT IS DELIBERATE: at respawnDelaySeconds = 0
+--- the window would otherwise be zero seconds wide, which is a rate limit that
+--- never limits anything.
+local UNWITNESSED_FREE_IN_WINDOW = 6
+local UNWITNESSED_HONEST_PRESS_MULTIPLE = 2
+
+local function respawnDelaySeconds()
+    return math.max(0, Arena.ToInt(Config.Match.respawnDelaySeconds) or 0)
+end
+
+--- Books one killer-less death against the run this player is on.
+---
+--- KEPT ON THE ROSTER ROW, NEVER IN A STORE KEYED BY SERVER ID. The server
+--- recycles ids, and ArenaLobby.Join builds a fresh row for whoever is handed
+--- one next -- so a run cannot be inherited from somebody who has left, which
+--- is the trap fenceStrikes and deadStrikes had to be taught to avoid.
+--- @param player table -- the victim's roster row
+--- @return integer inWindow -- how many killer-less deaths this one makes
+--- @return boolean priced -- has the run passed the rate above
+local function unwitnessedRun(player)
+    local at = tonumber(GetGameTimer())
+
+    -- NO CLOCK MEANS NO RATE, AND A RATE NOBODY CAN MEASURE MUST NOT CONVICT.
+    -- Everything in this block fails open, the same way the fence and the
+    -- dead sweep do: a thing the server cannot see counts as nothing at all.
+    if at == nil then return 1, false end
+
+    local window = UNWITNESSED_FREE_IN_WINDOW * UNWITNESSED_HONEST_PRESS_MULTIPLE
+        * math.max(1, respawnDelaySeconds()) * 1000
+
+    local kept, count = {}, 0
+    for _, stamp in ipairs(player.unwitnessedAt or {}) do
+        if type(stamp) == 'number' and (at - stamp) < window then
+            count = count + 1
+            kept[count] = stamp
+        end
+    end
+
+    count = count + 1
+    kept[count] = at
+    player.unwitnessedAt = kept
+
+    return count, count > UNWITNESSED_FREE_IN_WINDOW
+end
 
 --- @param unwitnessed boolean? -- the reporter named nobody; see above
 local function scheduleRespawn(match, player, unwitnessed)
     local matchId, src = match.id, player.src
-    local delay = math.max(0, Arena.ToInt(Config.Match.respawnDelaySeconds) or 0)
+    local delay = respawnDelaySeconds()
 
     if unwitnessed then
         delay = math.max(delay * UNWITNESSED_RESPAWN_FACTOR, UNWITNESSED_RESPAWN_FLOOR_SECONDS)
@@ -1918,13 +2029,30 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw)
     -- that mode, and withholding the re-arm on top would leave them standing
     -- in the arena with nothing -- the exact thing the respawn re-arm above
     -- exists to stop.
+    -- AND ONE OF THEM ON ITS OWN IS NOT THE PRESS. THE REGRESSION: this was
+    -- the whole test, so a skydome fall -- which names nobody, because a fall
+    -- has nobody to name -- was priced exactly like the press, three times in
+    -- one round on the owner's own server. What separates them is the RATE and
+    -- nothing else; see unwitnessedRun and scheduleRespawn's note above.
     local claimed = Arena.ToInt(killerSrc)
-    local unwitnessed = serverSaw ~= true
+    local unnamed = serverSaw ~= true
         and not playingLadder
         and (claimed == nil or claimed == id)
-    if unwitnessed then
-        ArenaLog('DEATH: %s reported their own death in match %s and named nobody -- booked, but with no resupply and a longer wait.',
-            tostring(id), tostring(match.id))
+
+    local unwitnessed = false
+    if unnamed then
+        local inWindow, priced = unwitnessedRun(player)
+        unwitnessed = priced
+
+        if priced then
+            ArenaLog('DEATH: %s reported their own death in match %s and named nobody -- %d of them inside %ds, which is faster than this arena kills people, so it is booked with no resupply and a longer wait.',
+                tostring(id), tostring(match.id), inWindow,
+                UNWITNESSED_FREE_IN_WINDOW * UNWITNESSED_HONEST_PRESS_MULTIPLE
+                    * math.max(1, respawnDelaySeconds()))
+        else
+            ArenaDebug('death named nobody on match %s: %s, %d in the window -- a fall or the boundary, by the rate of it, so full resupply and the normal wait.',
+                tostring(match.id), tostring(id), inWindow)
+        end
     end
 
     if playingLadder then

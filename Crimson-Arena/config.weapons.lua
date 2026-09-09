@@ -24,6 +24,17 @@ Config.Loadouts.weapons = {
     -- on is deliberate: the arena was asked to offer
     -- everything this server owns.
     --
+    -- WHY THOSE THREE AND NOT OTHERS, because it matters to anyone running
+    -- this somewhere else: it is an ANTI-CHEAT on the owner's server and NOT
+    -- anything in this file. That anti-cheat stops those three firing no
+    -- matter how much ammunition the arena hands out. The arena's own side of
+    -- it -- the weapon, the round, the item name, the count -- was measured
+    -- and is correct for all three, so there is no arena bug here and nothing
+    -- to fix; switching them off is the fix. DO NOT go hunting for a broken
+    -- ammo mapping on the strength of these three being off, and DO NOT
+    -- "correct" one: they are right. On a server without that anti-cheat all
+    -- three work, and one word each turns them back on.
+    --
     -- IT IS A DECISION AND NOT A DEFAULT, so it is written down. Explosive
     -- damage is not refused between teammates whatever
     -- Config.Teams.friendlyFire says -- the crossfire guard allows or
@@ -617,9 +628,13 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_DBSHOTGUN',
         label = 'Double Barrel Shotgun',
         category = 'shotgun',
-        -- OFF AT THE OWNER'S INSTRUCTION, like the musket above. It stays in
-        -- the list so it can be switched back on with one word, and so a
-        -- regeneration of this file does not quietly bring it back.
+        -- OFF AT THE OWNER'S INSTRUCTION, like the musket and the marksman
+        -- rifle: the owner's anti-cheat stops all three firing whatever
+        -- ammunition the arena issues, which is a thing outside this resource.
+        -- What this file hands it is correct -- DO NOT change the ammo entry
+        -- below on the strength of this being off. It stays in the list so it
+        -- can be switched back on with one word, and so a regeneration of this
+        -- file does not quietly bring it back.
         -- DO NOT flip this to true without being asked.
         enabled = false,
         ammo = { default = 40, options = { 20, 40, 80, 500 }, max = 500 },
@@ -711,9 +726,15 @@ Config.Loadouts.weapons = {
         label = 'Marksman Rifle',
         category = 'precision',
         -- OFF AT THE OWNER'S INSTRUCTION, like the musket and the double-barrel
-        -- above. It stays in the list so one word turns it back on, and so a
-        -- regeneration of this file does not quietly bring it back.
+        -- above: the owner's anti-cheat stops all three firing whatever
+        -- ammunition the arena issues, which is a thing outside this resource.
+        -- What this file hands it is correct -- DO NOT change the ammo entry
+        -- below on the strength of this being off. It stays in the list so one
+        -- word turns it back on, and so a regeneration of this file does not
+        -- quietly bring it back.
         -- DO NOT flip this to true without being asked.
+        -- Its Mk2 further down IS STILL ON, on purpose: a different weapon
+        -- with a different hash, and nobody reported it.
         enabled = false,
         ammo = { default = 20, options = { 10, 20, 40, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '7.62x51', item = 'ammo-sniper' } },
@@ -736,10 +757,16 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_MUSKET',
         label = 'Musket',
         category = 'precision',
-        -- OFF AT THE OWNER'S INSTRUCTION. The one weapon in this file that is
-        -- not enabled. It still appears in the list so it can be switched back
-        -- on with one word, and so nobody regenerates the file and quietly
-        -- brings it back. DO NOT flip this to true without being asked.
+        -- OFF AT THE OWNER'S INSTRUCTION -- one of the THREE switched off in
+        -- this file and not the only one; the double-barrel shotgun and the
+        -- marksman rifle went the same way and for the same reason. That
+        -- reason is the owner's anti-cheat, which stops all three firing
+        -- whatever ammunition the arena issues; what this file hands them is
+        -- correct, so DO NOT change the ammo entry below on the strength of
+        -- this being off. It still appears in the list so it can be switched
+        -- back on with one word, and so nobody regenerates the file and
+        -- quietly brings it back. DO NOT flip this to true without being
+        -- asked.
         enabled = false,
         ammo = { default = 20, options = { 10, 20, 40, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '.50 Ball', item = 'ammo-musket' } },

@@ -8,6 +8,30 @@ local owed = {}
 
 local probed = {}
 
+--- When each character's stash was last looked at, so the extra looks above
+--- are spread over minutes rather than spent in one burst of sweeps.
+local probedAt = {}
+
+--- Stashes the door has stopped touching because it can no longer tell what
+--- it has already handed over -- keyed by stash name.
+---
+--- WHY A STASH IS EVER ABANDONED, AND WHY THAT IS THE SAFE ANSWER.
+---
+--- Handing an item back is two calls: put it in the player's hands, then take
+--- it out of the stash. Between those two the item exists in BOTH places. If
+--- the second is refused, the copy in the stash stays -- and every later pass
+--- over that stash finds it and hands it over again. Measured, with nothing
+--- more exotic than a refused removal: one phone became two, then four, then
+--- eight, then sixteen over five rounds, with the same again still sitting in
+--- the stash.
+---
+--- So the first refusal stops the door touching that stash at all. Nothing of
+--- theirs is destroyed -- it is a real ox_inventory stash, /arenaadmin names
+--- it and an operator can open it -- and the alternative is minting copies of
+--- somebody's property until the ledger is meaningless. DO NOT hand back out
+--- of a stash whose removals are being refused.
+local jammedStash = {}
+
 --- Characters the empty-read warning has already been said for.
 ---
 --- The retry keeps trying for ever by design, and the warning must not: one
@@ -320,6 +344,46 @@ local function oxDid(label, fn)
     return true
 end
 
+--- Calls one ox_inventory export that PUTS SOMETHING INTO SOMEBODY'S HANDS
+--- and answers whether it can be PROVED to have landed.
+---
+--- THE OPPOSITE READING OF `nil` TO oxDid, AND THAT OPPOSITE IS THE WHOLE
+--- POINT. oxDid treats "no answer" as success, which is right for registering
+--- a stash or clearing an inventory -- nothing is lost by believing it. It is
+--- the wrong reading for a hand-over, because ox_inventory answers nil for an
+--- inventory IT HAS NOT LOADED, and a fighter placed in a round a fraction of
+--- a second before their inventory finishes loading is exactly that.
+---
+--- What reading nil as success cost, measured: the loadout never arrives, the
+--- arena records issuing it anyway, and the exit takes the recorded amount
+--- back out of the pockets it eventually can read -- which by then hold
+--- nothing but the player's OWN stock. A player walked in with 500 rounds and
+--- 30 bandages of their own and walked out with 280 and 25. The arena ate
+--- their property to settle a debt that never existed.
+---
+--- handBack already reads an AddItem answer this way and says why at length.
+--- This is the same rule, in one place, for the paths that hand kit OUT. DO
+--- NOT read a nil from a hand-over as success.
+--- @param fn fun():any
+--- @return boolean did, string|nil why, any answer
+local function oxGave(fn)
+    local called, answer = pcall(fn)
+    if not called then return false, 'threw', answer end
+    if answer == nil then return false, 'no-answer', nil end
+    if answer == false then return false, 'refused', nil end
+    return true, nil, answer
+end
+
+--- What to put in a log line about why a hand-over did not happen.
+local function gaveWhy(why, answer)
+    if why == 'threw' then return 'it threw -- ' .. tostring(answer) end
+    if why == 'no-answer' then
+        return 'ox_inventory gave no answer at all, which is what it does for an inventory it has '
+            .. 'not loaded yet'
+    end
+    return 'ox_inventory refused it'
+end
+
 --- Every real item in one ox_inventory items table, in slot order.
 ---
 --- WHY THIS IS NOT `ipairs`, AND WHY IT COST PEOPLE THEIR BELONGINGS.
@@ -389,6 +453,67 @@ local function itemsIn(items)
     return flat
 end
 
+--- What one inventory is holding, keyed by SLOT: { [slot] = { name, count } }.
+--- Nil when it could not be read at all, which is never the same answer as
+--- "it is empty".
+local function slotMap(ox, who)
+    local read, items = pcall(function() return ox:GetInventoryItems(who) end)
+    if not read or type(items) ~= 'table' then return nil end
+
+    local map = {}
+    for _, item in ipairs(itemsIn(items)) do
+        local slot = Arena.ToInt(item.slot)
+        if slot then
+            map[slot] = { name = item.name, count = math.max(0, Arena.ToInt(item.count) or 0) }
+        end
+    end
+    return map
+end
+
+--- Undoes a half-finished stow: takes back out of the stash whatever this
+--- attempt put into it, and nothing else.
+---
+--- BY SLOT, AGAINST A SNAPSHOT, BECAUSE A METADATA FILTER IS NOT AN ADDRESS.
+--- The rollback used to be `RemoveItem(stash, name, count, metadata)` inside a
+--- bare pcall with the answer thrown away -- two mistakes compounding. The
+--- filter misses whenever ox_inventory augments an item's metadata as it
+--- stores it, which it does; the removal is then refused; and the discarded
+--- result meant nobody noticed. The player kept the kit the rollback was
+--- written to give them AND a copy of it stayed in the stash, to be handed
+--- over at the next exit. Reproduced with no synthetic refusal at all: the
+--- player ended the round with two phones.
+---
+--- Highest slot first, so a build that closes the gap behind a removal cannot
+--- renumber a slot this loop has not reached yet.
+--- @return boolean -- whether every extra copy was actually taken back out
+local function unstow(ox, stash, before)
+    if type(before) ~= 'table' then return false end
+
+    local now = slotMap(ox, stash)
+    if now == nil then return false end
+
+    local slots = {}
+    for slot in pairs(now) do slots[#slots + 1] = slot end
+    table.sort(slots, function(a, b) return a > b end)
+
+    local undone = true
+    for _, slot in ipairs(slots) do
+        local has = now[slot]
+        local was = before[slot]
+        local kept = (was ~= nil and was.name == has.name) and was.count or 0
+        local extra = has.count - kept
+        if extra > 0 then
+            if not oxDid(('putting %s x%d back out of slot %d of %s'):format(
+                    tostring(has.name), extra, slot, tostring(stash)),
+                function() return ox:RemoveItem(stash, has.name, extra, nil, slot) end)
+            then
+                undone = false
+            end
+        end
+    end
+    return undone
+end
+
 local function stow(src, citizenid)
     local ox = inventory()
     if not ox then
@@ -403,6 +528,18 @@ local function stow(src, citizenid)
     end
 
     local stash = stashFor(citizenid)
+
+    -- NOTHING MORE GOES INTO A STASH THE DOOR HAS STOPPED HANDING BACK OUT
+    -- OF. The exit refuses to empty a jammed stash on purpose -- see
+    -- jammedStash -- so putting this player's belongings in would lock them in
+    -- beside whatever is already stuck there. They keep their own kit instead,
+    -- which is the same outcome as any other stash the door cannot use, and
+    -- the one path in this file that has never cost anybody anything.
+    if jammedStash[stash] then
+        ArenaLog('door: stash %s has a removal outstanding and is NOT being added to -- %s keeps '
+            .. 'their own kit rather than have it locked in there too.', stash, tostring(src))
+        return false, 0
+    end
 
     local registered = oxDid('registering stash ' .. stash, function()
         return ox:RegisterStash(stash, 'Arena Belongings', STASH_SLOTS, STASH_WEIGHT, citizenid)
@@ -428,22 +565,57 @@ local function stow(src, citizenid)
     -- The ENTRY clear's list, which is the same names the stash skipped and
     -- deliberately NOT the exit's -- see untouchable().
     local skip, keep = untouchable()
-    local stowed = {}
+
+    -- READ BEFORE A SINGLE ITEM GOES IN, and it is what the rollback below
+    -- subtracts from. A stash can already have things in it -- an earlier exit
+    -- that could not finish leaves them there on purpose -- so "take out what
+    -- is in the stash" and "take out what THIS attempt put in the stash" are
+    -- different sentences, and only the second is a rollback. DO NOT roll back
+    -- against anything but a snapshot taken here.
+    local before = slotMap(ox, stash)
+    if before == nil then
+        ArenaLog('door: could not read the stash %s before filling it, so nothing was put in it and '
+            .. '%s keeps their own kit. A stow that cannot be undone must not be started.',
+            stash, tostring(src))
+        return false, 0
+    end
+
+    local function rollback(why)
+        ArenaLog('door: %s -- putting it all back and letting %s keep their kit.',
+            why, tostring(src))
+        if unstow(ox, stash, before) then return end
+
+        -- THE ROLLBACK ITSELF WAS REFUSED, which is the one outcome that
+        -- leaves a copy of somebody's property in two places at once. The
+        -- stash is shut rather than handed back out later, because handing it
+        -- back is what turns the copy into a duplicate. DO NOT let an exit
+        -- empty a stash a rollback could not clean.
+        jammedStash[stash] = true
+        ArenaLog('door: some of %s\'s belongings could NOT be taken back out of stash %s after the '
+            .. 'door failed. They are carrying their own kit AND a copy is stuck in that stash, so '
+            .. 'the door will not hand that stash back on its own. Open it with /arenaadmin and '
+            .. 'settle it by hand.', tostring(src), stash)
+    end
+
+    local stowed = 0
 
     for _, item in ipairs(itemsIn(items)) do
         if not skip[item.name] then
-        local moved = oxDid(('stashing %s x%s'):format(tostring(item.name), tostring(item.count)), function()
-            return ox:AddItem(stash, item.name, item.count, item.metadata)
-        end)
-        if not moved then
-            ArenaLog('door: could not stash %s x%s for %s -- putting it all back and letting them keep their kit.',
-                tostring(item.name), tostring(item.count), tostring(src))
-            for _, done in ipairs(stowed) do
-                pcall(function() return ox:RemoveItem(stash, done.name, done.count, done.metadata) end)
+            -- PROOF THAT IT LANDED, NOT MERELY THE ABSENCE OF A DENIAL. The
+            -- next thing that happens to this player is ClearInventory, so an
+            -- item this believes is safely in the stash and is not gets
+            -- DESTROYED. ox_inventory answers nil for an inventory it has not
+            -- loaded, and a stash it has just been asked to register is
+            -- exactly such an inventory. DO NOT relax this to oxDid.
+            local moved, why, answer = oxGave(function()
+                return ox:AddItem(stash, item.name, item.count, item.metadata)
+            end)
+            if not moved then
+                rollback(('could not stash %s x%s for %s (%s)'):format(
+                    tostring(item.name), tostring(item.count), tostring(src), gaveWhy(why, answer)))
+                return false, 0
             end
-            return false, 0
-        end
-        stowed[#stowed + 1] = item
+            stowed = stowed + 1
         end
     end
 
@@ -451,17 +623,22 @@ local function stow(src, citizenid)
         return ox:ClearInventory(src, keep)
     end)
     if not cleared then
-        ArenaLog('door: stashed %s\'s kit but could not clear their inventory -- putting it back.', tostring(src))
-        for _, item in ipairs(stowed) do
-            pcall(function() return ox:RemoveItem(stash, item.name, item.count, item.metadata) end)
-        end
+        rollback(('stashed %s\'s kit but could not clear their inventory'):format(tostring(src)))
         return false, 0
     end
 
-    return true, #stowed
+    return true, stowed
 end
 
 local function handBack(ox, src, stash)
+    if jammedStash[stash] then
+        ArenaLog('door: stash %s is NOT being handed back. A removal from it was refused earlier, '
+            .. 'so the door cannot tell what it has already given out and will not risk handing the '
+            .. 'same things over twice. Everything left is still in it -- open it with /arenaadmin '
+            .. 'and give it back by hand.', tostring(stash))
+        return false, 0, 0
+    end
+
     local ok, items = pcall(function() return ox:GetInventoryItems(stash) end)
     if not ok or type(items) ~= 'table' then
         ArenaLog('door: could not read %s\'s stash (%s). THEIR KIT IS STILL IN IT -- it is a real ox_inventory stash and can be opened.',
@@ -488,41 +665,78 @@ local function handBack(ox, src, stash)
         -- The cost of being wrong in this direction is a loud line and an
         -- item still sitting in a stash the player can be pointed at. The
         -- cost of being wrong in the other direction is their belongings.
-        local called, answer = pcall(function()
+        local landed, why, answer = oxGave(function()
             return ox:AddItem(src, item.name, item.count, item.metadata)
         end)
 
-        if not called then
-            ArenaLog('door: returning %s x%s to %s threw -- %s. It stays in stash %s.',
-                tostring(item.name), tostring(item.count), tostring(src), tostring(answer), stash)
-        elseif answer == nil then
-            ArenaLog('door: ox_inventory gave no answer when returning %s x%s to %s. Treating that as a refusal: it stays in stash %s rather than being taken out of it on a guess.',
-                tostring(item.name), tostring(item.count), tostring(src), stash)
-        elseif answer == false then
-            ArenaLog('door: returning %s x%s to %s was REFUSED by ox_inventory -- most often a full inventory or a weight limit. It stays in stash %s.',
-                tostring(item.name), tostring(item.count), tostring(src), stash)
-        end
-
-        if called and answer ~= nil and answer ~= false then
-            -- ITS ANSWER IS READ, because the item is in BOTH places at
-            -- this instant: AddItem copied it to the player and this is what
-            -- takes it out of the stash. A refusal that goes unnoticed leaves
-            -- a duplicate in a real ox_inventory stash the player can open
-            -- again -- and `returned` was counted regardless, so the exit
-            -- called it a clean hand-back. DO NOT drop this result.
-            if not oxDid(('clearing %s x%s from %s'):format(
-                    tostring(item.name), tostring(item.count), tostring(stash)),
-                function() return ox:RemoveItem(stash, item.name, item.count, item.metadata) end)
-            then
-                ArenaLog('door: %s was given back %s x%s but it could NOT be cleared from stash %s. '
-                    .. 'There may now be a copy in both places -- open that stash and check.',
-                    tostring(src), tostring(item.name), tostring(item.count), tostring(stash))
-            end
-
-            returned = returned + 1
-        else
+        if not landed then
+            ArenaLog('door: returning %s x%s to %s did not happen -- %s. It stays in stash %s. '
+                .. '(A refusal is most often a full inventory or a weight limit.)',
+                tostring(item.name), tostring(item.count), tostring(src),
+                gaveWhy(why, answer), stash)
             failures = failures + 1
+            goto nextItem
         end
+
+        -- ITS ANSWER IS READ, because the item is in BOTH places at this
+        -- instant: AddItem copied it to the player and this is what takes it
+        -- out of the stash. A refusal that goes unnoticed leaves a duplicate
+        -- in a real ox_inventory stash the player can open again -- and
+        -- `returned` was counted regardless, so the exit called it a clean
+        -- hand-back. DO NOT drop this result.
+        --
+        -- AND WHEN THE FILTER MISSES, THE SLOT IS TRIED. A metadata filter is
+        -- a FILTER AND NOT AN ADDRESS: ox_inventory augments an item's
+        -- metadata as it stores it, so the table this read back out is not the
+        -- table the filter was built from, nothing matches, the removal is
+        -- refused, and the copy stays behind to be handed over again on the
+        -- next pass. Reproduced with no synthetic refusal at all -- the player
+        -- ended the round with two phones.
+        --
+        -- The filter is still tried first, because on a build that honours it
+        -- that is one call rather than two, and it aims at the exact item this
+        -- loop just read. The slot is the fallback, and it is the address:
+        -- `itemsIn` resolves it from the table key, so it is present on every
+        -- build. Quietly, because a miss here is not news -- it is what the
+        -- fallback exists for. DO NOT drop either half.
+        local out = oxDid(('clearing %s x%s from %s'):format(
+                tostring(item.name), tostring(item.count), tostring(stash)),
+            function() return ox:RemoveItem(stash, item.name, item.count, item.metadata) end)
+
+        if not out and Arena.ToInt(item.slot) then
+            out = oxDid(('clearing %s x%s from slot %d of %s'):format(
+                    tostring(item.name), tostring(item.count),
+                    Arena.ToInt(item.slot), tostring(stash)),
+                function()
+                    return ox:RemoveItem(stash, item.name, item.count, nil, Arena.ToInt(item.slot))
+                end)
+        end
+
+        if not out then
+            -- AND THE DOOR STOPS HERE, WHICH IS THE POINT OF THE WHOLE
+            -- BRANCH. This counted the item as returned and carried on, so
+            -- the copy still in the stash was found by the next sweep and
+            -- handed over again, and again: one phone became two, four,
+            -- eight, sixteen over five rounds.
+            --
+            -- Everything handed back before this line came out of the stash
+            -- cleanly and is theirs. This one item is now in both places, and
+            -- the arena cannot fix that without risking taking one of the
+            -- two off them -- so it says so, stops, and never touches this
+            -- stash again on its own. DO NOT count this as a return.
+            jammedStash[stash] = true
+            failures = failures + 1
+            ArenaLog('door: %s was given back %s x%s but it could NOT be taken out of stash %s. '
+                .. 'There is now a copy in both places. The door is handing NOTHING further out of '
+                .. 'that stash -- open it with /arenaadmin, compare it against what they are '
+                .. 'carrying, and settle it by hand.',
+                tostring(src), tostring(item.name), tostring(item.count), tostring(stash))
+            return true, failures, returned
+        end
+
+        returned = returned + 1
+
+        ::nextItem::
     end
 
     return true, failures, returned
@@ -632,10 +846,19 @@ local issuedSupplies = {}
 
 local heldBefore = {}
 
+--- What this fighter walked into the match already holding of one item, or
+--- NIL when nobody ever managed to read it.
+---
+--- NIL IS AN ANSWER AND IT IS NOT ZERO. This returned 0 for both, and the
+--- callers below subtract it from what a player is holding to decide how much
+--- of that is the arena's -- so "we never looked" read as "they owned none of
+--- this", and the arena took the whole issued amount out of their own stock.
+--- DO NOT put an `or 0` back on this.
 local function floorFor(matchId, src, item)
     local byMatch = heldBefore[matchId]
     local mine = byMatch and byMatch[src]
-    return mine and (Arena.ToInt(mine[item]) or 0) or 0
+    if mine == nil then return nil end
+    return Arena.ToInt(mine[item])
 end
 
 --- Which character the arena issued a match's consumables to:
@@ -671,8 +894,26 @@ local function rememberHeld(ox, src, matchId, item)
     heldBefore[matchId][src] = mine
     if mine[item] ~= nil then return end
 
+    -- A READ THAT DID NOT HAPPEN IS NOT A FLOOR OF ZERO, and writing it down
+    -- as one is how the arena ends up taking a player's own ammunition.
+    --
+    -- This was `mine[item] = ok and (Arena.ToInt(answer) or 0) or 0`, so both
+    -- ways of failing to read -- a throw, and the nil ox_inventory answers for
+    -- an inventory it has not loaded -- landed on ZERO. The entry is written
+    -- ONCE and never revisited, so a player placed a moment before their
+    -- inventory loaded had "they walked in with nothing" carved in for the
+    -- whole match. Every later top-up then measured against that, and the exit
+    -- took the full issued amount off them: measured at 30 bandages of their
+    -- own, all 30 gone.
+    --
+    -- Left unset it is tried again on the next call, and until one of those
+    -- succeeds the floor reads as UNKNOWN rather than as zero -- which is what
+    -- takeBack and the ledger below are taught to refuse to act on. DO NOT
+    -- collapse an unreadable count back to a number.
     local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
-    mine[item] = ok and (Arena.ToInt(answer) or 0) or 0
+    local counted = ok and Arena.ToInt(answer) or nil
+    if counted == nil then return end
+    mine[item] = math.max(0, counted)
 end
 
 local function splitRounds(entry)
@@ -785,8 +1026,11 @@ end
 local function giveWeapon(ox, src, name, metadata)
     local before = serialsFor(ox, src, name)
 
-    local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
-    if not ok or accepted == false then return false, nil end
+    local landed, why, accepted = oxGave(function() return ox:AddItem(src, name, 1, metadata) end)
+    if not landed then
+        ArenaDebug('weapons: %s did not reach %s -- %s.', name, tostring(src), gaveWhy(why, accepted))
+        return false, nil
+    end
 
     -- NIL AND EMPTY KEPT APART HERE TOO, which the `or {}` this replaced did
     -- not do: an unreadable inventory became an empty one, and the loop then
@@ -956,12 +1200,11 @@ local function issueSpareRounds(ox, src, matchId, entry, pass)
 
     rememberHeld(ox, src, matchId, item)
 
-    local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
-    if not (ok and granted ~= false) then
-        ArenaLog('ammo: %s x%d was refused for %s -- either their inventory has no room for '
-            .. 'it (check the round weight against your ox_inventory player limit) or the '
-            .. 'item does not exist on this server.',
-            item, count, tostring(src))
+    local landed, why, granted = oxGave(function() return ox:AddItem(src, item, count) end)
+    if not landed then
+        ArenaLog('ammo: %s x%d did not reach %s -- %s. Nothing is recorded as issued, so the '
+            .. 'exit will not take it back out of their own stock.',
+            item, count, tostring(src), gaveWhy(why, granted))
         return false, 0
     end
 
@@ -1038,6 +1281,13 @@ end
 local function takeBack(ox, src, item, count, floor, strict)
     local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
 
+    -- WHETHER A NUMBER CAME BACK, not merely whether the call survived.
+    -- ox_inventory answers nil for an inventory it has not loaded, and this
+    -- read that as a count of zero and reported it as MEASURED -- so a debt
+    -- was settled at "they hold none" against pockets nobody had looked in.
+    local counted = ok and Arena.ToInt(answer) or nil
+    local readable = counted ~= nil
+
     -- THE FALLBACK IS ONLY SAFE AT THE EXIT IT WAS WRITTEN FOR. Assuming the
     -- player still holds everything the arena just issued costs nothing when
     -- the arena issued it seconds ago and the alternative is letting a whole
@@ -1045,18 +1295,44 @@ local function takeBack(ox, src, item, count, floor, strict)
     -- opposite: the only rounds in those pockets are the player's own, and
     -- removing the full amount by name takes them. Callers chasing an old
     -- slate pass `strict` and get nothing rather than a guess.
-    if not ok and strict then
+    if not readable and strict then
         ArenaLog('weapons: could not read how much %s %s has, so nothing was taken. The debt stands.',
             item, tostring(src))
         return 0, math.max(0, Arena.ToInt(count) or 0), false
     end
 
-    local held = ok and (Arena.ToInt(answer) or 0) or count
+    local base = Arena.ToInt(floor)
 
-    local mine = math.max(0, held - math.max(0, Arena.ToInt(floor) or 0))
+    -- A COUNT WITH NO FLOOR TO SUBTRACT FROM IT IS NOT AN ANSWER, AND ACTING
+    -- ON IT TAKES THE PLAYER'S OWN STOCK.
+    --
+    -- `floor` is what this fighter walked in holding, and everything below
+    -- subtracts it to work out how much of what is in those pockets is the
+    -- arena's. Nil means nobody ever managed to read it -- which is what an
+    -- inventory ox_inventory had not loaded at issue time leaves behind -- and
+    -- treating that as zero claims the LOT. Measured: a player lost all 30 of
+    -- their own bandages that way.
+    --
+    -- Only when the live count IS readable, though. With no count at all this
+    -- is already the documented guess above -- "assume they still hold exactly
+    -- what was issued" -- and a floor changes nothing about a guess; refusing
+    -- there would stop a build with no item counter taking its own kit back at
+    -- all. The third return still says nothing was measured, so no caller
+    -- writes a debt out of either case. DO NOT extend this to the unreadable
+    -- one, and DO NOT default the floor to zero.
+    if readable and base == nil then
+        ArenaLog('weapons: nobody could read what %s walked in holding of %s, so NOTHING is being '
+            .. 'taken back and nothing is written down. The arena would rather lose what it issued '
+            .. 'than take theirs.', tostring(src), tostring(item))
+        return 0, math.max(0, Arena.ToInt(count) or 0), false
+    end
+
+    local held = readable and counted or count
+
+    local mine = math.max(0, held - math.max(0, base or 0))
 
     local take = math.min(math.max(0, Arena.ToInt(count) or 0), mine)
-    if take <= 0 then return 0, 0, ok end
+    if take <= 0 then return 0, 0, readable end
 
     -- THE ANSWER IS READ AND HANDED BACK, and the caller needs both halves.
     -- This was a bare pcall whose result went in the bin, so a refused
@@ -1070,7 +1346,7 @@ local function takeBack(ox, src, item, count, floor, strict)
     if oxDid(('taking back %d %s'):format(take, item),
         function() return ox:RemoveItem(src, item, take) end)
     then
-        return take, 0, ok
+        return take, 0, readable
     end
 
     -- THE THIRD RETURN IS "COULD I SEE WHAT THEY HAVE", and a caller writing
@@ -1079,7 +1355,7 @@ local function takeBack(ox, src, item, count, floor, strict)
     -- removal and a terrible one for a LEDGER: it invents a debt out of an
     -- unreadable inventory and collects it later out of the player's own
     -- stock. DO NOT record a shortfall this did not measure.
-    return 0, take, ok
+    return 0, take, readable
 end
 
 local function takeRungBack(ox, src, record, name)
@@ -1325,18 +1601,25 @@ function ArenaAmmo.Refresh(src, matchId, loadout)
 
             local counted, answer = pcall(function() return ox:GetItemCount(src, item) end)
             local held = counted and math.max(0, Arena.ToInt(answer) or 0) or 0
-            local mine = math.max(0, held - floorFor(matchId, src, item))
+
+            -- AN UNKNOWN FLOOR COUNTS AS ZERO HERE AND ONLY HERE. This line
+            -- decides how much to ADD, never how much to take, so the worst a
+            -- wrong answer does is hand a player one plate too few or too
+            -- many. Every place the floor decides a REMOVAL refuses to act on
+            -- an unknown one instead -- see takeBack. DO NOT copy this `or 0`
+            -- to a line that takes something away.
+            local mine = math.max(0, held - (floorFor(matchId, src, item) or 0))
 
             local short = wanted - mine
             if short > 0 then
-                local ok, granted = pcall(function() return ox:AddItem(src, item, short) end)
-                if ok and granted ~= false then
+                local landed, why, granted = oxGave(function() return ox:AddItem(src, item, short) end)
+                if landed then
                     supplyRecord[item] = (supplyRecord[item] or 0) + short
                     ArenaDebug('supplies: refreshed %s x%d for %s.', item, short, tostring(src))
                 else
-                    ArenaLog('supplies: %s x%d was refused for %s on a respawn -- either their inventory has '
-                        .. 'no room for it or the item does not exist on this server.',
-                        item, short, tostring(src))
+                    ArenaLog('supplies: %s x%d did not reach %s on a respawn -- %s. Nothing is '
+                        .. 'recorded as issued, so the exit will not take it out of their own stock.',
+                        item, short, tostring(src), gaveWhy(why, granted))
                 end
             end
         end
@@ -1384,10 +1667,10 @@ function ArenaAmmo.GrantRounds(src, matchId, item, count)
 
     rememberHeld(ox, src, matchId, item)
 
-    local ok, granted = pcall(function() return ox:AddItem(src, item, amount) end)
-    if not (ok and granted ~= false) then
-        ArenaDebug('kill ammo: %s x%d was refused for %s -- no room, or no such item.',
-            item, amount, tostring(src))
+    local landed, why, granted = oxGave(function() return ox:AddItem(src, item, amount) end)
+    if not landed then
+        ArenaDebug('kill ammo: %s x%d did not reach %s -- %s.',
+            item, amount, tostring(src), gaveWhy(why, granted))
         return false
     end
 
@@ -1413,10 +1696,10 @@ function ArenaAmmo.GrantSupply(src, matchId, item, count)
 
     rememberHeld(ox, src, matchId, item)
 
-    local ok, granted = pcall(function() return ox:AddItem(src, item, amount) end)
-    if not (ok and granted ~= false) then
-        ArenaDebug('kill reward: %s x%d was refused for %s -- no room, or no such item.',
-            item, amount, tostring(src))
+    local landed, why, granted = oxGave(function() return ox:AddItem(src, item, amount) end)
+    if not landed then
+        ArenaDebug('kill reward: %s x%d did not reach %s -- %s.',
+            item, amount, tostring(src), gaveWhy(why, granted))
         return false
     end
 
@@ -1730,6 +2013,78 @@ local function owedKitCharacters()
     return total
 end
 
+--- The order characters were last written down in, newest highest.
+---
+--- A COUNTER RATHER THAN A CLOCK, because all this has to answer is "which of
+--- these is the stalest", and a counter cannot be moved by an operator
+--- correcting the machine's time.
+local owedKitSeen = {}
+local owedKitClock = 0
+
+local function touchOwedKit(citizenid)
+    owedKitClock = owedKitClock + 1
+    owedKitSeen[citizenid] = owedKitClock
+end
+
+--- Takes one character off both slates and out of the table with them.
+local function dropOwedCharacter(citizenid)
+    for _, row in ipairs(owedKit[citizenid] or {}) do
+        if type(row) == 'table' and Arena.IsKey(row.serial) then
+            dropOwedWeapon(citizenid, row.serial)
+        end
+    end
+    for name in pairs(owedItems[citizenid] or {}) do
+        -- THE STORED ROW GOES WITH THE MEMORY ONE. Dropped from memory alone
+        -- it is read straight back in on the next start, and the cap this
+        -- serves would be back where it was within a restart.
+        ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, itemKey(name) }, wrote)
+    end
+    owedKit[citizenid] = nil
+    owedItems[citizenid] = nil
+    owedKitSeen[citizenid] = nil
+end
+
+--- Whether this character may be written down -- MAKING ROOM IF THERE IS NONE.
+---
+--- A FULL LEDGER USED TO BE A SHUT LEDGER, SERVER-WIDE AND FOR EVER.
+---
+--- Every writer asked `owedKitCharacters() >= OWED_KIT_CHARACTERS` and simply
+--- refused. Nothing in this file expires a row, and there are debts nothing
+--- can ever collect -- a weapon that was destroyed on death is not in anyone's
+--- pockets, so the chase keeps it on purpose rather than pretend it can prove
+--- otherwise. Two hundred characters carrying one of those and the ledger
+--- latched shut: every NEW debt on the server, from every player, refused,
+--- with one console line each. Proven at exactly two hundred.
+---
+--- So the cap now evicts instead of refusing, oldest character first -- the
+--- same rule trimOwedKit already applies to one character's rows, for the same
+--- reason: the newest debt is the one most likely still to be collectable, and
+--- a ledger that cannot accept a new one is not a ledger. DO NOT go back to
+--- refusing at the cap.
+local function admitToLedger(citizenid)
+    if owedKit[citizenid] ~= nil or owedItems[citizenid] ~= nil then return true end
+    if owedKitCharacters() < OWED_KIT_CHARACTERS then return true end
+
+    local oldest, seen = nil, nil
+    local function consider(id)
+        local at = owedKitSeen[id] or 0
+        if seen == nil or at < seen then oldest, seen = id, at end
+    end
+    for id in pairs(owedKit) do consider(id) end
+    for id in pairs(owedItems) do
+        if owedKit[id] == nil then consider(id) end
+    end
+
+    if oldest == nil then return false end
+
+    ArenaLog('weapons: the outstanding-kit ledger is full at %d characters, so the stalest one on '
+        .. 'it (%s) has been written off to make room for %s. A ledger this full means something is '
+        .. 'not collecting -- read the lines above.',
+        OWED_KIT_CHARACTERS, tostring(oldest), tostring(citizenid))
+    dropOwedCharacter(oldest)
+    return true
+end
+
 --- Puts a number of one stackable item on a character's slate. It ADDS to
 --- what is already there; DO NOT use it to write an absolute total.
 local function oweItem(citizenid, name, amount)
@@ -1743,9 +2098,7 @@ local function oweItem(citizenid, name, amount)
         -- already on the slate for a weapon -- a character the cap had
         -- already admitted and who adds nothing to the count by owing one
         -- more kind of thing. DO NOT test one table against a count of both.
-        if owedKit[citizenid] == nil and owedKitCharacters() >= OWED_KIT_CHARACTERS then
-            return false
-        end
+        if not admitToLedger(citizenid) then return false end
         rows = {}
         owedItems[citizenid] = rows
     end
@@ -1759,6 +2112,7 @@ local function oweItem(citizenid, name, amount)
     end
 
     rows[name] = (rows[name] or 0) + count
+    touchOwedKit(citizenid)
     saveOwedItem(citizenid, name, count)
     return true
 end
@@ -1782,16 +2136,17 @@ local function queueOwedKit(citizenid, src, counted)
     -- off rather than tracked", and the next restart read them straight back
     -- in and proved that false. A decision to record nothing has to be taken
     -- before the recording starts.
-    local fresh = owedKit[citizenid] == nil and owedItems[citizenid] == nil
-    if fresh and owedKitCharacters() >= OWED_KIT_CHARACTERS then
-        ArenaLog('weapons: the outstanding-kit ledger is full at %d characters, so nothing more of '
-            .. '%s\'s is being written down. Something is not collecting -- read the lines above.',
-            OWED_KIT_CHARACTERS, tostring(citizenid))
+    if not admitToLedger(citizenid) then
+        ArenaLog('weapons: the outstanding-kit ledger is full at %d characters and no room could be '
+            .. 'made, so nothing of %s\'s is being written down. Something is not collecting -- read '
+            .. 'the lines above.', OWED_KIT_CHARACTERS, tostring(citizenid))
         return 0
     end
 
     local ox = inventory()
 
+    -- READ AFTER THE ADMISSION, for the reason given in oweWeapon: making room
+    -- evicts a character, and a list grabbed above that could be theirs.
     local rows = owedKit[citizenid] or {}
     local added, stacks, unchaseable = 0, 0, 0
 
@@ -1958,13 +2313,23 @@ local function queueOwedKit(citizenid, src, counted)
                 else
                     ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
                 end
-                if not ok then
-                    ArenaLog('weapons: could not read how much %s %s has, so the arena is not '
-                        .. 'writing any down against %s. It would rather lose the rounds than '
-                        .. 'take theirs later.', item, tostring(src), tostring(citizenid))
+                -- AND THE FLOOR HAS TO BE KNOWN TOO, not just the count. This
+                -- asked only whether the pockets could be read; the floor was
+                -- allowed to be an unread zero, which claims the player's
+                -- whole stock of that item as the arena's and writes it on a
+                -- slate that is collected later. Both halves of the sum have
+                -- to have been measured or the sum means nothing. DO NOT test
+                -- one and assume the other.
+                local base = floorFor(matchId, src, item)
+
+                if not ok or base == nil then
+                    ArenaLog('weapons: could not read how much %s %s has, or what they walked in '
+                        .. 'with, so the arena is not writing any down against %s. It would rather '
+                        .. 'lose the rounds than take theirs later.',
+                        item, tostring(src), tostring(citizenid))
                 else
                     local held = math.max(0, Arena.ToInt(answer) or 0)
-                    local mine = math.max(0, held - floorFor(matchId, src, item))
+                    local mine = math.max(0, held - base)
                     local owing = math.min(math.max(0, Arena.ToInt(issued) or 0), mine)
 
                     if owing > 0 then
@@ -2018,7 +2383,10 @@ local function queueOwedKit(citizenid, src, counted)
     -- key still counted towards the character cap, which nothing ever
     -- cleared. Two hundred of those and the whole ledger latched shut and
     -- refused every new debt on the server. DO NOT write an empty row.
-    if #rows > 0 then owedKit[citizenid] = rows end
+    if #rows > 0 then
+        owedKit[citizenid] = rows
+        touchOwedKit(citizenid)
+    end
 
     -- COUNTED SEPARATELY, because they are not the same thing. `added` is
     -- incremented by the weapon loop AND by the stock loop, and the line
@@ -2208,6 +2576,14 @@ local function chaseOwedKit(src, citizenid)
     trimOwedKit(citizenid, left)
     owedKit[citizenid] = #left > 0 and left or nil
 
+    -- AND THE STAMP GOES WHEN THE LAST DEBT DOES. It is only ever read to
+    -- decide which character on the slate is the stalest, so a stamp for
+    -- somebody who owes nothing is a row in a table that would otherwise grow
+    -- with every debtor this server ever settles with.
+    if owedKit[citizenid] == nil and owedItems[citizenid] == nil then
+        owedKitSeen[citizenid] = nil
+    end
+
     -- AND THE PLAYER IS TOLD, because this is the only place in the resource
     -- that removes something a player is holding while they are nowhere near
     -- the arena. It said nothing at all: a weapon and a pile of rounds left
@@ -2232,18 +2608,22 @@ local function oweWeapon(citizenid, row)
         return false
     end
 
-    local rows = owedKit[citizenid] or {}
     -- BOTH TABLES, for the reason spelled out in oweItem: the counter
     -- answers about the union, so a character already owing rounds must not
     -- be refused a weapon row they do not widen the ledger by adding.
-    if owedKit[citizenid] == nil and owedItems[citizenid] == nil
-        and owedKitCharacters() >= OWED_KIT_CHARACTERS then
-        return false
-    end
+    if not admitToLedger(citizenid) then return false end
+
+    -- READ AFTER THE ADMISSION AND NOT BEFORE IT. Making room can evict a
+    -- character, and a list grabbed above that could be the evicted one's --
+    -- which would be re-filed here under the new name, putting the debt that
+    -- was just written off back on the slate against somebody who never
+    -- incurred it. DO NOT hoist this above admitToLedger.
+    local rows = owedKit[citizenid] or {}
 
     rows[#rows + 1] = { name = row.name, serial = row.serial }
     trimOwedKit(citizenid, rows)
     owedKit[citizenid] = rows
+    touchOwedKit(citizenid)
     saveOwedWeapon(citizenid, row)
     return true
 end
@@ -2679,15 +3059,15 @@ function ArenaAmmo.Issue(src, matchId, loadout)
         if Arena.IsKey(item) and count > 0 then
             rememberHeld(ox, src, matchId, item)
 
-            local ok, granted = pcall(function() return ox:AddItem(src, item, count) end)
-            if ok and granted ~= false then
+            local landed, why, granted = oxGave(function() return ox:AddItem(src, item, count) end)
+            if landed then
                 supplyRecord[item] = (supplyRecord[item] or 0) + count
                 ArenaDebug('supplies: gave %s x%d to %s.', item, count, tostring(src))
             else
-                ArenaLog('supplies: %s x%d was refused for %s -- either their inventory has no room '
-                    .. 'for it (%d is a lot to carry: check the item weight against your '
-                    .. 'ox_inventory player limit) or the item does not exist on this server.',
-                    item, count, tostring(src), count)
+                ArenaLog('supplies: %s x%d did not reach %s -- %s. (%d is a lot to carry: check the '
+                    .. 'item weight against your ox_inventory player limit.) Nothing is recorded as '
+                    .. 'issued, so the exit will not take it out of their own stock.',
+                    item, count, tostring(src), gaveWhy(why, granted), count)
             end
         end
     end
@@ -2942,10 +3322,52 @@ end
 
 local RETRY_SECONDS = 30
 
+--- How many times a character's stash may read EMPTY before the sweep stops
+--- looking at them for the rest of the process.
+---
+--- IT WAS ONE, AND ONE WAS A WAY TO LOSE SOMEBODY'S BELONGINGS FOR EVER.
+---
+--- "A stash that read empty is not a stash that was empty" is the rule this
+--- whole path is built on, and the guard below that enforces it needs
+--- `stowedCount` -- which lives in `stashed`, which is MEMORY. After a
+--- restart there is no record, so the count is zero, so the guard cannot
+--- fire: one transient empty read fell straight through to the settled block,
+--- the character was marked probed, and nothing ever looked at that stash
+--- again for the life of the process. Their phone and their cash sat in it
+--- for ever, with no line in the log saying so, because the warning is inside
+--- the branch that was skipped.
+---
+--- A restart is exactly when a transient empty read happens: ox_inventory
+--- loads a stash on demand, and the sweep can reach one before it is there.
+--- So the answer is not one look, it is several, spread over minutes -- and
+--- the moment anything at all comes back, the question is settled properly.
+--- DO NOT make this one again.
+local EMPTY_READS_BEFORE_GIVING_UP = 5
+
+--- And how far apart those looks are, which is the other half of the answer.
+---
+--- THE COST THE ONE-LOOK RULE WAS PROTECTING IS REAL AND IS NOT BEING SPENT.
+--- The look is a stash read for somebody nothing says is owed anything, which
+--- on a full server is a read per player -- and the sweep runs every
+--- `returnRetrySeconds`, which is thirty by default. Five looks taken on five
+--- consecutive passes is five times the cost in the same two and a half
+--- minutes and no more likely to catch anything: what the retry is waiting for
+--- is ox_inventory finishing a load, and asking it four more times in the same
+--- breath tells you nothing new.
+---
+--- Spread out, it is one read per player per minute for four minutes and then
+--- nothing for the rest of the session. DO NOT tie the look to the sweep's own
+--- cadence.
+local LOOK_AGAIN_SECONDS = 60
+
 local function worthTrying(src, citizenid)
     if owed[citizenid] then return true end
 
-    if probed[citizenid] then return false end
+    local looks = probed[citizenid] or 0
+    if looks >= EMPTY_READS_BEFORE_GIVING_UP then return false end
+    if looks > 0 and (os.time() - (probedAt[citizenid] or 0)) < LOOK_AGAIN_SECONDS then
+        return false
+    end
 
     -- THE ONE LOOK, and it is refused while a stash record is open for them.
     --
@@ -2983,11 +3405,32 @@ function ArenaAmmo.ReturnLeftovers(src)
     end
 
     local stowedCount = 0
+    local hasRecord = false
     for _, record in pairs(stashed) do
         if record.citizenid == citizenid then
+            hasRecord = true
             stowedCount = math.max(stowedCount, Arena.ToInt(record.stowedCount) or 0)
         end
     end
+
+    -- LOOKED AT BEFORE THE EXPENSIVE PART, because most passes over most
+    -- players find nothing and the snapshot below asks ox_inventory for a
+    -- count of every item this server is configured to issue -- ninety-odd
+    -- calls, per player, per sweep. There is nothing to snapshot for a stash
+    -- with nothing in it.
+    --
+    -- An unreadable stash is NOT an empty one and never falls through here:
+    -- it leaves without answering, exactly as handBack does, so the sweep
+    -- comes back rather than counting this character as settled.
+    local peek = slotMap(ox, stash)
+    if peek == nil then
+        ArenaLog('door: could not read %s\'s stash (%s). THEIR KIT IS STILL IN IT -- it is a real '
+            .. 'ox_inventory stash and can be opened.', tostring(src), stash)
+        return false, 0, false
+    end
+
+    local holding = false
+    for _ in pairs(peek) do holding = true break end
 
     -- READ BEFORE THE HAND-BACK, and used by queueOwedKit far below.
     --
@@ -2996,14 +3439,26 @@ function ArenaAmmo.ReturnLeftovers(src)
     -- arena's. The set is bounded -- only what this server is configured to
     -- issue -- and it is the last honest moment to ask. DO NOT move this
     -- below handBack.
+    --
+    -- ONLY COUNTS THAT WERE ACTUALLY COUNTED GO IN. `Arena.ToInt(answer) or 0`
+    -- wrote a zero for the nil ox_inventory answers when it has not loaded an
+    -- inventory, and the reader below treats a present entry as measured
+    -- fact. Left out, it falls back to a live read instead, which is what the
+    -- reader is written to do -- absent is not the same as none.
     local beforeHandBack = {}
-    for item in pairs(Arena.AllIssuedItems() or {}) do
-        local read, answer = pcall(function() return ox:GetItemCount(src, item) end)
-        if read then beforeHandBack[item] = math.max(0, Arena.ToInt(answer) or 0) end
+    if holding or hasRecord then
+        for item in pairs(Arena.AllIssuedItems() or {}) do
+            local read, answer = pcall(function() return ox:GetItemCount(src, item) end)
+            local counted = read and Arena.ToInt(answer) or nil
+            if counted ~= nil then beforeHandBack[item] = math.max(0, counted) end
+        end
     end
 
-    local readable, failures, returned = handBack(ox, src, stash)
-    if not readable then return false, 0, false end
+    local readable, failures, returned = true, 0, 0
+    if holding then
+        readable, failures, returned = handBack(ox, src, stash)
+        if not readable then return false, 0, false end
+    end
 
     -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY -- and this is
     -- the same guard restore() applies, standing here because THIS is the
@@ -3053,8 +3508,39 @@ function ArenaAmmo.ReturnLeftovers(src)
 
     owed[citizenid] = nil
     warnedEmptyRead[citizenid] = nil
+
+    -- WHOSE POCKETS THE SNAPSHOT DESCRIBES, AND WHY EVERY RECORD OF THEIRS
+    -- GETS IT RATHER THAN ONLY THE ONE UNDER THIS SERVER ID.
+    --
+    -- The snapshot was handed to the record filed under `src` and nothing
+    -- else. A player who combat-logs mid-round and reconnects gets a NEW
+    -- server id -- the ordinary case, not the exotic one -- so their record
+    -- is filed under the old id, missed the snapshot, and the ledger fell
+    -- back to reading the pockets of a server id nobody is on. That answers
+    -- zero, so nothing was owed: every round and every plate they logged out
+    -- holding was forgiven, which is the exact exploit this ledger exists to
+    -- close. Reconnecting on the SAME id was billed correctly, which is why
+    -- it read as working.
+    --
+    -- The counts belong to this CHARACTER, and every record here is this
+    -- character's. ONE record gets them, though: the snapshot is a single
+    -- measurement of a single pair of pockets, and giving it to two records
+    -- would bill the same rounds twice -- and this ledger is collected out of
+    -- a player's own stock later. DO NOT hand it to more than one.
+    local ids = {}
     for other, record in pairs(stashed) do
-        if record.citizenid == citizenid then
+        if record.citizenid == citizenid then ids[#ids + 1] = other end
+    end
+    table.sort(ids, function(a, b)
+        if a == src then return true end
+        if b == src then return false end
+        return tostring(a) < tostring(b)
+    end)
+
+    for index, other in ipairs(ids) do
+        local record = stashed[other]
+        if record ~= nil then
+            local counted = index == 1 and beforeHandBack or nil
             -- AND THE WEAPONS ARE WRITTEN DOWN, NOT WRITTEN OFF. This loop
             -- settles a character's BELONGINGS -- their own kit is back, so
             -- the stash record goes. It also dropped every arena weapon still
@@ -3063,7 +3549,7 @@ function ArenaAmmo.ReturnLeftovers(src)
             -- help somebody quietly forgave whatever they were still holding
             -- of the arena's. DO NOT drop this and leave forgetWeapons
             -- standing here on its own.
-            queueOwedKit(citizenid, other, other == src and beforeHandBack or nil)
+            queueOwedKit(citizenid, other, counted)
             stashed[other] = nil
             forgetWeapons(other)
         end
@@ -3118,7 +3604,24 @@ function ArenaAmmo.SweepReturns()
             if worthTrying(src, citizenid) then
                 local _, returned, answered = ArenaAmmo.ReturnLeftovers(src)
 
-                if answered then probed[citizenid] = true end
+                -- COUNTED, NOT LATCHED. This wrote `true` on the FIRST
+                -- answer, and `answered` is true for a stash that read empty
+                -- -- which is what an ox_inventory stash looks like in the
+                -- moment before it has been loaded. One such read and that
+                -- character was never looked at again for the life of the
+                -- process. Nothing anywhere cleared this table.
+                --
+                -- Something actually coming back is proof the stash was read
+                -- for real, and settles it. Nothing coming back is only ever
+                -- a vote. DO NOT go back to latching on one.
+                if answered then
+                    probedAt[citizenid] = os.time()
+                    if returned > 0 then
+                        probed[citizenid] = EMPTY_READS_BEFORE_GIVING_UP
+                    else
+                        probed[citizenid] = (probed[citizenid] or 0) + 1
+                    end
+                end
                 if returned > 0 then handed = handed + 1 end
             end
         end

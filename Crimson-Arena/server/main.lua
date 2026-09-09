@@ -538,6 +538,7 @@ local function pushAdmin(src, matchId)
             -- see it cannot tell a quiet server from one being farmed.
             owedKit = withHolders(ArenaAmmo.OwedKit()),
             owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
+            databaseOn = Config.Database.enabled == true,
             stashesFound = total,
             stashesRead = read,
         })

@@ -3475,6 +3475,7 @@
         owed: [],
         owedKit: [],
         owedKitSaved: false,
+        databaseOn: false,
         stashesFound: 0,
         stashesRead: 0,
         hoursOpen: true,
@@ -3728,7 +3729,10 @@
             });
         }
 
-        show(byId('admin-kit-heading'), onStashes && !onStash && kit.length > 0);
+        var kitOut = onStashes && !onStash && kit.length > 0;
+        show(byId('admin-kit-heading'), kitOut);
+        show(byId('admin-kit-line'), kitOut);
+        show(byId('admin-kit-list'), kitOut);
 
         var kitLine = byId('admin-kit-line');
         if (has(kitLine)) {
@@ -3754,22 +3758,40 @@
                 what += (what ? ' and ' : '') + plural(stacks, 'item stack');
             }
 
+            /* THE HEADING FOLLOWS WHAT IS ACTUALLY OUT. It was the static
+               words "Arena weapons still out", which is simply wrong above a
+               list of a character who owes nothing but bandages. */
+            var heading = byId('admin-kit-heading');
+            if (has(heading)) {
+                heading.textContent = guns > 0 && stacks > 0 ? 'Arena kit still out'
+                    : guns > 0 ? 'Arena weapons still out'
+                    : 'Arena supplies still out';
+            }
+
             kitLine.textContent = kit.length === 0 ? ''
                 : what + ' left with ' + plural(kit.length, 'character')
                   + (hereNow > 0 ? ', ' + hereNow + ' of them on the server now' : '')
                   + '. Each is taken back the next time that character is seen \u2014 '
                   + 'nothing has to be pressed. '
+                  /* WHICH OF THE TWO REASONS, because they need different
+                     things done. This told everybody to turn the database on
+                     -- including the operator who already had, and whose real
+                     problem was that oxmysql was not running. */
                   + (admin.owedKitSaved
-                      ? 'It is written to the database, so a restart does not lose it.'
-                      : 'It is held in memory only: a restart forgets it. Turn '
-                        + 'Config.Database.enabled on to keep it.');
+                      ? 'New debts are written to the database, so a restart does not lose them.'
+                      : admin.databaseOn
+                        ? 'It is held in memory only: Config.Database.enabled is on, but the '
+                          + 'arena has not been able to use the database. Check oxmysql is '
+                          + 'started and that its user may create and delete rows.'
+                        : 'It is held in memory only: a restart forgets it. Turn '
+                          + 'Config.Database.enabled on to keep it.');
         }
 
         var kitBox = byId('admin-kit-list');
         if (has(kitBox)) {
             clear(kitBox);
             kit.forEach(function (entry) {
-                var card = makeEl('div', 'admin-stash-row');
+                var card = makeEl('div', 'admin-kit-row');
                 card.appendChild(makeEl('span', 'admin-stash-who',
                     String(entry.citizenid)
                     + (int(entry.src, 0) > 0 ? ' \u00b7 here now' : ' \u00b7 offline')));
@@ -3910,6 +3932,7 @@
                     admin.owed = arrayOf(data.owed);
                     admin.owedKit = arrayOf(data.owedKit);
                     admin.owedKitSaved = data.owedKitSaved === true;
+                    admin.databaseOn = data.databaseOn === true;
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
                     admin.hoursOpen = data.hoursOpen !== false;
@@ -3933,6 +3956,7 @@
                     admin.owed = arrayOf(data.owed);
                     admin.owedKit = arrayOf(data.owedKit);
                     admin.owedKitSaved = data.owedKitSaved === true;
+                    admin.databaseOn = data.databaseOn === true;
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
                     admin.hoursOpen = data.hoursOpen !== false;

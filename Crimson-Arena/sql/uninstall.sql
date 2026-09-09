@@ -1,12 +1,22 @@
 -- crimson_arena/sql/uninstall.sql
 --
--- THIS DESTROYS EVERY ARENA STATISTIC YOU HAVE EVER RECORDED. There is no undo
--- and the resource keeps no second copy: wins, losses, kills, deaths and
--- lifetime earnings for every player are in this one table.
+-- THIS DESTROYS EVERY ARENA STATISTIC YOU HAVE EVER RECORDED, AND FORGIVES
+-- EVERY DEBT THE ARENA IS STILL OWED. There is no undo and the resource keeps
+-- no second copy.
+--
+-- The two tables are different in kind. crimson_arena_stats is history: wins,
+-- losses, kills, deaths and lifetime earnings. crimson_arena_owed_kit is a
+-- claim on the present -- every arena weapon and every round currently out
+-- with a player who has not handed it back. Dropping the first loses a
+-- record; dropping the second gives things away.
+--
+-- STOP THE RESOURCE FIRST. The slate also lives in memory while the arena is
+-- running, so dropping the table under a live server does not clear the
+-- debts. It just stops them being recorded, silently, until the next restart.
 --
 -- Take a backup first. Genuinely:
 --
---     mysqldump -u USER -p DATABASE crimson_arena_stats > crimson_arena_stats.sql
+--     mysqldump -u USER -p DATABASE crimson_arena_stats crimson_arena_owed_kit > crimson_arena.sql
 --
 -- Removing the resource does NOT require running this. An unused table costs
 -- you nothing, and leaving it means reinstalling later keeps every record.

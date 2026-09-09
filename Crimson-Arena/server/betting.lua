@@ -212,7 +212,21 @@ local function debit(src, amount, reason, preferred)
         local before = balanceOf(player, account)
 
         if before == nil or before >= amount then
-            local answer = player.Functions.RemoveMoney(account, amount, reason)
+            -- WRAPPED, LIKE EVERY OTHER CALL INTO ANOTHER RESOURCE. This
+            -- and the AddMoney below are the only two places money moves,
+            -- and they were the only two calls in this file that could throw
+            -- straight out of the arena. A framework that raises here takes
+            -- the whole settle with it -- and the note below the payout loop
+            -- says what that used to cost. DO NOT unwrap these.
+            local sent, answer = pcall(function()
+                return player.Functions.RemoveMoney(account, amount, reason)
+            end)
+
+            if not sent then
+                ArenaLog('betting: taking %d from %s threw -- %s. Nothing was taken.',
+                    amount, tostring(account), tostring(answer))
+                answer = false
+            end
 
             if answer ~= false then
                 local confirmed = moved(before, balanceOf(ArenaGetPlayer(src), account), amount, true)
@@ -266,7 +280,15 @@ local function credit(src, amount, reason, citizenid, account)
         or (debitAccounts()[1] or Config.Betting.account)
 
     local before = balanceOf(player, target)
-    local answer = player.Functions.AddMoney(target, amount, reason)
+    local sent, answer = pcall(function()
+        return player.Functions.AddMoney(target, amount, reason)
+    end)
+
+    if not sent then
+        ArenaLog('betting: paying %d into %s threw -- %s. Nothing was paid.',
+            amount, tostring(target), tostring(answer))
+        return false
+    end
     if answer == false then return false end
 
     -- THE BALANCE CAN CONFIRM THIS AND CANNOT REFUTE IT, and reading it the
@@ -894,13 +916,6 @@ function ArenaBetting.Settle(matchId, context)
         return {}
     end
 
-    for _, stake in pairs(stakesOf(matchId)) do
-        if not stake.settled then
-            stake.settled = true
-            stake.settledAs = 'payout'
-        end
-    end
-
     ArenaLog('betting: match %s paid out %s of a %s pot to %d player(s) (%s), house kept %s.',
         tostring(matchId), money(distributed), money(pot), #payouts,
         tostring(Config.Betting.payout or 'winner_takes_all'), money(houseCut))
@@ -941,6 +956,27 @@ function ArenaBetting.Settle(matchId, context)
                     { name = 'Amount', value = money(amount) },
                 })
             end
+        end
+    end
+
+    -- SETTLED AFTER THE MONEY MOVED, NEVER BEFORE.
+    --
+    -- This ran above the payout loop, so every stake was marked paid before
+    -- the first credit went out. The mark exists to stop a SECOND payout, and
+    -- setting it first inverted it: anything that stopped the loop part-way
+    -- -- and the two calls it makes into the framework were the only
+    -- unwrapped ones in this file until now -- left the winners below it
+    -- unpaid, unrecorded on the unpaid ledger, and unpayable, because the pot
+    -- they were owed was already settled on the books. The money simply
+    -- vanished, with a log line saying it had been paid.
+    --
+    -- Below the loop, the loop has either finished or it has not, and an
+    -- unfinished one leaves the stakes unsettled -- which is the state every
+    -- refund and retry path in this file already knows how to read.
+    for _, stake in pairs(stakesOf(matchId)) do
+        if not stake.settled then
+            stake.settled = true
+            stake.settledAs = 'payout'
         end
     end
 
@@ -1534,7 +1570,15 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                 ArenaLog('SIDE-BET UNCONTESTED: nobody bet against %s on match %s -- returning %d.',
                     tostring(bet.name or bet.src), tostring(matchId), bet.amount)
                 returnSideBet(bet, matchId)
-            elseif bet.pick == wanted then
+            elseif bet.pick == wanted and not bet.forfeited then
+                -- AND NOT FORFEITED, which is belt to a brace held in another
+                -- file. An entry stake that walked out carries the flag onto
+                -- the bet it becomes, and a walker's `pick` is their bare
+                -- server id -- which matches no team and no winner, because
+                -- ArenaLobby drops them from the roster in the same breath as
+                -- forfeiting them. That is the only thing standing between a
+                -- forfeited stake and this payout, and it is an invariant in
+                -- a file this one cannot see. DO NOT rely on it alone.
                 local amount = (bet.mode == 'odds')
                     and Arena.ComputeSpectatorPayout(bet.amount)
                     or (Arena.ToInt(bet.poolShare) or 0)

@@ -2,20 +2,31 @@
 --
 -- YOU DO NOT NORMALLY NEED TO RUN THIS.
 --
--- The resource creates this table itself on first start, from the identical
--- CREATE TABLE in server/stats.lua (ArenaStats.EnsureSchema). This file exists
--- for the two cases where that is not good enough:
+-- The resource creates both of its tables itself on first start, from the
+-- identical CREATE TABLE statements in server/stats.lua (ArenaStats.EnsureSchema)
+-- and server/ammo.lua (ArenaAmmo.LoadOwedKit). This file exists for the two
+-- cases where that is not good enough:
 --
 --   1. Your database user cannot CREATE TABLE at runtime, which is a sensible
 --      way to run a production server. Import this once as an admin, then let
---      the resource run with a user that only has SELECT/INSERT/UPDATE on it.
+--      the resource run with a user that has SELECT, INSERT, UPDATE and
+--      DELETE on both tables.
+--
+--      DELETE IS NOT OPTIONAL, AND IT IS NEW. crimson_arena_stats only ever
+--      upserts and never deletes anything, so SELECT/INSERT/UPDATE was enough
+--      when it was the only table. crimson_arena_owed_kit deletes a row the
+--      moment the debt it records is settled -- that is how a weapon handed
+--      back stops being chased. Without the grant the row survives the
+--      collection, the next restart reads the settled debt back in, and the
+--      player is chased for ever for something they already returned. The
+--      resource cannot see that failure: the error is reported on oxmysql's
+--      console, not this one.
 --   2. You want the table to exist before the first match, so an operator
 --      looking at the schema does not see it appear out of nowhere.
 --
--- The statements below are a byte-for-byte match for the ones in
--- server/stats.lua and server/ammo.lua. If you edit one, edit both, or first
--- start after an import will quietly do nothing (IF NOT EXISTS) and leave you
--- on the older shape.
+-- Each statement below is a byte-for-byte match for the one in its Lua file.
+-- If you edit either, edit both copies of it, or first start after an import
+-- will quietly do nothing (IF NOT EXISTS) and leave you on the older shape.
 --
 -- WHAT HAPPENS IF YOU NEVER IMPORT IT AND NEVER GRANT CREATE: nothing breaks.
 -- Config.Database.enabled = false, or a failed create, leaves the resource in
@@ -47,12 +58,16 @@ CREATE TABLE IF NOT EXISTS crimson_arena_stats (
 -- ----------------------------------------------------------------------
 -- WHAT PLAYERS STILL OWE THE ARENA.
 --
--- There is one way out of a round the exit cannot cover: the player on that
--- server id is no longer the character the arena armed. A mid-round character
--- switch, or a disconnect whose kit ox_inventory has already saved into
--- somebody who is not here. Reaching into whoever holds the id now would take
--- THEIR guns, so the debt is written down against the character instead and
--- collected the next time they are seen.
+-- Two things end up here. The first is the way out of a round the exit
+-- cannot cover: the player on that server id is no longer the character the
+-- arena armed -- a mid-round character switch, or a disconnect whose kit
+-- ox_inventory has already saved into somebody who is not here. Reaching into
+-- whoever holds the id now would take THEIR guns, so the debt is written down
+-- against the character instead and collected the next time they are seen.
+--
+-- The second is quieter: ox_inventory refusing a removal at an ordinary exit.
+-- The arena asked for its rounds back, was told no, and would otherwise have
+-- dropped the record a line later and forgotten they were ever issued.
 --
 -- WITHOUT THIS TABLE THAT SLATE LIVES IN MEMORY, and a restart writes off
 -- every outstanding weapon and every round. On a server that restarts nightly
@@ -60,20 +75,21 @@ CREATE TABLE IF NOT EXISTS crimson_arena_stats (
 --
 -- Unlike the stashes, none of this can be rebuilt. A stash is a real
 -- ox_inventory row the resource can find again by name; a weapon debt is
--- identified only by the serial recorded here.
+-- identified only by the serial recorded here, and a stack of rounds only by
+-- the number.
 --
--- `ledger_key` is the serial for a weapon and the item name for a stack. It
--- exists because MySQL cannot put a UNIQUE index on "the serial, or the name
--- when there is no serial", so the key is composed before it is written. It
--- is what stops one weapon being written down twice and lets a stack of
--- rounds accumulate instead.
+-- `ledger_key` is `w:` and the serial for a weapon, `i:` and the item name
+-- for a stack. The prefix is load-bearing: without it a serial that happened
+-- to read like an item name would collide on the primary key and one debt
+-- would silently overwrite the other. It is what stops one weapon being
+-- written down twice and lets a stack of rounds accumulate instead.
 -- ----------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
     citizenid VARCHAR(64) NOT NULL,
     ledger_key VARCHAR(191) NOT NULL,
     kind VARCHAR(16) NOT NULL,
-    name VARCHAR(191) NOT NULL,
+    name VARCHAR(128) NOT NULL,
     serial VARCHAR(128) NULL,
     amount INT NOT NULL DEFAULT 1,
     written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -1457,7 +1457,8 @@ option {
     overscroll-behavior: contain;
 }
 
-#admin-player h3 {
+#admin-player h3,
+#admin-stashes h3 {
     margin: 0;
     font-family: var(--font-display);
     font-size: 1.1rem;
@@ -1478,7 +1479,8 @@ option {
 
 #admin-matches,
 #admin-players,
-#admin-stash-list {
+#admin-stash-list,
+#admin-kit-list {
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
@@ -1552,6 +1554,31 @@ option {
 
 .admin-stash-open {
     width: 100%;
+}
+
+/* ITS OWN BOX, BECAUSE .admin-stash-row NEVER HAD ONE.
+
+   Every stash row's surface, border and padding come from the BUTTON inside
+   it -- .admin-stash-open -- and the row itself is only the two-column grid
+   that button sits in. A kit row is not a button, so reusing the row class
+   alone drew bare text on the page background, and the two-column geometry
+   squeezed the citizen id to nothing while the weapon list fought for the
+   `auto` track.
+
+   Same surface, no pointer and no hover, and stacked rather than columned:
+   the facts here are a list, not a short summary. */
+.admin-kit-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.8rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent-dim);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 1rem;
+    text-align: left;
 }
 
 .admin-owed-give {

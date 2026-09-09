@@ -2269,6 +2269,35 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                 local stamped = (issuedOwner[matchId] or {})[src]
                 local billed = Arena.IsKey(stamped) and stamped or owner
 
+                -- AN EMPTY ID IS NOT A WRONG ONE. This was `billed ==
+                -- liveId`, which refuses when NOBODY holds the server id as
+                -- readily as when a stranger does -- and nobody holding it is
+                -- the ordinary disconnect, the case with the most kit
+                -- outstanding. DO NOT go back to demanding a live holder.
+                local stranger = Arena.IsKey(liveId) and liveId ~= billed
+
+                -- ASKED BEFORE ANYTHING IS REMOVED, not after. This sat one
+                -- line below `takeBack` and gated only the ledger write, so
+                -- when a stranger held the server id the arena still walked
+                -- the departed character's rows against the NEWCOMER's
+                -- pockets -- with the departed character's floor, which for
+                -- a stripped fighter is zero -- took their ammunition, their
+                -- plates and their bandages, and then politely declined to
+                -- write any of it down.
+                --
+                -- Somebody who has never been in the arena, robbed by the
+                -- exit of somebody who has. The weapon loop above gets this
+                -- right and refuses before it removes; this is the same test
+                -- in the same order. DO NOT put a removal above this check.
+                if stranger then
+                    ArenaLog('weapons: %s\'s consumables from match %s are written off -- %s holds '
+                        .. 'that server id now, and NOTHING is being taken off them for a round '
+                        .. 'they were never in.',
+                        tostring(billed), tostring(matchId), tostring(liveId))
+                    byPlayer[src] = nil
+                    goto nextStock
+                end
+
                 for item, count in pairs(given) do
                     local _, short, measured = takeBack(ox, src, item, count, floorFor(matchId, src, item))
 
@@ -2277,18 +2306,7 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                     -- were holding -- and it is only THEIR debt when the
                     -- pockets it measured are the pockets of the character
                     -- being billed. DO NOT drop either half of that test.
-                    --
-                    -- AN EMPTY ID IS NOT A WRONG ONE. This read
-                    -- `billed == liveId`, which refuses when NOBODY holds the
-                    -- server id as readily as when a stranger does -- and
-                    -- nobody holding it is the ordinary disconnect, the case
-                    -- with the most kit outstanding. `measured` already
-                    -- proves the inventory answered, so the counts are real
-                    -- and they are the departing character's own. DO NOT go
-                    -- back to demanding a live holder.
-                    local stranger = Arena.IsKey(liveId) and liveId ~= billed
-
-                    if short > 0 and measured and Arena.IsKey(billed) and not stranger then
+                    if short > 0 and measured and Arena.IsKey(billed) then
                         if oweItem(billed, item, short) then
                             ArenaDebug('weapons: %d %s did not come back off %s -- put on %s\'s slate.',
                                 short, item, tostring(src), tostring(billed))
@@ -2301,6 +2319,8 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                 end
                 byPlayer[src] = nil
             end
+
+            ::nextStock::
         end
     end
 

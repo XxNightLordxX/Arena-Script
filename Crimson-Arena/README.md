@@ -782,7 +782,15 @@ Cancelling a shots-fired call about somebody on the other side of the map is a f
 
 **Each name is registered for the network as well as handled.** FXServer delivers a client-raised event only to a resource that has called `RegisterNetEvent` for that name, and gunfire and deaths are raised with `TriggerServerEvent` from the player's own client — so without it this whole layer never ran for the alerts that matter. Safe-for-net is per resource: it marks the name callable into *this* resource's handlers and changes nothing about the script that owns the event.
 
-The list ships pointed at the six events `sc-dispatch` and `sc-ambulance` really raise — `sc-dispatch:server:ShotsFired`, `hospital:server:EMSDownAlert`, `hospital:server:ambulanceAlert`, `mydispatch:requestEMS`, and `sc-dispatch:server:PlayerDown` and `sc-dispatch:server:PlayerDead`, which sc-dispatch's own client raises off the QB down metadata without anybody pressing a key. It previously named `sc-dispatch:server:AddNotification` and `sc-dispatch:AddNotification`, neither of which exists in either resource: `AddNotification` is an **export**, and nothing can register a handler on an export call. Those two entries never fired once, so this whole layer was listening to silence while every round paged police and EMS. The startup report counts what you put in the list and labels it `(best effort)` there too.
+The list ships pointed at the four events `sc-dispatch` really raises — `sc-dispatch:server:ShotsFired`, `mydispatch:requestEMS`, and `sc-dispatch:server:PlayerDown` and `sc-dispatch:server:PlayerDead`, the last two raised by sc-dispatch's own client off the QB down metadata without anybody pressing a key.
+
+**Two corrections to what this section used to claim, both made by reading the resources rather than reasoning about them.**
+
+It used to also name `hospital:server:EMSDownAlert` and `hospital:server:ambulanceAlert`, described as events sc-ambulance really raises. **Neither exists.** A search of sc-dispatch, sc-ambulance and sc-police finds no handler and no trigger for either name, so both were registering for an event nothing raises. They have been removed. The stock QBCore ambulance script does raise them, so put them back if you move to a build that has it.
+
+It also used to say that `sc-dispatch:server:AddNotification` and `sc-dispatch:AddNotification` do not exist, on the reasoning that `AddNotification` is an export and nothing can register a handler on an export call. **That reasoning was wrong.** The export exists, but so do two ordinary net events of the same name, at `server/main.lua:2664` and `:2679`, each validating its payload and forwarding to the export. A name being an export does not stop it also being an event. They are still left out of the list, for a different and better reason: on those two the `source` is whoever *raised* the alert rather than who it is *about*, so cancelling on it would be a guess.
+
+The startup report counts what you put in the list and labels it `(best effort)` there too.
 
 #### Layer 6 — withdrawing the alert after it is created
 
@@ -798,7 +806,7 @@ retract = {
     clockSlack = 1,
     idTemplates = {
         ['sc-dispatch:server:ShotsFired'] = 'shots_%d_%d',
-        ['hospital:server:EMSDownAlert'] = 'emsdown_%d_%d',
+        ['sc-dispatch:server:PlayerDown'] = 'playerdown_%d_%d',
     },
 },
 ```

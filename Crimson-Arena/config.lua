@@ -2328,15 +2328,15 @@ Config.Dispatch = {
             -- Gunfire, sent from the shooter's own machine.
             'sc-dispatch:server:ShotsFired',
 
-            -- "10-52 Person Down", when a downed player asks for EMS.
-            'hospital:server:EMSDownAlert',
-
-            -- The default QBCore ambulance alert. Usually quiet on this box,
-            -- and listed so that turning it back on cannot silently reopen
-            -- the hole. It gets NO id template below and cannot have one --
-            -- it broadcasts straight to on-duty medics and files no call, so
-            -- there is nothing to withdraw.
-            'hospital:server:ambulanceAlert',
+            -- REMOVED AT THE OWNER'S INSTRUCTION, and worth knowing why
+            -- before anybody puts them back: hospital:server:EMSDownAlert and
+            -- hospital:server:ambulanceAlert used to be listed here. Neither
+            -- event EXISTS on this box. A search of sc-dispatch, sc-ambulance
+            -- and sc-police finds no handler and no trigger for either, so
+            -- both were registering a handler on an event nothing ever
+            -- raises. They cost nothing and did nothing. If you move to a
+            -- build whose ambulance script raises them -- the stock QBCore
+            -- one does -- add them back.
 
             -- The second EMS entry point.
             'mydispatch:requestEMS',
@@ -2404,7 +2404,6 @@ Config.Dispatch = {
                 ['sc-dispatch:server:PlayerDead'] = 'playerdead_%d_%d', -- :2645
                 ['mydispatch:requestEMS'] = 'emshelp_%d_%d',            -- :2576
 
-                ['hospital:server:EMSDownAlert'] = 'emsdown_%d_%d',
             },
         },
     },

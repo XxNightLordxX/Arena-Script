@@ -981,7 +981,7 @@ That distinction has three cases, not two, and collapsing the last two was a rea
 | Everybody disconnects mid-round | The round is aborted, not settled. Every stake and every side-bet goes back — there is nobody to declare a winner over. |
 | The round ends in a draw | Refunded. Paying one of two equal scores out of the other's stake is a coin toss with somebody else's money. |
 | The round was **fought** by fewer than `minPlayersToPayOut` | Refunded. This is what stops two friends farming each other. It counts who the round started with, not who is left at the end: otherwise the losing half of a 1v1 could turn a decided match into a refund by walking out of it, and collect the stake that leaving is supposed to forfeit. |
-| An admin runs `/arenaadmin stop` or `wipe` | Aborted and refunded, whatever state the match was in. |
+| An admin runs `/arenaadmin stop` or `wipe` | Aborted and refunded, whatever state the match was in — **except a stake somebody had already forfeited by quitting the live round.** That one stays kept: the player was told at the time that it was gone, and an unrelated admin action is not meant to hand it back. The console says `REFUND REFUSED: ... was FORFEITED when they left and stays in the pot`, and the summary line counts them (`kept N forfeited stake(s) rather than refunding them`). Side-bets are a separate pool and *are* all returned unjudged, because a stopped round produced no result to judge them against. |
 | **The resource stops or the server restarts** | Every live match is aborted on the way down, which refunds every stake in full, and only then are queued stat rows flushed. The handler is deliberately synchronous — a stop handler that yields may never be resumed, and a refund that never resumes is the exact bug it exists to prevent. |
 
 ### Where a forfeited pot goes
@@ -992,21 +992,33 @@ That is the point of the setting. It exists to deter a host who fills a lobby, c
 
 Every forfeit prints a `FORFEIT:` line to the console and goes to the webhook regardless of `logPayouts`, because an operator running a house account by hand is the only person who can put that money anywhere.
 
-Only a **host cancelling** forfeits. An idle-timeout close, an admin force-stop, the last player walking out and a resource restart all still refund in full — an operator punishing a host who calls their own match off has not asked to punish a lobby the server itself closed.
+Only a **host cancelling** forfeits *the whole lobby*. An idle-timeout close, an admin force-stop, the last player walking out and a resource restart all still refund in full — an operator punishing a host who calls their own match off has not asked to punish a lobby the server itself closed.
+
+That is about the CLOSE. It does not reach back over a stake an individual player had already forfeited by quitting a live round, which stays forfeit through every one of those closes. **Forfeit on a quit, refund on an admin stop** is the whole rule in one line.
 
 ### When a payment cannot be made
 
-A refund that fails — almost always because the player has already left — is **left held and still owed**. It is not written off. A later refund tries again, `Clear` goes on refusing to drop the match, and the console says so:
+A refund that cannot be delivered — almost always because the player has already left — is **never written off**. There are two console lines for it and they are not the same event:
 
 ```
-[crimson_arena] REFUND FAILED: 1000 owed to John Doe (citizenid ABC12345) on match m4f2a1 -- the stake stays held.
+[crimson_arena] REFUND DEFERRED: 1000 owed to John Doe (citizenid ABC12345) could not be delivered on match m4f2a1 -- they are not on the server. It is recorded against their character and will be paid when they are next seen.
 ```
 
-A *payout* that cannot be delivered is different: the pot has already been divided among everyone else, so it cannot be rolled back without changing what they were paid. It is logged for a human to settle by hand, and sent to the webhook if one is configured:
+That is the ordinary case, and the one you will actually see: the player has gone, so the debt is filed **against the character** rather than the server id, the match's escrow is closed out, and the retry sweep pays it the next time they connect. A server id is recycled and a citizen id is not, which is why it is filed the way it is.
 
 ```
-[crimson_arena] PAYOUT UNDELIVERED: 4000 owed to 12 on match m4f2a1 -- they are not on the server. It is on the unpaid ledger and will be paid when they come back.
+[crimson_arena] REFUND FAILED: 1000 owed to John Doe (citizenid nil) on match m4f2a1 -- the stake stays held, and there is no citizen id to file it against.
 ```
+
+`REFUND FAILED:` now means only one thing, and it is rarer and worse: there was **no citizen id** to file the debt against, so there is nothing that survives their reconnect. The stake stays held and unsettled, a later refund tries again, and `Clear` goes on refusing to drop the match. Both lines go to the webhook whatever `logPayouts` says.
+
+A *payout* that cannot be delivered is different again: the pot has already been divided among everyone else, so it cannot be rolled back without changing what they were paid. It is logged for a human to settle by hand, and sent to the webhook if one is configured:
+
+```
+[crimson_arena] PAYOUT UNDELIVERED: 4000 owed to 12 (citizenid ABC12345) on match m4f2a1 -- they are not on the server. It is on the unpaid ledger and will be paid when they come back; /arenaadmin can list it.
+```
+
+And its own worse half, `PAYOUT LOST:`, for the same reason as above — no citizen id to file against, so it has to be settled by hand.
 
 Turn `Config.Webhook.enabled` on and set `logPayouts` if you want these in Discord. Undeliverable-money notices are sent whatever `logPayouts` says — an operator who turned payout logging off still needs to hear about a player who is owed.
 

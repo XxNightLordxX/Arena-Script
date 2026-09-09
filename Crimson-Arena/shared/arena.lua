@@ -148,6 +148,37 @@ function Arena.GetEnabledWeapons()
     return out
 end
 
+--- key -> entry, for the catalogue table it was built from.
+---
+--- MEMOISED, AND THE MEMO CANNOT BE TRUSTED ON ITS OWN. There is no config
+--- reload in this resource -- Config is built once by config.lua and
+--- config.weapons.lua at load -- but "there is no reloader today" is not a
+--- thing to build a cache on, and the suites that exercise this file DO edit
+--- the catalogue in place between calls: a spec that switches every weapon
+--- off, or renames one entry's key, changes the answer without changing the
+--- table it lives in. So the identity of the catalogue table is only enough
+--- to say the index is worth LOOKING in; the entry it hands back is re-checked
+--- against the live fields before it is returned, and a miss rebuilds and
+--- looks again rather than reporting nothing.
+---
+--- The rebuild-on-miss is why this is never wrong and never slower than what
+--- it replaced: a miss costs exactly the one full scan the old code did on
+--- EVERY call, and a hit costs a hash lookup and three field reads.
+local weaponIndexSource, weaponIndex = nil, nil
+
+local function buildWeaponIndex(catalogue)
+    local index = {}
+    for _, weapon in ipairs(catalogue) do
+        if weapon.enabled ~= false and Arena.IsKey(weapon.key) and Arena.IsKey(weapon.weapon)
+            and index[weapon.key] == nil                  -- first entry wins, as the scan did
+        then
+            index[weapon.key] = weapon
+        end
+    end
+    weaponIndexSource, weaponIndex = catalogue, index
+    return index
+end
+
 --- The one weapon with this key, or nil. Returns nil for a disabled weapon
 --- as well as an unknown one -- callers must not be able to tell the
 --- difference, or `enabled = false` would only be a UI hint.
@@ -155,10 +186,29 @@ end
 --- @return table|nil
 function Arena.GetWeaponByKey(key)
     if not Arena.IsKey(key) then return nil end
-    for _, weapon in ipairs(Arena.GetEnabledWeapons()) do
-        if weapon.key == key then return weapon end
+
+    -- DO NOT write `Config.Loadouts.weapons or {}` here, however much it
+    -- looks like every other read of this field in the file. `or {}` builds a
+    -- FRESH TABLE on each call whenever the catalogue is missing, and a fresh
+    -- table never matches the memo -- so the guard below would rebuild the
+    -- index on every single lookup, for ever, which is the cost this whole
+    -- thing exists to remove.
+    local catalogue = Config.Loadouts.weapons
+    if type(catalogue) ~= 'table' then return nil end
+
+    local index = (weaponIndexSource == catalogue and weaponIndex)
+        or buildWeaponIndex(catalogue)
+
+    local weapon = index[key]
+    if weapon ~= nil and weapon.key == key and weapon.enabled ~= false
+        and Arena.IsKey(weapon.weapon)
+    then
+        return weapon
     end
-    return nil
+
+    -- Either a genuine miss, or an entry edited under the memo -- switched
+    -- off, or its key moved to another block. Both are answered the same way.
+    return buildWeaponIndex(catalogue)[key]
 end
 
 function Arena.GetEnabledTeams()
@@ -208,7 +258,16 @@ function Arena.GetEnabledArenas()
             }
         end
     end
-    table.sort(out, function(a, b) return a.key < b.key end)
+    -- COMPARED AS TEXT, BECAUSE THE KEY IS WHATEVER AN OPERATOR TYPED.
+    -- `['pier']` is a string and `[3]` is a number, and Lua CANNOT order one
+    -- against the other -- `a.key < b.key` raises "attempt to compare string
+    -- with number" and takes the whole sort with it. This runs at start-up
+    -- in both realms, inside Arena.ValidateConfig and inside the client
+    -- thread that builds the lobby ped, so one mistyped bracket stopped the
+    -- resource booting AND left no way into the arena. DO NOT put the bare
+    -- comparison back: mixing the two orderings per pair is worse, because
+    -- 2, 10 and '5' then have no consistent order and table.sort rejects it.
+    table.sort(out, function(a, b) return tostring(a.key) < tostring(b.key) end)
     return out
 end
 
@@ -2559,10 +2618,32 @@ function Arena.ValidateConfig()
         end
     end
 
+    -- `or {}`, AND IT IS THE WHOLE POINT OF THIS LOOP RUNNING AT ALL.
+    --
+    -- The two calls disagree about what an arena is. GetEnabledArenas lists
+    -- every key whose block is not `enabled = false`; GetArenaByKey refuses
+    -- anything Arena.IsKey rejects, and Arena.IsKey rejects the empty string.
+    -- So `Config.Arenas[''] = { ... }` is LISTED here and answers nil there,
+    -- and an unguarded `arena.spawns` then indexes nil -- inside the
+    -- validator, which is the first thing onResourceStart calls. It took
+    -- EnsureSchema and the owed-kit read-back down with it, and on the client
+    -- it took the thread that builds the lobby ped, which is the only way
+    -- into the arena.
+    --
+    -- The loop twenty lines down already wrote `or {}` for the same pair.
+    -- DO NOT take this one back off; a validator that cannot survive the
+    -- config it is validating is not a validator.
     for _, entry in ipairs(Arena.GetEnabledArenas()) do
-        local arena = Arena.GetArenaByKey(entry.key)
+        local arena = Arena.GetArenaByKey(entry.key) or {}
         if type(arena.spawns) ~= 'table' or #arena.spawns == 0 then
-            complain(('Config.Arenas["%s"] has no spawns -- players would have nowhere to land.'):format(entry.key))
+            complain(('Config.Arenas["%s"] has no spawns -- players would have nowhere to land.'):format(tostring(entry.key)))
+        end
+        if not Arena.IsKey(entry.key) then
+            complain(('Config.Arenas has an arena under the key %s (a %s). An arena key has to be a '
+                .. 'non-empty piece of text in brackets and quotes -- ["pier"], not [pier], not [3] '
+                .. 'and not [""]. This one is listed in the panel and cannot be looked up, so no '
+                .. 'match can be created in it.'):format(
+                    entry.key == '' and '""' or tostring(entry.key), type(entry.key)))
         end
     end
 
@@ -2686,6 +2767,98 @@ function Arena.ValidateConfig()
     elseif roundBlock ~= nil and Arena.ToInt(roundBlock) == nil then
         complain(('Config.Match.roundTimeSeconds is a %s -- it has to be a number of seconds, or a { allowChoose, min, max, default } table. It is being read as 0, which means no round clock at all.')
             :format(type(roundBlock)))
+    end
+
+    -- THE TWO SETTINGS THAT HAD NO BOOT CHECK AT ALL.
+    --
+    -- lives, roundTimeSeconds, entryFee and slots each get a complaint above
+    -- or below when they are written in a way the code then reads as
+    -- something else. scoreLimit and serverChecks did not, and both fall back
+    -- SILENTLY -- which is the one thing a validator exists to stop.
+    --
+    -- DO NOT drop these on the grounds that the shipped numbers are fine.
+    -- The shipped numbers are exactly why nobody notices: a silent fallback
+    -- is invisible until somebody edits the file, which is the moment the
+    -- check is for. serverChecks is the expensive one -- its fallbacks eject
+    -- a fighter from a paid round and forfeit their stake, and the rule this
+    -- block was written under is NEVER EJECT AN HONEST PLAYER.
+    local scoreBlock = (Config.Match or {}).scoreLimit
+    if type(scoreBlock) == 'table' then
+        local low = Arena.ToInt(scoreBlock.min)
+        local high = Arena.ToInt(scoreBlock.max)
+
+        if scoreBlock.min ~= nil and low == nil then
+            complain(('Config.Match.scoreLimit.min is a %s, not a number -- it is being read as 1.')
+                :format(type(scoreBlock.min)))
+        end
+        if scoreBlock.max ~= nil and high == nil then
+            complain(('Config.Match.scoreLimit.max is a %s, not a number -- it is being read as the min, so the host has no range to pick from.')
+                :format(type(scoreBlock.max)))
+        end
+
+        local minimum = math.max(1, low or 1)
+        if low ~= nil and low < 1 then
+            complain(('Config.Match.scoreLimit.min is %d. A score limit of nought or less is a round that is already over, so it is being read as 1.')
+                :format(low))
+        end
+        if high ~= nil and high < minimum then
+            complain(('Config.Match.scoreLimit.max is %d, below its min of %d. It is being read as %d rather than refused, so the box on the create screen never opens and every score_limit round runs at %d.')
+                :format(high, minimum, minimum, minimum))
+        end
+
+        local wanted = Arena.ToInt(scoreBlock.default)
+        if scoreBlock.default ~= nil and wanted == nil then
+            complain(('Config.Match.scoreLimit.default is a %s, not a number -- it is being read as the min, %d.')
+                :format(type(scoreBlock.default), minimum))
+        elseif wanted ~= nil and high ~= nil and high >= minimum
+            and (wanted < minimum or wanted > high)
+        then
+            complain(('Config.Match.scoreLimit.default is %d, outside its own %d to %d range -- it is clamped, so score_limit rounds do not open on the number you wrote.')
+                :format(wanted, minimum, high))
+        end
+
+        if scoreBlock.allowChoose == true and Arena.ScoreLimitChoice() == nil then
+            complain(('Config.Match.scoreLimit lets the host choose but min and max leave nothing to choose between, so no box is drawn and every score_limit round runs at %d.')
+                :format(Arena.ScoreLimitDefault()))
+        end
+    elseif scoreBlock ~= nil and Arena.ToInt(scoreBlock) == nil then
+        complain(('Config.Match.scoreLimit is a %s -- it has to be a number of kills, or a { allowChoose, min, max, default } table. It is being read as 1, so a score_limit round ends on the first kill.')
+            :format(type(scoreBlock)))
+    end
+
+    local checks = (Config.Match or {}).serverChecks
+    if checks ~= nil and type(checks) ~= 'table' then
+        complain(('Config.Match.serverChecks is a %s, not a table -- BOTH SERVER-SIDE CHECKS ARE OFF. Nobody is measured against the fence and no unreported death is booked.')
+            :format(type(checks)))
+    elseif type(checks) == 'table' and checks.enabled == true then
+        -- OUT-OF-FENCE REMOVAL FORFEITS A STAKE, so a fallback here costs a
+        -- player money. The owner's rule for this block is NEVER EJECT AN
+        -- HONEST PLAYER, and every complaint below is one way of doing it.
+        local metres = tonumber(checks.outsideMetres)
+        if metres == nil then
+            complain('Config.Match.serverChecks.outsideMetres is missing or unreadable, so it is being read as 60 METRES -- six times the shipped 10. Sixty metres of slack outside the fence is the pocket the setting was written to close: it is measured in three dimensions from the middle of the arena, so a point under the skydome floor sits inside it while the kill ceiling still covers the whole arena. Check the spelling -- it is outsideMetres, not outsideMeters.')
+        elseif metres < 0 then
+            complain(('Config.Match.serverChecks.outsideMetres is %.2f. A negative distance is read as 0, which is ZERO TOLERANCE: a fighter one centimetre past the fence is being counted as outside on that check.')
+                :format(metres))
+        end
+
+        local ticks = Arena.ToInt(checks.outsideTicks)
+        if checks.outsideTicks ~= nil and ticks == nil then
+            complain(('Config.Match.serverChecks.outsideTicks is a %s, not a number -- it has fallen back to 8.')
+                :format(type(checks.outsideTicks)))
+        elseif ticks ~= nil and ticks < 1 then
+            complain(('Config.Match.serverChecks.outsideTicks is %d, WHICH IS NOT AN OFF SWITCH. It is read as 1, the harshest setting there is: ONE sighting outside the fence removes a fighter from the round AND forfeits their stake, with no second look. deadTicks four lines below it DOES treat 0 as off, and these two do not agree. To stop the fence check, set Config.Match.serverChecks.enabled = false, or give the arena no boundary block.')
+                :format(ticks))
+        end
+
+        local dead = Arena.ToInt(checks.deadTicks)
+        if checks.deadTicks ~= nil and dead == nil then
+            complain(('Config.Match.serverChecks.deadTicks is a %s, not a number -- it has fallen back to 4.')
+                :format(type(checks.deadTicks)))
+        elseif dead ~= nil and dead < 0 then
+            complain(('Config.Match.serverChecks.deadTicks is %d. A negative count is read as 0, which switches the unreported-death half OFF entirely -- write 0 if that is what you meant.')
+                :format(dead))
+        end
     end
 
     local ceilingRaw = ((Config.Loadouts or {}).supplies or {}).totalItems
@@ -2945,6 +3118,44 @@ function Arena.ValidateConfig()
         if percent > 0 and pooled then
             complain(('Config.Betting.houseCutPercent is %d%% but betPayout.includeEntryPot is on, so NO CUT IS TAKEN: the entry fees become bets in the pool and the pot never settles on its own. Set includeEntryPot = false to rake the pot, or houseCutPercent = 0 to stop asking for a cut that is not collected.')
                 :format(percent))
+        end
+
+        -- THE MULTIPLIER IS THE WHOLE PAYMENT, NOT THE PROFIT ON TOP OF IT.
+        --
+        -- Arena.ComputeSpectatorPayout returns stake x oddsMultiplier and the
+        -- stake is INSIDE that number, so the break-even is 1.0 and not 0. It
+        -- is the one setting in this file whose harmless-looking small number
+        -- takes money off the person who was RIGHT: at 0.2 a winning 1,000 is
+        -- paid 200, and at 0 the winner is paid nothing at all while the
+        -- losers are no worse off. Nothing said so anywhere until here.
+        --
+        -- NAMED WHATEVER betPayout SAYS, because a number that is inert today
+        -- is a trap on the day somebody switches a side to 'odds' -- but the
+        -- message says which of those two it is, so an operator on 'pool' is
+        -- not sent looking for a payout that never happened.
+        --
+        -- AND IT COMPLAINS RATHER THAN CLAMPING. DO NOT quietly read a value
+        -- below 1.0 as 1.0: somebody who typed 0.2 meant a fifth of
+        -- something, and this cannot tell whether they meant a fifth of the
+        -- stake as profit or the rake that belongs in houseCutPercent.
+        -- Guessing between those two moves a player's money on a guess.
+        local oddsRaw = (Config.Betting.spectatorBets or {}).oddsMultiplier
+        local odds = tonumber(oddsRaw)
+        local payoutBlock = type(Config.Betting.betPayout) == 'table' and Config.Betting.betPayout or {}
+        local onOdds = payoutBlock.fighters == 'odds' or payoutBlock.spectators == 'odds'
+        local tail = onOdds
+            and ' betPayout is set to \'odds\', so this is being paid out right now.'
+            or ' Both halves of betPayout are on \'pool\', so nothing is paid at this number today -- it starts costing people the moment either one is set to \'odds\'.'
+
+        if oddsRaw ~= nil and odds == nil then
+            complain(('Config.Betting.spectatorBets.oddsMultiplier is a %s, not a number -- it has fallen back to 2.0.%s')
+                :format(type(oddsRaw), tail))
+        elseif odds ~= nil and odds <= 0 then
+            complain(('Config.Betting.spectatorBets.oddsMultiplier is %s. A winning bet is then paid NOTHING -- the whole stake is kept and the winner ends up exactly where the losers do. This number is the TOTAL paid, stake included, so 1.0 hands the stake back and anything above 1.0 wins something.%s')
+                :format(tostring(odds), tail))
+        elseif odds ~= nil and odds < 1 then
+            complain(('Config.Betting.spectatorBets.oddsMultiplier is %s. This number is the TOTAL paid, stake included, NOT the profit on top of it -- so anything below 1.0 CHARGES A WINNER FOR BEING RIGHT: a winning 1,000 is paid %d and the other %d of their own stake is kept. Write 1.0 to hand the stake back and nothing more, above 1.0 to pay a win, and use Config.Betting.houseCutPercent if a cut is what you wanted.%s')
+                :format(tostring(odds), math.floor(1000 * odds), 1000 - math.floor(1000 * odds), tail))
         end
 
         local floorCount = Arena.ToInt(Config.Betting.minPlayersToPayOut) or 0

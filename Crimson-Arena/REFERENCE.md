@@ -99,7 +99,11 @@ instancing really happened rather than assuming it did.
 
 ### Weapons, ammunition and inventory
 
-- **96 weapons catalogued and all 96 enabled** -- the `heavy` category included, so explosives are pickable. In categories. A player carries
+- **96 weapons catalogued and all 96 enabled** — the whole `heavy` category
+  included (13 entries: the RPG, five launchers, the minigun, both railguns,
+  the Unholy Hellbringer, the Widowmaker and the flamethrower), so explosives
+  are pickable and explosive damage is not refused between teammates whatever
+  `Config.Teams.friendlyFire` says. Filed in categories. A player carries
   `Config.Loadouts.slots` of them — guns and melee against one count, so the mix
   is theirs.
 - **The host or the player picks**, per `Config.Loadouts.chooser`.
@@ -107,7 +111,12 @@ instancing really happened rather than assuming it did.
   weapon is worked out and handed over automatically: one magazine loaded in the
   gun, the rest as items, totalling exactly what was picked.
 - **Full health and a full plate on every life, by rule** — not a config key, not a field a client can send.
-- **Choosable spare kit**: extra armour plates and bandages, per-item maximums and a shared ceiling, issued as real items and reclaimed against what the player still holds.
+- **Choosable spare kit**: extra armour plates and bandages, per-item maximums
+  (25 and 30 as shipped), issued as real items and reclaimed against what the
+  player still holds. There is *also* a ceiling across all supplies together,
+  `Config.Loadouts.supplies.totalItems` — but **it ships at 0, which means no
+  ceiling**, so on the shipped config the per-item maximums are the only
+  limit and nothing is squeezed by a total.
 - **The door.** A player's own inventory is stowed in a stash keyed to their
   citizen id — so a reconnect finds it and a recycled server id cannot open it —
   and handed back on the way out.
@@ -191,9 +200,9 @@ instancing really happened rather than assuming it did.
 | | Enabled | Also in the catalogue, switched off |
 |---|---|---|
 | Arenas | **The Skydome** (`skydome`), **Trailer Park** (`trailerpark`) | — |
-| Modes | **Free For All** (`ffa`, the default), **Team Deathmatch** (`tdm`) | — |
+| Modes | **Free For All** (`ffa`, the default), **Team Deathmatch** (`tdm`), **Gun Game** (`gungame`) | — |
 | Teams | **Crimson** (`crimson`), **Ash** (`ash`) | Bone (`bone`), Ember (`ember`) |
-| Weapons | 77 | 19 |
+| Weapons | **96 — all of them**, the whole `heavy` category included | *(none)* |
 
 Other shipped defaults worth knowing: betting **on** (entry fees, spectator bets
 and fighter bets all on), the database **off** (so the board, and the record of what
@@ -205,15 +214,18 @@ no maximum, no cap on concurrent matches, and `last_standing` as the win conditi
 
 ## Commands
 
-All four are gated on `Config.Permissions.adminGroups`; the server console always
-qualifies.
+All five are gated on `Config.Permissions.adminGroups`; the server console
+always qualifies. **An empty `adminGroups` means nobody may run any of them** —
+job lists elsewhere in `Config.Permissions` read empty as "everyone", and this
+one deliberately does not.
 
 | Command | What it does |
 |---|---|
-| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. |
+| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. |
 | `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without a restart. |
 | `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
 | `/arenaisolation` | Prints what instancing is really doing: the mode the server reports for `onesync`, whether a routing bucket has been caught not landing, the bucket each live match was allocated, and the bucket the server says each of those players is standing in right now. |
+| `/arenahours` | Prints what the server thinks the time is, the offset applied to it, the opening hours in `Config.Schedule` and whether the doors are open right now. |
 
 **No player-facing slash command exists.** The panel opens from the lobby ped or
 the ground marker, whichever `Config.Lobby.interaction` names, and there is no
@@ -267,14 +279,27 @@ from scalars on arrival:
 `panelClosed`, `requestState`, `createMatch`, `joinMatch`, `leaveMatch`, `setTeam`,
 `setLoadout`, `setReady`, `startMatch`, `holdCountdown`, `cancelMatch`,
 `updateMatch`, `reportDeath`, `spectateMatch`, `stopSpectating`,
-`placeSpectatorBet` — all prefixed `crimson_arena:server:`.
+`placeSpectatorBet`, `outlineReason` — all prefixed `crimson_arena:server:`.
+
+And five more the admin tablet sends, same prefix:
+
+`adminState`, `adminStop`, `adminReturn`, `adminHours`, `adminRevive`.
+
+Every one of those five opens with
+`if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end`,
+which is where the gate has to be: **a `RegisterNetEvent` listener exists for
+every connected client whatever the panel draws for them**, so hiding the
+tablet button is not a permission check. The other seventeen are open to any
+player by design and are gated on state instead — you cannot leave a match you
+are not in.
 
 **Callback:** `crimson_arena:server:getState` — the panel's opening snapshot.
 
 **Server → client**, all prefixed `crimson_arena:client:`:
 
 `state`, `enterArena`, `exitArena`, `matchLive`, `matchHud`, `countdown`,
-`results`, `eliminated`, `respawn`, `notify`, `closePanel`, `holdVitals`.
+`results`, `eliminated`, `respawn`, `notify`, `closePanel`, `holdVitals`,
+`openAdmin`, `adminState`.
 
 ---
 
@@ -287,6 +312,7 @@ line-number map that is regenerated whenever the file changes.
 |---|---|
 | `Config.ResourceLabel`, `Config.Debug`, `Config.NotifyTitle` | Naming and the debug channel. |
 | `Config.Lobby` | The lobby ped, the ground marker, the blip, how players interact with it, and where they are returned to. |
+| `Config.Schedule` | Opening hours. Ships **on**, with four windows, on the server's own real clock rather than the city's — outside them nobody may create a match and nobody may join one. `offsetHours` shifts them if the box does not run in your players' timezone. |
 | `Config.Match` | Player counts, lives, countdowns, win conditions, respawn timing, spawn scatter, the keep-out barrier, the crossfire guard, the radar, the server-side position and death checks, and the rules about being dead or in a vehicle. |
 | `Config.Teams` | The team list, their colours and their order. |
 | `Config.Modes`, `Config.DefaultMode` | Free-for-all, team deathmatch and gun game: whether teams exist, what ends a round, and the gun-game ladder. |

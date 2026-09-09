@@ -17,20 +17,20 @@
     ------------------------------------------------------------------------------
      line   setting       what it is
     ------------------------------------------------------------------------------
-       81   Lobby         The NPC players walk up to
-      151   Schedule      Opening hours: when the door is actually open
-      187   Match         Lives, timers, player counts, win condition
-      484   Teams         The sides, and whether they may be uneven
-      600   Modes         Free-for-all, team deathmatch and gun game
-      904   DefaultMode   Which of them a new lobby opens on
-      923   Betting       Entry fees, self-bets, side-bets, how the pot is split
-      1100  UI            Panel colours, logo and title
-      1150  Permissions   Who may open a match, who may force-stop one
-      1231  Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1665   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2010   Database      Optional: leaderboard, and what players still owe the arena
-     2020   Webhook       Optional: a Discord line per finished match
-     2052   Dispatch      Optional: keeping police and EMS out of the arena
+       88   Lobby         The NPC players walk up to
+      158   Schedule      Opening hours: when the door is actually open
+      194   Match         Lives, timers, player counts, win condition
+      499   Teams         The sides, and whether they may be uneven
+      615   Modes         Free-for-all, team deathmatch and gun game
+      919   DefaultMode   Which of them a new lobby opens on
+      938   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1135   UI            Panel colours, logo and title
+     1193   Permissions   Who may open a match, who may force-stop one
+     1279   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1713   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2058   Database      Optional: leaderboard, and what players still owe the arena
+     2068   Webhook       Optional: a Discord line per finished match
+     2100   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -43,9 +43,16 @@
          `maxPot`, `maxConcurrentMatches` -- zero is the no-ceiling value
          everywhere in this file, and it is spelled out next to each one.
 
-      2. AN EMPTY LIST DOES NOT MEAN THE SAME THING TWICE. Empty job and
-         group lists in Config.Permissions mean EVERYONE; an empty list in
+      2. AN EMPTY LIST DOES NOT MEAN THE SAME THING TWICE, AND ONE OF THEM
+         CAN LOCK YOU OUT. An empty JOB list in Config.Permissions
+         (`createJobs`, `joinJobs`) means EVERYONE. An empty
+         `Config.Permissions.adminGroups` means NOBODY -- not everyone --
+         so emptying it takes /arenaadmin, /arenadispatch, /arenarevive,
+         /arenaisolation and /arenahours away from every player on the
+         server, including you. The server console (source 0) still
+         qualifies, and is the only way back in. An empty list in
          Config.Dispatch means NOTHING IS CALLED. Each one says which.
+         DO NOT empty `adminGroups` expecting it to mean everyone.
 
       3. NOTHING A PLAYER'S CLIENT CLAIMS IS TRUSTED. The weapon and ammo a
          client asks for are re-checked against the lists here by the server
@@ -444,6 +451,14 @@ Config.Match = {
         --
         -- One sighting is not enough and never will be. Set it low and a
         -- fighter whose game hitched at the wrong moment loses their round.
+        --
+        -- 0 DOES NOT SWITCH THIS HALF OFF -- it is read as 1, which is the
+        -- worst setting in the block: ONE sighting then removes a fighter
+        -- and forfeits their stake. `deadTicks` four lines down DOES treat 0
+        -- as off, and the two do not agree. To switch the fence check off,
+        -- set `enabled = false` on this whole block, or give the arena no
+        -- `boundary` -- there is no per-half off switch here. The console
+        -- says so at start-up if this is 0 or below.
         outsideTicks = 8,
 
         -- HOW MANY ONE-SECOND CHECKS IN A ROW a fighter's body must read as
@@ -1087,7 +1102,27 @@ Config.Betting = {
         -- Bets close this many seconds after the match starts. 0 closes
         -- them the moment the round begins.
         closeAfterStartSeconds = 30,
-        -- Winning side-bets pay stake x this. Losing ones are lost.
+        -- WHAT A WINNING SIDE-BET IS PAID, as a multiple of the stake --
+        -- and the number paid out is the WHOLE thing, the stake included,
+        -- not the profit on top of it. So the break-even is 1.0, and it is
+        -- not the obvious number:
+        --
+        --   2.0  a winning 1,000 is paid 2,000 -- 1,000 back and 1,000 won.
+        --   1.0  a winning 1,000 is paid 1,000 -- the stake back, no more.
+        --   0.2  a winning 1,000 is paid 200. THE WINNER LOSES 800 OF THEIR
+        --        OWN STAKE, for having been right.
+        --   0    the winner is paid NOTHING. Every stake is kept, and the
+        --        losers are no worse off than the winners.
+        --
+        -- ANYTHING BELOW 1.0 CHARGES PEOPLE FOR WINNING, which is not what
+        -- a house cut looks like -- that is Config.Betting.houseCutPercent.
+        -- The console says so at start-up if this is below 1.0.
+        --
+        -- ONLY READ ON 'odds'. It is the multiplier for BOTH halves of
+        -- betPayout -- a fighter bet settles on this same number when
+        -- `betPayout.fighters = 'odds'` -- and both of those ship as 'pool',
+        -- where the winners split the losers' money and this is never looked
+        -- at. Changing it on the shipped settings changes nothing.
         oddsMultiplier = 2.0,
         -- One bet per spectator per match.
         oneBetPerMatch = true,
@@ -1144,8 +1179,16 @@ Config.UI = {
 -- ======================================================================
 -- PERMISSIONS
 --
--- Empty job/group lists mean "everyone" -- that is the default, because an
--- arena is usually open to the whole server.
+-- THE TWO KINDS OF LIST HERE READ OPPOSITE WAYS ROUND, AND THAT IS NOT A
+-- TYPO. An empty JOB list means "everyone" -- the default, because an arena
+-- is usually open to the whole server. An empty adminGroups means NOBODY.
+--
+-- DO NOT EMPTY adminGroups EXPECTING IT TO OPEN THE ADMIN COMMANDS UP. It
+-- shuts them, for every player including you. That is deliberate: reading an
+-- empty list as "everyone" is right for who may fight, and would hand every
+-- player on the server the ability to force-stop and wipe other people's
+-- matches. The server console (source 0) always qualifies, and with an empty
+-- list it is the only thing that does.
 -- ======================================================================
 Config.Permissions = {
     -- Jobs allowed to CREATE a match. Empty = anyone may.
@@ -1153,7 +1196,12 @@ Config.Permissions = {
     -- ACE/ox_lib admin groups. This is the whole admin surface, not just the
     -- stop button: /arenaadmin (the tablet -- force-stop, wipe, the unpaid
     -- ledger, opening a player's stash by hand, and holding the arena's doors
-    -- open past Config.Schedule) and /arenahours are both gated on it.
+    -- open past Config.Schedule), /arenahours, /arenadispatch, /arenarevive
+    -- and /arenaisolation are all gated on it.
+    --
+    -- EMPTY MEANS NOBODY HERE, unlike the two job lists either side of it.
+    -- Each name is tried both as `group.<name>` and as a bare `<name>`,
+    -- because servers hand admin out both ways.
     adminGroups = { 'admin', 'god' },
     -- Anyone may join a match someone else created.
     joinJobs = {},

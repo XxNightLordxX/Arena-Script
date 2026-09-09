@@ -15,8 +15,26 @@ Config.Loadouts.weapons = {
     -- are separate items. That is exactly the per-weapon override
     -- config.lua's Config.Loadouts.defaultAmmoTypes note describes.
     --
-    -- ENABLED = FALSE ON EXPLOSIVES, LAUNCHERS AND NOVELTIES. They are
-    -- present so they can be switched on deliberately, rather than absent
+    -- EVERY ONE OF THE 96 ENTRIES BELOW IS `enabled = true`, INCLUDING ALL
+    -- THIRTEEN HEAVY WEAPONS -- the RPG, the homing, grenade, EMP, compact
+    -- and firework launchers, the minigun, both railguns, the Unholy
+    -- Hellbringer, the Widowmaker and the flamethrower. Nothing here is
+    -- switched off, and that is deliberate: the arena was asked to offer
+    -- everything this server owns.
+    --
+    -- IT IS A DECISION AND NOT A DEFAULT, so it is written down. Explosive
+    -- damage is not refused between teammates whatever
+    -- Config.Teams.friendlyFire says -- the crossfire guard allows or
+    -- refuses an explosion whole -- so on a team mode a launcher kills the
+    -- side that fired it. config.lua says the same beside friendlyFire.
+    --
+    -- TO TAKE ONE OUT OF THE ARENA, set `enabled = false` on its entry
+    -- here. That is the whole job: the server re-checks every loadout
+    -- request against this list before a round is handed out, so a switched
+    -- off weapon is genuinely gone rather than merely hidden from the panel,
+    -- and an edited client cannot ask for it. Delete the block instead and
+    -- it is gone too -- but `enabled = false` keeps the ammo item names for
+    -- when you change your mind.
 
     {
         key = 'acidspray',

@@ -454,15 +454,19 @@ keep the inventory UI open next to you.
 - [ ] Pick the **smallest** amount the weapon offers — 30 on the Pistol — and
       start again. **All of it is in the gun and there are no loose rounds**,
       which is correct: thirty rounds is thirty rounds.
-- [ ] The console shows `weapons: gave <weapon> x1 to <src> (ammo <n>)`, and
-      `<n>` is the MAGAZINE, not the whole pick. **There is no line for a
+- [ ] The console shows
+      `weapons: gave <weapon> x1 to <src> (ammo <n>, serial <serial>).`, and
+      `<n>` is the MAGAZINE, not the whole pick. The **serial** is how the
+      arena tells its own copy of a gun from the player's identical one when
+      it takes it back, so it is worth noting which one you were handed. **There is no line for a
       successful ammo-item grant** — the round-counting ledger that printed
       one is gone, and `ArenaAmmo.Issue` logs only failures now. Silence here
       is success.
-- [ ] **No `could not give` line.** One of those names an item that does not
-      exist on your server, or an inventory that was full — it is the only
-      place a wrong item name ever shows up, since nothing validates the names
-      at startup.
+- [ ] **No `weapons: ox_inventory would not give ...` line**, and no
+      `weapons: <src> was issued NOTHING despite a loadout of <n> weapon(s)`.
+      Either one names a weapon that does not exist in your ox_inventory
+      weapon data, or an inventory that was full — it is the only place a
+      wrong name ever shows up, since nothing validates the names at startup.
 - [ ] Pick a **different weapon** and start again. A different item arrives —
       a shotgun should bring `ammo-shotgun`, not the pistol's `ammo-9`. If two
       weapons bring the same item, two `ammoTypes` lines are pointing at the
@@ -506,8 +510,12 @@ arena keeps a slate at all. It is worth ten minutes.
 
 - [ ] Start a match. Mid-round, have the second player **switch characters**
       (not disconnect — switch) through your multicharacter script.
-- [ ] The console says `weapons: N arena weapon(s) left with <citizenid> and
-      are written down against them.` **Nothing is taken off the character
+- [ ] The console says `weapons: N arena weapon(s) and M item stack(s) left
+      with <citizenid> and are written down against them. They will be taken
+      back the next time that character is seen.` **Both numbers are
+      printed, and they are different things** — a fighter carrying nothing
+      but a plate and some rounds reads `0 arena weapon(s) and 2 item
+      stack(s)`, not as two guns. **Nothing is taken off the character
       they switched to** — that is the whole point. Reaching into whoever
       holds that server id now would take a stranger's guns.
 - [ ] `/arenaadmin` shows that citizen id with the weapon and its serial,
@@ -556,8 +564,8 @@ arena keeps a slate at all. It is worth ten minutes.
 - [ ] Start another and **restart the resource mid-round** (`restart
       crimson_arena`). Every issued item comes back off every player, before
       anything else in the shutdown runs.
-- [ ] Nothing in the console says `door: refusing to drop match <id> — <src>'s
-      kit is still stashed at <stash>`. That line means a match record was
+- [ ] Nothing in the console says `door: refusing to drop match <id> -- <src>'s
+      kit is still stashed at <stash>.`. That line means a match record was
       asked to close while this resource still owed somebody their own
       inventory. Refusing is the safe outcome, but read it as a sign that an
       exit path did not finish.
@@ -584,9 +592,19 @@ chatty about refusals, escrow and dispatch when that is on. `/arenadispatch`
 prints the dispatch report on demand. The README's Troubleshooting section
 covers the common causes.
 
-Anything involving money is logged with a `FORFEIT:` or `REFUND FAILED:` prefix
-and, where a webhook is configured, sent there regardless of `logPayouts`. If a
-pot goes missing, the console already knows why.
+Anything involving money is logged with a shouted prefix and, where a webhook is
+configured, sent there regardless of `logPayouts`. If a pot goes missing, the
+console already knows why. The ones to grep for:
+
+| Prefix | What it means |
+|---|---|
+| `FORFEIT:` | A cancelled lobby kept its stakes instead of returning them. |
+| `REFUND REFUSED:` | A stake that was forfeited when its owner quit a live round, refused a refund and left in the pot. Expected, not a fault. |
+| `REFUND DEFERRED:` | A refund the player was not on the server to receive. Filed against their character and paid when they are next seen. The ordinary case. |
+| `REFUND FAILED:` | A refund with **no citizen id** to file against. Rare, and the one that needs a human. |
+| `REFUND INCOMPLETE:` | A match that still owes money across its players after a refund sweep. |
+| `PAYOUT UNDELIVERED:` | A settled payout on the unpaid ledger, to be paid on return. `/arenaadmin` lists it. |
+| `PAYOUT LOST:` | A settled payout with no citizen id to file against. Settle by hand. |
 
 ## Before you go live
 

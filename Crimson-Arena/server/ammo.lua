@@ -1467,8 +1467,20 @@ end
 function ArenaAmmo.Clear(matchId)
     if not Arena.IsKey(matchId) then return false end
 
-    heldBefore[matchId] = nil
-
+    -- THE REFUSAL COMES FIRST, AND `heldBefore` GOES WITH THE REST OR NOT AT
+    -- ALL.
+    --
+    -- This dropped the floor before deciding whether to drop anything. When
+    -- the refusal then fired -- somebody's kit still stashed against the
+    -- match -- the issued rows survived, as intended, but the record of what
+    -- each fighter WALKED IN WITH was already gone. `takeBack` reads that as
+    -- a floor of zero, so the exit that followed reclaimed a player's own
+    -- ammunition down to nothing.
+    --
+    -- It bites hardest exactly where the floor is the only protection there
+    -- is: with the door off, or after a stash failed, a fighter's own rounds
+    -- are loose in their pockets beside the arena's. DO NOT hoist this line
+    -- back above the loop.
     for src, record in pairs(stashed) do
         if record.matchId == matchId then
             ArenaLog('door: refusing to drop match %s -- %s\'s kit is still stashed at %s.',
@@ -1476,6 +1488,8 @@ function ArenaAmmo.Clear(matchId)
             return false
         end
     end
+
+    heldBefore[matchId] = nil
 
     issued[matchId] = nil
     issuedAmmo[matchId] = nil

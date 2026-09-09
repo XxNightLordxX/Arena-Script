@@ -558,6 +558,15 @@ function ArenaBetting.TakeStake(src, matchId, amount, account)
             return false, 'error.bet_already_staked'
         end
 
+        -- AND IT IS THEIR LIVE STAKE AGAIN, so the forfeit comes off it.
+        --
+        -- Leaving marks a stake forfeited so no later refund can hand it
+        -- back. Sitting back down on that same money makes them a paying
+        -- fighter again -- and a fighter whose stake still carried the flag
+        -- would be refused their entry fee on an abort they had nothing to do
+        -- with, having paid for the round like everybody else.
+        held.forfeited = nil
+
         trace('%s took a seat on match %s back on the %d already forfeited to its pot -- nothing taken',
             tostring(held.citizenid or id), tostring(matchId), held.amount)
         return true, nil
@@ -604,6 +613,27 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
         return false
     end
 
+    -- SETTLED RATHER THAN SKIPPED, and the difference is whether the match
+    -- can ever be dropped. A forfeited stake is real money still sitting in
+    -- the pot, so GetPot counts it and Clear refuses to drop a match while it
+    -- does. Merely refusing to pay it would leave it counted for ever and the
+    -- escrow could never be closed out. Settling it as a forfeit takes it out
+    -- of the pot without paying anybody -- which is what ForfeitAll does with
+    -- the same money at the end of a round.
+    --
+    -- TRUE, because nothing is owed. A false here reads as "could not pay"
+    -- and would have RefundAll report the match as still owing money it has
+    -- deliberately kept.
+    if stake.forfeited then
+        stake.settled = true
+        stake.settledAs = 'forfeit'
+        stake.reason = reasonKey
+        ArenaLog('REFUND REFUSED: %d for %s on match %s was FORFEITED when they left and stays in the pot. ' ..
+            'They were told so at the time. Nothing was paid back.',
+            stake.amount, tostring(stake.citizenid or id), tostring(matchId))
+        return true
+    end
+
     if not credit(id, stake.amount, transaction('refund', matchId),
         stake.citizenid, stake.account) then
         -- Left unsettled deliberately: this is money still held and still
@@ -646,18 +676,29 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
 end
 
 function ArenaBetting.RefundAll(matchId, reasonKey)
-    local refunded, total, owed = 0, 0, 0
+    local refunded, total, owed, kept = 0, 0, 0, 0
 
     for id, stake in pairs(stakesOf(matchId)) do
         if not stake.settled then
             local amount = stake.amount
+            -- READ BEFORE THE CALL, because RefundOne settles it.
+            local forfeited = stake.forfeited == true
             if ArenaBetting.RefundOne(matchId, id, reasonKey) then
-                refunded = refunded + 1
-                total = total + amount
+                if forfeited then
+                    kept = kept + 1
+                else
+                    refunded = refunded + 1
+                    total = total + amount
+                end
             else
                 owed = owed + amount
             end
         end
+    end
+
+    if kept > 0 then
+        ArenaLog('betting: match %s kept %d forfeited stake(s) rather than refunding them (%s).',
+            tostring(matchId), kept, tostring(reasonKey))
     end
 
     if owed > 0 then
@@ -676,6 +717,21 @@ function ArenaBetting.KeepInPot(matchId, src)
 
     local stake = stakesOf(matchId)[id]
     if not stake or stake.settled then return 0 end
+
+    -- WRITTEN DOWN, NOT JUST ANNOUNCED.
+    --
+    -- `settled` in this file means "this money has left the pot", which is
+    -- why a forfeit deliberately does NOT set it: the stake stays in the pot
+    -- and the survivors win it. But every refund path reads unsettled as
+    -- REFUNDABLE, so the stake this line just told a player they had lost
+    -- was handed straight back on the next abort -- and the commonest abort
+    -- of all is the match dropping under minPlayersToPayOut BECAUSE they
+    -- left. Leaving paid for itself.
+    --
+    -- So the flag is its own: still in the pot for GetPot and for Settle,
+    -- never returnable to the player who walked out. RefundOne is the one
+    -- place that has to honour it.
+    stake.forfeited = true
 
     trace('kept %d of %s in the pot on match %s', stake.amount, tostring(id), tostring(matchId))
     ArenaNotifyKey(id, 'notify.stake_forfeited', 'error', money(stake.amount))

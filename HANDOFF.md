@@ -20,8 +20,10 @@ resolved.
 4. **WHAT THIS SESSION GOT WRONG** — the errors that repeated, with counts.
    One was made six times and one five times, each attempt freshly convinced.
    You will make them too unless you read the table.
-5. **PART D answer 8** — four of the five doc/code mismatches are confirmed;
-   one is incomplete.
+5. **PART E** — thirteen agents verified all of this against the code and by
+   running the tools. **It corrects three of my own answers**, including one
+   where I said the repository could not tell you which config numbers are
+   John's. It can, and E1 lists them.
 
 ---
 
@@ -1219,3 +1221,219 @@ say plainly in the doc that they differ and why.**
 One more thing you will want: `:1392` reads `outsideMetres > 0`, so setting it
 to **0 disables the out-of-fence kill refusal entirely**. That is a supported
 config value with a non-obvious consequence.
+
+---
+
+# PART E — VERIFIED APPENDIX (supersedes parts of PART D)
+
+Thirteen agents, no errors, ~2.7M tokens, run against `ecf7716`. Everything
+below was produced by **reading the code and running the tools**, not from
+memory. Where it corrects an answer in PART D, **the original is left in place
+above and the correction is marked** — Part D shows what one session believed;
+this shows what the repository proves.
+
+**Three of my own answers were wrong or too weak. They are corrected here.**
+
+---
+
+## E1. CORRECTION to answer 2 — the repository proves far more than I said
+
+**PART D says I cannot tell you which config numbers are John's. That was
+wrong.** I could not recall them, but the pre-strip `config.lua`
+(`git show 23a8e05^:Crimson-Arena/config.lua`, 3,129 lines — the strip
+deliberately deleted the "why this number changed" history) and 332 commit
+messages record most of it verbatim.
+
+### HIS numbers — do not tune these
+
+| Setting | Value | Evidence |
+|---|---|---|
+| `Config.Match.lives` | default **3**, range 1–10 | `8786ed6`: *"Asked for as \"3 lives per match\", then as the host choosing."* Was a flat `lives = 1`. **The clearest owner-set gameplay number in the repo.** |
+| every firearm `ammo.max` | **500** | `cfcf3b6`: *"Asked for: 500 rounds on every gun, 30 bandages, 25 armour."* Was 80/150/250/500 per weapon. |
+| `supplies.items.armour.max` | **25** | same commit. Was 4. |
+| `supplies.items.bandage.max` | **30** | same commit. Was 6. |
+| `Config.Loadouts.slots` | **4**, guns and blades in one count | `af76eb6`, verbatim: *"Let it choose if they only want to guns or only melee."* Replaced separate `weaponSlots`/`meleeSlots`. |
+| `config.weapons.lua` — **all 96 weapons enabled**, heavy included | on | `b8b053b`: *"AT THE OPERATOR'S INSTRUCTION: every weapon is enabled"* — RPG, launchers, minigun, railguns, flamethrower. README calls it *"a deliberate choice, not an oversight"*. |
+| `Config.Modes.gungame.enabled` | **true** | Flipped **four times**, every flip owner-driven (`2cd44d7`, `f0292f1`, `2c75115`, `d6d16d9` *"The operator asked for it"*). **Do not touch.** |
+| `Config.Debug` | **true** | `023cee1`: *"ships on, as asked. It is chatty on purpose."* |
+| `Config.Schedule.windows[1]` | **0 → 4** | `d697fa8`: *"runs to 4am rather than 2am, as asked."* The other three windows have **no** owner evidence. |
+| Lobby ped / marker / `returnCoords` | `vector4(-282.0125, -2030.4575, 30.1457, 276.6953)` | `2a30c70`: *"at the operator's request."* All three move together. |
+| `Config.Arenas['trailerpark']` | exists, enabled | `a9d8fe9`: *"a new arena at the operator's own coordinates."* |
+| Arena roster — only skydome + trailerpark | 2 | `439a53c`: *"At the operator's request the ground arenas are switched OFF."* |
+| `Config.Teams.list` colours | brightened | `30da6ee`: *"BRIGHTER BLIPS, asked for directly."* |
+| `Config.Match.spawnHeightOffset` | **1.0** | `0b9f1d0`, from field reports quoted verbatim: *"in the trailer park i keep spawning in trailers"*. **Field-validated by his players.** |
+| `Config.Betting.fighterBets.max` | **25000** | Your finding, confirmed: EXPLOITS decision 6, under *"do all your recommendations besides option 7 and 8"*. Standing rule in the config comment: **keep level with `spectatorBets.max`.** |
+| `gungame.maxTiersPerVictim` | **0** | Decision 8: *"You asked me to remove it so a 1v1 works."* |
+
+### NOT his — developer calls, safe to revisit
+
+`outsideMetres` 60→**10** (`566171c`, exploit fix — see E4); `entryFee.default`
+0→**500** (`40c58e1`, explicitly *not* a request); `supplies.totalItems` 55→**0**
+(developer tidy-up — but the **25 and 30 above ARE his**); `gungame.tierAmmo`
+200; `maxKillDistance` 150.0; boundary `damagePerTick` 8→20; skydome
+`boundary.radius` 60→**110**. `Config.Schedule.enabled` was toggled off only as
+temporary test scaffolding and is back on.
+
+### Also explicitly rejected — beyond the two you know
+
+Alongside EXPLOITS 7 and 8: **decision 5's alternative** (`closeAfterStartSeconds
+= 0` for everyone — watchers keep their 30 seconds); **decision 1's hard fix**
+(server-authoritative death detection, declined as the owner's design call);
+and **per-accomplice kill caps** (*"I did not cap fed kills per accomplice;
+that is decision 8, which you left alone"*).
+
+### Do not "add a knob" for these — they are rules on purpose
+
+- *"Full health and a full plate on every life ARE A RULE, NOT A SETTING."*
+- *"No slash command exists. The NPC is the way in, and it is the only way in."*
+- *"WHEN THE BOOK SHUTS FOR A FIGHTER: the moment the round goes live, and
+  there is no setting for it."*
+- `lockdownMode = 'relaxed'` — *"not `'strict'` on purpose."*
+
+**Still genuinely open** — unchanged from PART D: false-positive tolerance,
+the 1v1 question, and scope. Those really are not in the repository.
+
+---
+
+## E2. CORRECTION to answer 5 — the tools were all run
+
+**PART D says only the stripper was ever run and I could not settle 972 vs 983.
+Both gaps are now closed with real output.**
+
+### The baseline is neither 972 nor 983. It is **994** at HEAD.
+
+No stored baseline exists anywhere; it must be regenerated. Run against every
+relevant tree:
+
+```
+1786866  973     ← where "972" was written. Hand-typed, off by one even then.
+c51718a  978
+cfcee7f  978     ← the reverted first strip's own figure
+566171c  983
+7fb527e  983     ← "983" is the honest POST-STRIP number
+ecf7716  994     ← HEAD
+```
+
+The +11 since the strip is exactly my ledger work: 5 lost (the four dead
+`ArenaAmmo` functions and `meta.locale_probe`), 16 new (`LoadOwedKit`,
+`OwedKit`, `OwedKitIsSaved`, `ArenaDb`, `ArenaDbReady`, `ArenaToast`,
+`ArenaToastKey`, the admin-kit panel ids, the new locale keys).
+`inventory.py` reports it exactly, including `FAIL — something a server
+depends on is gone`, which is **correct and expected**: those four functions
+were deleted deliberately.
+
+### Both verifiers still work. "Before" is a commit.
+
+`git archive <commit> | tar -x` into a scratch dir, then point the tool at it.
+**The original strip was independently re-verified from scratch:**
+
+```
+verify_lua_identical.sh  566171c → 7fb527e   18 files, 0 changed   PASS
+verify_web_identical.py  566171c → 7fb527e    3 files, 0 changed   PASS
+inventory.py             566171c → 7fb527e   983 → 983, 0 lost     PASS
+```
+
+That reproduces `BEFORE-WE-DELETE.md`'s table exactly.
+
+### `strip_all.sh` is **NOT stale**, and HEAD is strip-safe
+
+The 19 hand-written entries still match the tree byte-for-byte. My PART D
+worry about `tools/harness/` was a non-issue: `strip_all.sh` only touches
+`$ROOT/<named path>` inside a copy of `Crimson-Arena`, and `tools/harness/`
+is outside it. A full re-strip of HEAD then diffed against HEAD:
+
+```
+18 lua files, 0 changed   PASS
+ 3 web files, 0 changed   PASS
+```
+
+**So every comment in my thirteen commits survives the strip, and the stripped
+tree is behaviourally identical to the shipped one.** Nothing was written into
+the working tree; `git status --porcelain` was empty before and after.
+
+---
+
+## E3. Answer 8 — all five CONFIRMED, none refuted
+
+Every claim was verified independently and then adversarially attacked by a
+second agent instructed to refute it. **All five survived.**
+
+| | Accurate | Fix the | Extra found by the adversarial pass |
+|---|---|---|---|
+| 8(a) | yes | **doc** | See E4 |
+| 8(b) | yes | **doc** | The cap **was** delivered (`Arena.KillCeilingFor`, `shared/arena.lua:428-437`, 200 m on a 200 m fence). The fail-open is deliberate — `match.lua:1361-1365` reads **"FAILS OPEN, ON PURPOSE"**. A nil for **either** body skips it, not just the killer's. |
+| 8(c) | yes | **code** | See E4 — the deleted spec proves intent |
+| 8(d) | yes | **both** | The "cheater wins a 1v1 by attrition" shape does **not** work unaided: they are frozen and disarmed by their own `deathReported` flag (`client/match.lua:595-606`), so nothing kills the honest player and the round runs to the 600 s clock. |
+| 8(e) | yes | **both** | See E4 — **my answer was wrong** |
+
+---
+
+## E4. The four things worth acting on first
+
+### (i) My 8(e) answer was too generous to the doc. CORRECTED.
+
+**PART D says** the 60.0 fallback at `match.lua:1084` "is what applies whenever
+the config block is missing or unreadable", and therefore the doc is not simply
+stale.
+
+**That is wrong.** `match.lua:1081` returns early —
+`if type(block) ~= 'table' or block.enabled ~= true then return false, 0.0, 0, 0 end`
+— so a **missing or disabled block turns the checks OFF entirely and the 60
+never runs.** The `or 60.0` fires only on an absent key, a **misspelled** key
+(American `outsideMeters`), or a genuinely non-numeric value. A quoted `"10.0"`
+is fine; `tonumber` handles it.
+
+So the doc **is** simply stale, and the fallback is a **latent code bug**: the
+only person who reaches it is an operator who mistyped one key, and what they
+get back is the exact 60 m pocket `566171c` was written to close.
+
+**But do NOT delete the doc's reasoning.** `config.lua:436-437` still makes the
+same argument in the same words — *"a fighter who steps over the line is being
+bled by the boundary already"* — and the spec that shipped **with** the fix
+(`566171c:Crimson-Arena/tests/serverchecks_spec.lua:262-265`) is titled *"and a
+fighter a step past the fence is left alone"*. `566171c` overturned the
+**magnitude**, not the **principle**.
+
+**Resolution:** doc — change "Sixty" to "Ten" and say why 60 was a pocket, keep
+the "not a second boundary" reasoning. Code — make `match.lua:1084` `or 10.0`.
+
+Bonus, unrelated but real: `match.lua:1391` discards the enabled flag and uses
+`outsideMetres > 0` as its test, so **`outsideMetres = 0` silently disables the
+kill-credit refusal** while leaving the sweep running at zero tolerance.
+
+### (ii) 8(a) — the doc is wrong in a second way you did not flag
+
+Your reading is right and the change was deliberate: at `c51718a` the doc was
+**true** — the check sat inside `OnDeath` *before* `player.alive = false` and
+returned false. `566171c` moved it into `resolveKiller`, **43 minutes later**,
+and the stale-claim sweep in `46e8555` missed the doc sentence.
+
+Two additions:
+
+- **"It costs the reporter nothing to send" is now false.** It costs a booked
+  death, plus a lost tier in a ladder, plus a life in a lives-spending mode.
+- **"Spends a life" is only true in some modes.** `WIN_CONDITIONS_WITHOUT_LIVES`
+  (`shared/arena.lua:549-556`) holds `score_limit` and `most_kills`, and a
+  ladder never spends lives — and those are precisely the modes the doc cites
+  as the measured exploits.
+- **A worse hole the doc hides:** `resolveKiller` bails at `match.lua:1324-1328`
+  if the killer id is missing, invalid, the reporter themselves, or off-roster
+  — all **before** the fence test. So a fake death naming no killer **books
+  unconditionally, from any distance.**
+
+### (iii) 8(c) — the deleted test suite proves this was intended to work
+
+`Crimson-Arena/tests/serverchecks_spec.lua` exists at `7fb527e^`. Its test at
+lines 226-243, *"and the count has to be CONSECUTIVE, not merely reached"*,
+opens: **"A HITCH IS NOT A CHEAT. A player whose world stalls for a second, OR
+WHO IS BETWEEN A DEATH AND A RESPAWN…"**
+
+**The behaviour you found missing was specified, tested, and the test was
+deleted by the strip.** You have that file recovered. This is a code bug with a
+spec already written for it.
+
+### (iv) 8(d) — no evidence it was ever considered
+
+The adversarial pass looked and found none. Combined with (iii), the honest
+framing for John is that the dead sweep has two independent holes, and how
+tightly to close them is **his** call — question 2(e).

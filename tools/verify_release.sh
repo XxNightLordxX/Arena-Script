@@ -92,13 +92,22 @@ if command -v lua5.4 >/dev/null 2>&1 && [ -d $R/tests ]; then
     [ "$f" -eq 0 ] && ok "$p specs pass" || bad "$f of $((p+f)) specs fail:$bad_specs"
 else skip "spec suite not present (stripped for production -- this is normal)"; fi
 
-head_ "7. nobody but the owner is credited"
+head_ "7. every internal contract holds"
+if [ -f tools/verify_contracts.py ]; then
+    if out=$(python3 tools/verify_contracts.py "$R" 2>&1); then
+        ok "$(printf '%s' "$out" | grep -c '^  ok')  contracts hold (locale keys, Config keys, NUI names, element ids, the manifest, the line map)"
+    else
+        bad "a contract is broken:"; printf '%s\n' "$out" | sed 's/^/        /'
+    fi
+else skip "tools/verify_contracts.py missing"; fi
+
+head_ "8. nobody but the owner is credited"
 if [ -x tools/verify_credit.sh ]; then
     ./tools/verify_credit.sh >/dev/null 2>&1 && ok "tree, messages, authors and trailers all clean" \
                                              || { bad "credit check failed"; ./tools/verify_credit.sh | sed 's/^/        /'; }
 else skip "tools/verify_credit.sh missing"; fi
 
-head_ "8. the dependency surface is intact"
+head_ "9. the dependency surface is intact"
 if [ -f tools/inventory.py ]; then
     c=$(python3 tools/inventory.py $R 2>/dev/null | grep -cE '^' || echo 0)
     [ "$c" -gt 0 ] && ok "inventory.py ran ($c lines) -- compare against a known-good tree by hand" \

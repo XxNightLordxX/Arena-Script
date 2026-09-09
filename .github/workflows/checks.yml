@@ -1,0 +1,170 @@
+# Crimson Arena -- CI
+#
+# The workflow this replaces ran three gates: parse, luacheck, and the spec
+# suite. Two of the three depended on files the production strip removed --
+# tests/ and .luacheckrc are deliberately not shipped -- so it was deleted with
+# them and nothing has checked a push since.
+#
+# These are the gates that still MEAN something against the tree as it ships,
+# in the order they are worth failing on. A file that does not parse makes
+# every check after it meaningless, so that goes first.
+#
+# None of this boots FiveM. It cannot: the natives do not exist outside a
+# server. What it proves is that nothing fails to load, that no file reached
+# for a global it never declared, that the two non-Lua files are well formed,
+# that stripping the resource for production changes no instruction, and that
+# the work is credited to its author and nobody else.
+#
+# To run the same gates locally, including the spec suite if you have restored
+# it: ./tools/verify_release.sh
+
+name: checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first run's answer stale.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: parse, scope, formats, strip and credit
+    runs-on: ubuntu-latest
+
+    steps:
+      # FULL HISTORY, NOT A SHALLOW CLONE. The credit gate reads every commit's
+      # author, committer and trailers, and a shallow clone would pass by
+      # simply not having the commit that failed.
+      - name: Check out, with history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # lua5.4 is the runtime this resource ships against -- fxmanifest.lua
+      # says `lua54 'yes'` -- so it is the one the checks must run under.
+      - name: Install lua5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends lua5.4
+          lua5.4 -v
+
+      # Every .lua file, fxmanifest.lua and config.lua included: a manifest
+      # that does not parse takes the whole resource down at start. -p parses
+      # and discards, so nothing is written.
+      - name: Every Lua file parses
+        run: |
+          set -uo pipefail
+          status=0
+          while IFS= read -r -d '' file; do
+              if ! luac5.4 -p "$file"; then
+                  echo "::error file=${file}::does not parse under lua5.4"
+                  status=1
+              fi
+          done < <(find Crimson-Arena -type f -name '*.lua' -print0)
+          exit "$status"
+
+      # A local referenced ABOVE its own declaration compiles cleanly and is
+      # nil when it runs. The only symptom is the name appearing as a GLOBAL in
+      # the bytecode, so that is what this looks for: any lowercase name
+      # reaching _ENV that is not one this resource genuinely reads.
+      #
+      # fxmanifest.lua is excluded because it is a manifest of directives
+      # rather than a script, and every bare word in it would read as a leak.
+      #
+      # This has already caught a real defect once, in a forward declaration
+      # placed below the function that called it.
+      - name: No local is used before it is defined
+        run: |
+          set -uo pipefail
+          known='^(Arena[A-Za-z]*|Config|Citizen|Entity|Player|Ped|Vehicle|exports|msgpack|json|promise|lib|MySQL|locale|source|vector2|vector3|vector4|quat|joaat|assert|collectgarbage|error|getmetatable|ipairs|load|next|os|pairs|pcall|print|rawequal|rawget|rawlen|rawset|require|select|setmetatable|string|table|tonumber|tostring|type|unpack|xpcall|math|utf8|debug|coroutine|[A-Z][A-Za-z0-9_]*)$'
+          status=0
+          while IFS= read -r -d '' file; do
+              for name in $(luac5.4 -l -l -p "$file" | grep -oP '_ENV "\K[A-Za-z_][A-Za-z0-9_]*' | sort -u); do
+                  if ! printf '%s' "$name" | grep -qE "$known"; then
+                      echo "::error file=${file}::'${name}' reaches _ENV -- a local used before its definition, or a genuine global this gate does not know about"
+                      status=1
+                  fi
+              done
+          done < <(find Crimson-Arena -type f -name '*.lua' ! -name 'fxmanifest.lua' -print0)
+          exit "$status"
+
+      # The panel's script and every player-facing string. Both are read by
+      # something other than Lua, so neither is covered above.
+      - name: The panel and the locale file are well formed
+        run: |
+          set -uo pipefail
+          node --check Crimson-Arena/html/app.js
+          python3 -c "import json; json.load(open('Crimson-Arena/locales/en.json'))"
+
+      # The resource ships stripped of its explanatory comments. This proves
+      # that doing so changes no INSTRUCTION: both sides are compiled and the
+      # instruction streams compared with line numbers taken out, because
+      # removing a comment moves the lines a function was defined over and a
+      # check that cries wolf is not a check.
+      - name: Stripping for production changes no instruction
+        run: |
+          set -uo pipefail
+          status=0
+          work="$(mktemp -d)"
+          cp -r Crimson-Arena "$work/r"
+          while IFS= read -r -d '' file; do
+              rel="${file#Crimson-Arena/}"
+              python3 tools/strip_prod.py --header "Crimson Arena" "$work/r/$rel" >/dev/null
+              before="$(luac5.4 -l -p "$file"          | grep -oP '^\t\d+\t\[\d+\]\t\K\S+' | md5sum)"
+              after="$( luac5.4 -l -p "$work/r/$rel"   | grep -oP '^\t\d+\t\[\d+\]\t\K\S+' | md5sum)"
+              if [ "$before" != "$after" ]; then
+                  echo "::error file=${file}::stripping this file changes what it does"
+                  status=1
+              fi
+              if ! luac5.4 -p "$work/r/$rel"; then
+                  echo "::error file=${file}::does not parse once stripped"
+                  status=1
+              fi
+          done < <(find Crimson-Arena -type f -name '*.lua' ! -name 'fxmanifest.lua' ! -name 'config.lua' -print0)
+          exit "$status"
+
+      # The harnesses load the REAL server files under a fake FiveM environment
+      # and drive them. They are the only executable coverage that ships in this
+      # repository -- the spec suite is deliberately stripped -- and they cover
+      # the two files every serious defect in this project has lived in.
+      - name: The harnesses pass
+        run: |
+          set -uo pipefail
+          status=0
+          cd tools/harness
+          for h in *.lua; do
+              if lua5.4 "$h" >/dev/null 2>&1; then
+                  echo "  ok   $h"
+              else
+                  echo "::error file=tools/harness/${h}::harness failed"
+                  lua5.4 "$h" || true
+                  status=1
+              fi
+          done
+          exit "$status"
+
+      # Every name that crosses a boundary: locale keys and their placeholder
+      # counts, Config keys, NUI actions and callbacks, element ids, CSS classes,
+      # the manifest's file list, and config.lua's line map. A typo in any of
+      # these is silent at load time and only shows up when a player hits it.
+      - name: Every internal contract holds
+        run: python3 tools/verify_contracts.py Crimson-Arena
+
+      # The tools themselves. A broken gate is worse than no gate.
+      - name: The tools parse
+        run: |
+          set -uo pipefail
+          status=0
+          for f in tools/*.sh; do bash -n "$f" || { echo "::error file=${f}::shell syntax"; status=1; }; done
+          for f in tools/*.py; do python3 -m py_compile "$f" || { echo "::error file=${f}::python syntax"; status=1; }; done
+          exit "$status"
+
+      # Nobody but the author is credited, in the tree or in any commit.
+      - name: The work is credited to its author
+        run: ./tools/verify_credit.sh

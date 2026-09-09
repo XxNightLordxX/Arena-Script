@@ -45,8 +45,14 @@ ArenaMatch = {}
 local SWEEP_INTERVAL_MS = 1000
 
 local function toPoint(value)
+    -- Arena.IsPoint RATHER THAN A LIST OF ITS OWN. Elsewhere in this file the
+    -- rule is written down as "Arena.IsPoint is the one place that knows the
+    -- list"; this hand-rolled its own and quietly left out vector2 and
+    -- userdata, which made a comment further down claiming this had already
+    -- gone through IsPoint false. DO NOT write the types out again.
+    if not Arena.IsPoint(value) then return nil end
+
     local kind = type(value)
-    if kind ~= 'table' and kind ~= 'vector3' and kind ~= 'vector4' then return nil end
 
     local indexed = kind == 'table' and value or nil
     local x = tonumber(value.x) or (indexed and tonumber(indexed[1]))

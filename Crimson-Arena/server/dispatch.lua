@@ -747,7 +747,18 @@ local function readCancelEntry(key, entry)
 end
 
 local function insideLiveArena(point)
-    if type(point) ~= 'table' and type(point) ~= 'vector3' then return false end
+    -- THROUGH Arena.IsPoint, WHICH IS THE ONE PLACE THAT KNOWS THE LIST.
+    --
+    -- Written out here it read `table` or `vector3` and nothing else -- so a
+    -- vector4, which is what a dispatch resource hands over when it sends
+    -- coordinates WITH a heading, was refused. In this runtime a vector is
+    -- its own type, so `type()` on one answers 'vector4' and NEVER 'table'.
+    -- The whole point of this function is to recognise that a shot was fired
+    -- inside an arena; refusing the payload means it is not recognised, and
+    -- the alert the arena exists to swallow goes out to the city police
+    -- instead. Silent, and only on the servers whose dispatch sends a
+    -- heading. DO NOT write the types out again.
+    if not Arena.IsPoint(point) then return false end
 
     local px, py = tonumber(point.x), tonumber(point.y)
     if not px or not py then return false end
@@ -781,14 +792,19 @@ local function pinnedByLocation(entry, ...)
 
     local payload = (select(entry.coordsArg, ...))
 
-    -- vector3 as well as table, to match what insideLiveArena accepts. These
-    -- two disagreed: a payload that WAS the point rather than a table
-    -- carrying one was rejected here, forty lines before the function that
-    -- would have taken it.
-    local kind = type(payload)
-    if kind ~= 'table' and kind ~= 'vector3' then return false end
+    -- THE SAME QUESTION AS insideLiveArena, SO IT MUST BE THE SAME ANSWER.
+    --
+    -- These two kept their own hand-written type lists and drifted: a payload
+    -- that WAS the point rather than a table carrying one was rejected here,
+    -- forty lines before the function that would have taken it. Both now ask
+    -- Arena.IsPoint, which is the only thing that knows every shape a
+    -- coordinate arrives in -- vector4 included, and a vector is its own type
+    -- here, never a 'table'. DO NOT give either of them a private list again.
+    if not Arena.IsPoint(payload) then return false end
 
-    if kind == 'vector3' then return insideLiveArena(payload) end
+    -- A BARE POINT HAS NO `coords`, and reading one off it must not be
+    -- mistaken for a payload that carries one.
+    if type(payload) ~= 'table' then return insideLiveArena(payload) end
 
     return insideLiveArena(payload.coords or payload)
 end

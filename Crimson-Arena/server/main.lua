@@ -525,6 +525,11 @@ local function pushAdmin(src, matchId)
             hoursLine = Arena.ScheduleLine(),
             hoursOpensAt = ArenaHoursSnapshot().opensAt,
             owed = withHolders(rows),
+            -- WHAT LEFT WITH SOMEBODY, beside what the arena is holding FOR
+            -- somebody. The list above is the arena's debt to a player; this
+            -- is the player's debt to the arena, and an operator who cannot
+            -- see it cannot tell a quiet server from one being farmed.
+            owedKit = withHolders(ArenaAmmo.OwedKit()),
             stashesFound = total,
             stashesRead = read,
         })

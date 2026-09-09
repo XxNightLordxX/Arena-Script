@@ -3473,6 +3473,7 @@
         focused: null,
         player: null,
         owed: [],
+        owedKit: [],
         stashesFound: 0,
         stashesRead: 0,
         hoursOpen: true,
@@ -3672,7 +3673,13 @@
            yet", and any positive number means a real answer, including the
            real answer that there is nothing. */
         var looked = int(admin.stashesRead, 0) > 0 || int(admin.stashesFound, 0) > 0;
-        show(byId('admin-stash-empty'), onStashes && !onStash && owed.length === 0 && looked);
+        var kit = arrayOf(admin.owedKit);
+        /* AND NO WEAPONS OUT EITHER. "The arena is holding nothing for
+           anybody" is about stashes, and read alone it told an operator
+           everything was settled while a list of missing guns sat directly
+           underneath it. */
+        show(byId('admin-stash-empty'),
+            onStashes && !onStash && owed.length === 0 && kit.length === 0 && looked);
         show(byId('admin-stash-waiting'), onStashes && !onStash && owed.length === 0 && !looked);
 
         var stashLine = byId('admin-stash-line');
@@ -3717,6 +3724,46 @@
                 card.appendChild(open);
                 card.appendChild(returnButton(entry, 'btn admin-owed-give'));
                 stashBox.appendChild(card);
+            });
+        }
+
+        show(byId('admin-kit-heading'), onStashes && !onStash && kit.length > 0);
+
+        var kitLine = byId('admin-kit-line');
+        if (has(kitLine)) {
+            var guns = 0;
+            var hereNow = 0;
+            kit.forEach(function (entry) {
+                guns += int(entry.count, 0);
+                if (int(entry.src, 0) > 0) hereNow += 1;
+            });
+
+            /* NO BUTTON, DELIBERATELY. There is nothing useful to press:
+               collecting needs the character on the server, and when they are
+               the door and the sweep already do it. A button here would only
+               invite an admin to reach into somebody's inventory by hand. */
+            kitLine.textContent = kit.length === 0 ? ''
+                : plural(guns, 'arena weapon') + ' left with '
+                  + plural(kit.length, 'character')
+                  + (hereNow > 0 ? ', ' + hereNow + ' of them on the server now' : '')
+                  + '. Each is taken back the next time that character is seen \u2014 '
+                  + 'nothing has to be pressed. This list is in memory: a restart forgets it.';
+        }
+
+        var kitBox = byId('admin-kit-list');
+        if (has(kitBox)) {
+            clear(kitBox);
+            kit.forEach(function (entry) {
+                var card = makeEl('div', 'admin-stash-row');
+                card.appendChild(makeEl('span', 'admin-stash-who',
+                    String(entry.citizenid)
+                    + (int(entry.src, 0) > 0 ? ' \u00b7 here now' : ' \u00b7 offline')));
+                card.appendChild(makeEl('span', 'admin-stash-facts',
+                    arrayOf(entry.weapons).map(function (row) {
+                        return String(row.name)
+                            + (row.serial ? ' (' + String(row.serial) + ')' : ' (no serial)');
+                    }).join(', ')));
+                kitBox.appendChild(card);
             });
         }
 
@@ -3843,6 +3890,7 @@
                     admin.open = true;
                     admin.matches = arrayOf(data.matches);
                     admin.owed = arrayOf(data.owed);
+                    admin.owedKit = arrayOf(data.owedKit);
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
                     admin.hoursOpen = data.hoursOpen !== false;
@@ -3864,6 +3912,7 @@
                     if (!admin.open) break;
                     admin.matches = arrayOf(data.matches);
                     admin.owed = arrayOf(data.owed);
+                    admin.owedKit = arrayOf(data.owedKit);
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
                     admin.hoursOpen = data.hoursOpen !== false;

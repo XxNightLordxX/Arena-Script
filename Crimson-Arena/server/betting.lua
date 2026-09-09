@@ -464,6 +464,19 @@ end
 local function returnSideBet(bet, matchId)
     if bet.settled then return false end
 
+    -- FORFEITED MONEY IS NEVER HANDED BACK, and it is settled rather than
+    -- skipped so the escrow can still be closed out -- the same shape
+    -- RefundOne uses for a forfeited stake. Returning TRUE is the honest
+    -- answer: nothing is owed, so nothing should be reported as unpaid.
+    if bet.forfeited then
+        bet.settled = true
+        bet.settledAs = 'forfeit'
+        ArenaLog('SIDE-BET RETURN REFUSED: %d from %s on match %s was FORFEITED when they walked out '
+            .. 'and stays with the house. They were told so at the time.',
+            bet.amount, tostring(bet.name or bet.src), tostring(matchId))
+        return true
+    end
+
     if not credit(bet.src, bet.amount, transaction('sidebet_refund', matchId),
         bet.citizenid, bet.account) then
         if owe(bet.citizenid, bet.name or bet.src, bet.amount, bet.account, 'sidebet_refund') then
@@ -795,6 +808,15 @@ local function addEntryStakesAsBets(matchId, context)
                 kind = 'fighter',
                 mode = 'pool',
                 fromEntryFee = true,
+                -- CARRIED ONTO THE BET, because the money does not stop being
+                -- forfeited just because it changed table. This was dropped
+                -- here, and it was the last way round the forfeit: a fighter
+                -- who walked out was told their stake was lost, the entry pot
+                -- then joined the betting pool, and on a DRAW -- where nobody
+                -- backed a winner and every bet is handed back -- the arena
+                -- returned it to them with a "your bet was returned" message.
+                -- DO NOT drop this again.
+                forfeited = stake.forfeited == true,
                 placedAt = stake.takenAt,
                 settled = false,
             }

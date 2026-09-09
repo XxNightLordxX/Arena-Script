@@ -71,6 +71,23 @@ local unpaid = {}
 
 local sideBets = {}
 
+--- Matches whose pot payout is part-way through, or was.
+---
+--- THE COST OF SETTLING AFTER PAYING. Marking the stakes below the payout
+--- loop is right -- a mark set first turns a failure mid-loop into money
+--- recorded as paid and filed nowhere -- but it leaves the other half open:
+--- a loop that stops part-way leaves every stake unsettled, so GetPot still
+--- reports the FULL pot and a second Settle on that match pays the whole
+--- list again, winners already paid included.
+---
+--- Neither order is safe on its own. This is the half that was missing:
+--- Settle refuses to start a payout for a match it has already started one
+--- for. A match whose payout did not finish stays refused rather than being
+--- silently re-run -- the money is still on the books, an operator can see
+--- it, and settling it by hand is a smaller problem than paying it twice.
+--- DO NOT drop this and rely on the stake marks alone.
+local settling = {}
+
 local function trace(fmt, ...)
     if Config.Debug then ArenaLog(fmt, ...) end
 end
@@ -862,6 +879,15 @@ function ArenaBetting.Settle(matchId, context)
         return {}
     end
 
+    if settling[matchId] then
+        ArenaLog('betting: match %s was asked to pay out a SECOND time and was refused. The first '
+            .. 'attempt did not finish, so its stakes are still open and the pot still reads full '
+            .. '-- paying again would pay every winner who already had their money. Nothing has '
+            .. 'been paid twice. Look above this line for what stopped the first attempt, and '
+            .. 'settle what is left by hand.', tostring(matchId))
+        return {}
+    end
+
     local pot = ArenaBetting.GetPot(matchId)
     if pot <= 0 then
         ArenaLog('betting: match %s had NOTHING IN THE POT to pay out. Either the match was created with no entry fee, or every stake had already been refunded or forfeited before it ended. Side-bets are a separate pool and are unaffected.',
@@ -927,13 +953,27 @@ function ArenaBetting.Settle(matchId, context)
         nameOf[id] = stake.name
     end
 
+    settling[matchId] = true
+
     local lines, undelivered = {}, 0
     for _, payout in ipairs(payouts) do
         local amount = math.max(0, Arena.ToInt(payout.amount) or 0)
         local winner = serverId(payout.id)
         if amount > 0 then
+            -- PAID TO THE CHARACTER WHO STAKED, not to whoever holds the
+            -- server id when the round ends. Every other credit in this file
+            -- passes a citizen id and `credit` refuses when it does not
+            -- match; this one passed nil, so winning a round and switching
+            -- character before it ended paid the pot into the character who
+            -- had just taken over the id. A way to move money between your
+            -- own characters, through the arena, with no record of it.
+            --
+            -- A refusal is not a loss: it falls through to the unpaid ledger
+            -- below, filed against the citizen id that actually won, and is
+            -- paid when they are next seen. DO NOT pass nil here.
             if winner and credit(winner, amount, transaction('payout', matchId),
-                nil, paidFrom[winner] or paidFrom[payout.id]) then
+                citizenOf[winner] or citizenOf[payout.id],
+                paidFrom[winner] or paidFrom[payout.id]) then
                 lines[#lines + 1] = ('%s: %s (%s)'):format(ArenaPlayerName(winner), money(amount), tostring(payout.reason))
                 trace('paid %d to %s on match %s (%s)',
                     amount, tostring(winner), tostring(matchId), tostring(payout.reason))
@@ -1582,30 +1622,68 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
                 local amount = (bet.mode == 'odds')
                     and Arena.ComputeSpectatorPayout(bet.amount)
                     or (Arena.ToInt(bet.poolShare) or 0)
-                -- Marked before the payment for the same reason the pot is:
-                -- a settlement that runs twice must not pay twice.
+                -- SETTLED AFTER THE MONEY MOVED, the way the pot is.
+                --
+                -- This marked first, on the argument that a settlement which
+                -- runs twice must not pay twice -- but the pot loop was moved
+                -- below its payments for the opposite and stronger reason: a
+                -- mark set first turns any failure between here and the
+                -- credit into money that is recorded as paid, filed nowhere,
+                -- and unpayable afterwards. `credit` reaches into the
+                -- framework, and the arena would rather risk a second attempt
+                -- it can see than a silent loss it cannot. DO NOT move the
+                -- mark back above the payment.
+                --
+                -- AND THE TOTALS COUNT ONLY WHAT WENT SOMEWHERE. `earnings`
+                -- is handed to the match and read back to the player as their
+                -- winnings, and it was incremented before anything moved --
+                -- so an undeliverable payout was still announced to them as
+                -- money they had won.
+                local delivered = amount <= 0
+
+                if amount > 0 then
+                    if credit(bet.src, amount, transaction('sidebet_payout', matchId),
+                        bet.citizenid, bet.account) then
+                        delivered = true
+                        lines[#lines + 1] = ('%s: %s on "%s"'):format(tostring(bet.name or bet.src), money(amount), bet.pick)
+                        ArenaNotifyKey(bet.src,
+                            bet.fromEntryFee == true and 'notify.pot_won' or 'notify.spectator_bet_won',
+                            'success', money(amount))
+                    elseif owe(bet.citizenid, bet.name or bet.src, amount, bet.account, 'sidebet_payout') then
+                        -- READ, NOT ASSUMED. `owe` refuses when there is no
+                        -- citizen id to file against, and this ignored the
+                        -- answer and logged that the money was safe on the
+                        -- ledger either way. The pot loop tells the truth
+                        -- about the same failure. DO NOT promise a filing
+                        -- that did not happen.
+                        delivered = true
+                        ArenaLog('SIDE-BET PAYOUT UNDELIVERED: %d owed to %s (citizenid %s) on match %s. It is on the unpaid ledger and will be paid when they come back.',
+                            amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
+                        incidentWebhook('Side-bet payout not delivered',
+                            'A winning spectator side-bet could not be paid.', {
+                                { name = 'Match', value = tostring(matchId) },
+                                { name = 'Player', value = ('%s (%s)'):format(tostring(bet.name or bet.src), tostring(bet.citizenid)) },
+                                { name = 'Amount', value = money(amount) },
+                            })
+                    else
+                        ArenaLog('SIDE-BET PAYOUT LOST: %d owed to %s on match %s -- they are not on the server and there is no citizen id to file it against. Settle by hand.',
+                            amount, tostring(bet.name or bet.src), tostring(matchId))
+                        incidentWebhook('Side-bet payout lost',
+                            'A winning spectator side-bet could be neither paid nor filed.', {
+                                { name = 'Match', value = tostring(matchId) },
+                                { name = 'Player', value = ('%s (%s)'):format(tostring(bet.name or bet.src), tostring(bet.citizenid)) },
+                                { name = 'Amount', value = money(amount) },
+                            })
+                    end
+                end
+
                 bet.settled = true
                 bet.settledAs = 'won'
                 paid = paid + 1
-                total = total + amount
-                earnings[bet.src] = (earnings[bet.src] or 0) + amount
-                if amount > 0 and credit(bet.src, amount, transaction('sidebet_payout', matchId),
-                    bet.citizenid, bet.account) then
-                    lines[#lines + 1] = ('%s: %s on "%s"'):format(tostring(bet.name or bet.src), money(amount), bet.pick)
-                    ArenaNotifyKey(bet.src,
-                        bet.fromEntryFee == true and 'notify.pot_won' or 'notify.spectator_bet_won',
-                        'success', money(amount))
-                elseif amount > 0 then
-                    owe(bet.citizenid, bet.name or bet.src, amount, bet.account, 'sidebet_payout')
 
-                    ArenaLog('SIDE-BET PAYOUT UNDELIVERED: %d owed to %s (citizenid %s) on match %s. It is on the unpaid ledger and will be paid when they come back.',
-                        amount, tostring(bet.name or bet.src), tostring(bet.citizenid), tostring(matchId))
-                    incidentWebhook('Side-bet payout not delivered',
-                        'A winning spectator side-bet could not be paid.', {
-                            { name = 'Match', value = tostring(matchId) },
-                            { name = 'Player', value = ('%s (%s)'):format(tostring(bet.name or bet.src), tostring(bet.citizenid)) },
-                            { name = 'Amount', value = money(amount) },
-                        })
+                if delivered then
+                    total = total + amount
+                    earnings[bet.src] = (earnings[bet.src] or 0) + amount
                 end
             elseif bet.mode ~= 'odds' and not (winners[poolKeyFor(bet.kind or 'spectator')] or {})[1] then
                 returnSideBet(bet, matchId)
@@ -1738,5 +1816,12 @@ function ArenaBetting.Clear(matchId)
 
     escrow[matchId] = nil
     sideBets[matchId] = nil
+
+    -- CLEARED ONLY WITH THE MATCH ITSELF, below every refusal above. Clearing
+    -- it at the top of this function would have freed the guard on a Clear
+    -- that then REFUSED -- and a refused clear is exactly the state where the
+    -- pot is still held and a second payout would pay it out again. The flag
+    -- goes when the pot and the bets go, and not before. DO NOT hoist this.
+    settling[matchId] = nil
     return true
 end

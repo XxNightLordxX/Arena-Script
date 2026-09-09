@@ -1562,6 +1562,26 @@ local kitSchemaConfirmed = false
 --- why. The sweep retries until it lands. DO NOT make this a one-shot again.
 local kitLoaded = false
 
+--- Whether a read is already out on the wire.
+---
+--- `kitLoaded` CANNOT DO THIS JOB. It is set inside the innermost callback,
+--- which is the last thing to happen, so between dispatching the read and it
+--- landing the guard is still open and every retry tick fires another one.
+--- The sweep runs every `returnRetrySeconds`; a database slow enough to need
+--- the retry is a database slow enough to still be answering the last one.
+---
+--- Two reads in flight is not merely wasteful. The snapshots are taken at
+--- different instants, and nothing makes them land in that order -- so a
+--- collection that happened in between is undone when the older one lands:
+--- a settled stack reinstated at its old total and charged again, or a
+--- returned weapon re-inserted as a debt the arena can never collect because
+--- it already has the gun. DO NOT drop this flag and lean on kitLoaded.
+local kitLoading = false
+
+--- How long a slate read may be outstanding before the retry is allowed to
+--- try again. Generous on purpose: it is a deadlock release, not a deadline.
+local RETRY_TIMEOUT_MS = 30000
+
 local function kitDbOn()
     if Config.Database.enabled ~= true then return false end
 
@@ -1679,7 +1699,14 @@ local function oweItem(citizenid, name, amount)
 
     local rows = owedItems[citizenid]
     if rows == nil then
-        if owedKitCharacters() >= OWED_KIT_CHARACTERS then return false end
+        -- THE UNION, because that is what the counter counts. Asking only
+        -- whether the ITEM table knows them refused a new stack for somebody
+        -- already on the slate for a weapon -- a character the cap had
+        -- already admitted and who adds nothing to the count by owing one
+        -- more kind of thing. DO NOT test one table against a count of both.
+        if owedKit[citizenid] == nil and owedKitCharacters() >= OWED_KIT_CHARACTERS then
+            return false
+        end
         rows = {}
         owedItems[citizenid] = rows
     end
@@ -1725,7 +1752,7 @@ local function queueOwedKit(citizenid, src)
     local ox = inventory()
 
     local rows = owedKit[citizenid] or {}
-    local added, unchaseable = 0, 0
+    local added, stacks, unchaseable = 0, 0, 0
 
     for _, byPlayer in pairs(issuedWeapons) do
         for _, item in ipairs(byPlayer[src] or {}) do
@@ -1738,7 +1765,14 @@ local function queueOwedKit(citizenid, src)
             -- exploits: a free kit for the newcomer and a debt collected off
             -- somebody who was never in the round. DO NOT bill a row to
             -- anyone but the character named on it.
-            local owner = Arena.IsKey(item.citizenid) and item.citizenid or citizenid
+            -- ASKED BEFORE THE ROW IS TOUCHED. The test below already says
+            -- this might not be a table, and reading `item.citizenid` above
+            -- it made that promise unkeepable: a malformed row raised on the
+            -- index and took the whole exit down before forgetWeapons, so a
+            -- guard written to survive bad data was the thing that could not.
+            -- DO NOT index a row above its own type check.
+            local owner = type(item) == 'table' and Arena.IsKey(item.citizenid)
+                and item.citizenid or citizenid
 
             if type(item) == 'table' and Arena.IsKey(item.name) and owner == citizenid then
                 -- WITHOUT A SERIAL IT IS NOT A DEBT, IT IS A TRAP, and this
@@ -1796,6 +1830,7 @@ local function queueOwedKit(citizenid, src)
     -- the arena does not know what is theirs, and a guess here is a guess
     -- with somebody else's property. It would rather lose the rounds -- the
     -- same rule the weapon side follows for a missing serial.
+    --
     -- AND ONLY WHERE THE POCKETS BEING READ ARE THE POCKETS BEING BILLED.
     --
     -- The counts below come from `src`, and `src` is only this character
@@ -1809,22 +1844,50 @@ local function queueOwedKit(citizenid, src)
 
     local function oweStock(store)
         for matchId, byPlayer in pairs(store) do
+            local given = byPlayer[src]
             local stamped = (issuedOwner[matchId] or {})[src]
             local billed = Arena.IsKey(stamped) and stamped or citizenid
 
-            if billed ~= citizenid or citizenid ~= liveId then
+            if given == nil then
+                -- NOTHING WAS ISSUED HERE, so there is nothing to say about
+                -- it. `store` is keyed by every live match on the server,
+                -- not by the ones this player fought in, and the refusal
+                -- below is a shouted console line. Testing ownership before
+                -- testing whether this match ever armed them named every
+                -- other match on the server, once per exit, per store. DO
+                -- NOT put the ownership test first.
+                goto nextMatch
+            elseif billed ~= citizenid or (Arena.IsKey(liveId) and liveId ~= citizenid) then
                 -- NOT THIS CHARACTER'S TO MEASURE. Either the rows belong to
                 -- somebody else, or the pockets do. Either way the arena
                 -- would rather lose the rounds than guess -- the same rule
                 -- the weapon side follows for a missing serial. DO NOT bill
                 -- a character whose pockets these are not.
-                ArenaLog('weapons: %s\'s consumables from match %s cannot be counted -- that server '
-                    .. 'id no longer answers to them. The rounds are written off rather than '
-                    .. 'charged to the wrong person.', tostring(citizenid), tostring(matchId))
+                --
+                -- SOMEBODY ELSE MUST ACTUALLY BE THERE. This read
+                -- `citizenid ~= liveId`, which sounds like the same test and
+                -- is not: it also refuses when NOBODY holds the server id.
+                -- Both callers reach this function only after finding
+                -- exactly that, and both pass the departed character as
+                -- `citizenid` -- so the test was true by construction at
+                -- every real call site and the loop below never ran once.
+                -- Every round and every plate went free on the one path this
+                -- ledger was written for.
+                --
+                -- An empty id is the /logout to character select, and
+                -- ox_inventory still has that inventory loaded at the moment
+                -- the door runs. The counts are the departing character's
+                -- own, and billing them is right. If the inventory HAS gone
+                -- the read comes back zero and the clamp below writes
+                -- nothing, so the open case costs nothing either way. DO NOT
+                -- fold the two conditions back together.
+                ArenaLog('weapons: %s\'s consumables from match %s cannot be counted -- %s holds '
+                    .. 'that server id now. The rounds are written off rather than charged to '
+                    .. 'the wrong person.', tostring(citizenid), tostring(matchId), tostring(liveId))
                 goto nextMatch
             end
 
-            for item, issued in pairs(byPlayer[src] or {}) do
+            for item, issued in pairs(given) do
                 local ok, answer = pcall(function() return ox:GetItemCount(src, item) end)
                 if not ok then
                     ArenaLog('weapons: could not read how much %s %s has, so the arena is not '
@@ -1835,8 +1898,18 @@ local function queueOwedKit(citizenid, src)
                     local mine = math.max(0, held - floorFor(matchId, src, item))
                     local owing = math.min(math.max(0, Arena.ToInt(issued) or 0), mine)
 
-                    if owing > 0 and oweItem(citizenid, item, owing) then
-                        added = added + 1
+                    if owing > 0 then
+                        if oweItem(citizenid, item, owing) then
+                            stacks = stacks + 1
+                        else
+                            -- SAID OUT LOUD, the way the other one is. The
+                            -- identical refusal in reclaimStock logs; this
+                            -- one dropped the rounds in silence, so the same
+                            -- full ledger was loud on one path and invisible
+                            -- on the other. DO NOT leave a refusal unlogged.
+                            ArenaLog('weapons: %d %s could NOT be written down against %s -- the '
+                                .. 'ledger is full. They are gone.', owing, item, tostring(citizenid))
+                        end
                     end
                 end
             end
@@ -1877,10 +1950,20 @@ local function queueOwedKit(citizenid, src)
     -- cleared. Two hundred of those and the whole ledger latched shut and
     -- refused every new debt on the server. DO NOT write an empty row.
     if #rows > 0 then owedKit[citizenid] = rows end
-    ArenaLog('weapons: %d arena weapon(s) left with %s and are written down against them. '
-        .. 'They will be taken back the next time that character is seen.',
-        added, tostring(citizenid))
-    return added
+
+    -- COUNTED SEPARATELY, because they are not the same thing. `added` is
+    -- incremented by the weapon loop AND by the stock loop, and the line
+    -- called the total "arena weapon(s)" -- so a fighter who walked off with
+    -- nothing but a plate and some rounds was reported as leaving with two
+    -- guns. An operator reading that goes looking for weapons that were
+    -- never issued. DO NOT report one number as the other.
+    if added > 0 or stacks > 0 then
+        ArenaLog('weapons: %d arena weapon(s) and %d item stack(s) left with %s and are written '
+            .. 'down against them. They will be taken back the next time that character is seen.',
+            added, stacks, tostring(citizenid))
+    end
+
+    return added + stacks
 end
 
 --- Takes back whatever this character still owes, and forgets what they no
@@ -1944,7 +2027,7 @@ local function chaseOwedKit(src, citizenid)
         -- take the whole sweep down with it, for every player after this one,
         -- and leave the slate claimed but never merged back. One malformed
         -- row must NEVER cost a character their entire ledger.
-        if not Arena.IsKey(row.name) then
+        if type(row) ~= 'table' or not Arena.IsKey(row.name) then
             ArenaLog('weapons: a row owed by %s has no item name and cannot mean anything -- dropped.',
                 tostring(citizenid))
             goto continue
@@ -2041,7 +2124,13 @@ local function oweWeapon(citizenid, row)
     end
 
     local rows = owedKit[citizenid] or {}
-    if owedKit[citizenid] == nil and owedKitCharacters() >= OWED_KIT_CHARACTERS then return false end
+    -- BOTH TABLES, for the reason spelled out in oweItem: the counter
+    -- answers about the union, so a character already owing rounds must not
+    -- be refused a weapon row they do not widen the ledger by adding.
+    if owedKit[citizenid] == nil and owedItems[citizenid] == nil
+        and owedKitCharacters() >= OWED_KIT_CHARACTERS then
+        return false
+    end
 
     rows[#rows + 1] = { name = row.name, serial = row.serial }
     trimOwedKit(citizenid, rows)
@@ -2188,7 +2277,18 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                     -- were holding -- and it is only THEIR debt when the
                     -- pockets it measured are the pockets of the character
                     -- being billed. DO NOT drop either half of that test.
-                    if short > 0 and measured and Arena.IsKey(billed) and billed == liveId then
+                    --
+                    -- AN EMPTY ID IS NOT A WRONG ONE. This read
+                    -- `billed == liveId`, which refuses when NOBODY holds the
+                    -- server id as readily as when a stranger does -- and
+                    -- nobody holding it is the ordinary disconnect, the case
+                    -- with the most kit outstanding. `measured` already
+                    -- proves the inventory answered, so the counts are real
+                    -- and they are the departing character's own. DO NOT go
+                    -- back to demanding a live holder.
+                    local stranger = Arena.IsKey(liveId) and liveId ~= billed
+
+                    if short > 0 and measured and Arena.IsKey(billed) and not stranger then
                         if oweItem(billed, item, short) then
                             ArenaDebug('weapons: %d %s did not come back off %s -- put on %s\'s slate.',
                                 short, item, tostring(src), tostring(billed))
@@ -2207,12 +2307,48 @@ local function reclaimWeapons(ox, src, fallbackOwner)
     reclaimStock(issuedAmmo)
 
     reclaimStock(issuedSupplies)
+
+    -- AND THE STAMP AND THE FLOOR GO WITH THE ROWS. `reclaimStock` nils
+    -- `byPlayer[src]` as it settles each match, but the two tables that
+    -- describe those rows are keyed the same way and were left standing --
+    -- and both are written ONCE and never overwritten, so whatever survives
+    -- here is what the next character on this server id inherits.
+    --
+    -- `forgetWeapons` clears them too, but it is not on this path: an
+    -- ordinary disconnect reclaims and never calls it. Leaving it to that
+    -- one function covered the exits that drop rows and missed every exit
+    -- that collects them, which is most of them. DO NOT rely on
+    -- forgetWeapons alone.
+    for _, byPlayer in pairs(issuedOwner) do byPlayer[src] = nil end
+    for _, byPlayer in pairs(heldBefore) do byPlayer[src] = nil end
 end
 
 local function forgetWeapons(src)
     for _, byPlayer in pairs(issuedWeapons) do byPlayer[src] = nil end
     for _, byPlayer in pairs(issuedAmmo) do byPlayer[src] = nil end
     for _, byPlayer in pairs(issuedSupplies) do byPlayer[src] = nil end
+
+    -- AND THE STAMP GOES WITH THEM. `rememberHeld` writes the owner once and
+    -- then NEVER overwrites a stamp that is already there, so a stamp left
+    -- standing after its rows are gone is inherited by the next character to
+    -- take this server id in the same match.
+    --
+    -- That is the exact failure the stamp was added to prevent, pointed the
+    -- other way: the newcomer is armed, the arena still believes the
+    -- departed character holds the kit, and at the newcomer's ORDINARY exit
+    -- every ownership test refuses and their real shortfall is written off.
+    -- A free loadout, from the machinery meant to close one. DO NOT drop
+    -- rows here without dropping the stamp that describes them.
+    for _, byPlayer in pairs(issuedOwner) do byPlayer[src] = nil end
+
+    -- THE FLOOR IS PART OF THE SAME ANSWER, so it cannot be left behind
+    -- either. `heldBefore` records what THIS character walked in carrying,
+    -- and every debt is `min(issued, held now - that floor)`. Fixing the
+    -- stamp so the newcomer is billed correctly, while still measuring them
+    -- against the departed character's floor, bills the right person the
+    -- wrong number -- and a floor higher than their own stock forgives the
+    -- lot. The two are one answer about one character. DO NOT separate them.
+    for _, byPlayer in pairs(heldBefore) do byPlayer[src] = nil end
 end
 
 local function removeWeaponsByKey(ox, src, matchId, keys, loadout)
@@ -2858,6 +2994,27 @@ function ArenaAmmo.ReturnLeftovers(src)
 end
 
 function ArenaAmmo.SweepReturns()
+    -- THE SLATE IS READ BACK IF IT NEVER WAS, and this is the first thing
+    -- the sweep does. Cheap once it has been -- one boolean -- and the only
+    -- thing that rescues a server whose `ensure` order put this resource
+    -- above oxmysql.
+    --
+    -- ABOVE THE INVENTORY CHECK AND OUTSIDE THE PLAYER LOOP, both on
+    -- purpose. Reading a database has nothing to do with ox_inventory, so
+    -- the same bad `ensure` order that this exists to survive must not also
+    -- be able to skip it; and an empty server still needs the read, or the
+    -- admin screen reports the slate unsaved until somebody happens to
+    -- connect.
+    --
+    -- Inside the loop it fired ONCE PER CONNECTED PLAYER. FiveM Lua does not
+    -- preempt, so no callback could land mid-loop to set the guard: thirty
+    -- players meant thirty CREATE statements and thirty full-table reads
+    -- dispatched together, at the exact moment a struggling database came
+    -- up. Worse than the noise, the snapshots were taken at different
+    -- instants, and a later-landing older one overwrote what a newer one had
+    -- already merged. DO NOT move this back inside the loop.
+    ArenaAmmo.LoadOwedKit()
+
     if not inventory() then return 0 end
 
     local handed = 0
@@ -2867,11 +3024,6 @@ function ArenaAmmo.SweepReturns()
         local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
 
         if Arena.IsKey(citizenid) then
-            -- AND THE SLATE IS READ BACK IF IT NEVER WAS. Cheap when it has
-            -- been -- one boolean -- and the only thing that rescues a server
-            -- whose `ensure` order put this resource above oxmysql.
-            ArenaAmmo.LoadOwedKit()
-
             -- OUTSIDE `worthTrying`, DELIBERATELY. That gate exists to stop
             -- the stash sweep re-reading a database for a character it has
             -- already answered for, and it is never reopened for the rest of
@@ -2904,15 +3056,57 @@ end
 --- incurred in those first seconds must not be wiped by the read that
 --- follows it.
 function ArenaAmmo.LoadOwedKit()
-    if kitLoaded or not kitDbOn() then return false end
+    if kitLoaded or kitLoading or not kitDbOn() then return false end
+
+    kitLoading = true
+
+    -- AND THE FLAG IS FREED IF NOTHING EVER ANSWERS. kitDb calls back on
+    -- every path it controls, but a query oxmysql accepts and then never
+    -- answers is not one of them -- and a flag stuck on would end the retry
+    -- for the life of the process, turning a guard against reading twice
+    -- into a guarantee of never reading at all. The late answer is handled
+    -- above. DO NOT set the flag without this releasing it.
+    SetTimeout(RETRY_TIMEOUT_MS, function() kitLoading = false end)
 
     kitDb(KIT_SCHEMA_SQL, {}, function()
         kitDb(KIT_READ_SQL, {}, function(rows)
+            -- CLEARED ON EVERY EXIT FROM HERE, including the failure below.
+            -- kitDb calls the callback with nil when it cannot send, so both
+            -- ways out come through this function -- but leaving the flag
+            -- set on the failure path would end the retry permanently, which
+            -- is the very thing the retry exists to prevent.
+            kitLoading = false
+
             if type(rows) ~= 'table' then return end
 
+            -- AND A LATE ONE IS REFUSED OUTRIGHT. The timeout below can free
+            -- the flag while a read is still out there, so the flag alone
+            -- does not prove this is the only answer -- but a second answer
+            -- is never wanted. Once one read has merged, the slate in memory
+            -- is the live one and anything still on the wire is a photograph
+            -- of the table BEFORE whatever has been collected since. Merging
+            -- it re-inserts settled debts. DO NOT drop this check.
+            if kitLoaded then return end
+
             local weapons, stacks, skipped = 0, 0, 0
-            for _, row in ipairs(rows) do
-                local citizenid = row.citizenid
+
+            -- WALKED BACKWARDS, because the read is deliberately the other
+            -- way round. The statement is `ORDER BY written_at DESC LIMIT`,
+            -- so that a table far past the cap yields the NEWEST rows rather
+            -- than the oldest -- and appending them in arrival order then
+            -- built each character's slate newest-first.
+            --
+            -- Every other producer appends newest LAST, and trimOwedKit
+            -- evicts index 1 as the oldest and DELETES its row. Fed a
+            -- reversed list, it deleted the newest debt from the database
+            -- every time a heavy character passed the cap, keeping the
+            -- stalest two hundred and erasing everything worth collecting --
+            -- the exact inverse of the rule the read order exists to serve.
+            -- Reversing here, not in the SQL, keeps both. DO NOT change this
+            -- to a forward walk without changing the ORDER BY with it.
+            for i = #rows, 1, -1 do
+                local row = rows[i]
+                local citizenid = type(row) == 'table' and row.citizenid or nil
                 if Arena.IsKey(citizenid) then
                     -- THE CAPS APPLY TO WHAT COMES BACK IN, TOO. This read
                     -- was a straight bulk insert with no bound of any kind,
@@ -2961,9 +3155,25 @@ function ArenaAmmo.LoadOwedKit()
                         local names = 0
                         for _ in pairs(held) do names = names + 1 end
 
+                        -- WHICHEVER TOTAL IS HIGHER, because neither side is
+                        -- reliably the fresher one. This assigned the stored
+                        -- total outright, on the premise that every write to
+                        -- memory is mirrored into the row before this runs --
+                        -- and the one situation that makes this read retry is
+                        -- the situation that falsifies it. A debt incurred
+                        -- while oxmysql was still down lives in memory ONLY,
+                        -- because kitDb drops the write silently; assigning
+                        -- the stored total then forgave every round taken
+                        -- before the database came up.
+                        --
+                        -- Taking the larger keeps the original fix -- a
+                        -- stored total still beats a memory holding only the
+                        -- new part -- without throwing away the half the
+                        -- column never saw. DO NOT put the bare assignment
+                        -- back.
                         if amount > 0 and (held[row.name] ~= nil or names < OWED_ITEM_LIMIT) then
                             if held[row.name] == nil then stacks = stacks + 1 end
-                            held[row.name] = amount
+                            held[row.name] = math.max(amount, held[row.name] or 0)
                             owedItems[citizenid] = held
                         elseif amount > 0 then
                             skipped = skipped + 1

@@ -368,8 +368,24 @@ local function itemsIn(items)
 
     table.sort(out, function(a, b) return a.slot < b.slot end)
 
+    -- THE KEY IS THE AUTHORITY ON THE SLOT, AND THIS IS WHERE IT WAS BEING LOST.
+    -- ox_inventory omits item.slot on some builds, so the slot resolved from the
+    -- table key above was worked out and then thrown away here. copiesOf then read
+    -- nil, removeSlot refused without ever calling RemoveItem, and every by-slot
+    -- take-back silently did nothing: the exit reclaim, the owed-kit chase, the
+    -- gun game ladder and allowWeaponWithoutAmmoItem all failed to take the
+    -- arena's own weapons back. DO NOT drop the resolved slot again.
     local flat = {}
-    for index, row in ipairs(out) do flat[index] = row.item end
+    for index, row in ipairs(out) do
+        local item = row.item
+        if tonumber(item.slot) ~= row.slot then
+            local copy = {}
+            for key, value in pairs(item) do copy[key] = value end
+            copy.slot = row.slot
+            item = copy
+        end
+        flat[index] = item
+    end
     return flat
 end
 

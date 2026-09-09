@@ -1529,8 +1529,6 @@ local KIT_READ_SQL =
     'SELECT citizenid, ledger_key, kind, name, serial, amount FROM crimson_arena_owed_kit '
     .. 'ORDER BY written_at DESC LIMIT ' .. KIT_READ_LIMIT
 
-local warnedNoKitDatabase = false
-
 --- Set only from inside a callback that actually ran -- see LoadOwedKit.
 ---
 --- MEASURED, NOT INFERRED, and the difference is a screen that lies. Whether
@@ -1574,58 +1572,16 @@ local kitLoading = false
 --- try again. Generous on purpose: it is a deadlock release, not a deadline.
 local RETRY_TIMEOUT_MS = 30000
 
-local function kitDbOn()
-    if Config.Database.enabled ~= true then return false end
-
-    if GetResourceState('oxmysql') ~= 'started' then
-        -- SAID ONCE PER OUTAGE, NOT ONCE PER PROCESS. An operator who turned
-        -- the database on and has not started oxmysql needs telling; they do
-        -- not need telling per weapon per exit. But the flag never cleared,
-        -- so oxmysql stopping LATER -- a restart, a crash -- went by in
-        -- total silence while every write was dropped. It re-arms below.
-        if not warnedNoKitDatabase then
-            warnedNoKitDatabase = true
-            ArenaLog('Config.Database.enabled is true but oxmysql is not started, so the arena '
-                .. 'CANNOT remember what players still owe it. The slate works for this run only '
-                .. 'and a restart forgets it. Start oxmysql, or set Config.Database.enabled = false.')
-        end
-        return false
-    end
-
-    warnedNoKitDatabase = false
-    return true
-end
-
-local function kitDb(sql, params, cb)
-    if not kitDbOn() then
-        if cb then cb(nil) end
-        return false
-    end
-
-    -- WRAPPED, because a database that is up is not a database that answers.
-    -- Losing the durable copy must NEVER take the round down with it.
-    -- The in-memory slate is the live one and this is the backup of it.
-    local ok, err = pcall(function() exports.oxmysql:query(sql, params, cb) end)
-    if not ok then
-        ArenaLog('the outstanding-kit slate could not be written (%s). It is still kept in memory '
-            .. 'for this run.', tostring(err))
-        if cb then cb(nil) end
-        return false
-    end
-
-    return true
-end
-
 local function weaponKey(serial) return 'w:' .. tostring(serial) end
 
 local function itemKey(name) return 'i:' .. tostring(name) end
 
 local function saveOwedWeapon(citizenid, row)
-    kitDb(KIT_WEAPON_SQL, { citizenid, weaponKey(row.serial), row.name, row.serial })
+    ArenaDb('the outstanding-kit slate', KIT_WEAPON_SQL, { citizenid, weaponKey(row.serial), row.name, row.serial })
 end
 
 local function saveOwedItem(citizenid, name, amount)
-    kitDb(KIT_ITEM_ADD_SQL, { citizenid, itemKey(name), name, amount })
+    ArenaDb('the outstanding-kit slate', KIT_ITEM_ADD_SQL, { citizenid, itemKey(name), name, amount })
 end
 
 --- Writes a stack's CURRENT total, rather than adding to it -- used after a
@@ -1634,14 +1590,14 @@ end
 --- a debt or erases one.
 local function setOwedItem(citizenid, name, amount)
     if amount <= 0 then
-        kitDb(KIT_DROP_SQL, { citizenid, itemKey(name) })
+        ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, itemKey(name) })
         return
     end
-    kitDb(KIT_ITEM_SET_SQL, { citizenid, itemKey(name), name, amount })
+    ArenaDb('the outstanding-kit slate', KIT_ITEM_SET_SQL, { citizenid, itemKey(name), name, amount })
 end
 
 local function dropOwedWeapon(citizenid, serial)
-    kitDb(KIT_DROP_SQL, { citizenid, weaponKey(serial) })
+    ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(serial) })
 end
 
 --- Trims a character's weapon slate to the cap, oldest first.
@@ -2028,7 +1984,7 @@ local function chaseOwedKit(src, citizenid)
         if not Arena.IsKey(row.serial) then
             -- AND THE STORED ROW GOES WITH IT. Dropped from memory only, it
             -- is read back on every start for ever and can NEVER be acted on.
-            kitDb(KIT_DROP_SQL, { citizenid, weaponKey(row.serial) })
+            ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(row.serial) })
             ArenaLog('weapons: a %s owed by %s has no serial and cannot be told from one of their own '
                 .. '-- written off.', tostring(row.name), tostring(citizenid))
             goto continue
@@ -3016,11 +2972,11 @@ end
 --- incurred in those first seconds must not be wiped by the read that
 --- follows it.
 function ArenaAmmo.LoadOwedKit()
-    if kitLoaded or kitLoading or not kitDbOn() then return false end
+    if kitLoaded or kitLoading or not ArenaDbReady('the outstanding-kit slate') then return false end
 
     kitLoading = true
 
-    -- AND THE FLAG IS FREED IF NOTHING EVER ANSWERS. kitDb calls back on
+    -- AND THE FLAG IS FREED IF NOTHING EVER ANSWERS. ArenaDb calls back on
     -- every path it controls, but a query oxmysql accepts and then never
     -- answers is not one of them -- and a flag stuck on would end the retry
     -- for the life of the process, turning a guard against reading twice
@@ -3028,10 +2984,10 @@ function ArenaAmmo.LoadOwedKit()
     -- above. DO NOT set the flag without this releasing it.
     SetTimeout(RETRY_TIMEOUT_MS, function() kitLoading = false end)
 
-    kitDb(KIT_SCHEMA_SQL, {}, function()
-        kitDb(KIT_READ_SQL, {}, function(rows)
+    ArenaDb('the outstanding-kit slate', KIT_SCHEMA_SQL, {}, function()
+        ArenaDb('the outstanding-kit slate', KIT_READ_SQL, {}, function(rows)
             -- CLEARED ON EVERY EXIT FROM HERE, including the failure below.
-            -- kitDb calls the callback with nil when it cannot send, so both
+            -- ArenaDb calls the callback with nil when it cannot send, so both
             -- ways out come through this function -- but leaving the flag
             -- set on the failure path would end the retry permanently, which
             -- is the very thing the retry exists to prevent.
@@ -3122,7 +3078,7 @@ function ArenaAmmo.LoadOwedKit()
                         -- and the one situation that makes this read retry is
                         -- the situation that falsifies it. A debt incurred
                         -- while oxmysql was still down lives in memory ONLY,
-                        -- because kitDb drops the write silently; assigning
+                        -- because ArenaDb drops the write silently; assigning
                         -- the stored total then forgave every round taken
                         -- before the database came up.
                         --
@@ -3172,9 +3128,12 @@ end
 --- Whether the slate is being written somewhere that survives a restart.
 --- @return boolean
 function ArenaAmmo.OwedKitIsSaved()
-    return kitSchemaConfirmed
-        and Config.Database.enabled == true
-        and GetResourceState('oxmysql') == 'started'
+    -- THE SAME GATE THE WRITES GO THROUGH, not a second copy of it. This
+    -- spelled the two conditions out inline, so the screen an operator reads
+    -- to decide whether their slate is safe could disagree with the code
+    -- that actually decides whether to send the write. DO NOT restate the
+    -- gate; ask it.
+    return kitSchemaConfirmed and ArenaDbReady('the outstanding-kit slate')
 end
 
 --- Every arena weapon that left with a character and has not come back.

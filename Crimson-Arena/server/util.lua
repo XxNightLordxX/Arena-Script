@@ -79,10 +79,22 @@ function ArenaNotifyKey(src, localeKey, notifyType, ...)
     return ArenaNotify(src, locale(localeKey, ...), notifyType)
 end
 
+--- WRAPPED, because this is on the issue and exit hot paths now.
+---
+--- The owner stamp calls it for every fighter as their kit is handed over,
+--- and the exit calls it again for every row it settles -- so a framework
+--- that raises on an unknown source no longer costs one lookup, it takes
+--- the whole round down mid-issue with a player half-armed.
+---
+--- A nil answer is what every caller already handles: they all read through
+--- `player and player.PlayerData`. Callers that need to tell "nobody there"
+--- from "the framework fell over" must NOT use this. DO NOT unwrap it.
 function ArenaGetPlayer(src)
     local target = tonumber(src)
     if not target or target <= 0 then return nil end
-    return exports.qbx_core:GetPlayer(target)
+
+    local ok, player = pcall(function() return exports.qbx_core:GetPlayer(target) end)
+    return ok and player or nil
 end
 
 function ArenaPlayerName(src)
@@ -333,4 +345,76 @@ function ArenaHoursState()
         forced = hoursOverride,
         snapshot = ArenaHoursSnapshot(),
     }
+end
+
+--- Whether a database query can be sent right now.
+---
+--- ONE GATE FOR THE WHOLE RESOURCE, because there were two and they had
+--- already drifted. The leaderboard's copy warned once per PROCESS, so
+--- oxmysql stopping later -- a restart, a crash -- went by in total silence
+--- while every write was dropped; the outstanding-kit copy had been fixed to
+--- re-arm and the other had not. Two implementations of the same rule can
+--- only ever be in two states, and the state that matters is the one nobody
+--- looked at. DO NOT write a third.
+---
+--- `subject` names what stops working, so the console line stays actionable
+--- rather than generic, and it is also the key the warning is remembered
+--- against -- so two subjects do not silence each other.
+---
+--- ox_inventory's own tables are NOT this. They exist whether the arena
+--- persists anything or not, so the stash scan asks GetResourceState
+--- directly and must not come through here.
+--- @param subject string
+--- @return boolean
+local warnedNoDb = {}
+
+function ArenaDbReady(subject)
+    if Config.Database.enabled ~= true then return false end
+
+    if GetResourceState('oxmysql') ~= 'started' then
+        -- SAID ONCE PER OUTAGE, NOT ONCE PER PROCESS. An operator who turned
+        -- the database on and has not started oxmysql needs telling; they do
+        -- not need telling per write. It re-arms below the moment oxmysql
+        -- answers again, so a SECOND outage is heard about too. DO NOT latch
+        -- this flag for the life of the process.
+        if not warnedNoDb[subject] then
+            warnedNoDb[subject] = true
+            ArenaLog('Config.Database.enabled is true but oxmysql is not started, so %s CANNOT be '
+                .. 'saved. It works for this run only and a restart forgets it. Start oxmysql, '
+                .. 'or set Config.Database.enabled = false.', subject)
+        end
+        return false
+    end
+
+    warnedNoDb[subject] = nil
+    return true
+end
+
+--- Sends one query, and NEVER lets the database take the round down with it.
+---
+--- THE CALLBACK ALWAYS FIRES. On every path that does not reach oxmysql it
+--- is called with nil, because callers use it to decide whether an answer
+--- ever came -- and one that is silently never called is a load that retries
+--- for ever or a flag that latches on a read that never happened. DO NOT add
+--- a path that returns without calling it.
+--- @param subject string -- as ArenaDbReady
+--- @return boolean -- whether oxmysql actually took the query
+function ArenaDb(subject, sql, params, cb)
+    if not ArenaDbReady(subject) then
+        if cb then cb(nil) end
+        return false
+    end
+
+    -- WRAPPED, because a database that is up is not a database that answers.
+    -- Losing the durable copy must NEVER take the round down with it: what
+    -- is in memory is the live answer and this is the backup of it.
+    local ok, err = pcall(function() exports.oxmysql:query(sql, params, cb) end)
+    if not ok then
+        ArenaLog('a query for %s could not be sent (%s). It is still kept in memory for this run.',
+            subject, tostring(err))
+        if cb then cb(nil) end
+        return false
+    end
+
+    return true
 end

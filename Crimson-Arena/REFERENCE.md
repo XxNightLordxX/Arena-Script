@@ -450,13 +450,15 @@ listed; the source documents them where they are.
 | `ArenaCompat.Mute(src, active)` | Calls every detected adapter's mute, if it has one. |
 | `ArenaCompat.Report()` | The startup block, as lines. |
 
-#### `server/util.lua` — 19 functions
+#### `server/util.lua` — 23 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaLog(fmt, ...)` | Console line an operator will always see. |
 | `ArenaDebug(fmt, ...)` | The chatty half. |
 | `ArenaNotify(src, description, notifyType)` | One player-visible message, handed to client/ui.lua to place. |
+| `ArenaToast(src, message, notifyType)` | A message that shows even while the arena panel is open, for the moments a closing panel would swallow the only thing the player needed to read. |
+| `ArenaToastKey(src, localeKey, notifyType, ...)` | The same, from a locale key. |
 | `ArenaNotifyKey(src, localeKey, notifyType, ...)` | The form almost every caller wants: Arena.* hands back locale KEYS, not sentences, and they go straight through here. |
 | `ArenaGetPlayer(src)` | The qbx_core player object for a server id, or nil. |
 | `ArenaPlayerName(src)` | Never nil. |
@@ -473,6 +475,8 @@ listed; the source documents them where they are.
 | `ArenaHoursOpen()` | Whether the doors are open right now. Fails OPEN on every path that cannot produce a schedule. |
 | `ArenaHoursSnapshot()` | The opening-hours block the panel, the NPC and the marker are all drawn from. |
 | `ArenaHoursState()` | The same facts kept apart, for `/arenahours`. |
+| `ArenaDbReady(subject)` | Whether a query can be sent right now: `Config.Database.enabled` on and oxmysql started. Says so once per outage, per subject, and re-arms when the database comes back. |
+| `ArenaDb(subject, sql, params, cb)` | Sends one query. Never lets a database failure take the round down, and always calls `cb` — with nil on every path that did not reach oxmysql. |
 
 #### `server/dispatch.lua` — 13 functions
 

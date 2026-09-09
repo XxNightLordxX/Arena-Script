@@ -4,34 +4,6 @@ ArenaStats = {}
 
 local pending = {}
 
-local warnedNoDatabase = false
-
-local function dbQuery(sql, params, cb)
-    if GetResourceState('oxmysql') ~= 'started' then
-        if not warnedNoDatabase then
-            warnedNoDatabase = true
-            ArenaLog('Config.Database.enabled is true but oxmysql is not started. ' ..
-                     'No stats are being written or read -- the leaderboard is this ' ..
-                     'server run only. Install oxmysql, or set Config.Database.enabled = false.')
-        end
-        if cb then cb(nil) end
-        return false
-    end
-
-    local ok, err = pcall(function()
-        exports.oxmysql:query(sql, params, cb)
-    end)
-
-    if not ok then
-        ArenaLog('a stats query could not be sent (%s). The numbers for this run are still kept in memory.',
-            tostring(err))
-        if cb then cb(nil) end
-        return false
-    end
-
-    return true
-end
-
 local session = {}
 
 local UPSERT_SQL = [[
@@ -179,7 +151,7 @@ function ArenaStats.GetLeaderboard(cb)
         LIMIT %d
     ]]):format(size)
 
-    dbQuery(query, {}, function(result)
+    ArenaDb('the leaderboard', query, {}, function(result)
         if type(result) ~= 'table' then
             cb(sessionRows(size))
             return
@@ -229,7 +201,7 @@ function ArenaStats.Flush()
 
     local dispatched = 0
     for citizenid, row in pairs(batch) do
-        if dbQuery(UPSERT_SQL, {
+        if ArenaDb('the leaderboard', UPSERT_SQL, {
             citizenid:sub(1, 64),
             row.name,
             row.wins,
@@ -251,7 +223,7 @@ end
 function ArenaStats.EnsureSchema()
     if Config.Database.enabled ~= true then return false end
 
-    dbQuery(SCHEMA_SQL, {}, function()
+    ArenaDb('the leaderboard', SCHEMA_SQL, {}, function()
         ArenaDebug('crimson_arena_stats is ready')
     end)
     return true

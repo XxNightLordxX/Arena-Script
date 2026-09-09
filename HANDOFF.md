@@ -15,7 +15,9 @@ resolved.
    questions only he can answer.
 2. **PART D answer 1(d)** — history was rewritten and force-pushed. Read it
    before you rebase.
-3. **PART D answer 8** — four of the five doc/code mismatches are confirmed;
+3. **HOW TO WORK WITH JOHN WITHOUT BURNING HIS MONEY** — he asked for this
+   by name. It is the difference between one control test and five agents.
+4. **PART D answer 8** — four of the five doc/code mismatches are confirmed;
    one is incomplete.
 
 ---
@@ -452,6 +454,112 @@ These are real gaps. Do not fill them by guessing.
 3. **"What should a 1v1 feel like."** Still open as far as I can tell.
 4. **Scope and doneness.** What he still wants built, what is out of bounds,
    how near finished he thinks this is.
+
+---
+
+---
+
+# HOW TO WORK WITH JOHN WITHOUT BURNING HIS MONEY
+
+He asked for this section by name. His words: he does not like *"constantly
+doing things over and having to use so many agents to confirm you didn't do
+something wrong."*
+
+He is right, and the fault is not his review process. **He has been paying
+fleets of agents to do verification the developer should have done before
+claiming the work was finished.** That is the loop to break. Everything below
+is the specific, mechanical way to break it.
+
+## The rule that replaces most of the agents
+
+**Never claim a fix works. Show the number change.**
+
+Before you say a defect is fixed, do this — it takes about a minute:
+
+1. Write the smallest harness that reproduces the defect. `tools/harness/`
+   has seven working examples and a README of the traps.
+2. Run it **with the fix reverted**. Record the number.
+3. Run it **with the fix in**. Record the number.
+4. Report both. `before: 5, after: 0`.
+
+This session's whole record argues for it. The consumables guard was dead at
+every call site — six agents found it, but a two-line control test would have
+found it in a minute for a fraction of the cost. The over-billing fix went in
+with the honest note "verified by reading, not by test", and when the harness
+was finally made to work it turned out **the harness had been wrong twice**,
+not the code. Three separate harnesses passed while broken, and only the
+control revealed it.
+
+**A passing test proves nothing on its own.** If you did not watch the number
+change when you removed the fix, you have not tested anything.
+
+## The mechanical gates — seconds each, whole classes of bug
+
+Run these on every file you touch, every time, before you commit. They are in
+§8 above with the exact commands. They are not optional and they are not slow.
+
+| Check | Catches |
+|---|---|
+| `luac5.4 -p` on every Lua file | syntax, every time |
+| `luac5.4 -l -l -p \| grep '_ENV "'` | a local used before it is defined. Caught a forward declaration placed in the wrong spot this session — one command, instant |
+| copy the file, run `strip_prod.py`, grep for the comments you added | comments that would silently vanish from the shipped resource. **This bit six times.** Reasoning about the stripper does not work; run it |
+| `node --check` on `app.js`, `json.load` on `en.json` | the two non-Lua files |
+| run all seven harnesses | regressions in what has already been proved |
+
+**Never reason about what a tool will do. Run the tool.** Every single time I
+predicted `strip_prod.py`'s behaviour instead of running it, I was wrong.
+
+## What agents are for, and what they are not for
+
+- **Agents are for DISCOVERY** — finding things nobody thought to look for.
+  The powergamer and griefer personas earn their cost, because they surface
+  attacks a developer staring at their own code will not imagine. The
+  stolen-weapon confiscation and the debt-laundering path both came from that,
+  and neither was on anybody's list.
+- **Agents are NOT for confirming your own work.** If you are spawning a fleet
+  to check whether you did your job, you have skipped the control test. Do the
+  control test.
+- **Give each agent a genuinely different surface.** He says this every time.
+  Two agents on the same file is one wasted agent.
+- **When an agent reports a defect, reproduce it yourself before acting.**
+  They are confidently wrong in both directions. This is the reason for his
+  ten-check rule — but the rule is a workaround for not verifying at source.
+  Reproduce it, then fix it, then show the number change.
+
+## Land it right the first time
+
+The rework he is objecting to almost always traces to one of these:
+
+- **A claim made before it was proved.** Covered above.
+- **A fix applied without checking every call site.** `grep` for every caller
+  before you change a function's behaviour. The dead guard survived precisely
+  because nobody checked that both callers guaranteed its condition.
+- **A batch edit that half-applied.** Python patch scripts have aborted
+  mid-batch after earlier writes landed, leaving a duplicated block in
+  `betting.lua` once. **Verify after every batch, not just at the end.**
+- **Re-opening something already decided.** Check "Decisions already made" above
+  and both MD files before you "fix" anything. He has said no to some of this
+  already and does not want to say it twice.
+
+## Things he does not want you to do
+
+- **Do not run his in-game checks.** He tests on the live server. When he says
+  something behaves a certain way in game, that is primary evidence — do not
+  argue with it or re-derive it. Ask what he saw, then find it in the code.
+- **Do not narrate the process.** He wants the outcome and the evidence.
+- **Do not ask permission to continue.** "Continue", "do all that", "keep
+  going" mean work the whole list. Check in only when a decision is genuinely
+  his — and when you do, give him concrete options with the cost of each. He
+  answers those immediately and does not engage with open questions.
+- **Do not tidy away things he might want.** He said it directly during this
+  handover: keep both versions in case one is wrong. Preserve over prune.
+
+## The short version
+
+**One control test at the moment of the change is worth five agents afterwards,
+and costs about a hundredth as much.** Prove it when you write it, run the
+mechanical gates every time, and spend the agents on finding what nobody knew
+to look for.
 
 ---
 

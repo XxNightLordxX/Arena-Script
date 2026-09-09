@@ -627,6 +627,50 @@ local function stow(src, citizenid)
         return false, 0
     end
 
+    -- PROOF THAT THE POCKETS ARE EMPTY, NOT MERELY THAT THE CLEAR WAS NOT
+    -- REFUSED.
+    --
+    -- `oxDid` reads a nil as success, and ox_inventory answers nil for an
+    -- inventory it has not loaded -- so the clear can do NOTHING AT ALL and
+    -- still read as done. Measured against a clear that answers nil: "door:
+    -- stashed 5 item(s)" printed, the player walked into the round still
+    -- carrying every item they own, a COPY of the lot sat in the stash, and
+    -- the exit handed that copy over -- they left with two of everything,
+    -- with not one line anywhere saying so. It is also how a fighter ends up
+    -- fighting on their own ammunition while the arena believes it stripped
+    -- them.
+    --
+    -- The AddItem fifteen lines above is already written this way and says
+    -- why at length. This is the same rule applied to the very next call.
+    -- DO NOT go back to trusting the answer to a clear.
+    --
+    -- AN UNREADABLE INVENTORY TAKES THE SAME PATH, and it is not the
+    -- dangerous reading it looks like: the pockets were read successfully a
+    -- few lines ago, and the one state that stops them being readable now is
+    -- the unloaded inventory that also makes the clear do nothing -- so
+    -- their own items are still in their hands. The rollback takes back out
+    -- of the STASH only what this attempt put in, and leaves those hands
+    -- alone.
+    local after = slotMap(ox, src)
+    local left = nil
+    if after ~= nil then
+        for _, has in pairs(after) do
+            if not skip[has.name] then
+                left = has.name
+                break
+            end
+        end
+    end
+
+    if after == nil or left ~= nil then
+        rollback(('ox_inventory reported clearing %s\'s inventory and %s -- which is what it does '
+            .. 'for an inventory it has not loaded: it answers nothing and nothing happens'):format(
+            tostring(src),
+            after == nil and 'their pockets can no longer be read at all'
+                or ('they are STILL carrying ' .. tostring(left))))
+        return false, 0
+    end
+
     return true, stowed
 end
 
@@ -1243,17 +1287,52 @@ local function issueSpareRounds(ox, src, matchId, entry, pass)
     local count = itemsFor(spare)
     if not (Arena.IsKey(item) and count > 0) then return true, 0 end
 
+    -- BEFORE THE COUNT IS READ, NOT AFTER IT, and that order is the whole of
+    -- a fighter's own ammunition.
+    --
+    -- This sat below the early return, so on the one path that needed it --
+    -- a player already holding rounds of this kind -- the floor was never
+    -- stamped at all. `rememberHeld` writes what they walked in with ONCE per
+    -- player per match and every subtraction below and at the exit is
+    -- measured against it, so it has to be taken before the first thing the
+    -- arena hands over, not after. DO NOT move it back down.
+    rememberHeld(ox, src, matchId, item)
+
     local counted, answer = pcall(function() return ox:GetItemCount(src, item) end)
     if counted then
         local held = math.max(0, Arena.ToInt(answer) or 0)
 
+        -- WHAT OF THIS IS THE ARENA'S. Without this line `held` was
+        -- EVERYTHING in their pockets, so a fighter carrying 270 rounds of
+        -- their own was issued ZERO -- measured -- and then fought the round
+        -- on their own stock. Nothing was recorded as issued, so the exit
+        -- took nothing back and there was no line anywhere: the rounds they
+        -- fired were simply gone. The supplies half of ArenaAmmo.Refresh has
+        -- always subtracted the floor here; the rounds half never did, and
+        -- the same loadout came out right for plates and wrong for rounds.
+        --
+        -- AN UNKNOWN FLOOR COUNTS AS ZERO HERE, for the reason spelled out
+        -- against the same `or 0` in ArenaAmmo.Refresh: this line decides how
+        -- much to ADD and can only ever hand out one magazine too few. The
+        -- lines that TAKE refuse to act on an unknown floor instead -- see
+        -- takeBack. DO NOT copy this `or 0` to a line that removes anything.
+        held = math.max(0, held - (floorFor(matchId, src, item) or 0))
+
+        -- AND WHAT THIS PASS HAS ALREADY HANDED OVER COMES OFF AGAIN, which
+        -- is NOT double-counting the line above: it is what gives two
+        -- weapons sharing one ammo type their own allowance each. `held` is
+        -- read live, so the rounds issued for the first weapon are already
+        -- in it, and without this the second weapon would read them as "they
+        -- have plenty" and issue nothing. Measured before this change and
+        -- unchanged by it: two 270-round weapons on one ammo type arrive as
+        -- 540. DO NOT drop this as a double subtraction of the same rounds --
+        -- the line above takes off what is THEIRS, this one takes off what
+        -- this pass has just handed over, and they are different rounds.
         held = math.max(0, held - (Arena.ToInt(pass and pass[item]) or 0))
 
         count = count - held
         if count <= 0 then return true, 0 end
     end
-
-    rememberHeld(ox, src, matchId, item)
 
     local landed, why, granted = oxGave(function() return ox:AddItem(src, item, count) end)
     if not landed then
@@ -2531,6 +2610,43 @@ end
 
 --- Takes back whatever this character still owes, and forgets what they no
 --- longer have.
+--- Whether a FUNGIBLE debt can be collected right now, which is really the
+--- question of whether settling it can be WRITTEN DOWN.
+---
+--- A CONSUMABLE DEBT IS A NUMBER WITH NOTHING ON IT. A weapon row carries a
+--- serial, so a debt collected twice cannot take the wrong gun -- the second
+--- attempt finds the arena's copy is not there and leaves the player alone.
+--- Rounds and plates have no such lock: two armour is two armour, and the
+--- only thing standing between a settled stack and it being collected AGAIN
+--- is the DELETE that takes the row out of the table.
+---
+--- So when that DELETE cannot be sent, the collection does not happen either.
+--- ArenaDb drops a write it cannot deliver -- there is no queue and no dirty
+--- set -- so with oxmysql stopped the slate clears in memory while the row
+--- survives, and the next start reads it back and takes the same two armour
+--- and three bandages off the player a second time, out of stock they bought
+--- themselves, with a toast telling them the arena has taken its kit back.
+--- Reproduced end to end: eleven items in, one item left, on a debt of five.
+---
+--- The debt is NOT written off by waiting -- it stays on both the slate and
+--- the table, which agree with each other throughout, and the first sweep or
+--- door after the database answers collects it in full. DO NOT trade that
+--- delay for a second collection: the arena would rather wait for its own
+--- rounds than take a player's twice.
+---
+--- WITH NO DATABASE AT ALL there is no row to disagree with, the slate is
+--- memory only, and clearing it is the whole of the settlement -- so the
+--- collection goes ahead exactly as it always has. `kitWriteRefused` is the
+--- third case: a user who can read the table and not write it, whose DELETE
+--- is refused asynchronously on oxmysql's own console. Once one write has
+--- come back refused, every further collection would be a repeat of the
+--- first, so it stops there too.
+local function stockIsCollectable()
+    if Config.Database.enabled ~= true then return true end
+    if kitWriteRefused then return false end
+    return ArenaDbReady('the outstanding-kit slate')
+end
+
 local function midMatch(src)
     if type(ArenaDispatch) == 'table' and type(ArenaDispatch.IsPlayerInArena) == 'function' then
         return ArenaDispatch.IsPlayerInArena(src) == true
@@ -2664,7 +2780,21 @@ local function chaseOwedKit(src, citizenid)
     -- The debt is not written off, only left alone -- `owedItems` is not
     -- claimed below, so the slate is untouched and the next sweep after they
     -- leave collects it. DO NOT move this gate above the weapons.
-    if type(stock) == 'table' and not midMatch(src) then
+    local settle = type(stock) == 'table' and not midMatch(src)
+
+    if settle and not stockIsCollectable() then
+        -- SAID EVERY TIME RATHER THAN ONCE, on purpose and for the same
+        -- reason as the strict refusal in takeBack: each line is one
+        -- collection that did not happen, to one named character.
+        ArenaLog('weapons: %s owes the arena consumables and the outstanding-kit slate cannot be '
+            .. 'written to right now, so NOTHING was taken. Settling a fungible debt the arena '
+            .. 'cannot record as settled is how the same two armour and three bandages get taken '
+            .. 'off somebody twice. The debt stands and is collected once the database answers.',
+            tostring(citizenid))
+        settle = false
+    end
+
+    if settle then
         -- CLAIMED AND MERGED, the same way the weapon slate above is. This
         -- assigned straight over the top, which is exactly what the comment
         -- there says must never come back -- anything written while the loop

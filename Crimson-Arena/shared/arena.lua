@@ -1363,6 +1363,59 @@ function Arena.CanDamage(modeKey, attackerTeam, victimTeam)
     return Config.Teams.friendlyFire == true
 end
 
+--- HOW FAR OFF ITS OWN FLOOR A SPAWN MAY SIT, in metres, on an arena that
+--- carries one. Arena.ValidateConfig warns on exactly this band and shares
+--- these two numbers with the guard below, so that what an operator is
+--- warned about and what is corrected under them can NEVER drift apart.
+---
+--- A LITTLE ABOVE IS A CHOICE; A LOT ABOVE IS A TYPO. A spawn a step over
+--- the surface is a raised platform somebody meant. One far above it is a
+--- fall the moment the countdown ends -- and on the sky arena the boundary
+--- is a 110m sphere around the floor, so it is also outside the world,
+--- bleeding on the way down. There is no keypress that gets you back.
+local SPAWN_BELOW_FLOOR = 0.5
+local SPAWN_ABOVE_FLOOR = 5.0
+
+--- Bring a spawn point back down to the floor its arena carries, or hand it
+--- back untouched.
+---
+--- ONLY DOWNWARDS, AND ONLY FROM ABSURDLY HIGH. THIS IS NOT SYMMETRICAL AND
+--- MUST NOT BE MADE SO. A spawn BELOW the surface is already handled where it
+--- has to be, on the client: client/match.lua places an exact-Z arena at
+--- `math.max(z, floorZ)` and its ground probe refuses any ground under
+--- floorZ, so a low number is lifted at the moment of placement by the one
+--- piece of code that can see the world. Clamping it up here as well would
+--- change nothing a player experiences and would quietly delete the evidence
+--- the operator is meant to act on -- tests/skyarena_spec.lua asserts the low
+--- number survives this call for exactly that reason.
+---
+--- Nothing anywhere bounds it from ABOVE. `math.max` does not, the ground
+--- probe cannot -- there is no ground -- and a mistyped 12010 for 1201 puts
+--- every fighter ten kilometres up, frozen, and then unfreezes them.
+---
+--- ONLY AN ARENA WITH A PLATFORM HAS A FLOOR TO ARGUE WITH. On real ground
+--- there is no configured surface to compare against, so a ground arena's
+--- points come back exactly as the operator wrote them -- which is what
+--- Arena.PickSpawn's callers and the suite both expect.
+---
+--- The point is REBUILT only when it actually has to move, so the ordinary
+--- case still hands back the operator's own vector4 rather than a copy of it.
+--- @param arenaKey any
+--- @param point any
+--- @param factor number|nil
+--- @return any point
+local function settleOnFloor(arenaKey, point, factor)
+    if not Arena.IsPoint(point) then return point end
+
+    local x, y, z = tonumber(point.x), tonumber(point.y), tonumber(point.z)
+    if not x or not y or not z then return point end
+
+    local platform = Arena.GetPlatform(arenaKey, factor)
+    if not platform or z <= platform.z + SPAWN_ABOVE_FLOOR then return point end
+
+    return { x = x, y = y, z = platform.z, w = tonumber(point.w) or 0.0 }
+end
+
 function Arena.PickSpawn(arenaKey, teamKey, index)
     local arena = Arena.GetArenaByKey(arenaKey)
     if not arena then return nil end
@@ -1377,7 +1430,7 @@ function Arena.PickSpawn(arenaKey, teamKey, index)
 
     local position = Arena.ToInt(index) or 1
     if position < 1 then position = 1 end
-    return list[((position - 1) % #list) + 1]
+    return settleOnFloor(arenaKey, list[((position - 1) % #list) + 1])
 end
 
 function Arena.ModelChain(entry)
@@ -1717,6 +1770,31 @@ function Arena.GetSpawnArea(arenaKey, factor)
 
     local radius = math.max(1.0, tonumber(area.radius) or 60.0) * grow
 
+    -- THE CIRCLE IS PUT ON THE FLOOR, because this is the one place every
+    -- placement in this file reads it from -- Arena.PlanSpawns for the roster
+    -- at the start of a round, Arena.PickRespawn for every death after it.
+    --
+    -- A RING WIDER THAN THE FLOOR PLACES PEOPLE OVER OPEN AIR, and under the
+    -- sky arena open air is a thousand metres of it. A CENTRE FAR ABOVE THE
+    -- FLOOR is the same fall with no bad radius to blame it on. Both are
+    -- named by Arena.ValidateConfig at start-up -- off the RAW config, so
+    -- those warnings survive this clamp and DO NOT go quiet the moment it
+    -- starts working -- but a line in a console nobody is reading is not a
+    -- floor under anybody's feet.
+    --
+    -- CLAMPED TO platform.radius, WHICH IS THE CONSERVATIVE EDGE. The floor
+    -- is tiled and a tile is kept whenever ANY part of it reaches that
+    -- radius, so the real surface hangs half a tile further out than this
+    -- everywhere and a spawn on the clamped rim still has ground under it.
+    --
+    -- The height is brought DOWN only. See settleOnFloor for why the low
+    -- side is the client's to fix and not this file's.
+    local platform = Arena.GetPlatform(arenaKey, factor)
+    if platform then
+        if radius > platform.radius then radius = platform.radius end
+        if z > platform.z + SPAWN_ABOVE_FLOOR then z = platform.z end
+    end
+
     return {
         x = x, y = y, z = z,
         radius = radius,
@@ -1948,6 +2026,47 @@ local RESPAWN_CANDIDATES = 48
 
 local COVER_RETRIES = 12
 
+--- HOW MUCH OF THE BEST GAP ON OFFER A RESPAWN HAS TO CLEAR, as a share.
+---
+--- A MAXIMIN IS NOT RANDOM, AND DO NOT PUT ONE BACK. The rule here used to
+--- be "the candidate whose nearest enemy is furthest away", which sounds
+--- like safety and is a cursor. Measured on the shipped skydome over 3,000
+--- respawns with one enemy standing on the spawn rim: every single one
+--- landed 64.2 to 70.0 metres away against a possible 70.0 -- a 5.8m window
+--- on a 35m circle. With that enemy in the MIDDLE instead, all 3,000 landed
+--- 34.4 to 35.0 metres out, which is the wall, every time, all the way
+--- round. An arithmetic maximum has one answer, so an opponent who knows
+--- where they are standing knows where you are about to appear: stand
+--- still, watch the far wall, kill them again.
+---
+--- WHAT REPLACED IT: a bar, and a draw above it. Every candidate that
+--- clears the bar is as good as every other and one of them is taken at
+--- random. The bar is the gap the arena can actually promise --
+--- achievableSeparation for the crowd on the field, floored at the
+--- operator's own minSeparation -- and where the arena cannot promise that
+--- much, it is this share of the best any candidate managed.
+---
+--- THE NUMBER, MEASURED RATHER THAN CHOSEN. Same arena, same 3,000 draws,
+--- one enemy in the middle where the promise is out of reach: at 0.90 the
+--- answer spans 31.2 to 35.0m, which is the maximin again with extra steps;
+--- at 0.75, 26.4 to 35.0m; at 0.50, 17.4 to 35.0m and the rim case gives up
+--- 4.3m of real distance (33.4 rather than 37.7) for spread nobody can see.
+--- It must also stay UNDER 1.0: at exactly 1.0 the bar is the best gap
+--- itself, one float round-trip puts the only candidate that reaches it on
+--- the wrong side, nothing qualifies, and the draw falls back to the whole
+--- disc -- measured at 0.49m from the enemy.
+local SAFE_SHARE = 0.75
+
+--- One of these, at random.
+---
+--- CLAMPED, because `rng` is a caller's function and not always math.random:
+--- the suites pass a seeded stand-in, and a generator that can answer exactly
+--- 1.0 indexes one past the end and hands back nil -- which reads to every
+--- caller as "this arena has nowhere to put you".
+local function drawFrom(rng, list)
+    return list[math.min(#list, math.floor(rng() * #list) + 1)]
+end
+
 local function asPoint(value)
     if not Arena.IsPoint(value) then return nil end
     local ok, x, y = pcall(function() return value.x, value.y end)
@@ -1980,26 +2099,78 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor, prefer)
         blocked[#blocked + 1] = { x = piece.x, y = piece.y }
     end
 
-    local function insideCover(point, centreX, centreY)
+    --- How much room a point has, squared: the distance to the NEAREST piece
+    --- of cover, rather than a yes/no against the first piece that is close.
+    --- The number is what lets the last resort below pick the least buried
+    --- point instead of an arbitrary one.
+    local function coverRoom(point, centreX, centreY)
+        local nearest = math.huge
         for _, piece in ipairs(blocked) do
             local dx = point.x - (centreX + piece.x)
             local dy = point.y - (centreY + piece.y)
-            if (dx * dx + dy * dy) < (clearance * clearance) then return true end
+            local room = dx * dx + dy * dy
+            if room < nearest then nearest = room end
         end
-        return false
+        return nearest
     end
 
-    local candidates = {}
+    -- TWO ARRAYS, AND THE SECOND ONE IS NOT TIDINESS.
+    --
+    -- `candidates` holds what is handed back -- for a hand-written list that
+    -- is the operator's own vector4, untouched. `planes` holds a plain
+    -- { x, y } read of the same point, and every distance below is measured
+    -- against THAT.
+    --
+    -- THE DEFECT this closes, which HEAD threw on: an operator may write a
+    -- spawn as a bare array, `{ 1500.0, 3000.0, 1201.0, 0.0 }` -- the shape
+    -- asPoint was taught to read for threat positions, so it is a shape
+    -- somebody has already used. Scoring it directly reads `point.x` as nil
+    -- and `nil - number` RAISES, inside the respawn thread, after
+    -- scheduleRespawn has already set `entry.alive = true`. That is a corpse
+    -- the roster counts as a living fighter: it can never report another
+    -- death, `stillIn` never falls to one, and a round with no clock never
+    -- ends. Measured at HEAD: throws the moment there is one live enemy.
+    --
+    -- An entry nothing can be read out of is DROPPED, exactly as a junk
+    -- threat position is. If that empties the list the answer is nil, which
+    -- server/match.lua already handles by leaving them down and saying so.
+    local candidates, planes = {}, {}
     local area = Arena.GetSpawnArea(arenaKey, factor)
     if area then
+        local wall = clearance * clearance
+
+        -- WHAT HAPPENS WHEN EVERY DRAW IS INSIDE A PROP, which is the whole
+        -- reason this is kept rather than counted.
+        --
+        -- THE DEFECT: the redraw loop ran up to twelve times and then used
+        -- whatever the LAST draw was, inside cover or not, and the filter
+        -- underneath fell back to the unfiltered list the moment nothing in
+        -- it was clear. So an arena whose cover swallows its spawn ring --
+        -- clearance set too high, a dense layout, a small ring inside a
+        -- doubled wall -- placed fighters INSIDE the props, arbitrarily, and
+        -- that is the complaint this whole clearance exists to answer:
+        -- players spawning in the trailers.
+        --
+        -- Now nothing that is inside cover is ever a candidate. If 576 draws
+        -- cannot find one clear point, the single ROOMIEST draw is used --
+        -- the least buried place the arena has, which is the best answer
+        -- there is and is never worse than an arbitrary one.
+        local roomiest, roomiestRoom
         for _ = 1, RESPAWN_CANDIDATES do
-            local point
             for _ = 1, COVER_RETRIES do
-                point = sampleDisc(rng, area, area.x, area.y, area.radius)
-                if not insideCover(point, area.x, area.y) then break end
+                local drawn = sampleDisc(rng, area, area.x, area.y, area.radius)
+                local room = coverRoom(drawn, area.x, area.y)
+                if room >= wall then
+                    candidates[#candidates + 1] = drawn
+                    planes[#planes + 1] = drawn
+                    break
+                end
+                if roomiestRoom == nil or room > roomiestRoom then
+                    roomiest, roomiestRoom = drawn, room
+                end
             end
-            candidates[#candidates + 1] = point
         end
+        if #candidates == 0 and roomiest then candidates[1], planes[1] = roomiest, roomiest end
     else
         local arena = Arena.GetArenaByKey(arenaKey)
         if type(arena) ~= 'table' then return nil end
@@ -2017,82 +2188,161 @@ function Arena.PickRespawn(arenaKey, teamKey, avoid, rng, factor, prefer)
         -- one. Without this a small list plus one enemy is a cursor again.
         local offset = math.floor(rng() * #list)
         for step = 1, #list do
-            candidates[#candidates + 1] = list[((offset + step - 1) % #list) + 1]
+            local point = list[((offset + step - 1) % #list) + 1]
+            local plane = asPoint(point)
+            if plane then
+                candidates[#candidates + 1] = settleOnFloor(arenaKey, point, factor)
+                planes[#planes + 1] = plane
+            end
         end
 
         -- A HAND-WRITTEN LIST IS THE OPERATOR'S CHOICE and is never thinned:
         -- these are points somebody placed on purpose, and dropping one
         -- because a barrier is near it can leave nothing to return at all.
         -- Cover clearance is for points this file INVENTED.
+        --
+        -- ITS HEIGHT IS NOT A CHOICE, which is why settleOnFloor is the one
+        -- thing applied to it. A hand-typed z that misses the floor of a sky
+        -- arena is not a placement somebody meant; it is a fighter under the
+        -- platform or falling past it, and the arena knows exactly where its
+        -- own surface is.
     end
 
     if #candidates == 0 then return nil end
 
-    local clear = {}
+    local pool = {}
+    for index = 1, #candidates do pool[index] = index end
+
+    -- The gap this arena PROMISES against the crowd currently on the field,
+    -- and the floor it may never go under. Both are the operator's own
+    -- numbers, and both are the same ones Arena.PlanSpawns places the
+    -- opening roster to. A hand-written list has no circle and so no
+    -- promise -- there the bar is a share of the best on offer and nothing
+    -- else.
+    local keepOut = 0.0
+    local promised = math.huge
     if area then
-        for _, candidate in ipairs(candidates) do
-            if not insideCover(candidate, area.x, area.y) then
-                clear[#clear + 1] = candidate
-            end
-        end
-    end
-    local pool = #clear > 0 and clear or candidates
-
-    if #threats == 0 then
-        return pool[1]
+        keepOut = area.minSeparation
+        promised = math.max(keepOut, achievableSeparation(area.radius, #threats + 1))
     end
 
-    local function threatGap(candidate)
+    local function nearestOf(index, crowd)
         local nearest = math.huge
-        for _, threat in ipairs(threats) do
-            local gap = distanceSquared(candidate, threat)
+        for _, other in ipairs(crowd) do
+            local gap = distanceSquared(planes[index], other)
             if gap < nearest then nearest = gap end
         end
         return nearest
     end
 
-    local safe = pool
+    local safe, held = pool, true
 
-    local rejoinable = pool
-    if area then
-        local wanted = math.max(area.minSeparation,
-            achievableSeparation(area.radius, #threats + 1))
+    if #threats > 0 then
+        local reach = 0.0
+        for _, index in ipairs(pool) do
+            local gap = nearestOf(index, threats)
+            if gap > reach then reach = gap end
+        end
+        reach = math.sqrt(reach)
+
+        local share = reach * SAFE_SHARE
+        local bar = math.max(keepOut, math.min(promised, share))
+
+        -- THE ONE CASE THE OPERATOR'S FLOOR CANNOT BE HONOURED: an arena
+        -- whose minSeparation is as wide as the arena, or a field so crowded
+        -- that nowhere in it is that far from everybody. Nothing qualifying
+        -- means nothing to choose from, so the bar drops to the best on
+        -- offer -- and `held` records that the promise was NOT kept, which
+        -- is what stands the team rule below down. Rejoining your side must
+        -- NEVER be the thing that walks you into the fight.
+        if bar > reach then
+            bar, held = share, false
+        end
+
         local qualified = {}
-        for _, candidate in ipairs(pool) do
-            if threatGap(candidate) >= wanted * wanted then qualified[#qualified + 1] = candidate end
-        end
-        if #qualified > 0 then
-            safe = qualified
-            rejoinable = qualified
-        else
-            local floor = area.minSeparation * area.minSeparation
-            rejoinable = {}
-            for _, candidate in ipairs(pool) do
-                if threatGap(candidate) >= floor then rejoinable[#rejoinable + 1] = candidate end
+        for _, index in ipairs(pool) do
+            if nearestOf(index, threats) >= bar * bar then
+                qualified[#qualified + 1] = index
             end
         end
+        if #qualified > 0 then safe = qualified end
     end
 
-    if #friends > 0 and #rejoinable > 0 then
-        local best, bestScore = nil, math.huge
-        for _, candidate in ipairs(rejoinable) do
-            local nearest = math.huge
-            for _, friend in ipairs(friends) do
-                local gap = distanceSquared(candidate, friend)
-                if gap < nearest then nearest = gap end
-            end
-            if nearest < bestScore then best, bestScore = candidate, nearest end
+    -- COMING BACK BESIDE YOUR OWN SIDE, IN A BAND RATHER THAN ON TOP OF THEM.
+    --
+    -- THE DEFECT, MEASURED on the shipped skydome over 3,000 team respawns
+    -- with one team-mate 20m off centre: a mean of 4.20m from them, a median
+    -- of 3.20m and a closest of 0.11m. The rule was "the qualifying point
+    -- NEAREST a team-mate", and the nearest point to somebody is on top of
+    -- them. An enemy who kills one of a pair then knows within a couple of
+    -- metres where the other one is about to stand, and one grenade covers
+    -- both of them.
+    --
+    -- THE TWO NUMBERS ARE THE OPERATOR'S, NOT MINE.
+    --
+    --   NEVER CLOSER THAN minSeparation. config.lua writes it down as
+    --   "never closer than this to another player" -- another PLAYER, not
+    --   another enemy -- and a respawn places exactly one body, so it has
+    --   none of the packing pressure that makes Arena.PlanSpawns relax to
+    --   mateSeparation when eight fighters will not fit in one team circle.
+    --   There is no excuse for a respawn to come in under the number the
+    --   arena states. On both shipped arenas that is 10 metres.
+    --
+    --   NEVER FURTHER THAN teamRadius. That is config.lua's own "how
+    --   tightly one team lands together", and it is what Arena.PlanSpawns
+    --   scatters a side inside at the start of the round. 16m on the
+    --   skydome, 18m on the trailer park. Inside it you are with your side;
+    --   outside it you have been dropped somewhere else.
+    --
+    -- So "close to an ally" is 10 to 16 metres of open annulus -- around
+    -- 490 square metres of it -- drawn from at random. Close enough to be
+    -- in the same fight, far enough that killing one of a pair does not
+    -- tell you where the other will be.
+    --
+    -- WHEN NOTHING IS IN THE BAND -- your side is fighting in the middle and
+    -- the enemy gap has pushed every candidate out to the rim -- the CEILING
+    -- is what gives way, NEVER the floor, and it gives way to the whole safe
+    -- set rather than to a single nearest point. Being unable to reach your
+    -- team-mate is a disappointment; being placed on top of them is the
+    -- defect. The floor only gives way where nothing at all can hold it,
+    -- which is the same condition `held` records for the enemy gap.
+    if held and #friends > 0 and #safe > 0 then
+        local closest = math.huge
+        for _, index in ipairs(safe) do
+            local gap = nearestOf(index, friends)
+            if gap < closest then closest = gap end
         end
-        if best then return best end
+
+        local ceiling = math.max(area and area.teamRadius or 0.0,
+            math.sqrt(closest) / SAFE_SHARE)
+
+        local band, spaced = {}, {}
+        for _, index in ipairs(safe) do
+            local gap = nearestOf(index, friends)
+            if gap >= keepOut * keepOut then
+                spaced[#spaced + 1] = index
+                if gap <= ceiling * ceiling then band[#band + 1] = index end
+            end
+        end
+
+        if #band == 0 then band = spaced end
+
+        -- Everything near enough to a team-mate is also nearer than the
+        -- arena allows, which happens only where the enemy gap and the team
+        -- gap cannot both be had. Being with your side wins that one -- the
+        -- enemy bar has already been cleared by every candidate here.
+        if #band == 0 then
+            for _, index in ipairs(safe) do
+                if nearestOf(index, friends) <= ceiling * ceiling then
+                    band[#band + 1] = index
+                end
+            end
+        end
+
+        if #band > 0 then return candidates[drawFrom(rng, band)] end
     end
 
-    local best, bestScore = nil, -1
-    for _, candidate in ipairs(safe) do
-        local nearest = threatGap(candidate)
-        if nearest > bestScore then best, bestScore = candidate, nearest end
-    end
-
-    return best
+    return candidates[drawFrom(rng, safe)]
 end
 
 --- How many lives a host may give a match, resolved from what they asked for.
@@ -2536,13 +2786,36 @@ function Arena.LoadoutChooser()
     return chooser == 'player' and 'player' or 'host'
 end
 
---- The spawn area of an arena at its configured size, for the validator.
---- Separate from Arena.GetSpawnArea only so the intent is obvious: a check
---- about what an operator TYPED must not be reading a scaled copy of it.
+--- The spawn area an operator TYPED, for the validator, and deliberately
+--- not Arena.GetSpawnArea.
+---
+--- THE READER AND THE PLACER HAVE TO DISAGREE HERE, WHICH IS THE POINT.
+--- Arena.GetSpawnArea now clamps a ring that overhangs the floor and a
+--- height that misses it, because a placement has to put a body somewhere
+--- solid. Read the clamped answer here and every warning about those two
+--- mistakes goes quiet the moment the clamp starts working -- the operator
+--- is silently rescued, keeps the typo, and finds it again the day they
+--- move the arena onto real ground where nothing rescues anybody.
+---
+--- So this reads the block itself. It is the raw radius and the raw centre
+--- height, at the configured size, exactly as written.
 --- @param arenaKey any
---- @return table|nil
+--- @return table|nil -- { z, radius }, or nil if there is no readable area
 local function arenaSpawnAreaOf(arenaKey)
-    return Arena.GetSpawnArea(arenaKey, 1.0)
+    local arena = Arena.GetArenaByKey(arenaKey)
+    if type(arena) ~= 'table' then return nil end
+
+    local area = arena.spawnArea
+    if type(area) ~= 'table' or area.enabled == false then return nil end
+
+    local centre = area.center or area.centre
+    local z = centre and tonumber(centre.z) or (centre and tonumber(centre[3]))
+    if not z then return nil end
+
+    return {
+        z = z,
+        radius = math.max(1.0, tonumber(area.radius) or 60.0),
+    }
 end
 
 function Arena.ValidateConfig()
@@ -2645,6 +2918,31 @@ function Arena.ValidateConfig()
                 .. 'match can be created in it.'):format(
                     entry.key == '' and '""' or tostring(entry.key), type(entry.key)))
         end
+
+        -- A CLEARANCE OF ZERO IS NOT "NO MARGIN", IT IS NO GUARD.
+        --
+        -- Arena.CoverClearance takes any number at or above zero, so a nought
+        -- typed here is honoured -- and it is the ONE reading that switches
+        -- the whole prop exclusion off rather than tightening it. Measured on
+        -- the shipped skydome with clearance = 0: 1,260 respawns in 2,000
+        -- landed within seven metres of a container's centre, which is inside
+        -- it. Nothing else anywhere says so, and the report an operator gets
+        -- back is "I keep spawning in the containers".
+        --
+        -- Named rather than overridden, because zero on an arena with no
+        -- pieces is harmless and meaningless, and this cannot read the
+        -- operator's mind -- only the pieces they wrote next to it.
+        local cover = arena.cover
+        if type(cover) == 'table' and cover.enabled ~= false
+            and type(cover.pieces) == 'table' and #cover.pieces > 0
+            and tonumber(cover.clearance) == 0
+        then
+            complain(('Config.Arenas["%s"].cover.clearance is 0, with %d piece(s) of cover standing. '
+                .. 'That is not a tight margin, it is no check at all: fighters will be placed inside '
+                .. 'the props. It has to be at least the widest piece\'s half-length -- about 7 for a '
+                .. 'shipping container, which is what an unset clearance uses.')
+                :format(tostring(entry.key), #cover.pieces))
+        end
     end
 
     -- AN ARENA THAT CARRIES ITS OWN FLOOR WRITES ITS HEIGHT DOWN SEVERAL
@@ -2669,10 +2967,10 @@ function Arena.ValidateConfig()
             local function checkHeight(where, z)
                 local value = tonumber(z)
                 if not value then return end
-                if value < surface - 0.5 then
+                if value < surface - SPAWN_BELOW_FLOOR then
                     complain(('Config.Arenas["%s"].%s is at %.2f, BELOW the platform surface at %.2f -- a fighter placed there is under the arena.')
                         :format(entry.key, where, value, surface))
-                elseif value > surface + 5.0 then
+                elseif value > surface + SPAWN_ABOVE_FLOOR then
                     complain(('Config.Arenas["%s"].%s is at %.2f, %.2f above the platform surface at %.2f -- that is a fall when the countdown ends.')
                         :format(entry.key, where, value, value - surface, surface))
                 end

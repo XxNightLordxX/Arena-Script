@@ -1384,18 +1384,37 @@ local KIT_SCHEMA_SQL = [[
     )
 ]]
 
-local KIT_WRITE_SQL = [[
+-- NO PARAMETER IS EVER NIL, and the two statements are split for that one
+-- reason. A weapon row carries a serial and an item row does not, so the
+-- obvious single statement wanted a nil in the middle of the parameter list
+-- -- and a Lua table with a hole in it is not one value short, it is
+-- UNDEFINED. `#t` answers 6, `ipairs` stops at 4, and which of those
+-- oxmysql happens to use decides whether the query runs, fails, or silently
+-- writes the wrong columns. The item statement simply does not mention the
+-- column; the database default fills it in.
+--
+-- `kind` is written by the statement rather than passed, for the same
+-- reason it is worth being strict here: it is not data, it is which
+-- statement you called. DO NOT merge these back into one.
+local KIT_WEAPON_SQL = [[
     INSERT INTO crimson_arena_owed_kit
         (citizenid, ledger_key, kind, name, serial, amount)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE amount = VALUES(amount)
+    VALUES (?, ?, 'weapon', ?, ?, 1)
+    ON DUPLICATE KEY UPDATE amount = 1
 ]]
 
-local KIT_ADD_SQL = [[
+local KIT_ITEM_ADD_SQL = [[
     INSERT INTO crimson_arena_owed_kit
-        (citizenid, ledger_key, kind, name, serial, amount)
-    VALUES (?, ?, ?, ?, ?, ?)
+        (citizenid, ledger_key, kind, name, amount)
+    VALUES (?, ?, 'item', ?, ?)
     ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)
+]]
+
+local KIT_ITEM_SET_SQL = [[
+    INSERT INTO crimson_arena_owed_kit
+        (citizenid, ledger_key, kind, name, amount)
+    VALUES (?, ?, 'item', ?, ?)
+    ON DUPLICATE KEY UPDATE amount = VALUES(amount)
 ]]
 
 local KIT_DROP_SQL =
@@ -1450,12 +1469,11 @@ local function weaponKey(serial) return 'w:' .. tostring(serial) end
 local function itemKey(name) return 'i:' .. tostring(name) end
 
 local function saveOwedWeapon(citizenid, row)
-    kitDb(KIT_WRITE_SQL,
-        { citizenid, weaponKey(row.serial), 'weapon', row.name, row.serial, 1 })
+    kitDb(KIT_WEAPON_SQL, { citizenid, weaponKey(row.serial), row.name, row.serial })
 end
 
 local function saveOwedItem(citizenid, name, amount)
-    kitDb(KIT_ADD_SQL, { citizenid, itemKey(name), 'item', name, nil, amount })
+    kitDb(KIT_ITEM_ADD_SQL, { citizenid, itemKey(name), name, amount })
 end
 
 --- Writes a stack's CURRENT total, rather than adding to it -- used after a
@@ -1465,11 +1483,29 @@ local function setOwedItem(citizenid, name, amount)
         kitDb(KIT_DROP_SQL, { citizenid, itemKey(name) })
         return
     end
-    kitDb(KIT_WRITE_SQL, { citizenid, itemKey(name), 'item', name, nil, amount })
+    kitDb(KIT_ITEM_SET_SQL, { citizenid, itemKey(name), name, amount })
 end
 
 local function dropOwedWeapon(citizenid, serial)
     kitDb(KIT_DROP_SQL, { citizenid, weaponKey(serial) })
+end
+
+--- Trims a character's weapon slate to the cap, oldest first.
+---
+--- THE DATABASE ROW GOES WITH IT. Three places trimmed the Lua table and
+--- left the row behind, so the next restart read the evicted debt straight
+--- back in -- a cap that capped nothing, and a slate that could only grow.
+--- DO NOT trim `owedKit` anywhere without coming through here.
+local function trimOwedKit(citizenid, rows)
+    while #rows > OWED_KIT_LIMIT do
+        local gone = table.remove(rows, 1)
+        if type(gone) == 'table' and Arena.IsKey(gone.serial) then
+            ArenaLog('weapons: %s\'s slate is full at %d, so the arena has given up on its %s (%s).',
+                tostring(citizenid), OWED_KIT_LIMIT, tostring(gone.name), tostring(gone.serial))
+            dropOwedWeapon(citizenid, gone.serial)
+        end
+    end
+    return rows
 end
 
 --- How many characters owe the arena ANYTHING -- a weapon, an item, or both.
@@ -1600,7 +1636,7 @@ local function queueOwedKit(citizenid, src)
     -- and this one has no expiry -- a character who never comes back is never
     -- collected from. The OLDEST rows go, because the newest debt is the one
     -- most likely still to be collectable.
-    while #rows > OWED_KIT_LIMIT do table.remove(rows, 1) end
+    trimOwedKit(citizenid, rows)
 
     if owedKit[citizenid] == nil and owedKitCharacters() >= OWED_KIT_CHARACTERS then
         ArenaLog('weapons: the outstanding-kit ledger is full at %d characters, so %d weapon(s) of '
@@ -1724,7 +1760,7 @@ local function chaseOwedKit(src, citizenid)
 
     -- MERGED, NOT ASSIGNED, for the reason given above the loop.
     for _, row in ipairs(owedKit[citizenid] or {}) do left[#left + 1] = row end
-    while #left > OWED_KIT_LIMIT do table.remove(left, 1) end
+    trimOwedKit(citizenid, left)
     owedKit[citizenid] = #left > 0 and left or nil
     return taken
 end
@@ -1737,7 +1773,7 @@ local function oweWeapon(citizenid, row)
     if owedKit[citizenid] == nil and owedKitCharacters() >= OWED_KIT_CHARACTERS then return false end
 
     rows[#rows + 1] = { name = row.name, serial = row.serial }
-    while #rows > OWED_KIT_LIMIT do table.remove(rows, 1) end
+    trimOwedKit(citizenid, rows)
     owedKit[citizenid] = rows
     saveOwedWeapon(citizenid, row)
     return true

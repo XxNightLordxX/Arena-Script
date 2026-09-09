@@ -19,3 +19,8 @@ luac.out
 
 # Local operator overrides -- never commit a live server's real config
 config.local.lua
+
+# Python bytecode from tools/. Machine-specific, and it goes stale the moment
+# the script beside it is edited.
+__pycache__/
+*.pyc

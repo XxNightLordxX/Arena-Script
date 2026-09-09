@@ -1085,9 +1085,19 @@ end
 --- nothing else it could possibly take: exactly one copy of that name on
 --- them, which must be the one it issued. Two, and it stops -- losing a
 --- weapon rather than taking somebody's.
---- @return boolean
+---
+--- THREE ANSWERS, AND MERGING TWO OF THEM IS WHAT MADE THE LADDER AND THE
+--- RESPAWN DISAGREE. `taken` is "this call removed the arena's copy".
+--- `absent` is "the inventory was READ and the arena's copy is not in it" --
+--- destroyed on death, dropped, or parked somewhere the arena cannot reach,
+--- and NOTHING here can tell those apart. Neither remaining answer fits it:
+--- calling it taken hands a parked rung off the books, and calling it
+--- refused sends a respawning fighter in unarmed. Only the caller knows
+--- whether a death came first, so only the caller can decide. DO NOT
+--- collapse this back to one boolean.
+--- @return boolean taken, boolean absent
 local function takeWeaponBack(ox, src, record)
-    if type(record) ~= 'table' or not Arena.IsKey(record.name) then return false end
+    if type(record) ~= 'table' or not Arena.IsKey(record.name) then return false, false end
 
     local function removeSlot(slot, why)
         if not slot then return false end
@@ -1104,6 +1114,13 @@ local function takeWeaponBack(ox, src, record)
     -- QUIETLY, because a refusal here is not news: the weapon being gone and
     -- the build not supporting the filter both land on it, and the answer is
     -- worked out below. Shouting here trained operators to ignore the log.
+    --
+    -- READ FIRST, BECAUSE THE REMOVAL DESTROYS THE EVIDENCE. Once the filter
+    -- has run, "the serial is not in these pockets" means either that it
+    -- worked or that the weapon was NEVER there, and the answer below is
+    -- opposite in the two cases. This is the only moment the difference can
+    -- still be seen. DO NOT move it under the removal.
+    local before = Arena.IsKey(record.serial) and serialsFor(ox, src, record.name) or nil
     if Arena.IsKey(record.serial) then
         pcall(function()
             return ox:RemoveItem(src, record.name, 1, { serial = record.serial })
@@ -1111,7 +1128,7 @@ local function takeWeaponBack(ox, src, record)
     end
 
     local copies = copiesOf(ox, src, record.name)
-    if copies == nil then return false end
+    if copies == nil then return false, false end
 
     if Arena.IsKey(record.serial) then
         -- THE INVENTORY SAYS WHETHER IT WORKED, NOT THE RETURN VALUE.
@@ -1129,14 +1146,26 @@ local function takeWeaponBack(ox, src, record)
         -- the return value.
         for _, copy in ipairs(copies) do
             if copy.serial == record.serial then
-                return removeSlot(copy.slot, 'by serial ' .. record.serial)
+                return removeSlot(copy.slot, 'by serial ' .. record.serial), false
             end
         end
 
-        -- NOT THERE ANY MORE. Either the removal above worked, or it was
-        -- destroyed, dropped or already taken. Both mean the arena's copy is
-        -- not in these pockets and there is nothing left to do about it.
-        return true
+        -- IT IS ONLY TAKEN IF THIS CALL IS WHAT TOOK IT. The serial was in
+        -- these pockets before the filter ran and is not in them now, so the
+        -- filter is the only thing that can have moved it. `before` is the
+        -- only witness to that: DO NOT drop the read that makes it, or this
+        -- line goes back to calling a weapon that was never here a success.
+        if before and before[record.serial] then return true, false end
+
+        -- AND OTHERWISE IT WAS NEVER IN THESE POCKETS AT ALL. Reporting that
+        -- as a successful removal is what let a climber park each rung in a
+        -- trunk and keep it, with the row struck off the arena's books on the
+        -- way past. It is not a refusal either -- ox_inventory empties a dead
+        -- fighter's pockets onto the floor on EVERY death here, so a
+        -- respawning fighter reaches this line in the ordinary course of
+        -- play, and refusing would leave them unarmed for the rest of the
+        -- round. The caller settles it.
+        return false, true
     end
 
     -- AND ONLY IF THAT COPY HAS NO SERIAL EITHER.
@@ -1161,8 +1190,17 @@ local function takeWeaponBack(ox, src, record)
     -- weapon off instead -- the same rule the ledger already follows for a
     -- serial it cannot read. DO NOT take an identified weapon on a record
     -- that cannot identify anything.
+    --
+    -- AND NONE AT ALL IS THE SAME ABSENCE THE SERIAL BRANCH REPORTS. The
+    -- inventory was read and holds no copy of that name, which is what a
+    -- weapon dropped by a corpse looks like from here. This fell through to
+    -- the refusal at the bottom, so a fighter whose record carried no serial
+    -- -- melee on some builds, or anything issued while the inventory could
+    -- not be read -- was NEVER re-armed after their first death.
+    if #copies == 0 then return false, true end
+
     if #copies == 1 and not Arena.IsKey(copies[1].serial) then
-        return removeSlot(copies[1].slot, 'the only copy they hold, and neither it nor the record has a serial')
+        return removeSlot(copies[1].slot, 'the only copy they hold, and neither it nor the record has a serial'), false
     end
 
     if #copies == 1 then
@@ -1179,7 +1217,24 @@ local function takeWeaponBack(ox, src, record)
             .. 'than take the wrong one.', tostring(src), #copies, record.name)
     end
 
-    return false
+    return false, false
+end
+
+--- The two answers back into one, for the callers that genuinely cannot use
+--- the second and must not silently get the wrong half of it.
+---
+--- WHAT THIS DECIDES IS WHO PAYS FOR A WEAPON THAT DIED WITH ITS OWNER, and
+--- it is one word. `taken or absent` settles the row: nothing is billed, and
+--- a weapon parked out of reach before a disconnect is free. `taken` alone
+--- bills it: the parked weapon goes on the slate, and so does every gun a
+--- corpse dropped -- and chaseOwedKit will NEVER write those off, because it
+--- refuses on purpose to delete a row that is not in front of it, so they sit
+--- on the ledger until the cap forgets them and crowd out real debts. This is
+--- the arena's answer today and changing it is the owner's call, not an
+--- editor's.
+local function settledWeapon(ox, src, record)
+    local took, absent = takeWeaponBack(ox, src, record)
+    return took or absent
 end
 
 local function issueSpareRounds(ox, src, matchId, entry, pass)
@@ -1358,8 +1413,15 @@ local function takeBack(ox, src, item, count, floor, strict)
     return 0, take, readable
 end
 
-local function takeRungBack(ox, src, record, name)
-    if not Arena.IsKey(name) then return nil, false end
+--- @param keepAbsent boolean? -- whether a row naming a weapon that is NOT
+--- in these pockets is left on the record. OFF by default, which is what the
+--- arena has always done. A caller that is about to REFUSE over that row
+--- turns it on, and DO NOT leave it off there: the row is the only thing the
+--- next call has to refuse over, so the refusal would last exactly one call
+--- and the attempt after it sails through on an empty candidate list.
+--- @return table|nil row, boolean refused, boolean absent
+local function takeRungBack(ox, src, record, name, keepAbsent)
+    if not Arena.IsKey(name) then return nil, false, false end
 
     -- THE ROW IS KEPT ON PURPOSE, not just a yes/no, because the removal has
     -- to name WHICH copy it is taking. A rung weapon and the player's own can
@@ -1376,21 +1438,45 @@ local function takeRungBack(ox, src, record, name)
     for index = #record, 1, -1 do
         if record[index].name == name then candidates[#candidates + 1] = index end
     end
-    if #candidates == 0 then return nil, false end
+    if #candidates == 0 then return nil, false, false end
+
+    -- EVERY CANDIDATE IS TRIED BEFORE ANY ANSWER IS GIVEN, and the order of
+    -- the two failures is fixed: one copy the player IS holding that
+    -- ox_inventory would not take outranks any number of rows naming weapons
+    -- that are simply not there. Arming them again on top of a weapon they
+    -- still have is the double-issue the refusal exists to stop, and it must
+    -- not be reached by a stale row further down the same record.
+    local missing = {}
+    local balked = false
 
     for _, index in ipairs(candidates) do
         local row = record[index]
-        if takeWeaponBack(ox, src, row) then
+        local took, absent = takeWeaponBack(ox, src, row)
+        if took then
             -- ONLY THE ROW ACTUALLY TAKEN. This deleted EVERY row of the
             -- name after removing a single weapon, so a second copy the arena
             -- had issued was forgotten while the player kept it. One removal
             -- must not forget two guns.
             table.remove(record, index)
-            return row, false
+            return row, false, false
+        end
+        if absent then
+            missing[#missing + 1] = index
+        else
+            balked = true
         end
     end
 
-    return nil, true
+    if #missing > 0 and not balked then
+        -- COLLECTED DESCENDING, so removing them in order cannot shift an
+        -- index that has not been used yet. DO NOT re-sort this.
+        if not keepAbsent then
+            for _, index in ipairs(missing) do table.remove(record, index) end
+        end
+        return nil, false, true
+    end
+
+    return nil, true, false
 end
 
 local function putRungsBack(ox, src, record, rows, context)
@@ -1456,7 +1542,15 @@ local function dropRungRounds(ox, src, matchId, keep)
     end
 end
 
-function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear)
+--- @param allowAbsent boolean? -- treat a rung that is NOT in these pockets
+--- as nothing left to take rather than as parked. OFF by default, because
+--- the anti-parking rule is the only reason the rung below can refuse at
+--- all. The one caller that KNOWS the pockets were emptied by something
+--- other than the player's own choice -- a demotion, which follows their own
+--- death -- opts in, and settleTier already had the answer in its reason key.
+--- DO NOT switch it on for a promotion: a promotion follows somebody else's
+--- death, and the climber's own pockets are theirs to have emptied.
+function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear, allowAbsent)
     local ox = inventory()
     if not ox then return false, 'no-inventory' end
     if type(entry) ~= 'table' or not Arena.IsKey(entry.weapon) then return false, 'refused' end
@@ -1490,8 +1584,31 @@ function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear)
     local taken = {}
     if Arena.IsKey(removeWeapon) then
         sweep[removeWeapon] = nil
-        local row, refused = takeRungBack(ox, src, record, removeWeapon)
+
+        -- THE ROW IS KEPT WHILE THIS CALL MIGHT REFUSE OVER IT, and DO NOT
+        -- drop it here. Dropping it makes the refusal last exactly one
+        -- promotion: the next kill finds no candidate row at all, reads that
+        -- as nothing to take back, and hands over the tier anyway.
+        local row, refused, absent =
+            takeRungBack(ox, src, record, removeWeapon, allowAbsent ~= true)
         if refused then return false, 'refused' end
+
+        -- PARKED, UNLESS THE CALLER KNOWS BETTER, and this is the whole
+        -- anti-parking rule. The rung is not in these pockets and the
+        -- inventory read fine, so either the player put it somewhere
+        -- ox_inventory cannot reach -- in which case advancing arms them with
+        -- both tiers and strikes the lower one off the books, which is a free
+        -- weapon per rung -- or a death emptied their pockets onto the floor,
+        -- which happens on every death here. Nothing at this level separates
+        -- the two, and only a demotion follows the player's own death -- so
+        -- DO NOT try to answer it here instead of asking the caller.
+        if absent and allowAbsent ~= true then
+            ArenaDebug('weapons: %s is not carrying the tier weapon %s the arena issued them, so the '
+                .. 'promotion is refused rather than hand over a second one.',
+                tostring(src), tostring(removeWeapon))
+            return false, 'refused'
+        end
+
         if row then taken[#taken + 1] = row end
     end
 
@@ -1561,7 +1678,16 @@ function ArenaAmmo.Refresh(src, matchId, loadout)
             local armed = roundsOk
                 or (Config.Loadouts.ammoItems or {}).allowWeaponWithoutAmmoItem ~= false
 
-            local taken, refused = takeRungBack(ox, src, record, name)
+            -- THE STALE ROW GOES WITH THE WEAPON IT NAMED, which is what
+            -- the arena has always done here and what makes the re-issue
+            -- below a replacement rather than a second copy. A respawn is the
+            -- one moment the arena KNOWS the pockets were emptied by a death
+            -- rather than by the player, so `refused` stays false for it and
+            -- the skip below does not fire -- a fighter whose weapon died
+            -- with them is armed again on the next life, and DO NOT put that
+            -- skip back in the way of it. See settledWeapon for the half of
+            -- this decision that is the owner's.
+            local taken, refused = takeRungBack(ox, src, record, name, false)
 
             if refused then
                 -- NOT RE-ISSUED WHILE THE OLD ONE IS STILL ON THEM, on
@@ -2700,7 +2826,7 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                             .. 'taking a weapon of somebody else\'s.',
                             item.name, tostring(item.citizenid))
                     end
-                elseif not takeWeaponBack(ox, src, item) then
+                elseif not settledWeapon(ox, src, item) then
                     -- IT DID NOT COME BACK, SO IT GOES ON THE SLATE. This is
                     -- the branch every ordinary disconnect takes: nobody has
                     -- taken the server id over yet, so the row still looks
@@ -2710,12 +2836,16 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                     -- line below and the weapons were gone for good -- which
                     -- is the same free loadout by a quieter route.
                     --
-                    -- SAFE TO WRITE DOWN EVEN WHEN NOTHING IS WRONG. A weapon
-                    -- destroyed on death fails here too, and the chase settles
-                    -- that on its own: the next time the character is seen it
-                    -- asks whether they hold the serial, finds they do not,
-                    -- and writes the debt off. DO NOT try to guess the
-                    -- difference here -- there is nothing to guess it from.
+                    -- AND ONLY A REFUSAL REACHES HERE NOW. settledWeapon has
+                    -- already taken "the arena's copy is not in these
+                    -- pockets" off this branch, which is what a weapon
+                    -- destroyed on death looks like -- so what is written
+                    -- down is kit ox_inventory would not give up, not kit
+                    -- that has stopped existing. DO NOT widen it back over
+                    -- the absent case on the reasoning that the chase will
+                    -- sort it out: chaseOwedKit refuses on purpose to delete
+                    -- a row that is not in front of it, so a debt for a gun
+                    -- nobody holds is NEVER collected and NEVER cleared.
                     -- NAMED APART FROM THE FUNCTION-SCOPE `owner`, which it
                     -- used to shadow. Both were correct, and a reader had to
                     -- prove that twice.

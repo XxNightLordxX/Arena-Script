@@ -879,8 +879,38 @@ local function takeWeaponBack(ox, src, record)
         return true
     end
 
+    -- AND ONLY IF THAT COPY HAS NO SERIAL EITHER.
+    --
+    -- The arena's row has no serial, so it can be matched to nothing. This
+    -- took the single copy anyway, on the reasoning that one copy cannot be
+    -- the wrong one -- and it can. The arena's copy is destroyed on death,
+    -- dropped, or already taken on plenty of ordinary paths, and what is left
+    -- in those pockets is then the player's OWN gun of that name.
+    --
+    -- A weapon that carries a serial is somebody's identified property. It
+    -- may be theirs, it may be one they took off somebody else, and either
+    -- way that serial is what a police script, an evidence system or the
+    -- owner reads to know whose it is. Confiscating it does not just cost
+    -- them a gun, it erases the only thing that says where it came from --
+    -- and the arena CANNOT have issued it, because a row with no serial has
+    -- nothing to match against.
+    --
+    -- So the fallback now only fires on a copy that is as anonymous as the
+    -- record is. That is the melee-on-some-builds case it was written for.
+    -- Anything with a serial is left alone, and the arena writes its own
+    -- weapon off instead -- the same rule the ledger already follows for a
+    -- serial it cannot read. DO NOT take an identified weapon on a record
+    -- that cannot identify anything.
+    if #copies == 1 and not Arena.IsKey(copies[1].serial) then
+        return removeSlot(copies[1].slot, 'the only copy they hold, and neither it nor the record has a serial')
+    end
+
     if #copies == 1 then
-        return removeSlot(copies[1].slot, 'the only copy they hold, and it has no serial')
+        ArenaLog('weapons: %s is holding one %s and it carries serial %s, which the arena has no '
+            .. 'record of issuing -- its own row for that weapon has no serial at all. That gun is '
+            .. 'theirs or somebody else\'s, and taking it would destroy the serial that says which. '
+            .. 'It is LEFT WITH THEM and the arena writes its own copy off.',
+            tostring(src), record.name, tostring(copies[1].serial))
     end
 
     if #copies > 1 then
@@ -1946,6 +1976,13 @@ end
 
 --- Takes back whatever this character still owes, and forgets what they no
 --- longer have.
+local function midMatch(src)
+    if type(ArenaDispatch) == 'table' and type(ArenaDispatch.IsPlayerInArena) == 'function' then
+        return ArenaDispatch.IsPlayerInArena(src) == true
+    end
+    return true
+end
+
 local function chaseOwedKit(src, citizenid)
     if not Arena.IsKey(citizenid) then return 0 end
 
@@ -2054,7 +2091,25 @@ local function chaseOwedKit(src, citizenid)
     -- does not care which rounds it gets. What it must not do is take more
     -- than is owed, so a partial collection leaves the remainder on the
     -- slate rather than rounding it away.
-    if type(stock) == 'table' then
+    -- NOT WHILE THEY ARE IN A ROUND, and only this half.
+    --
+    -- A consumable debt is a NUMBER: the chase asks for that many back and
+    -- does not care which ones it gets. Inside a match the rounds and plates
+    -- in a fighter's pockets are the ones the arena just handed them -- so
+    -- the sweep settled last week's debt out of this week's issue. Walk in
+    -- owing two hundred and fifty, carry none of it, take the loadout, and
+    -- thirty seconds later the debt is paid with the arena's own property at
+    -- no cost to you at all. The exit then finds nothing left to reclaim and
+    -- writes nothing down.
+    --
+    -- The weapon half above is safe and stays outside this: a row carries the
+    -- serial it was issued with, so it can only ever match the arena's own
+    -- copy from the round it came from, never the one in their hands now.
+    --
+    -- The debt is not written off, only left alone -- `owedItems` is not
+    -- claimed below, so the slate is untouched and the next sweep after they
+    -- leave collects it. DO NOT move this gate above the weapons.
+    if type(stock) == 'table' and not midMatch(src) then
         -- CLAIMED AND MERGED, the same way the weapon slate above is. This
         -- assigned straight over the top, which is exactly what the comment
         -- there says must never come back -- anything written while the loop
@@ -2825,13 +2880,6 @@ function ArenaAmmo.HeldFor(src)
 end
 
 local RETRY_SECONDS = 30
-
-local function midMatch(src)
-    if type(ArenaDispatch) == 'table' and type(ArenaDispatch.IsPlayerInArena) == 'function' then
-        return ArenaDispatch.IsPlayerInArena(src) == true
-    end
-    return true
-end
 
 local function worthTrying(src, citizenid)
     if owed[citizenid] then return true end

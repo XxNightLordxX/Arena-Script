@@ -332,7 +332,7 @@ end
 --- which is why three people can leave the same match and one of them come
 --- out short.
 ---
---- The specs never saw it: the fake ox_inventory in tests/ returns a packed
+--- No test ever saw it, and none could: a fake ox_inventory returns a packed
 --- array, which is the one shape where `ipairs` and this function agree.
 ---
 --- Non-tables are skipped rather than trusted. Some builds park `false` in an

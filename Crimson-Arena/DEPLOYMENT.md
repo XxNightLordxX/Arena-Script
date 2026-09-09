@@ -6,7 +6,7 @@ Read this before the resource goes anywhere near players.
 
 Everything that can be checked without a running FiveM server has been checked:
 every Lua file parsed, `luacheck` was clean across the resource, and a suite of
-76 specs exercised the real production files under plain Lua 5.4 — the rules,
+77 specs exercised the real production files under plain Lua 5.4 — the rules,
 the payout arithmetic, the escrow invariants, the locale coverage.
 
 The client was also run against a *model* of the game: a fake-native harness

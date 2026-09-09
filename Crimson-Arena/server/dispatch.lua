@@ -65,8 +65,9 @@ end
 -- need them: it runs nothing on the server console and has no client channel
 -- for running anything. The medical handoff is events and exports -- things
 -- a script publishes on purpose for other scripts to call, needing no
--- permission from anybody. tests/dispatch_spec.lua fails if any source file
--- reaches for the permission natives.
+-- permission from anybody. NOTHING CHECKS THIS ANY MORE -- the test that
+-- failed the build if any source file reached for the permission natives was
+-- retired with the rest of the suite -- so it is on whoever edits this file.
 -- ======================================================================
 
 local function downStateConfig()

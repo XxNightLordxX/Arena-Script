@@ -176,7 +176,7 @@ instancing really happened rather than assuming it did.
   it finds rather than throwing.
 - **Rate limiting on every client entry point**, and every payload rebuilt from
   scalars on arrival rather than trusted.
-- **The test suite is not in this release.** 78 Lua specs and 21 panel
+- **The test suite is not in this release.** 77 Lua specs and 21 panel
   suites ran green against the code in this folder, comments and all, and
   again after they were stripped -- and were then removed for shipping.
   They are in the repository's history if you want them back.

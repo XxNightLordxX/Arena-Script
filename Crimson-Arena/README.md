@@ -1219,7 +1219,7 @@ Set `Config.Debug = true` and restart. It is chatty by design — every stake, r
 
 ## Development
 
-**THE TEST SUITE IS NOT IN THIS RELEASE.** It was 76 Lua specs and a Node
+**THE TEST SUITE IS NOT IN THIS RELEASE.** It was 77 Lua specs and 21 Node
 suite for the panel, and it was removed for shipping along with `.luacheckrc`
 and everything else nobody running a server needs. It is not gone: it is in
 this repository's history, and one `git checkout` of the commit before the

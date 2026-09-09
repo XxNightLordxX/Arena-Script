@@ -102,7 +102,7 @@ touched. Results:
 |---|---|
 | 1. Lua instructions | **PASS** — 18 files, 0 changed |
 | 2. Panel tokens | **PASS** — 3 files, 0 changed |
-| 3. Dependency surface | **PASS** — 973 entries before, 973 after, 0 lost |
+| 3. Dependency surface | **PASS** — 983 entries before, 983 after, 0 lost |
 | 4. Tests against stripped code | 95 of 96 spec files pass — see below |
 
 **Run again, on the real strip.** The table above is the first dry run, which
@@ -272,7 +272,7 @@ Example of the change:
 
 That would take `config.lua` from roughly 3,117 lines to about 1,100.
 
-- [x] **That is the right level** — done, but it landed at **2,293 lines,
+- [x] **That is the right level** — done, but it landed at **2,396 lines,
       not 1,100**, and you should know why before you decide it is wrong.
 - [ ] Go shorter still — one sentence each
 - [ ] Keep more than that
@@ -287,8 +287,7 @@ the ones a shorter file would have lost.
 
 So the rewrite did what Doubt 6 describes — every setting now says what it
 does and what you may write, and the history of why a number changed is
-gone — and the warnings stayed. The file is 689 lines of actual settings and
-187 blank; the rest is that.
+gone — and the warnings stayed. The file is 695 lines of actual settings and 192 blank; the rest is that.
 
 If you want it shorter, the next thing to cut is the warnings, and that is
 Doubt 1 again rather than this one. Say the word and I will do it — but I

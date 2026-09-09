@@ -13,9 +13,10 @@
     same code, so the UI can never offer something the server will refuse.
 
     IT CALLS NO NATIVES. Not one. That is deliberate and load-bearing:
-    it means tests/ can load this file under plain lua5.4 and exercise every
-    rule directly, and it means neither realm can quietly grow a dependency
-    on the other's runtime.
+    it means this file can be loaded under plain lua5.4 and every rule
+    exercised directly, and it means neither realm can quietly grow a
+    dependency on the other's runtime. Keep it that way -- one native in
+    here and the whole file becomes untestable outside a running server.
 
     WHO TRUSTS WHOM: the client calls into this file to BUILD the panel.
     The server calls into the same functions to CHECK what comes back. The

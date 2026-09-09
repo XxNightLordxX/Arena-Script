@@ -659,6 +659,117 @@ local function weaponMetadata(entry)
     return metadata, loaded
 end
 
+--- Every serial the player is holding for one weapon name, as a set.
+---
+--- NIL AND EMPTY ARE DIFFERENT ANSWERS, and callers must not conflate them:
+--- nil is "the inventory could not be read", an empty table is "they hold
+--- none of these". Reading nil as empty would report every arena weapon as
+--- already gone.
+--- @return table<string, boolean>|nil
+local function serialsFor(ox, src, name)
+    local ok, items = pcall(function() return ox:GetInventoryItems(src) end)
+    if not ok or type(items) ~= 'table' then return nil end
+
+    local out = {}
+    for _, item in ipairs(itemsIn(items)) do
+        if item.name == name and type(item.metadata) == 'table'
+            and Arena.IsKey(item.metadata.serial)
+        then
+            out[item.metadata.serial] = true
+        end
+    end
+    return out
+end
+
+--- Hands one weapon over and writes down WHICH COPY it is.
+---
+--- A SERIAL, NOT A NAME, AND THAT DISTINCTION COSTS PEOPLE THEIR GUNS.
+--- ox_inventory gives every weapon its own serial, so a player's own carbine
+--- and the arena's are two different objects wearing the same item name. The
+--- exit removed one BY NAME and took whichever slot it found first -- and on
+--- any server where a fighter carries their own kit into the round (the door
+--- switched off, or a stash that failed), that was a coin flip on somebody's
+--- own weapon, with its components, tint and serial destroyed to leave an
+--- arena clone behind. Ammunition and supplies have had a floor against
+--- exactly this for a long time; weapons had nothing. DO NOT go back to
+--- removing a weapon by name alone.
+---
+--- READ BACK RATHER THAN ASSUMED. The serial is taken from the inventory
+--- AFTER the item lands, by diffing against what was there before, because
+--- ox_inventory owns serial generation and CANNOT be assumed to use the one
+--- it was handed. Asking what it actually did is the only answer that cannot
+--- drift.
+---
+--- A NIL SERIAL IS NOT A FAILURE. If the inventory cannot be read the weapon
+--- is still issued and still recorded -- reclaim falls back to the old
+--- by-name removal for that one record. Degrading to what the resource did
+--- before is correct; refusing to arm the player is NEVER the answer -- a
+--- fighter sent into a round unarmed is a worse bug than an imprecise exit.
+--- @return boolean, table|nil
+local function giveWeapon(ox, src, name, metadata)
+    local before = serialsFor(ox, src, name)
+
+    local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
+    if not ok or accepted == false then return false, nil end
+
+    local serial
+    if before then
+        for candidate in pairs(serialsFor(ox, src, name) or {}) do
+            if not before[candidate] then
+                serial = candidate
+                break
+            end
+        end
+    end
+
+    return true, { name = name, metadata = metadata, serial = serial }
+end
+
+--- Takes back one issued weapon -- that exact copy, wherever it can.
+--- @return boolean
+local function takeWeaponBack(ox, src, record)
+    if type(record) ~= 'table' or not Arena.IsKey(record.name) then return false end
+
+    -- ONLY THE SERIAL GOES IN THE FILTER, NEVER THE WHOLE METADATA.
+    --
+    -- ox_inventory treats a metadata argument on a removal as a match, and
+    -- the metadata on this record is what the weapon was ISSUED with --
+    -- `{ ammo = <a full magazine> }`. A player who fires a single round no
+    -- longer matches it, so the removal found nothing and the arena's own
+    -- gun stayed in their pockets. The serial is the one field that does not
+    -- move: it survives firing, reloading and every component change.
+    if Arena.IsKey(record.serial) then
+        if oxDid(('taking back %s (%s)'):format(record.name, record.serial),
+            function() return ox:RemoveItem(src, record.name, 1, { serial = record.serial }) end)
+        then
+            return true
+        end
+
+        -- A REFUSED SERIAL REMOVAL HAS TWO QUITE DIFFERENT MEANINGS, and
+        -- guessing wrong costs somebody a gun either way. Either the weapon
+        -- is not there any more -- destroyed, dropped, already taken -- and
+        -- there is nothing to do; or this ox_inventory build does not match
+        -- on a partial metadata table, in which case the arena's copy IS in
+        -- their pockets and the old by-name removal is the only thing that
+        -- will reach it.
+        --
+        -- THE INVENTORY DECIDES, and it must not be guessed at. If
+        -- the serial is genuinely on them, taking by name can only be taking
+        -- the arena's own copy, and falling back is safe. If it is not, this
+        -- STOPS -- because a by-name removal there would reach past the arena
+        -- into whatever the player brought in themselves and destroy it.
+        local held = serialsFor(ox, src, record.name)
+        if held == nil or not held[record.serial] then return false end
+
+        ArenaLog('weapons: %s could not be taken back by serial though %s is holding it -- '
+            .. 'this ox_inventory does not filter on partial metadata. Falling back to a removal by name.',
+            record.name, tostring(src))
+    end
+
+    return oxDid('taking back ' .. record.name,
+        function() return ox:RemoveItem(src, record.name, 1) end)
+end
+
 local function issueSpareRounds(ox, src, matchId, entry, pass)
     local item = entry.ammoTypeItem
     local _, spare = splitRounds(entry)
@@ -710,10 +821,11 @@ local function issueWeapons(ox, src, matchId, loadout)
         if Arena.IsKey(name) then
             local metadata, loaded = weaponMetadata(entry)
 
-            local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
-            if ok and accepted ~= false then
-                given[#given + 1] = { name = name, metadata = metadata }
-                ArenaLog('weapons: gave %s x1 to %s (ammo %d).', name, tostring(src), loaded)
+            local ok, issued = giveWeapon(ox, src, name, metadata)
+            if ok then
+                given[#given + 1] = issued
+                ArenaLog('weapons: gave %s x1 to %s (ammo %d, serial %s).',
+                    name, tostring(src), loaded, tostring(issued.serial or 'unread'))
             else
                 failed[#failed + 1] = entry.key or name
                 ArenaLog('weapons: ox_inventory would not give %s to %s. Check that item exists in your ox_inventory weapon data -- the player is in the arena unarmed.',
@@ -769,15 +881,17 @@ end
 local function takeRungBack(ox, src, record, name)
     if not Arena.IsKey(name) then return nil, false end
 
-    local listed = false
+    -- THE ROW IS KEPT ON PURPOSE, not just a yes/no, because the removal has to
+    -- name WHICH copy it is taking. A rung weapon and the player's own can
+    -- share an item name, and a by-name removal picks whichever slot comes
+    -- first -- so demoting a climber could confiscate their own gun.
+    local listed = nil
     for _, row in ipairs(record) do
-        if row.name == name then listed = true break end
+        if row.name == name then listed = row break end
     end
     if not listed then return nil, false end
 
-    if not oxDid('taking back the tier weapon ' .. name,
-        function() return ox:RemoveItem(src, name, 1) end)
-    then
+    if not takeWeaponBack(ox, src, listed) then
         return nil, true
     end
 
@@ -794,9 +908,14 @@ end
 
 local function putRungsBack(ox, src, record, rows, context)
     for _, row in ipairs(rows) do
-        local back, gave = pcall(function() return ox:AddItem(src, row.name, 1, row.metadata) end)
-        if back and gave ~= false then
-            record[#record + 1] = row
+        -- RE-READ, NEVER REUSED. Handing the weapon back makes a NEW object
+        -- with a NEW serial -- ox_inventory does not resurrect the one that
+        -- was taken. Re-filing the old row would leave the record naming a
+        -- serial that no longer exists anywhere, and the exit would then find
+        -- nothing to take back: a free weapon for every rollback.
+        local back, issued = giveWeapon(ox, src, row.name, row.metadata)
+        if back then
+            record[#record + 1] = issued
         else
             ArenaLog('weapons: %s was left empty-handed -- ox_inventory would take neither %s back nor %s away.',
                 tostring(src), tostring(context), tostring(row.name))
@@ -894,8 +1013,8 @@ function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear)
 
     local metadata, loaded = weaponMetadata(entry)
 
-    local ok, accepted = pcall(function() return ox:AddItem(src, entry.weapon, 1, metadata) end)
-    if not (ok and accepted ~= false) then
+    local ok, issued = giveWeapon(ox, src, entry.weapon, metadata)
+    if not ok then
         putRungsBack(ox, src, record, taken, entry.weapon)
 
         ArenaLog('weapons: ox_inventory would not give the tier weapon %s to %s -- they keep the tier they had.',
@@ -903,7 +1022,7 @@ function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear)
         return false, 'refused'
     end
 
-    record[#record + 1] = { name = entry.weapon, metadata = metadata }
+    record[#record + 1] = issued
 
     -- AND THE ROUNDS THAT DO NOT FIT IN IT. `weaponMetadata` above loaded
     -- one magazine; the rest of the pick is an inventory item, and without
@@ -953,9 +1072,9 @@ function ArenaAmmo.Refresh(src, matchId, loadout)
                 ArenaLog('weapons: %s was not re-issued to %s on respawn -- their rounds could not be '
                     .. 'issued and this server does not arm an empty gun.', tostring(name), tostring(src))
             else
-                local ok, accepted = pcall(function() return ox:AddItem(src, name, 1, metadata) end)
-                if ok and accepted ~= false then
-                    record[#record + 1] = { name = name, metadata = metadata }
+                local ok, issued = giveWeapon(ox, src, name, metadata)
+                if ok then
+                    record[#record + 1] = issued
                 else
                     if taken then putRungsBack(ox, src, record, { taken }, name) end
                     ArenaLog('weapons: could not refresh %s for %s -- ox_inventory refused it. They keep what they had.',
@@ -1070,27 +1189,114 @@ function ArenaAmmo.GrantSupply(src, matchId, item, count)
     return true
 end
 
+--- Arena weapons that left with a character, keyed by the CITIZEN ID that
+--- owes them: { [citizenid] = { { name = ..., serial = ... }, ... } }.
+---
+--- WHY A LEDGER AND NOT A REMOVAL. The exit can only take a kit off the
+--- player who is standing there, and there are two ordinary ways for the kit
+--- to leave without them: a character switch mid-round, and a disconnect that
+--- ox_inventory saved before this resource ran. Both end in the same place --
+--- Reclaim finds the server id now answers to somebody ELSE, so it cannot
+--- touch the loadout, and up to now it simply forgot the kit had been issued.
+--- Logging out mid-round was a free arena loadout, every round, for anybody
+--- who noticed. DO NOT reduce this back to forgetting the kit.
+---
+--- KEYED BY CITIZEN ID FOR THE SAME REASON `owed` IS: a server id is whoever
+--- holds it now, and this debt has to outlive a reconnect to be worth
+--- writing down at all.
+---
+--- IT CAN ONLY EVER TAKE THE ARENA'S OWN COPY, because every row carries the
+--- serial ox_inventory gave that weapon when the arena handed it over. A
+--- player's own gun of the same name has a different serial and is NEVER
+--- touched. That is the only thing making it safe to chase a stranger's
+--- inventory at all, so a row with no serial must not be chased across
+--- characters.
+local owedKit = {}
+
+local OWED_KIT_LIMIT = 200
+
+--- Writes this player's issued weapons down against the character that owes
+--- them, and stops tracking them by server id.
+local function queueOwedKit(citizenid, src)
+    if not Arena.IsKey(citizenid) then return 0 end
+
+    local rows = owedKit[citizenid] or {}
+    local added = 0
+
+    for _, byPlayer in pairs(issuedWeapons) do
+        for _, item in ipairs(byPlayer[src] or {}) do
+            if type(item) == 'table' and Arena.IsKey(item.name) then
+                rows[#rows + 1] = { name = item.name, serial = item.serial }
+                added = added + 1
+            end
+        end
+    end
+
+    if added == 0 then return 0 end
+
+    -- BOUNDED, like `owed` is, and deliberately so: a ledger nothing can
+    -- empty is a memory leak with a moral. The OLDEST rows go, because the
+    -- newest debt is the one most likely still to be collectable.
+    while #rows > OWED_KIT_LIMIT do table.remove(rows, 1) end
+
+    owedKit[citizenid] = rows
+    ArenaLog('weapons: %d arena weapon(s) left with %s and are written down against them. '
+        .. 'They will be taken back the next time that character is seen.',
+        added, tostring(citizenid))
+    return added
+end
+
+--- Takes back whatever this character still owes, and forgets what they no
+--- longer have.
+local function chaseOwedKit(src, citizenid)
+    local rows = Arena.IsKey(citizenid) and owedKit[citizenid] or nil
+    if type(rows) ~= 'table' or #rows == 0 then return 0 end
+
+    local ox = inventory()
+    if not ox then return 0 end
+
+    local left, taken = {}, 0
+    for _, row in ipairs(rows) do
+        -- GONE IS AN ANSWER AND NOT A FAILURE, on purpose. A weapon can stop
+        -- existing -- destroyed on death, dropped and despawned -- and a
+        -- ledger that keeps chasing a serial nobody holds is one that never
+        -- empties. Asking the inventory settles it.
+        local held = Arena.IsKey(row.serial) and serialsFor(ox, src, row.name) or nil
+
+        if held ~= nil and not held[row.serial] then
+            ArenaLog('weapons: %s no longer has the arena\'s %s (%s) -- the debt is written off.',
+                tostring(citizenid), row.name, tostring(row.serial))
+        elseif takeWeaponBack(ox, src, row) then
+            taken = taken + 1
+            ArenaLog('weapons: took the arena\'s %s (%s) back off %s.',
+                row.name, tostring(row.serial or 'no serial'), tostring(citizenid))
+        else
+            left[#left + 1] = row
+        end
+    end
+
+    owedKit[citizenid] = #left > 0 and left or nil
+    return taken
+end
+
 local function reclaimWeapons(ox, src)
     for _, byPlayer in pairs(issuedWeapons) do
         local given = byPlayer[src]
         if given then
-            for _, item in ipairs(given) do
-                -- BY NAME ONLY. ox_inventory treats a metadata argument on a
-                -- removal as a FILTER: it takes back the copy whose metadata
-                -- MATCHES, and the metadata this record holds is what the
-                -- weapon was ISSUED with -- `{ ammo = <a full magazine> }`.
-                -- A player who fires a single round no longer matches it, so
-                -- the removal found nothing and the arena's own gun stayed in
-                -- their pockets. With the door on that never showed, because
-                -- `restore` clears the inventory wholesale; with it off --
-                -- a documented, supported setting -- it was a free firearm
-                -- per player per round.
-                --
-                -- The metadata is still kept on the record, because
-                -- SwapWeapon's rollback re-adds the weapon with it. It is
-                -- only the removal that must not filter on it.
-                pcall(function() return ox:RemoveItem(src, item.name, 1) end)
-            end
+            -- THE COPY THE ARENA ISSUED, IDENTIFIED BY ITS SERIAL, and this
+            -- is a theft guard rather than a tidiness one. Removing by name
+            -- alone took whichever slot ox_inventory found first, so a
+            -- fighter carrying their own rifle beside the arena's could lose
+            -- THEIRS -- serial, components and tint destroyed to leave the
+            -- arena's stock copy behind. takeWeaponBack filters on the
+            -- serial, which is the one field that survives being fired, and
+            -- this must not go back to a bare name.
+            --
+            -- ITS ANSWER IS READ, too. This threw the removal's result away,
+            -- so a refusal left the arena's weapon in a player's pockets and
+            -- said nothing; the record was forgotten a line later, and
+            -- nothing anywhere remembered the gun had ever been issued.
+            for _, item in ipairs(given) do takeWeaponBack(ox, src, item) end
             byPlayer[src] = nil
         end
     end
@@ -1146,10 +1352,13 @@ local function removeWeaponsByKey(ox, src, matchId, keys, loadout)
     --
     -- So the record of what was issued is the gate. It is read here rather
     -- than only below, where it was used solely for forgetting.
+    -- THE RECORD AND NOT A FLAG, on purpose. This held `true` and answered
+    -- only "did the arena hand this name over"; the removal below needs to
+    -- know WHICH copy, which is what the record's serial says.
     local issuedHere = {}
     for _, record in ipairs((issuedWeapons[matchId] or {})[src] or {}) do
         if type(record) == 'table' and Arena.IsKey(record.name) then
-            issuedHere[record.name] = true
+            issuedHere[record.name] = record
         end
     end
 
@@ -1157,7 +1366,10 @@ local function removeWeaponsByKey(ox, src, matchId, keys, loadout)
     for _, entry in ipairs(loadout.weapons or {}) do
         local name = entry.weapon
         if Arena.IsKey(name) and (wanted[entry.key] or wanted[name]) and issuedHere[name] then
-            if oxDid('taking back ' .. name, function() return ox:RemoveItem(src, name, 1) end) then
+            -- THROUGH THE ISSUED RECORD, so this takes the arena's copy and
+            -- not the player's. `issuedHere` already proved the arena handed
+            -- this name over; the record carries the serial that says WHICH.
+            if takeWeaponBack(ox, src, issuedHere[name]) then
                 removed[#removed + 1] = name
                 takenBack[name] = true
             end
@@ -1233,6 +1445,13 @@ function ArenaAmmo.Issue(src, matchId, loadout)
         if not Arena.IsKey(citizenid) then
             warnOwnKit(src, matchId, 'there is no citizen id to stash against')
         else
+            -- ON PURPOSE AT THE DOOR, and not only on the sweep. A player
+            -- who walked off with an arena kit is most likely
+            -- to be seen again exactly here, queueing for another round --
+            -- and collecting the old debt before issuing a new loadout is
+            -- what stops the trick paying twice while a timer catches up.
+            chaseOwedKit(src, citizenid)
+
             -- WHAT THE STASH IS ALREADY HOLDING FOR THIS CHARACTER.
             --
             -- CARRIED FORWARD RATHER THAN REPLACED, and the difference is
@@ -1395,6 +1614,24 @@ function ArenaAmmo.Reclaim(src, reasonKey)
                 'NOTHING was taken from the player holding the id -- %s\'s belongings stay in stash %s and are queued to be returned when they are next seen.',
                 tostring(src), tostring(citizenid), tostring(record.citizenid),
                 tostring(record.citizenid), tostring(record.stash))
+            -- AND THE KIT IS WRITTEN DOWN RATHER THAN WAVED OFF. DO NOT
+            -- drop this and leave forgetWeapons standing on its own.
+            --
+            -- forgetWeapons alone dropped the issued rows without taking
+            -- anything back, which is the whole of a free-loadout exploit:
+            -- join a round, /logout mid-match, and the exit finds a stranger
+            -- on the server id and gives up. ox_inventory has already saved
+            -- the arena's weapons into the character who walked away, and
+            -- nothing remembered they were ever issued. Every round, for
+            -- free.
+            --
+            -- Reclaiming from whoever holds the id now is NOT the answer --
+            -- they never got a kit, and on any build that matches by name it
+            -- would take their own guns. The debt follows the CHARACTER, and
+            -- the serial on each row means collecting it can only ever take
+            -- the arena's own copy.
+            queueOwedKit(record.citizenid, src)
+
             owed[record.citizenid] = record.stash
             stashed[src] = nil
             forgetWeapons(src)
@@ -1696,11 +1933,21 @@ function ArenaAmmo.SweepReturns()
         local player = src and ArenaGetPlayer(src) or nil
         local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
 
-        if Arena.IsKey(citizenid) and worthTrying(src, citizenid) then
-            local _, returned, answered = ArenaAmmo.ReturnLeftovers(src)
+        if Arena.IsKey(citizenid) then
+            -- OUTSIDE `worthTrying`, DELIBERATELY. That gate exists to stop
+            -- the stash sweep re-reading a database for a character it has
+            -- already answered for, and it is never reopened for the rest of
+            -- the session. A weapon debt is a table lookup, it can be
+            -- incurred long after that gate shut, and it must not inherit a
+            -- decision made about something else.
+            chaseOwedKit(src, citizenid)
 
-            if answered then probed[citizenid] = true end
-            if returned > 0 then handed = handed + 1 end
+            if worthTrying(src, citizenid) then
+                local _, returned, answered = ArenaAmmo.ReturnLeftovers(src)
+
+                if answered then probed[citizenid] = true end
+                if returned > 0 then handed = handed + 1 end
+            end
         end
     end
 

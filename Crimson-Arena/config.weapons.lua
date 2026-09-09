@@ -15,11 +15,13 @@ Config.Loadouts.weapons = {
     -- are separate items. That is exactly the per-weapon override
     -- config.lua's Config.Loadouts.defaultAmmoTypes note describes.
     --
-    -- EVERY ONE OF THE 96 ENTRIES BELOW IS `enabled = true`, INCLUDING ALL
+    -- NINETY-FOUR OF THE 96 ENTRIES BELOW ARE `enabled = true`, INCLUDING ALL
     -- THIRTEEN HEAVY WEAPONS -- the RPG, the homing, grenade, EMP, compact
     -- and firework launchers, the minigun, both railguns, the Unholy
-    -- Hellbringer, the Widowmaker and the flamethrower. Nothing here is
-    -- switched off, and that is deliberate: the arena was asked to offer
+    -- Hellbringer, the Widowmaker and the flamethrower. The MUSKET and the
+    -- DOUBLE-BARREL SHOTGUN are the two exceptions and are switched off at the
+    -- owner's instruction. Everything else being on is deliberate: the arena
+    -- was asked to offer
     -- everything this server owns.
     --
     -- IT IS A DECISION AND NOT A DEFAULT, so it is written down. Explosive
@@ -615,7 +617,11 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_DBSHOTGUN',
         label = 'Double Barrel Shotgun',
         category = 'shotgun',
-        enabled = true,
+        -- OFF AT THE OWNER'S INSTRUCTION, like the musket above. It stays in
+        -- the list so it can be switched back on with one word, and so a
+        -- regeneration of this file does not quietly bring it back.
+        -- DO NOT flip this to true without being asked.
+        enabled = false,
         ammo = { default = 40, options = { 20, 40, 80, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '12 Gauge', item = 'ammo-shotgun' } },
         components = {},
@@ -726,7 +732,11 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_MUSKET',
         label = 'Musket',
         category = 'precision',
-        enabled = true,
+        -- OFF AT THE OWNER'S INSTRUCTION. The one weapon in this file that is
+        -- not enabled. It still appears in the list so it can be switched back
+        -- on with one word, and so nobody regenerates the file and quietly
+        -- brings it back. DO NOT flip this to true without being asked.
+        enabled = false,
         ammo = { default = 20, options = { 10, 20, 40, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '.50 Ball', item = 'ammo-musket' } },
         components = {},

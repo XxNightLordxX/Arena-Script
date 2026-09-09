@@ -1432,7 +1432,20 @@ local function chaseOwedKit(src, citizenid)
         local held = heldFor(row.name)
 
         if held ~= nil and not held[row.serial] then
-            ArenaDebug('weapons: %s no longer has the arena\'s %s (%s) -- the debt is written off.',
+            -- NOT IN THEIR POCKETS IS NOT THE SAME AS GONE, and treating it
+            -- as gone was a thirty-second window with a hole in it. This read
+            -- only the player's OWN inventory and deleted the row on the
+            -- first look that came back empty -- so putting the arena's rifle
+            -- in a house stash, a glovebox or a friend's hands before the
+            -- next sweep settled the debt for good, and it could be collected
+            -- again afterwards. Outside an arena nothing refuses that move.
+            --
+            -- THE ROW STAYS. The arena cannot prove a weapon was destroyed
+            -- and no longer pretends it can: the debt is simply not collected
+            -- this time, and the cap is what eventually forgets it. DO NOT
+            -- delete a row because it is not in front of you.
+            left[#left + 1] = row
+            ArenaDebug('weapons: %s is not carrying the arena\'s %s (%s) right now -- still owed.',
                 tostring(citizenid), row.name, tostring(row.serial))
         elseif takeWeaponBack(ox, src, row) then
             taken = taken + 1
@@ -1918,6 +1931,19 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         owed[record.citizenid] = nil
 
         if wiped then
+            -- WRITTEN DOWN BEFORE IT IS FORGOTTEN, because `wiped` is not
+            -- proof. ox_inventory answers a clear against an inventory that
+            -- is no longer loaded with nil, and nil reads as success here --
+            -- which is exactly what a player sitting at the character-select
+            -- screen produces. Their kit was never destroyed; it is saved
+            -- into the character they stepped out of. Forgetting the rows
+            -- there was the free loadout by its quietest route.
+            --
+            -- HARMLESS WHEN THE CLEAR REALLY DID RUN: the chase asks whether
+            -- they still hold the serial before it takes anything, so a kit
+            -- genuinely destroyed settles itself. DO NOT forget without
+            -- writing down first.
+            queueOwedKit(record.citizenid, src)
             forgetWeapons(src)
         else
             local ox = inventory()
@@ -2173,6 +2199,15 @@ function ArenaAmmo.ReturnLeftovers(src)
     warnedEmptyRead[citizenid] = nil
     for other, record in pairs(stashed) do
         if record.citizenid == citizenid then
+            -- AND THE WEAPONS ARE WRITTEN DOWN, NOT WRITTEN OFF. This loop
+            -- settles a character's BELONGINGS -- their own kit is back, so
+            -- the stash record goes. It also dropped every arena weapon still
+            -- recorded against them, which is a different question and the
+            -- wrong answer to it: an admin pressing "return their gear" to
+            -- help somebody quietly forgave whatever they were still holding
+            -- of the arena's. DO NOT drop this and leave forgetWeapons
+            -- standing here on its own.
+            queueOwedKit(citizenid, other)
             stashed[other] = nil
             forgetWeapons(other)
         end

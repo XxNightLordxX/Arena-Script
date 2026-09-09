@@ -15,13 +15,13 @@ Config.Loadouts.weapons = {
     -- are separate items. That is exactly the per-weapon override
     -- config.lua's Config.Loadouts.defaultAmmoTypes note describes.
     --
-    -- NINETY-FOUR OF THE 96 ENTRIES BELOW ARE `enabled = true`, INCLUDING ALL
+    -- NINETY-THREE OF THE 96 ENTRIES BELOW ARE `enabled = true`, INCLUDING ALL
     -- THIRTEEN HEAVY WEAPONS -- the RPG, the homing, grenade, EMP, compact
     -- and firework launchers, the minigun, both railguns, the Unholy
-    -- Hellbringer, the Widowmaker and the flamethrower. The MUSKET and the
-    -- DOUBLE-BARREL SHOTGUN are the two exceptions and are switched off at the
-    -- owner's instruction. Everything else being on is deliberate: the arena
-    -- was asked to offer
+    -- Hellbringer, the Widowmaker and the flamethrower. The MUSKET, the
+    -- DOUBLE-BARREL SHOTGUN and the MARKSMAN RIFLE are the three exceptions
+    -- and are switched off at the owner's instruction. Everything else being
+    -- on is deliberate: the arena was asked to offer
     -- everything this server owns.
     --
     -- IT IS A DECISION AND NOT A DEFAULT, so it is written down. Explosive
@@ -710,7 +710,11 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_MARKSMANRIFLE',
         label = 'Marksman Rifle',
         category = 'precision',
-        enabled = true,
+        -- OFF AT THE OWNER'S INSTRUCTION, like the musket and the double-barrel
+        -- above. It stays in the list so one word turns it back on, and so a
+        -- regeneration of this file does not quietly bring it back.
+        -- DO NOT flip this to true without being asked.
+        enabled = false,
         ammo = { default = 20, options = { 10, 20, 40, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '7.62x51', item = 'ammo-sniper' } },
         components = {},

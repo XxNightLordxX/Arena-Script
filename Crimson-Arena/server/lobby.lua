@@ -112,6 +112,43 @@ local function hostLoadoutFor(match)
     return (Arena.ResolveLoadout(host.loadout))
 end
 
+--- Whether two resolved loadouts are the same kit.
+---
+--- BY VALUE, BECAUSE IDENTITY ANSWERS "DIFFERENT" EVERY TIME.
+--- Arena.ResolveLoadout builds a fresh table on every call, so `old ~= new`
+--- is true even when the player re-sent the pick they already hold -- which
+--- is the only way a guard in ArenaLobby.SetLoadout could have been written
+--- with `==`, and it would have guarded nothing. DO NOT reduce this to an
+--- equality test.
+---
+--- Everything a resolved loadout holds is a string, a number, or an array of
+--- those (Arena.ResolveWeaponEntry and Arena.ResolveSupplies build them), so
+--- there are no cycles to walk and no metatables to respect.
+--- @param a table|nil
+--- @param b table|nil
+--- @return boolean same
+local function sameLoadout(a, b)
+    if a == b then return true end
+    if type(a) ~= 'table' or type(b) ~= 'table' then return false end
+
+    for key, value in pairs(a) do
+        if type(value) == 'table' then
+            if not sameLoadout(value, b[key]) then return false end
+        elseif value ~= b[key] then
+            return false
+        end
+    end
+
+    -- THE SECOND WALK IS NOT REDUNDANT AND MUST NOT BE DELETED: the first
+    -- only proves every key of `a` is matched in `b`, and a `b` carrying an
+    -- extra weapon passes that.
+    for key in pairs(b) do
+        if a[key] == nil then return false end
+    end
+
+    return true
+end
+
 local function findPlayer(src)
     local match = ArenaLobby.GetByPlayer(src)
     local player = match and match.players[src] or nil
@@ -959,6 +996,37 @@ function ArenaLobby.MayLeave(src, dropped, ejected)
         return false, 'error.bet_then_leave'
     end
 
+    -- AND THE SECOND REFUSAL, WHICH IS NOT ABOUT MONEY AT ALL: ONE PLAYER
+    -- MUST NOT BE ABLE TO CALL OFF EVERY ROUND ON THE SERVER.
+    --
+    -- ArenaMatch.Begin's countdown thread re-runs Arena.CanStartMatch once a
+    -- second and puts the match back to 'lobby' the moment it fails, so
+    -- anybody the roster still needs cancels the start by standing up: the
+    -- second body under Config.Match.minPlayers, or -- with
+    -- Config.Teams.requireBothTeamsOccupied on, which is what ships -- the
+    -- sole occupant of one side of a 3v1. The entry fee comes back in full on
+    -- this path (refundOnDisconnectBeforeStart ships true), so they rejoin a
+    -- second later and do it again, free, for as long as they like. The bet
+    -- rule above refuses exactly that trade, but only to somebody holding a
+    -- side-bet, and a griefer holds none.
+    --
+    -- `placed ~= true` LEAVES THE FROZEN WINDOW ALONE, ON PURPOSE, and that
+    -- is the whole care in this line. 'countdown' is two states wearing one
+    -- name -- the forfeit rule in ArenaLobby.Leave below sets both out -- and
+    -- the second of them, after ArenaMatch.Start has teleported the roster
+    -- in, is a round being fought. Walking out of THAT is the settled rule
+    -- tests/countdownexit_spec.lua covers, money and all, and it is not
+    -- touched here. A live round is not touched either: the state test above
+    -- has already returned true for it before this line is reached.
+    --
+    -- WHAT THE HELD PLAYER CAN DO, because a refusal that names no action is
+    -- worse than none: the countdown is ten seconds and ends by itself, the
+    -- host's Cancel Start puts the whole room back in the lobby, and a
+    -- disconnect is never refused.
+    if match.state == 'countdown' and match.placed ~= true then
+        return false, 'error.match_in_progress'
+    end
+
     return true
 end
 
@@ -1316,11 +1384,48 @@ function ArenaLobby.Destroy(matchId, reasonKey)
         spectatorIndex[src] = nil
 
         if not match.players[src] then
-            local pulled = type(ArenaDispatch) == 'table'
-                and type(ArenaDispatch.ExitBucket) == 'function'
-                and ArenaDispatch.ExitBucket(src)
+            -- THE EXIT GOES WHATEVER THE BUCKET SAYS, AND THE BUCKET DOES
+            -- NOT GET A VOTE ON IT.
+            --
+            -- This was an EXISTENCE check -- `type(ExitBucket) == 'function'`
+            -- -- whose VALUE was then used as the send condition, and
+            -- ExitBucket answers false for anybody it was never given. With
+            -- Config.Dispatch.isolation.enabled off, GetBucket returns nil and
+            -- EnterBucket recorded nothing, so that is EVERY spectator on such
+            -- a server: not one of them was ever told the match had gone.
+            -- Camera locked on a match that no longer exists, ped invisible
+            -- and frozen, for the rest of the session.
+            --
+            -- The Broadcast at the foot of this function CANNOT stand in for
+            -- it: it carries no exit, and `matches[match.id]` is cleared
+            -- before it runs, so recipients() no longer counts a spectator
+            -- with no panel open.
+            --
+            -- SAFE FOR A WATCHER WHO WAS NEVER MOVED ANYWHERE: client/
+            -- match.lua's leaveArena returns at `not currentMatch` before it
+            -- teleports or strips anything, and client/spectate.lua's handler
+            -- -- the one that matters here -- only stops the camera.
+            --
+            -- ArenaMatch.End and ArenaMatch.Abort both send theirs
+            -- unconditionally through sendExitArena; Destroy was the odd one
+            -- out. DO NOT gate this on ExitBucket again.
+            --
+            -- `state ~= 'ended'` IS NOT THAT GATE COMING BACK. It is the
+            -- SAME question the notify six lines up asks, for the same
+            -- reason: End and Abort are the only two callers that set
+            -- 'ended', they both set it BEFORE their own spectator loop, and
+            -- they have therefore already sent this exit -- with the results
+            -- board and the return point on it, which this bare one has not
+            -- got. Every other way in here (Cancel, the idle sweep,
+            -- CloseWaitingLobbies, the last player leaving) arrives at
+            -- 'lobby', 'countdown' or 'live', where nobody has sent anything.
+            -- Asking the bucket was what made this dedupe work, and it only
+            -- worked while isolation was on.
+            if type(ArenaDispatch) == 'table' and type(ArenaDispatch.ExitBucket) == 'function' then
+                ArenaDispatch.ExitBucket(src)
+            end
 
-            if pulled then
+            if match.state ~= 'ended' then
                 TriggerClientEvent('crimson_arena:client:exitArena', src, {})
             end
         end
@@ -1510,15 +1615,56 @@ function ArenaLobby.UpdateMatch(src, data)
         return false, 'error.mode_locked_by_bets'
     end
 
+    -- WHAT WINNING MEANS, as opposed to what the fight is like. Kept apart
+    -- from `ruleChanged` below because the two books lock different halves of
+    -- this form and the reasons do not travel.
+    local decidesTheWinner = roundTime ~= (Arena.ToInt(match.roundTimeSeconds) or 0)
+        or winCondition ~= (Arena.IsKey(match.winCondition) and match.winCondition or '')
+        or scoreLimit ~= (Arena.ToInt(match.scoreLimit) or 0)
+
     local ruleChanged = arenaKey ~= match.arenaKey
         or lives ~= match.lives
         or radar ~= (match.radar == true)
-        or roundTime ~= (Arena.ToInt(match.roundTimeSeconds) or 0)
-        or winCondition ~= (Arena.IsKey(match.winCondition) and match.winCondition or '')
-        or scoreLimit ~= (Arena.ToInt(match.scoreLimit) or 0)
         or tierPlan ~= match.tierPlan
+        or decidesTheWinner
 
+    -- THE ENTRY POT LOCKS THE WHOLE FORM, and it is the entry pot on purpose:
+    -- en.json renders this key as "People have already paid to be in this
+    -- round. The rules are set now." ArenaBetting.GetPot walks the entry-fee
+    -- escrow, which is exactly who that sentence is about, so this line is
+    -- NOT a mis-typed CountSideBets. DO NOT merge it into the guard below.
     if ruleChanged and ArenaBetting.IsEnabled() and ArenaBetting.GetPot(match.id) > 0 then
+        return false, 'error.rules_locked_by_stakes'
+    end
+
+    -- AND THE SIDE-BET BOOK LOCKS THE HALF THAT RE-JUDGES IT.
+    --
+    -- THE DEFECT: there was one guard here, on the entry pot alone, and with
+    -- entryFee = 0 -- which every free lobby is, and which
+    -- Config.Betting.entryFee invites -- that pot reads zero however large
+    -- the side-bet book is. Measured: a host rewrote the win condition, the
+    -- round clock and the score limit over a 50,000 book, every edit
+    -- accepted, while a 1,000 entry pot with nothing bet on it refused the
+    -- identical edit.
+    --
+    -- THE ARENA, THE LIVES AND THE RADAR ARE DELIBERATELY NOT IN HERE. The
+    -- mode lock above states the line and tests/payaccount_spec.lua pins it:
+    -- a side-bet names a SIDE, and moving the venue, the number of lives or
+    -- the radar leaves every pick exactly where it was, so locking them
+    -- would take the feature away from the honest host to fix an abuse of
+    -- three other fields. What these three do is different in kind -- they
+    -- decide WHO WINS, which is the only thing a side-bet is a wager on --
+    -- so changing them re-judges every bet already down under rules the
+    -- bettor never saw. That is the mode lock's own harm arriving by another
+    -- door, and it is why the two guards ask two different books.
+    --
+    -- `tierPlan` IS MISSING FROM decidesTheWinner ON PURPOSE, and it is not
+    -- an oversight: `tierPlan ~= match.tierPlan` compares two TABLES BY
+    -- IDENTITY, and the panel posts a fresh one on every Apply, so in a
+    -- ladder mode that test is true even when nothing changed. Locking on it
+    -- would make a gungame lobby with one side-bet on it completely
+    -- uneditable. It stays in `ruleChanged`, where it already was.
+    if decidesTheWinner and ArenaBetting.IsEnabled() and ArenaBetting.CountSideBets(match.id) > 0 then
         return false, 'error.rules_locked_by_stakes'
     end
 
@@ -1613,6 +1759,7 @@ function ArenaLobby.SetLoadout(src, request)
     end
 
     local loadout, rejected = Arena.ResolveLoadout(type(request) == 'table' and request or nil)
+    local changed = not sameLoadout(player.loadout, loadout)
     player.loadout = loadout
 
     local asked = {}
@@ -1631,7 +1778,27 @@ function ArenaLobby.SetLoadout(src, request)
         ArenaNotifyKey(target, 'notify.loadout_rejected', 'warning', table.concat(rejected, ', '))
     end
 
-    if hostPicks then
+    -- PUSH ONLY WHEN SOMETHING CHANGED, which is the rule ArenaLobby.SetReady
+    -- below already has and states at length. This handler shares setReady's
+    -- RATE.choice bucket in server/main.lua and was the one door of the three
+    -- left without the guard -- setReady has it, updateMatch has it.
+    --
+    -- THE FAN-OUT IS WHAT MADE IT WORTH THE TROUBLE. With
+    -- Config.Loadouts.chooser = 'host', which is what ships, one setLoadout
+    -- wrote and pushed a full snapshot to EVERY other player in the lobby:
+    -- measured at 6 state builds per event in a six-player room, four times a
+    -- second, for a pick the host had already sent and nobody's screen would
+    -- move on. Config.Match.maxPlayers ships at 0, so the room has no ceiling
+    -- and neither did the multiplier.
+    --
+    -- `#rejected > 0` STILL PUSHES, and that is not a hole in the guard. The
+    -- weapon picker is a control holding a DRAFT -- server/main.lua says so
+    -- beside the create/edit form, which copied the behaviour from this one
+    -- -- so a request that was refused a weapon resolves to the SAME loadout
+    -- the player already had, and without this clause their screen would go
+    -- on showing the gun the server just turned down. The asker only: the
+    -- room did not change and is not told. DO NOT tidy that clause away.
+    if hostPicks and changed then
         for _, other in pairs(match.players) do
             if other.src ~= target then
                 other.loadout = (Arena.ResolveLoadout(request))
@@ -1640,7 +1807,7 @@ function ArenaLobby.SetLoadout(src, request)
         end
     end
 
-    pushState(target)
+    if changed or #rejected > 0 then pushState(target) end
     return true, nil
 end
 
@@ -1733,7 +1900,28 @@ function ArenaLobby.AddSpectator(src, matchId)
         ArenaDispatch.EnterBucket(target, match.id)
     end
 
-    ArenaLobby.Broadcast()
+    -- ONE SCREEN, BECAUSE ONLY ONE SCREEN CHANGED.
+    --
+    -- Starting or stopping a watch moves two fields, `spectating` and `bet`,
+    -- and both live in snapshotPlayer -- the WATCHER'S OWN ROW.
+    -- snapshotMatches carries no spectator anywhere in it, and snapshotKeepOut
+    -- reads spectatorIndex only for the player it is building for. So a
+    -- Broadcast here rebuilt the leaderboard, the config block, every lobby
+    -- and a per-head row for every recipient on the server, and handed all
+    -- but one of them a snapshot identical to the one they already had.
+    --
+    -- WHAT THAT BOUGHT A CLIENT: spectateMatch and stopSpectating hold
+    -- SEPARATE rate-limit buckets in server/main.lua, so alternating them
+    -- costs one of each per second -- measured at 66 full snapshots a second
+    -- to a 32-recipient server, from somebody in no match holding no bet, and
+    -- 60 of every 70 went to a screen that did not change. It is
+    -- the same hole setReady's changed-value guard was added for, one door
+    -- along.
+    --
+    -- ArenaMatch.OnDeath's elimination path does its own Broadcast after
+    -- this returns, so the room still learns the eliminated fighter is out.
+    -- DO NOT put a Broadcast back here, or in ArenaLobby.RemoveSpectator.
+    ArenaLobby.PushState(target)
     return true, nil
 end
 
@@ -1755,7 +1943,13 @@ function ArenaLobby.RemoveSpectator(src, quiet)
         ArenaDispatch.ExitBucket(target)
     end
 
-    if not quiet then ArenaLobby.Broadcast() end
+    -- The other half of AddSpectator's rule, and it says why up there --
+    -- including why a Broadcast must not come back to either of them. This
+    -- one also REACHES them, which the Broadcast could not: their spectatorIndex
+    -- entry is already gone by this line, so recipients() no longer counts a
+    -- watcher who never opened the panel -- and the exit half of this pair
+    -- is exactly the one that must land.
+    if not quiet then ArenaLobby.PushState(target) end
     return true
 end
 

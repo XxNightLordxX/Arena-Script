@@ -139,6 +139,7 @@
         "stake_refunded": "Stake back: %s",
         "stake_taken": "%s staked. It sits in the pot until this is settled.",
         "start_cancelled": "Start called off. Back to the lobby.",
+        "team_side": "You are fighting for %s.",
         "you_are_host": "The match is yours to run now.",
         "you_left": "You are out of the arena."
     }

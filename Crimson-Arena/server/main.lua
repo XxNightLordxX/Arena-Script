@@ -108,10 +108,31 @@ local function refuse(src, reasonKey)
     ArenaNotifyKey(src, Arena.IsKey(reasonKey) and reasonKey or 'error.invalid_request', 'error')
 end
 
-local function onClient(event, intervalMs, fn)
+--- @param event string
+--- @param intervalMs integer
+--- @param fn fun(src: integer, data: any)
+--- @param throttled fun(src: integer)? -- run INSTEAD of fn when the rate
+---        limiter drops this one. Opt-in per event; see setTeam below for
+---        the only one that takes it, and why.
+local function onClient(event, intervalMs, fn, throttled)
     RegisterNetEvent(event, function(data)
         local src = source
-        if not ArenaRateLimit(src, event, intervalMs) then return end
+        if not ArenaRateLimit(src, event, intervalMs) then
+            -- A DROPPED EVENT ANSWERS ONLY WHERE AN EVENT WAS ASKED TO
+            -- ANSWER, and that is deliberate rather than timidity.
+            --
+            -- Most of what this file throttles is a flood -- a panel
+            -- refreshing, a client reporting a death twice, an operator
+            -- hammering the tablet -- and answering a flood is how a rate
+            -- limiter becomes an amplifier pointed at the person who
+            -- triggered it. `death` in particular is loose ON PURPOSE and
+            -- says so above; a toast per dropped death report would be
+            -- noise over the one thing a fighter must not miss.
+            --
+            -- So a handler that wants its refusals audible asks for it.
+            if throttled then throttled(src) end
+            return
+        end
         fn(src, data)
     end)
 end
@@ -194,6 +215,47 @@ onClient('crimson_arena:server:setTeam', RATE.choice, function(src, data)
 
     local ok, reason = ArenaLobby.SetTeam(src, teamKey)
     if not ok then return refuse(src, reason) end
+end,
+-- THE ONE THROTTLED EVENT THAT ANSWERS, AND THE DEFECT THAT BOUGHT IT.
+--
+-- IN A PLAYER'S WORDS, from the live server, three times: "i clicked a
+-- team, had another member join my team, they switched teams, and in the
+-- match they could not kill each other" -- "it bugged them where they
+-- couldnt shoot each other". The server's own log for that round says
+-- `ash 1 v crimson 2 (0 assigned, 3 chose their own)` and then `crossfire:
+-- 4 may not damage 3 -- they are on the same team and friendly fire is
+-- off`. So the pair really were on one side, the guard really did refuse
+-- the shot, and the friendly-fire rule was never broken. The SWITCH never
+-- happened.
+--
+-- It never happened because this handler ate it. Two clicks inside
+-- RATE.choice -- a fifth of a second, which is exactly how long a person
+-- takes to correct a misclick on a tile that has not lit up yet -- and the
+-- second one fell down the bare `return` above: no refusal, no toast, no
+-- state push, nothing in any log. Every other way a switch can be turned
+-- down says so; this one alone was silent, and it is the one that put a
+-- man in a round believing he was on the other side.
+--
+-- SO IT NAMES THE SIDE HE IS ACTUALLY ON, which is the answer to the
+-- question the click asked. Not "slow down": a fighter does not need to
+-- know about a rate limiter, he needs to know he did not move.
+--
+-- CHEAP, AND POINTED AT NOBODY BUT THE CLICKER. One table lookup and one
+-- event, to the source and only the source -- no snapshot, no broadcast,
+-- no leaderboard. A client spamming this event pays for one line to
+-- itself per message it sent, which is the same order as the message.
+-- Somebody who is in no match is told nothing at all, because there is no
+-- side to name.
+function(src)
+    -- `match.players` is keyed by SERVER ID, a number, and every other
+    -- reader in this file goes through tonumber before indexing it.
+    local target = tonumber(src)
+    local match = target and ArenaLobby.GetByPlayer(target)
+    local row = match and match.players[target]
+    local side = row and Arena.GetTeamByKey(row.team)
+    if not side then return end
+
+    ArenaNotifyKey(target, 'notify.team_side', 'warning', side.label or row.team)
 end)
 
 onClient('crimson_arena:server:setLoadout', RATE.choice, function(src, data)

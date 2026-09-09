@@ -1734,6 +1734,38 @@ function ArenaLobby.SetTeam(src, teamKey)
     local was = player.team
     player.team = team
     if was ~= team then ArenaLobby.Broadcast() end
+
+    -- NAME THE SIDE BACK, EVERY TIME, AND NOT ONLY WHEN IT MOVED.
+    --
+    -- REPORTED THREE TIMES: "i clicked a team, had another member join my
+    -- team, they switched teams, and in the match they could not kill each
+    -- other". His log for that round reads `ash 1 v crimson 2 (0 assigned,
+    -- 3 chose their own)` and then `crossfire: 4 may not damage 3 -- they
+    -- are on the same team` -- so the server had the pair on ONE side and
+    -- refused the shot correctly. The switch never happened.
+    --
+    -- IT NEVER HAPPENED BECAUSE NOTHING ANSWERED. server/main.lua drops a
+    -- client event that arrives inside RATE.choice -- 250ms -- with a bare
+    -- `return`: no refusal, no toast, no state push, nothing in any log.
+    -- And the click before it, a re-pick of the side you are already on,
+    -- changed nothing, so it broadcast nothing and the panel did not so
+    -- much as flicker. A player whose click produces no visible answer
+    -- clicks again, and the second click is the one the window eats.
+    --
+    -- So a click the server ACTS ON now always says which side you are on
+    -- -- the pick, the switch and the re-pick alike. That is what makes
+    -- silence mean something: no line back is a click that never arrived,
+    -- and clicking again is the right thing to do. teamswitchtempo_spec
+    -- drives it at the tempo a person clicks at and fails without this.
+    --
+    -- THE PANEL IS NOT ENOUGH ON ITS OWN. It renders the side the server
+    -- holds and it is right to -- but it is repainted by a broadcast that a
+    -- no-op does not send, and it cannot say anything about a message that
+    -- never got here. server/match.lua says the same line again as the
+    -- fighter is put on the ground, which is the last moment it can be
+    -- heard.
+    local side = Arena.GetTeamByKey(team)
+    ArenaNotifyKey(target, 'notify.team_side', 'success', (side and side.label) or team)
     return true, nil
 end
 

@@ -974,6 +974,37 @@ end
 local function sendEnterArena(match, player, index, arena, freezeSeconds)
     local teamKey = teamOf(match, player)
 
+    -- WHICH SIDE THIS FIGHTER IS ON, SAID OUT LOUD, ON THE WAY IN.
+    --
+    -- IN A PLAYER'S WORDS, three times over, the last of them: "so the
+    -- friendly fire stuff wasnt working right when you switch teams prior
+    -- to the match starting". The friendly-fire rule was working. His log
+    -- for that round says `ash 1 v crimson 2 (0 assigned, 3 chose their
+    -- own)` and then `crossfire: 4 may not damage 3 -- they are on the same
+    -- team`: the server had those two on ONE side, refused the shot because
+    -- that is the rule, and one of them believed he had left that side.
+    --
+    -- NOTHING IN THIS RESOURCE HAS EVER TOLD A FIGHTER WHICH SIDE HE IS ON.
+    -- The panel lights a tile in a menu that is closed a line below this
+    -- one; in the arena there is the teammate outline and the teammate
+    -- marker, and a fighter alone on a side has neither -- so the man who
+    -- thinks he switched and did not sees exactly what he expects to see,
+    -- right up until his bullets stop working on the person beside him.
+    --
+    -- ArenaToastKey RATHER THAN ArenaNotifyKey, for the reason the comment
+    -- on ArenaToast in server/util.lua gives: this function sends
+    -- closePanel a dozen lines down, so a message painted into the panel
+    -- goes to a surface that is about to be torn down -- and the players it
+    -- is written for are exactly the ones who sat watching that panel.
+    --
+    -- server/lobby.lua says the same line for every pick and switch in the
+    -- lobby. This is the last moment it can be said, and the one that
+    -- cannot be missed.
+    if Arena.IsKey(teamKey) then
+        local side = Arena.GetTeamByKey(teamKey)
+        ArenaToastKey(player.src, 'notify.team_side', 'info', (side and side.label) or teamKey)
+    end
+
     -- NOBODY STARTS A ROUND DEAD.
     --
     -- IN A PLAYER'S WORDS: "if i kill someone prior to a match start they

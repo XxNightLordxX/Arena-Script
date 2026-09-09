@@ -88,6 +88,57 @@ local sideBets = {}
 --- DO NOT drop this and rely on the stake marks alone.
 local settling = {}
 
+--- Matches whose side-bet book has already been judged.
+---
+--- `settling` ABOVE CANNOT ANSWER THIS, and one flag for both is why the
+--- book could be settled twice. On the shipped config
+--- (betPayout.includeEntryPot) ArenaBetting.Settle hands the entry stakes
+--- straight to SettleSpectatorBets and raises `settling` on the way past --
+--- so that flag is already up the first and only legitimate time the side
+--- book runs, and a guard reading it would refuse the payout the pot
+--- depends on. This one is raised by that run itself, so the SECOND run --
+--- an ArenaMatch.Abort arriving after ArenaMatch.End, or an operator
+--- retrying a payout that died part-way -- is refused instead of paying
+--- every winner again. Measured on the shipped config: a 15,000 pot paid
+--- 15,000 a second time. DO NOT collapse the two into one flag.
+local sideSettled = {}
+
+--- Who walked out of a round that was being FOUGHT, per match.
+---
+--- `match.players` CANNOT BE ASKED THIS. It is the roster as it stands, and
+--- ArenaLobby.Leave drops the leaver's row on the way out -- so one second
+--- after quitting a live round the book read them as an ordinary onlooker
+--- and sold them the watcher's spectatorBets.closeAfterStartSeconds on the
+--- very round they had just abandoned. Refused while fighting, accepted
+--- twenty seconds after walking out, on the shipped config.
+---
+--- Recorded rather than derived, because by the time MarkWalkedOut runs the
+--- roster row is already gone and nothing else remembers they were ever on
+--- it. Dropped with the match in Clear.
+local walkedOutOf = {}
+
+--- Has this match's pot payout begun?
+---
+--- EVERY PATH THAT HANDS MONEY BACK HAS TO ASK. Both payout loops mark a
+--- stake settled AFTER the money has moved -- on purpose, so a credit that
+--- failed is retried rather than recorded as paid and filed nowhere -- and
+--- the price of that order is a window in which a stake is PAID and still
+--- reads unsettled. ArenaLobby.Destroy's RefundAll, ArenaMatch.Abort's, and
+--- Clear's own side-bet return all read unsettled as "not yet paid" and
+--- handed the same money out a second time: a 15,000 pot paid its winner
+--- 15,000 and then refunded all three stakes on the way down. That is
+--- 15,000 of new money in a file whose whole invariant is that no sequence
+--- of join, leave, abort or stop creates a dollar.
+---
+--- SO THE REFUND PATHS ARE GATED AND THE SETTLE PATH IS NOT. Marking the
+--- stakes earlier is the other way to shut this and it is the wrong one --
+--- read the note under the pot loop for what a mark set before the payment
+--- costs. What a half-finished payout leaves on the books is loud, visible
+--- and fixable by hand; money paid twice is none of those.
+local function payoutBegun(matchId)
+    return settling[matchId] == true
+end
+
 local function trace(fmt, ...)
     if Config.Debug then ArenaLog(fmt, ...) end
 end
@@ -335,6 +386,235 @@ local function credit(src, amount, reason, citizenid, account)
     return true
 end
 
+-- ----------------------------------------------------------------------
+-- THE DEBT THE ARENA OWES, WRITTEN SOMEWHERE A RESTART CANNOT REACH.
+--
+-- THE ASYMMETRY WAS THE DEFECT. What players owe the arena is persisted --
+-- server/ammo.lua's owed-kit table, keyed by citizen id for exactly the
+-- reasons written over `unpaid` above. What the ARENA owes a player lived in
+-- this file's memory and nowhere else: there was not one ArenaDb call in it.
+-- So a pot that could not be delivered because the winner's game died was
+-- filed faithfully against their character and then forgiven by the next
+-- restart, and on a server that restarts nightly the ledger could not
+-- survive the night it was written on. The debts run one way and only one of
+-- them was durable.
+--
+-- SAME SHAPE AS THE OWED-KIT TABLE, on purpose: citizen id and a key
+-- composed in Lua, one row per thing owed, accumulating with
+-- ON DUPLICATE KEY UPDATE, deleted the moment it is settled. An operator who
+-- has read one of these two tables has read both.
+--
+-- `ledger_key` is the account the money came out of and the reason it is
+-- owed, joined by a character neither can contain. It is what lets an entry
+-- fee and a side-bet payout owed to the same character off the same collapse
+-- be two rows instead of one overwriting the other -- the property the
+-- in-memory `parts` list has always had, carried into the table.
+--
+-- NO PARAMETER IS EVER NIL, which is why account and reason are NOT NULL
+-- with an empty default and are written as '' rather than left out. A Lua
+-- table with a hole in it is not one value short, it is undefined: `#t` and
+-- `ipairs` disagree about it, and which one oxmysql happens to use decides
+-- whether the statement runs, fails, or writes the wrong columns. DO NOT
+-- pass a nil through here.
+-- ----------------------------------------------------------------------
+local UNPAID_SUBJECT = 'the money the arena still owes players'
+
+local UNPAID_SCHEMA_SQL = [[
+    CREATE TABLE IF NOT EXISTS crimson_arena_unpaid (
+        citizenid VARCHAR(64) NOT NULL,
+        ledger_key VARCHAR(191) NOT NULL,
+        name VARCHAR(128) NOT NULL DEFAULT '',
+        account VARCHAR(32) NOT NULL DEFAULT '',
+        reason VARCHAR(64) NOT NULL DEFAULT '',
+        amount BIGINT NOT NULL DEFAULT 0,
+        written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (citizenid, ledger_key)
+    )
+]]
+
+local UNPAID_ADD_SQL = [[
+    INSERT INTO crimson_arena_unpaid
+        (citizenid, ledger_key, name, account, reason, amount)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount), name = VALUES(name)
+]]
+
+local UNPAID_DROP_SQL =
+    'DELETE FROM crimson_arena_unpaid WHERE citizenid = ? AND ledger_key = ?'
+
+-- NEWEST FIRST AND BOUNDED, for the reason ammo.lua's read is: the table has
+-- no expiry, a character who never comes back is never paid, and the newest
+-- debt is the one most likely still collectable. This is the only thing
+-- `written_at` is for. DO NOT drop the column.
+local UNPAID_READ_SQL =
+    'SELECT citizenid, ledger_key, name, account, reason, amount FROM crimson_arena_unpaid '
+    .. 'ORDER BY written_at DESC LIMIT 5000'
+
+--- How long a read may be outstanding before the retry may try again.
+local UNPAID_READ_TIMEOUT_MS = 30000
+local UNPAID_RETRY_MS = 30000
+
+local unpaidLoaded = false
+local unpaidReading = false
+local unpaidWriteRefused = false
+
+--- Watches whether a write actually landed, and says so ONCE.
+---
+--- A READ IS NOT EVIDENCE OF A WRITE. The commonest careful production setup
+--- -- import sql/install.sql as an admin, run the resource as a user with
+--- SELECT and nothing else -- fails asynchronously: oxmysql reports it on its
+--- own console and the pcall inside ArenaDb never sees a thing. The operator
+--- has to be told here or not at all. DO NOT report a read as proof of a
+--- write.
+local function unpaidWrote(answer)
+    if answer ~= nil or unpaidWriteRefused then return end
+
+    -- A NIL ANSWER IS ONLY A REFUSAL WHEN THERE WAS SOMETHING TO REFUSE IT.
+    -- ArenaDb calls back with nil on every path that does not reach oxmysql
+    -- at all, which says nothing about whether this user may write. Latching
+    -- on those would leave the ledger reported as unsaved for the rest of the
+    -- run after an outage that has since ended. DO NOT drop this test.
+    if not ArenaDbReady(UNPAID_SUBJECT) then return end
+
+    unpaidWriteRefused = true
+    ArenaLog('betting: money the arena owes players could NOT be written to the database. The table '
+        .. 'can be read but not changed, which is almost always a database user with SELECT and no '
+        .. 'INSERT or DELETE. The ledger still works for this run and a restart forgets it. The '
+        .. 'real error is on oxmysql\'s console, not this one.')
+end
+
+--- `account` and `reason` joined by a character neither can contain.
+local function partKey(account, reason)
+    return ('%s|%s'):format(Arena.IsKey(account) and account or '',
+        Arena.IsKey(reason) and reason or '')
+end
+
+--- WRAPPED, AND THE WRAP IS NOT BELT AND BRACES. Both of these run on the
+--- money path -- `owe` is the line inside each payout loop that catches what
+--- a winner could not be handed -- and losing the durable copy must NEVER
+--- take the payout down with it. ArenaDb already swallows what oxmysql
+--- throws; this covers everything above oxmysql, an operator's Config among
+--- it. What is in memory is the live answer and the table is the backup of
+--- it, so a backup that fails is a line in the log and nothing more. DO NOT
+--- unwrap these.
+local mirrorThrew = false
+
+local function mirror(sql, params)
+    local ok, err = pcall(function() ArenaDb(UNPAID_SUBJECT, sql, params, unpaidWrote) end)
+    if ok or mirrorThrew then return end
+
+    -- SAID ONCE. These fire per debt and per collection; an operator whose
+    -- Config or database wrapper is broken needs telling, not spamming. DO
+    -- NOT make this a counter that resets.
+    mirrorThrew = true
+    ArenaLog('betting: money the arena owes players could not be written down (%s), so a restart '
+        .. 'will forget it. It is still kept in memory for this run and paid to anyone who comes '
+        .. 'back before then.', tostring(err))
+end
+
+local function saveUnpaidPart(citizenid, name, part, added)
+    mirror(UNPAID_ADD_SQL, {
+        citizenid,
+        part.key,
+        tostring(name or citizenid),
+        Arena.IsKey(part.account) and part.account or '',
+        Arena.IsKey(part.reason) and part.reason or '',
+        added,
+    })
+end
+
+local function dropUnpaidPart(citizenid, key)
+    mirror(UNPAID_DROP_SQL, { citizenid, key })
+end
+
+--- Reads the ledger back at start, and MERGES rather than assigns.
+---
+--- WITHOUT THIS THE TABLE IS A WRITE-ONLY LOG -- every debt recorded
+--- faithfully and never read again, the rows just sitting there proving the
+--- restart forgot them.
+---
+--- A debt can be incurred in the seconds between the CREATE and the answer
+--- landing, and it must not be wiped by the read that follows it. Where both
+--- have the same row THE STORED TOTAL WINS, because every write to memory is
+--- mirrored into that same row before this runs -- so the column already
+--- holds the older total plus the new part, and keeping memory's number
+--- instead would forgive everything from before the restart.
+--- @return boolean loaded
+local function loadUnpaid()
+    if unpaidLoaded then return true end
+    if unpaidReading or not ArenaDbReady(UNPAID_SUBJECT) then return false end
+
+    unpaidReading = true
+
+    -- AND THE FLAG IS FREED IF NOTHING EVER ANSWERS. ArenaDb calls back on
+    -- every path it controls, but a query oxmysql accepts and then never
+    -- answers is not one of them -- and a flag stuck on would turn a guard
+    -- against reading twice into a guarantee of never reading at all. DO NOT
+    -- set the flag without this releasing it.
+    SetTimeout(UNPAID_READ_TIMEOUT_MS, function() unpaidReading = false end)
+
+    ArenaDb(UNPAID_SUBJECT, UNPAID_SCHEMA_SQL, {}, function()
+        ArenaDb(UNPAID_SUBJECT, UNPAID_READ_SQL, {}, function(rows)
+            unpaidReading = false
+            if type(rows) ~= 'table' then return end
+
+            -- A LATE ANSWER IS REFUSED OUTRIGHT. The timeout above can free
+            -- the flag while a read is still out there, so the flag alone
+            -- does not prove this is the only answer -- and a second one is
+            -- a photograph of the table BEFORE whatever has been paid since.
+            -- Merging it reinstates settled debts. DO NOT drop this check.
+            if unpaidLoaded then return end
+
+            -- NOT `money`, WHICH IS THE FORMATTER THIS BLOCK CALLS BELOW.
+            -- DO NOT rename it back: a local of that name here shadows it
+            -- and the log line at the end of this function stops being a
+            -- call and starts being an attempt to call a number.
+            local people, owedTotal = 0, 0
+            for _, row in ipairs(rows) do
+                local citizenid = type(row) == 'table' and row.citizenid or nil
+                local amount = math.max(0, Arena.ToInt(row and row.amount) or 0)
+                local key = type(row) == 'table' and row.ledger_key or nil
+
+                if Arena.IsKey(citizenid) and Arena.IsKey(key) and amount > 0 then
+                    local held = unpaid[citizenid]
+                    if not held then
+                        held = { citizenid = citizenid, name = row.name, total = 0, parts = {} }
+                        unpaid[citizenid] = held
+                        people = people + 1
+                    end
+
+                    local part
+                    for _, have in ipairs(held.parts) do
+                        if have.key == key then part = have break end
+                    end
+                    if part then
+                        held.total = held.total - part.amount
+                        part.amount = amount
+                    else
+                        part = {
+                            key = key,
+                            amount = amount,
+                            account = Arena.IsKey(row.account) and row.account or nil,
+                            reason = Arena.IsKey(row.reason) and row.reason or nil,
+                        }
+                        held.parts[#held.parts + 1] = part
+                    end
+                    held.total = held.total + amount
+                    owedTotal = owedTotal + amount
+                end
+            end
+
+            unpaidLoaded = true
+            if people > 0 then
+                ArenaLog('betting: read back %s owed to %d character(s) from before the restart. '
+                    .. 'It is paid the next time each of them is seen.', money(owedTotal), people)
+            end
+        end)
+    end)
+
+    return false
+end
+
 --- Records money this resource owes a character and could not deliver.
 ---
 --- THE POINT IS THE KEY. A debt filed against a match id dies with the
@@ -365,7 +645,35 @@ local function owe(citizenid, name, amount, account, reason)
 
     row.name = name or row.name
     row.total = row.total + value
-    row.parts[#row.parts + 1] = { amount = value, account = account, reason = reason }
+
+    -- ONE PART PER ACCOUNT AND REASON, which is the shape of the row that
+    -- backs it. Two debts off the same collapse -- an entry fee and a
+    -- side-bet payout -- have different reasons and stay two parts, which is
+    -- what "accumulated rather than overwritten" has always meant here; two
+    -- of the SAME thing add up, exactly as the stack of rounds in
+    -- server/ammo.lua's slate does. DO NOT go back to appending blind: a
+    -- part with no identity cannot be deleted from the table when it is
+    -- paid, and a debt that cannot be deleted is one the next restart hands
+    -- out again.
+    local key = partKey(account, reason)
+    local part
+    for _, held in ipairs(row.parts) do
+        if held.key == key then part = held break end
+    end
+
+    if part then
+        part.amount = part.amount + value
+    else
+        part = { key = key, amount = value, account = account, reason = reason }
+        row.parts[#row.parts + 1] = part
+    end
+
+    -- THE MEMORY IS THE LIVE ANSWER AND THIS IS THE BACKUP OF IT, which is
+    -- the order everything below `mirror` depends on: a database that is
+    -- down, switched off or broken costs this line nothing and CANNOT stop
+    -- the debt being recorded. DO NOT make the write conditional on the
+    -- mirror having worked.
+    saveUnpaidPart(id, row.name, part, value)
     return true
 end
 
@@ -412,15 +720,68 @@ local function fightersOf(matchId)
     return match.players
 end
 
+--- Is this row held by the character sitting on that server id RIGHT NOW?
+---
+--- A SERVER ID IS NOT AN IDENTITY, and every payment in this file already
+--- knew it: `credit` refuses a payout whose citizen id does not match the
+--- character holding the id, and has since the day somebody won a pot and
+--- switched character before it was settled. THE DEFECT is that the GATES
+--- never got the same test. A bettor who disconnects leaves an unsettled
+--- row behind, FiveM hands their server id to the next player through the
+--- door, and that stranger was refused the lobby by holdsSideBet, shown the
+--- departed player's stake by GetSideBet, counted as a backer by
+--- MatchesBackedBy and refused a bet of their own by HasSpectatorBet. No
+--- money could move -- credit would have refused it -- but every gate in
+--- front of the money was answering about somebody else.
+---
+--- A ROW WITH NO CITIZEN ID OF ITS OWN is judged on the server id alone,
+--- because that is all it has: it was placed in a moment the framework
+--- could not say who the player was, and falling back is exactly what
+--- `credit` does with the same gap. DO NOT tighten this into a refusal --
+--- it would strand the bet behind every gate at once.
+--- @param bet table
+--- @param id integer
+--- @param citizenid string|nil -- who holds `id` now; read once by the caller
+--- @return boolean
+local function betIsHeldBy(bet, id, citizenid)
+    if bet.src ~= id then return false end
+    if not Arena.IsKey(bet.citizenid) then return true end
+    return bet.citizenid == citizenid
+end
+
 local function holdsSideBet(matchId, src)
+    local citizenid = citizenIdOf(src)
     for _, bet in ipairs(sideBets[matchId] or {}) do
-        if bet.src == src and not bet.settled then return true end
+        if betIsHeldBy(bet, src, citizenid) and not bet.settled then return true end
     end
     return false
 end
 
+--- `countdown` IS TWO DIFFERENT STATES WEARING ONE NAME, and reading the
+--- name alone is what left the fighters' book open inside the arena.
+---
+--- A lobby counting down has nobody on the ground. A match in its FIVE-SECOND
+--- FREEZE -- after ArenaMatch.Start has teleported the whole roster in and
+--- set `match.placed` -- is a round being fought that has not been promoted
+--- to `live` yet. Measured: a fighter standing in the arena, weapon in hand,
+--- was sold a 25,000 bet on himself.
+---
+--- server/lobby.lua works the identical distinction out for what leaving
+--- costs, off the identical two fields, and its comment calls reading the
+--- state name alone the defect. That fix never reached this file.
+---
+--- THE BOOK SHUTS FOR A FIGHTER THE MOMENT THE ROUND GOES LIVE AND THERE IS
+--- NO SETTING FOR IT. Nothing below is configurable and nothing here should
+--- be: spectatorBets.closeAfterStartSeconds is the WATCHER's grace and has
+--- never applied to the people in the fight. DO NOT wire this to a config
+--- key.
+local function roundIsBeingFought(match)
+    return match.state == 'live' or (match.state == 'countdown' and match.placed == true)
+end
+
 local function betsAreOpen(match, isFighter)
     local state = match.state
+    if isFighter and roundIsBeingFought(match) then return false end
     if state == 'lobby' or state == 'countdown' then return true end
     if state ~= 'live' then return false end
 
@@ -650,9 +1011,55 @@ function ArenaBetting.TakeStake(src, matchId, amount, account)
     return true, nil
 end
 
+--- The reason keys that mean AN OPERATOR STOPPED THIS ROUND.
+---
+--- WHY A LIST OF KEYS AND NOT A FLAG. ArenaMatch.Abort is the admin stop --
+--- the tablet's Stop button, /arenaadmin stop, /arenaadmin wipe and the
+--- onResourceStop sweep every one of them reach the books through it -- and
+--- the only thing Abort hands this file is the reason it was given. Nothing
+--- else here can tell an operator pulling a round down from a lobby that
+--- emptied by itself, and the two must not be treated alike. If a key is
+--- ever renamed in server/main.lua it has to be renamed here with it.
+---
+--- WHAT IT CHANGES, AND IT IS ONE THING: on an admin stop a stake that was
+--- forfeited by walking out goes BACK to the player who walked out.
+--- Everywhere else the forfeit stands exactly as it always has -- leaving a
+--- round that is still being fought costs you the stake and the survivors
+--- play for it. The money only comes back when an operator has taken the
+--- round away and there is no longer anybody who can win it.
+---
+--- 'match.aborted' is Abort's own default, for a caller that names no
+--- reason. 'match.ended_abandoned' is DELIBERATELY ABSENT: that is
+--- everybody walking out, which is the case the forfeit exists for.
+local ADMIN_STOP_REASONS = {
+    ['notify.match_stopped_by_admin'] = true,
+    ['notify.resource_stopping'] = true,
+    ['match.aborted'] = true,
+}
+
+local function adminStop(reasonKey)
+    return type(reasonKey) == 'string' and ADMIN_STOP_REASONS[reasonKey] == true
+end
+
+--- Says, once, why a refund path is refusing a match that has been paid.
+local function refusePaidOut(matchId, what)
+    ArenaLog('%s REFUSED: match %s has already begun paying out, so what still reads unsettled on '
+        .. 'it is money that may ALREADY be in a winner\'s pocket -- both payout loops mark a '
+        .. 'stake settled AFTER the money moves, on purpose, so that a credit which failed is '
+        .. 'retried instead of being recorded as paid and filed nowhere. Handing it back here '
+        .. 'would pay it a second time and CREATE money. Nothing was paid. It stays on the books '
+        .. 'and this match will not be dropped; look above for what stopped the payout and settle '
+        .. 'the rest by hand.', what, tostring(matchId))
+end
+
 function ArenaBetting.RefundOne(matchId, src, reasonKey)
     local id = serverId(src)
     if not id then return false end
+
+    if payoutBegun(matchId) then
+        refusePaidOut(matchId, 'REFUND')
+        return false
+    end
 
     local stake = stakesOf(matchId)[id]
     if not stake then
@@ -676,7 +1083,19 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
     -- TRUE, because nothing is owed. A false here reads as "could not pay"
     -- and would have RefundAll report the match as still owing money it has
     -- deliberately kept.
-    if stake.forfeited then
+    --
+    -- AND AN ADMIN STOP IS THE ONE UNWIND THAT UNDOES IT. A forfeited stake
+    -- stays in the pot because the survivors are playing for it; an operator
+    -- stopping the round takes away the thing it was forfeited TO, and from
+    -- that moment keeping it is not a penalty, it is the arena destroying
+    -- money. Four fighters dropping out of a live round and an admin then
+    -- pressing Stop used to burn the whole pot -- 200,000 at the shipped
+    -- ceiling -- with nobody credited and nothing to show for it.
+    --
+    -- ONLY an admin stop. A lobby that empties, a round that ends, a single
+    -- player walking out: the forfeit stands, because there is still a round
+    -- for the money to be won in. See ADMIN_STOP_REASONS.
+    if stake.forfeited and not adminStop(reasonKey) then
         stake.settled = true
         stake.settledAs = 'forfeit'
         stake.reason = reasonKey
@@ -684,6 +1103,12 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
             'They were told so at the time. Nothing was paid back.',
             stake.amount, tostring(stake.citizenid or id), tostring(matchId))
         return true
+    end
+
+    if stake.forfeited then
+        ArenaLog('FORFEIT RETURNED: %d for %s on match %s was forfeited when they left, but the round '
+            .. 'was stopped (%s) -- there is nobody left to win it, so it goes back.',
+            stake.amount, tostring(stake.citizenid or id), tostring(matchId), tostring(reasonKey))
     end
 
     if not credit(id, stake.amount, transaction('refund', matchId),
@@ -728,46 +1153,58 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
 end
 
 function ArenaBetting.RefundAll(matchId, reasonKey)
-    local refunded, total, owed, restored = 0, 0, 0, 0
+    local refunded, total, owed, kept = 0, 0, 0, 0
+
+    -- ASKED ONCE HERE AS WELL AS PER STAKE, so a match that has been paid
+    -- says so in one line instead of one per player.
+    if payoutBegun(matchId) then
+        refusePaidOut(matchId, 'REFUND ALL')
+        return false, 0, 0
+    end
 
     for id, stake in pairs(stakesOf(matchId)) do
         if not stake.settled then
             local amount = stake.amount
+            -- READ BEFORE THE CALL, because RefundOne settles it. And read
+            -- through the same admin-stop test RefundOne uses: DO NOT test
+            -- `stake.forfeited` alone here, or a stake this reasonKey is
+            -- about to hand back is counted as kept and the log says the
+            -- opposite of what happened.
+            local forfeited = stake.forfeited == true and not adminStop(reasonKey)
 
-            -- NOBODY WON THIS ROUND, SO A FORFEIT HAS NOWHERE TO GO.
+            -- AND NO PATH THAT REACHES RefundAll HAS A WINNER LEFT EITHER.
+            -- An admin stop is the obvious one and RefundOne knows about it,
+            -- but the other three callers are a lobby being torn down and
+            -- Settle's two refund branches, and none of those has survivors
+            -- playing for the pot any more than a stopped round does. A
+            -- forfeit is only honest while somebody else is being paid it;
+            -- everywhere else it deletes the money. Four fighters dropping
+            -- out and the lobby emptying burned the whole pot, and the log
+            -- said the stake "stays in the pot" one line before the pot
+            -- stopped existing. DO NOT narrow this back to the admin stop
+            -- alone without first giving the other three a recipient.
             --
-            -- A stake forfeited by somebody who walked out of a live round is
-            -- kept ON PURPOSE, so that the fighters who stayed win it. That is
-            -- the whole point of it and RefundOne is right to refuse it.
-            --
-            -- But every path that reaches RefundAll is a round with no winner:
-            -- an admin stop, a lobby torn down, or a settle that refunded
-            -- everybody. There is no pot left for the forfeit to be won out of,
-            -- so keeping it here does not pay it to the survivors -- it deletes
-            -- the money. Measured: a lobby where everyone drops out lost its
-            -- whole pot, and the log said the stake "stays in the pot" one line
-            -- before the pot stopped existing.
-            --
-            -- DO NOT put this back without first giving the money a recipient.
-            -- Refusing to refund is only honest while somebody else is being
-            -- paid it.
-            if stake.forfeited == true then
-                stake.forfeited = nil
-                restored = restored + 1
-            end
-
+            -- RefundOne is left alone on purpose: its other caller hands a
+            -- SINGLE player their stake back when they quit, and that one
+            -- still forfeits, because the round they walked out of carries on
+            -- without them.
+            if stake.forfeited == true then stake.forfeited = nil end
             if ArenaBetting.RefundOne(matchId, id, reasonKey) then
-                refunded = refunded + 1
-                total = total + amount
+                if forfeited then
+                    kept = kept + 1
+                else
+                    refunded = refunded + 1
+                    total = total + amount
+                end
             else
                 owed = owed + amount
             end
         end
     end
 
-    if restored > 0 then
-        ArenaLog('betting: match %s returned %d forfeited stake(s) because the round ended with nobody to '
-            .. 'win them (%s).', tostring(matchId), restored, tostring(reasonKey))
+    if kept > 0 then
+        ArenaLog('betting: match %s kept %d forfeited stake(s) rather than refunding them (%s).',
+            tostring(matchId), kept, tostring(reasonKey))
     end
 
     if owed > 0 then
@@ -888,20 +1325,38 @@ end
 function ArenaBetting.Settle(matchId, context)
     if not Arena.IsKey(matchId) then return {} end
 
-    if entryPotJoinsPool() then
-        local added = addEntryStakesAsBets(matchId, context)
-        if added > 0 then
-            trace('entry fees joined the bet pool on match %s (%d stake(s))', tostring(matchId), added)
-        end
-        return {}
-    end
-
+    -- ABOVE THE ENTRY-POT BRANCH, WHICH IS WHERE THIS GUARD WAS DEAD.
+    --
+    -- betPayout.includeEntryPot SHIPS TRUE, and the branch below returned
+    -- before the test ever ran -- so on the default install the one guard in
+    -- this file against a second payout was unreachable code. Measured on
+    -- the shipped config: a payout that died part-way, asked to run again,
+    -- paid the winner the whole 15,000 pot a SECOND time. DO NOT move this
+    -- back underneath the branch.
     if settling[matchId] then
         ArenaLog('betting: match %s was asked to pay out a SECOND time and was refused. The first '
             .. 'attempt did not finish, so its stakes are still open and the pot still reads full '
             .. '-- paying again would pay every winner who already had their money. Nothing has '
             .. 'been paid twice. Look above this line for what stopped the first attempt, and '
             .. 'settle what is left by hand.', tostring(matchId))
+        return {}
+    end
+
+    if entryPotJoinsPool() then
+        -- RAISED BEFORE THE STAKES MOVE, and it is not the same flag the
+        -- pot loop below raises for itself. This branch does not pay
+        -- anybody: it hands the entry stakes to SettleSpectatorBets, which
+        -- is where the money actually leaves on the default config. The
+        -- flag is what stops ArenaLobby.Destroy and ArenaMatch.Abort
+        -- refunding those stakes on the way down AFTER they have been paid
+        -- out as bets -- see payoutBegun. DO NOT wait for the payout to
+        -- start; the whole window is between here and there.
+        settling[matchId] = true
+
+        local added = addEntryStakesAsBets(matchId, context)
+        if added > 0 then
+            trace('entry fees joined the bet pool on match %s (%d stake(s))', tostring(matchId), added)
+        end
         return {}
     end
 
@@ -1080,6 +1535,7 @@ function ArenaBetting.GetSideBet(matchId, src)
     local id = serverId(src)
     if not id then return nil end
 
+    local citizenid = citizenIdOf(id)
     for _, bet in ipairs(sideBets[matchId] or {}) do
         -- The one they CHOSE. An entry fee folded into the pool at settle
         -- time is not a bet they placed and must not be shown as one.
@@ -1093,7 +1549,7 @@ function ArenaBetting.GetSideBet(matchId, src)
         -- -- the mode change is refused instead -- but a bet still comes back
         -- through half a dozen other doors, and this is the check that keeps
         -- the panel honest about every one of them.
-        if bet.src == id and not bet.settled and bet.fromEntryFee ~= true then
+        if betIsHeldBy(bet, id, citizenid) and not bet.settled and bet.fromEntryFee ~= true then
             return {
                 amount = bet.amount,
                 pick = bet.pick,
@@ -1130,9 +1586,13 @@ function ArenaBetting.MatchesBackedBy(src)
     local out = {}
     if not id then return out end
 
+    -- READ ONCE, OUTSIDE BOTH LOOPS. It reaches into the framework for the
+    -- player, and this walks every match on the server.
+    local citizenid = citizenIdOf(id)
+
     for matchId, bets in pairs(sideBets) do
         for _, bet in ipairs(bets) do
-            if bet.src == id and not bet.settled and bet.fromEntryFee ~= true then
+            if betIsHeldBy(bet, id, citizenid) and not bet.settled and bet.fromEntryFee ~= true then
                 out[#out + 1] = matchId
                 break
             end
@@ -1144,8 +1604,9 @@ end
 function ArenaBetting.HasSpectatorBet(matchId, src)
     local id = serverId(src)
     if not id then return false end
+    local citizenid = citizenIdOf(id)
     for _, bet in ipairs(sideBets[matchId] or {}) do
-        if bet.src == id and not bet.settled then return true end
+        if betIsHeldBy(bet, id, citizenid) and not bet.settled then return true end
     end
     return false
 end
@@ -1260,7 +1721,17 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     end
     if not stake then return false, reason or 'error.bet_invalid' end
 
-    if not betsAreOpen(match, isFighter) then return false, 'error.bets_closed' end
+    -- A FIGHTER WHO WALKED OUT IS NOT A WATCHER, whatever the roster says,
+    -- and the roster CANNOT say otherwise -- it no longer holds them.
+    -- `isFighter` above reads match.players, which no longer holds them --
+    -- see MarkWalkedOut. Asked here rather than folded into `isFighter`
+    -- because they really are no longer a fighter for every OTHER rule in
+    -- this function: the band, the own-side test and the one-bet limit are
+    -- all a departed player's spectator ones. This is the single question
+    -- their old seat still answers.
+    local walkedOut = (walkedOutOf[matchId] or {})[id] == true
+
+    if not betsAreOpen(match, isFighter or walkedOut) then return false, 'error.bets_closed' end
 
     local wanted = canonicalPick(pick)
     if not wanted or not pickExists(match, wanted) then return false, 'error.bet_invalid_pick' end
@@ -1415,6 +1886,25 @@ function ArenaBetting.MarkWalkedOut(matchId, src)
     local id = serverId(src)
     if not id or not Arena.IsKey(matchId) then return 0, 0 end
 
+    -- WRITTEN DOWN FIRST, AND WRITTEN DOWN FOR PEOPLE HOLDING NO BET AT ALL.
+    --
+    -- This is the only moment anything is told that a fighter left, and by
+    -- the time it runs ArenaLobby.Leave has already dropped their roster row
+    -- -- so if it is not recorded here, nothing afterwards can tell a
+    -- departed fighter from somebody who wandered up to watch. What that
+    -- cost: the walker was handed the WATCHER's grace period on the round
+    -- they had just abandoned, and could bet on it up to
+    -- spectatorBets.closeAfterStartSeconds after the start, having been
+    -- refused a second earlier while standing in it.
+    --
+    -- Above the loop, because the loop only ever visits their BETS and this
+    -- has to be true of a fighter who never placed one. DO NOT fold it in.
+    local match = lobbyMatch(matchId)
+    if match and roundIsBeingFought(match) then
+        walkedOutOf[matchId] = walkedOutOf[matchId] or {}
+        walkedOutOf[matchId][id] = true
+    end
+
     local ceiling = spectatorCeiling()
     local marked, returned = 0, 0
 
@@ -1568,6 +2058,34 @@ end
 function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
     local bets = sideBets[matchId]
     if type(bets) ~= 'table' then return 0, 0, {} end
+
+    -- ONCE PER MATCH, AND THIS HAD NO GUARD AT ALL.
+    --
+    -- ArenaBetting.Settle has refused a second payout since the day the pot
+    -- loop was moved below its payments; this function, which is where the
+    -- pot is actually paid on the shipped config, had nothing. Every branch
+    -- below marks a bet settled AFTER the money moves -- on purpose, and the
+    -- note over the credit says why -- so a run that dies part-way leaves
+    -- winners it has already paid reading as unsettled, and a second run
+    -- pays them again. Measured: 15,000 paid twice out of a 15,000 pot.
+    --
+    -- The second run is not hypothetical. ArenaMatch.Abort calls this after
+    -- ArenaMatch.End has already called it, on any teardown that follows a
+    -- settle.
+    --
+    -- RAISED BEFORE THE FIRST PAYMENT, deliberately, and it is the same
+    -- trade Settle makes: a book whose settlement did not finish stays
+    -- REFUSED rather than being silently re-run. What is left is on the
+    -- books, loud, and Clear will not drop the match while it is there.
+    -- DO NOT move this below the loop to make a retry possible.
+    if sideSettled[matchId] then
+        ArenaLog('betting: the side-bet book on match %s was asked to settle a SECOND time and was '
+            .. 'refused. Every bet it paid the first time still reads unsettled if that run did not '
+            .. 'finish, so settling again would pay those winners twice. Nothing has been paid. '
+            .. 'Look above this line for what stopped the first run.', tostring(matchId))
+        return 0, 0, {}
+    end
+    sideSettled[matchId] = true
 
     local fighters = fightersOf(matchId) or {}
     local wanted = canonicalPick(winningPick)
@@ -1745,6 +2263,12 @@ function ArenaBetting.PayOutstanding(src)
         if credit(id, part.amount, transaction(part.reason or 'refund_owed', 'owed'),
             citizenid, part.account) then
             paid = paid + part.amount
+            -- THE ROW GOES WITH THE PART. Dropped from memory alone, the
+            -- next restart reads the settled debt straight back in and pays
+            -- it a second time -- which is the same mistake, one table over,
+            -- that the DELETE warning in sql/install.sql is about. DO NOT
+            -- drop a part from `parts` anywhere without deleting its row.
+            dropUnpaidPart(citizenid, part.key)
         else
             left[#left + 1] = part
         end
@@ -1793,6 +2317,26 @@ function ArenaBetting.Outstanding()
     return characters, total
 end
 
+--- ONE ATTEMPT AT START IS NOT ENOUGH, and this is why it is a thread of
+--- its own rather than a line in the sweep below. `ensure crimson_arena`
+--- above `ensure oxmysql` in a server.cfg is an ordinary mistake, at which
+--- point a single read at load never happens, every debt from previous runs
+--- sits in the table unread, and new ones begin writing fine the moment
+--- oxmysql comes up -- a working table full of rows nothing will ever pay.
+--- The sweep below is ALSO the wrong place for it: it is switched off
+--- entirely by refundRetrySeconds = 0, and whether the ledger is read has
+--- nothing to do with how often it is swept. DO NOT fold this into it.
+CreateThread(function()
+    -- WRAPPED FOR THE SAME REASON THE WRITES ARE. A throw here would end
+    -- the retry for the life of the process, which is the one thing this
+    -- loop exists to prevent. DO NOT unwrap it.
+    while true do
+        local ok, loaded = pcall(loadUnpaid)
+        if ok and loaded then return end
+        Wait(UNPAID_RETRY_MS)
+    end
+end)
+
 CreateThread(function()
     local seconds = Arena.ToInt(Config.Betting.refundRetrySeconds)
     if seconds == nil then seconds = 30 end
@@ -1807,13 +2351,31 @@ end)
 
 function ArenaBetting.Clear(matchId)
     local owed = 0
+
+    -- AN UNSETTLED BET ON A MATCH THAT HAS BEEN PAID IS NOT AN UNPAID BET,
+    -- and this loop must NEVER hand one back.
+    -- It is the other half of the order every payout in this file uses: the
+    -- mark goes on AFTER the money moves, so a run that stopped part-way
+    -- leaves winners it has already paid reading exactly like winners it has
+    -- not. This loop handed those back, which paid them twice -- and it is
+    -- the last of the three doors, with ArenaLobby.Destroy's RefundAll and
+    -- ArenaMatch.Abort's. Counted as still owed instead, which is what keeps
+    -- the match on the books and this function refusing to drop it.
+    local paidOut = payoutBegun(matchId)
+
     for _, bet in ipairs(sideBets[matchId] or {}) do
         if not bet.settled then
-            ArenaLog('CLEAR: match %s had an unresolved side-bet of %d from %s -- returning it.',
-                tostring(matchId), bet.amount, tostring(bet.name or bet.src))
-            if not returnSideBet(bet, matchId) then owed = owed + bet.amount end
+            if paidOut then
+                owed = owed + (Arena.ToInt(bet.amount) or 0)
+            else
+                ArenaLog('CLEAR: match %s had an unresolved side-bet of %d from %s -- returning it.',
+                    tostring(matchId), bet.amount, tostring(bet.name or bet.src))
+                if not returnSideBet(bet, matchId) then owed = owed + bet.amount end
+            end
         end
     end
+
+    if paidOut and owed > 0 then refusePaidOut(matchId, 'CLEAR') end
 
     local held = ArenaBetting.GetPot(matchId)
     if held > 0 then
@@ -1840,5 +2402,7 @@ function ArenaBetting.Clear(matchId)
     -- pot is still held and a second payout would pay it out again. The flag
     -- goes when the pot and the bets go, and not before. DO NOT hoist this.
     settling[matchId] = nil
+    sideSettled[matchId] = nil
+    walkedOutOf[matchId] = nil
     return true
 end

@@ -17,7 +17,10 @@ resolved.
    before you rebase.
 3. **HOW TO WORK WITH JOHN WITHOUT BURNING HIS MONEY** — he asked for this
    by name. It is the difference between one control test and five agents.
-4. **PART D answer 8** — four of the five doc/code mismatches are confirmed;
+4. **WHAT THIS SESSION GOT WRONG** — the errors that repeated, with counts.
+   One was made six times and one five times, each attempt freshly convinced.
+   You will make them too unless you read the table.
+5. **PART D answer 8** — four of the five doc/code mismatches are confirmed;
    one is incomplete.
 
 ---
@@ -560,6 +563,171 @@ The rework he is objecting to almost always traces to one of these:
 and costs about a hundredth as much.** Prove it when you write it, run the
 mechanical gates every time, and spend the agents on finding what nobody knew
 to look for.
+
+---
+
+---
+
+# WHAT THIS SESSION GOT WRONG, AND THE CORRECTED INSTINCT
+
+John asked for this section specifically. It is not an apology — it is the
+scar tissue, written down, because the next session does not inherit any.
+
+Each entry is a **wrong instinct I actually had**, what it cost, and the
+instinct that replaced it. If you catch yourself about to do one of these, you
+are repeating a mistake that has already been paid for.
+
+## The ones that repeated — read this table first
+
+Not the one-off slips. These are the errors I made **again and again**, each
+time freshly convinced I was right, because nothing carried over between them.
+They will feel like new judgements to you too. They are not.
+
+| Repeats | The wrong instinct | The one-line fix |
+|---|---|---|
+| **6×** | Predicting what `strip_prod.py` keeps instead of running it | Copy the file, run it, grep for your own lines |
+| **5×** | `type(v) == 'table'` on a coordinate | A vector is its own type. Use `Arena.IsPoint` |
+| **3×** | Trusting a harness because it passed | Revert the fix. If the number does not move, the harness is broken |
+| **3×** | Claiming a fix works before testing it | The control test *is* the claim |
+| **2×** | Reading `nil` as success at the exit | `nil` means the inventory was not there — that is the failure case |
+| **2×** | Believing an agent's report without reproducing it | Reproduce, then act |
+
+The 6× and the 5× are the tell. A person makes that mistake twice and the
+second one stings. Nothing stings here — each attempt is re-derived clean from
+the same wrong premise, so **frequency is not evidence of difficulty, it is
+evidence of no memory.** That is exactly what this document is for.
+
+Detail on each, plus the one-off errors, follows.
+
+## 1. "I can predict what this tool does by reading it."
+
+**Cost: six repeats.** Every time I reasoned about what `strip_prod.py` would
+keep or delete instead of running it, I was wrong. Comments I was certain would
+survive were deleted. Once, a marker was split across a line wrap — `DO` at the
+end of one line, `NOT` at the start of the next — which I would never have seen
+by reading.
+
+**Corrected instinct: run the tool.** Copy the file, run the stripper, grep for
+your own added lines. It takes ten seconds. There is no amount of reading that
+substitutes.
+
+Generalised: **any question that a command can answer, answer with the
+command.** Not just this stripper.
+
+## 2. "The fix is obviously right, so I can say it works."
+
+**Cost: the single biggest defect of the session.** I wrote a guard whose
+condition was *guaranteed true by both of its call sites* — so the code it
+protected never ran once. Six review agents found it. A two-line control test
+would have found it in a minute.
+
+**Corrected instinct: the control test IS the claim.** Revert the fix, run,
+record the number. Put it back, run, record. `before: 5, after: 0`. Until you
+have those two numbers you have an opinion, not a fix.
+
+## 3. "My test passed, so the thing works."
+
+**Cost: three harnesses passed while broken.** In one, the fake `RemoveItem`
+decremented the player's pockets even when removing from the *stash* — so every
+returned item landed and instantly vanished, and the test read 0 either way. In
+another, `Arena.AllIssuedItems` returned `{}`, quietly emptying the snapshot the
+fix depended on and making a real fix look like a no-op.
+
+**Corrected instinct: a harness that agrees with you is suspect until you have
+watched it disagree.** If reverting the fix does not change the output, your
+harness is not testing the fix. That is the *first* thing to check, not the
+last.
+
+## 4. "The house convention covers this case."
+
+**Cost: a free loadout on five routes.** The codebase treats `false` as refusal
+and `nil` as success — correct almost everywhere, and exactly wrong at the exit,
+where a player at character-select answers `nil` to everything precisely
+*because* nothing happened.
+
+**Corrected instinct: ask what the value means HERE, not what the convention
+says.** A convention that is right 95% of the time is a trap at the other 5%,
+and the 5% is where the money is.
+
+## 5. "I wrote a guard, so the case is handled."
+
+**Cost: see 2.** A guard is only as good as the callers' ability to fail its
+condition.
+
+**Corrected instinct: after writing any guard, grep every caller and ask "can
+this condition ever be false here?"** If no caller can falsify it, the guard is
+dead and you have written a comment, not a check.
+
+## 6. "Both fixes are correct, so together they are correct."
+
+**Cost: every clean exit wrote a permanent phantom debt.** Two individually
+sound changes — "queue before forget" and "keep the row" — combined into a debt
+that could never clear.
+
+**Corrected instinct: after two changes in the same area, re-walk the combined
+path from the top.** Not each change. The path.
+
+## 7. "The batch script ran, so the batch applied."
+
+**Cost: a duplicated settle block in `betting.lua`, found later by grep.**
+Python patch scripts have aborted partway after earlier writes already landed.
+
+**Corrected instinct: verify after every batch, not at the end of the
+session.** Parse the file and grep for what you just wrote, every time.
+
+## 8. "The declaration is in the file, so it is in scope."
+
+**Cost: nearly shipped.** I forward-declared two locals *below* the function
+that called them. Caught in one command by
+`luac5.4 -l -l -p file | grep '_ENV "'` — a name showing up as a global is the
+symptom.
+
+**Corrected instinct: run that grep on every server file you touch.** Every
+name it prints must be a genuine global.
+
+## 9. "The agent found it, so it is true."
+
+**Cost: wasted effort in both directions.** Agents reported defects that were
+not real, and reported as fine things that were broken. One reported five
+"deleted" comments that were actually fine — my grep had spanned a line wrap.
+
+**Corrected instinct: reproduce before you act.** This is the reason for John's
+ten-check rule, but the rule is a workaround. Reproducing it yourself is
+cheaper and settles it.
+
+## 10. "The rule is about the code, not about what I write about the rule."
+
+**Cost: nearly committed a handover document that would have failed the
+project's own attribution check**, because I quoted the exact string the check
+greps for while explaining that the string must not appear.
+
+**Corrected instinct: apply the rule to the artefact you are writing about the
+rule.** Including this document.
+
+## 11. Language-level traps that bite regardless of care
+
+These are in §7 above with more detail. They are listed again here because they
+are the ones that produce *silent* wrong answers rather than errors:
+
+- **A vector is its own type.** `type(v)` answers `'vector3'`, never
+  `'table'`. Recurred five times across sessions. Use `Arena.IsPoint`.
+- **`x and nil or y` always yields `y`.** It silently disabled a whole test
+  branch for an hour. Spell out the `if`.
+- **A `nil` inside a table constructor makes the table undefined**, not one
+  element short — and FiveM's MessagePack then sends it as a map, not an array.
+- **Removal by metadata filter is a filter, not an address.** `{ammo=...}`
+  stops matching the moment a round is fired. Remove by slot.
+
+## The pattern underneath all of these
+
+Nine of the eleven are the same error wearing different clothes: **I substituted
+reasoning for observation.** I predicted what a tool would do, what a test
+proved, what a convention covered, what a caller could pass — instead of
+running, reverting, checking, grepping.
+
+The corrected instinct, stated once: **when the machine can answer, do not
+answer for it.** It is faster than being wrong, and it is the whole difference
+between one control test and five agents.
 
 ---
 

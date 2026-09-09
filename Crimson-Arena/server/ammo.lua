@@ -2092,6 +2092,21 @@ local function chaseOwedKit(src, citizenid)
     trimOwedKit(citizenid, left)
     owedKit[citizenid] = #left > 0 and left or nil
 
+    -- AND THE PLAYER IS TOLD, because this is the only place in the resource
+    -- that removes something a player is holding while they are nowhere near
+    -- the arena. It said nothing at all: a weapon and a pile of rounds left
+    -- their inventory on a routine sweep tick, anywhere on the map, with the
+    -- only explanation going to the server console. That is indistinguishable
+    -- from ox_inventory eating their kit, and it is what they will report.
+    --
+    -- A TOAST, not a notification, and once for the whole collection rather
+    -- than per row. They may have the arena panel open at the door -- the
+    -- likeliest moment for this to fire -- and a closing panel swallows an
+    -- ordinary notify. DO NOT quieten this.
+    if taken > 0 then
+        ArenaToastKey(src, 'notify.kit_reclaimed', 'info')
+    end
+
     return taken
 end
 

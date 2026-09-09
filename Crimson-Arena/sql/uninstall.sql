@@ -21,6 +21,16 @@
 -- Removing the resource does NOT require running this. An unused table costs
 -- you nothing, and leaving it means reinstalling later keeps every record.
 -- Run this only when you have decided the history itself is unwanted.
+--
+-- IF YOU CAME HERE TO FIX THE CHARSET, YOU ARE IN THE WRONG FILE. Both tables
+-- name utf8mb4 in install.sql, but CREATE TABLE IF NOT EXISTS cannot change a
+-- table that already exists, so the obvious repair -- drop them and let the
+-- resource make them again -- is this file, and it takes the history and the
+-- debts with it. sql/install.sql carries the ALTER TABLE statements that
+-- convert a live table in place instead. Use those.
+--
+-- These two statements do not care what charset, collation or row format the
+-- tables were created with; DROP removes the table whatever shape it is in.
 
 DROP TABLE IF EXISTS crimson_arena_stats;
 

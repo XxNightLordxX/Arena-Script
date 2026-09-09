@@ -18,9 +18,54 @@ Whitespace and comments produce no tokens at all, so reformatting is
 invisible here -- which is the point. Everything that is not a comment is
 visible.
 
-    usage: verify_web_identical.py <before-dir> <after-dir>
+EITHER SIDE MAY BE A COMMIT. This was written for a working tree and its
+stripped copy, and that pair stopped existing the day the strip landed: there
+is no "before" directory in the tree any more, so the check read as unrunnable
+and went unrun. The "before" is now any commit. Give it a ref and it archives
+that ref into a scratch directory itself, so the check somebody reaches for at
+2am is one command and not a recipe.
+
+    usage: verify_web_identical.py <before> <after>
+
+      <before> and <after> are each EITHER a directory OR anything git will
+      resolve to a commit -- a sha, a tag, a branch, HEAD~3. An existing
+      directory wins over a ref of the same name, because a name that is both
+      is the ambiguous case and the thing the caller can see is the one that
+      cannot silently compare something they did not mean.
+
+      verify_web_identical.py 566171c 7fb527e         two commits
+      verify_web_identical.py 566171c Crimson-Arena   a commit against the tree
+      verify_web_identical.py /tmp/before /tmp/after  two directories
+
+    A ref is archived whole and the Crimson-Arena/ inside it is what gets
+    compared, so the tools/ directory of that commit is not dragged in.
 """
-import sys, os, re
+import sys, os, re, shutil, subprocess, tarfile, tempfile
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def resolve(arg, work, slot):
+    """A directory if it is one, otherwise a commit unpacked into `work`."""
+    if os.path.isdir(arg):
+        return arg
+    if subprocess.call(['git', '-C', REPO, 'rev-parse', '--verify', '--quiet',
+                        arg + '^{commit}'], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL) != 0:
+        sys.exit('not a directory and not a commit: %s' % arg)
+    into = os.path.join(work, slot)
+    os.makedirs(into, exist_ok=True)
+    tar = os.path.join(work, slot + '.tar')
+    with open(tar, 'wb') as fh:
+        if subprocess.call(['git', '-C', REPO, 'archive', '--format=tar', arg],
+                           stdout=fh) != 0:
+            sys.exit('could not archive %s' % arg)
+    with tarfile.open(tar) as tf:
+        try:
+            tf.extractall(into, filter='data')
+        except TypeError:
+            tf.extractall(into)
+    inner = os.path.join(into, 'Crimson-Arena')
+    return inner if os.path.isdir(inner) else into
 
 def tokens_js(src):
     out, i, n = [], 0, len(src)
@@ -113,4 +158,15 @@ def main(before, after):
     return 1 if (fail or missing) else 0
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    if len(sys.argv) != 3:
+        sys.exit('usage: verify_web_identical.py <before dir or git ref> '
+                 '<after dir or git ref>')
+    scratch = tempfile.mkdtemp()
+    try:
+        a = resolve(sys.argv[1], scratch, 'before')
+        b = resolve(sys.argv[2], scratch, 'after')
+        print('before: %s  ->  %s' % (sys.argv[1], a))
+        print('after:  %s  ->  %s' % (sys.argv[2], b))
+        sys.exit(main(a, b))
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)

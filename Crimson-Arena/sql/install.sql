@@ -3,7 +3,7 @@
 -- YOU DO NOT NORMALLY NEED TO RUN THIS.
 --
 -- The resource creates both of its tables itself on first start, from the
--- identical CREATE TABLE statements in server/stats.lua (ArenaStats.EnsureSchema)
+-- matching CREATE TABLE statements in server/stats.lua (ArenaStats.EnsureSchema)
 -- and server/ammo.lua (ArenaAmmo.LoadOwedKit). This file exists for the two
 -- cases where that is not good enough:
 --
@@ -24,9 +24,16 @@
 --   2. You want the table to exist before the first match, so an operator
 --      looking at the schema does not see it appear out of nowhere.
 --
--- Each statement below is a byte-for-byte match for the one in its Lua file.
--- If you edit either, edit both copies of it, or first start after an import
--- will quietly do nothing (IF NOT EXISTS) and leave you on the older shape.
+-- EACH STATEMENT BELOW AND ITS COPY IN THE LUA MUST BE THE SAME STATEMENT,
+-- character for character. There are exactly two copies and they are at
+-- server/stats.lua (SCHEMA_SQL) and server/ammo.lua (KIT_SCHEMA_SQL). Edit one
+-- and you must edit the other, or first start after an import will quietly do
+-- nothing (IF NOT EXISTS) and leave you on whichever shape got there first.
+--
+-- THE CHARSET CLAUSE IS PART OF THAT and is the half most likely to be
+-- forgotten: a table created without one takes the DATABASE's default, so the
+-- same resource on two servers ends up with two different tables, and only one
+-- of them can store a player whose name has an accent in it.
 --
 -- WHAT HAPPENS IF YOU NEVER IMPORT IT AND NEVER GRANT CREATE: nothing breaks.
 -- Config.Database.enabled = false, or a failed create, leaves the resource in
@@ -37,8 +44,89 @@
 -- restart. And the arena stops remembering what players still owe it -- see
 -- the second table below, which matters more.
 
+-- ----------------------------------------------------------------------
+-- WHY EVERY TABLE HERE NAMES ITS OWN CHARSET.
+--
+-- Neither table used to say, so both took whatever the database default was.
+-- On a server whose default is latin1 -- still the shipped default on plenty
+-- of MySQL 5.7 installs, and what an older my.cnf leaves you with -- a player
+-- name with an accent or an emoji in it is not merely mangled. It is REFUSED:
+-- MySQL answers "Incorrect string value: '\xF0\x9F...'" and the row is never
+-- written. On a utf8mb3 default the accents get through and the emoji do not,
+-- because utf8mb3 stops at three bytes and every emoji is four.
+--
+-- THAT FAILURE IS INVISIBLE FROM INSIDE THE GAME. The write goes out through
+-- oxmysql, is refused there, and the error is printed on oxmysql's console.
+-- ArenaStats.Flush sees a nil answer, treats it as "the database is down",
+-- and requeues the row -- so the same doomed row is retried every flush for
+-- the rest of the run, and when 5000 of them have piled up the queue starts
+-- dropping the oldest. One player with an emoji in their name is enough.
+--
+-- utf8mb4 is the only charset that holds everything a player can be called.
+-- utf8mb4_unicode_ci sorts them the way a person would expect.
+--
+-- THE TWO KEY COLUMNS ARE utf8mb4_bin ON PURPOSE, and it is not a style
+-- choice. They are machine identifiers, not prose, and they are the primary
+-- key: under a _ci collation `char:abc` and `char:ABC` are THE SAME ROW, so
+-- two different characters would silently share one set of statistics, and
+-- two different weapon serials would silently share one debt -- which is the
+-- exact collision the `w:` / `i:` prefix below exists to prevent. A binary
+-- collation compares them byte for byte, which is how the Lua compares them.
+--
+-- ROW_FORMAT=DYNAMIC is what pays for that. utf8mb4 reserves four bytes per
+-- character in an index, so the (citizenid, ledger_key) key below asks for
+-- 64*4 + 191*4 = 1020 bytes. InnoDB's old COMPACT format allows 767 and would
+-- refuse the CREATE outright; DYNAMIC allows 3072. It is the default on MySQL
+-- 5.7+ and MariaDB 10.2+ and is named here so that it does not depend on the
+-- default. If a server old enough to refuse it ever turns up, drop the clause
+-- and shorten ledger_key to 100 -- not the charset. Only the second table
+-- needs it: the stats table's key is one 64-character column, 256 bytes, and
+-- fits COMPACT's 767 with room to spare.
+--
+-- THIS FILE ONLY AFFECTS A TABLE THAT DOES NOT EXIST YET. Both statements are
+-- CREATE TABLE IF NOT EXISTS, so importing this over an install that already
+-- has the tables changes NOTHING -- including the charset. To convert one that
+-- already exists, stop the resource, back it up, and run these two by hand:
+--
+--     ALTER TABLE crimson_arena_stats
+--         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--     ALTER TABLE crimson_arena_stats
+--         MODIFY citizenid VARCHAR(64) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL;
+--
+--     ALTER TABLE crimson_arena_owed_kit ROW_FORMAT=DYNAMIC;
+--     ALTER TABLE crimson_arena_owed_kit
+--         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--     ALTER TABLE crimson_arena_owed_kit
+--         MODIFY citizenid VARCHAR(64) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL,
+--         MODIFY ledger_key VARCHAR(191) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL;
+--
+-- They are not run for you because an ALTER on a table that is not there
+-- aborts the import, and because the second pair rebuilds the primary key on
+-- a table the arena may be actively collecting from.
+-- ----------------------------------------------------------------------
+
+-- EVERY WIDTH BELOW WAS CHECKED AGAINST WHAT THE LUA ACTUALLY WRITES.
+--
+--   citizenid  ArenaStats.Record cuts it to 64 -- 64 BYTES, because Lua's
+--              string.sub counts bytes. 64 bytes is never more than 64
+--              characters, so it always fits.
+--   name       cut to 128 bytes the same way, into 128 characters. Also
+--              always fits. IT IS THE CUT ITSELF THAT IS THE RISK, not the
+--              width: a cut that lands in the middle of a multi-byte
+--              character produces a half character, and MySQL refuses the
+--              whole row for that just as it refuses an emoji into latin1.
+--              The column cannot fix that; the cut has to be done in
+--              characters. Nothing in this file can do it.
+--   wins/losses/kills/deaths  one per match, accumulated. INT tops out at
+--              2.1 billion matches.
+--   earnings   accumulated money, so BIGINT and not INT: a busy arena passes
+--              INT's 2.1 billion in a way a match count never will.
+
 CREATE TABLE IF NOT EXISTS crimson_arena_stats (
-    citizenid VARCHAR(64) NOT NULL,
+    citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     name VARCHAR(128) NOT NULL DEFAULT '',
     wins INT NOT NULL DEFAULT 0,
     losses INT NOT NULL DEFAULT 0,
@@ -47,7 +135,20 @@ CREATE TABLE IF NOT EXISTS crimson_arena_stats (
     earnings BIGINT NOT NULL DEFAULT 0,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (citizenid)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- `losses` IS WRITTEN EVERY ROUND AND IS NOT ON THE BOARD YET. That is a gap
+-- and not a spare column: the leaderboard selects name, wins, kills, deaths
+-- and earnings, so a player who wins two rounds out of forty reads exactly
+-- like one who has won two out of two. DO NOT DROP IT to tidy the schema --
+-- the write is what makes surfacing it possible later, and dropping it throws
+-- away every defeat recorded since the arena opened, which cannot be
+-- reconstructed from anything else here.
+--
+-- `updated_at` IS FOR YOU, NOT FOR THE GAME. Nothing selects it and nothing
+-- is meant to. It is the only way to answer "who has played since March" or
+-- to prune an install that has collected ten years of one-match visitors, and
+-- the database fills it in for free. Same instruction: leave it alone.
 
 -- Optional. The leaderboard orders by wins then kills; on a server with tens of
 -- thousands of rows that is a filesort every time somebody opens the panel.
@@ -83,15 +184,33 @@ CREATE TABLE IF NOT EXISTS crimson_arena_stats (
 -- to read like an item name would collide on the primary key and one debt
 -- would silently overwrite the other. It is what stops one weapon being
 -- written down twice and lets a stack of rounds accumulate instead.
+--
+-- THE WIDTHS, AGAIN AGAINST WHAT THE LUA WRITES. Nothing on this table is
+-- cut to length before it is sent -- unlike the stats table, ammo.lua passes
+-- citizenid, the item name and the serial through as they came:
+--
+--   citizenid   a framework character id, eight or so characters. 64 is
+--               generous. IF ONE EVER ARRIVES LONGER THAN 64 the row is
+--               refused with "Data too long", on oxmysql's console, and the
+--               debt is silently forgiven -- which is a free arena loadout.
+--   ledger_key  two characters plus an ox_inventory serial or item name,
+--               both of which that resource keeps short. 191 is the largest
+--               this can be without the key outgrowing DYNAMIC's 3072 bytes.
+--   kind        never passed as a parameter: 'weapon' and 'item' are written
+--               into the statements themselves. 16 is six to spare.
+--   name        an ox_inventory item name. serial: an ox_inventory serial.
+--   amount      rounds owed, bounded by the per-weapon ammo.max in
+--               config.weapons.lua (500 at the highest) and by the ledger
+--               caps in ammo.lua long before INT is in sight.
 -- ----------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
-    citizenid VARCHAR(64) NOT NULL,
-    ledger_key VARCHAR(191) NOT NULL,
+    citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    ledger_key VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     kind VARCHAR(16) NOT NULL,
     name VARCHAR(128) NOT NULL,
     serial VARCHAR(128) NULL,
     amount INT NOT NULL DEFAULT 1,
     written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (citizenid, ledger_key)
-);
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

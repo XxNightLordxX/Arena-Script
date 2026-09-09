@@ -80,12 +80,22 @@ element the panel looks up. The two lists are compared line by line.
 *Why this is strong:* it is written in your terms, not in code terms. A
 failure reads *"this setting is gone"*, not *"a checksum changed"*, and the
 number it counts is only ever compared against itself — a run before and a run
-after, on the same tree. **Against the code as it ships today it is 994
-entries** (`python3 tools/inventory.py Crimson-Arena | wc -l`, run against
-this commit). It was 972 when this paragraph was written and 983 at the strip
-below; the surface has grown since, which is what those three numbers are
-saying. What matters is that a before and an after of the same change agree,
-not that any of them is a round number.
+after, on the same tree. **Against the code as it ships today it is 4,072
+entries** (`python3 tools/inventory.py Crimson-Arena | wc -l`).
+
+**That number used to be 994, and the difference is not growth — the tool was
+half blind.** It read the config files by pattern rather than parsing them, so
+it never opened `config.weapons.lua` at all, never saw a top-level `Config.X`,
+never saw a bracketed key like `['skydome']`, and stopped at twelve spaces of
+indent. Measured on this tree: deleting the whole **trailerpark arena** was
+reported as *0 lost, PASS*; deleting the weapon **appistol** was reported as
+*0 lost, PASS*. A check that cannot see a deletion did not prove that nothing
+was deleted, whatever it printed. It parses the config now, and the same two
+deletions report 183 and 21 entries lost.
+
+The earlier figures in this document — 972 when the paragraph was written, 983
+at the strip below — were that same blind count and are left in place so the
+correction is visible rather than tidied away.
 
 *Tool:* `tools/inventory.py`
 
@@ -113,7 +123,7 @@ touched. Results:
 |---|---|
 | 1. Lua instructions | **PASS** — 18 files, 0 changed |
 | 2. Panel tokens | **PASS** — 3 files, 0 changed |
-| 3. Dependency surface | **PASS** — 983 entries before, 983 after, 0 lost. *(983 is what the tree held on the day of the strip; it is 994 today. The check is a before against an after of the same change, so the count moving since does not weaken the result above.)* |
+| 3. Dependency surface | **PASS** — 983 entries before, 983 after, 0 lost. *(Those were the blind tool's numbers. **Re-run with the corrected one: 4,060 before, 4,060 after, 0 lost — the verdict holds, and is now worth about four times as much.** 4,072 today, the difference being work added since.)* |
 | 4. Tests against stripped code | 76 of 77 spec files pass — see below |
 
 **Run again, on the real strip.** The table above is the first dry run, which

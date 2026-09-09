@@ -1,0 +1,151 @@
+diff --git a/Crimson-Arena/server/ammo.lua b/Crimson-Arena/server/ammo.lua
+index 41c65b5..dff158e 100644
+--- a/Crimson-Arena/server/ammo.lua
++++ b/Crimson-Arena/server/ammo.lua
+@@ -741,6 +741,16 @@ local function serialsFor(ox, src, name)
+     return out
+ end
+ 
++--- Written the moment a weapon leaves the arena's hands, and struck off the
++--- moment it comes back.
++---
++--- ASSIGNED FURTHER DOWN, because the ledger helpers they use need the SQL
++--- and the key builders, and those sit below this. Declaring them here is
++--- what lets `giveWeapon` and `takeWeaponBack` -- the two choke points every
++--- issue and every reclaim goes through -- reach them. DO NOT move the
++--- assignment above the helpers it calls.
++local markWeaponOut, strikeWeaponOff
++
+ --- Hands one weapon over and writes down WHICH COPY it is.
+ ---
+ --- A SERIAL, NOT A NAME, AND THAT DISTINCTION COSTS PEOPLE THEIR GUNS.
+@@ -794,12 +804,36 @@ local function giveWeapon(ox, src, name, metadata)
+     -- "this belongs to somebody who is not here".
+     local holder = ArenaGetPlayer(src)
+ 
+-    return true, {
++    local record = {
+         name = name,
+         metadata = metadata,
+         serial = serial,
+         citizenid = holder and holder.PlayerData and holder.PlayerData.citizenid or nil,
+     }
++
++    -- WRITTEN DOWN AS IT IS HANDED OVER, not when it fails to come back.
++    --
++    -- Nothing was persisted until the EXIT ran, so a crash, a kill -9 or a
++    -- host dying mid-round left every fighter on the server holding an arena
++    -- weapon with no record anywhere that it had ever been issued. Not a
++    -- debt, not a row, nothing -- the whole roster kept its guns and the next
++    -- start had no idea. The one event that loses the most kit was the one
++    -- event the ledger could not see.
++    --
++    -- WEAPONS ONLY. Rounds and plates stay exit-only on purpose: they are
++    -- fungible, they are re-issued on every respawn, and writing them here
++    -- would put a statement on the wire for every top-up of every fighter.
++    -- A weapon carries a serial, so a row written now can be matched exactly
++    -- later, which is the whole reason this is worth its cost.
++    --
++    -- The row says OUT, not owed. It is struck off at the door on the way
++    -- back, so a clean round leaves nothing behind; only a row that outlives
++    -- the process becomes a debt, and LoadOwedKit is what promotes it. DO NOT
++    -- write these as 'weapon' -- the admin screen would then list every armed
++    -- fighter as owing the arena their loadout.
++    markWeaponOut(record)
++
++    return true, record
+ end
+ 
+ --- Takes back one issued weapon -- that exact copy, and no other.
+@@ -831,8 +865,16 @@ local function takeWeaponBack(ox, src, record)
+ 
+     local function removeSlot(slot, why)
+         if not slot then return false end
+-        return oxDid(('taking back %s from slot %d (%s)'):format(record.name, slot, why),
++
++        local took = oxDid(('taking back %s from slot %d (%s)'):format(record.name, slot, why),
+             function() return ox:RemoveItem(src, record.name, 1, nil, slot) end)
++
++        -- STRUCK OFF ONLY WHEN IT ACTUALLY CAME BACK. The row written at
++        -- issue says this weapon is OUT; a refused removal means it still is.
++        -- Deleting on the attempt rather than the result would forgive
++        -- exactly the weapon the row exists for.
++        if took then strikeWeaponOff(record) end
++        return took
+     end
+ 
+     -- ONLY THE SERIAL GOES IN THE FILTER, NEVER THE WHOLE METADATA. The
+@@ -1529,6 +1571,24 @@ local KIT_WEAPON_SQL = [[
+     ON DUPLICATE KEY UPDATE amount = 1
+ ]]
+ 
++--- The same row, said differently: this weapon is OUT, not owed.
++---
++--- ONE KEY, TWO MEANINGS, and that is the point. A weapon is either in the
++--- arena's hands, in a fighter's hands, or on somebody's slate -- never two
++--- of those at once -- so `w:<serial>` is written as 'out' at issue and
++--- UPDATED to 'weapon' if it ever becomes a debt. No second row, no second
++--- key, and nothing to reconcile.
++---
++--- `amount` is 1 for the same reason the weapon statement sets it: every
++--- column the item rows use has to carry something, and a weapon is one
++--- weapon. DO NOT give this its own ledger_key prefix.
++local KIT_OUT_SQL = [[
++    INSERT INTO crimson_arena_owed_kit
++        (citizenid, ledger_key, kind, name, serial, amount)
++    VALUES (?, ?, 'out', ?, ?, 1)
++    ON DUPLICATE KEY UPDATE kind = 'out', amount = 1
++]]
++
+ local KIT_ITEM_ADD_SQL = [[
+     INSERT INTO crimson_arena_owed_kit
+         (citizenid, ledger_key, kind, name, amount)
+@@ -1671,6 +1731,22 @@ local function setOwedItem(citizenid, name, amount)
+     ArenaDb('the outstanding-kit slate', KIT_ITEM_SET_SQL, { citizenid, itemKey(name), name, amount }, wrote)
+ end
+ 
++function markWeaponOut(record)
++    if type(record) ~= 'table' then return end
++    if not (Arena.IsKey(record.citizenid) and Arena.IsKey(record.serial)) then return end
++
++    ArenaDb('the outstanding-kit slate', KIT_OUT_SQL,
++        { record.citizenid, weaponKey(record.serial), record.name, record.serial }, wrote)
++end
++
++function strikeWeaponOff(record)
++    if type(record) ~= 'table' then return end
++    if not (Arena.IsKey(record.citizenid) and Arena.IsKey(record.serial)) then return end
++
++    ArenaDb('the outstanding-kit slate', KIT_DROP_SQL,
++        { record.citizenid, weaponKey(record.serial) }, wrote)
++end
++
+ local function dropOwedWeapon(citizenid, serial)
+     ArenaDb('the outstanding-kit slate', KIT_DROP_SQL, { citizenid, weaponKey(serial) }, wrote)
+ end
+@@ -3184,8 +3260,23 @@ function ArenaAmmo.LoadOwedKit()
+                     local fresh = owedKit[citizenid] == nil and owedItems[citizenid] == nil
+                     if fresh and owedKitCharacters() >= OWED_KIT_CHARACTERS then
+                         skipped = skipped + 1
+-                    elseif row.kind == 'weapon' and Arena.IsKey(row.serial)
+-                        and Arena.IsKey(row.name)
++                    -- AN 'OUT' ROW THAT SURVIVED THE PROCESS IS A DEBT.
++                    --
++                    -- It says a weapon was handed over and never struck off,
++                    -- and the only way that row is still here is that the
++                    -- exit which would have removed it never ran: a crash, a
++                    -- kill -9, the host dying mid-round. The fighter is
++                    -- holding it and nothing else remembers.
++                    --
++                    -- The two kinds merge into one slate because from here
++                    -- they mean the same thing -- a serial the arena wants
++                    -- back. `chaseOwedKit` takes it by serial or leaves it
++                    -- alone, exactly as for a debt written at an exit, so a
++                    -- fighter who legitimately still holds theirs is charged
++                    -- nothing they do not have. DO NOT read 'out' as
++                    -- settled.
++                    elseif (row.kind == 'weapon' or row.kind == 'out')
++                        and Arena.IsKey(row.serial) and Arena.IsKey(row.name)
+                     then
+                         local held = owedKit[citizenid] or {}
+                         local already = false

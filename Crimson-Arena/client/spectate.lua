@@ -167,6 +167,23 @@ local function runCameraThread()
                     waitingSince = waitingSince or GetGameTimer()
                     if focusPoint and loading and (GetGameTimer() - waitingSince) < STREAM_GRACE_MS then
                         Wait(250)
+                    elseif ArenaDispatch.IsInArena() then
+                        -- AN ELIMINATED FIGHTER STAYS ON THE CAMERA. For them
+                        -- "nobody alive" is a moment, not the end: the list is
+                        -- fighters waiting to respawn, and two of them trading
+                        -- kills, or both being out of scope past the grace on
+                        -- the skydome, reads as nobody for a frame. This branch
+                        -- used to stop the camera on that frame -- stopSpectating,
+                        -- which keeps them on the roster and in the bucket --
+                        -- and Stop() leaves an in-arena ped where it found it:
+                        -- invisible, frozen, able to look around and do nothing
+                        -- else until somebody finished the round. The quit key
+                        -- below makes this exact distinction and this branch did
+                        -- not. So they wait; the next frame finds a respawned
+                        -- target, and the round's end sends them home either way.
+                        -- The quit key is still theirs. An onlooker is not in
+                        -- the arena, and for them stopping is still right.
+                        Wait(250)
                     else
                         ArenaUI.Notify(locale('notify.spectate_no_targets'), 'warning')
                         TriggerServerEvent('crimson_arena:server:stopSpectating')

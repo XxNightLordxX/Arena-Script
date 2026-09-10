@@ -3190,6 +3190,39 @@ function Arena.ValidateConfig()
             :format(type(scoreBlock)))
     end
 
+    -- THE WIN CONDITION, WHICH HAD NO CHECK AT ALL while every setting
+    -- around it did. Arena.WinConditionDefault falls back to last_standing
+    -- for any value it does not recognise, silently, in both shapes -- so an
+    -- operator who wrote most_kills with one letter wrong, or lastStanding,
+    -- or score-limit, ran every round on the server under a rule they did
+    -- not pick, with lives being spent when they wanted the clock, and the
+    -- console said nothing. config.lua promises the opposite in as many
+    -- words: a default this file does not know is named at start-up. Now it
+    -- is. A table with no default is not an error -- that is "use the
+    -- default" -- only a value that is present and wrong.
+    local winBlock = (Config.Match or {}).winCondition
+    if winBlock ~= nil then
+        local named, where
+        if type(winBlock) == 'table' then
+            named, where = winBlock.default, 'Config.Match.winCondition.default'
+            if winBlock.allowChoose ~= nil and type(winBlock.allowChoose) ~= 'boolean' then
+                complain(('Config.Match.winCondition.allowChoose is a %s, not true or false -- it is being read as false, so the host is not offered the choice.')
+                    :format(type(winBlock.allowChoose)))
+            end
+        elseif type(winBlock) == 'string' then
+            named, where = winBlock, 'Config.Match.winCondition'
+        else
+            complain(('Config.Match.winCondition is a %s -- it has to be one of %s, or a { allowChoose, default } table. Every round is being run as %s.')
+                :format(type(winBlock), table.concat(WIN_CONDITIONS, ', '), WIN_CONDITIONS[1]))
+        end
+
+        if named ~= nil and not isWinCondition(named) then
+            complain(('%s is %s, which is not a win condition this resource knows -- it has to be one of %s. Every round is being run as %s instead, which is not what was picked.')
+                :format(where, type(named) == 'string' and ("'" .. named .. "'") or tostring(named),
+                    table.concat(WIN_CONDITIONS, ', '), WIN_CONDITIONS[1]))
+        end
+    end
+
     local checks = (Config.Match or {}).serverChecks
     if checks ~= nil and type(checks) ~= 'table' then
         complain(('Config.Match.serverChecks is a %s, not a table -- BOTH SERVER-SIDE CHECKS ARE OFF. Nobody is measured against the fence and no unreported death is booked.')

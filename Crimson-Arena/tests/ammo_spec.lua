@@ -58,6 +58,7 @@ local function newServer(pockets, mutate, opts)
     -- a long time this resource could not tell from success.
     --   register / read / readStash / stash / clear : throw
     --   stashRefuse / clearRefuse / give            : return false
+    --   clearLies                                   : return TRUE and do nothing
     local fail = {}
 
     -- Who the server thinks is online. GetPlayers is what the return sweep
@@ -247,6 +248,12 @@ local function newServer(pockets, mutate, opts)
         ClearInventory = function(_self, id)
             if fail.clear and type(id) == 'number' then error('cannot clear') end
             if fail.clearRefuse and type(id) == 'number' then return false end
+            -- A CLEAR THAT SAYS YES AND DOES NOTHING, which is what
+            -- ox_inventory does for an inventory it has not loaded: it answers
+            -- and the pockets are untouched. Not a refusal -- a refusal is
+            -- `clearRefuse` above and the resource has always handled it --
+            -- but the far worse case it could not tell apart from success.
+            if fail.clearLies and type(id) == 'number' then return true end
             if type(id) == 'number' then inv[id] = {} else stashes[id] = {} end
             return true
         end,
@@ -2548,6 +2555,31 @@ t.test('and nothing is written on the slate for rounds the clear destroyed', fun
     local owed = 0
     for _, row in ipairs(s.ammo.OwedKit()) do owed = owed + #row.items + #row.weapons end
     t.equals(owed, 0, 'a debt was written for a kit the clear had already destroyed')
+end)
+
+t.test('DEFECT: a clear that answers yes and does nothing does not leave a copy in the stash', function()
+    -- THE WORST THING ox_inventory CAN DO TO THIS RESOURCE, and until now the
+    -- one thing no fixture could do. A clear on an inventory it has not
+    -- loaded ANSWERS and changes nothing -- so the door stashed the player's
+    -- belongings, was told the pockets were empty, and walked them into the
+    -- round still carrying every one of them with a COPY sitting in the
+    -- stash. The exit then handed the copy over: they left with two of
+    -- everything, and not one line anywhere said so.
+    --
+    -- The guard is the read-back under the clear -- proof that the pockets
+    -- are empty rather than proof that the clear was not refused. Inverting
+    -- it left all 105 tests in this file green, because `clearRefuse` (a
+    -- polite no) was the only lie this fixture could tell.
+    local s = newServer({ [1] = OWN })
+
+    s.breakOn('clearLies')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water', 'the fixture cleared anyway, so this proves nothing')
+    t.equals(s.stashContents(1), '',
+        'THE ARENA LEFT A COPY OF THEIR BELONGINGS IN THE STASH while they walked in carrying the originals')
+    t.isFalse(isHolding(s.ammo, 1),
+        'and it believes it is holding a kit for them, so the exit will hand that copy over')
 end)
 
 os.exit(t.summary())

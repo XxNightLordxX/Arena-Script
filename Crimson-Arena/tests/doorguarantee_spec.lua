@@ -775,6 +775,35 @@ t.test('and the moment the stash can be read again, everything comes back', func
     t.isFalse(isHolding(server.ammo, 1), 'and the record was not dropped afterwards')
 end)
 
+t.test('and it is still THEIR phone when it comes back late', function()
+    -- THE CLOSEST THING THIS SANDBOX HAS TO THE REPORTED SYMPTOM. A phone
+    -- that returns immediately is one thing; the case worth checking is the
+    -- one where the hand-back could not happen at the exit and the kit comes
+    -- back on a later sweep instead. That is a player who finished a match,
+    -- found nothing in their pockets, and got their things minutes later --
+    -- and if the identity is lost on that path, what arrives is a stranger's
+    -- phone with their name on the label.
+    --
+    -- It is the same handBack either way, so this ought to hold. Ought is not
+    -- the same as does, and the test above only ever compared counts.
+    local phone = { number = '555-0134', contacts = 12 }
+    local server, matchId = liveMatch({ 1, 2 }, { { name = 'phone-2', count = 1, metadata = phone } })
+
+    server.forgetStash(1)
+    server.match.End(matchId, 'match.ended')
+    for _ = 1, 3 do server.ammo.SweepReturns() end
+    t.isNil(server.metaOf(1, 'phone-2'), 'it came back while the stash was unreadable, so this proves nothing')
+
+    server.forgetStash(1, false)
+    server.ammo.SweepReturns()
+
+    local back = server.metaOf(1, 'phone-2')
+    t.isNotNil(back, 'the phone never came back at all on the late path')
+    t.equals(back.number, phone.number,
+        'THE LATE RETURN HANDED BACK A PHONE THAT IS NOT THEIRS -- the number did not survive the wait')
+    t.equals(back.contacts, phone.contacts, 'and what was on it did not either')
+end)
+
 t.test('and a stash that really IS empty still settles cleanly', function()
     -- The guard must not turn every ordinary exit into a permanent debt. A
     -- player who walked in owning nothing stashes nothing, so there is no

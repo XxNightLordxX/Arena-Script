@@ -43,7 +43,9 @@ print('earnings_spec')
 --- @param mutate function? -- last word on Config
 local function newServer(mutate)
     local players = {}
-    for src = 1, 3 do
+    -- FOUR, so a two-a-side round can be played. The tests above use 1 and 2
+    -- and are unaffected by a fighter who never joins anything.
+    for src = 1, 4 do
         players[src] = {
             citizenid = ('CID%03d'):format(src),
             name = ('Fighter %d'):format(src),
@@ -164,6 +166,29 @@ local function newServer(mutate)
         local matchId = server.lobby.All()[1].id
         server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
         return matchId
+    end
+
+    --- A two-a-side round: 1 and 3 on one side, 2 and 4 on the other.
+    function server.playTeamMatch(fee)
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = fee, account = 'cash' })
+        local matchId = server.lobby.All()[1].id
+        for src = 2, 4 do server.fire('joinMatch', src, { matchId = matchId, account = 'cash' }) end
+        for src = 1, 4 do
+            server.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+        end
+        return matchId
+    end
+
+    --- Kills the whole of one side, which is how a team round is won.
+    function server.finishTeam(matchId, losers, killer)
+        for src = 1, 4 do server.fire('setReady', src, { ready = true }) end
+        server.match.Start(matchId)
+        threads.step()
+        for _, victim in ipairs(losers) do
+            server.match.OnDeath(victim, killer)
+            for _ = 1, 4 do threads.step() end
+        end
+        for _ = 1, 8 do threads.step() end
     end
 
     function server.finish(matchId, loser)
@@ -332,6 +357,27 @@ t.test('and a free round moves nothing at all', function()
     t.equals(server.cash(1), startCash, 'a free round paid the winner out of nowhere')
     t.equals(server.cash(2), startCash, 'a free round charged the loser')
     t.equals(purse(server), before)
+end)
+
+t.test('a team round pays the whole winning SIDE, and only that side', function()
+    -- The team half of the same question, and the one the win-decision code
+    -- reaches through a different branch: sides are scored, a side with
+    -- nobody left standing is dropped, and what comes out is a set of
+    -- winners rather than one. Nothing anywhere asked whether those winners
+    -- are the people whose wallets move -- both specs that mention
+    -- winningTeam assert on the results card and neither reads a wallet.
+    local server = newServer()
+    local before = purse(server)
+    local start = server.cash(1)
+
+    -- 1 and 3 are crimson; 2 and 4 are ash. Crimson kills both of ash.
+    server.finishTeam(server.playTeamMatch(5000), { 2, 4 }, 1)
+
+    local won, lost = server.cash(1) + server.cash(3), server.cash(2) + server.cash(4)
+    t.equals(lost, (start - 5000) * 2, 'the losing side is out their two stakes and no more')
+    t.equals(won, (start - 5000) * 2 + 20000,
+        'THE WINNING SIDE WAS NOT HANDED THE POT -- four stakes of 5,000 is 20,000')
+    t.equals(purse(server), before, 'a team settlement created or destroyed money')
 end)
 
 os.exit(t.summary())

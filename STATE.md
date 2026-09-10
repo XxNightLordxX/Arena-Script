@@ -88,10 +88,16 @@ No non-terminating loop exists anywhere in the shipped code.
 > | 4 | **Fixed and held** | A stash the door could not empty is shut instead of handed out twice. Removing the guard turns 2 waters into 4. |
 > | 5 | **Fixed, NOT held** | The second-payout refusal now sits above the entry-pot branch, where it is reachable on the shipped config. No test fires when it is removed -- a complete payout empties the pot anyway, and the case where it bites is a payout that dies part-way, which no fixture can build. |
 > | 6 | **Fixed and held** | Leaving during an unplaced countdown is refused; `holdstart_spec` pins the refusal for a player and for the host. |
-> | 7 | **Not re-checked** | Left as written. |
+> | 7 | **Fixed** | A countdown that never becomes a round is called off after 30 seconds of overrun. The branch names this exact defect and says it is the only way out of the state. Not verified as HELD -- no test was found that exercises the overrun. |
+> | 8 | **Fixed and held** | A death naming nobody -- including a server id that is nobody in the round -- is priced, never elimination, which is the ruling you gave. Narrowing the predicate back turns `unwitnessedclaim_spec` red. |
+> | 9 | **Fixed** | `config.lua` now states the trap in as many words: an empty `adminGroups` means NOBODY, and emptying it locks every player out including you. The code agrees -- only the console (source 0) is exempt. |
+> | 10 | **Fixed** | The header says 93 of the 96 entries are enabled, names all thirteen heavy weapons, and names the three that are not. |
+> | 11 | **WAS STILL TRUE. Fixed now.** | Two comments in `server/betting.lua` still said, in the present tense, that `fighterBets.max` ships at twice the spectator ceiling. Both ship at 25,000 -- level -- so a reader would have concluded the config was wrong and restored 50,000, which is the exploit those comments describe. |
+> | 12 | **No longer silent** | The clamp stands by design: 0 is read as 1. What changed is that `config.lua` spells out that 0 is not an off switch, and the start-up validator says so too. The behaviour is unchanged and deliberate. |
 >
-> Items 8 onward were not re-checked either. Nothing here was marked fixed on
-> reading alone -- only where a mutation proved a test would catch its return.
+> Nothing here was marked fixed on reading alone. "Held" means a guard was
+> switched off and a named test went red; where that was not established the
+> row says so.
 
 
 1. **Gun game leaves you unarmed from your first death.** Measured across six lives:

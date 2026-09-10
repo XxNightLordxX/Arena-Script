@@ -176,6 +176,16 @@ did.
 Run this on a development server, with at least two accounts. Each step names
 what to watch for, because most failures here are silent.
 
+### 0. The artifact, before anything else
+
+- [ ] In the server console type `version` and write the build number down.
+      The ally outline (section 5b) is drawn with
+      `SetEntityDrawOutlineRenderTechnique`, a native FiveM added around
+      **May 2025**. On an older build the call is simply absent: the outline
+      does nothing, raises nothing, and the client log still says
+      `drawing N teammate(s)`. If your build predates that, every glow check
+      below will fail and none of them is a bug in this resource.
+
 ### 1. It starts
 
 Two of these are in the **server console**, two are in **F8** on a client. They
@@ -356,6 +366,24 @@ wrong here is something the resource did that it should not have.
 - [ ] The match ends, both are returned to `returnCoords`, and **your own
       weapons and armour are back**. Losing a player's inventory is the
       unforgivable failure; verify it deliberately rather than assuming.
+- [ ] **Spectate**, from the panel, with a round live. The camera goes to a
+      fighter; you cannot be shot and cannot shoot. **Stop spectating** puts
+      you back at the lobby ped, not in the arena.
+- [ ] Lose your last life with `spectateOnElimination` on. The camera stays on
+      the fight instead of dropping you at the ped; when the round ends you
+      come out with everybody else.
+
+### 5b. The ally glow
+
+Team mode, two players on the same side, and the build from section 0 is new
+enough.
+
+- [ ] Your teammate has an outline **and** an overhead marker. Enemies have
+      neither.
+- [ ] Three-a-side: both teammates glow, all three enemies do not.
+- [ ] The round ends: no outline on anyone, and nobody else's resource draws
+      its outlines differently afterwards -- the render technique is put back
+      on the way out.
 
 ### 6. Dispatch — the reason most of this exists
 - [ ] Fire a weapon inside the arena. **Your police script gets no call.**
@@ -584,6 +612,39 @@ would show.
 - [ ] Have the **host cancel** during that same window.
 - [ ] Open the panel, then have somebody start the match while it is open. Your
       mouse must be released.
+
+### 10. Every button on the panel, once
+
+The panel posts twenty-one messages to the client and each one is a server
+event with its own refusals. The rest of this smoke test reaches most of them
+on the way past; this table is the list, so nothing is skipped by accident.
+Press it, then look for the thing named.
+
+| # | Button | What must happen |
+|---|---|---|
+| 1 | Open the panel | Lobby list, your wallet, the leaderboard all filled in; no "state unavailable" toast |
+| 2 | Create | Toast "match created"; your lobby card appears for the other player |
+| 3 | Edit the rules, as host | The card updates for both; the other player's Ready light goes **off** |
+| 4 | Edit the rules after somebody else staked | Refused (rules locked by stakes); your form re-seeds to the real rules |
+| 5 | Join, as the second player | Toast "joined"; two names on the card; the entry fee left the account you chose |
+| 6 | Pick a team, then click a second tile within a quarter-second | The second click is answered with "You are fighting for X" -- **never silence** |
+| 7 | Pick a loadout | The weapons you chose; an armour value sent from the client changes nothing |
+| 8 | Ready | The light comes on; with everyone ready and enough players the countdown starts |
+| 9 | Start, as host | Countdown, then both fighters placed, in the bucket, kit in hand |
+| 10 | Hold the countdown | It pauses; a **second** hold from the same host is refused with "start held" for a while |
+| 11 | Cancel, as host | Lobby gone for both; every stake back in the account it came from |
+| 12 | Leave during the countdown | Refused -- nobody walks out of a countdown |
+| 13 | Leave from the lobby | You are out; stake back, or forfeited with a toast saying so |
+| 14 | Spectate a live round | Camera on a fighter; you cannot be shot or shoot |
+| 15 | Spectator bet | Money leaves; the bet shows on the card; a bet after bets close is refused |
+| 16 | Stop spectating | Back at your ped, outside the arena |
+| 17 | Close the panel (ESC) | Panel gone, mouse back; the server stops pushing state to you |
+| 18 | Admin tablet, as a non-admin | Refused "not cleared"; nothing opens |
+| 19 | Admin stop, on a live round | Round over; **every** stake refunded, forfeits included; fighters sent home |
+| 20 | Admin revive, on a dead fighter | They stand up where they fell; an eliminated fighter stands up and **stays out** |
+| 21 | Admin hours, forced shut | Waiting lobbies close with stakes returned; the door refuses new matches |
+| 21b | Admin return, for a player who left with kit | Their leftover arena items come back, or are queued for their next login |
+
 
 ## If something goes wrong
 

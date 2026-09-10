@@ -106,12 +106,25 @@ stripped resource, and **only then** are the tests removed. So the code that
 ships has been proven working by the very tests being retired, rather than
 by the ones that existed before the change.
 
-*Tool:* the existing `tests/run.sh` — 77 spec files, roughly five minutes.
-(**77 is the count, and it is the most there ever were.** This document said
-96 in four places; no commit in the history has ever carried more than 77
-`*_spec.lua` files. Corrected rather than left, because the number is the
-only thing telling you whether the folder you are about to delete is the
-whole suite.)
+*Tool:* the existing `tests/run.sh` — 77 spec files when this was written,
+roughly five minutes.
+
+> **This count is out of date, and the sentence under it was the reason to
+> say so.** When this was written, 77 was the most the history had ever
+> carried, and the number was the only thing telling you whether the folder
+> you were about to delete was the whole suite. The suite is now **93
+> `*_spec.lua` files plus 21 panel suites, 121 files tracked in total**, and
+> it is IN the repository rather than something to be deleted — see the
+> section in `STATE.md`. Count it yourself before trusting either number:
+>
+>     ls Crimson-Arena/tests/*_spec.lua | wc -l
+>     git ls-files Crimson-Arena/tests | wc -l
+>
+> The plan below still describes what was done at the time and is left as it
+> stands. What changed since is that the suite has a home, so "before they
+> are deleted" no longer describes the arrangement: `tools/strip_prod.py`
+> does not touch `tests/`, and the release is produced without it rather than
+> by removing it afterwards.
 
 ### All four, run for real — before anything was deleted
 

@@ -75,6 +75,25 @@ No non-terminating loop exists anywhere in the shipped code.
 
 ## Confirmed and still open, worst first
 
+> **RE-CHECKED, and most of this list is no longer true.** Each item below was
+> tested by switching the guard that answers it OFF in a throwaway copy of the
+> tree and running the whole suite. Where a test goes red, the fix is both
+> present and defended.
+>
+> | # | Now | Evidence |
+> |---|---|---|
+> | 1 | **Fixed and held** | The respawn tops the fighter up through `ArenaAmmo.Refresh`. Both halves are pinned: free-for-all, and a climber killed on the first rung. |
+> | 2 | **Fixed and held** | The empty-read latch no longer latches on one look; `stashrelook_spec` goes red if it does. |
+> | 3 | **Fixed and held** | An unread floor means the exit takes nothing and writes nothing down, rather than billing a fighter for their own rounds; `ammo_spec` pins it. |
+> | 4 | **Fixed and held** | A stash the door could not empty is shut instead of handed out twice. Removing the guard turns 2 waters into 4. |
+> | 5 | **Fixed, NOT held** | The second-payout refusal now sits above the entry-pot branch, where it is reachable on the shipped config. No test fires when it is removed -- a complete payout empties the pot anyway, and the case where it bites is a payout that dies part-way, which no fixture can build. |
+> | 6 | **Fixed and held** | Leaving during an unplaced countdown is refused; `holdstart_spec` pins the refusal for a player and for the host. |
+> | 7 | **Not re-checked** | Left as written. |
+>
+> Items 8 onward were not re-checked either. Nothing here was marked fixed on
+> reading alone -- only where a mutation proved a test would catch its return.
+
+
 1. **Gun game leaves you unarmed from your first death.** Measured across six lives:
    armed, then unarmed five times. The respawn handler re-issues only when there is no
    ladder, and ox drops a dead fighter's inventory on the floor, so every death empties

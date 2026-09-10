@@ -62,11 +62,15 @@ local function newServer(ids, mutate, extra)
             money = { cash = 50000, bank = 0 },
         }
         inv[src] = {}
+        -- METADATA COMES WITH THE ITEM. It was dropped here, so nothing in
+        -- this file could carry an item whose IDENTITY is its metadata -- a
+        -- phone with a number, a licence with a name -- and the door's
+        -- promise is about those more than about a count of burgers.
         for _, item in ipairs(OWN) do
-            inv[src][#inv[src] + 1] = { name = item.name, count = item.count }
+            inv[src][#inv[src] + 1] = { name = item.name, count = item.count, metadata = item.metadata }
         end
         for _, item in ipairs(extra or {}) do
-            inv[src][#inv[src] + 1] = { name = item.name, count = item.count }
+            inv[src][#inv[src] + 1] = { name = item.name, count = item.count, metadata = item.metadata }
         end
     end
 
@@ -254,6 +258,16 @@ local function newServer(ids, mutate, extra)
         return table.concat(names, ',')
     end
 
+    --- The metadata on the first item of that name a player is holding, or
+    --- nil. `carrying` above compares names and counts, which is the whole
+    --- of what most items are and none of what a phone is.
+    function server.metaOf(src, name)
+        for _, item in ipairs(inv[src] or {}) do
+            if item.name == name then return item.metadata end
+        end
+        return nil
+    end
+
     --- What is sitting in one player's arena stash, as a sorted string.
     --- The door's promise is about this side as much as the player's side.
     function server.stashed(src)
@@ -372,6 +386,31 @@ t.test('a match that finishes normally hands everything back', function()
     t.equals(server.carrying(1), INTACT)
     t.equals(server.carrying(2), INTACT)
     t.isFalse(isHolding(server.ammo, 1))
+end)
+
+t.test('and it hands back THEIR phone, not a phone', function()
+    -- WHAT A COUNT CANNOT SEE. Every assertion above compares names and
+    -- counts -- `phonex1` before, `phonex1` after -- and that is the whole of
+    -- what a burger is. It is none of what a phone is: the number, the
+    -- contacts and the messages live in the item's METADATA, and an item that
+    -- comes back without it is a new phone belonging to nobody.
+    --
+    -- To the player those two outcomes are not similar, they are opposite,
+    -- and they read identically in every other test in this file. The fixture
+    -- dropped metadata when it seeded a player, so the case could not be
+    -- built here at all.
+    local phone = { number = '555-0134', contacts = 12 }
+    local server, matchId = liveMatch({ 1, 2 }, { { name = 'phone-2', count = 1, metadata = phone } })
+
+    t.isNil(server.metaOf(1, 'phone-2'), 'they carried it INTO the arena -- the door did not take it')
+
+    server.match.End(matchId, 'match.ended')
+
+    local back = server.metaOf(1, 'phone-2')
+    t.isNotNil(back, 'the phone did not come back at all')
+    t.equals(back.number, phone.number,
+        'A PHONE CAME BACK, BUT NOT THEIRS -- the number it is known by did not survive the round')
+    t.equals(back.contacts, phone.contacts, 'and what was on it did not either')
 end)
 
 -- ========================================================================

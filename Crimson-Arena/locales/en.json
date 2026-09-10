@@ -99,6 +99,7 @@
     "notify": {
         "return_queued": "%s's belongings are queued -- they go back the next time they are seen.",
         "revived_but_out": "%s is back on their feet, but they are out of the round and stay out.",
+        "revived_respawning": "%s is waiting to respawn and will be back in the fight on their own -- they were not stood up early.",
         "bet_trimmed": "Out of the fight, so your bet is cut to what a watcher may hold. %s back.",
         "death_unattributed": "Nothing could be pinned on anybody for that death, so no kill was credited for it. If somebody shot you, tell the server owner -- your console has the details.",
         "eliminated": "You are out.",

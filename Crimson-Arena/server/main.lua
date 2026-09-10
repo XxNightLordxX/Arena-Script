@@ -852,7 +852,26 @@ onClient('crimson_arena:server:adminRevive', RATE.admin, function(src, data)
     -- so there is no round standing to restore.
     local fighting = match.state == 'live' or match.state == 'countdown'
     local eliminated = Arena.IsEliminated(row)
-    if row and not eliminated and fighting then
+
+    -- A FIGHTER WAITING TO RESPAWN IS NOT DEAD FOR LONG, AND FLIPPING THE
+    -- FLAG CANCELLED THE RESPAWN. A death in a live round with lives left
+    -- schedules one, and the thread that sends it bails the moment it sees
+    -- the row alive -- so a Revive pressed inside that five-second wait
+    -- marked the fighter alive with NO respawn ever sent. They stayed on the
+    -- floor, held: invincible, at full health, which the dead sweep reads as
+    -- a healthy ped, and counted as standing by every winner-selection path.
+    -- The round could not end by last man standing while they lay there,
+    -- and once the real fighters had knocked each other out the held body
+    -- was the last one standing: crowned, and paid. The tablet offers this
+    -- press on exactly that fighter, because it marks them Down during the
+    -- wait. So the round standing is left alone while a respawn is pending;
+    -- the medical revive below still happens, and the respawn arrives on
+    -- its own. The flip is kept for the countdown, where nothing is
+    -- scheduled and somebody who arrived down is the person an admin is
+    -- reaching for -- that is the case the comment above was written for.
+    -- DO NOT set alive on a live-round fighter who has lives left.
+    local respawning = row ~= nil and not eliminated and match.state == 'live' and row.alive ~= true
+    if row and not eliminated and fighting and not respawning then
         row.alive = true
     end
 
@@ -862,6 +881,8 @@ onClient('crimson_arena:server:adminRevive', RATE.admin, function(src, data)
 
     if eliminated then
         ArenaNotifyKey(src, 'notify.revived_but_out', 'inform', ArenaPlayerName(target))
+    elseif respawning then
+        ArenaNotifyKey(src, 'notify.revived_respawning', 'inform', ArenaPlayerName(target))
     end
 
     pushAdmin(src, match.id)

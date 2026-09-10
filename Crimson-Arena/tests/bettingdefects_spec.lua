@@ -909,4 +909,42 @@ t.test('DEFECT: a forfeited stake that was handed back is counted and logged as 
     t.notContains(server.log(), 'rather than refunding them')
 end)
 
+t.test('and a SIDE-BET with no citizen id to file it under stays held too', function()
+    -- THE TWIN OF THE TEST ABOVE, for the other kind of money this file
+    -- moves. An entry stake whose refund cannot be delivered AND cannot be
+    -- filed against a character stays held on the match, so a later sweep can
+    -- still pay it and Clear refuses to drop the match while it does. A
+    -- spectator's side-bet takes a separate path through returnSideBet with
+    -- its own settled flag, and nothing asked whether that path keeps the
+    -- same promise.
+    --
+    -- What it costs when it does not: the bet is marked settled, the money
+    -- never moves, and nothing anywhere remembers it was owed. That is not a
+    -- deferred payment, it is a payment that stops existing -- and it is the
+    -- spectator's own stake, not their winnings.
+    --
+    -- THE IDENTITY GOES FIRST, BEFORE THE BET. A side-bet records the citizen
+    -- id it was placed with, so stripping it afterwards leaves the bet still
+    -- carrying one and the refund is merely DEFERRED against that character
+    -- -- which is the ordinary case and already covered. The case with no key
+    -- at all is a bet placed while the framework could not say who was
+    -- sitting there.
+    local server, record = teamMatch({ [3] = 3000 })
+    server.stripCitizenId(3)
+    t.isTrue(server.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 1000),
+        'the bet was refused, so this proves nothing')
+
+    -- And now there is nobody to hand it back to.
+    server.disconnect(3)
+    record.players[1] = nil
+    server.betting.RefundAll('m1', 'notify.match_empty')
+    local dropped = server.betting.Clear('m1')
+
+    t.contains(server.log(), 'SIDE-BET REFUND FAILED')
+    t.isFalse(dropped,
+        'the match was dropped while still holding a side-bet nobody can trace')
+    t.equals(select(1, server.betting.Outstanding()), 0,
+        'the side-bet was filed under a key that identifies nobody')
+end)
+
 os.exit(t.summary())

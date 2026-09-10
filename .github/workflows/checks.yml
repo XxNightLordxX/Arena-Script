@@ -5,6 +5,24 @@
 # tests/ and .luacheckrc are deliberately not shipped -- so it was deleted with
 # them and nothing has checked a push since.
 #
+# tests/ IS NOW TRACKED, and that is not a change of mind about shipping it.
+# The suite is what every claim in this repository's commit messages rests on;
+# untracked, it lived in one working copy and a single wiped machine would have
+# made twenty commits' worth of "N failed, then 0" unreproducible for good. It
+# is in the repository so it can be re-run, and it is still stripped out of the
+# production release -- tools/strip_prod.py never touches it and
+# tools/verify_release.sh has excluded '*/tests/*' from its Lua gates since it
+# was written.
+#
+# THE GATES BELOW THAT ARE ABOUT SHIPPED CODE NOW SAY SO IN THEIR find. Two of
+# them -- the _ENV check and the strip check -- ask questions that are true of
+# runtime code and meaningless of a test: a spec calls dofile, io and loadfile
+# because that is how it loads the file under test, and stripping a spec for
+# production is a thing that never happens. Measured before the exclusion went
+# in: the _ENV gate reported 121 errors, every one of them a test doing its job.
+# The parse gate above them is NOT excluded, deliberately -- a spec that does
+# not parse is a spec that cannot run, and CI is the right place to learn that.
+#
 # These are the gates that still MEAN something against the tree as it ships,
 # in the order they are worth failing on. A file that does not parse makes
 # every check after it meaningless, so that goes first.
@@ -91,7 +109,7 @@ jobs:
                       status=1
                   fi
               done
-          done < <(find Crimson-Arena -type f -name '*.lua' ! -name 'fxmanifest.lua' -print0)
+          done < <(find Crimson-Arena -type f -name '*.lua' ! -name 'fxmanifest.lua' ! -path '*/tests/*' -print0)
           exit "$status"
 
       # The panel's script and every player-facing string. Both are read by
@@ -126,7 +144,7 @@ jobs:
                   echo "::error file=${file}::does not parse once stripped"
                   status=1
               fi
-          done < <(find Crimson-Arena -type f -name '*.lua' ! -name 'fxmanifest.lua' ! -name 'config.lua' -print0)
+          done < <(find Crimson-Arena -type f -name '*.lua' ! -name 'fxmanifest.lua' ! -name 'config.lua' ! -path '*/tests/*' -print0)
           exit "$status"
 
       # The harnesses load the REAL server files under a fake FiveM environment

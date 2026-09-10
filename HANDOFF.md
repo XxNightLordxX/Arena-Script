@@ -1155,6 +1155,21 @@ strengthens the "deliberate" reading — but it is a posture question, and
 posture questions here are John's, not ours. **This is question 2(e) wearing a
 different hat.** Ask him before changing it.
 
+> **SETTLED SINCE, and this entry should no longer be read as an open item.**
+> The kill-ceiling posture is now deliberate, reasoned in the code and pinned
+> by a test: `tests/gungame_spec.lua` parks the killer where the server cannot
+> read a position and asserts *"a position the server cannot read credits the
+> kill"*, under a comment saying why — refusing a real kill because one body
+> had not streamed in would take a fought kill off an honest player.
+>
+> So the fail-open is a decision with a test holding it, not a hole nobody
+> looked at. Changing it now turns that test red, which is exactly what should
+> happen: whoever changes the posture has to change the statement of it too.
+>
+> The out-of-fence twin at `:1701` carries the same posture and the same
+> reasoning in its own comment, and is NOT pinned by an assertion. That is the
+> half still worth a decision — and it is still John's.
+
 ### 8(c) — ACCURATE, and better-found than you may realise.
 
 Only four references exist in the whole file: lazy init at `:1135-1136`, and

@@ -2092,10 +2092,23 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
     -- has nobody to name -- was priced exactly like the press, three times in
     -- one round on the owner's own server. What separates them is the RATE and
     -- nothing else; see unwitnessedRun and scheduleRespawn's note above.
+    -- "NAMED NOBODY" MEANS THE SAME THING HERE AS IT DOES TO resolveKiller,
+    -- and it did not. resolveKiller refuses a claim that is nil, non-positive,
+    -- the victim themself, or not a fighter in this match -- none of those is
+    -- a kill. This test asked only nil-or-self. So a claim of 0, of -1, or of
+    -- a server id that is nobody in the round fell between the two: refused
+    -- as a kill AND excused from the unwitnessed price, with the UNATTRIBUTED
+    -- line never printed. A free, silent death, on demand -- the honest
+    -- client never sends any of those (it sends no id at all when it has
+    -- nobody to name), so this was a modded client's rate-limit bypass and
+    -- nothing else. The two predicates are one expression now, so they cannot
+    -- drift apart again. DO NOT narrow this back to nil-or-self.
     local claimed = Arena.ToInt(killerSrc)
+    local nobodyNamed = claimed == nil or claimed <= 0 or claimed == id
+        or match.players[claimed] == nil
     local unnamed = serverSaw ~= true
         and not playingLadder
-        and (claimed == nil or claimed == id)
+        and nobodyNamed
 
     local unwitnessed = false
     if unnamed then
@@ -2137,7 +2150,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
     -- LADDERS TOO, which the pricing above deliberately skips. A gun game
     -- kill that cannot be attributed costs the killer their promotion, so it
     -- is at least as worth reporting there as anywhere else.
-    if serverSaw ~= true and (claimed == nil or claimed == id) then
+    if serverSaw ~= true and nobodyNamed then
         local past = metresOutside(match, id)
         local where = past and past > 0
             and ('%.0fm outside the fence, which is what a fall or the boundary looks like'):format(past)

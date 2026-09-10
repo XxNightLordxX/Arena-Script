@@ -794,6 +794,14 @@ What I verified afterwards:
 
 The commit is now `8291f5c`, 43rd from the tip.
 
+> **Since this was written, the suite is tracked in the repository.**
+> `Crimson-Arena/tests/` is in the tree at HEAD and runs with
+> `bash Crimson-Arena/tests/run.sh`. The recovery point below is still a real
+> commit and the check below still works, but **do not restore the suite from
+> it**: it holds 77 specs of an older shape and laying them over the 96 that
+> are here now would silently lose every control written since. It remains
+> useful for reading what a spec looked like back then, and nothing else.
+
 **Checked for you, because your recovery depends on it:** `566171c` and
 `7fb527e` **still resolve on origin today**, and `566171c` still contains 104
 files under `Crimson-Arena/tests/` (77 `_spec.lua`). Your recovery point is

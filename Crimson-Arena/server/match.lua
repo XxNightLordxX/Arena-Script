@@ -606,7 +606,38 @@ local function decideOnKills(match, teamMode)
     local scores, best = {}, 0
 
     if teamMode then
+        -- ONLY SIDES WITH SOMEBODY STILL IN THE ROUND ARE CANDIDATES. The
+        -- filter is on the SIDE and not the player, and that is the whole of
+        -- the distinction: a fallen team-mate's kills were won for their
+        -- side and still count for it, which is why teamKills is left
+        -- unfiltered. What is dropped is a side with nobody left in it at
+        -- all -- wiped out, or walked out with its kills banked in
+        -- departedKills -- because a side that is not in the fight cannot win
+        -- it, however many kills it took on the way out.
+        --
+        -- THE OLD REASONING WAS: "evaluate has already ended the round if
+        -- only one side is left standing, so the sides compared here are all
+        -- still in it." That is true of two teams and false of three. With a
+        -- third side enabled, two can be standing while the third is wiped
+        -- out, and the clock then reached this with the dead side still
+        -- scored -- and crowned it. Its eliminated members were announced as
+        -- winners over the people still fighting, placed first and second
+        -- with their last-place placements already on the board, and paid
+        -- the whole pot. The mirror case -- a side that left entirely, whose
+        -- kills sit in departedKills -- has no members for membersOfTeam to
+        -- return, so the round ended as a DRAW and refunded everybody, taking
+        -- the pot off the side that had actually stayed and won. The same
+        -- defect on the free-for-all branch below was found and fixed
+        -- earlier; this is the team half of it.
+        local standing = {}
+        for _, player in pairs(match.players) do
+            if Arena.IsKey(player.team) and stillIn(player) then standing[player.team] = true end
+        end
+
         scores = teamKills(match)
+        for team in pairs(scores) do
+            if not standing[team] then scores[team] = nil end
+        end
     else
         -- ONLY PLAYERS STILL IN THE ROUND ARE CANDIDATES. An eliminated
         -- fighter keeps their row on purpose -- the results board ranks off
@@ -618,11 +649,9 @@ local function decideOnKills(match, teamMode)
         -- out, wait, and the timer crowned you and paid you the pot over the
         -- people still fighting for it.
         --
-        -- Teams are deliberately NOT filtered this way. A side is still in
-        -- the round while any member is, and a fallen team-mate's kills were
-        -- won for that side -- evaluate has already ended the round if only
-        -- one side is left standing, so the sides being compared here are
-        -- all still in it.
+        -- Teams are filtered by SIDE rather than by player -- see the team
+        -- branch above for why, and for the three-team case that broke the
+        -- earlier claim that every side reaching here was still in it.
         for _, player in pairs(match.players) do
             if stillIn(player) then
                 scores[player.src] = math.max(0, Arena.ToInt(player.kills) or 0)

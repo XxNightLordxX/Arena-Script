@@ -934,6 +934,20 @@ local function sendExitArena(src, payload)
     ArenaDispatch.Revive(src)
 
     TriggerClientEvent('crimson_arena:client:exitArena', src, payload)
+
+    -- AND THE FENCE GOES UP BEHIND THEM. A fighter who walked out of a live
+    -- round, or whose round ended while another was being fought on the
+    -- same ground, was never sent another word of state: the leave takes
+    -- them off the roster BEFORE the broadcast, and End tears the match down
+    -- before its own. So their client kept the last thing it was told -- no
+    -- fence for their own arena, because they were in it -- and they could
+    -- walk or drive straight back into a round being fought there. This is
+    -- the mirror of the fence that never came DOWN, which fenceHeld fixed,
+    -- and it is closed the same way: one push, to them alone, now that the
+    -- flag is clear and their own arena is no longer exempt. fenceHeld then
+    -- remembers them and takes it down when that round ends. AFTER the exit
+    -- event, so the client has already left before it learns the fence.
+    ArenaLobby.PushState(src)
 end
 
 local function sendPlayerHome(player, payload)

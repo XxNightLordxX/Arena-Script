@@ -1857,6 +1857,34 @@ function ArenaMatch.Begin(matchId, requestedBy)
         end
     end
 
+    -- A HELD START MAY NOT BE CALLED AGAIN STRAIGHT AWAY. Leave is refused
+    -- during a countdown on purpose -- one player must not be able to call
+    -- off every round by standing up -- and that refusal is left exactly as
+    -- it is. But it handed the HOST a stall: press Start, everybody loses
+    -- the Leave button; press Hold, they get it back for the two seconds
+    -- the rate limit allows; press Start. Every player in the room was held
+    -- in a lobby they could not leave, with their stake in escrow, taking a
+    -- "start was called off" toast on every cycle, for as long as the host
+    -- cared to click.
+    --
+    -- THE FIRST HOLD IS FREE, ON PURPOSE. Holding a countdown so somebody
+    -- can switch sides and starting straight back up is what the button is
+    -- for, and a flat grace made that honest host wait ten seconds -- the
+    -- team-switch spec is exactly that flow and it must keep passing. What
+    -- is refused is the SECOND hold in quick succession: from there a start
+    -- inside one countdown's length of the hold is turned away, which
+    -- guarantees a window in which the Leave button works. HoldCountdown
+    -- keeps the count and lets it decay. It applies to the auto-start too,
+    -- or a host re-fires that by toggling their own Ready. Above assignMissingTeams for the
+    -- same reason the hours gate is: a refusal here must leave the roster
+    -- exactly as it found it.
+    local grace = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
+    local heldAt = tonumber(match.heldAt)
+    local stalling = (Arena.ToInt(match.holds) or 0) >= 2
+    if stalling and heldAt and grace > 0 and (os.time() - heldAt) < grace then
+        return false, 'error.start_held'
+    end
+
     if not assignMissingTeams(match) then return false, 'error.no_team_chosen' end
 
     local ok, reason = Arena.CanStartMatch({

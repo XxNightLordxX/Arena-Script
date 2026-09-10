@@ -1535,6 +1535,18 @@ function ArenaLobby.HoldCountdown(src)
     match.state = 'lobby'
     match.startsAt = 0
 
+    -- COUNTED, WITH DECAY, so Begin can tell one hold from a stall. The
+    -- first hold is free -- holding a countdown so a mate can switch sides
+    -- and starting straight back up is the ordinary use of this button. A
+    -- second hold inside two countdowns' length of the first is the shape
+    -- of the trap ArenaMatch.Begin refuses; see the grace there. A hold
+    -- after a longer gap starts the count again at one.
+    local now = os.time()
+    local window = 2 * math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
+    local recent = tonumber(match.heldAt) and (now - match.heldAt) < window
+    match.holds = recent and ((Arena.ToInt(match.holds) or 0) + 1) or 1
+    match.heldAt = now
+
     for src2 in pairs(match.players) do
         ArenaNotifyKey(src2, 'notify.start_cancelled', 'warning')
     end

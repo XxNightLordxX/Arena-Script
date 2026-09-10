@@ -30,6 +30,7 @@
         "cannot_join_in_vehicle": "Get out of the vehicle first.",
         "fighter_bets_disabled": "Fighters cannot back themselves on this server.",
         "host_only": "Only the host calls that.",
+        "start_held": "The start was called off a moment ago. It can be started again in a few seconds.",
         "host_picks_loadout": "The host picks the loadout for this match.",
         "invalid_request": "The arena threw that request out.",
         "lives_out_of_range": "That is not a number of lives this server allows.",

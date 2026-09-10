@@ -512,15 +512,103 @@ local function mirror(sql, params)
         .. 'back before then.', tostring(err))
 end
 
+-- ======================================================================
+-- AN ADD THAT NEVER REACHED THE DATABASE CUT THE DEBT ON THE NEXT START
+--
+-- The read at start merges the stored ledger over memory, and where both
+-- hold the same row THE STORED TOTAL WINS -- on the premise that every
+-- write to memory was mirrored into that row first. During an outage that
+-- premise is false: ArenaDb refuses a statement it cannot send and queues
+-- nothing, so a debt filed while oxmysql was down existed in memory alone.
+-- The moment oxmysql came back the load thread ran, the stored total won,
+-- and the debt filed during the outage was gone -- money owed to a player,
+-- cut, with no line anywhere. The README says the start order does not
+-- matter, so an operator following it can hit this on every boot.
+--
+-- So an ADD the database never took is remembered, replayed once it is up,
+-- and counted on top of the stored total when the ledger is read. ONLY an
+-- ADD that was never sent: the statement is an increment, so replaying one
+-- that DID land would count the money twice. ArenaDb says which -- it
+-- returns false when oxmysql was not there to take it -- and that is the
+-- only case recorded here. DO NOT replay an ADD on a nil answer alone.
+-- ======================================================================
+local pendingAdds = {}
+local pendingAddCount = 0
+local PENDING_ADD_LIMIT = 500
+
+--- The unmirrored amount pending for one part, or nil.
+local function addStillPending(citizenid, key)
+    local keys = pendingAdds[citizenid]
+    local entry = keys and keys[key]
+    return entry and entry.amount or nil
+end
+
+local function sendAdd(citizenid, key, name, account, reason, added)
+    local taken = false
+    local ok, err = pcall(function()
+        taken = ArenaDb(UNPAID_SUBJECT, UNPAID_ADD_SQL, {
+            citizenid, key, tostring(name or citizenid),
+            Arena.IsKey(account) and account or '',
+            Arena.IsKey(reason) and reason or '',
+            added,
+        }, unpaidWrote)
+    end)
+    if not ok then
+        if not mirrorThrew then
+            mirrorThrew = true
+            ArenaLog('betting: money the arena owes players could not be written down (%s), so a restart '
+                .. 'will forget it. It is still kept in memory for this run and paid to anyone who comes '
+                .. 'back before then.', tostring(err))
+        end
+        return false
+    end
+    return taken == true
+end
+
 local function saveUnpaidPart(citizenid, name, part, added)
-    mirror(UNPAID_ADD_SQL, {
-        citizenid,
-        part.key,
-        tostring(name or citizenid),
-        Arena.IsKey(part.account) and part.account or '',
-        Arena.IsKey(part.reason) and part.reason or '',
-        added,
-    })
+    if sendAdd(citizenid, part.key, name, part.account, part.reason, added) then return end
+
+    -- NOT TAKEN. Remembered as a whole, so a replay sends one increment for
+    -- everything filed on this part while the database was away. The cap
+    -- refuses a new part rather than evicting an older one, for the reason
+    -- the drop cap does: everything in here is money the database has not
+    -- heard of, and making room loses exactly as much.
+    local keys = pendingAdds[citizenid]
+    local entry = keys and keys[part.key]
+    if entry then
+        entry.amount = entry.amount + added
+        return
+    end
+    if pendingAddCount >= PENDING_ADD_LIMIT then return end
+    if not keys then
+        keys = {}
+        pendingAdds[citizenid] = keys
+    end
+    keys[part.key] = { amount = added, name = name, account = part.account, reason = part.reason }
+    pendingAddCount = pendingAddCount + 1
+end
+
+--- Re-sends every ADD the database never took, once it is there to take it.
+local function replayAdds()
+    if pendingAddCount == 0 then return 0 end
+    if not ArenaDbReady(UNPAID_SUBJECT) then return 0 end
+
+    local flat = {}
+    for citizenid, keys in pairs(pendingAdds) do
+        for key, entry in pairs(keys) do flat[#flat + 1] = { citizenid, key, entry } end
+    end
+
+    local sent = 0
+    for _, item in ipairs(flat) do
+        local citizenid, key, entry = item[1], item[2], item[3]
+        if sendAdd(citizenid, key, entry.name, entry.account, entry.reason, entry.amount) then
+            pendingAdds[citizenid][key] = nil
+            pendingAddCount = pendingAddCount - 1
+            if next(pendingAdds[citizenid]) == nil then pendingAdds[citizenid] = nil end
+            sent = sent + 1
+        end
+    end
+    return sent
 end
 
 -- ======================================================================
@@ -672,6 +760,15 @@ local function loadUnpaid()
                 if Arena.IsKey(citizenid) and Arena.IsKey(key) and dropStillPending(citizenid, key) then
                     amount = 0
                 end
+
+                -- A PART THE DATABASE HAS NOT HEARD OF YET IS ADDED ON TOP.
+                -- The stored total wins because memory's writes were all
+                -- mirrored into it first; a part filed while oxmysql was away
+                -- was not, so for that part the truth is the stored total
+                -- PLUS what is still waiting to be sent. Without this the
+                -- read cut the debt to what the database remembered.
+                local waiting = Arena.IsKey(citizenid) and Arena.IsKey(key) and addStillPending(citizenid, key)
+                if waiting and amount > 0 then amount = amount + waiting end
 
                 if Arena.IsKey(citizenid) and Arena.IsKey(key) and amount > 0 then
                     local held = unpaid[citizenid]
@@ -2448,6 +2545,7 @@ function ArenaBetting.SweepUnpaid()
     -- table waiting for the next restart to pay it again. DO NOT move this
     -- under the early return.
     replayDrops()
+    replayAdds()
 
     if next(unpaid) == nil then return 0, 0 end
 

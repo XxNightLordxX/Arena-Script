@@ -191,6 +191,18 @@ local function newServer(mutate)
         for _ = 1, 8 do threads.step() end
     end
 
+    --- A round fought to a SCORE LIMIT rather than to the last fighter
+    --- standing: it ends the moment somebody reaches the number.
+    function server.playToScore(fee, limit)
+        server.fire('createMatch', 1, {
+            arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee, account = 'cash',
+            winCondition = 'score_limit', scoreLimit = limit,
+        })
+        local matchId = server.lobby.All()[1].id
+        server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
+        return matchId
+    end
+
     function server.finish(matchId, loser)
         server.fire('setReady', 1, { ready = true })
         server.fire('setReady', 2, { ready = true })
@@ -378,6 +390,27 @@ t.test('a team round pays the whole winning SIDE, and only that side', function(
     t.equals(won, (start - 5000) * 2 + 20000,
         'THE WINNING SIDE WAS NOT HANDED THE POT -- four stakes of 5,000 is 20,000')
     t.equals(purse(server), before, 'a team settlement created or destroyed money')
+end)
+
+t.test('a round fought to a SCORE LIMIT pays the fighter who reached it', function()
+    -- The third way a round can be decided, and the one with no money test
+    -- anywhere: last_standing and most_kills are both reached by the 1v1
+    -- above, and score_limit ends the round on a number instead of on a
+    -- roster. wincondition_spec drives all three and pays nobody -- it runs
+    -- with betting switched off on purpose.
+    local server = newServer()
+    local before = purse(server)
+    local start = server.cash(1)
+
+    local matchId = server.playToScore(5000, 1)
+    t.equals(server.lobby.Get(matchId).winCondition, 'score_limit',
+        'the round is not being fought to a score limit, so this proves nothing')
+
+    server.finish(matchId, 2)
+
+    t.equals(server.cash(1), start - 5000 + 10000, 'the fighter who reached the limit was not paid the pot')
+    t.equals(server.cash(2), start - 5000, 'the loser is out their stake and no more')
+    t.equals(purse(server), before)
 end)
 
 os.exit(t.summary())

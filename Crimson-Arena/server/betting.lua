@@ -1251,7 +1251,7 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
 end
 
 function ArenaBetting.RefundAll(matchId, reasonKey)
-    local refunded, total, owed, kept = 0, 0, 0, 0
+    local refunded, total, owed, handedBackForfeits = 0, 0, 0, 0
 
     -- ASKED ONCE HERE AS WELL AS PER STAKE, so a match that has been paid
     -- says so in one line instead of one per player.
@@ -1263,12 +1263,41 @@ function ArenaBetting.RefundAll(matchId, reasonKey)
     for id, stake in pairs(stakesOf(matchId)) do
         if not stake.settled then
             local amount = stake.amount
-            -- READ BEFORE THE CALL, because RefundOne settles it. And read
-            -- through the same admin-stop test RefundOne uses: DO NOT test
-            -- `stake.forfeited` alone here, or a stake this reasonKey is
-            -- about to hand back is counted as kept and the log says the
-            -- opposite of what happened.
-            local forfeited = stake.forfeited == true and not adminStop(reasonKey)
+
+            -- READ BEFORE THE CALL, because RefundOne settles it.
+            --
+            -- AND NOT THROUGH THE ADMIN-STOP TEST ANY MORE, WHICH IS THE
+            -- WHOLE OF THIS FIX. That test was the right one when a forfeit
+            -- reaching RefundAll could still be kept; the clear a few lines
+            -- below then made every one of them handed back, and this line
+            -- was left reading as though some still were. So on a lobby
+            -- teardown or a settle mismatch -- every reason that is NOT an
+            -- admin stop -- the money went back to the player while this
+            -- counted it as kept, and the console said the arena "kept N
+            -- forfeited stake(s) rather than refunding them" about stakes it
+            -- had just refunded. The comment that used to sit here warned
+            -- about exactly that outcome and named the wrong cause.
+            --
+            -- Nothing that reaches this loop is kept. The only question worth
+            -- recording is how many of the stakes handed back had been
+            -- forfeits, because that is the line an operator reads when a pot
+            -- unwinds.
+            --
+            -- RefundOne's REFUSAL IS STILL THERE AND STILL WORKS -- "was
+            -- FORFEITED when they left and stays in the pot", keeping the
+            -- money and returning true. It is not dead code and it has not
+            -- been weakened. It is simply unreachable FROM HERE, because the
+            -- clear below drops the flag it tests before it is called, and it
+            -- is still reached by RefundOne's other caller, which hands a
+            -- single player their stake back when they quit a round that
+            -- carries on without them. DO NOT go looking for a missing
+            -- refusal path; look at the clear.
+            --
+            -- AND THE RETURN VALUES CHANGE WITH THIS, deliberately. A forfeit
+            -- that is handed back now counts in `refunded` and `total`,
+            -- because that is what happened to it. It used to land in `kept`
+            -- and be missing from both.
+            local wasForfeit = stake.forfeited == true
 
             -- AND NO PATH THAT REACHES RefundAll HAS A WINNER LEFT EITHER.
             -- An admin stop is the obvious one and RefundOne knows about it,
@@ -1288,21 +1317,18 @@ function ArenaBetting.RefundAll(matchId, reasonKey)
             -- without them.
             if stake.forfeited == true then stake.forfeited = nil end
             if ArenaBetting.RefundOne(matchId, id, reasonKey) then
-                if forfeited then
-                    kept = kept + 1
-                else
-                    refunded = refunded + 1
-                    total = total + amount
-                end
+                refunded = refunded + 1
+                total = total + amount
+                if wasForfeit then handedBackForfeits = handedBackForfeits + 1 end
             else
                 owed = owed + amount
             end
         end
     end
 
-    if kept > 0 then
-        ArenaLog('betting: match %s kept %d forfeited stake(s) rather than refunding them (%s).',
-            tostring(matchId), kept, tostring(reasonKey))
+    if handedBackForfeits > 0 then
+        ArenaLog('betting: match %s handed back %d forfeited stake(s) because there was nobody left '
+            .. 'to win them (%s).', tostring(matchId), handedBackForfeits, tostring(reasonKey))
     end
 
     if owed > 0 then

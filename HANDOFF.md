@@ -964,6 +964,14 @@ Full detail is in `HANDOFF.md` §9 in the repo. Classified the way you asked:
 - **A gun-game climber can end up unarmed for the rest of a round** — the
   respawn does not re-issue in ladder modes and `settleTier` returns early when
   the tier is unchanged. Diagnosed, not fixed.
+  > **FIXED SINCE, and now held both ways.** The respawn tops the fighter back
+  > up through `ArenaAmmo.Refresh`, with the reasoning stated where the call
+  > is. It was only half protected until this was checked: removing the re-arm
+  > turned the FREE-FOR-ALL respawn test red and left the ladder green, which
+  > is the wrong way round. `gungame_spec` now covers the ladder as well — a
+  > climber killed on the first rung, where there is no tier to lose and no
+  > promotion coming, comes back with the supplies the tier issues rather than
+  > with nothing.
 - **With `stripOnEntry = false` the player is never warned** that anything
   leaving their pockets cannot be picked back up. They *are* warned on a stash
   failure, which is the same physical situation. Asymmetry noted, not fixed.

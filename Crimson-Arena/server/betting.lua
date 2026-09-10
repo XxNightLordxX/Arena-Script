@@ -523,8 +523,95 @@ local function saveUnpaidPart(citizenid, name, part, added)
     })
 end
 
+-- ======================================================================
+-- A DELETE THAT IS LOST PAYS THE SAME DEBT TWICE
+--
+-- Every other statement on this ledger can be dropped and cost the arena
+-- nothing worse than forgetting a debt it owes -- the player is out of
+-- pocket, which is bad, and `mirror` says so out loud. THE DELETE IS THE
+-- OTHER WAY ROUND. PayOutstanding credits the player and then drops the row;
+-- if that drop never reaches the database the money has been paid and the
+-- row is still there, so the next start reads it back and SweepUnpaid pays
+-- it AGAIN, out of the owner's pocket, for as many restarts as it takes.
+--
+-- So this one is remembered until the database says it is gone, and re-sent
+-- until then. It is the same treatment the outstanding-kit slate already
+-- gives its own statements, and for the same reason; see replayPending in
+-- server/ammo.lua. DO NOT put this drop back through `mirror`, which cannot
+-- tell one statement from another and forgets it either way.
+-- ======================================================================
+local pendingDrops = {}
+local pendingDropCount = 0
+local PENDING_DROP_LIMIT = 500
+
+--- Sends one drop, and forgets it only when the database has answered.
+local function sendDrop(citizenid, key)
+    local ok = pcall(function()
+        ArenaDb(UNPAID_SUBJECT, UNPAID_DROP_SQL, { citizenid, key }, function(answer)
+            unpaidWrote(answer)
+
+            -- NIL IS NOT AN ANSWER, IT IS THE ABSENCE OF ONE. ArenaDb calls
+            -- back with nil on every path that never reached oxmysql, which
+            -- is exactly the outage this exists for -- so clearing on nil
+            -- would forget the drop precisely when it had not happened. DO
+            -- NOT relax this to a bare callback.
+            if answer == nil then return end
+
+            local keys = pendingDrops[citizenid]
+            if keys == nil or keys[key] == nil then return end
+
+            keys[key] = nil
+            pendingDropCount = pendingDropCount - 1
+            if next(keys) == nil then pendingDrops[citizenid] = nil end
+        end)
+    end)
+
+    if not ok then mirrorThrew = true end
+end
+
 local function dropUnpaidPart(citizenid, key)
-    mirror(UNPAID_DROP_SQL, { citizenid, key })
+    local keys = pendingDrops[citizenid]
+
+    if keys == nil or keys[key] == nil then
+        -- THE CAP REFUSES A NEW KEY RATHER THAN MAKING ROOM FOR IT, the same
+        -- judgement the kit slate's cap makes: everything in here is a drop
+        -- the database has not taken, so evicting one to admit another loses
+        -- exactly as much and does it to the older debt. The drop is still
+        -- SENT -- it just is not replayed if it goes missing.
+        if pendingDropCount < PENDING_DROP_LIMIT then
+            if keys == nil then
+                keys = {}
+                pendingDrops[citizenid] = keys
+            end
+            keys[key] = true
+            pendingDropCount = pendingDropCount + 1
+        end
+    end
+
+    sendDrop(citizenid, key)
+end
+
+--- True while this part has been paid but the database has not yet agreed.
+local function dropStillPending(citizenid, key)
+    local keys = pendingDrops[citizenid]
+    return keys ~= nil and keys[key] ~= nil
+end
+
+--- Re-sends every drop the database has not taken.
+local function replayDrops()
+    if pendingDropCount == 0 then return 0 end
+    if not ArenaDbReady(UNPAID_SUBJECT) then return 0 end
+
+    -- LISTED BEFORE ANY OF IT IS SENT, because the callback can answer on
+    -- this very line and take its key out of the table being walked. DO NOT
+    -- dispatch from inside the pairs loop.
+    local flat = {}
+    for citizenid, keys in pairs(pendingDrops) do
+        for key in pairs(keys) do flat[#flat + 1] = { citizenid, key } end
+    end
+
+    for _, entry in ipairs(flat) do sendDrop(entry[1], entry[2]) end
+    return #flat
 end
 
 --- Reads the ledger back at start, and MERGES rather than assigns.
@@ -574,6 +661,17 @@ local function loadUnpaid()
                 local citizenid = type(row) == 'table' and row.citizenid or nil
                 local amount = math.max(0, Arena.ToInt(row and row.amount) or 0)
                 local key = type(row) == 'table' and row.ledger_key or nil
+
+                -- A PART THAT HAS BEEN PAID IS NOT READ BACK IN. This read
+                -- can land after PayOutstanding has already settled somebody
+                -- -- the comment above says so -- and the row it returns is a
+                -- photograph taken before that payment. Merging it would
+                -- reinstate a debt the arena has already handed over, and the
+                -- stored total wins here, so it would win over the payment
+                -- too. DO NOT drop this test.
+                if Arena.IsKey(citizenid) and Arena.IsKey(key) and dropStillPending(citizenid, key) then
+                    amount = 0
+                end
 
                 if Arena.IsKey(citizenid) and Arena.IsKey(key) and amount > 0 then
                     local held = unpaid[citizenid]
@@ -2292,6 +2390,15 @@ function ArenaBetting.PayOutstanding(src)
 end
 
 function ArenaBetting.SweepUnpaid()
+    -- BEFORE THE EARLY RETURN, NOT AFTER. A drop still outstanding is a debt
+    -- the DATABASE believes in, and it survives the last part being paid out
+    -- of memory -- which is exactly when `unpaid` is empty. Putting this
+    -- below the test would switch the replay off in the one state it exists
+    -- for: everything paid, nothing owed, and a row still sitting in the
+    -- table waiting for the next restart to pay it again. DO NOT move this
+    -- under the early return.
+    replayDrops()
+
     if next(unpaid) == nil then return 0, 0 end
 
     local people, total = 0, 0
@@ -2345,6 +2452,7 @@ CreateThread(function()
 
     while true do
         Wait(seconds * 1000)
+
         ArenaBetting.SweepUnpaid()
     end
 end)

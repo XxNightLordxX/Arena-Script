@@ -3255,7 +3255,32 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                 -- rather write its own weapon off, which is the same
                 -- judgement the serial guard below already makes. DO NOT
                 -- narrow this back to rows that name an owner.
-                if Arena.IsKey(liveId) and rowOwner ~= liveId then
+                --
+                -- BUT A SERIAL IS AN EXACT ANSWER, AND WRITING ONE OFF GAVE
+                -- THE ARENA'S GUN AWAY. The rule above was applied to every
+                -- unnamed row, serial or not, and that is too much: the whole
+                -- danger is a removal BY NAME, which on a recycled server id
+                -- finds the newcomer's own weapon. A removal by SERIAL cannot
+                -- do that -- takeWeaponBack filters on `{ serial = ... }`, so
+                -- it matches the arena's own weapon instance and nothing
+                -- else, and it already refuses a serial the arena did not
+                -- issue. So an unnamed row that carries a serial is safe to
+                -- chase and was being written off instead, which left the
+                -- arena's rifle in the pockets of whoever held it -- free, and
+                -- repeatable by anybody who could make the owner unreadable.
+                --
+                -- The three answers are therefore different and must stay so:
+                -- a row naming SOMEBODY ELSE goes on their slate, because the
+                -- weapon left with them; a row naming NOBODY and carrying no
+                -- serial is written off, because the only removal left is by
+                -- name and that takes a stranger's; a row naming nobody but
+                -- carrying a serial is CHASED, because the serial says exactly
+                -- which weapon is meant and it is the arena's.
+                local ownerElsewhere = Arena.IsKey(rowOwner) and rowOwner ~= liveId
+                local ownerUnknown = not Arena.IsKey(rowOwner)
+                local nothingExactToChase = ownerUnknown and not Arena.IsKey(item.serial)
+
+                if Arena.IsKey(liveId) and (ownerElsewhere or nothingExactToChase) then
                     if oweWeapon(rowOwner, item) then
                         ArenaLog('weapons: the arena\'s %s (%s) went with %s, not with %s who holds '
                             .. 'their server id now. It is written down against them.',
@@ -3337,6 +3362,26 @@ local function reclaimWeapons(ox, src, fallbackOwner)
                                 .. 'down -- the ledger is full. It is gone.',
                                 item.name, tostring(item.serial), tostring(src))
                         end
+                    elseif not Arena.IsKey(rowOwner) then
+                        -- THE WRITE-OFF IS ANNOUNCED HERE AND NOT ABOVE, and
+                        -- that is a consequence of chasing serials rather than
+                        -- refusing them. A row nobody can name but that
+                        -- carries a serial no longer stops at the ownership
+                        -- test -- it is chased, because a serial names one
+                        -- weapon exactly and the removal cannot reach anybody
+                        -- else's. So when it is genuinely not in these
+                        -- pockets, THIS is where the arena learns it, and this
+                        -- is the only place left that can say so.
+                        --
+                        -- Nothing is billed: there is no name to bill, and the
+                        -- branch above deliberately refuses to invent one. DO
+                        -- NOT add a fallback owner here -- that is the bug
+                        -- that put a newcomer on the outstanding-kit screen
+                        -- owing a weapon they had never held.
+                        ArenaLog('weapons: the arena\'s %s (%s) did not come back and is written off -- '
+                            .. 'it was issued without a readable owner, so there is nobody to put it on. '
+                            .. 'NOTHING is being taken off %s, who holds that server id now.',
+                            item.name, tostring(item.serial or 'no serial'), tostring(liveId))
                     end
                 end
             end

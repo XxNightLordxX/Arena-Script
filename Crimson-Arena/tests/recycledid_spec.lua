@@ -215,6 +215,21 @@ local function newServer(mutate)
             end
         end,
         countOf = function(src, name) return ox.GetItemCount(ox, src, name) end,
+        --- WHICH COPIES they are holding, not how many. Two weapons of one
+        --- name are the same number and different property: the serial is
+        --- the only thing that says whose a copy is, so a test about the
+        --- arena taking back ITS gun has to read this rather than the count.
+        --- A copy with no serial is somebody's own; 'none' says so out loud.
+        serialsOf = function(src, name)
+            local found = {}
+            for _, item in pairs(bag(src)) do
+                if item.name == name then
+                    found[#found + 1] = (item.metadata or {}).serial or 'none'
+                end
+            end
+            table.sort(found)
+            return #found == 0 and 'empty' or table.concat(found, ',')
+        end,
         carrying = function(src)
             local names = {}
             for _, item in pairs(bag(src)) do names[#names + 1] = item.name end
@@ -422,6 +437,42 @@ t.test('REGRESSION: a row the arena cannot name is still chased when it carries 
         'the arena wrote off a weapon it could have taken back by serial -- the player keeps it free')
     t.equals(s.countOf(1, 'WEAPON_BAT'), 1,
         'it took the fighter\'s own weapon instead of the one it issued')
+end)
+
+t.test('DEFECT: the arena takes back ITS gun, not the fighter\'s own copy of the same weapon', function()
+    -- THE ONE CASE THE SERIAL FILTER EXISTS FOR, AND THE ONE CASE NOTHING
+    -- HERE SET UP. Every test above hands the fighter a WEAPON_BAT and issues
+    -- a WEAPON_PISTOL -- two names, so the removal can find the right copy
+    -- with the name alone and the filter is never what decides. A removal
+    -- given only a name takes whichever slot ox_inventory reaches first, and
+    -- with the door off the fighter's own gun is very often the lower slot.
+    --
+    -- Measured by inverting the filter in takeWeaponBack: the fighter's own
+    -- pistol is removed and the arena's is left in their pockets. They lose
+    -- their property and keep the arena's, and every count in the suite reads
+    -- the same on both sides -- one pistol before, one after.
+    local s = newServer(function(config)
+        config.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.identify(1, 'CID_FIGHTER')
+
+    -- Theirs, carried in through a door that is switched off. Nothing ever
+    -- stamped it, so it holds no serial.
+    s.give(1, 'WEAPON_PISTOL', 1)
+
+    s.ammo.Issue(1, 'm1', {
+        weapons = { { weapon = 'WEAPON_PISTOL', key = 'pistol', ammo = 30 } },
+        supplies = {},
+    })
+    t.equals(s.countOf(1, 'WEAPON_PISTOL'), 2, 'they should be holding two pistols now -- theirs and the arena\'s')
+    t.equals(s.serialsOf(1, 'WEAPON_PISTOL'), 'SER1,none', 'and exactly one of them should carry the arena\'s serial')
+
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.equals(s.countOf(1, 'WEAPON_PISTOL'), 1, 'one pistol should be left')
+    t.equals(s.serialsOf(1, 'WEAPON_PISTOL'), 'none',
+        'THE ARENA TOOK THE FIGHTER\'S OWN PISTOL AND LEFT ITS OWN IN THEIR POCKETS')
+    t.equals(s.slate(), 'nobody', 'and nothing is owed, because the arena has its weapon back')
 end)
 
 os.exit(t.summary())

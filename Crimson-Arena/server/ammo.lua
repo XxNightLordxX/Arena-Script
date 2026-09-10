@@ -843,6 +843,15 @@ local function restore(src, record)
             wiped = false
         end
         record.cleared = true
+
+        -- AND WHETHER IT ACTUALLY WIPED, kept on the record. `cleared` says
+        -- the clear was ATTEMPTED; only `wiped` says the arena's kit is gone.
+        -- The two used to be one flag, and the second pass could not tell a
+        -- kit the clear destroyed from one the clear was refused on -- so it
+        -- went looking for the arena's rounds, plates and its serial-less
+        -- knife in pockets that by then held only the player's own, and took
+        -- them. DO NOT collapse this back into `cleared`.
+        record.wiped = wiped
     end
 
     local readable, failures, returned = handBack(ox, src, record.stash)
@@ -3499,6 +3508,22 @@ local function reclaimWeapons(ox, src, fallbackOwner)
     for _, byPlayer in pairs(heldBefore) do byPlayer[src] = nil end
 end
 
+--- Drops everything the arena issued to `src` FOR ONE MATCH, stamp included.
+---
+--- For a kit the wholesale clear has already destroyed. Nothing of it can be
+--- in the pockets any more, so nothing of it can be taken back, and nothing
+--- of it is owed: a chase from here finds only the player's own property and
+--- a debt written from here is for rounds that no longer exist. Scoped to the
+--- match on the record rather than everything under the server id, because
+--- that is exactly what the clear destroyed. The stamp goes with the rows for
+--- the reason forgetWeapons gives. DO NOT chase or bill a wiped kit.
+local function forgetIssuedFor(matchId, src)
+    for _, store in ipairs({ issuedWeapons, issuedAmmo, issuedSupplies, issuedOwner }) do
+        local byPlayer = store[matchId]
+        if byPlayer then byPlayer[src] = nil end
+    end
+end
+
 local function forgetWeapons(src)
     for _, byPlayer in pairs(issuedWeapons) do byPlayer[src] = nil end
     for _, byPlayer in pairs(issuedAmmo) do byPlayer[src] = nil end
@@ -3964,9 +3989,18 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         return 0
     end
 
+    -- THE SECOND PASS CHASES A KIT THE CLEAR WAS REFUSED ON, AND ONLY THAT.
+    -- A kit the clear wiped is not in these pockets; whatever is in them now
+    -- is the player's own, handed back by the first pass. Chasing it took
+    -- their rounds and plates by the issued count, and their own knife as
+    -- "the only copy they hold" -- silently, on the next restart or drop.
     if record.cleared then
-        local ox = inventory()
-        if ox then reclaimWeapons(ox, src, record.citizenid) end
+        if record.wiped then
+            forgetIssuedFor(record.matchId, src)
+        else
+            local ox = inventory()
+            if ox then reclaimWeapons(ox, src, record.citizenid) end
+        end
     end
 
     local ok, wiped = restore(src, record)
@@ -4012,6 +4046,13 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         end
     elseif Arena.IsKey(record.citizenid) then
         owed[record.citizenid] = record.stash
+
+        -- FORGOTTEN NOW, NOT ON THE NEXT PASS. The retry sweep takes its
+        -- pocket snapshot after this partial hand-back has already put the
+        -- player's own stock back, and wrote the issued count against it as
+        -- a debt -- then collected it, from their own rounds, thirty seconds
+        -- later. A kit the clear wiped is owed by nobody.
+        if record.wiped then forgetIssuedFor(record.matchId, src) end
 
         ArenaNotifyKey(src, 'notify.kit_held', 'error')
     end

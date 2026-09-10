@@ -27,6 +27,9 @@ local KEY = 'cash|match_cancelled'
 local function newArena(control)
     control = control or {}
     local stored = {}
+    --- The read that has been issued and not yet answered, if this test is
+    --- holding one. Released by hand with s.releaseRead().
+    local held = nil
     for k, row in pairs(control.seed or {}) do
         local copy = {}
         for f, v in pairs(row) do copy[f] = v end
@@ -39,8 +42,25 @@ local function newArena(control)
         local flat = sql:gsub('%s+', ' ')
         if flat:find('CREATE TABLE') then if cb then cb({}) end return end
         if flat:find('^SELECT') then
+            -- A PHOTOGRAPH, TAKEN NOW AND DELIVERED LATER. oxmysql is async:
+            -- the rows a read answers with are the rows that existed when it
+            -- was ISSUED, and anything that happens to the ledger while it is
+            -- in flight is not in them. Modelled synchronously, that window
+            -- does not exist and the guard against it cannot be reached.
             local rows = {}
-            for _, row in pairs(stored) do rows[#rows + 1] = row end
+            for _, row in pairs(stored) do
+                local copy = {}
+                for f, v in pairs(row) do copy[f] = v end
+                rows[#rows + 1] = copy
+            end
+            -- EVERY read is held while a test is holding one, not just the
+            -- first: the load thread retries until it is answered, so
+            -- delivering the second read would close the window the first one
+            -- opened and the test would prove nothing.
+            if control.holdSelect then
+                if held == nil then held = function() if cb then cb(rows) end end end
+                return
+            end
             if cb then cb(rows) end
             return
         end
@@ -100,6 +120,14 @@ local function newArena(control)
         step = function(n) for _ = 1, (n or 1) do threads.step() end end,
         owed = function() local _, total = env.ArenaBetting.Outstanding() return total end,
         storedAmount = function() local r = stored['CID1|' .. KEY] return r and r.amount or 0 end,
+        --- Deliver the read that has been in flight since the load began.
+        releaseRead = function()
+            local deliver = held
+            held = nil
+            if deliver then deliver() end
+            return deliver ~= nil
+        end,
+        wallet = function() return wallets[1].cash end,
     }
 end
 
@@ -159,6 +187,46 @@ t.test('CONTROL: an ADD the database DID take is not replayed', function()
     s.control.offline = true
     s.betting.SweepUnpaid()
     t.equals(s.storedAmount(), 1000, 'a debt the store already held was added again by a replay')
+end)
+
+t.test('DEFECT: a debt PAID while the ledger read was in flight is not brought back by it', function()
+    -- THE PHOTOGRAPH THAT ARRIVES AFTER THE MONEY. The load's SELECT is
+    -- issued at start and answers whenever oxmysql gets round to it. In
+    -- between, a debt can be filed, the player can walk in, and the sweep can
+    -- pay them -- and the row that read is still carrying says they are owed
+    -- it. Merging that row reinstates a debt the arena has already handed
+    -- over, and the next sweep pays it a second time.
+    --
+    -- The guard is one line in loadUnpaid: a part whose DROP has not reached
+    -- the database yet is read back as zero. Inverting it left the suite
+    -- green, because nothing here could hold a read open -- the fixture's
+    -- database answered on the spot, so the window did not exist.
+    local s = newArena({ seed = SEED, holdSelect = true })
+    s.step(3)
+    t.equals(s.owed(), 0, 'the read answered anyway, so there is no window and this proves nothing')
+
+    -- A debt of 700 is filed in memory while that read is still out.
+    fileDebt(s)
+    t.equals(s.owed(), 700, 'the debt was not filed, so this proves nothing')
+
+    -- The database goes away, so the DROP that follows the payment cannot
+    -- land and stays queued. Then the player walks in and is paid.
+    s.control.down = true
+    local before = s.wallet()
+    s.betting.SweepUnpaid()
+    t.equals(s.owed(), 0, 'the sweep did not settle the debt, so this proves nothing')
+    t.equals(s.wallet(), before + 700, 'the player was not actually paid, so this proves nothing')
+
+    -- And now the read lands, carrying a row from before any of that.
+    s.control.down = false
+    t.isTrue(s.releaseRead(), 'there was no read in flight to release')
+
+    t.equals(s.owed(), 0,
+        'A DEBT THE ARENA HAD ALREADY PAID WAS BROUGHT BACK by a read taken before the payment')
+
+    -- And the proof that it matters: the next sweep pays nothing more.
+    s.betting.SweepUnpaid()
+    t.equals(s.wallet(), before + 700, 'they were paid the same debt twice')
 end)
 
 os.exit(t.summary())

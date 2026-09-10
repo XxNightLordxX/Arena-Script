@@ -6,8 +6,10 @@ Read this before the resource goes anywhere near players.
 
 Everything that can be checked without a running FiveM server has been checked:
 every Lua file parsed, `luacheck` was clean across the resource, and a suite of
-77 specs exercised the real production files under plain Lua 5.4 — the rules,
-the payout arithmetic, the escrow invariants, the locale coverage.
+93 specs plus 21 panel suites exercised the real production files under plain
+Lua 5.4 — the rules, the payout arithmetic, the escrow invariants, the locale
+coverage. It is kept in the repository under `Crimson-Arena/tests/` and runs
+with `bash Crimson-Arena/tests/run.sh`; it is not part of what ships.
 
 The client was also run against a *model* of the game: a fake-native harness
 gave it objects, prop dimensions and a streaming bubble, and the real

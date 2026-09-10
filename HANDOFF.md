@@ -798,7 +798,7 @@ The commit is now `8291f5c`, 43rd from the tip.
 > `Crimson-Arena/tests/` is in the tree at HEAD and runs with
 > `bash Crimson-Arena/tests/run.sh`. The recovery point below is still a real
 > commit and the check below still works, but **do not restore the suite from
-> it**: it holds 77 specs of an older shape and laying them over the 96 that
+> it**: it holds 77 specs of an older shape and laying them over the 93 that
 > are here now would silently lose every control written since. It remains
 > useful for reading what a spec looked like back then, and nothing else.
 

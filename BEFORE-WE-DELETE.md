@@ -30,7 +30,7 @@ That answers most of it cleanly:
 
 | # | Action | Why I am sure |
 |---|---|---|
-| 1 | Delete the whole `tests/` folder (77 spec files) | The game never loads it. It is not shipped, not required, and every version of it stays in the repository's history for ever. |
+| 1 | ~~Delete the whole `tests/` folder (77 spec files)~~ **Not done — the suite is kept.** | The game never loads it and it is still not shipped, but it is now tracked rather than deleted: `strip_prod.py` leaves it alone and the release is built without it. See the note under check 4. |
 | 2 | Delete `.luacheckrc` | It configures a code checker used only while developing. |
 | 3 | Remove every comment from `client/`, `server/`, `shared/`, `html/` | A non-coder never opens these files. |
 | 4 | Rewrite `config.lua`'s comments to operator language | Currently 2,241 lines of comment around 689 lines of settings — 76% of the file. Most of it explains *why a decision was made*, which is a developer's question, not yours. |

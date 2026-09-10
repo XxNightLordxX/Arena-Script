@@ -47,7 +47,7 @@ no ally glow in them by design.
 
 It used to be untracked, and this section used to tell you to recover it with
 `git archive 566171c Crimson-Arena/tests | tar -x`. **Do not do that** -- that commit
-holds 74 specs of an older shape and restoring it would put them over the 96 that are
+holds 74 specs of an older shape and restoring it would put them over the 93 that are
 here now. The instruction is left visible rather than deleted because it was followed
 before, and anybody rereading an old copy of this file needs to know it is wrong.
 

@@ -428,6 +428,35 @@ t.test('and a death the server cannot place is passed through', function()
         'a death was refused because the server could not see where the body was')
 end)
 
+t.test('and the KILL is credited too -- this check fails open, on purpose', function()
+    -- THE POSTURE, STATED SO THAT CHANGING IT HAS TO BE DELIBERATE.
+    --
+    -- The test above proves the DEATH survives a body the server cannot
+    -- place. This is the other half of the same moment: the kill is credited
+    -- as well, because the out-of-fence test is written `past ~= nil and ...`
+    -- and an unreadable position is not a position outside the arena.
+    --
+    -- It is a trade, and it is the same one the kill-distance ceiling makes a
+    -- few lines below it -- gungame_spec pins that half with "a position the
+    -- server cannot read credits the kill". Refusing a real kill because one
+    -- body had not streamed in takes a fought kill off an honest player every
+    -- time it happens, in exchange for closing a claim that needs an
+    -- unreadable position to work.
+    --
+    -- WHICH WAY IT SHOULD GO IS THE OPERATOR'S CALL, not this file's. What
+    -- this file does is make the current answer visible: flip the check to
+    -- refuse an unplaceable claim and this test goes red, so the statement of
+    -- the posture has to move at the same time as the posture.
+    local server = newServer()
+    server.play(3)
+
+    server.place(2, nil)
+    server.match.OnDeath(2, 1)
+
+    t.equals(server.rowOf(1).kills or 0, 1,
+        'a kill was refused because the server could not see where the BODY was')
+end)
+
 t.test('and being thrown out is a defeat on the record, unlike a crash', function()
     -- THE TWO EXITS LOOK IDENTICAL FROM INSIDE ArenaLobby.Leave and must not
     -- be treated identically. A crash spares the record because nobody chose

@@ -1768,9 +1768,20 @@ function ArenaLobby.UpdateMatch(src, data)
     match.label = locale('match.label', match.hostName,
         (Arena.GetModeByKey(modeKey) or {}).label or modeKey)
 
+    -- A RULES REWRITE TAKES EVERYBODY ELSE'S READY BACK. Ready is consent
+    -- to a particular match -- this arena, this mode, these lives, this way
+    -- of winning -- and it did not move when the match did. A player who
+    -- ticked Ready for a free-for-all with three lives was still ticked
+    -- after the host had made it a gun game somewhere else, and because the
+    -- host is normally the last to ready, their own tick then auto-started
+    -- a round nobody else had agreed to. The host keeps theirs: they wrote
+    -- the change, they know what it is. Only an ACTUAL change does this --
+    -- ruleChanged, not the press of Apply -- so re-applying the same form
+    -- disturbs nobody.
     for _, player in pairs(match.players) do
         player.lives = lives
         if teamsChanged then player.team = nil end
+        if ruleChanged and player.src ~= match.hostSource then player.ready = false end
     end
 
     ArenaLobby.Broadcast()

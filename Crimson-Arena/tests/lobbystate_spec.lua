@@ -971,4 +971,75 @@ t.test('and the bet still reaches the panel, which is why the broadcast is there
     t.equals(bet.amount, 1000, 'the stake reached the panel wrong')
 end)
 
+-- ======================================================================
+-- WHAT THE SERVER TELLS EVERY CLIENT ABOUT EVERYBODY ELSE
+--
+-- The panel state is BROADCAST: every player with it open receives the
+-- roster of every lobby. What it carries about other people is therefore
+-- public, to anybody running a modified client, for as long as the resource
+-- is running.
+--
+-- It is safe today because snapshotMatches REBUILDS each row from a short
+-- list of fields rather than passing the server's own player record through.
+-- That is one line away from being untrue -- `players[#players + 1] = player`
+-- is a natural-looking edit -- and the record it would then send carries the
+-- citizen id the stash and the debt ledger are keyed by, plus which account
+-- somebody paid from.
+-- ======================================================================
+
+--- Every key and every string in a payload, however deep, as one flat list.
+local function everything(value, keys, values, seen)
+    keys, values, seen = keys or {}, values or {}, seen or {}
+    if type(value) ~= 'table' or seen[value] then return keys, values end
+    seen[value] = true
+    for key, inner in pairs(value) do
+        if type(key) == 'string' then keys[#keys + 1] = key:lower() end
+        if type(inner) == 'string' then values[#values + 1] = inner end
+        everything(inner, keys, values, seen)
+    end
+    return keys, values
+end
+
+t.test('EXPLOIT: the broadcast state carries no citizen id, and nobody else\'s wallet', function()
+    local server = twoInLobby()
+    local state = server.state(1)
+
+    -- THEIR OWN money is in there on purpose: the panel offers a choice of
+    -- account to pay from, so it has to show what is in them. Everything
+    -- below is about what it says regarding OTHER people.
+    t.isNotNil(state.player.money, 'the panel stopped telling a player their own balance')
+
+    -- A CITIZEN ID NEVER BELONGS ON A CLIENT, under any key. It is what the
+    -- stash, the weapon debt and the unpaid ledger are all kept under.
+    local keys, values = everything(state)
+    t.isTrue(#keys > 20, 'the state is empty, so this proves nothing')
+    for _, key in ipairs(keys) do
+        t.isTrue(key ~= 'citizenid',
+            'the panel state carries a CITIZEN ID -- the key the stash and the debt ledger are kept under')
+    end
+    for _, text in ipairs(values) do
+        t.isTrue(text:find('CID%d') == nil,
+            ('a citizen id (%s) reached the client under a different name'):format(text))
+    end
+
+    -- And the roster rows -- the part that is about everybody else -- carry
+    -- nothing but what a panel needs to draw them.
+    local allowed = {
+        id = true, name = true, team = true, ready = true, kills = true,
+        deaths = true, alive = true, isHost = true,
+    }
+    local rows = 0
+    for _, match in ipairs(state.matches or {}) do
+        for _, row in ipairs(match.players or {}) do
+            rows = rows + 1
+            for key in pairs(row) do
+                t.isTrue(allowed[key] == true,
+                    ('the roster row sent to every client carries "%s" -- the panel does not draw it, '
+                        .. 'and a modified client keeps it'):format(tostring(key)))
+            end
+        end
+    end
+    t.isTrue(rows >= 2, 'no roster rows were sent, so this proves nothing')
+end)
+
 os.exit(t.summary())

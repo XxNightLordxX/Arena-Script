@@ -1890,10 +1890,17 @@ local function voided(bet, fighters)
     -- A spectator who never joined, judged on the pick they chose -- which is
     -- what this line was written for -- and a FIGHTER who placed a bet at the
     -- fighter band and then came off the roster, who was judged on the same
-    -- terms and should not have been. That second one was a live exploit:
-    -- fighterBets.max ships at twice spectatorBets.max, so a fighter could
-    -- take a 50,000 position, walk out of the lobby for nothing, and settle
-    -- it against a field nobody else could put more than 25,000 into.
+    -- terms and should not have been. That second one was a live exploit on
+    -- the config of the day, when fighterBets.max shipped at TWICE
+    -- spectatorBets.max: a fighter could take a 50,000 position, walk out of
+    -- the lobby for nothing, and settle it against a field nobody else could
+    -- put more than 25,000 into.
+    --
+    -- BOTH CEILINGS SHIP AT 25,000 NOW, level, and config.lua says beside
+    -- fighterBets.max that they are meant to stay level -- so there is no gap
+    -- left to walk out with. The guard below stays regardless: it is what
+    -- makes the two ceilings SAFE to separate again, and an operator raising
+    -- one is exactly who needs it.
     --
     -- THE ANSWER IS NOT HERE, and deliberately so. Voiding it would hand the
     -- stake back, which is the exact refund ArenaBetting.MarkWalkedOut exists
@@ -2095,14 +2102,20 @@ end
 --- same fact and was missing for as long as fighter bets have existed.
 ---
 --- A fighter's stake is held to Config.Betting.fighterBets, which ships at
---- TWICE the spectator ceiling. That is not a bonus, it is the price of being
---- in the fight: the money is riding on a round the holder has to stand up
---- in. Take the holder off the roster and every reason for the larger number
---- goes with them -- but the stake did not move, and nothing re-read the
---- band, so a fighter could put down 50,000, walk out of the lobby for
---- nothing (the shipped entry fee is zero), and settle a fighter-sized
---- position against a field capped at 25,000. On the shipped config that paid
---- the leaver the honest spectator's whole stake.
+--- TWICE the spectator ceiling, on the config this was written against. That
+--- was not a bonus, it was the price of being in the fight: the money is
+--- riding on a round the holder has to stand up in. Take the holder off the
+--- roster and every reason for the larger number goes with them -- but the
+--- stake did not move, and nothing re-read the band, so a fighter could put
+--- down 50,000, walk out of the lobby for nothing (the shipped entry fee is
+--- zero), and settle a fighter-sized position against a field capped at
+--- 25,000. On that config it paid the leaver the honest spectator's whole
+--- stake.
+---
+--- THE TWO CEILINGS SHIP LEVEL AT 25,000 NOW, so there is nothing to trim on
+--- a stock install and this reads as a no-op there. It is not decoration: an
+--- operator who raises fighterBets.max re-opens the whole of the above, and
+--- this is what stands between them and it.
 ---
 --- TRIMMED, NOT VOIDED. Handing the bet back is the refund the whole function
 --- exists to withhold. What is returned is only the part the fighter band

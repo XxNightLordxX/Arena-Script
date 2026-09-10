@@ -59,6 +59,7 @@ local function newServer(pockets, mutate, opts)
     --   register / read / readStash / stash / clear : throw
     --   stashRefuse / clearRefuse / give            : return false
     --   clearLies                                   : return TRUE and do nothing
+    --   count                                       : GetItemCount throws
     local fail = {}
 
     -- Who the server thinks is online. GetPlayers is what the return sweep
@@ -207,6 +208,11 @@ local function newServer(pockets, mutate, opts)
             return true
         end,
         GetItemCount = function(_self, id, name)
+            -- THE COUNT READ CAN FAIL ON ITS OWN, separately from the slot
+            -- read above it. It is what records the floor -- how much of an
+            -- item a fighter walked in already holding -- and a floor that
+            -- was never read is the whole subject of one test below.
+            if fail.count and type(id) == 'number' then error('inventory is not loaded') end
             local total = 0
             for _, item in ipairs(bucket(id)) do
                 if item.name == name then total = total + (tonumber(item.count) or 0) end
@@ -2580,6 +2586,40 @@ t.test('DEFECT: a clear that answers yes and does nothing does not leave a copy 
         'THE ARENA LEFT A COPY OF THEIR BELONGINGS IN THE STASH while they walked in carrying the originals')
     t.isFalse(isHolding(s.ammo, 1),
         'and it believes it is holding a kit for them, so the exit will hand that copy over')
+end)
+
+t.test('DEFECT: "nobody looked" is not "they owned none" -- a fighter is not billed for their own rounds', function()
+    -- floorFor answers what a fighter walked in HOLDING of one item, and nil
+    -- when nobody ever managed to read it. The callers subtract that from
+    -- what they are holding now to work out how much of it is the arena's --
+    -- so a nil read as zero says they owned none of it, and everything in
+    -- their pockets at the end is the arena's to take or to bill them for.
+    --
+    -- Inverting the nil to a 0 left every test here green: nothing set up a
+    -- door whose pockets-read fails, so the floor was always known.
+    local s = newServer({ [1] = { { name = 'ammo-rifle', count = 500 } } }, function(c)
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+
+    -- The read at the door fails, so nothing is recorded about what they
+    -- walked in with. Then it comes back, which is why the exit can see 560
+    -- and be tempted by it.
+    s.breakOn('count')
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    s.fixOn('count')
+
+    -- However many the arena's own rules issue, they land on top of the 500
+    -- that are theirs. That total is what the exit must not touch.
+    local afterIssue = s.countOf(1, 'ammo-rifle')
+    t.isTrue(afterIssue > 500, 'the rounds were never issued, so this proves nothing')
+
+    s.ammo.Reclaim(1, 'm1')
+
+    t.equals(s.countOf(1, 'ammo-rifle'), afterIssue,
+        'THE ARENA TOOK ITS ROUNDS OUT OF THE FIGHTER\'S OWN 500, having never read what they came in with')
+    local owed = 0
+    for _, row in ipairs(s.ammo.OwedKit()) do owed = owed + #row.items end
+    t.equals(owed, 0, 'and wrote a debt for rounds it never established were its own')
 end)
 
 os.exit(t.summary())

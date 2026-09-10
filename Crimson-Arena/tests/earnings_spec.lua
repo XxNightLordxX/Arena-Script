@@ -1,0 +1,458 @@
+--[[
+    crimson_arena/tests/earnings_spec.lua
+
+    WHAT A PLAYER IS TOLD THEY EARNED, AND WHAT THE BOARD REMEMBERS.
+
+    Two readers, one number, and until this file they could not agree on a
+    default server -- because the number they both read was empty.
+
+    `ArenaBetting.Settle` hands back the list of who it paid, and both the
+    results board on the player's screen and the all-time leaderboard are
+    derived from that list. With `betPayout.includeEntryPot` on -- which is
+    how this ships -- Settle does not pay anybody: it folds the entry stakes
+    into the bet pool and returns `{}`, and the money is paid a line further
+    down by `SettleSpectatorBets`. So on the shipped configuration:
+
+      THE WINNER WAS TOLD THEY EARNED NOTHING while the pot arrived in their
+      pocket, and
+
+      THE LEADERBOARD RECORDED ZERO for every player, for ever.
+
+    Neither is visible from a balance -- the money really does move -- which
+    is why nothing caught it. The rules this file holds:
+
+      EARNINGS ARE WHAT WAS PAID, whichever of the two settlements paid it.
+
+      THE BOARD AND THE LEADERBOARD ARE THE SAME NUMBER, by construction and
+      not by two readers happening to agree.
+
+      A REFUND IS NOT EARNINGS, including the uncontested-pool refund. Money
+      handed back is money you already had.
+
+    The real `server/stats.lua` is loaded rather than stubbed, because the
+    defect lived in the handoff between it and the settlement, and a stub is
+    exactly the thing that cannot have a handoff.
+]]
+
+local t = dofile('testkit.lua')
+local Sandbox = dofile('fixtures/sandbox.lua')
+
+print('earnings_spec')
+
+--- A two-fighter server with the real stats module in it.
+--- @param mutate function? -- last word on Config
+local function newServer(mutate)
+    local players = {}
+    -- FOUR, so a two-a-side round can be played. The tests above use 1 and 2
+    -- and are unaffected by a fighter who never joins anything.
+    for src = 1, 4 do
+        players[src] = {
+            citizenid = ('CID%03d'):format(src),
+            name = ('Fighter %d'):format(src),
+            money = { cash = 100000, bank = 100000 },
+            job = { name = 'unemployed', grade = { level = 0 } },
+        }
+    end
+
+    local qbx = Sandbox.newQbxCore(players)
+    local threads = Sandbox.newThreadRunner()
+    local netEvents, console, sent, handlers = {}, {}, {}, {}
+    local clock = 0
+
+    local env = Sandbox.newArenaEnv({
+        exports = qbx.exports,
+        lib = Sandbox.newOxLib(),
+        CreateThread = threads.CreateThread,
+        Wait = threads.Wait,
+        SetTimeout = threads.SetTimeout,
+        print = function(line) console[#console + 1] = line end,
+        TriggerClientEvent = function(event, target, payload)
+            sent[#sent + 1] = { event = event, target = target, payload = payload }
+        end,
+        TriggerEvent = function() end,
+        RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
+        -- CAPTURED RATHER THAN DISCARDED. server/main.lua registers
+        -- playerDropped here, and that handler is the whole of what happens
+        -- to a round when somebody's connection goes -- there is no other way
+        -- to make a fighter leave the way a real one does.
+        AddEventHandler = function(name, fn) handlers[name] = fn end,
+        RegisterCommand = function() end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        GetGameTimer = function() clock = clock + 60000 return clock end,
+        GetPlayerName = function(src) return (players[src] or {}).name or '' end,
+        GetPlayerPed = function(src) return src end,
+        GetEntityCoords = function(ped)
+            -- INSIDE THE ARENA THESE FIGHTERS ARE SUPPOSED TO BE IN, which
+            -- this used to be nowhere near: it answered a point 1,450m from
+            -- the Trailer Park, so every fighter in every one of these specs
+            -- was standing well outside the fence they were fighting inside.
+            -- Nothing read it until Config.Match.serverChecks did, and then
+            -- it read as the whole roster having walked out of the round.
+            --
+            -- Spread three metres apart, so they are also close enough for
+            -- the kill-distance ceiling -- the other thing that reads this.
+            return {
+                x = 2344.4 + ((tonumber(ped) or 0) % 16) * 3.0,
+                y = 2565.1,
+                z = 46.7,
+            }
+        end,
+        GetVehiclePedIsIn = function() return 0 end,
+        IsPlayerAceAllowed = function() return false end,
+        PerformHttpRequest = function() end,
+        ArenaAmmo = {
+            IsEnabled = function() return false end,
+            Issue = function() return {} end, Reclaim = function() return 0 end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
+            ReclaimAll = function() return 0 end, Clear = function() return true end,
+            OnLoan = function() return 0 end,
+        },
+        ArenaDispatch = {
+            Set = function() end, Clear = function() end, Revive = function() end,
+            IsPlayerInArena = function() return false end,
+            ClearDownState = function() return 0 end,
+            EnterBucket = function() end, ExitBucket = function() end,
+            GetBucket = function() end, ReleaseBucket = function() end,
+        },
+    })
+
+    env.Config.Match.minPlayers = 2
+    env.Config.Match.lobbyCountdownSeconds = 0
+    env.Config.Match.startCountdownSeconds = 0
+    env.Config.Match.lives = 1
+    env.Config.Betting.enabled = true
+    if mutate then mutate(env.Config) end
+
+    -- `stats` is in this list and stubbed nowhere: the defect was in the
+    -- handoff between it and the settlement.
+    for _, file in ipairs({ 'util', 'stats', 'betting', 'lobby', 'match', 'main' }) do
+        Sandbox.loadInto('../server/' .. file .. '.lua', env)
+    end
+
+    local server = { env = env, qbx = qbx, config = env.Config,
+        betting = env.ArenaBetting, match = env.ArenaMatch, lobby = env.ArenaLobby }
+
+    function server.fire(event, src, data)
+        local handler = netEvents['crimson_arena:server:' .. event]
+        if not handler then error('no handler for ' .. event, 2) end
+        env.source = src
+        handler(data)
+    end
+
+    function server.cash(src) return qbx.players[src].money.cash end
+
+    --- The results board this player was actually sent.
+    function server.resultsFor(src)
+        local found
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:results' and message.target == src then
+                found = message.payload
+            end
+        end
+        return found
+    end
+
+    --- The all-time board, as a { [name] = earnings } map.
+    function server.leaderboard()
+        local out = {}
+        env.ArenaStats.GetLeaderboard(function(rows)
+            for _, row in ipairs(rows or {}) do out[row.name] = row.earnings end
+        end)
+        return out
+    end
+
+    --- Opens a `fee` match between 1 and 2, runs it, and 2 loses.
+    function server.playMatch(fee)
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee, account = 'cash' })
+        local matchId = server.lobby.All()[1].id
+        server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
+        return matchId
+    end
+
+    --- A two-a-side round: 1 and 3 on one side, 2 and 4 on the other.
+    function server.playTeamMatch(fee)
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = fee, account = 'cash' })
+        local matchId = server.lobby.All()[1].id
+        for src = 2, 4 do server.fire('joinMatch', src, { matchId = matchId, account = 'cash' }) end
+        for src = 1, 4 do
+            server.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+        end
+        return matchId
+    end
+
+    --- Kills the whole of one side, which is how a team round is won.
+    function server.finishTeam(matchId, losers, killer)
+        for src = 1, 4 do server.fire('setReady', src, { ready = true }) end
+        server.match.Start(matchId)
+        threads.step()
+        for _, victim in ipairs(losers) do
+            server.match.OnDeath(victim, killer)
+            for _ = 1, 4 do threads.step() end
+        end
+        for _ = 1, 8 do threads.step() end
+    end
+
+    --- A round fought to a SCORE LIMIT rather than to the last fighter
+    --- standing: it ends the moment somebody reaches the number.
+    --- Drops a player the way a lost connection does: through the real
+    --- playerDropped handler, with `source` set, and not by editing a roster.
+    server.step = function(n) for _ = 1, (n or 1) do threads.step() end end
+
+    function server.dropPlayer(src)
+        env.source = src
+        assert(handlers.playerDropped, 'server/main.lua registered no playerDropped handler')
+        handlers.playerDropped()
+        for _ = 1, 8 do threads.step() end
+    end
+
+    function server.playToScore(fee, limit)
+        server.fire('createMatch', 1, {
+            arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee, account = 'cash',
+            winCondition = 'score_limit', scoreLimit = limit,
+        })
+        local matchId = server.lobby.All()[1].id
+        server.fire('joinMatch', 2, { matchId = matchId, account = 'cash' })
+        return matchId
+    end
+
+    function server.finish(matchId, loser)
+        server.fire('setReady', 1, { ready = true })
+        server.fire('setReady', 2, { ready = true })
+        server.match.Start(matchId)
+        threads.step()
+        server.match.OnDeath(loser, loser == 1 and 2 or 1)
+        for _ = 1, 8 do threads.step() end
+    end
+
+    return server
+end
+
+-- ======================================================================
+-- EARNINGS ARE WHAT WAS PAID
+-- ======================================================================
+
+t.test('DEFECT: the winner of a shipped-config match is told what they won', function()
+    -- includeEntryPot ships ON, which is the whole point: this is the
+    -- default path, and it was the broken one.
+    local server = newServer()
+    t.isTrue(server.config.Betting.betPayout.includeEntryPot,
+        'the shipped default changed -- this test is aimed at the wrong path')
+
+    server.finish(server.playMatch(5000), 2)
+
+    local results = server.resultsFor(1)
+    t.isNotNil(results, 'the winner was sent no results board at all')
+    t.equals(results.earnings, 10000, 'the board told the winner they earned this')
+end)
+
+t.test('DEFECT: and the all-time board records it too', function()
+    local server = newServer()
+    server.finish(server.playMatch(5000), 2)
+    t.equals(server.leaderboard()['Fighter 1'], 10000, 'the leaderboard recorded the winner at this')
+end)
+
+t.test('and the loser earned nothing, in both places', function()
+    local server = newServer()
+    server.finish(server.playMatch(5000), 2)
+    t.equals(server.resultsFor(2).earnings, 0, 'the loser was told they earned something')
+    t.equals(server.leaderboard()['Fighter 2'], 0, 'the leaderboard credited the loser')
+end)
+
+t.test('the pot settling on its own reports the SAME number', function()
+    -- The other path, and the one that was already right. Both have to
+    -- answer identically or the leaderboard means different things on two
+    -- servers running the same arena.
+    local shipped = newServer()
+    shipped.finish(shipped.playMatch(5000), 2)
+
+    local separate = newServer(function(config) config.Betting.betPayout.includeEntryPot = false end)
+    separate.finish(separate.playMatch(5000), 2)
+
+    t.equals(separate.resultsFor(1).earnings, shipped.resultsFor(1).earnings,
+        'the two settlement paths report different earnings for the same match')
+    t.equals(separate.leaderboard()['Fighter 1'], shipped.leaderboard()['Fighter 1'],
+        'the two settlement paths record different earnings for the same match')
+end)
+
+t.test('the board on screen and the board on record never disagree', function()
+    -- Written as an equality between the two readers rather than against a
+    -- number, because the failure was not a wrong figure -- it was two
+    -- readers of one empty list.
+    for _, fee in ipairs({ 0, 1000, 5000, 25000 }) do
+        local server = newServer()
+        server.finish(server.playMatch(fee), 2)
+        t.equals(server.leaderboard()['Fighter 1'], server.resultsFor(1).earnings,
+            ('at a fee of %d the screen and the record disagree'):format(fee))
+    end
+end)
+
+t.test('a free match earns nobody anything, and says so', function()
+    local server = newServer()
+    server.finish(server.playMatch(0), 2)
+    t.equals(server.resultsFor(1).earnings, 0, 'a free match paid the winner something')
+    t.equals(server.leaderboard()['Fighter 1'], 0, 'a free match recorded earnings')
+end)
+
+-- ======================================================================
+-- A REFUND IS NOT EARNINGS
+-- ======================================================================
+
+t.test('a returned side-bet is not counted as money the player made', function()
+    -- The uncontested-pool refund is the newest way to get money back
+    -- without having won anything, and the oldest rule in this area is that
+    -- getting your own stake back is not earnings.
+    local server = newServer()
+    local matchId = server.playMatch(0)
+    t.isTrue(server.betting.PlaceSpectatorBet(1, matchId, 1, 5000, 'cash'),
+        'the self-bet was refused')
+
+    server.finish(matchId, 2)
+
+    t.equals(server.cash(1), 100000, 'the uncontested bet was not handed back')
+    t.equals(server.resultsFor(1).earnings, 0, 'a refund was reported as earnings')
+    t.equals(server.leaderboard()['Fighter 1'], 0, 'a refund was recorded as earnings')
+end)
+
+t.test('but a side-bet actually won IS', function()
+    -- The other side of the same rule. A fighter who backs themselves against
+    -- a real backer and wins has earned that money in this match.
+    local server = newServer()
+    local matchId = server.playMatch(0)
+    -- 3 never joins: a fighter backing another fighter is refused, so the
+    -- other side of this pool has to come from somebody watching.
+    t.isTrue(server.betting.PlaceSpectatorBet(1, matchId, 1, 5000, 'cash'), 'fighter backs themselves')
+    t.isTrue(server.betting.PlaceSpectatorBet(3, matchId, 2, 5000, 'cash'), 'a spectator backs the other')
+
+    server.finish(matchId, 2)
+
+    t.equals(server.cash(1), 105000, 'the winner did not take the pool')
+    t.equals(server.resultsFor(1).earnings, 10000, 'the won pool was not reported as earnings')
+    t.equals(server.leaderboard()['Fighter 1'], 10000, 'the won pool was not recorded as earnings')
+end)
+
+-- ======================================================================
+-- AND THE MONEY ITSELF, NOT THE NUMBER ON THE BOARD
+--
+-- Everything above asks what the winner was TOLD they earned -- the results
+-- card and the all-time leaderboard, which is where the defect this file was
+-- written for lived. A board saying 10,000 and a wallet holding it are two
+-- different claims, and only the second one is what a player walks away with.
+--
+-- Nothing in the suite followed a whole round -- created on the wire, joined,
+-- readied, started, fought, settled -- through to the pot arriving in
+-- somebody's pocket with the total across every wallet unchanged. The
+-- generated-match property specs conserve money across four hundred rounds,
+-- but they drive the betting layer directly rather than playing a round; the
+-- specs that PLAY one stop at who won.
+-- ======================================================================
+
+--- Every dollar on the server, so a settlement can be checked for creating or
+--- destroying money rather than only for moving it.
+local function purse(server)
+    local total = 0
+    for _, record in pairs(server.qbx.players) do
+        total = total + (record.money.cash or 0) + (record.money.bank or 0)
+    end
+    return total
+end
+
+t.test('the pot reaches the winner\'s WALLET, and the loser is out exactly their stake', function()
+    local server = newServer()
+    local before = purse(server)
+    local startCash = server.cash(1)
+
+    server.finish(server.playMatch(5000), 2)
+
+    t.equals(server.cash(1), startCash - 5000 + 10000,
+        'the winner was told they earned 10,000 -- this is whether they were given it')
+    t.equals(server.cash(2), startCash - 5000,
+        'the loser is out their own stake and no more')
+    t.equals(purse(server), before,
+        'the settlement created or destroyed money rather than moving it between two players')
+end)
+
+t.test('and a free round moves nothing at all', function()
+    local server = newServer()
+    local before = purse(server)
+    local startCash = server.cash(1)
+
+    server.finish(server.playMatch(0), 2)
+
+    t.equals(server.cash(1), startCash, 'a free round paid the winner out of nowhere')
+    t.equals(server.cash(2), startCash, 'a free round charged the loser')
+    t.equals(purse(server), before)
+end)
+
+t.test('a team round pays the whole winning SIDE, and only that side', function()
+    -- The team half of the same question, and the one the win-decision code
+    -- reaches through a different branch: sides are scored, a side with
+    -- nobody left standing is dropped, and what comes out is a set of
+    -- winners rather than one. Nothing anywhere asked whether those winners
+    -- are the people whose wallets move -- both specs that mention
+    -- winningTeam assert on the results card and neither reads a wallet.
+    local server = newServer()
+    local before = purse(server)
+    local start = server.cash(1)
+
+    -- 1 and 3 are crimson; 2 and 4 are ash. Crimson kills both of ash.
+    server.finishTeam(server.playTeamMatch(5000), { 2, 4 }, 1)
+
+    local won, lost = server.cash(1) + server.cash(3), server.cash(2) + server.cash(4)
+    t.equals(lost, (start - 5000) * 2, 'the losing side is out their two stakes and no more')
+    t.equals(won, (start - 5000) * 2 + 20000,
+        'THE WINNING SIDE WAS NOT HANDED THE POT -- four stakes of 5,000 is 20,000')
+    t.equals(purse(server), before, 'a team settlement created or destroyed money')
+end)
+
+t.test('a round fought to a SCORE LIMIT pays the fighter who reached it', function()
+    -- The third way a round can be decided, and the one with no money test
+    -- anywhere: last_standing and most_kills are both reached by the 1v1
+    -- above, and score_limit ends the round on a number instead of on a
+    -- roster. wincondition_spec drives all three and pays nobody -- it runs
+    -- with betting switched off on purpose.
+    local server = newServer()
+    local before = purse(server)
+    local start = server.cash(1)
+
+    local matchId = server.playToScore(5000, 1)
+    t.equals(server.lobby.Get(matchId).winCondition, 'score_limit',
+        'the round is not being fought to a score limit, so this proves nothing')
+
+    server.finish(matchId, 2)
+
+    t.equals(server.cash(1), start - 5000 + 10000, 'the fighter who reached the limit was not paid the pot')
+    t.equals(server.cash(2), start - 5000, 'the loser is out their stake and no more')
+    t.equals(purse(server), before)
+end)
+
+t.test('a fighter who DISCONNECTS mid-round leaves the money where it belongs', function()
+    -- The exit nobody chooses, and the one a paid round has to survive: a
+    -- connection goes in the middle of a fight. The betting layer's own specs
+    -- crash a player and check the ledger; nothing played a ROUND and then
+    -- pulled somebody out of it, so the handoff between the disconnect and
+    -- the settlement -- roster, escrow, payout -- had no test at the wallet.
+    local server = newServer()
+    local before = purse(server)
+    local start = server.cash(1)
+
+    local matchId = server.playMatch(5000)
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.match.Start(matchId)
+    server.step()
+
+    -- And their connection goes.
+    server.dropPlayer(2)
+
+    t.isTrue(server.cash(1) >= start - 5000,
+        'the fighter still standing was charged more than their stake by somebody else leaving')
+    t.equals(purse(server), before,
+        'a disconnect mid-round created or destroyed money')
+    t.isNil(server.lobby.Get(matchId),
+        'the round outlived the only two people in it')
+end)
+
+os.exit(t.summary())

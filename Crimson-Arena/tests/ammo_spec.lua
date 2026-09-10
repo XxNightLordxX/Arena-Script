@@ -1,0 +1,2671 @@
+--[[
+    crimson_arena/tests/ammo_spec.lua
+
+    The door: what a player may bring into the arena, and what leaves with them.
+
+    THE PROMISE. Nobody brings their own kit in. A player's whole inventory
+    goes into a private stash at the door, they are given only what the loadout
+    screen issued, and on the way out everything they are carrying is destroyed
+    and their own inventory handed back.
+
+    That is stronger than reconciling counts, and the difference is everything
+    a match can produce. Reconciling can put a player back to what they started
+    with. This makes the question not arise -- there is nothing in their
+    pockets at the end that was not issued, because there was nothing in them
+    at the start. Looting a body, scavenging off the floor and hoarding all
+    come out in the wash.
+
+    THE FAILURE MODE THAT MATTERS. This is the only code in the resource that
+    holds somebody's entire inventory. Losing it is not a bug you get to
+    apologise for. So the tests below care less about the happy path than about
+    every way stowing can fail: in each one the player must keep their own kit
+    and simply not be stripped. "The arena did not work properly" is an
+    acceptable outcome. "Your inventory is gone" is not.
+
+    The inventory double holds REAL CONTENTS rather than recording calls,
+    because the thing worth asserting is where a player's things end up.
+]]
+
+local t = dofile('testkit.lua')
+local Sandbox = dofile('fixtures/sandbox.lua')
+
+--- @param pockets table<number, table[]>? -- { [src] = { {name, count, metadata} } }
+--- @param mutate fun(config: table)?
+--- @return table fixture
+--- @param opts table? -- { inventoryStartsAfter = integer } -- how many Waits
+---        ox_inventory takes to come up, for the late-start path
+---        { noDispatch = true } -- load with no ArenaDispatch at all, which
+---        is what this file sees before server/dispatch.lua has loaded
+---        { retry = true } -- run the return sweep on a STEPPING thread
+---        runner, so `s.step()` drives one pass. Off by default because this
+---        fixture runs a CreateThread body straight through and the sweep is
+---        a `while true`, which would never come back.
+local function newServer(pockets, mutate, opts)
+    opts = opts or {}
+    local runner = Sandbox.newThreadRunner()
+    local inv, console, handlers, hooks = {}, {}, {}, {}
+    local sent = {}
+    -- How many times anything has yielded, which is the only clock this
+    -- fixture has and what the late-start test counts against.
+    local waits = 0
+    local stashes = {}
+    --- How many slots each stash was registered with, so the number the
+    --- production code passes is load-bearing rather than decorative.
+    local stashSlots = {}
+    -- Which operation to break, and HOW. The distinction is the whole point
+    -- of half the tests below: a call that THROWS is caught by pcall, and a
+    -- call that RETURNS FALSE is ox_inventory politely refusing -- which for
+    -- a long time this resource could not tell from success.
+    --   register / read / readStash / stash / clear : throw
+    --   stashRefuse / clearRefuse / give            : return false
+    --   clearLies                                   : return TRUE and do nothing
+    --   count                                       : GetItemCount throws
+    --   stuckInStash                                : a STASH removal refuses
+    local fail = {}
+
+    -- Who the server thinks is online. GetPlayers is what the return sweep
+    -- walks, and a player who is not on it is one it never looks at.
+    local connected = {}
+
+    -- Which CHARACTER a server id belongs to. Overridable because the stash
+    -- is named from the citizen id and not the id, which is the whole reason
+    -- somebody can come back on a different one and still be handed their
+    -- things -- and there is no way to test that if the two are welded.
+    local identity = {}
+    local function cidOf(src) return identity[src] or ('CID' .. tostring(src)) end
+
+    -- How many times each stash has been READ. The retry looks once at a
+    -- stash nothing in memory knows about, and "once" is a promise about
+    -- cost that only a count can hold it to.
+    local stashReads = {}
+
+    -- Inventories that answer with a `false` parked in an empty slot, which
+    -- is how some ox_inventory builds spell "nothing here" instead of
+    -- leaving the key absent. Indexing `.name` on a boolean throws.
+    local falseSlots = {}
+
+    for src, items in pairs(pockets or {}) do
+        connected[src] = true
+        inv[src] = {}
+        for _, item in ipairs(items) do
+            inv[src][#inv[src] + 1] = { name = item.name, count = item.count, metadata = item.metadata }
+        end
+    end
+
+    local function bucket(id)
+        if type(id) == 'number' then
+            inv[id] = inv[id] or {}
+            return inv[id]
+        end
+        stashes[id] = stashes[id] or {}
+        return stashes[id]
+    end
+
+    local ox = {
+        RegisterStash = function(_self, id, _label, slots)
+            if fail.register then error('no stash for you') end
+            stashes[id] = stashes[id] or {}
+            -- THE SLOT COUNT IS RECORDED, AND HONOURED BELOW.
+            --
+            -- It used to be ignored, which made the number in the production
+            -- call decorative: a stash registered with ONE slot would have
+            -- swallowed a whole inventory here and every test would have gone
+            -- on passing. The one promise this resource makes is that a match
+            -- cannot cost anyone anything, and the size of the pen their
+            -- belongings are held in is part of that promise.
+            stashSlots[id] = tonumber(slots) or math.huge
+            return true
+        end,
+        GetInventoryItems = function(_self, id)
+            if fail.read and type(id) == 'number' then error('cannot read') end
+            if type(id) == 'string' then stashReads[id] = (stashReads[id] or 0) + 1 end
+            if fail.readStash and type(id) == 'string' then error('cannot read stash') end
+
+            -- THE SHAPE REAL ox_inventory ANSWERS IN, when a test asks for
+            -- it. GetInventoryItems hands back the inventory's own `items`
+            -- table, which is KEYED BY SLOT: a player with three things in
+            -- slots 1, 3 and 5 has nothing at all at 2 and 4, and every
+            -- inventory somebody has moved things around in looks like that.
+            --
+            -- The dense array below is the shape this fixture used
+            -- everywhere, and it is the one shape where a reader that stops
+            -- at the first hole and one that does not agree -- which is why
+            -- the hole was invisible to this suite for as long as it was.
+            if opts.slotted then
+                local out = {}
+                for index, item in ipairs(bucket(id)) do
+                    local slot = index * 2 - 1
+                    out[slot] = {
+                        name = item.name,
+                        count = item.count,
+                        metadata = item.metadata,
+                        -- NOT ON EVERY ITEM. ox_inventory stamps `slot` on
+                        -- the entries it hands back, but the KEY is the
+                        -- authority and always there -- so every third one
+                        -- goes without, and a reader that only trusts the
+                        -- field loses track of where it belongs.
+                        slot = (index % 3 ~= 0) and slot or nil,
+                    }
+                end
+                if falseSlots[id] then out[2] = false end
+                return out
+            end
+
+            local out = {}
+            for _, item in ipairs(bucket(id)) do
+                out[#out + 1] = { name = item.name, count = item.count, metadata = item.metadata }
+            end
+            if falseSlots[id] then table.insert(out, 1, false) end
+            return out
+        end,
+        AddItem = function(_self, id, name, count, metadata)
+            if fail.stash and type(id) == 'string' then error('stash is full') end
+
+            -- OUT OF SLOTS. Real ox_inventory refuses rather than throwing,
+            -- and refuses the whole add rather than taking part of it -- which
+            -- is exactly the branch stow() rolls back from.
+            if type(id) == 'string' and stashes[id] then
+                local used = 0
+                for _ in pairs(stashes[id]) do used = used + 1 end
+                if used >= (stashSlots[id] or math.huge) then return false end
+            end
+            -- REFUSED, not thrown. This is what a full stash, or an item the
+            -- operator's ox_inventory data does not know, actually does.
+            if fail.stashRefuse and type(id) == 'string' then return false end
+            if fail.give and type(id) == 'number' then return false end
+            -- NO ANSWER AT ALL, which is not the same as a refusal and was
+            -- being read as success. The stash is where an item is safe, and
+            -- removing it from there on a nil is how it gets destroyed.
+            if fail.giveSilent and type(id) == 'number' then return nil end
+            -- ONE NAMED ITEM, not everything. A return that fails COMPLETELY
+            -- and one that fails PARTLY are different animals: the partial
+            -- one has already put some of the player's belongings back in
+            -- their pockets and taken them out of the stash, which is the
+            -- state the door has to survive being run over a second time.
+            if type(fail.refuseNamed) == 'table' and type(id) == 'number'
+                and fail.refuseNamed[name] then
+                return false
+            end
+            -- ONLY the ammo item, never the weapon. `give` above refuses
+            -- everything a player is handed, so a test using it to break the
+            -- ammunition also stops the weapon being issued -- and then
+            -- "the player is not carrying that weapon" is true for the wrong
+            -- reason.
+            if fail.ammoItem and type(id) == 'number'
+                and type(name) == 'string' and name:find('^ammo') then
+                return false
+            end
+            -- THE MIRROR OF THE FLAG ABOVE: the WEAPON refused and the
+            -- rounds fine. `give` refuses everything, which cannot tell
+            -- "the arena could not arm them" from "the arena could not load
+            -- them" -- and those two failures are supposed to be handled
+            -- completely differently.
+            if fail.weaponItem and type(id) == 'number'
+                and type(name) == 'string' and name:find('^WEAPON') then
+                return false
+            end
+            local into = bucket(id)
+            into[#into + 1] = { name = name, count = count, metadata = metadata }
+            return true
+        end,
+        GetItemCount = function(_self, id, name)
+            -- THE COUNT READ CAN FAIL ON ITS OWN, separately from the slot
+            -- read above it. It is what records the floor -- how much of an
+            -- item a fighter walked in already holding -- and a floor that
+            -- was never read is the whole subject of one test below.
+            if fail.count and type(id) == 'number' then error('inventory is not loaded') end
+            local total = 0
+            for _, item in ipairs(bucket(id)) do
+                if item.name == name then total = total + (tonumber(item.count) or 0) end
+            end
+            return total
+        end,
+        --- REFUSED OUTRIGHT WHEN THEY DO NOT HOLD THAT MANY, which is what
+        --- ox_inventory actually does and is the entire subject of takeBack:
+        --- it does not take what is there and shrug. The old stub here
+        --- matched a stack whose count was EXACTLY the number asked for,
+        --- which could express neither a partial removal nor that refusal --
+        --- so the arena asking a player for 250 rounds they no longer had
+        --- looked the same in this suite as asking for the 120 they did.
+        RemoveItem = function(_self, id, name, count)
+            local from = bucket(id)
+            local want = tonumber(count) or 0
+
+            -- STUCK IN THE STASH: the item is handed to the player and then
+            -- CANNOT be taken back out of the stash it came from, so a copy
+            -- exists in two places at once. Distinct from every refusal
+            -- above, which stop a player being GIVEN something -- this one
+            -- happens after they already have it, and it is the only way a
+            -- door can duplicate somebody's property.
+            if type(fail.stuckInStash) == 'table' and type(id) ~= 'number'
+                and fail.stuckInStash[name] then
+                return false
+            end
+
+            local total = 0
+            for _, item in ipairs(from) do
+                if item.name == name then total = total + (tonumber(item.count) or 0) end
+            end
+            if total < want then return false end
+
+            for index = #from, 1, -1 do
+                if want <= 0 then break end
+                if from[index].name == name then
+                    local have = tonumber(from[index].count) or 0
+                    if have <= want then
+                        want = want - have
+                        table.remove(from, index)
+                    else
+                        from[index].count = have - want
+                        want = 0
+                    end
+                end
+            end
+            return true
+        end,
+        ClearInventory = function(_self, id)
+            if fail.clear and type(id) == 'number' then error('cannot clear') end
+            if fail.clearRefuse and type(id) == 'number' then return false end
+            -- A CLEAR THAT SAYS YES AND DOES NOTHING, which is what
+            -- ox_inventory does for an inventory it has not loaded: it answers
+            -- and the pockets are untouched. Not a refusal -- a refusal is
+            -- `clearRefuse` above and the resource has always handled it --
+            -- but the far worse case it could not tell apart from success.
+            if fail.clearLies and type(id) == 'number' then return true end
+            if type(id) == 'number' then inv[id] = {} else stashes[id] = {} end
+            return true
+        end,
+        registerHook = function(_self, name, fn)
+            if fail.hook then error('this build has no hooks') end
+            hooks[name] = fn
+            return true
+        end,
+    }
+
+    --- Who the dispatch flag says has actually been teleported into a round.
+    --- The drop guard asks this rather than the stash, because with the door
+    --- off nobody is stashed and every fighter would look like a bystander.
+    local placed = {}
+
+    local env = Sandbox.newArenaEnv({
+        exports = setmetatable({ ox_inventory = ox }, { __call = function() end }),
+        ArenaDispatch = not opts.noDispatch and {
+            Set = function(src) placed[src] = true end,
+            Clear = function(src) placed[src] = nil end,
+            IsPlayerInArena = function(src) return placed[src] == true end,
+        } or nil,
+        -- ox_inventory can come up AFTER this resource. Resource start order
+        -- is not guaranteed and Crimson-Arena is deliberately asked to start
+        -- early, so "not started yet" is an ordinary state and not an error.
+        GetResourceState = function(name)
+            if name ~= 'ox_inventory' then return 'missing' end
+            return waits >= (opts.inventoryStartsAfter or 0) and 'started' or 'missing'
+        end,
+        Wait = opts.retry and runner.Wait or function() waits = waits + 1 end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        AddEventHandler = function(name, fn) handlers[name] = fn end,
+        CreateThread = opts.retry and runner.CreateThread or function(fn) fn() end,
+        GetPlayers = function()
+            local out = {}
+            for src in pairs(connected) do out[#out + 1] = tostring(src) end
+            table.sort(out)
+            return out
+        end,
+        -- RECORDED, not swallowed. A player whose belongings could not be
+        -- handed back is told so, and a stub that dropped the message would
+        -- make the assertion about it pass against a server that says
+        -- nothing -- which is the defect it exists to catch.
+        TriggerClientEvent = function(event, target, payload)
+            sent[#sent + 1] = { event = event, target = target, payload = payload }
+        end,
+        print = function(line) console[#console + 1] = line end,
+        lib = Sandbox.newOxLib(),
+        ArenaGetPlayer = function(src)
+            return { PlayerData = { citizenid = cidOf(src) } }
+        end,
+    })
+    -- OFF UNLESS A TEST ASKS FOR IT. The retry sweep is a `while true do
+    -- Wait(...) end`, and the CreateThread above runs a body to completion,
+    -- so leaving the shipped default on would hang every test in this file.
+    -- Tests that want it set it back through `mutate`, with opts.retry.
+    env.Config.Loadouts.inventory.returnRetrySeconds = 0
+    if mutate then mutate(env.Config) end
+
+    Sandbox.loadInto('../server/util.lua', env)
+    env.ArenaGetPlayer = function(src)
+        return { PlayerData = { citizenid = cidOf(src) } }
+    end
+    Sandbox.loadInto('../server/ammo.lua', env)
+
+    return {
+        env = env,
+        ammo = env.ArenaAmmo,
+        --- Shrinks every stash to `slots`, whatever it was registered with.
+        ---
+        --- Applied to the LIMIT TABLE rather than through RegisterStash, so a
+        --- test can lower the ceiling under a stash the production code will
+        --- register again with its own number a moment later -- which is
+        --- exactly what stow() does.
+        stashCeiling = function(slots)
+            setmetatable(stashSlots, { __newindex = function(tbl, key)
+                rawset(tbl, key, slots)
+            end })
+            for id in pairs(stashSlots) do stashSlots[id] = slots end
+        end,
+        --- Every item name a player is holding, sorted, as a comparable string.
+        carrying = function(src)
+            local names = {}
+            for _, item in ipairs(inv[src] or {}) do names[#names + 1] = item.name end
+            table.sort(names)
+            return table.concat(names, ',')
+        end,
+        --- HOW MANY OF ONE ITEM A PLAYER HOLDS, ADDED UP ACROSS STACKS.
+        ---
+        --- `itemNamed` below answers the FIRST matching row, which is the
+        --- right shape for asking about a weapon's metadata and the wrong
+        --- one for asking how much ammunition somebody has: AddItem appends
+        --- a row rather than merging, so two issues of thirty rounds are two
+        --- rows of thirty and reading the first says thirty. A test that did
+        --- that measured a shortfall the resource had not applied.
+        countOf = function(src, name)
+            local total = 0
+            for _, item in ipairs(inv[src] or {}) do
+                if item.name == name then total = total + (tonumber(item.count) or 0) end
+            end
+            return total
+        end,
+        --- One item as it actually sits in the inventory, metadata and all.
+        --- `carrying` flattens to names, which is the right shape for asking
+        --- WHAT somebody holds and useless for asking what state it is in --
+        --- and a weapon's magazine lives in its metadata.
+        itemNamed = function(src, name)
+            for _, item in ipairs(inv[src] or {}) do
+                if item.name == name then return item end
+            end
+            return nil
+        end,
+        stashContents = function(src)
+            local names = {}
+            for _, item in ipairs(stashes['crimson_arena_CID' .. tostring(src)] or {}) do
+                names[#names + 1] = item.name
+            end
+            table.sort(names)
+            return table.concat(names, ',')
+        end,
+        --- Uses some of a stackable item up, the way firing a weapon spends
+        --- rounds through ox_inventory. Not `give` with a negative: a stack
+        --- has to actually shrink, or nothing downstream can tell a fighter
+        --- who reloaded from one who never fired.
+        spend = function(src, name, count)
+            local want = count
+            for index = #(inv[src] or {}), 1, -1 do
+                if want <= 0 then break end
+                local item = inv[src][index]
+                if item.name == name then
+                    local have = item.count or 0
+                    if have <= want then
+                        want = want - have
+                        table.remove(inv[src], index)
+                    else
+                        item.count = have - want
+                        want = 0
+                    end
+                end
+            end
+        end,
+        give = function(src, name, count)
+            inv[src] = inv[src] or {}
+            inv[src][#inv[src] + 1] = { name = name, count = count }
+        end,
+        breakOn = function(what, value) fail[what] = value == nil and true or value end,
+        --- Empties a stash behind the resource's back, without touching the
+        --- record that says something was put in it.
+        ---
+        --- WHAT A FORGOTTEN STASH LOOKS LIKE. ox_inventory drops its stashes
+        --- on a restart, and a stash it has been re-registered for is a stash
+        --- it reads as empty -- indistinguishable, from the outside, from one
+        --- that never had anything in it.
+        forgetStash = function(id) stashes[id] = {} end,
+        --- Runs the retry sweep's thread one pass. Two steps is one pass:
+        --- the loop's Wait is its first statement, so the first resume only
+        --- primes the coroutine. Needs opts.retry.
+        step = function() runner.step() end,
+        --- Puts a player on the server, so GetPlayers reports them.
+        connect = function(src) connected[src] = true end,
+        disconnect = function(src) connected[src] = nil end,
+        --- A DIFFERENT CHARACTER arriving on a server id somebody else has
+        --- just vacated, which is what the server does with every freed slot
+        --- and is not the same event as a reconnect below.
+        recycleId = function(src, citizenid, items)
+            identity[src] = citizenid
+            connected[src] = true
+            inv[src] = {}
+            for _, item in ipairs(items or {}) do
+                inv[src][#inv[src] + 1] = { name = item.name, count = item.count }
+            end
+        end,
+        --- The same CHARACTER coming back on a different server id, which is
+        --- what a reconnect actually is.
+        reconnect = function(oldSrc, newSrc)
+            identity[newSrc] = cidOf(oldSrc)
+            connected[oldSrc] = nil
+            connected[newSrc] = true
+        end,
+        --- What is in one CHARACTER's stash, by citizen id rather than by
+        --- server id -- the only handle that still works across a reconnect.
+        --- Puts something into a character's stash directly, with nothing in
+        --- this resource's memory knowing about it -- which is exactly the
+        --- state a server restart leaves behind.
+        putInStash = function(citizenid, name, count)
+            local id = 'crimson_arena_' .. citizenid
+            stashes[id] = stashes[id] or {}
+            stashes[id][#stashes[id] + 1] = { name = name, count = count }
+        end,
+        --- The names a player is holding IN THE ORDER THEY WERE HANDED OVER,
+        --- which `carrying` deliberately destroys by sorting. The order is
+        --- the whole question when a return only partly fits.
+        carryingInOrder = function(src)
+            local names = {}
+            for _, item in ipairs(inv[src] or {}) do names[#names + 1] = item.name end
+            return table.concat(names, ',')
+        end,
+        --- Makes one character's stash answer with a `false` where an empty
+        --- slot would be, the way some ox_inventory builds do.
+        pokeStashSlot = function(citizenid)
+            falseSlots['crimson_arena_' .. citizenid] = true
+        end,
+        stashReadsOf = function(citizenid)
+            return stashReads['crimson_arena_' .. citizenid] or 0
+        end,
+        --- Marks a player as actually being in a round, the way the dispatch
+        --- flag does in production.
+        place = function(src) placed[src] = true end,
+        stashOfCid = function(citizenid)
+            local names = {}
+            for _, item in ipairs(stashes['crimson_arena_' .. citizenid] or {}) do
+                names[#names + 1] = item.name
+            end
+            table.sort(names)
+            return table.concat(names, ',')
+        end,
+        --- Puts ox_inventory back together, so a retry after a failed
+        --- restore can be driven.
+        fixOn = function(what) fail[what] = nil end,
+        config = env.Config,
+        --- What is sitting in one player's arena stash, by name. The stash is
+        --- the promise: anything that could not be handed back has to still
+        --- be in it, because a player can be pointed at a real ox_inventory
+        --- stash and cannot be pointed at a deleted item.
+        stashed = function(src)
+            local names = {}
+            for id, items in pairs(stashes) do
+                if tostring(id):find(tostring(src), 1, true) then
+                    for _, item in ipairs(items) do names[#names + 1] = item.name end
+                end
+            end
+            table.sort(names)
+            return table.concat(names, ',')
+        end,
+        hook = function(name) return hooks[name] end,
+        log = function() return table.concat(console, '\n') end,
+
+        --- Every notification sentence one player has been shown, joined.
+        --- The real server/util.lua renders these off the real locale file,
+        --- so a message whose key does not exist fails here rather than on
+        --- somebody's screen.
+        notices = function(target)
+            local out = {}
+            for _, message in ipairs(sent) do
+                if message.event == 'crimson_arena:client:notify' and message.target == target then
+                    out[#out + 1] = tostring((message.payload or {}).description or '')
+                end
+            end
+            return table.concat(out, '\n')
+        end,
+        stopResource = function() handlers['onResourceStop']('crimson_arena') end,
+    }
+end
+
+--- @return table
+local function loadoutOf(item, ammo)
+    return {
+        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = ammo, ammoTypeItem = item, components = {} } },
+        armor = 100, health = 200,
+    }
+end
+
+--- WHETHER THE ARENA IS STILL HOLDING THIS PLAYER'S OWN KIT.
+---
+--- ArenaAmmo.IsHolding and ArenaAmmo.StashOf answered these two questions
+--- until 2fec9fe deleted them: nothing in the shipped tree called either one.
+--- HeldFor is the reader that survived, and the commit that removed the other
+--- two says so in as many words -- all three went through the same private
+--- ownRecord, which is what makes these exact stand-ins rather than
+--- approximations. The questions the tests below ask are unchanged; only the
+--- function that answers them is.
+--- @param ammo table -- env.ArenaAmmo
+--- @param src integer
+--- @return boolean
+local function isHolding(ammo, src)
+    return ammo.HeldFor(src) ~= nil
+end
+
+--- Where that kit is, or nil when the arena is holding none.
+--- @param ammo table -- env.ArenaAmmo
+--- @param src integer
+--- @return string?
+local function stashOf(ammo, src)
+    local held = ammo.HeldFor(src)
+    return held and held.stash or nil
+end
+
+local OWN = { { name = 'phone', count = 1 }, { name = 'water', count = 2 } }
+
+-- ========================================================================
+-- The door
+-- ========================================================================
+
+t.test('a player walks in with nothing of their own', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), '', 'their pockets are empty inside the arena')
+    t.equals(s.stashContents(1), 'phone,water', 'and their kit is safe in their stash')
+    t.isTrue(isHolding(s.ammo, 1))
+end)
+
+t.test('and walks out with exactly what they walked in with', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.equals(s.carrying(1), 'phone,water')
+    t.equals(s.stashContents(1), '', 'nothing left behind in the stash')
+    t.isFalse(isHolding(s.ammo, 1))
+end)
+
+t.test('everything the arena gave them is destroyed on the way out', function()
+    local s = newServer({ [1] = OWN }, function(c) c.Loadouts.ammoItems.enabled = true end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 250))
+
+    -- THE WEAPON IS AN ITEM TOO, and this line is the change. On an
+    -- ox_inventory server a weapon handed to the ped is reconciled straight
+    -- back off the player, because ox_inventory decides what a ped holds
+    -- from what the inventory contains -- and the door has just emptied it.
+    -- So the arena issues the weapon here, as an item, and the client no
+    -- longer touches the ped. Before this the assertion read
+    -- 'ammo-rifle-ap' alone and every player spawned unarmed.
+    t.equals(s.carrying(1), 'WEAPON_TEST,ammo-rifle-ap',
+        'in the arena they have the issued weapon and the issued round, and nothing of their own')
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.carrying(1), 'phone,water', 'and none of it leaves with them -- weapon included')
+end)
+
+t.test('ammunition LOOTED off a body does not leave either', function()
+    local s = newServer({ [1] = OWN }, function(c) c.Loadouts.ammoItems.enabled = true end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 100))
+
+    -- They kill somebody and empty their pockets.
+    s.give(1, 'ammo-rifle-ap', 500)
+    s.give(1, 'gold-bar', 3)
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.carrying(1), 'phone,water', 'the arena is not a way to carry anything out of it')
+end)
+
+t.test('a player who owned nothing gets nothing back', function()
+    local s = newServer(nil, function(c) c.Loadouts.ammoItems.enabled = true end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.equals(s.carrying(1), 'WEAPON_TEST,ammo-rifle', 'the weapon is issued as an item as well')
+
+    s.ammo.Reclaim(1)
+    t.equals(s.carrying(1), '')
+end)
+
+-- ========================================================================
+-- THE WEAPON IS AN ITEM
+--
+-- The bug this covers spawned every player in the arena unarmed, on the
+-- exact configuration this resource was written for.
+--
+-- Two of my own features collided. ox_inventory owns weapons: it decides
+-- what a ped holds from what the inventory contains, and reconciles the two
+-- continuously. The door empties the player's inventory into a stash on
+-- entry. So a weapon handed to the ped by the client was a weapon with no
+-- item behind it, and ox_inventory took it straight back off them -- with
+-- nothing in any console, because neither half was doing anything wrong.
+--
+-- The weapon is issued as an ITEM now, from the server, magazine in its
+-- metadata, and the client does not touch the ped when ox_inventory is
+-- running. These tests are about the item, which is the part that decides
+-- whether a player is armed.
+-- ========================================================================
+
+t.test('the loadout weapon is handed over as an item, not left to the ped', function()
+    -- AMMO ITEMS OFF, and now said out loud rather than inherited.
+    --
+    -- This used to lean on the shipped default, with a comment calling it
+    -- "the shipped setting" -- and then the shipped setting changed, and the
+    -- test started failing for a reason that had nothing to do with what it
+    -- checks. A test about weapons should not move when an ammunition
+    -- default does.
+    --
+    -- What it is really asserting: weapons are NOT behind the ammo-items
+    -- toggle. Putting them there would leave a default install issuing
+    -- nobody anything at all.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = false
+    end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.equals(s.carrying(1), 'WEAPON_TEST',
+        'the weapon did not arrive as an item, so ox_inventory will disarm the player on sight')
+end)
+
+t.test('the magazine rides in the item metadata rather than being set on the ped', function()
+    -- SetPedAmmo is reconciled away exactly like the weapon, so a weapon
+    -- whose rounds are not in its metadata arrives empty.
+    --
+    -- ONE MAGAZINE OF THE SIXTY, not all of it: the rest is handed over as
+    -- items, and the test below this one is the one that holds the total.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    local weapon = s.itemNamed(1, 'WEAPON_TEST')
+    t.isNotNil(weapon, 'no weapon item to inspect')
+    t.equals(weapon.metadata and weapon.metadata.ammo, 30,
+        'the weapon was issued without its magazine')
+end)
+
+t.test('DEFECT: sixty rounds picked is sixty rounds carried, not a hundred and twenty', function()
+    -- THE ONE ASSERTION NEITHER HALF EVER MADE. The magazine was written by
+    -- issueWeapons and the items by the loop after it, each correct on its
+    -- own and each with its own passing test -- and both were issuing the
+    -- WHOLE pick. Sixty chosen, sixty in the gun, sixty in the pocket, a
+    -- hundred and twenty carried, on every weapon of every round ever
+    -- fought here. The total was the thing nobody asserted.
+    --
+    -- Driven through the REAL catalogue rather than a synthetic entry,
+    -- because that is where it happened: a shipped weapon, a shipped ammo
+    -- item, and the shipped magazine read off the weapon's own options.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 60 } } })
+
+    t.equals(#loadout.weapons, 1, 'the shipped pistol stopped resolving, so this proves nothing')
+    t.equals(loadout.weapons[1].ammoTypeItem, 'ammo-9',
+        'the pistol stopped pulling its own round, which is the other half of this')
+
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local weapon = s.itemNamed(1, 'WEAPON_PISTOL')
+    local rounds = s.itemNamed(1, 'ammo-9')
+    t.isNotNil(weapon, 'the pistol was never issued')
+
+    local loaded = (weapon.metadata and weapon.metadata.ammo) or 0
+    local spare = (rounds and rounds.count) or 0
+
+    t.equals(loaded + spare, 60,
+        ('a player who picked 60 rounds is carrying %d (%d loaded, %d spare)')
+            :format(loaded + spare, loaded, spare))
+
+    -- And the split is the one the operator's own config describes: the
+    -- smallest amount the pistol's own list offers is 30.
+    t.equals(loaded, 30, 'the magazine is not the weapon\'s own smallest option')
+    t.equals(spare, 30, 'the remainder did not reach the inventory as items')
+end)
+
+t.test('and a pick that fits in one magazine hands over no loose rounds at all', function()
+    -- Thirty rounds is thirty rounds. Issuing a magazine AND thirty items
+    -- would be the same doubling one size down.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 30 } } })
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local weapon = s.itemNamed(1, 'WEAPON_PISTOL')
+    t.equals(weapon.metadata and weapon.metadata.ammo, 30, 'the gun did not get the rounds')
+    t.isNil(s.itemNamed(1, 'ammo-9'), 'loose rounds were issued on top of a full magazine')
+end)
+
+t.test('and the split is read off the WEAPON, not one number for every gun', function()
+    -- THE PISTOL CANNOT PROVE THIS. Its smallest option is 30 and the
+    -- blanket default is also 30, so a door that never looked at the weapon
+    -- at all would issue exactly the same thing. The heavy sniper's own
+    -- list starts at 10, which tells the two apart.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'heavysniper', ammo = 40 } } })
+    t.equals(#loadout.weapons, 1, 'the shipped heavy sniper stopped resolving')
+
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local weapon = s.itemNamed(1, 'WEAPON_HEAVYSNIPER')
+    local rounds = s.itemNamed(1, 'ammo-heavysniper')
+    t.isNotNil(weapon, 'the heavy sniper was never issued')
+
+    local loaded = (weapon.metadata and weapon.metadata.ammo) or 0
+    local spare = (rounds and rounds.count) or 0
+
+    t.equals(loaded, 10, 'the sniper was loaded with something other than its own 10')
+    t.equals(spare, 30, 'the remainder is wrong, so the total is wrong')
+    t.equals(loaded + spare, 40, 'a player who picked 40 rounds is carrying a different number')
+end)
+
+t.test('and with ammo items switched off the whole pick stays in the magazine', function()
+    -- config.lua promises exactly this: "rounds then travel in the weapon's
+    -- own metadata instead". Splitting a pick that has nowhere to be split
+    -- INTO would hand somebody thirty rounds when they asked for sixty.
+    local s = newServer({ [1] = {} }, function(config)
+        config.Loadouts.ammoItems.enabled = false
+    end)
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 60 } } })
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local weapon = s.itemNamed(1, 'WEAPON_PISTOL')
+    t.equals(weapon.metadata and weapon.metadata.ammo, 60,
+        'the pick was split even though there are no items to split it into')
+    t.isNil(s.itemNamed(1, 'ammo-9'), 'ammo items were issued while they are switched off')
+end)
+
+t.test('melee is issued with no ammo in its metadata at all', function()
+    -- Not zero -- absent. ox_inventory reads a missing ammo key as "this is
+    -- not an ammo weapon"; a present zero reads as an empty one.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', {
+        weapons = { { key = 'blade', weapon = 'WEAPON_TEST', ammo = 0, components = {} } },
+        armor = 100, health = 200,
+    })
+
+    local weapon = s.itemNamed(1, 'WEAPON_TEST')
+    t.isNotNil(weapon)
+    t.isNil(weapon.metadata and weapon.metadata.ammo,
+        'a blade was issued carrying a magazine')
+end)
+
+t.test('DEFECT: and a REAL blade, resolved the way the server resolves one', function()
+    -- THE TEST ABOVE WAS VACUOUS AND SAID SO CONFIDENTLY. It hands in
+    -- `ammo = 0` -- a value Arena.ResolveAmmo never produces for a melee
+    -- weapon. Every one of the shipped blades resolves to 1, because
+    -- config.weapons.lua gives them `default = max = 1` so the ammo
+    -- machinery has a number to agree on. So the branch this is about was
+    -- never reached: splitRounds returned 1, and every knife and bat on
+    -- every server was issued carrying `metadata.ammo = 1`, which is
+    -- precisely the "present zero reads as an empty one" mistake the comment
+    -- above warns against -- one worse.
+    --
+    -- The fix reads the CATALOGUE, so the test has to go through the
+    -- catalogue too. Nothing is hand-fed here but the key.
+    local s = newServer({ [1] = OWN })
+
+    local blade = nil
+    for _, entry in ipairs(s.env.Arena.GetEnabledWeapons()) do
+        if s.env.Arena.IsMeleeWeapon(entry) then blade = entry break end
+    end
+    t.isNotNil(blade, 'no melee weapon is enabled, so this proves nothing')
+
+    -- Through the real resolver, so the ammo is whatever the server would
+    -- actually have put on it.
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = blade.key } } })
+    t.equals(#loadout.weapons, 1, 'the blade did not resolve')
+    t.isTrue((loadout.weapons[1].ammo or 0) > 0,
+        'the blade resolved to zero ammo, so this test is back to proving nothing')
+
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local given = s.itemNamed(1, loadout.weapons[1].weapon)
+    t.isNotNil(given, 'the blade was never handed over')
+    t.isNil(given.metadata and given.metadata.ammo,
+        'a real blade was issued carrying a magazine of '
+            .. tostring(given.metadata and given.metadata.ammo))
+end)
+
+t.test('a weapon ox_inventory refuses is named in the console, not swallowed', function()
+    -- "No weapon appeared" has two completely different causes: the item was
+    -- refused, or it was accepted and something took it back afterwards.
+    -- Without a line for each they are the same silence, and the operator
+    -- has nothing to go on.
+    local s = newServer({ [1] = OWN })
+    s.breakOn('give')
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    local console = s.log()
+    t.contains(console, 'WEAPON_TEST', 'the refused weapon is not named')
+    t.contains(console, 'issued NOTHING', 'a player left unarmed is not called out')
+end)
+
+t.test('and a weapon that WAS accepted says so, with what it was loaded with', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    local console = s.log()
+    t.contains(console, 'gave WEAPON_TEST')
+    t.contains(console, 'ammo 30', 'the magazine it was issued with is not recorded')
+    t.notContains(console, 'issued NOTHING')
+end)
+
+t.test('DEFECT: with the door OFF the arena weapon has to be taken back by name', function()
+    -- The door is what usually destroys the arena kit: it clears the whole
+    -- inventory on the way out. Switch it off and nothing does -- Reclaim
+    -- returned early the moment it found no stash, so every weapon the arena
+    -- issued stayed in the player's pockets, permanently, and the arena
+    -- became a weapon shop.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.inventory.stripOnEntry = false
+        -- Weapons only, so this stays a test about the weapon reclaim. The
+        -- ammunition reclaim is its own test below.
+        c.Loadouts.ammoItems.enabled = false
+    end)
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.equals(s.carrying(1), 'WEAPON_TEST,phone,water',
+        'with the door off they keep their own kit AND get the arena weapon')
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.carrying(1), 'phone,water',
+        'the arena weapon left with them -- the arena is now a way to acquire guns')
+end)
+
+t.test('and taking it back does not touch anything of the player\'s own', function()
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.inventory.stripOnEntry = false
+        c.Loadouts.ammoItems.enabled = false
+    end)
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.equals(s.carrying(1), 'phone,water', 'their own kit is untouched, in order')
+end)
+
+t.test('DEFECT: the ROUNDS come back too, or the arena is a slower weapon shop', function()
+    -- The leak that turning ammo items on opened, and it is the same shape as
+    -- the weapon one above.
+    --
+    -- Issued ammunition was recorded as a running COUNT -- enough for the
+    -- console line, useless to the exit, because knowing sixty rounds were
+    -- given says nothing about which item to take back. With the door on that
+    -- never showed: the door clears the whole inventory anyway. With the door
+    -- off the rounds simply stayed. Join, collect sixty, leave, keep them,
+    -- repeat -- a weapon shop with extra steps.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.inventory.stripOnEntry = false
+        c.Loadouts.ammoItems.enabled = true
+    end)
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.contains(s.carrying(1), 'ammo-rifle',
+        'the rounds were never issued, so this proves nothing about taking them back')
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.carrying(1), 'phone,water',
+        'the rounds left with the player -- the arena is now a way to farm ammunition')
+end)
+
+-- ========================================================================
+-- Every way stowing can fail -- the player must keep their kit
+-- ========================================================================
+
+t.test('a stash that will not register leaves them carrying their own kit', function()
+    local s = newServer({ [1] = OWN })
+    s.breakOn('register')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water', 'not stripped, because it could not be put anywhere safe')
+    t.isFalse(isHolding(s.ammo, 1), 'and nothing is owed back to them')
+    t.isTrue(s.log():find('keep their own kit', 1, true) ~= nil)
+end)
+
+t.test('DEFECT: a stash that REFUSES the write must not strip them either', function()
+    -- THE DIFFERENCE BETWEEN A THROW AND A NO. Every write in this file was
+    -- written as
+    --
+    --     local moved = pcall(function() return ox:AddItem(...) end)
+    --
+    -- where `moved` is the pcall flag and nothing else -- true whenever the
+    -- call did not throw, INCLUDING when ox_inventory returned false to say
+    -- it refused the item. A full stash, or an item the operator's own
+    -- ox_inventory data does not know, returns false rather than throwing.
+    --
+    -- So the loop reported success on a stash that had taken nothing, and the
+    -- ClearInventory behind it destroyed everything the player owned. The one
+    -- promise this resource makes is that a match cannot cost anyone
+    -- anything.
+    --
+    -- The test above proves the THROWING case was handled. Nothing proved
+    -- this one, and the whole suite passed with the bug in place.
+    local s = newServer({ [1] = OWN })
+    s.breakOn('stashRefuse')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water',
+        'THE PLAYER WAS STRIPPED INTO A STASH THAT REFUSED THEIR KIT -- it is gone')
+    t.isFalse(isHolding(s.ammo, 1), 'and nothing is owed back to them')
+end)
+
+t.test('and a clear that REFUSES puts the stashed kit back rather than losing it', function()
+    -- The other half of the same mistake, one line further down: the clear
+    -- reported success, so the kit stayed in the stash while the player was
+    -- treated as stripped -- and the record saying whose stash it was is what
+    -- the exit path reads to give it back.
+    local s = newServer({ [1] = OWN })
+    s.breakOn('clearRefuse')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water',
+        'a refused clear left the player without their kit')
+    t.isFalse(isHolding(s.ammo, 1))
+end)
+
+t.test('DEFECT: an item the player cannot be GIVEN back is left in the stash, not deleted', function()
+    -- restore() read the same value the same wrong way, and then removed the
+    -- item from the stash on the strength of it. So an item ox_inventory
+    -- refused to hand back was deleted from the one place it was safe --
+    -- and the exit reported the kit as returned.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(isHolding(s.ammo, 1), 'nothing was stashed, so this proves nothing')
+
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+
+    -- Not on the player (ox refused), so it must still be in the stash.
+    t.isTrue(s.stashed(1):find('phone', 1, true) ~= nil,
+        'AN ITEM THAT COULD NOT BE RETURNED WAS DELETED FROM THE STASH')
+    t.isTrue(s.log():find('still in stash', 1, true) ~= nil,
+        'and the player was never told where their belongings are')
+end)
+
+t.test('DEFECT: allowWeaponWithoutAmmoItem off takes the empty gun back', function()
+    -- The setting shipped documented and READ BY NOTHING: both values issued
+    -- the weapon, logged the missing rounds, and sent the player in holding a
+    -- gun that looked loaded and was not.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+    end)
+    s.breakOn('ammoItem')   -- ox refuses the ROUNDS, and issues the weapon
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-test', 60))
+
+    t.isFalse(s.carrying(1):find('WEAPON_TEST', 1, true) ~= nil,
+        'the weapon was left on a player who could not be given a single round for it')
+    t.isTrue(s.log():find('took back', 1, true) ~= nil,
+        'and nothing in the console says why they are unarmed')
+end)
+
+t.test('and ON -- the default -- it is left with them, empty', function()
+    -- The other half, so the test above is not passing on a build that simply
+    -- stopped issuing weapons.
+    local s = newServer({ [1] = OWN })
+    t.isTrue(s.config.Loadouts.ammoItems.allowWeaponWithoutAmmoItem,
+        'the shipped default changed, and this test is about the old one')
+    s.breakOn('ammoItem')
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-test', 60))
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST', 1, true) ~= nil,
+        'the weapon was taken back on a server that allows an empty gun')
+end)
+
+t.test('DEFECT: a finished match\'s records are actually dropped', function()
+    -- ArenaAmmo.Clear has always existed and was called from NOWHERE, so
+    -- every match a server ran left its issued-weapon and issued-ammunition
+    -- tables behind for good -- an unbounded leak on a resource whose whole
+    -- job is running matches back to back.
+    --
+    -- And Clear itself only dropped one of the three tables it is supposed
+    -- to, so wiring it up alone would have fixed a third of it.
+    --
+    -- ASSERTED THROUGH Clear'S OWN ANSWER AND NOTHING ELSE, because the probe
+    -- this used to read is gone. ArenaAmmo.OnLoan summed a second scalar
+    -- ledger that was never decremented when the arena took anything back --
+    -- it reported cumulative-issued, not outstanding -- and 2fec9fe deleted
+    -- the function and the ledger together. Nothing survives that can see the
+    -- per-match rows from out here, and re-deriving them in the fixture would
+    -- be asserting against a copy rather than against the code.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-test', 60))
+
+    -- Reclaimed first: Clear refuses while anybody is still owed their kit,
+    -- which is the guard and not the leak.
+    s.ammo.Reclaim(1, 'm1')
+    t.isTrue(s.ammo.Clear('m1'), 'a match nobody is owed anything on could not be dropped')
+end)
+
+t.test('DEFECT: an item ox_inventory answers NOTHING about is not taken out of the stash', function()
+    -- oxDid treats a nil return as success, which is a fine rule for
+    -- registering a stash or clearing an inventory -- nothing is lost by
+    -- believing it. It is the wrong rule for the one call whose next line
+    -- REMOVES the item from the stash, because that is the only
+    -- irreversible thing the door does.
+    --
+    -- ox_inventory's AddItem answers `success, response`. A nil where a true
+    -- belongs is a version or a code path we do not understand, and the safe
+    -- reading of an answer we do not understand is to leave the item where
+    -- it is.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(isHolding(s.ammo, 1), 'nothing was stashed, so this proves nothing')
+
+    s.breakOn('giveSilent')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.isTrue(s.stashed(1):find('phone', 1, true) ~= nil,
+        'AN ITEM OX_INVENTORY SAID NOTHING ABOUT WAS TAKEN OUT OF THE STASH')
+    t.isTrue(s.log():find('no answer', 1, true) ~= nil,
+        'and the operator was never told which item, or where it is')
+end)
+
+t.test('and it can still be handed back once ox_inventory answers properly', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('giveSilent')
+    s.ammo.Reclaim(1, 'm1')
+
+    s.fixOn('giveSilent')
+    t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the retry could not hand the kit back')
+    t.isFalse(isHolding(s.ammo, 1))
+end)
+
+t.test('DEFECT: a restore that FAILS keeps the record of where the kit is', function()
+    -- restore() returns false in exactly the cases where the player's
+    -- belongings are STILL IN THE STASH -- ox_inventory gone, or the stash
+    -- unreadable -- and its own log offers the stash name, because it is a
+    -- real openable stash.
+    --
+    -- Reclaim cleared the record on the line ABOVE that call, so the name was
+    -- thrown away with it: nothing could retry, Clear stopped refusing over
+    -- them, IsHolding said there was nothing held, and the debug line printed
+    -- STILL STASHED about a record it had just deleted.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(isHolding(s.ammo, 1), 'nothing was stashed, so this proves nothing')
+
+    s.breakOn('readStash')
+    t.equals(s.ammo.Reclaim(1, 'm1'), 0, 'a restore that could not read the stash reported success')
+
+    t.isTrue(isHolding(s.ammo, 1),
+        'the arena forgot it was holding a kit it had just failed to hand back')
+    t.isNotNil(stashOf(s.ammo, 1),
+        'and forgot WHICH stash it is in, which is the one thing the player needs')
+    t.equals(s.ammo.Owed(), 1,
+        'and does not count itself as owing anybody anything, so nothing will come back for it')
+end)
+
+t.test('and the PLAYER is told, not only the console', function()
+    -- All of it was written to the console: the server knew, the retry
+    -- knew, the operator could read it -- and the one person whose
+    -- belongings these are walked out of the arena with empty pockets and
+    -- no reason given. Somebody who thinks a script has eaten their
+    -- inventory files a report and stops playing.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.contains(s.notices(1), 'could not be handed back',
+        'the player was told nothing about belongings the server knows it is holding')
+end)
+
+t.test('and is told nothing when the kit comes back normally', function()
+    -- The other direction. A message on every clean exit is noise on every
+    -- round of a working server, which is most of them.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the ordinary return failed, so this proves nothing')
+    t.notContains(s.notices(1), 'could not be handed back',
+        'a player whose kit came straight back was told it had not')
+    t.notContains(s.notices(1), 'is back',
+        'a player whose kit never went missing was told it had come back')
+end)
+
+t.test('and hears about it when the retry finally hands it over', function()
+    -- The other end of the promise. A player told their gear is held has to
+    -- be told when it stops being held, or the message is worth nothing and
+    -- they go looking for a report to file anyway.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('readStash')
+
+    t.isTrue(s.ammo.ReturnLeftovers(1), 'the retry could not hand the kit back')
+    t.contains(s.notices(1), 'is back',
+        'the kit came back and nobody told the player it had')
+end)
+
+t.test('and a player the sweep merely LOOKED at hears nothing', function()
+    -- ReturnLeftovers is the sweep's one look per character, and it runs
+    -- against everybody on the server, not only debtors -- so an empty
+    -- stash settling cleanly is the ordinary case, over and over. Telling
+    -- somebody their gear is back when they never lost any is noise on a
+    -- working server, and it is what the `returned > 0` guard is for.
+    local s = newServer({ [2] = OWN })
+
+    t.isTrue(s.ammo.ReturnLeftovers(2), 'the empty stash did not settle cleanly')
+    t.notContains(s.notices(2), 'is back',
+        'a player who never left anything behind was told it had come back')
+end)
+
+t.test('and the match cannot be dropped while that is outstanding', function()
+    -- The guard is the whole point: dropping the match's records while a kit
+    -- is unreturned is how it becomes unreturnable.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.isFalse(s.ammo.Clear('m1'),
+        'the match was dropped while somebody\'s belongings were still in a stash')
+end)
+
+t.test('and once ox_inventory is working again the kit still comes back', function()
+    -- What keeping the record buys. A retry is only possible because the
+    -- stash name survived the failure.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'm1')
+
+    s.fixOn('readStash')
+    t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the retry could not find the kit it had been told about')
+    t.isFalse(isHolding(s.ammo, 1), 'the kit came back and the record stayed behind')
+    t.isTrue(s.ammo.Clear('m1'), 'the match still could not be dropped afterwards')
+    t.equals(s.ammo.Owed(), 0,
+        'and it still says it owes them, which is a stash it will keep re-opening for ever')
+end)
+
+t.test('and it still refuses while somebody is owed their kit', function()
+    -- The guard the leak fix must not trade away: dropping the record while
+    -- a stash is outstanding is how a kit becomes unreturnable.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-test', 60))
+
+    t.isFalse(s.ammo.Clear('m1'), 'a match still holding somebody\'s inventory was dropped')
+    t.isTrue(isHolding(s.ammo, 1), 'and their kit is now unreachable')
+end)
+
+-- ========================================================================
+-- The retry
+--
+-- The door already refused to destroy anything it could not hand back --
+-- a full inventory, a weight limit, a disconnect and a dead ox_inventory
+-- all leave a player's belongings sitting in a real, openable stash. What
+-- it did NOT do was ever try again: it logged the stash name and waited for
+-- an operator to read the console.
+--
+-- These are about the promise being kept without anybody watching. Every
+-- one of them ends with the player holding their own things again, and
+-- nothing in any of them opens a stash by hand.
+-- ========================================================================
+
+t.test('DEFECT: a second match does not destroy what a partial return handed back', function()
+    -- THE HOLE THE RETRY OPENED. Keeping the record on a failed restore is
+    -- what lets the sweep find the stash again -- and it is also what makes
+    -- the door skip a player who already has one. So:
+    --
+    --   they leave a match, half their kit goes back and half stays in the
+    --   stash; they join another, the door sees a record and does NOT stow
+    --   the half they are carrying; the round ends, and the exit's clear --
+    --   which is there to destroy the ARENA's kit -- destroys their own.
+    --
+    -- The remainder then fits, restore() returns true, and the exit reports
+    -- a clean return. Nothing anywhere records a loss.
+    local s = newServer({ [1] = OWN })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'the door did not stow their kit')
+
+    -- The water will not go back -- a weight limit, a full inventory. The
+    -- phone does.
+    s.breakOn('refuseNamed', { water = true })
+    t.equals(s.ammo.Reclaim(1, 'm1'), 0, 'a partial return reported success')
+    t.equals(s.carrying(1), 'phone', 'the half that COULD go back did not')
+    t.equals(s.stashOfCid('CID1'), 'water', 'the half that could not is not in the stash')
+
+    -- Whatever was wrong clears up, and they join another round.
+    s.fixOn('refuseNamed')
+    s.ammo.Issue(1, 'm2', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Reclaim(1, 'm2')
+
+    t.equals(s.carrying(1), 'phone,water',
+        'a match cost this player their phone, and reported a clean exit')
+end)
+
+t.test('and a second pass over the same record does not destroy it either', function()
+    -- THE DISCONNECT ROUTE INTO THE SAME HOLE, with no second match in it.
+    -- playerDropped reclaims unconditionally, and the sweep reclaims again
+    -- afterwards -- two passes over one record. If the second one clears the
+    -- player out, everything the first handed back goes with it.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'disconnected')
+    t.equals(s.carrying(1), 'phone', 'the half that could go back did not')
+
+    s.fixOn('refuseNamed')
+    s.ammo.Reclaim(1, 'retry')
+
+    t.equals(s.carrying(1), 'phone,water', 'the second pass destroyed what the first handed back')
+    t.equals(s.stashOfCid('CID1'), '', 'and their belongings are still in the stash')
+    t.isFalse(isHolding(s.ammo, 1), 'the record survived a return that finally completed')
+end)
+
+t.test('and the arena kit still comes off on that second pass, by name', function()
+    -- WHAT REFUSING TO CLEAR TWICE COULD HAVE COST. The wholesale clear is
+    -- how the arena's own weapons are destroyed on the way out; a pass that
+    -- skips it has to take them back some other way, or the fix for losing
+    -- a player's phone becomes a way to walk out with the arena's rifle.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.equals(s.itemNamed(1, 'WEAPON_TEST') ~= nil, true, 'the arena weapon was never issued')
+
+    -- The clear is REFUSED, so the arena kit survives the first pass, and
+    -- one of their own items will not go back either.
+    s.breakOn('clearRefuse')
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+
+    t.isNotNil(s.itemNamed(1, 'WEAPON_TEST'),
+        'the fixture cleared anyway, so this proves nothing')
+
+    s.fixOn('clearRefuse')
+    s.fixOn('refuseNamed')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.isNil(s.itemNamed(1, 'WEAPON_TEST'),
+        'the arena weapon walked out of the arena with them')
+    t.equals(s.carrying(1), 'phone,water', 'and their own belongings did not survive it')
+end)
+
+t.test('DEFECT: a stale record does not let somebody carry their own kit into the next round', function()
+    -- THE OTHER HALF OF THE SAME HOLE. Keeping the record after a partial
+    -- return is what lets the sweep find the stash again -- and the door
+    -- used to read "has a record" as "already stripped", so a player with
+    -- half their belongings back walked into their NEXT round still holding
+    -- them. Two things follow, and both are the arena's core promise:
+    -- nobody brings their own kit in, and nothing they loot leaves with them.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+    t.equals(s.carrying(1), 'phone', 'the partial return this is built on did not happen')
+
+    s.fixOn('refuseNamed')
+    s.ammo.Issue(1, 'm2', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), '', 'they walked into the next round carrying their own phone')
+    t.equals(s.stashOfCid('CID1'), 'phone,water',
+        'the phone they were holding never made it back into the stash')
+end)
+
+t.test('and issuing the same match twice does not stash the arena\'s own kit', function()
+    -- The guard the fix above has to keep. The player is stripped by the
+    -- FIRST pass, so by the second they are carrying nothing but what the
+    -- arena issued -- and a door that stows again puts the arena's rifle
+    -- into their stash, to be handed back on the way out as their own
+    -- property. That is the arena paying out weapons.
+    --
+    -- Nothing calls Issue twice for one match today; server/match.lua does
+    -- it once per player from sendEnterArena. This is here so that stays
+    -- true by test rather than by nobody having tried.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'the door did not stow their kit at all')
+
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.equals(s.stashOfCid('CID1'), 'phone,water',
+        'the arena\'s own kit was stowed into the player\'s stash')
+end)
+
+t.test('DEFECT: an item that would not go back is handed over on the next sweep', function()
+    -- The plain case, and the commonest one: their pockets were full at the
+    -- moment the match ended. The door correctly left everything in the
+    -- stash -- and then nothing ever asked ox_inventory a second time.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('give')
+    t.equals(s.ammo.Reclaim(1, 'm1'), 0, 'a refused restore reported success')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'the refused items were not left in the stash')
+    t.equals(s.carrying(1), '', 'they were handed things ox_inventory had refused')
+
+    -- Whatever was wrong stops being wrong. NOBODY IS TOLD.
+    s.fixOn('give')
+    t.equals(s.ammo.SweepReturns(), 1, 'the sweep did not hand anybody anything')
+
+    t.equals(s.carrying(1), 'phone,water', 'their own belongings never came back')
+    t.equals(s.stashOfCid('CID1'), '', 'and are still sitting in the stash')
+    t.equals(s.ammo.Owed(), 0, 'and it still counts them as owed')
+    t.isFalse(isHolding(s.ammo, 1), 'the arena still thinks it is holding their kit')
+    t.isTrue(s.ammo.Clear('m1'), 'and the finished match still cannot be dropped')
+
+    -- AND THEN IT STOPS. A debt that is not written off when it is paid is a
+    -- stash this resource re-opens for the rest of the server's life.
+    local reads = s.stashReadsOf('CID1')
+    s.ammo.SweepReturns()
+    t.equals(s.stashReadsOf('CID1'), reads, 'it kept re-opening a stash it had already emptied')
+end)
+
+t.test('and it goes on trying for as long as it has to', function()
+    -- One retry is not the fix. A player whose inventory is full stays full
+    -- until they do something about it, and the sweep has to still be there
+    -- when they do.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.equals(s.ammo.SweepReturns(), 0, 'it handed something over while ox_inventory was still refusing')
+    t.equals(s.ammo.SweepReturns(), 0, 'and again')
+    t.equals(s.ammo.Owed(), 1, 'and stopped counting them as owed while it was still true')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'their belongings did not survive the failed attempts')
+
+    s.fixOn('give')
+    t.equals(s.ammo.SweepReturns(), 1, 'it had given up by the time it could have worked')
+    t.equals(s.carrying(1), 'phone,water', 'their belongings never came back')
+end)
+
+t.test('DEFECT: somebody who comes back on a new server id is still handed their things', function()
+    -- The disconnect case, which is the one that actually loses people their
+    -- inventory. playerDropped reclaims -- into a source that has already
+    -- gone, so ox_inventory refuses it -- and `stashed` is keyed by SERVER
+    -- ID, an id they will not be given again. Every handle on their stash
+    -- went with the connection.
+    --
+    -- The stash name is built from the CITIZEN ID and nothing else, which is
+    -- the only reason this is recoverable at all.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'disconnected')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'nothing was left in the stash to come back for')
+
+    -- Same character, different server id. Nothing keyed by 1 is any use.
+    s.reconnect(1, 7)
+    s.fixOn('give')
+    t.equals(s.ammo.SweepReturns(), 1, 'they reconnected and nothing looked for their stash')
+
+    t.equals(s.carrying(7), 'phone,water', 'they came back to an empty inventory')
+    t.equals(s.stashOfCid('CID1'), '', 'and their things are still in a stash they cannot open')
+    t.isFalse(isHolding(s.ammo, 1), 'the record under their OLD id was left behind for ever')
+    t.isTrue(s.ammo.Clear('m1'), 'and it pinned the finished match with it')
+end)
+
+t.test('DEFECT: a stash a restart left behind is found with nothing in memory naming it', function()
+    -- `stashed` and the debt list are both in memory and go with a restart.
+    -- The stash does not: ox_inventory persists it, named from the character.
+    -- So after a restart the resource has no idea anyone is owed anything,
+    -- and the only thing that can tell it is looking.
+    local s = newServer({ [1] = {} })
+    s.putInStash('CID1', 'phone', 1)
+    s.putInStash('CID1', 'water', 2)
+
+    t.equals(s.ammo.SweepReturns(), 1, 'a stash left over from before the restart was never looked at')
+    t.equals(s.carrying(1), 'phone,water', 'their belongings did not come back')
+    t.equals(s.stashOfCid('CID1'), '', 'and are still in the stash')
+end)
+
+t.test('and a stash ox_inventory has forgotten is registered before it is read', function()
+    -- The restart case has a second half. ox_inventory forgets every stash
+    -- it was told about when IT restarts, and a stash it does not know is
+    -- not one it will read -- so looking without registering first finds
+    -- nothing, on precisely the servers where there is something to find.
+    local s = newServer({ [1] = {} })
+    s.putInStash('CID1', 'phone', 1)
+    s.breakOn('register')
+
+    t.equals(s.ammo.SweepReturns(), 0, 'it read a stash ox_inventory had refused to register')
+    t.equals(s.stashOfCid('CID1'), 'phone', 'and moved things out of it on that basis')
+
+    s.fixOn('register')
+    t.equals(s.ammo.SweepReturns(), 1, 'and then never tried again once registering worked')
+    t.equals(s.carrying(1), 'phone', 'their belongings never came back')
+end)
+
+t.test('and that look costs one read per character, not one per sweep', function()
+    -- The restart check is a stash read for somebody nothing says is owed
+    -- anything, which on a full server is a read per player. Once each is a
+    -- bounded cost. Every pass is a permanent tax on a resource whose whole
+    -- job is running matches back to back.
+    local s = newServer({ [1] = {} })
+
+    s.ammo.SweepReturns()
+    s.ammo.SweepReturns()
+    s.ammo.SweepReturns()
+
+    t.equals(s.stashReadsOf('CID1'), 1, 'the sweep re-read a stash it had already found empty')
+end)
+
+t.test('DEFECT: nothing is handed to somebody who is in a round', function()
+    -- THE GUARD THAT MATTERS MOST, and it is not a nicety. The exit clears
+    -- a player's whole inventory BEFORE it reads their stash. Put their own
+    -- belongings into their pockets mid-match and the next exit destroys
+    -- them -- the retry would become the thing it exists to prevent.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+
+    -- They are owed their kit AND they have started another round.
+    s.place(1)
+    s.fixOn('give')
+
+    t.equals(s.ammo.SweepReturns(), 0, 'it handed a fighter their own inventory mid-round')
+    t.equals(s.carrying(1), '', 'which the next exit would have destroyed')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'their belongings left the stash mid-match')
+end)
+
+t.test('and not to somebody the door has just shut behind either', function()
+    -- The same hazard one step earlier, and the reason the sweep asks about
+    -- the stash record as well as the dispatch flag. A player whose kit has
+    -- been stashed and whose exit has not run yet is owed nothing: their
+    -- belongings are in the stash on purpose.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.ammo.SweepReturns(), 0, 'the sweep undid the door while the match was still on')
+    t.equals(s.carrying(1), '', 'they walked into the arena carrying their own kit')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'which had been taken back out of the stash')
+end)
+
+
+t.test('DEFECT: a stash the sweep could not empty is remembered, not written off', function()
+    -- The two halves have to work together. The once-only look is what makes
+    -- checking every player affordable; the debt list is what remembers the
+    -- ones that look found something wrong with. Keep the first without the
+    -- second and a stash the sweep DID find, and could not empty, is written
+    -- off for the rest of the session -- worse than never having looked.
+    local s = newServer({ [1] = {} })
+    s.putInStash('CID1', 'phone', 1)
+
+    s.breakOn('give')
+    t.equals(s.ammo.SweepReturns(), 0, 'ox_inventory was refusing and something was handed over anyway')
+    t.equals(s.stashOfCid('CID1'), 'phone', 'and it came out of the stash')
+
+    s.fixOn('give')
+    t.equals(s.ammo.SweepReturns(), 1, 'the one look was spent on a refusal and never repeated')
+    t.equals(s.carrying(1), 'phone', 'their belongings never came back')
+end)
+
+t.test('and an exit that WORKED is not swept over again for ever', function()
+    -- The ordinary case, which is every match: the kit went back at the door
+    -- and this resource owes nobody anything. A debt that is not cleared when
+    -- it is paid turns that into a stash read per player per pass, for ever.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.ammo.Reclaim(1, 'm1'), 1, 'the ordinary exit failed, so this proves nothing')
+
+    s.ammo.SweepReturns()
+    local reads = s.stashReadsOf('CID1')
+    s.ammo.SweepReturns()
+    s.ammo.SweepReturns()
+
+    t.equals(s.stashReadsOf('CID1'), reads,
+        'it goes on opening the stash of somebody who was paid in full at the door')
+end)
+
+t.test('DEFECT: with no dispatch flag to ask, it hands over nothing at all', function()
+    -- server/dispatch.lua loads after this file, so "is this player in a
+    -- round?" is a question that can have no answer. It is answered NO
+    -- RETURN, and that direction is not arbitrary: the exit clears a
+    -- player's whole inventory before it reads their stash, so handing
+    -- somebody their own kit during a round is how the retry would come to
+    -- destroy the very thing it exists to protect. Waiting costs minutes.
+    local s = newServer({ [1] = {} }, nil, { noDispatch = true })
+    s.putInStash('CID1', 'phone', 1)
+
+    t.equals(s.ammo.SweepReturns(), 0,
+        'it handed things over without being able to tell who was mid-round')
+    t.equals(s.stashOfCid('CID1'), 'phone', 'and took them out of the stash to do it')
+    t.equals(s.carrying(1), '', 'and put them somewhere they could be cleared')
+end)
+
+t.test('DEFECT: the sweep runs on its own, with nobody calling it', function()
+    -- Everything above drives the sweep by hand, which proves it works and
+    -- not that it ever happens. This is the difference between "an operator
+    -- can fix it" and "it fixes itself", and it is the entire point.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.returnRetrySeconds = 30
+    end, { retry = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('give')
+
+    -- Two resumes is one pass: the loop waits before it works, so the first
+    -- only reaches that wait.
+    s.step()
+    s.step()
+
+    t.equals(s.carrying(1), 'phone,water',
+        'nothing swept on its own -- their belongings needed somebody to notice')
+end)
+
+t.test('and setting the interval to zero switches it off, as config.lua says', function()
+    -- An operator who turns it off gets exactly what this resource did
+    -- before: their things stay in the stash until somebody opens it.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.returnRetrySeconds = 0
+    end, { retry = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('give')
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('give')
+
+    s.step()
+    s.step()
+
+    t.equals(s.carrying(1), '', 'the sweep ran on a server that had switched it off')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'and emptied a stash it had been told to leave alone')
+end)
+
+t.test('DEFECT: the drop block waits for an ox_inventory that starts late', function()
+    -- It ran once at load and returned if ox_inventory was not started YET.
+    -- That is not a rare state: start order is not guaranteed, and this
+    -- resource is deliberately asked to start early, before the medical
+    -- script, to win the death race. So on any server where ox_inventory
+    -- came up second the hook was never installed, dropping in an arena was
+    -- allowed for the whole session, and nothing said so -- the only branch
+    -- that logs is the one where ox_inventory REFUSES the hook, which this
+    -- never reached.
+    local s = newServer({ [1] = OWN }, nil, { inventoryStartsAfter = 3 })
+
+    t.isNotNil(s.hook('swapItems'),
+        'ox_inventory started three seconds late and the drop block was never installed')
+end)
+
+t.test('and gives up loudly on one that never starts', function()
+    -- Thirty seconds, then it says so. Silence here reads as "drops are
+    -- blocked" to an operator, which is the opposite of what is true.
+    local s = newServer({ [1] = OWN }, nil, { inventoryStartsAfter = 9999 })
+
+    t.isNil(s.hook('swapItems'))
+    t.isTrue(s.log():find('never started', 1, true) ~= nil,
+        'dropping is allowed and the console does not mention it')
+end)
+
+t.test('an inventory that cannot be read leaves them carrying their own kit', function()
+    local s = newServer({ [1] = OWN })
+    s.breakOn('read')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water')
+    t.isFalse(isHolding(s.ammo, 1))
+end)
+
+t.test('a stash that fills up halfway puts back what already moved', function()
+    -- The worst shape of failure: an inventory split across two places, with
+    -- the player holding half of it and no record of the rest.
+    local s = newServer({ [1] = OWN })
+    s.breakOn('stash')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water', 'still all theirs')
+    t.equals(s.stashContents(1), '', 'and nothing stranded in the stash')
+    t.isFalse(isHolding(s.ammo, 1))
+end)
+
+t.test('a clear that fails after stashing puts everything back', function()
+    local s = newServer({ [1] = OWN })
+    s.breakOn('clear')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water')
+    t.equals(s.stashContents(1), '', 'the stash was emptied again rather than left holding a copy')
+    t.isFalse(isHolding(s.ammo, 1))
+end)
+
+t.test('a player with no citizen id is not stripped', function()
+    local s = newServer({ [1] = OWN })
+    s.env.ArenaGetPlayer = function() return nil end
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water')
+    t.isFalse(isHolding(s.ammo, 1))
+end)
+
+t.test('a stash that cannot be read back leaves the kit IN it, and says where', function()
+    -- Not recoverable here, but not lost either: it is a real ox_inventory
+    -- stash and an admin can open it. The console has to name it.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.isTrue(s.log():find('crimson_arena_CID1', 1, true) ~= nil, 'the stash is named in the console')
+    t.isTrue(s.log():find('STILL IN IT', 1, true) ~= nil)
+end)
+
+-- ========================================================================
+-- Not making things worse
+-- ========================================================================
+
+t.test('a second reclaim does not touch them again', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Reclaim(1)
+    s.give(1, 'rifle-they-bought-afterwards', 1)
+
+    s.ammo.Reclaim(1)
+    s.ammo.Reclaim(1)
+    t.equals(s.carrying(1), 'phone,rifle-they-bought-afterwards,water')
+end)
+
+t.test('a player who never entered is left alone', function()
+    local s = newServer({ [2] = OWN })
+    t.equals(s.ammo.Reclaim(2), 0)
+    t.equals(s.carrying(2), 'phone,water')
+end)
+
+t.test('stripOnEntry = false lets them bring their own kit in', function()
+    local s = newServer({ [1] = OWN }, function(c) c.Loadouts.inventory.stripOnEntry = false end)
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water')
+    t.isFalse(isHolding(s.ammo, 1), 'nothing was taken, so nothing is owed')
+end)
+
+-- ========================================================================
+-- Dropping
+-- ========================================================================
+
+t.test('a player in a match cannot drop anything', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    local hook = s.hook('swapItems')
+    t.isNotNil(hook, 'the drop guard should be registered')
+    t.isFalse(hook({ source = 1, toInventory = 'drop-7' }), 'a drop is refused')
+    t.isTrue(hook({ source = 1, toInventory = 1 }), 'moving things around their own pockets is fine')
+end)
+
+t.test('DEFECT: and cannot LOOT anything either -- which is where the kit went', function()
+    -- THE REPORT, IN A PLAYER'S WORDS: "when killing someone on free for all
+    -- or team deathmatch it gives 100 ammo per weapon chosen".
+    --
+    -- It was never a reward -- there is no on-kill grant outside the gun
+    -- game's killReward, and that is gated behind the ladder. ox_inventory
+    -- drops a dead player's inventory on the floor as its own container, and
+    -- the guard refused moves OUT and permitted every move IN. So a fighter
+    -- walking over a body could take the whole arena kit its owner had just
+    -- been issued: their weapons and every round that came with them, per
+    -- kill, for as long as bodies kept falling.
+    --
+    -- The exit was already catching the consequences -- reclaimWeapons takes
+    -- looted rounds back by name, which is why nothing walked OUT of the
+    -- arena -- but "it is confiscated at the door" is not "it never
+    -- happened". The round is still fought by somebody carrying four dead
+    -- men's ammunition, and a loadout nobody has to live within is not a
+    -- loadout.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    local hook = s.hook('swapItems')
+    t.isNotNil(hook, 'the guard should be registered')
+
+    t.isFalse(hook({ source = 1, fromInventory = 'drop-7', toInventory = 1 }),
+        'looting a dead fighter\'s drop was allowed')
+    t.isFalse(hook({ source = 1, fromInventory = 'stash-abc', toInventory = 1 }),
+        'and taking something out of a stash mid-round was allowed')
+    t.isFalse(hook({ source = 1, fromInventory = 2, toInventory = 1 }),
+        'and taking something out of another player was allowed')
+
+    -- AND THE THINGS THAT MUST STILL WORK.
+    t.isTrue(hook({ source = 1, fromInventory = 1, toInventory = 1 }),
+        'moving things around their own pockets is their business')
+    t.isTrue(hook({ source = 1 }),
+        'a payload naming no inventories at all must not be refused blind')
+end)
+
+t.test('and an id that arrives as a string still counts as their own pockets', function()
+    -- ox_inventory answers a player inventory as a number on some paths and
+    -- as a string on others. Compared only by identity, a fighter whose id
+    -- arrives the other way round is a fighter the guard silently stops
+    -- applying to -- and worse, one whose own pocket-to-pocket moves are all
+    -- refused.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    local hook = s.hook('swapItems')
+    t.isTrue(hook({ source = 1, fromInventory = '1', toInventory = '1' }),
+        'their own pockets were refused because the id came back as a string')
+end)
+
+t.test('and somebody NOT in a match may loot and drop as they please', function()
+    -- The guard is about being in a round, not about being on the server.
+    local s = newServer({ [1] = OWN })
+
+    local hook = s.hook('swapItems')
+    t.isTrue(hook({ source = 1, fromInventory = 'drop-7', toInventory = 1 }),
+        'a player outside the arena was stopped from picking things up')
+    t.isTrue(hook({ source = 1, toInventory = 'drop-7' }),
+        'and from putting things down')
+end)
+
+t.test('DEFECT: and cannot drop with the door OFF either', function()
+    -- The guard asked `stashed[src]`, which is only ever populated when the
+    -- door is SHUT. With Config.Loadouts.inventory.stripOnEntry off -- where
+    -- a player keeps their own inventory and is handed the arena's kit on
+    -- top of it -- nobody is stashed, so this returned "allowed" for every
+    -- fighter and the block was off for the whole match.
+    --
+    -- Which is the setting where it matters most: the arena's weapons are
+    -- loose in the player's own pockets, so dropping one on the floor for
+    -- somebody to collect is a single drag.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isFalse(isHolding(s.ammo, 1), 'the door was shut after all, so this tests the wrong thing')
+
+    -- What actually says they are mid-match.
+    s.env.ArenaDispatch.Set(1, 'm1')
+
+    local hook = s.hook('swapItems')
+    t.isNotNil(hook, 'the drop guard should be registered')
+    t.isFalse(hook({ source = 1, toInventory = 'drop-7' }),
+        'a fighter dropped the arena kit on the floor with the door off')
+    t.isTrue(hook({ source = 1, toInventory = 1 }),
+        'moving things around their own pockets stopped being their business')
+end)
+
+t.test('a player outside the arena drops whatever they like', function()
+    local s = newServer({ [1] = OWN })
+    local hook = s.hook('swapItems')
+    t.isTrue(hook({ source = 1, toInventory = 'drop-7' }))
+end)
+
+t.test('an ox_inventory with no hooks degrades to allowing drops, loudly', function()
+    local s = newServer({ [1] = OWN })
+    s.breakOn('hook')
+    -- Reload so the registration runs against the broken double.
+    Sandbox.loadInto('../server/ammo.lua', s.env)
+    t.isTrue(s.log():find('would not take a swapItems hook', 1, true) ~= nil)
+end)
+
+-- ========================================================================
+-- Using what you were not issued
+--
+-- swapItems is every route an item leaves a player BY HAND. It is not every
+-- route: consuming one takes no move at all, so a medkit eaten where it
+-- stands raises `usingItem` and nothing else. On the shipped settings that
+-- is unreachable -- the door stashes everything a fighter owns, so the only
+-- things in their pockets came from the arena -- which is exactly why it went
+-- unnoticed. With `stripOnEntry` off, the documented setting where a fighter
+-- keeps their own inventory, it is a fighter healing to full off their own
+-- kit while the man shooting at them lives on two arena bandages.
+-- ========================================================================
+
+t.test('DEFECT: a fighter uses their OWN kit mid-round with the door open', function()
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.stripOnEntry = false
+    end)
+    -- What actually says they are mid-match: with the door off nobody is
+    -- stashed, so the record the drop guard reads does not exist.
+    s.env.ArenaDispatch.Set(1, 'm1')
+
+    local hook = s.hook('usingItem')
+    t.isNotNil(hook, 'nothing is registered for consuming an item, so it is unguarded')
+    t.isFalse(hook({ source = 1, item = { name = 'medkit' } }),
+        'a fighter healed to full off their own medkit mid-round')
+    t.isTrue(s.notices(1):find('issued', 1, true) ~= nil,
+        'and was not told why')
+end)
+
+t.test('and the kit the arena issued is still usable', function()
+    -- THE HALF THAT MUST NOT BREAK. ox_inventory raises usingItem for a
+    -- weapon item and an ammunition item as readily as for a consumable, so
+    -- a guard that refused anything but supplies would leave a fighter
+    -- holding a gun they cannot draw.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    local hook = s.hook('usingItem')
+    t.isNotNil(hook, 'the use guard should be registered')
+    t.isTrue(hook({ source = 1, item = { name = 'bandage' } }),
+        'a fighter could not use the bandages the arena handed them')
+    t.isTrue(hook({ source = 1, item = { name = 'armour' } }),
+        'a fighter could not use the plate the arena handed them')
+    t.isTrue(hook({ source = 1, item = { name = 'WEAPON_APPISTOL' } }),
+        'a fighter could not draw the gun they were issued')
+    t.isTrue(hook({ source = 1, item = { name = 'ammo-9' } }),
+        'a fighter could not load a round')
+    t.isTrue(hook({ source = 1 }),
+        'a payload naming no item at all must not be refused blind')
+    t.isTrue(hook({ source = 1, item = 'medkit' }),
+        'a payload shaped differently must not be refused blind either')
+end)
+
+t.test('and somebody NOT in a match uses whatever they like', function()
+    -- The guard is about being in a round, not about being on the server.
+    local s = newServer({ [1] = OWN })
+    local hook = s.hook('usingItem')
+    t.isTrue(hook({ source = 1, item = { name = 'medkit' } }),
+        'a player standing in their own kitchen was refused their own medkit')
+end)
+
+t.test('and an item the operator left in their pockets stays usable', function()
+    -- `neverStash` is an operator saying "this belongs on a fighter during a
+    -- round". Carrying it and being unable to touch it is not a reading of
+    -- that anyone asked for.
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.stripOnEntry = false
+        config.Loadouts.inventory.neverStash = { 'phone' }
+    end)
+    s.env.ArenaDispatch.Set(1, 'm1')
+
+    local hook = s.hook('usingItem')
+    t.isTrue(hook({ source = 1, item = { name = 'phone' } }),
+        'an item the operator deliberately left in their pockets was refused')
+    t.isFalse(hook({ source = 1, item = { name = 'medkit' } }),
+        'and everything else stopped being refused with it')
+end)
+
+t.test('and an operator who switched the guard off gets neither hook', function()
+    local s = newServer({ [1] = OWN }, function(config)
+        config.Loadouts.inventory.blockDropsInArena = false
+    end)
+
+    t.isNil(s.hook('swapItems'), 'the drop guard ignored the switch')
+    t.isNil(s.hook('usingItem'), 'the use guard ignored the switch')
+end)
+
+-- ========================================================================
+-- Teardown
+-- ========================================================================
+
+-- NO ReclaimAll TEST, and that is not an omission. ArenaAmmo.ReclaimAll was
+-- deleted in 2fec9fe: it had no caller anywhere in the tree, and it had
+-- rotted -- it dropped four per-match tables and missed the two its sibling
+-- Clear also drops, so calling it would have leaked the owner stamp and the
+-- floor. The arena empties a match one fighter at a time now, through the
+-- Reclaim above and the Clear below, and a test that looped over Reclaim
+-- itself here would be asserting against its own loop. DO NOT re-add one
+-- unless the function comes back.
+
+t.test('Clear REFUSES while anybody is still owed their kit', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.isFalse(s.ammo.Clear('m1'))
+    t.isTrue(s.log():find('refusing to drop match', 1, true) ~= nil)
+
+    s.ammo.Reclaim(1)
+    t.isTrue(s.ammo.Clear('m1'))
+end)
+
+t.test('stopping the resource hands everybody their kit back', function()
+    local s = newServer({ [1] = OWN, [2] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Issue(2, 'm2', { weapons = {}, armor = 100, health = 200 })
+
+    s.stopResource()
+
+    t.equals(s.carrying(1), 'phone,water')
+    t.equals(s.carrying(2), 'phone,water')
+end)
+
+-- ========================================================================
+-- A HOLE IN SOMEBODY'S INVENTORY
+--
+-- REPORTED FROM A LIVE SERVER: three players finished the same match, two
+-- were handed everything back, and the third came out short. Nothing in the
+-- console said a word about it, which ruled out every failure path this file
+-- already covers -- all of them are loud.
+--
+-- The difference between those three players was not the arena. It was the
+-- shape of their own inventory. ox_inventory's GetInventoryItems answers with
+-- the inventory's `items` table KEYED BY SLOT, so a player with things in
+-- slots 1, 3 and 5 has nothing at all at 2 and 4 -- the ordinary state of any
+-- inventory somebody has rearranged. Both readers in server/ammo.lua walked
+-- that with `ipairs`, which stops at the first hole.
+--
+-- So the player with a tidy inventory was fine and the player with a gap was
+-- robbed, in BOTH directions:
+--
+--   on the way IN   the items past the gap were never stashed, and then
+--                   ClearInventory destroyed them where they sat;
+--   on the way OUT  they were never handed back, and nothing counted a
+--                   failure, because nothing had looked.
+--
+-- The suite could not see it because this fixture answered in a packed array
+-- -- the one shape where a reader that stops at a hole and one that does not
+-- give the same answer. `opts.slotted` is what makes it answer the way the
+-- real thing does.
+-- ========================================================================
+
+t.test('THE BUG: a gap in the inventory is not the end of the inventory', function()
+    local s = newServer({
+        [1] = {
+            { name = 'phone', count = 1 },
+            { name = 'water', count = 2 },
+            { name = 'burger', count = 3 },
+        },
+    }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    -- Under `ipairs` this was 'phone' alone: slot 1 read, slot 2 empty, and
+    -- the water and the burger left in an inventory about to be cleared.
+    t.equals(s.stashContents(1), 'burger,phone,water',
+        'everything they own is in the stash, not just what sat before the first hole')
+    t.equals(s.carrying(1), '', 'and their pockets are empty')
+end)
+
+t.test('and it all comes back out again', function()
+    local s = newServer({
+        [1] = {
+            { name = 'phone', count = 1 },
+            { name = 'water', count = 2 },
+            { name = 'burger', count = 3 },
+        },
+    }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(s.ammo.Reclaim(1, 'match ended') == 1, 'the exit reports a clean return')
+
+    t.equals(s.carrying(1), 'burger,phone,water')
+    t.equals(s.stashContents(1), '', 'and nothing is left behind in the stash')
+end)
+
+t.test('the player with the tidy inventory was never the one at risk', function()
+    -- The other two of the three. Same match, same code, no gap -- which is
+    -- why this looked like it only ever happened to one person.
+    local s = newServer({
+        [1] = { { name = 'phone', count = 1 } },
+        [2] = { { name = 'phone', count = 1 } },
+    }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Issue(2, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Reclaim(1, 'match ended')
+    s.ammo.Reclaim(2, 'match ended')
+
+    t.equals(s.carrying(1), 'phone')
+    t.equals(s.carrying(2), 'phone')
+end)
+
+t.test('and they come back in SLOT order, not in whatever order the table iterates', function()
+    -- `pairs` over a slot-keyed table has no defined order, and the order is
+    -- not cosmetic: when a return only partly fits, WHICH items go back is
+    -- decided by the order they are tried in. Two sweeps over the same stash
+    -- have to make the same choice, or a player watching their pockets sees a
+    -- different random half of their kit on every pass.
+    local kit = {}
+    for _, name in ipairs({ 'aaa', 'bbb', 'ccc', 'ddd', 'eee', 'fff', 'ggg' }) do
+        kit[#kit + 1] = { name = name, count = 1 }
+    end
+
+    local s = newServer({ [1] = kit }, nil, { slotted = true })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.equals(s.carryingInOrder(1), 'aaa,bbb,ccc,ddd,eee,fff,ggg')
+end)
+
+t.test('a slot holding false rather than nothing is skipped, not thrown over', function()
+    -- Some builds park `false` in an empty slot instead of leaving it nil.
+    -- `item.name` on a boolean throws, which would take the whole stow down
+    -- and cost the player everything rather than one slot.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.putInStash('CID1', 'burger', 1)
+    s.pokeStashSlot('CID1')
+
+    s.ammo.Reclaim(1, 'match ended')
+    t.equals(s.carrying(1), 'burger,phone,water', 'the real items came back')
+end)
+
+t.test('HeldFor names where a kit is, for an admin who has to find it', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(stashOf(s.ammo, 1), 'crimson_arena_CID1')
+
+    s.ammo.Reclaim(1)
+    t.isNil(stashOf(s.ammo, 1))
+end)
+
+print('ammo_spec')
+-- ========================================================================
+-- THE SERVER ID IS NOT THE PERSON
+--
+-- `stashed` is keyed by server id, and a record deliberately OUTLIVES the
+-- player who made it: a failed restore keeps it so the sweep can retry. The
+-- file says so, and reasons about the reconnect -- the same character coming
+-- back on a NEW id. What it never considered is the other half of that: the
+-- OLD id is handed to the next person who connects.
+--
+-- From then on `stashed[src]` names one character and `src` names another,
+-- and restore() opens with an indiscriminate ClearInventory on the reasoning
+-- that everything this player carries belongs to the arena. True of somebody
+-- walking out of a round; false of a stranger who has never been in one.
+-- ========================================================================
+
+t.test('DEFECT: a recycled server id emptied a stranger and robbed the last holder', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'their kit never reached the stash')
+
+    -- They drop, and the hand-back cannot land on somebody who has gone --
+    -- so the record is KEPT, deliberately, for the retry to find.
+    s.breakOn('give')
+    s.disconnect(1)
+    s.ammo.Reclaim(1, 'disconnected')
+    t.equals(s.stashOfCid('CID1'), 'phone,water', 'the stash should still be holding everything')
+
+    -- The server hands slot 1 to the next person through the door. They have
+    -- never been near the arena.
+    s.fixOn('give')
+    s.recycleId(1, 'CID99', { { name = 'gold-bar', count = 5 }, { name = 'laptop', count = 1 } })
+
+    -- Anything at all that reclaims against this id -- their own disconnect,
+    -- an exit, the sweep.
+    s.ammo.Reclaim(1, 'disconnected')
+
+    t.equals(s.carrying(1), 'gold-bar,laptop',
+        'a player who has never entered the arena had their inventory emptied by somebody else\'s record')
+    t.equals(s.stashOfCid('CID1'), 'phone,water',
+        'the previous holder\'s belongings were taken out of their stash and given to a stranger')
+end)
+
+t.test('and it says so, naming both characters and the stash', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('give')
+    s.disconnect(1)
+    s.ammo.Reclaim(1, 'disconnected')
+    s.fixOn('give')
+    s.recycleId(1, 'CID99', { { name = 'gold-bar', count = 5 } })
+    s.ammo.Reclaim(1, 'disconnected')
+
+    local said = s.log()
+    t.isTrue(said:find('CID99', 1, true) ~= nil and said:find('CID1', 1, true) ~= nil,
+        ('the console does not name who holds the id and who owns the kit:\n%s'):format(said))
+    t.isTrue(said:find('crimson_arena_CID1', 1, true) ~= nil,
+        'the console does not name the stash the belongings are still sitting in')
+end)
+
+t.test('and the real owner is still owed it, so the sweep hands it back on sight', function()
+    -- NOT MERELY REFUSED. The items are real and still theirs, and refusing
+    -- to give them to the wrong person is only half an answer -- the other
+    -- half is that the right person still gets them.
+    --
+    -- WHAT THIS PINS, HONESTLY: the outcome, not the route. Two things can
+    -- deliver here -- the debt the guard files under `owed`, and
+    -- ReturnLeftovers' own settled path, which walks `stashed` by citizen id
+    -- and would find this record anyway. Deleting the `owed` write does not
+    -- fail this test, and I could not construct one where it does. The write
+    -- stays because a refusal that records nothing is relying on a downstream
+    -- sweep's incidental behaviour for a player's belongings, which is not a
+    -- thing to rely on; but it is belt-and-braces, and this comment is here
+    -- so nobody reads the test as proof that it is load-bearing.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.inventory.returnRetrySeconds = 1
+    end, { retry = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.breakOn('give')
+    s.disconnect(1)
+    s.ammo.Reclaim(1, 'disconnected')
+    s.fixOn('give')
+    s.recycleId(1, 'CID99', {})
+    s.ammo.Reclaim(1, 'disconnected')
+
+    -- The original character comes back on a new id, as they actually would.
+    -- Through recycleId rather than reconnect(): reconnect copies whatever
+    -- identity the OLD id carries now, and that id belongs to CID99.
+    s.recycleId(7, 'CID1', {})
+    for _ = 1, 6 do s.step() end
+
+    t.equals(s.carrying(7), 'phone,water',
+        'the owner reconnected and the sweep never caught up with what it had been told they were owed')
+end)
+
+-- ========================================================================
+-- TAKEN BACK AGAINST WHAT THEY STILL HOLD
+--
+-- ox_inventory refuses a removal it cannot satisfy in full: it does not take
+-- what is there and shrug. So reclaiming BY THE AMOUNT ISSUED takes nothing
+-- at all from anybody who spent any of it -- which is everybody who fired
+-- their weapon.
+--
+-- The supplies loop was taught this and carries the comment explaining it.
+-- The ammunition loop, twenty lines above it, was not. Both now go through
+-- one function, so there is no second copy left to drift.
+-- ========================================================================
+
+t.test('DEFECT: a fighter who fired their weapon kept every round they had left', function()
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        -- The door OFF, which is where reclaimWeapons is the only thing that
+        -- takes the arena's kit back -- there is no wholesale clear.
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 250))
+    t.isTrue(s.carrying(1):find('ammo%-rifle%-ap') ~= nil, 'the rounds were never issued')
+
+    -- They shoot. ox_inventory decrements the ammo item as the weapon
+    -- reloads, so they are down to 120 of the 250 they were handed.
+    s.spend(1, 'ammo-rifle-ap', 130)
+
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.isTrue(s.carrying(1):find('ammo%-rifle%-ap') == nil,
+        ('the arena left %s holding rounds it issued, because it asked for the number it gave '
+            .. 'rather than the number they still had'):format(s.carrying(1)))
+end)
+
+t.test('and it still takes back the full amount from somebody who fired nothing', function()
+    -- The control. A clamp that took nothing would pass the test above.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 250))
+    s.ammo.Reclaim(1, 'match ended')
+
+    t.equals(s.carrying(1), 'phone,water',
+        'the arena did not take back ammunition from a player who had spent none of it')
+end)
+
+t.test('and never reaches past the arena into rounds the player brought themselves', function()
+    -- THE OTHER DIRECTION, and the reason the clamp is a min rather than
+    -- "take whatever they have". A player who walks in with their own
+    -- ammunition -- which is exactly what the door being off means -- must
+    -- not have it confiscated because the arena happened to issue the same
+    -- item.
+    local s = newServer({ [1] = { { name = 'ammo-rifle-ap', count = 400 } } }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle-ap', 250))
+    s.ammo.Reclaim(1, 'match ended')
+
+    local left = 0
+    for _, item in ipairs({ s.itemNamed(1, 'ammo-rifle-ap') }) do
+        left = left + (item.count or 0)
+    end
+    t.equals(left, 400,
+        'the arena took back more than it issued and ate into the player\'s own rounds')
+end)
+
+-- ========================================================================
+-- CONFISCATION REACHES ONLY WHAT THE ARENA ISSUED
+--
+-- `allowWeaponWithoutAmmoItem = false` exists for one situation: the weapon
+-- went over, its ammunition did not, and nobody should fight with an empty
+-- gun that looks loaded. So it takes the gun back.
+--
+-- But the list it works from is the FAILURE list, and a weapon lands on that
+-- for the other reason too -- the weapon itself would not go. Then the
+-- player never had it, and "take the gun back" reaches past the arena into
+-- what they walked in carrying.
+-- ========================================================================
+
+t.test('DEFECT: a weapon the arena could not issue was taken off the player anyway', function()
+    local s = newServer({ [1] = { { name = 'WEAPON_TEST', count = 1 } } }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+        -- The door OFF, which is the whole point: with it on the player is
+        -- carrying nothing at this moment and there is nothing of theirs to
+        -- destroy.
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+
+    -- The arena cannot arm them -- a full inventory, a weight limit, an item
+    -- name this server's ox_inventory data does not know.
+    s.breakOn('weaponItem')
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') ~= nil,
+        ('the arena destroyed the player\'s own weapon over one it never managed to give them '
+            .. '-- they are left holding: %s'):format(s.carrying(1)))
+end)
+
+t.test('but a weapon it DID issue is still taken back when the rounds fail', function()
+    -- The control, and the setting's actual purpose. A fix that simply
+    -- stopped confiscating would pass the test above and quietly arm
+    -- everybody with an empty gun on the servers that switched this off.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+    end)
+
+    s.breakOn('ammoItem')
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') == nil,
+        ('a weapon the arena issued and could not load stayed in the fighter\'s hands: %s')
+            :format(s.carrying(1)))
+end)
+
+t.test('two weapons taking the same round are two entitlements, not one', function()
+    -- THE SHORTFALL, AIMED AT THE WRONG CALLER. issueSpareRounds subtracts
+    -- what a player is already holding, so a tier climber who bounces one
+    -- boundary cannot collect another full batch each way. It runs on the
+    -- once-per-round issue path too -- and there a magazine rides in item
+    -- METADATA rather than as an ammo item, so the pockets start empty, the
+    -- first 9mm weapon's loose rounds land in them, and the SECOND 9mm
+    -- weapon reads them as rounds the player already had and hands over
+    -- nothing.
+    --
+    -- Silent, and paid for: the picker shows the full number, the entry fee
+    -- is charged against it, and nothing is logged. Fourteen shipped weapons
+    -- take ammo-9 and twelve take ammo-rifle, so any two-gun loadout of one
+    -- family trips it.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = {
+        { key = 'pistol', ammo = 60 },
+        { key = 'combatpistol', ammo = 60 },
+    } })
+    t.equals(#loadout.weapons, 2, 'the fixture did not resolve both sidearms')
+    t.equals(loadout.weapons[1].ammoTypeItem, loadout.weapons[2].ammoTypeItem,
+        'the two weapons do not share a round, so this test measures nothing')
+
+    s.ammo.Issue(1, 'm1', loadout)
+
+    --- Magazines plus loose items, which is what the player actually has.
+    local function carried(item)
+        local total = 0
+        for _, entry in ipairs(loadout.weapons) do
+            if entry.ammoTypeItem == item then
+                local weapon = s.itemNamed(1, entry.weapon)
+                total = total + ((weapon and weapon.metadata and weapon.metadata.ammo) or 0)
+            end
+        end
+        return total + s.countOf(1, item)
+    end
+
+    t.equals(carried(loadout.weapons[1].ammoTypeItem), 120,
+        ('two sidearms picked at 60 rounds each should carry 120, and carry %d')
+            :format(carried(loadout.weapons[1].ammoTypeItem)))
+end)
+
+t.test('and the farm the shortfall exists to close is still closed', function()
+    -- THE OTHER HALF, because a fix that just deleted the check would pass
+    -- the test above. ArenaAmmo.SwapWeapon issues one weapon on its own and
+    -- passes no pass-ledger, so it still measures against live inventory:
+    -- a climber who bounces a tier boundary without firing collects nothing
+    -- the second time.
+    local s = newServer({ [1] = {} })
+    local loadout = s.env.Arena.ResolveLoadout({ weapons = { { key = 'bat' } } })
+    s.ammo.Issue(1, 'm1', loadout)
+
+    local entry = s.env.Arena.ResolveLoadout({ weapons = { { key = 'pistol', ammo = 60 } } }).weapons[1]
+    t.isNotNil(entry, 'the fixture could not resolve a tier weapon')
+
+    local seen = {}
+    for round = 1, 4 do
+        s.ammo.SwapWeapon(1, 'm1', round > 1 and entry.weapon or nil, entry)
+        seen[#seen + 1] = tostring(s.countOf(1, entry.ammoTypeItem))
+    end
+
+    t.equals(table.concat(seen, ','), '30,30,30,30',
+        ('four promotions onto the same weapon handed out %s loose rounds')
+            :format(table.concat(seen, ',')))
+end)
+
+-- ======================================================================
+-- HOWEVER MUCH THEY ARE CARRYING
+-- ======================================================================
+
+t.test('a very full inventory goes into the stash and all of it comes back', function()
+    -- "ensure nothing gets lost no matter how much is in the inventory".
+    --
+    -- The stash is a holding pen the size of one person's pockets, and every
+    -- slot short of that is somebody's belongings the arena will not accept.
+    -- It used to be registered at 100 -- comfortably over ox_inventory's own
+    -- default of 50, but NOT over a server that has raised it, and metadata
+    -- items do not stack, so a player carrying forty weapons is holding forty
+    -- slots on their own.
+    local owned, expected = {}, {}
+    for index = 1, 200 do
+        local name = ('thing%03d'):format(index)
+        owned[#owned + 1] = { name = name, count = index }
+        expected[#expected + 1] = name
+    end
+    table.sort(expected)
+    local wanted = table.concat(expected, ',')
+
+    local s = newServer({ [1] = owned }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.stashContents(1), wanted, 'a big inventory did not all reach the stash')
+    t.equals(s.carrying(1), '', 'and their pockets were not emptied')
+
+    t.equals(s.ammo.Reclaim(1, 'match ended'), 1, 'the exit did not report a clean return')
+    t.equals(s.carrying(1), wanted, 'and not all of it came back')
+    t.equals(s.stashContents(1), '', 'and something was left stranded in the stash')
+end)
+
+t.test('and a stash too small to hold it costs them nothing at all', function()
+    -- THE SAFE DIRECTION, asserted rather than assumed. stow() verifies every
+    -- item into the stash BEFORE it clears anything and puts back what it
+    -- moved the moment one is refused -- so a stash that cannot hold a
+    -- player's kit means "they fight with their own gear", never "they lost
+    -- something". This is the test that keeps that true if the ceiling is
+    -- ever lowered.
+    local owned = {}
+    for index = 1, 6 do owned[#owned + 1] = { name = ('thing%d'):format(index), count = 1 } end
+
+    local s = newServer({ [1] = owned }, nil, { slotted = true })
+    s.stashCeiling(3)
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'thing1,thing2,thing3,thing4,thing5,thing6',
+        'the door emptied pockets it could not empty safely')
+    t.equals(s.stashContents(1), '', 'and left half their kit in a stash it had given up on')
+end)
+
+t.test('and an empty-handed player is still stripped and restored cleanly', function()
+    -- "no matter how little". Nothing to put away is a SUCCESS, not a
+    -- failure: a player who owns nothing must still walk the same path, or
+    -- the door quietly stops applying to the people it is cheapest to break.
+    local s = newServer({ [1] = {} }, nil, { slotted = true })
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.stashContents(1), '', 'an empty inventory put something in the stash')
+
+    t.equals(s.ammo.Reclaim(1, 'match ended'), 1, 'an empty-handed exit was not reported clean')
+    t.equals(s.carrying(1), '', 'and they were handed something that was never theirs')
+end)
+
+-- ======================================================================
+-- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY
+-- ======================================================================
+
+t.test('THE HOLE: a stash that reads empty is not reported as a clean return', function()
+    -- THE REPORT: "it didn't give people their phone back, so it is not
+    -- giving everything back after a match ends."
+    --
+    -- handBack cannot tell "nothing was in there" from "nothing came back":
+    -- ox_inventory answers an empty list for both, and the second is what a
+    -- forgotten or re-registered stash looks like -- a resource restart, a
+    -- database hiccup, a stash id that came back namespaced differently.
+    --
+    -- So a return of NOTHING was reported as a clean return of nothing: the
+    -- record was dropped, `owed` was cleared, the retry had nothing left to
+    -- work from, and the player walked out empty-handed while every log in
+    -- the file said the exit had gone perfectly. Their belongings may well
+    -- still be in the stash -- it is a real one -- but nothing in this
+    -- resource remembered to go back for them.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(isHolding(s.ammo, 1), 'the door did not run, so this proves nothing')
+    t.isTrue(s.stashContents(1) ~= '', 'the fixture stashed nothing')
+
+    -- The stash goes out from under it, exactly as a restart does.
+    s.forgetStash(stashOf(s.ammo, 1))
+    t.equals(s.stashContents(1), '', 'the fixture did not really empty the stash')
+
+    t.equals(s.ammo.Reclaim(1, 'match ended'), 0,
+        'an empty read was reported as a clean return')
+
+    -- THE RECORD IS KEPT, which is what any retry works from and what
+    -- HeldFor answers with when a player asks where their things went.
+    t.isTrue(isHolding(s.ammo, 1),
+        'the arena forgot it was holding anything, so nothing can go back for it')
+    t.isTrue(type(stashOf(s.ammo, 1)) == 'string' and stashOf(s.ammo, 1) ~= '',
+        'and it can no longer say which stash to look in')
+
+    -- AND IT SAYS SO, loudly, with the number that proves the two apart.
+    t.isTrue(s.log():find('READ EMPTY', 1, true) ~= nil,
+        'nothing in the console says the stash came back empty: ' .. s.log())
+end)
+
+t.test('and a player who really walked in with nothing still exits cleanly', function()
+    -- THE OTHER SIDE OF IT, and the reason the guard counts rather than
+    -- simply refusing every empty return: somebody who owns nothing has an
+    -- empty stash legitimately, and holding their exit open for ever over it
+    -- would be the same bug pointed the other way.
+    local s = newServer({ [1] = {} })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.ammo.Reclaim(1, 'match ended'), 1,
+        'an empty-handed player was held back over a stash that was correctly empty')
+    t.isFalse(isHolding(s.ammo, 1), 'and the record was kept for a return that had nothing to return')
+end)
+
+-- ========================================================================
+-- A RESPAWN IS ANOTHER ISSUE OF THE SAME KIT
+--
+-- ArenaAmmo.Refresh stands a fighter back up with a full magazine and their
+-- supplies topped up. It is the entry door run again -- so every rule the
+-- entry door applies has to survive it, or the rule lasts exactly one death.
+-- ========================================================================
+
+t.test('DEFECT: the first respawn handed back a weapon the door had confiscated', function()
+    -- allowWeaponWithoutAmmoItem = false means this server does not arm a gun
+    -- it cannot feed, and ArenaAmmo.Issue honours it by taking the weapon
+    -- straight back off them. Refresh re-issued every weapon in the loadout
+    -- unconditionally -- so the setting was undone by the first death, and
+    -- the fighter respawned holding exactly the loaded-looking empty gun it
+    -- exists to prevent, with nothing in the console saying so.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = false
+    end)
+
+    s.breakOn('ammoItem')
+    local loadout = loadoutOf('ammo-rifle', 60)
+    s.ammo.Issue(1, 'm1', loadout)
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') == nil,
+        'the door did not confiscate, so this proves nothing')
+
+    s.ammo.Refresh(1, 'm1', loadout)
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') == nil,
+        ('the respawn re-armed a weapon the door had taken away: %s'):format(s.carrying(1)))
+end)
+
+t.test('and a server that DOES arm an empty gun still gets one back', function()
+    -- The control. A fix that simply stopped re-issuing would pass the test
+    -- above and leave every fighter on every ordinary server permanently
+    -- unarmed from their first death onward.
+    local s = newServer({ [1] = OWN }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+        c.Loadouts.ammoItems.allowWeaponWithoutAmmoItem = true
+    end)
+
+    s.breakOn('ammoItem')
+    local loadout = loadoutOf('ammo-rifle', 60)
+    s.ammo.Issue(1, 'm1', loadout)
+    s.ammo.Refresh(1, 'm1', loadout)
+
+    t.isTrue(s.carrying(1):find('WEAPON_TEST') ~= nil,
+        ('a respawn left the fighter with no weapon at all: %s'):format(s.carrying(1)))
+end)
+
+-- ========================================================================
+-- AND A KILL REWARD IS STILL AN ISSUE OF AMMUNITION
+-- ========================================================================
+
+t.test('DEFECT: kill ammo ignored the switch that turns ammo items off', function()
+    -- Every other issue path goes through splitRounds, which returns a spare
+    -- of nothing when Config.Loadouts.ammoItems.enabled is false -- so no ammo
+    -- item ever reaches a player on such a server. GrantRounds read only the
+    -- item NAME, and Arena.ResolveWeaponEntry fills that in from the weapon
+    -- catalogue whatever the switch says. On a server that switched ammo items
+    -- off because those items do not exist in its ox_inventory data, every
+    -- single kill fired a refused AddItem and the reward silently did nothing.
+    local s = newServer({ [1] = {} }, function(c)
+        c.Loadouts.ammoItems.enabled = false
+    end)
+
+    local granted = s.ammo.GrantRounds(1, 'm1', 'ammo-rifle', 100)
+
+    t.isFalse(granted, 'a server with ammo items switched off still paid a kill in them')
+    t.isTrue(s.carrying(1):find('ammo%-rifle') == nil,
+        ('ammunition reached a player on a server that hands out none: %s'):format(s.carrying(1)))
+end)
+
+t.test('and a server that DOES use ammo items is still paid', function()
+    local s = newServer({ [1] = {} }, function(c)
+        c.Loadouts.ammoItems.enabled = true
+    end)
+
+    t.isTrue(s.ammo.GrantRounds(1, 'm1', 'ammo-rifle', 100),
+        'the kill reward was refused on a server that hands out ammunition')
+    t.isTrue(s.carrying(1):find('ammo%-rifle') ~= nil,
+        ('the rounds never arrived: %s'):format(s.carrying(1)))
+end)
+
+
+-- ========================================================================
+-- A KIT THE CLEAR DESTROYED IS NOT CHASED, AND NOT OWED
+-- ========================================================================
+
+t.test('DEFECT: after a refused hand-back the restart charged the fighter their OWN rounds', function()
+    -- They walk in with 500 rounds of their own; the arena issues 60 of the
+    -- same. The clear on the way out destroys the arena's 60 -- then one of
+    -- their own items will not go back, so the record is kept. The restart
+    -- reclaims again, and used to take "the issued 60" out of pockets that by
+    -- then held only their own 500.
+    local s = newServer({ [1] = { { name = 'phone', count = 1 }, { name = 'water', count = 2 }, { name = 'ammo-rifle', count = 500 } } })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('refuseNamed')
+    t.equals(s.countOf(1, 'ammo-rifle'), 500, 'their own rounds did not come back on the first pass, so this proves nothing')
+
+    s.stopResource()
+
+    t.equals(s.countOf(1, 'ammo-rifle'), 500,
+        'the second pass took the arena\'s issued count out of the fighter\'s OWN rounds')
+end)
+
+t.test('DEFECT: and took their OWN knife as "the only copy they hold"', function()
+    local s = newServer({ [1] = { { name = 'phone', count = 1 }, { name = 'water', count = 2 }, { name = 'WEAPON_KNIFE', count = 1 } } })
+    s.ammo.Issue(1, 'm1', { weapons = { { key = 'k1', weapon = 'WEAPON_KNIFE', components = {} } }, armor = 100, health = 200 })
+
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('refuseNamed')
+    t.isNotNil(s.itemNamed(1, 'WEAPON_KNIFE'), 'their own knife did not come back on the first pass, so this proves nothing')
+
+    s.stopResource()
+
+    t.isNotNil(s.itemNamed(1, 'WEAPON_KNIFE'),
+        'the second pass confiscated the fighter\'s OWN knife for one the clear had already destroyed')
+end)
+
+t.test('and nothing is written on the slate for rounds the clear destroyed', function()
+    local s = newServer({ [1] = { { name = 'phone', count = 1 }, { name = 'water', count = 2 }, { name = 'ammo-rifle', count = 500 } } })
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    s.breakOn('refuseNamed', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+    s.fixOn('refuseNamed')
+
+    local owed = 0
+    for _, row in ipairs(s.ammo.OwedKit()) do owed = owed + #row.items + #row.weapons end
+    t.equals(owed, 0, 'a debt was written for a kit the clear had already destroyed')
+end)
+
+t.test('DEFECT: a clear that answers yes and does nothing does not leave a copy in the stash', function()
+    -- THE WORST THING ox_inventory CAN DO TO THIS RESOURCE, and until now the
+    -- one thing no fixture could do. A clear on an inventory it has not
+    -- loaded ANSWERS and changes nothing -- so the door stashed the player's
+    -- belongings, was told the pockets were empty, and walked them into the
+    -- round still carrying every one of them with a COPY sitting in the
+    -- stash. The exit then handed the copy over: they left with two of
+    -- everything, and not one line anywhere said so.
+    --
+    -- The guard is the read-back under the clear -- proof that the pockets
+    -- are empty rather than proof that the clear was not refused. Inverting
+    -- it left all 105 tests in this file green, because `clearRefuse` (a
+    -- polite no) was the only lie this fixture could tell.
+    local s = newServer({ [1] = OWN })
+
+    s.breakOn('clearLies')
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.equals(s.carrying(1), 'phone,water', 'the fixture cleared anyway, so this proves nothing')
+    t.equals(s.stashContents(1), '',
+        'THE ARENA LEFT A COPY OF THEIR BELONGINGS IN THE STASH while they walked in carrying the originals')
+    t.isFalse(isHolding(s.ammo, 1),
+        'and it believes it is holding a kit for them, so the exit will hand that copy over')
+end)
+
+t.test('DEFECT: "nobody looked" is not "they owned none" -- a fighter is not billed for their own rounds', function()
+    -- floorFor answers what a fighter walked in HOLDING of one item, and nil
+    -- when nobody ever managed to read it. The callers subtract that from
+    -- what they are holding now to work out how much of it is the arena's --
+    -- so a nil read as zero says they owned none of it, and everything in
+    -- their pockets at the end is the arena's to take or to bill them for.
+    --
+    -- Inverting the nil to a 0 left every test here green: nothing set up a
+    -- door whose pockets-read fails, so the floor was always known.
+    local s = newServer({ [1] = { { name = 'ammo-rifle', count = 500 } } }, function(c)
+        c.Loadouts.inventory.stripOnEntry = false
+    end)
+
+    -- The read at the door fails, so nothing is recorded about what they
+    -- walked in with. Then it comes back, which is why the exit can see 560
+    -- and be tempted by it.
+    s.breakOn('count')
+    s.ammo.Issue(1, 'm1', loadoutOf('ammo-rifle', 60))
+    s.fixOn('count')
+
+    -- However many the arena's own rules issue, they land on top of the 500
+    -- that are theirs. That total is what the exit must not touch.
+    local afterIssue = s.countOf(1, 'ammo-rifle')
+    t.isTrue(afterIssue > 500, 'the rounds were never issued, so this proves nothing')
+
+    s.ammo.Reclaim(1, 'm1')
+
+    t.equals(s.countOf(1, 'ammo-rifle'), afterIssue,
+        'THE ARENA TOOK ITS ROUNDS OUT OF THE FIGHTER\'S OWN 500, having never read what they came in with')
+    local owed = 0
+    for _, row in ipairs(s.ammo.OwedKit()) do owed = owed + #row.items end
+    t.equals(owed, 0, 'and wrote a debt for rounds it never established were its own')
+end)
+
+t.test('POWERGAMING: a stash the door could not empty is never handed out twice', function()
+    -- HOW A DOOR DUPLICATES SOMEBODY'S PROPERTY, and the only way it can.
+    -- The exit hands a player their belongings back and then takes them out
+    -- of the stash. If that removal is refused, they are holding the items
+    -- AND the stash still has them -- a copy in two places. Run the exit over
+    -- that stash a second time and the copy is handed over as well: two of
+    -- everything, out of an arena, from a player who only has to make one
+    -- removal fail.
+    --
+    -- So the stash is SHUT instead. The door hands nothing further out of it
+    -- and says to settle it by hand. Inverting that left the whole suite
+    -- green, because no fixture could refuse a removal from a stash -- every
+    -- failure this file could express stopped a player being GIVEN something,
+    -- which happens before there is anything to duplicate.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.carrying(1), '', 'the door did not take their belongings, so this proves nothing')
+
+    -- The exit hands the water back and cannot clear it out of the stash.
+    s.breakOn('stuckInStash', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+    t.equals(s.countOf(1, 'water'), 2, 'they were not handed their water back, so this proves nothing')
+    t.isTrue(s.stashContents(1):find('water', 1, true) ~= nil,
+        'the copy is not stuck in the stash, so there is nothing to duplicate')
+
+    -- The removal starts working again, and the door is run over that stash
+    -- a second time -- a retry, a reconnect, the return sweep.
+    s.fixOn('stuckInStash')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.equals(s.countOf(1, 'water'), 2,
+        'THE ARENA HANDED OVER A SECOND COPY of everything it could not take out of that stash')
+end)
+
+os.exit(t.summary())

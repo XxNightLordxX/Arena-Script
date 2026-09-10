@@ -1,0 +1,608 @@
+--[[
+    crimson_arena/tests/payaccount_spec.lua
+
+    WHICH POCKET PAYS, AND WHO DECIDES.
+
+    Money used to come out of Config.Betting.accounts in order for the whole
+    amount, so a player was never asked: the entry fee and every bet left
+    whichever account the operator had listed first, and there was no way to
+    know before it happened.
+
+    The player picks now, and A CHOSEN ACCOUNT IS THE ONLY ONE TRIED. Falling
+    back to the other would be spending money out of a pocket they
+    deliberately left alone -- somebody picks `bank` precisely because they
+    want the cash kept -- which is the same class of mistake as quietly
+    clamping a number they typed. Refused with a reason is the honest answer.
+
+    Two properties this file exists to hold, both of which are easy to lose:
+
+      THE CHOICE IS OBEYED     no silent fallback, in either direction.
+      THE REFUND FOLLOWS THE   the escrow record must name the account the
+      MONEY                    money actually LEFT, never the one that was
+                               asked for -- otherwise a refund invents money
+                               in a place the player never spent it from.
+
+    Everything goes in over the wire, because the wire is where this build's
+    defects have lived.
+]]
+
+local t = dofile('testkit.lua')
+local Sandbox = dofile('fixtures/sandbox.lua')
+
+print('payaccount_spec')
+
+--- @param wallets table<integer, table> -- [src] = { cash = n, bank = n }
+local function newServer(wallets, mutate)
+    local players = {}
+    for src, money in pairs(wallets) do
+        players[src] = {
+            citizenid = ('CID%03d'):format(src),
+            name = ('Fighter %d'):format(src),
+            money = { cash = money.cash or 0, bank = money.bank or 0 },
+            job = { name = 'unemployed', grade = { level = 0 } },
+        }
+    end
+
+    local qbx = Sandbox.newQbxCore(players)
+    local threads = Sandbox.newThreadRunner()
+    local netEvents, console, sent = {}, {}, {}
+    local clock = 0
+
+    local env = Sandbox.newArenaEnv({
+        exports = qbx.exports,
+        lib = Sandbox.newOxLib(),
+        CreateThread = threads.CreateThread,
+        Wait = threads.Wait,
+        SetTimeout = threads.SetTimeout,
+        print = function(line) console[#console + 1] = line end,
+        TriggerClientEvent = function(event, target, payload)
+            sent[#sent + 1] = { event = event, target = target, payload = payload }
+        end,
+        TriggerEvent = function() end,
+        RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
+        -- Nothing here drives a disconnect, so the handlers are taken and
+        -- dropped rather than kept: an unused table that looks like a
+        -- fixture is a fixture somebody will wonder why nothing uses.
+        AddEventHandler = function() end,
+        RegisterCommand = function() end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        GetGameTimer = function() clock = clock + 60000 return clock end,
+        GetPlayerName = function(src) return (players[src] or {}).name or '' end,
+        GetPlayerPed = function(src) return src end,
+        GetEntityCoords = function(ped)
+            -- INSIDE THE ARENA THESE FIGHTERS ARE SUPPOSED TO BE IN, which
+            -- this used to be nowhere near: it answered a point 1,450m from
+            -- the Trailer Park, so every fighter in every one of these specs
+            -- was standing well outside the fence they were fighting inside.
+            -- Nothing read it until Config.Match.serverChecks did, and then
+            -- it read as the whole roster having walked out of the round.
+            --
+            -- Spread three metres apart, so they are also close enough for
+            -- the kill-distance ceiling -- the other thing that reads this.
+            return {
+                x = 2344.4 + ((tonumber(ped) or 0) % 16) * 3.0,
+                y = 2565.1,
+                z = 46.7,
+            }
+        end,
+        GetVehiclePedIsIn = function() return 0 end,
+        IsPlayerAceAllowed = function() return false end,
+        PerformHttpRequest = function() end,
+        ArenaStats = {
+            GetLeaderboard = function(cb) cb({}) end,
+            EnsureSchema = function() end, RecordMatch = function() end, Flush = function() end,
+        },
+        ArenaAmmo = {
+            IsEnabled = function() return false end,
+            Issue = function() return {} end, Reclaim = function() return 0 end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
+            ReclaimAll = function() return 0 end, Clear = function() return true end,
+            OnLoan = function() return 0 end,
+        },
+        ArenaDispatch = {
+            Set = function() end, Clear = function() end, Revive = function() end,
+            IsPlayerInArena = function() return false end,
+            ClearDownState = function() return 0 end,
+            EnterBucket = function() end, ExitBucket = function() end,
+            GetBucket = function() end, ReleaseBucket = function() end,
+        },
+    })
+
+    env.Config.Match.minPlayers = 2
+    env.Config.Match.lobbyCountdownSeconds = 0
+    if mutate then mutate(env.Config) end
+
+    for _, file in ipairs({ 'util', 'betting', 'lobby', 'match', 'main' }) do
+        Sandbox.loadInto('../server/' .. file .. '.lua', env)
+    end
+
+    local server = { env = env, qbx = qbx, config = env.Config,
+        betting = env.ArenaBetting, lobby = env.ArenaLobby }
+
+    function server.fire(event, src, data)
+        local handler = netEvents['crimson_arena:server:' .. event]
+        if not handler then error('no handler for ' .. event, 2) end
+        env.source = src
+        handler(data)
+    end
+
+    --- How many state snapshots one player has been sent since forgetSent.
+    function server.snapshotsTo(src)
+        local hits = 0
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:state' and message.target == src then
+                hits = hits + 1
+            end
+        end
+        return hits
+    end
+
+    function server.forgetSent()
+        for index = #sent, 1, -1 do sent[index] = nil end
+    end
+
+    function server.cash(src) return qbx.players[src].money.cash end
+    function server.bank(src) return qbx.players[src].money.bank end
+    function server.log() return table.concat(console, '\n') end
+
+    return server
+end
+
+--- Opens a lobby at `fee`, with the host paying from `account`.
+local function openLobby(server, fee, account)
+    server.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee, account = account,
+    })
+    local match = server.lobby.All()[1]
+    return match and match.id or nil
+end
+
+-- ======================================================================
+-- WHAT SHIPS
+-- ======================================================================
+
+t.test('the shipped config offers both accounts, in order', function()
+    local server = newServer({ [1] = { cash = 1000, bank = 1000 } })
+    local accounts = server.betting.Accounts()
+    t.equals(#accounts, 2, 'the choice is not on offer at all')
+    t.equals(accounts[1], 'cash')
+    t.equals(accounts[2], 'bank')
+end)
+
+t.test('and reports what a player holds in each, for the panel to draw', function()
+    local server = newServer({ [1] = { cash = 250, bank = 9000 } })
+    local wallet = server.betting.Wallet(1)
+    t.equals(wallet.cash, 250)
+    t.equals(wallet.bank, 9000)
+end)
+
+-- ======================================================================
+-- THE ENTRY FEE
+-- ======================================================================
+
+t.test('an entry fee paid from the BANK leaves the cash alone', function()
+    -- The whole point. Cash could cover it and is listed first, so with the
+    -- choice ignored this money comes out of the wrong pocket.
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } })
+    openLobby(server, 1000, 'bank')
+
+    t.equals(server.cash(1), 5000, 'the fee came out of cash despite the player picking bank')
+    t.equals(server.bank(1), 4000)
+end)
+
+t.test('and from CASH leaves the bank alone', function()
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } })
+    openLobby(server, 1000, 'cash')
+
+    t.equals(server.cash(1), 4000)
+    t.equals(server.bank(1), 5000)
+end)
+
+t.test('a chosen account that cannot cover it is REFUSED, not quietly swapped', function()
+    -- Falling through to cash would take money from a pocket the player
+    -- deliberately did not pick.
+    local server = newServer({ [1] = { cash = 5000, bank = 10 } })
+    local matchId = openLobby(server, 1000, 'bank')
+
+    t.isNil(matchId, 'the match opened on money the player did not offer')
+    t.equals(server.cash(1), 5000, 'CASH WAS SPENT AFTER THE PLAYER CHOSE BANK')
+    t.equals(server.bank(1), 10)
+end)
+
+t.test('with no choice made, the operator order still applies', function()
+    -- Every server that has not switched the choice on, and every panel that
+    -- has not been touched.
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } })
+    openLobby(server, 1000, nil)
+
+    t.equals(server.cash(1), 4000, 'the fee did not fall to the first listed account')
+    t.equals(server.bank(1), 5000)
+end)
+
+t.test('a name that is not one of their accounts at all is no preference', function()
+    -- A stale panel or a crafted payload, not a reason to refuse a player who
+    -- can plainly pay. Nothing was really chosen, so the operator order
+    -- applies exactly as it does when nothing was sent.
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } })
+    t.isNotNil(openLobby(server, 1000, 'crypto'), 'a junk account name refused a payable fee')
+    t.equals(server.cash(1), 4000)
+end)
+
+t.test('DEFECT: but a REAL account this server will not debit is refused, not swapped', function()
+    -- THE HOLE THIS CLOSES, and it is the exact failure the module's own
+    -- comment says must never happen.
+    --
+    -- A player picks cash. The operator later takes cash out of
+    -- Config.Betting.accounts. The old code could not tell that from a
+    -- typo, so it fell back to "the operator's list" and quietly took the
+    -- money out of the bank -- the pocket they chose cash specifically to
+    -- avoid. Nothing said so at either end.
+    --
+    -- Refused instead. Nothing moves, from either account.
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } },
+        function(config) config.Betting.accounts = { 'bank' } end)
+
+    t.isNil(openLobby(server, 1000, 'cash'),
+        'a fee was taken despite the chosen account not being one this server debits')
+    t.equals(server.cash(1), 5000, 'the cash moved')
+    t.equals(server.bank(1), 5000, 'the money came out of the pocket they did not choose')
+end)
+
+t.test('and the same choice is honoured normally once the operator allows it', function()
+    -- The other half: this is a refusal about the ACCOUNT LIST, not about
+    -- the player or the name.
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } },
+        function(config) config.Betting.accounts = { 'bank', 'cash' } end)
+
+    t.isNotNil(openLobby(server, 1000, 'cash'))
+    t.equals(server.cash(1), 4000)
+    t.equals(server.bank(1), 5000)
+end)
+
+t.test('a joiner picks their own account, independently of the host', function()
+    local server = newServer({
+        [1] = { cash = 5000, bank = 5000 },
+        [2] = { cash = 5000, bank = 5000 },
+    })
+    local matchId = openLobby(server, 1000, 'cash')
+    server.fire('joinMatch', 2, { matchId = matchId, account = 'bank' })
+
+    t.equals(server.cash(1), 4000, 'the host did not pay from cash')
+    t.equals(server.cash(2), 5000, 'the joiner paid from cash after choosing bank')
+    t.equals(server.bank(2), 4000)
+end)
+
+-- ======================================================================
+-- THE REFUND FOLLOWS THE MONEY
+-- ======================================================================
+
+t.test('a refund goes back to the account the money LEFT, not the one asked for', function()
+    -- The trap in threading a preference through: the escrow record is what a
+    -- refund reads, and recording the REQUEST rather than the result would
+    -- put the money back somewhere it never came from -- inventing it in one
+    -- pocket while it is still missing from the other.
+    local server = newServer({ [1] = { cash = 5000, bank = 5000 } })
+    openLobby(server, 1000, 'bank')
+    t.equals(server.bank(1), 4000, 'the fee did not come out of the bank, so this proves nothing')
+
+    server.fire('cancelMatch', 1)
+
+    t.equals(server.bank(1), 5000, 'the bank was not made whole')
+    t.equals(server.cash(1), 5000, 'THE REFUND WAS PAID INTO CASH, WHICH NEVER PAID ANYTHING')
+end)
+
+t.test('and with no preference it still goes back where it came from', function()
+    local server = newServer({ [1] = { cash = 0, bank = 5000 } })
+    -- Cash is listed first and holds nothing, so the fee falls to the bank.
+    local matchId = openLobby(server, 1000, nil)
+    t.isNotNil(matchId)
+    t.equals(server.bank(1), 4000, 'the fee did not fall through to the bank')
+
+    server.fire('cancelMatch', 1)
+
+    t.equals(server.bank(1), 5000, 'the refund did not return to the account that paid')
+    t.equals(server.cash(1), 0, 'the refund conjured cash the player never had')
+end)
+
+-- ======================================================================
+-- SIDE-BETS TAKE THE SAME ROUTE
+-- ======================================================================
+
+t.test('a side-bet is paid from the account the bettor picked', function()
+    local server = newServer({
+        [1] = { cash = 5000, bank = 5000 },
+        [2] = { cash = 5000, bank = 5000 },
+        [3] = { cash = 5000, bank = 5000 },
+    })
+    local matchId = openLobby(server, 0, nil)
+    server.fire('joinMatch', 2, { matchId = matchId })
+
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = '1', amount = 500, account = 'bank',
+    })
+
+    t.equals(server.cash(3), 5000, 'the bet came out of cash despite the bettor picking bank')
+    t.equals(server.bank(3), 4500)
+end)
+
+t.test('DEFECT: placing a bet refreshes the panel that shows the balance', function()
+    -- Every other money movement runs through a lobby path that broadcasts
+    -- afterwards. A side-bet is placed from the Bets tab and settled inside
+    -- betting.lua, and told nobody -- so the bettor read their balance from
+    -- before the bet, and a pot that did not include it, until some unrelated
+    -- lobby change happened to refresh them.
+    --
+    -- It matters more now the panel offers a choice of account and prints
+    -- what is in each: a player pays from the bank and the chip still shows
+    -- the old figure.
+    local server = newServer({
+        [1] = { cash = 5000, bank = 5000 },
+        [2] = { cash = 5000, bank = 5000 },
+        [3] = { cash = 5000, bank = 5000 },
+    })
+    local matchId = openLobby(server, 0, nil)
+    server.fire('joinMatch', 2, { matchId = matchId })
+
+    -- The bettor has the panel open, because the Bets tab is the only place
+    -- a bet can be placed from. That is what puts them on the broadcast list.
+    server.fire('requestState', 3, { panel = true })
+    server.forgetSent()
+
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = '1', amount = 500, account = 'cash',
+    })
+    t.equals(server.cash(3), 4500, 'the bet was not taken, so this proves nothing')
+
+    t.isTrue(server.snapshotsTo(3) > 0,
+        'the bettor was left reading the balance and the pot from before their own bet')
+    t.isTrue(server.snapshotsTo(1) > 0,
+        'and nobody else was told the pot had grown')
+end)
+
+t.test('DEFECT: changing a lobby\'s mode was a free "void every bet" button', function()
+    -- A side-bet names a SIDE: a team key in a team mode, a fighter's server
+    -- id in a free-for-all. Change the mode of an open lobby and every bet
+    -- already on it is picking something that cannot win any more -- so at
+    -- settlement it simply lost. Not voided, not refunded: lost, with nothing
+    -- on screen saying so and no way for the bettor to have seen it coming.
+    --
+    -- This file used to assert the answer to that was to HAND THE WHOLE BOOK
+    -- BACK, which is fair to the bettors and is exactly what made the lever
+    -- worth pulling: the host is a fighter with money on the outcome, the
+    -- flip costs nothing, and it can be done again a second later. So the
+    -- host held a cancel-everyone's-bets button -- their own losing wager
+    -- included -- pressable the moment the book turned against them.
+    --
+    -- The mode is refused instead, so nobody's pick can die under them and
+    -- there is nothing to hand back. Asserted on BOTH: the refusal, and that
+    -- the stake stayed exactly where the bettor put it.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 },
+        [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 },
+    })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = 500, account = 'cash',
+    })
+    t.equals(server.cash(3), 49500, 'the bet was never taken, so this proves nothing')
+
+    -- The host changes their mind about the mode.
+    local ok, reason = server.lobby.UpdateMatch(1, { modeKey = 'ffa' })
+
+    t.isTrue(ok ~= true, 'the host flipped the mode out from under a standing bet')
+    t.equals(reason, 'error.mode_locked_by_bets',
+        'the host was refused without being told which of their edits was the problem')
+    t.equals(server.lobby.Get(matchId).modeKey, 'tdm',
+        'the refusal came back and the mode changed anyway')
+    t.equals(server.cash(3), 49500,
+        'the refused mode change still handed the bettor their stake back')
+    t.isNotNil(server.betting.GetSideBet(matchId, 3),
+        'the bet was settled off the books by a change that never happened')
+end)
+
+t.test('and the host can still change everything else while the book is open', function()
+    -- THE HONEST HOST, WHO IS THE WHOLE REASON THE REFUSAL IS AIMED AT THE
+    -- MODE AND NOTHING ELSE. Only a mode change can make a side stop
+    -- existing; the arena, the lives and the radar leave every pick exactly
+    -- where it was, so a guard that locked the whole form once a bet was down
+    -- would take the feature away to fix an abuse of one field of it.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 },
+        [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 },
+    })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = 500, account = 'cash',
+    })
+
+    t.isTrue(server.lobby.UpdateMatch(1, { lives = 2 }),
+        'a lives edit was refused over a bet that does not name the lives')
+    t.isTrue(server.lobby.UpdateMatch(1, { arenaKey = 'skydome' }),
+        'an arena edit was refused over a bet that does not name the arena')
+
+    local match = server.lobby.Get(matchId)
+    t.equals(match.lives, 2, 'the lives edit did not land')
+    t.equals(match.arenaKey, 'skydome', 'the arena edit did not land')
+
+    -- AND RE-SENDING THE MODE IT ALREADY HAS IS NOT A CHANGE. The panel posts
+    -- the whole form on every Apply, so the mode arrives with every one of
+    -- those edits -- a guard that fired on the FIELD BEING PRESENT rather
+    -- than on the value differing would have locked the entire form.
+    t.isTrue(server.lobby.UpdateMatch(1, { modeKey = 'tdm', lives = 3 }),
+        'the host could not edit anything at all once a bet was down')
+    t.equals(server.lobby.Get(matchId).lives, 3, 'that edit did not land either')
+end)
+
+t.test('but editing anything ELSE leaves the bets exactly where they are', function()
+    -- The distinction the guard exists to draw. A side-bet names a SIDE, and
+    -- only a mode change can make a side stop existing -- so a host nudging
+    -- the lives or the arena must not hand everybody their money back and
+    -- empty the pool they were betting into. Returning on every edit passes
+    -- the test above just as well as returning on the right one, which is
+    -- why this is here.
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 },
+        [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 },
+    })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = 500, account = 'cash',
+    })
+    t.equals(server.cash(3), 49500, 'the bet was never taken, so this proves nothing')
+
+    -- Lives, then the arena. Neither changes what "crimson" means.
+    server.fire('updateMatch', 1, { lives = 2 })
+    t.equals(server.cash(3), 49500,
+        'editing the LIVES handed a standing bet back and emptied the pool')
+
+    server.fire('updateMatch', 1, { arenaKey = 'skydome' })
+    t.equals(server.cash(3), 49500,
+        'changing the ARENA handed a standing bet back -- the side they picked still exists')
+
+    t.equals(server.lobby.Get(matchId).lives, 2, 'the lives edit itself did not land')
+end)
+
+t.test('and a mode change with no bets on it is uneventful', function()
+    -- The guard must not fire on the ordinary case: a host adjusting an empty
+    -- lobby is not a settlement.
+    local server = newServer({ [1] = { cash = 50000, bank = 50000 } })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 1000 })
+    local matchId = server.lobby.All()[1].id
+
+    server.fire('updateMatch', 1, { modeKey = 'ffa' })
+
+    t.equals(server.lobby.Get(matchId).modeKey, 'ffa', 'the mode change did not take')
+    t.equals(server.cash(1), 49000, 'the host\'s own entry fee was disturbed by a mode change')
+end)
+
+t.test('and a bet the chosen account cannot cover is refused', function()
+    local server = newServer({
+        [1] = { cash = 5000, bank = 5000 },
+        [2] = { cash = 5000, bank = 5000 },
+        [3] = { cash = 5000, bank = 10 },
+    })
+    local matchId = openLobby(server, 0, nil)
+    server.fire('joinMatch', 2, { matchId = matchId })
+
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = '1', amount = 500, account = 'bank',
+    })
+
+    t.equals(server.cash(3), 5000, 'CASH WAS SPENT ON A BET THE PLAYER ASKED TO PAY FROM THE BANK')
+    t.equals(server.bank(3), 10)
+end)
+
+t.test('a fighter who DROPS keeps only what a watcher may hold', function()
+    -- THE DOOR NOTHING CAN SHUT. Refusing the voluntary leave closes the
+    -- button; it cannot close a disconnect, because the player is already
+    -- gone and holding their row would strand a ghost on the roster with a
+    -- routing bucket, a dispatch flag and a stake nobody can reach.
+    --
+    -- So the BAND lapses at the moment the fact changes. The stake was legal
+    -- at the fighter ceiling while they were fighting; the instant they are
+    -- off the roster the most a non-fighter may hold is the spectator
+    -- ceiling, and the difference goes back to the account it came from.
+    --
+    -- WITHOUT THIS the exploit runs on the drop route exactly as it did on
+    -- the leave route: bet at the fighter cap, pull the plug, and settle a
+    -- position at twice what this same file caps an honest watcher at.
+    local server = newServer({
+        [1] = { cash = 200000, bank = 0 },
+        [2] = { cash = 200000, bank = 0 },
+        [3] = { cash = 200000, bank = 0 },
+    }, function(config)
+        config.Betting.fighterBets.enabled = true
+        -- THE SHIPPED CONFIG LEVELS THE TWO BANDS ON PURPOSE, because a
+        -- fighter ceiling above the watcher ceiling is exactly the free
+        -- insurance this test describes. Levelling them makes the exploit
+        -- unreachable on the shipped numbers -- it does not delete the trim,
+        -- and an operator who raises the fighter band is back in range of
+        -- it. So the fixture widens the band itself: the code under test is
+        -- covered whatever the shipped ceiling happens to be.
+        config.Betting.fighterBets.max = config.Betting.spectatorBets.max * 2
+    end)
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'ash' })
+    server.fire('joinMatch', 3, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+
+    local fighterMax = server.config.Betting.fighterBets.max
+    local watcherMax = server.config.Betting.spectatorBets.max
+    t.isTrue(fighterMax > watcherMax,
+        'the fixture did not widen the fighter band, so this test measures nothing')
+
+    -- 3 is a FIGHTER, so the fighter band is what they are held to.
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = fighterMax, account = 'cash',
+    })
+    t.equals(server.cash(3), 200000 - fighterMax, 'the fighter bet was never taken')
+
+    -- dropped = true: the path a refusal can never reach.
+    server.lobby.Leave(3, nil, true)
+
+    t.equals(server.cash(3), 200000 - watcherMax,
+        ('the over-band part was not returned on a drop -- they are out %d, expected %d')
+            :format(200000 - server.cash(3), watcherMax))
+
+    local bet = server.betting.GetSideBet(matchId, 3)
+    t.isNotNil(bet, 'the bet vanished entirely rather than being trimmed')
+    t.equals(bet.amount, watcherMax,
+        'the stake still standing is not the spectator ceiling')
+end)
+
+t.test('and a fighter who drops inside the band keeps every penny of it', function()
+    -- THE OTHER HALF. The trim is a band lapsing, not a confiscation: a
+    -- stake a watcher could legally have placed is untouched, so a fighter
+    -- who bet modestly and crashed is not punished for crashing.
+    local server = newServer({
+        [1] = { cash = 200000, bank = 0 },
+        [2] = { cash = 200000, bank = 0 },
+        [3] = { cash = 200000, bank = 0 },
+    }, function(config)
+        config.Betting.fighterBets.enabled = true
+    end)
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local matchId = server.lobby.All()[1].id
+    server.fire('joinMatch', 2, { matchId = matchId, teamKey = 'ash' })
+    server.fire('joinMatch', 3, { matchId = matchId, teamKey = 'crimson' })
+    server.fire('setTeam', 1, { teamKey = 'crimson' })
+
+    -- STRICTLY BELOW THE CEILING, not exactly on it. A stake sitting on the
+    -- boundary cannot tell "the trim was skipped" from "the trim ran and
+    -- landed on the same number" -- so a version that trimmed every walked-out
+    -- fighter's bet to the ceiling, raising a small one, would pass.
+    local watcherMax = server.config.Betting.spectatorBets.max
+    local modest = math.floor(watcherMax / 2)
+    t.isTrue(modest > 0 and modest < watcherMax, 'the fixture cannot express a stake inside the band')
+
+    server.fire('placeSpectatorBet', 3, {
+        matchId = matchId, pick = 'crimson', amount = modest, account = 'cash',
+    })
+    local before = server.cash(3)
+
+    server.lobby.Leave(3, nil, true)
+
+    t.equals(server.cash(3), before, 'a stake already inside the band was trimmed anyway')
+    local bet = server.betting.GetSideBet(matchId, 3)
+    t.isNotNil(bet, 'the bet vanished')
+    t.equals(bet.amount, modest, 'and the stake they really placed was altered')
+end)
+
+os.exit(t.summary())

@@ -1,0 +1,331 @@
+/*
+    crimson_arena/tests/panel/harness.js
+
+    A DOM shim thin enough to run html/app.js for real.
+
+    WHY THIS EXISTS. Every other panel test in this suite reads app.js as
+    TEXT and asserts that the right words are in it. That catches a wire
+    that was never connected and cannot catch a wire connected to the wrong
+    thing -- and the bug that prompted this was exactly the second kind: a
+    state key that was never declared, so the guard seeding it from config
+    never fired and every match was created with a fallback of one life. The
+    text was all present and correct.
+
+    So this runs the file. Not a browser -- just enough of one that app.js
+    loads, receives a snapshot the way FiveM sends it, and posts what a
+    button click would post. What is asserted is the PAYLOAD, because that
+    is the thing the server acts on and the thing a reader cannot verify by
+    looking at the source.
+*/
+
+const fs = require('fs');
+const path = require('path');
+
+/*
+ * The document the nodes below report their focus to. Assigned once
+ * loadPanel builds the shim; a node needs it to answer focus() and to hand
+ * focus back when it is removed from the tree.
+ */
+let focusOwner = null;
+
+function makeNode(id) {
+    return {
+        id,
+        value: '',
+        textContent: '',
+        min: '',
+        max: '',
+        disabled: false,
+        title: '',
+        hidden: false,
+        children: [],
+        listeners: {},
+        classList: {
+            _set: new Set(),
+            toggle(name, on) { if (on === false) this._set.delete(name); else if (on === true) this._set.add(name); },
+            add(n) { this._set.add(n); },
+            remove(n) { this._set.delete(n); },
+            contains(n) { return this._set.has(n); },
+        },
+        /*
+         * THE SAME CLASSES classList REPORTS, which they were not.
+         *
+         * app.js dresses everything it BUILDS by assigning className -- one
+         * string, often several classes -- while it toggles state through
+         * classList. Here those were two unrelated properties: a card the
+         * panel had just labelled `admin-owed-give` answered false to
+         * classList.contains('admin-owed-give'), so no test could find an
+         * element by the class it visibly has, and any that tried passed or
+         * failed for a reason unrelated to the panel.
+         *
+         * Backed by the same set, the way a real element is. `hidden` toggled
+         * through classList therefore shows up in className too, which is
+         * also what a real element does.
+         */
+        get className() { return Array.from(this.classList._set).join(' '); },
+        set className(value) {
+            this.classList._set = new Set(
+                String(value).split(/\s+/).filter(Boolean),
+            );
+        },
+        style: {},
+        get firstChild() { return this.children.length ? this.children[0] : null; },
+        addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+        /*
+         * REAL, because app.js's clear() is
+         *
+         *     while (node.firstChild) node.removeChild(node.firstChild)
+         *
+         * and both halves of that were inert here -- firstChild was a fixed
+         * null, so the loop never ran, and removeChild did nothing when it
+         * did. So no container was ever cleared in a test, and every render
+         * appended a second copy of everything on top of the first.
+         *
+         * Tests that reach for one node by name never noticed: find() returns
+         * the first match and the first match was correct. A test that COUNTS
+         * children was reading the number of renders.
+         */
+        removeChild(child) {
+            const at = this.children.indexOf(child);
+            if (at >= 0) this.children.splice(at, 1);
+            /*
+             * A BROWSER DROPS FOCUS WITH THE ELEMENT. Removing the node the
+             * caret is in blurs it -- focus falls back to the body -- and
+             * that is the whole of the bug the panel's rebuilt inputs hit:
+             * every render replaces them, so anybody typing into one loses
+             * the caret the moment a snapshot arrives.
+             *
+             * Modelled here rather than asserted around, because a harness
+             * that keeps focus on a detached node cannot reproduce it and
+             * would pass a panel that still had it.
+             */
+            if (focusOwner && contains(child, focusOwner.activeElement)) {
+                focusOwner.activeElement = null;
+            }
+            return child;
+        },
+        appendChild(child) { this.children.push(child); return child; },
+        setAttribute(name, value) { this[name] = value; },
+        getAttribute(name) { return this[name] === undefined ? null : this[name]; },
+        querySelectorAll() { return []; },
+        focus() { if (focusOwner) focusOwner.activeElement = this; },
+        blur() { if (focusOwner && focusOwner.activeElement === this) focusOwner.activeElement = null; },
+    };
+}
+
+/** Whether `node` is `wanted` or has it somewhere beneath it. */
+function contains(node, wanted) {
+    if (!node || !wanted) return false;
+    if (node === wanted) return true;
+    return (node.children || []).some((kid) => contains(kid, wanted));
+}
+
+/**
+ * Loads html/app.js into a shim and returns handles for driving it.
+ * @param {string} root -- the Crimson-Arena directory
+ */
+function loadPanel(root) {
+    const source = fs.readFileSync(path.join(root, 'html', 'app.js'), 'utf8');
+
+    const nodes = {};
+    const posted = [];
+    const listeners = {};
+    /** Handlers app.js binds to the document itself -- keydown, pointerdown. */
+    const docListeners = {};
+
+    const context = {
+        document: {
+            getElementById: (id) => nodes[id] || (nodes[id] = makeNode(id)),
+            querySelectorAll: () => [],
+            /*
+             * Elements the panel BUILDS, registered under whatever id it
+             * gives them -- which is what a real document does, and what
+             * makes a control the panel created addressable by a test.
+             *
+             * Without this only the ids the panel LOOKED UP existed, so a
+             * card or an input it created was unreachable: node() would
+             * conjure a fresh detached one and every assertion against it
+             * passed for the wrong reason.
+             */
+            createElement: (tag) => {
+                const node = makeNode('el:' + tag);
+                let assigned = '';
+                Object.defineProperty(node, 'id', {
+                    get() { return assigned; },
+                    set(value) {
+                        assigned = String(value);
+                        if (assigned) nodes[assigned] = node;
+                    },
+                    enumerable: true,
+                    configurable: true,
+                });
+                return node;
+            },
+            /*
+             * REAL, and it used to be a no-op.
+             *
+             * app.js binds ESC and the audio unlock to the DOCUMENT rather
+             * than to a node, so every one of those handlers was registered
+             * into nothing: a test could not press a key, and the ESC path --
+             * the only way out of a screen whose Close button is unreachable
+             * -- had no coverage at all.
+             */
+            addEventListener(type, fn) {
+                (docListeners[type] = docListeners[type] || []).push(fn);
+            },
+            activeElement: null,
+            body: makeNode('body'),
+            /* THE ROOT ELEMENT, because a REAL snapshot has a theme on it.
+               server/lobby.lua puts Config.UI on the wire verbatim and
+               config.lua's `ui.theme` is a table of CSS variables, so
+               applyTheme writes to document.documentElement.style on the
+               first `state` push of any genuine ArenaLobby.BuildState
+               payload. Without this it threw -- and the throw was SWALLOWED
+               by the panel's own guarded() wrapper, so the page simply
+               rendered nothing: an empty picker, an empty roster, an empty
+               title, and a Start button left at its default. A suite driven
+               by hand-written payloads never noticed, and one driven by a
+               real one would have measured a blank screen and called it a
+               finding about whatever it was looking at. */
+            documentElement: (function () {
+                const node = makeNode('html');
+                node.style.setProperty = function (name, value) { this[name] = value; };
+                return node;
+            })(),
+        },
+        window: {
+            addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+            removeEventListener() {},
+            setTimeout: () => 0,
+            clearTimeout() {},
+            AudioContext: null,
+            webkitAudioContext: null,
+        },
+        GetParentResourceName: () => 'Crimson-Arena',
+        fetch: (url, options) => {
+            posted.push({
+                name: String(url).split('/').pop(),
+                body: options && options.body ? JSON.parse(options.body) : null,
+            });
+            return Promise.resolve({ json: () => Promise.resolve({}) });
+        },
+        setTimeout: () => 0,
+        clearTimeout() {},
+        console,
+    };
+
+    // The file reads `window.x` and bare globals interchangeably, as browser
+    // code does, so both have to resolve to the same shim.
+    Object.assign(context.window, {
+        document: context.document,
+        fetch: context.fetch,
+        GetParentResourceName: context.GetParentResourceName,
+    });
+
+    // Every node built from here reports its focus to this document.
+    focusOwner = context.document;
+
+    const vm = require('vm');
+    vm.createContext(context);
+    vm.runInContext(source, context, { filename: 'app.js' });
+
+    return {
+        nodes,
+        posted,
+        /** Delivers a NUI message in the shape FiveM sends it. */
+        send(action, data) {
+            (listeners.message || []).forEach((fn) => fn({ data: { action, data } }));
+        },
+        /**
+         * Presses a key, the way a player does. Dispatched to the DOCUMENT,
+         * because that is where app.js listens for them.
+         * @returns {boolean} whether anything was listening at all
+         */
+        key(name) {
+            const handlers = docListeners.keydown || [];
+            let prevented = false;
+            handlers.forEach((fn) => fn({
+                key: name,
+                preventDefault() { prevented = true; },
+            }));
+            return prevented;
+        },
+        /** @returns {object} the node, created on demand like the real DOM lookup */
+        node(id) { return nodes[id] || (nodes[id] = makeNode(id)); },
+        /**
+         * Whether the PANEL built a node with this id, as opposed to a test
+         * having conjured one by asking for it.
+         *
+         * node() creates on demand, which is right for driving controls and
+         * useless for asking whether a control exists -- every id "exists"
+         * the moment you look. This asks the real question.
+         */
+        built(id) { return Object.prototype.hasOwnProperty.call(nodes, id); },
+        /** The node the caret is in, or null -- the document's own answer. */
+        activeElement() { return context.document.activeElement; },
+        /**
+         * Fires one DOM event on a node, the way a player would.
+         *
+         * BOTH WIRINGS, because app.js uses both. Most controls are bound
+         * with addEventListener, but the ones a render re-wires every pass --
+         * Ready Up, Start, Cancel, Leave, the radar, the bet button -- are
+         * assigned to `.onclick` instead, so the handler is replaced rather
+         * than stacked.
+         *
+         * This dispatched only to the listener list, so every one of those
+         * six was unreachable through fire(): a test could click them and
+         * assert against a panel that had done nothing, and pass. That is not
+         * hypothetical -- the fighter-bet tests were written against
+         * `bet-submit` and posted nothing at all.
+         */
+        fire(id, type, event) {
+            const node = this.node(id);
+            // A real event carries these and the panel calls them: controls
+            // that sit inside a clickable card stop propagation so clicking
+            // them does not also toggle the card. An event object without
+            // them throws instead of testing anything.
+            const detail = Object.assign({
+                target: node,
+                stopPropagation() {},
+                preventDefault() {},
+            }, event || {});
+            // A disabled control is inert in a browser, so it is inert here:
+            // asserting that a greyed-out button does nothing is a real test
+            // and it must not pass merely because the handler was called.
+            //
+            // BOTH WIRINGS, and this used to be only the inline one. A
+            // browser does not dispatch a click to an addEventListener
+            // handler on a disabled button either, so a panel test that
+            // greyed a control out and then asserted the click posted
+            // nothing was passing on the inline controls and failing on the
+            // bound ones -- for a difference the player cannot see.
+            if (node.disabled === true) return;
+
+            (node.listeners[type] || []).forEach((fn) => fn(detail));
+
+            const inline = node['on' + type];
+            if (typeof inline === 'function') inline.call(node, detail);
+        },
+        /**
+         * All text rendered inside a node, children included.
+         *
+         * The panel builds screens by appending elements rather than by
+         * setting innerHTML, so what a player actually READS is spread across
+         * a tree. A test that only checks textContent on the container sees
+         * an empty string and passes for the wrong reason.
+         */
+        text(id) {
+            const walk = (node) => (node.textContent || '')
+                + (node.children || []).map(walk).join(' ');
+            return walk(this.node(id)).trim();
+        },
+        /** Types into an input and fires the input event, as a player does. */
+        type(id, value) {
+            const node = this.node(id);
+            node.value = String(value);
+            this.fire(id, 'input', { target: { value: String(value) } });
+        },
+    };
+}
+
+module.exports = { loadPanel, makeNode };

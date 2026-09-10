@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<!-- Crimson Arena: what the panel is made of. -->
+
+<!--
+    crimson_arena/html/index.html
+
+    The arena panel and the in-match overlay, as structure only. Styling
+    lives in style.css, behaviour in app.js; this file names the ids those
+    two build against and nothing else.
+
+    TWO ROOTS, ON PURPOSE. #arena-root is the modal panel and is the only
+    thing that ever holds NUI focus. #arena-hud and #arena-countdown are
+    drawn over live gameplay while the player is shooting, so they are
+    inert at every level -- see the pointer-events note in style.css before
+    adding anything clickable to them.
+
+    Both roots start hidden; app.js toggles the `hidden` class and nothing
+    else. Every list here is empty on purpose: the panel renders from the
+    server's state snapshot, so there is no placeholder markup to go stale.
+
+    THE STATIC COPY IS THE EXCEPTION, and it is here rather than in app.js
+    because it is fixed English chrome: a sentence that is true whatever the
+    snapshot says. Anything whose wording depends on config -- what an entry
+    fee buys, why a button is disabled -- is left as an empty element for
+    app.js to fill, so the panel never states a rule this server does not run.
+-->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Crimson Arena</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="arena-root" class="hidden">
+    <header id="arena-header">
+        <img id="arena-logo" alt="">
+        <h1 id="arena-title"></h1>
+        <span id="arena-subtitle"></span>
+        <span id="arena-hours"></span>
+        <div id="arena-money"></div>
+        <button id="arena-close" type="button">&#10005;</button>
+    </header>
+
+    <section id="arena-shut" class="hidden">
+        <h2 id="arena-shut-title">The arena is closed</h2>
+        <p id="arena-shut-why"></p>
+        <p id="arena-shut-hours"></p>
+    </section>
+
+    <nav id="arena-nav">
+        <button class="arena-tab" type="button" data-tab="matches">Matches</button>
+        <button class="arena-tab" type="button" data-tab="lobby">Lobby</button>
+        <button class="arena-tab" type="button" data-tab="loadout">Loadout</button>
+        <button class="arena-tab" type="button" data-tab="bets">Bets</button>
+        <button class="arena-tab" type="button" data-tab="board">Leaderboard</button>
+    </nav>
+
+    <main id="arena-body">
+        <section id="tab-matches" class="arena-panel">
+            <div id="match-list"></div>
+
+            <div id="create-panel">
+                <!-- Named for the button at the bottom of the box, not for
+                     the lobby's Start Match Now: creating a match and
+                     starting a round are different things and must not
+                     borrow each other's verb. -->
+                <h2 class="panel-heading">Create A Match</h2>
+                <p class="hint">Set one up for other players to join.</p>
+
+                <label class="field">
+                    <span class="field-label">Arena</span>
+                    <select id="create-arena"></select>
+                </label>
+
+                <label class="field">
+                    <span class="field-label">Mode</span>
+                    <select id="create-mode"></select>
+                </label>
+
+                <div id="create-fee-row" class="field">
+                    <span class="field-label">Entry Fee</span>
+                    <input id="create-fee" type="number" min="0" step="1">
+                    <div id="create-fee-presets"></div>
+                    <div id="create-account"></div>
+                    <p id="create-fee-hint" class="hint"></p>
+                </div>
+
+                <!-- HOW THE ROUND IS WON. Above Lives Each on purpose: the
+                     choice made here decides whether Lives Each is read at
+                     all -- a score limit spends no lives -- so a host meets
+                     the question in the order the answers depend on.
+
+                     Hidden when the operator has fixed the condition, on the
+                     same rule as everything else in this form. -->
+                <div id="create-win-row" class="field">
+                    <span class="field-label">Win Condition</span>
+                    <select id="create-win"></select>
+                    <p id="create-win-hint" class="hint"></p>
+                </div>
+
+                <div id="create-limit-row" class="field">
+                    <span class="field-label">Kill Limit</span>
+                    <input id="create-limit" type="number" min="1" step="1">
+                    <p id="create-limit-hint" class="hint"></p>
+                </div>
+
+                <div id="create-lives-row" class="field">
+                    <span class="field-label">Lives Each</span>
+                    <input id="create-lives" type="number" min="1" step="1">
+                    <p id="create-lives-hint" class="hint"></p>
+                </div>
+
+                <div id="create-lives-note" class="hint hidden"></div>
+
+                <div id="create-round-row" class="field">
+                    <span class="field-label">Round Length</span>
+                    <input id="create-round" type="number" min="60" step="30">
+                    <p id="create-round-hint" class="hint"></p>
+                </div>
+
+                <div id="create-tiers-row" class="field">
+                    <span class="field-label">Weapon Tiers</span>
+                    <div id="create-tiers"></div>
+                    <p id="create-tiers-hint" class="hint"></p>
+                </div>
+
+                <div id="create-radar-row" class="field">
+                    <span class="field-label">Radar</span>
+                    <button id="btn-radar" class="btn" type="button">Radar Off</button>
+                    <p id="create-radar-hint" class="hint"></p>
+                </div>
+
+                <button id="create-submit" class="btn btn-primary" type="button">Create Match</button>
+                <p id="create-hint" class="hint"></p>
+            </div>
+        </section>
+
+        <section id="tab-lobby" class="arena-panel">
+            <div id="lobby-empty"></div>
+
+            <div id="lobby-detail">
+                <h2 id="lobby-title"></h2>
+                <div id="lobby-meta"></div>
+                <div id="team-picker"></div>
+                <div id="roster"></div>
+                <!-- Sits ABOVE the buttons on purpose: it is the sentence that
+                     tells Ready Up from Start Match Now, and pressing the wrong
+                     one during a countdown is the mistake it exists to stop. -->
+                <p id="lobby-hint" class="hint"></p>
+                <div id="lobby-actions">
+                    <button id="btn-ready" class="btn" type="button">Ready Up</button>
+                    <button id="btn-start" class="btn btn-primary" type="button">Start Match Now</button>
+                    <button id="btn-close" class="btn" type="button">Close Lobby</button>
+                    <button id="btn-leave" class="btn btn-danger" type="button">Leave Match</button>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-loadout" class="arena-panel">
+            <div id="loadout-note"></div>
+
+            <div id="loadout-empty" class="hidden"></div>
+
+            <div id="loadout-lists">
+                <section id="loadout-firearms" class="loadout-section">
+                    <div class="loadout-section-head">
+                        <h2 class="panel-heading">Firearms</h2>
+                        <span id="firearms-count" class="loadout-count"></span>
+                    </div>
+                    <div id="loadout-cats"></div>
+                    <div id="weapon-grid" class="weapon-grid"></div>
+                </section>
+
+                <section id="loadout-melee" class="loadout-section">
+                    <div class="loadout-section-head">
+                        <h2 class="panel-heading">Melee</h2>
+                        <!-- The same shared counter as above, on purpose. -->
+                        <span id="melee-count" class="loadout-count"></span>
+                    </div>
+                    <div id="melee-grid" class="weapon-grid"></div>
+                </section>
+            </div>
+
+            <div id="loadout-slots"></div>
+            <div id="supplies-picker"></div>
+            <div id="loadout-save-row">
+                <button id="loadout-save" class="btn btn-primary" type="button">Save Loadout</button>
+                <span id="loadout-save-status" class="hint"></span>
+            </div>
+        </section>
+
+        <section id="tab-bets" class="arena-panel">
+            <div id="bet-disabled"></div>
+
+            <div id="bet-summary"></div>
+
+            <div id="bet-form">
+                <p id="bet-note" class="hint"></p>
+                <div id="bet-pick"></div>
+                <label id="bet-amount-row" class="field">
+                    <span class="field-label">Your Stake</span>
+                    <input id="bet-amount" type="number" min="0" step="1">
+                </label>
+
+                <div id="bet-account-row" class="field">
+                    <span class="field-label">Pay From</span>
+                    <div id="bet-account"></div>
+                </div>
+                <p id="bet-hint" class="hint"></p>
+                <button id="bet-submit" class="btn btn-primary" type="button">Place Bet</button>
+            </div>
+
+            <div id="bet-list"></div>
+        </section>
+
+        <section id="tab-board" class="arena-panel">
+            <p id="board-note" class="hint">All-time totals for every match this server has
+                finished. Earnings are what a player has taken out of arena pots.</p>
+
+            <table id="leaderboard">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Player</th>
+                        <th>Wins</th>
+                        <th>Kills</th>
+                        <th>Deaths</th>
+                        <th>Earnings</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboard-body"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <div id="arena-toast"></div>
+</div>
+
+<div id="arena-hud" class="hidden">
+    <div id="hud-timer"></div>
+    <div id="hud-alive"></div>
+    <div id="hud-kills"></div>
+    <div id="hud-pot"></div>
+    <div id="hud-scoreboard"></div>
+</div>
+
+<div id="arena-countdown" class="hidden">
+    <div id="countdown-value"></div>
+    <div id="countdown-label"></div>
+</div>
+
+<div id="arena-admin" class="hidden">
+    <header id="admin-head">
+        <h1 id="admin-title">Arena Control</h1>
+        <button id="admin-close" class="btn" type="button">Close</button>
+    </header>
+
+    <div id="admin-doors">
+        <span id="admin-doors-state"></span>
+        <button id="admin-doors-schedule" class="btn" type="button">Follow the schedule</button>
+        <button id="admin-doors-open" class="btn" type="button">Hold open</button>
+        <button id="admin-doors-shut" class="btn btn-danger" type="button">Close the arena</button>
+    </div>
+
+    <section id="admin-shut" class="hidden">
+        <h2 id="admin-shut-title">The arena is closed</h2>
+        <p id="admin-shut-who" class="hint"></p>
+        <p id="admin-shut-hours" class="hint"></p>
+    </section>
+
+    <nav id="admin-tabs">
+        <button id="admin-tab-matches" class="arena-tab" type="button">Matches</button>
+        <button id="admin-tab-stashes" class="arena-tab" type="button">Stashes</button>
+    </nav>
+
+    <section id="admin-list">
+        <p id="admin-empty" class="hint hidden">No matches are running.</p>
+        <div id="admin-matches"></div>
+    </section>
+
+    <section id="admin-detail" class="hidden">
+        <button id="admin-back" class="btn" type="button">Back to matches</button>
+        <h2 id="admin-detail-title"></h2>
+        <p id="admin-detail-line" class="hint"></p>
+        <button id="admin-stop" class="btn btn-danger" type="button">Stop this match</button>
+        <div id="admin-players"></div>
+    </section>
+
+    <section id="admin-stashes" class="hidden">
+        <p id="admin-stash-line" class="hint"></p>
+        <p id="admin-stash-empty" class="hint hidden">The arena is holding nothing for anybody.</p>
+        <p id="admin-stash-waiting" class="hint hidden">Reading the stashes&hellip;</p>
+        <p id="admin-stash-blind" class="hint hidden">ox_inventory is not running, so not one
+            stash could be opened. This screen cannot tell you what is being held &mdash; it is
+            the LOOK that failed, not the arena. Everything in those stashes is still in them.</p>
+        <div id="admin-stash-list"></div>
+
+        <h3 id="admin-kit-heading" class="hidden">Arena weapons still out</h3>
+        <p id="admin-kit-line" class="hint"></p>
+        <div id="admin-kit-list"></div>
+    </section>
+
+    <section id="admin-stash-detail" class="hidden">
+        <button id="admin-stash-back" class="btn" type="button">Back to stashes</button>
+        <h2 id="admin-stash-title"></h2>
+        <p id="admin-stash-detail-line" class="hint"></p>
+        <button id="admin-stash-return" class="btn btn-primary" type="button">Hand it back</button>
+        <div id="admin-stash-items"></div>
+    </section>
+
+    <section id="admin-player" class="hidden">
+        <button id="admin-player-back" class="btn" type="button">Back to the match</button>
+        <h2 id="admin-player-title"></h2>
+        <p id="admin-player-line" class="hint"></p>
+        <button id="admin-revive" class="btn btn-primary" type="button">Revive</button>
+        <h3>Held by the arena</h3>
+        <p id="admin-escrow-line" class="hint"></p>
+        <div id="admin-escrow"></div>
+    </section>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

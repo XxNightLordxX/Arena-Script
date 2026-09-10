@@ -378,6 +378,33 @@ t.test('DEFECT: a host could hold and restart the countdown for ever, and nobody
     t.isTrue(server.lobby.MayLeave(2), 'the other player still could not leave')
 end)
 
+t.test('CONTROL: during an HONEST countdown nobody may stand up and take the round with them', function()
+    -- The other side of the rule the test above bends, and the reason it
+    -- exists at all. Leaving is refused between the host pressing Start and
+    -- the roster being teleported in, because a lobby that ships with
+    -- requireBothTeamsOccupied on is called off by whoever walks out of it --
+    -- and the entry fee comes back in full on that path, so it costs the
+    -- griefer nothing and they can do it all night.
+    --
+    -- Inverting that refusal left all 91 spec files green: everything here
+    -- asserted when leaving IS allowed -- once the roster is placed, once the
+    -- host has stalled -- and nothing asserted the refusal itself.
+    local server, matchId = counting(0, slowLobby)
+    t.equals(server.lobby.Get(matchId).state, 'countdown', 'the countdown never started, so this proves nothing')
+    t.isFalse(server.lobby.Get(matchId).placed == true,
+        'the roster is already placed here -- that is the other window, and it is not this rule')
+
+    local may, refusal = server.lobby.MayLeave(2)
+    t.isFalse(may, 'a player could stand up mid-countdown and call the round off for everybody')
+    t.equals(refusal, 'error.match_in_progress')
+
+    -- AND THE HOST IS HELD TO IT TOO. They have Cancel Start, which puts the
+    -- whole room back in the lobby; walking out on their own is the same
+    -- griefing move with the same cost to everybody else.
+    local hostMay = server.lobby.MayLeave(1)
+    t.isFalse(hostMay, 'the host could walk out of their own countdown')
+end)
+
 -- ======================================================================
 -- WHO MAY, AND WHEN
 -- ======================================================================

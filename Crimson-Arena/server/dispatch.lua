@@ -982,16 +982,50 @@ end
 --- @param px number
 --- @param py number
 --- @return boolean
+-- AN ARENA WITH NO FENCE IS STILL AN ARENA, and reading it as "nowhere" took
+-- the explosion guard off it entirely.
+--
+-- `boundary.enabled = false` is a supported setting -- README calls it an open
+-- arena -- and Arena.BoundaryOf answers nil for one. This returned false on
+-- that nil, and BOTH branches of explosionEvent are gated on it: the first
+-- never ran, so a launcher ignored friendly fire and killed teammates the
+-- crossfire guard refuses to let a bullet touch; the second never ran either,
+-- so an open arena could be shelled from outside by anybody. Bullets stayed
+-- refused the whole time, which is the shape that makes it hard to notice --
+-- the rule works right up until somebody picks up an RPG.
+--
+-- So a missing fence falls back to the arena's own spawn ring, which every
+-- arena has and which is where its fighters actually are, with
+-- Config.Match.maxKillDistance as a floor under the radius. That is not a new
+-- number: Arena.KillCeilingFor already falls back to exactly it for an arena
+-- with no boundary, and it is the same question -- how far apart two people
+-- can be and still be in the same fight.
+--
+-- STILL FALSE WHEN THERE IS NOTHING TO MEASURE FROM. An arena with no
+-- boundary AND no spawn ring gives no centre, and a guess would be worse than
+-- the gap: refusing explosions in a circle round the wrong point cancels other
+-- people's. DO NOT invent a centre here.
 local function matchCoversPoint(matchId, px, py)
     local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(matchId) or nil
     local arena = match and Arena.GetArenaByKey(match.arenaKey) or nil
-    local boundary = Arena.BoundaryOf(arena)
-    if not boundary or not boundary.center then return false end
-
-    local cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
+    if not arena then return false end
 
     local factor = math.max(1.0, tonumber(match.sizeFactor) or 1.0)
-    local radius = (tonumber(boundary.radius) or 0) * factor
+
+    local cx, cy, radius
+    local boundary = Arena.BoundaryOf(arena)
+
+    if boundary and boundary.center then
+        cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
+        radius = (tonumber(boundary.radius) or 0) * factor
+    else
+        local area = Arena.GetSpawnArea(match.arenaKey, factor)
+        if not area then return false end
+
+        cx, cy = area.x, area.y
+        radius = math.max(tonumber(area.radius) or 0,
+            math.max(0.0, tonumber((Config.Match or {}).maxKillDistance) or 0.0))
+    end
 
     if not cx or not cy or not radius or radius <= 0 then return false end
 

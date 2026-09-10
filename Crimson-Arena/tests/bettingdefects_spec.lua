@@ -947,4 +947,55 @@ t.test('and a SIDE-BET with no citizen id to file it under stays held too', func
         'the side-bet was filed under a key that identifies nobody')
 end)
 
+t.test('a forfeited stake on a round NOBODY wins is not handed back, and not handed to anybody else', function()
+    -- THE DECISION THIS PINS, because two comments in this resource could be
+    -- read as disagreeing about it, and the money it concerns quietly leaves
+    -- the server.
+    --
+    -- A fighter walks out of a live round: the stake is kept in the pot and
+    -- they are told so. The round then ends with no winner at all -- everyone
+    -- left is refunded their own stake, because nothing was won. What happens
+    -- to the walker's money?
+    --
+    -- It stays where it is, and that is deliberate rather than an oversight.
+    -- The other two answers can both be farmed:
+    --
+    --   giving it BACK makes the forfeit refundable on demand -- two players
+    --   stake, both walk out, the round dies for want of anybody to win it,
+    --   and both are refunded, so leaving costs nothing;
+    --
+    --   giving it to whoever STAYED is worse -- one walks, one stays, the
+    --   round dies under minPlayersToPayOut, and the pair split a stake the
+    --   arena handed them for arranging it.
+    --
+    -- Burning it is the only answer nobody can profit from arranging. The
+    -- cost is that the money leaves the economy in a case an operator will
+    -- rarely see, which is the trade being made here on purpose.
+    local server, record = teamMatch()
+    server.betting.TakeStake(1, 'm1', 1000)
+    server.betting.TakeStake(2, 'm1', 1000)
+    t.equals(server.cash(1), 4000, 'the stakes were not taken, so this proves nothing')
+    t.equals(server.cash(2), 4000)
+
+    -- Player 2 walks out of a round that is being fought.
+    record.state = 'live'
+    t.equals(server.betting.KeepInPot('m1', 2), 1000, 'the stake was not forfeited, so this proves nothing')
+    record.players[2] = nil
+
+    -- And it ends with nobody able to win it.
+    server.betting.Settle('m1', {
+        players = { { id = 1, kills = 0, stake = 1000, placement = 1 } },
+        winners = {}, teams = false, contestants = 2,
+    })
+    server.betting.SettleSpectatorBets('m1', nil)
+    server.betting.Clear('m1')
+
+    t.equals(server.cash(1), 5000, 'the fighter who stayed did not get their own stake back')
+    t.equals(server.cash(2), 4000,
+        'THE FORFEIT WAS HANDED BACK -- walking out of a round that then fizzles now costs nothing')
+    t.equals(server.cash(1), 5000,
+        'and it was not handed to whoever stayed, which would pay a pair for arranging it')
+    t.equals(server.betting.GetPot('m1'), 0, 'the pot still holds money for a match that is over')
+end)
+
 os.exit(t.summary())

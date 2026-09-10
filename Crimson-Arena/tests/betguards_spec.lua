@@ -874,4 +874,57 @@ t.test('and a pick leaving the LOBBY still does, because nothing was fought', fu
         'a watcher whose pick left the queue was not given their stake back')
 end)
 
+t.test('POWERGAMING: walking out of a live round does not turn you into a spectator who can back the winner', function()
+    -- THE TRADE THIS REFUSAL EXISTS TO STOP. A fighter who is losing leaves
+    -- the round -- forfeiting their stake, which is the advertised cost --
+    -- and then puts money on the opponent who is about to win. The forfeit
+    -- becomes the entry fee for a bet that can hardly lose.
+    --
+    -- It is only worth anything while the book is still open, and on a live
+    -- round that is exactly what spectatorBets.closeAfterStartSeconds leaves
+    -- open: a grace window in which somebody who is NOT fighting may still
+    -- back a side. The rule is one term in one line -- a player who walked
+    -- out of a round being fought counts as a FIGHTER for that question, and
+    -- fighters are closed out the moment the round starts.
+    --
+    -- Nothing named it: ArenaBetting.MarkWalkedOut appears in no other spec,
+    -- and every existing refusal here is a round whose window has passed, so
+    -- the term could be deleted with the suite still green.
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.entryFee.enabled = false
+        config.Betting.spectatorBets = config.Betting.spectatorBets or {}
+        config.Betting.spectatorBets.enabled = true
+        config.Betting.spectatorBets.closeAfterStartSeconds = 60
+    end)
+    local matchId = s.lobby.Create(1, anArena(s), nil, 0, nil, nil, 'cash')
+    t.isNotNil(matchId, 'the match could not be created')
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'), 'the second fighter could not join')
+
+    local match = s.lobby.Get(matchId)
+    match.state = 'live'
+    match.startsAt = os.time()
+
+    -- THE WINDOW IS GENUINELY OPEN: a real spectator can back a side right
+    -- now. Without this the refusal below would prove only that the book was
+    -- shut to everybody.
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'),
+        'the grace window is closed, so this proves nothing')
+
+    -- And player 2, who is losing, walks out and tries to back player 1.
+    --
+    -- THE ROSTER ROW GOES WITH THEM, because that is what leaving does -- and
+    -- it is the whole reason this rule needs a term of its own. While they
+    -- are still listed as a fighter the book is shut to them anyway; the
+    -- moment they are not, the only thing standing between a forfeited stake
+    -- and a free bet on the winner is `walkedOut`.
+    s.betting.MarkWalkedOut(matchId, 2)
+    match.players[2] = nil
+    local ok, err = s.betting.PlaceSpectatorBet(2, matchId, 1, 2000, 'cash')
+
+    t.isFalse(ok, 'A FIGHTER WALKED OUT OF A LIVE ROUND AND WAS SOLD A BET ON THE OTHER SIDE')
+    t.equals(err, 'error.bets_closed')
+    t.equals(s.qbx.players[2].money.cash, 50000, 'money moved on a refused bet')
+end)
+
 os.exit(t.summary())

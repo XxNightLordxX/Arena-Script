@@ -60,6 +60,7 @@ local function newServer(pockets, mutate, opts)
     --   stashRefuse / clearRefuse / give            : return false
     --   clearLies                                   : return TRUE and do nothing
     --   count                                       : GetItemCount throws
+    --   stuckInStash                                : a STASH removal refuses
     local fail = {}
 
     -- Who the server thinks is online. GetPlayers is what the return sweep
@@ -229,6 +230,17 @@ local function newServer(pockets, mutate, opts)
         RemoveItem = function(_self, id, name, count)
             local from = bucket(id)
             local want = tonumber(count) or 0
+
+            -- STUCK IN THE STASH: the item is handed to the player and then
+            -- CANNOT be taken back out of the stash it came from, so a copy
+            -- exists in two places at once. Distinct from every refusal
+            -- above, which stop a player being GIVEN something -- this one
+            -- happens after they already have it, and it is the only way a
+            -- door can duplicate somebody's property.
+            if type(fail.stuckInStash) == 'table' and type(id) ~= 'number'
+                and fail.stuckInStash[name] then
+                return false
+            end
 
             local total = 0
             for _, item in ipairs(from) do
@@ -2620,6 +2632,40 @@ t.test('DEFECT: "nobody looked" is not "they owned none" -- a fighter is not bil
     local owed = 0
     for _, row in ipairs(s.ammo.OwedKit()) do owed = owed + #row.items end
     t.equals(owed, 0, 'and wrote a debt for rounds it never established were its own')
+end)
+
+t.test('POWERGAMING: a stash the door could not empty is never handed out twice', function()
+    -- HOW A DOOR DUPLICATES SOMEBODY'S PROPERTY, and the only way it can.
+    -- The exit hands a player their belongings back and then takes them out
+    -- of the stash. If that removal is refused, they are holding the items
+    -- AND the stash still has them -- a copy in two places. Run the exit over
+    -- that stash a second time and the copy is handed over as well: two of
+    -- everything, out of an arena, from a player who only has to make one
+    -- removal fail.
+    --
+    -- So the stash is SHUT instead. The door hands nothing further out of it
+    -- and says to settle it by hand. Inverting that left the whole suite
+    -- green, because no fixture could refuse a removal from a stash -- every
+    -- failure this file could express stopped a player being GIVEN something,
+    -- which happens before there is anything to duplicate.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.equals(s.carrying(1), '', 'the door did not take their belongings, so this proves nothing')
+
+    -- The exit hands the water back and cannot clear it out of the stash.
+    s.breakOn('stuckInStash', { water = true })
+    s.ammo.Reclaim(1, 'm1')
+    t.equals(s.countOf(1, 'water'), 2, 'they were not handed their water back, so this proves nothing')
+    t.isTrue(s.stashContents(1):find('water', 1, true) ~= nil,
+        'the copy is not stuck in the stash, so there is nothing to duplicate')
+
+    -- The removal starts working again, and the door is run over that stash
+    -- a second time -- a retry, a reconnect, the return sweep.
+    s.fixOn('stuckInStash')
+    s.ammo.Reclaim(1, 'm1')
+
+    t.equals(s.countOf(1, 'water'), 2,
+        'THE ARENA HANDED OVER A SECOND COPY of everything it could not take out of that stash')
 end)
 
 os.exit(t.summary())

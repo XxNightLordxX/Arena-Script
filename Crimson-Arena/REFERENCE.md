@@ -555,7 +555,7 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 31 functions
+#### `server/betting.lua` — 32 functions
 
 | Function | What it does |
 |---|---|
@@ -568,6 +568,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.IsEnabled()` | Whether betting is switched on at all. |
 | `ArenaBetting.StakeOf(matchId, src)` | What one player has staked on one match and not yet had back. |
 | `ArenaBetting.GetPot(matchId)` | What a match is holding right now. |
+| `ArenaBetting.OthersStaked(matchId, exceptSrc)` | Whether anybody other than `exceptSrc` -- the host -- holds an unsettled entry stake on the match. The question the rules lock asks; `GetPot > 0` counted the host's own stake and locked every lobby against the only person in it. |
 | `ArenaBetting.GetStake(matchId, src)` | One player's share of the held pot -- 0 once it has been refunded or paid out, because at that point this match holds nothing of theirs. |
 | `ArenaBetting.TakeStake(src, matchId, amount, account)` | Takes a player's entry fee and holds it against `matchId`. |
 | `ArenaBetting.RefundOne(matchId, src, reasonKey)` | Returns exactly what was taken, exactly once. |

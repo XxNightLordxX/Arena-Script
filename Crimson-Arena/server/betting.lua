@@ -1025,6 +1025,30 @@ function ArenaBetting.GetPot(matchId)
     return total
 end
 
+--- Whether anybody OTHER THAN `exceptSrc` holds an unsettled entry stake on
+--- the match.
+---
+--- THIS IS THE QUESTION THE RULES LOCK ACTUALLY ASKS, and GetPot was never
+--- it. The lock's sentence is "People have already paid to be in this
+--- round" -- other people, who paid to play under the rules they saw. The
+--- host's own stake is taken by ArenaLobby.Create the instant the lobby
+--- exists, so a pot that is merely non-zero says nothing about whether a
+--- second person has ever paid. Counting it locked every lobby on the
+--- shipped fee against the only person in it. DO NOT go back to GetPot > 0
+--- here.
+--- @param matchId string
+--- @param exceptSrc any -- the host, whose own stake does not count
+--- @return boolean
+function ArenaBetting.OthersStaked(matchId, exceptSrc)
+    local host = serverId(exceptSrc)
+    for id, stake in pairs(stakesOf(matchId)) do
+        if not stake.settled and id ~= host and (Arena.ToInt(stake.amount) or 0) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
 function ArenaBetting.GetStake(matchId, src)
     local id = serverId(src)
     if not id then return 0 end

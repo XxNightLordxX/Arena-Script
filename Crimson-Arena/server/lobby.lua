@@ -1681,18 +1681,47 @@ function ArenaLobby.UpdateMatch(src, data)
         or winCondition ~= (Arena.IsKey(match.winCondition) and match.winCondition or '')
         or scoreLimit ~= (Arena.ToInt(match.scoreLimit) or 0)
 
+    -- THE TIER PLAN IS COMPARED BY VALUE, NOT BY IDENTITY. It is a flat map
+    -- of class key to tier count, and the panel posts a fresh table on every
+    -- Apply -- so `tierPlan ~= match.tierPlan` was true whenever a ladder
+    -- mode was being edited at all, changed or not, and a gun-game lobby
+    -- with any stake on it refused an Apply that altered nothing.
+    local function sameTierPlan(a, b)
+        if a == b then return true end
+        if type(a) ~= 'table' or type(b) ~= 'table' then
+            return (a == nil or next(a) == nil) and (b == nil or next(b) == nil)
+        end
+        for key, count in pairs(a) do if b[key] ~= count then return false end end
+        for key, count in pairs(b) do if a[key] ~= count then return false end end
+        return true
+    end
+
+    -- THE MODE IS A RULE, and it was the one rule this did not name. Every
+    -- other field on the form was locked once money was down, and the mode
+    -- -- the thing the money was put down ON -- could be swapped freely
+    -- right up to the start, wiping every player's chosen team as it went.
+    -- The side-bet guard above does lock it, but only against the side-bet
+    -- book; entry fees are not side-bets, so a full pot with no side-bets on
+    -- it left the mode open. It belongs here with the rest.
     local ruleChanged = arenaKey ~= match.arenaKey
+        or modeKey ~= match.modeKey
         or lives ~= match.lives
         or radar ~= (match.radar == true)
-        or tierPlan ~= match.tierPlan
+        or not sameTierPlan(tierPlan, match.tierPlan)
         or decidesTheWinner
 
     -- THE ENTRY POT LOCKS THE WHOLE FORM, and it is the entry pot on purpose:
     -- en.json renders this key as "People have already paid to be in this
-    -- round. The rules are set now." ArenaBetting.GetPot walks the entry-fee
-    -- escrow, which is exactly who that sentence is about, so this line is
-    -- NOT a mis-typed CountSideBets. DO NOT merge it into the guard below.
-    if ruleChanged and ArenaBetting.IsEnabled() and ArenaBetting.GetPot(match.id) > 0 then
+    -- round. The rules are set now." That sentence is about OTHER PEOPLE,
+    -- and this asks exactly that. It used to ask GetPot > 0, and the host's
+    -- own stake is taken the instant the lobby is created -- so on the
+    -- shipped fee every lobby was locked against the only person in it from
+    -- the moment it existed, with the panel still offering Apply and the
+    -- server answering that other people had paid. The honest host, alone,
+    -- edits freely again; the moment a second person has paid, the rules
+    -- are set. This is the entry-fee book and NOT a mis-typed CountSideBets.
+    -- DO NOT merge it into the guard below, and DO NOT put GetPot back.
+    if ruleChanged and ArenaBetting.IsEnabled() and ArenaBetting.OthersStaked(match.id, target) then
         return false, 'error.rules_locked_by_stakes'
     end
 
@@ -1717,12 +1746,13 @@ function ArenaLobby.UpdateMatch(src, data)
     -- bettor never saw. That is the mode lock's own harm arriving by another
     -- door, and it is why the two guards ask two different books.
     --
-    -- `tierPlan` IS MISSING FROM decidesTheWinner ON PURPOSE, and it is not
-    -- an oversight: `tierPlan ~= match.tierPlan` compares two TABLES BY
-    -- IDENTITY, and the panel posts a fresh one on every Apply, so in a
-    -- ladder mode that test is true even when nothing changed. Locking on it
-    -- would make a gungame lobby with one side-bet on it completely
-    -- uneditable. It stays in `ruleChanged`, where it already was.
+    -- `tierPlan` IS STILL MISSING FROM decidesTheWinner, and the reason has
+    -- changed. It used to be that the comparison was by table identity and
+    -- would have locked every gun-game edit; that is fixed above, the plan
+    -- is now compared by value. What remains is a judgement, not a bug: a
+    -- ladder change does re-judge a gun-game side-bet, and whether that
+    -- should lock behind the side-bet book like the other three is the
+    -- owner's call. Reported, not changed here.
     if decidesTheWinner and ArenaBetting.IsEnabled() and ArenaBetting.CountSideBets(match.id) > 0 then
         return false, 'error.rules_locked_by_stakes'
     end

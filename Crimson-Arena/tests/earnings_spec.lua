@@ -281,4 +281,57 @@ t.test('but a side-bet actually won IS', function()
     t.equals(server.leaderboard()['Fighter 1'], 10000, 'the won pool was not recorded as earnings')
 end)
 
+-- ======================================================================
+-- AND THE MONEY ITSELF, NOT THE NUMBER ON THE BOARD
+--
+-- Everything above asks what the winner was TOLD they earned -- the results
+-- card and the all-time leaderboard, which is where the defect this file was
+-- written for lived. A board saying 10,000 and a wallet holding it are two
+-- different claims, and only the second one is what a player walks away with.
+--
+-- Nothing in the suite followed a whole round -- created on the wire, joined,
+-- readied, started, fought, settled -- through to the pot arriving in
+-- somebody's pocket with the total across every wallet unchanged. The
+-- generated-match property specs conserve money across four hundred rounds,
+-- but they drive the betting layer directly rather than playing a round; the
+-- specs that PLAY one stop at who won.
+-- ======================================================================
+
+--- Every dollar on the server, so a settlement can be checked for creating or
+--- destroying money rather than only for moving it.
+local function purse(server)
+    local total = 0
+    for _, record in pairs(server.qbx.players) do
+        total = total + (record.money.cash or 0) + (record.money.bank or 0)
+    end
+    return total
+end
+
+t.test('the pot reaches the winner\'s WALLET, and the loser is out exactly their stake', function()
+    local server = newServer()
+    local before = purse(server)
+    local startCash = server.cash(1)
+
+    server.finish(server.playMatch(5000), 2)
+
+    t.equals(server.cash(1), startCash - 5000 + 10000,
+        'the winner was told they earned 10,000 -- this is whether they were given it')
+    t.equals(server.cash(2), startCash - 5000,
+        'the loser is out their own stake and no more')
+    t.equals(purse(server), before,
+        'the settlement created or destroyed money rather than moving it between two players')
+end)
+
+t.test('and a free round moves nothing at all', function()
+    local server = newServer()
+    local before = purse(server)
+    local startCash = server.cash(1)
+
+    server.finish(server.playMatch(0), 2)
+
+    t.equals(server.cash(1), startCash, 'a free round paid the winner out of nowhere')
+    t.equals(server.cash(2), startCash, 'a free round charged the loser')
+    t.equals(purse(server), before)
+end)
+
 os.exit(t.summary())

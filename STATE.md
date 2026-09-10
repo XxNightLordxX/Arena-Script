@@ -39,22 +39,34 @@ no ally glow in them by design.
 | `b74d175` | `itemsIn` resolved each item's slot from the inventory key — the key is the authority, ox omits `item.slot` on some builds — then threw it away, so `copiesOf` read nil and `removeSlot` refused **without ever calling RemoveItem**. Every by-slot take-back silently did nothing. Suite went 61 to 75 of 77. |
 | `6f69a77` | `tools/verify_release.sh` — eight gates in one command. Gate 2 (a local used before its own definition) was itself checked against a mutation, because a gate never seen to fire is not a gate. |
 
-## The spec suite, recovered and run for the first time
+## The spec suite, now kept in the repository
 
-It was stripped for production on purpose and is **not** in the tree. Recover it with:
+**It is in the tree.** `Crimson-Arena/tests/`, tracked, and it runs with:
 
-    git archive 566171c Crimson-Arena/tests | tar -x
+    bash Crimson-Arena/tests/run.sh
+
+It used to be untracked, and this section used to tell you to recover it with
+`git archive 566171c Crimson-Arena/tests | tar -x`. **Do not do that** -- that commit
+holds 74 specs of an older shape and restoring it would put them over the 96 that are
+here now. The instruction is left visible rather than deleted because it was followed
+before, and anybody rereading an old copy of this file needs to know it is wrong.
+
+Tracked is not the same as shipped: `tools/strip_prod.py` does not touch `tests/`, the
+production release still does not carry it, and CI's shipped-code gates skip it (its
+parse gate does not -- a spec that will not parse is worth failing a push for).
 
 | | pass | fail |
 |---|---|---|
 | `566171c` (last commit where the specs were current) | 74 | 0 |
-| HEAD when this session started | 61 | 13 |
-| HEAD now | **75** | 2 |
+| HEAD when the recovery session started | 61 | 13 |
+| HEAD at the end of that session | 75 | 2 |
+| HEAD now, whole suite via `run.sh` | **114 files** | 0 |
+| HEAD now, via `tools/verify_release.sh` | **93 specs** | 0 |
 
-Both remaining failures are **stale specs, not broken code**: `gungame_spec` asserts on
-`ArenaAmmo.OnLoan`, deleted on purpose; `moneyconservation_spec` predates a deliberate
-third forfeit path. Ten of the original thirteen were likewise stale and were proved so
-one by one.
+The two failures in that third row were **stale specs, not broken code**: `gungame_spec`
+asserted on `ArenaAmmo.OnLoan`, deleted on purpose, and `moneyconservation_spec` predated
+a deliberate third forfeit path. Ten of the original thirteen were likewise stale and
+were proved so one by one. Both have since been settled -- the whole suite is green.
 
 Three specs that appeared to hang are **merely slow** — 22 to 40 seconds — and all pass.
 No non-terminating loop exists anywhere in the shipped code.

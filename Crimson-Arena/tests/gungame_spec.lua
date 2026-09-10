@@ -2229,6 +2229,46 @@ t.test('a fighter who is out of the round cannot be credited with a kill', funct
     t.equals(row(1).kills, 1, 'nor a fighter already standing back at the lobby')
 end)
 
+t.test('and a kill on your own team-mate is credited to nobody', function()
+    -- THE CREDIT SIDE OF FRIENDLY FIRE. server/dispatch.lua refuses the
+    -- BULLET when friendlyFire is off, and that half is well covered --
+    -- crossfire, teamswitch and a two-thousand-world property test all go red
+    -- if it is removed. This is the other half: what happens when a report of
+    -- a team-mate's death arrives anyway.
+    --
+    -- It can. A death has more than one cause -- a fall, a fire, a vehicle,
+    -- an explosion the damage guard never saw, a client saying whatever it
+    -- likes -- and resolveKiller asks Arena.CanDamage before crediting for
+    -- exactly that reason. Inverting that one line left the whole suite
+    -- green, and it decides a team deathmatch: farm your own side, win on
+    -- most kills, take the pot.
+    local s = newServer(function(config)
+        config.Modes.gungame.teams = true
+        config.Teams.friendlyFire = false
+    end)
+    s.play(4)
+    for src = 1, 4 do
+        s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+    end
+
+    local match = s.match_()
+    local function row(src) return match.players[src] end
+    t.equals(row(1).team, row(3).team, 'the two are not on one side, so this proves nothing')
+    t.isTrue(row(1).team ~= row(2).team, 'and 1 and 2 are not on opposite sides, so this proves nothing')
+
+    local before = row(1).kills or 0
+
+    -- Their own side first: no credit, though the death still counts.
+    s.match.OnDeath(3, 1)
+    t.equals(row(1).kills or 0, before, 'A FIGHTER WAS CREDITED WITH KILLING THEIR OWN TEAM-MATE')
+    t.equals(row(3).deaths, 1, 'the death itself should still be recorded')
+
+    -- And the control: the other side does score, or the assertion above
+    -- would pass on a build that credits nothing at all.
+    s.match.OnDeath(2, 1)
+    t.equals(row(1).kills or 0, before + 1, 'a lawful kill stopped scoring')
+end)
+
 t.test('a tier tie is broken on the capped number, not the uncapped one', function()
     -- `kills` IS THE ONE NUMBER THE CAP DELIBERATELY LEAVES ALONE -- a kill
     -- past maxTiersPerVictim still counts as a kill, it just stops buying

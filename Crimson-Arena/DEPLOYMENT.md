@@ -179,7 +179,7 @@ what to watch for, because most failures here are silent.
 ### 0. The artifact, before anything else
 
 - [ ] In the server console type `version` and write the build number down.
-      The ally outline (section 5b) is drawn with
+      The ally outline -- see **The ally glow** below -- is drawn with
       `SetEntityDrawOutlineRenderTechnique`, a native FiveM added around
       **May 2025**. On an older build the call is simply absent: the outline
       does nothing, raises nothing, and the client log still says
@@ -375,8 +375,8 @@ wrong here is something the resource did that it should not have.
 
 ### 5b. The ally glow
 
-Team mode, two players on the same side, and the build from section 0 is new
-enough.
+Team mode, two players on the same side, and the build from **The artifact,
+before anything else** is new enough.
 
 - [ ] Your teammate has an outline **and** an overhead marker. Enemies have
       neither.

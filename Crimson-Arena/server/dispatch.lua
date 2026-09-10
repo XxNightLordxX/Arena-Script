@@ -968,7 +968,10 @@ local function pointXY(point)
 
     local px, py = tonumber(point.x), tonumber(point.y)
     if not px or not py then return nil end
-    return px, py
+    -- Z TOO, when the point has one. It was dropped here, one call after
+    -- the explosion handler had it in hand, and that is how the arena became
+    -- a circle on the map instead of the sphere every other check uses.
+    return px, py, tonumber(point.z)
 end
 
 --- Whether ONE live match's arena covers this spot.
@@ -1005,24 +1008,38 @@ end
 -- boundary AND no spawn ring gives no centre, and a guess would be worse than
 -- the gap: refusing explosions in a circle round the wrong point cancels other
 -- people's. DO NOT invent a centre here.
-local function matchCoversPoint(matchId, px, py)
+-- A SPHERE, NOT A CIRCLE, and the difference is a kilometre. The skydome is
+-- a platform at z 1201 with a 110-metre boundary; measured on x and y alone
+-- that boundary was a 110-metre circle drawn on the Grand Senora desert
+-- floor 1.2 kilometres underneath it, and every explosion a bystander set
+-- off inside that circle -- on the ground, in a live skydome round they
+-- could not see -- was cancelled as if it had landed in the arena. The
+-- fence the fighters are held by is a sphere, the server's own distance
+-- checks are three-dimensional and name a point directly under the
+-- skydome's floor as the case they exist for, and the explosion handler
+-- had the z in hand and dropped it one call later. So when a point carries
+-- a z it is tested against the sphere. A point without one -- nothing in
+-- the resource sends one, but the fallback costs nothing -- keeps the old
+-- circle rather than refusing outright. DO NOT go back to x/y for a point
+-- that has a z.
+local function matchCoversPoint(matchId, px, py, pz)
     local match = ArenaLobby and ArenaLobby.Get and ArenaLobby.Get(matchId) or nil
     local arena = match and Arena.GetArenaByKey(match.arenaKey) or nil
     if not arena then return false end
 
     local factor = math.max(1.0, tonumber(match.sizeFactor) or 1.0)
 
-    local cx, cy, radius
+    local cx, cy, cz, radius
     local boundary = Arena.BoundaryOf(arena)
 
     if boundary and boundary.center then
-        cx, cy = tonumber(boundary.center.x), tonumber(boundary.center.y)
+        cx, cy, cz = tonumber(boundary.center.x), tonumber(boundary.center.y), tonumber(boundary.center.z)
         radius = (tonumber(boundary.radius) or 0) * factor
     else
         local area = Arena.GetSpawnArea(match.arenaKey, factor)
         if not area then return false end
 
-        cx, cy = area.x, area.y
+        cx, cy, cz = area.x, area.y, tonumber(area.z)
         radius = math.max(tonumber(area.radius) or 0,
             math.max(0.0, tonumber((Config.Match or {}).maxKillDistance) or 0.0))
     end
@@ -1030,18 +1047,19 @@ local function matchCoversPoint(matchId, px, py)
     if not cx or not cy or not radius or radius <= 0 then return false end
 
     local dx, dy = px - cx, py - cy
-    return (dx * dx + dy * dy) <= (radius * radius)
+    local dz = (pz ~= nil and cz ~= nil) and (pz - cz) or 0.0
+    return (dx * dx + dy * dy + dz * dz) <= (radius * radius)
 end
 
 local function insideLiveArena(point)
-    local px, py = pointXY(point)
+    local px, py, pz = pointXY(point)
     if not px then return false end
 
     -- Which arenas currently have somebody in them. Read from the same
     -- `active` table the player pin uses, so the two layers can never
     -- disagree about whether a match is running.
     for _, matchId in pairs(active) do
-        if matchCoversPoint(matchId, px, py) then return true end
+        if matchCoversPoint(matchId, px, py, pz) then return true end
     end
 
     return false
@@ -1459,7 +1477,7 @@ AddEventHandler('explosionEvent', function(sender, data)
     -- THEIR OWN ROUND, AND NOT MERELY SOME ROUND. "Are they in a match" is
     -- what this asked, and DO NOT put that test back: it made a fighter at
     -- one arena free to shell the round being fought at another.
-    if ownMatch and matchCoversPoint(ownMatch, x, y) then
+    if ownMatch and matchCoversPoint(ownMatch, x, y, z) then
         local refusal = explosionRefusal(exploder, ownMatch, x, y)
         if refusal then
             ArenaDebug('crossfire: refused an explosion from %s -- %s.', tostring(sender), refusal)

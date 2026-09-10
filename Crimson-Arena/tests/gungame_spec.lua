@@ -3033,6 +3033,48 @@ t.test('a respawn puts a free-for-all fighter back on a full loadout', function(
     t.equals(s.ox.count(1, 'bandage'), 3, 'and the supplies they picked back at their count')
 end)
 
+t.test('and a CLIMBER who dies before their first kill is re-armed too', function()
+    -- THE BUG THIS RE-ARM WAS WRITTEN FOR, and the one case no test held.
+    --
+    -- The respawn used to skip ladders entirely, on the reasoning that the
+    -- ladder arms its own players. settleTier does -- but only when the tier
+    -- CHANGES, and it returns at its first line when it has not. A death in a
+    -- gun game costs a tier only if there is one to lose, so a climber who
+    -- dies on tier 1 -- the ordinary thing, since everybody starts there --
+    -- moves nowhere, gets no promotion, and is armed by nobody.
+    --
+    -- The free-for-all half of this is covered directly above. Removing the
+    -- re-arm turns that one red and left the ladder green, which is the wrong
+    -- way round: the ladder is where the bug was reported.
+    --
+    -- Measured the same way as the test above, by SPENDING the kit rather
+    -- than by dying with it: this fixture's ox_inventory does not drop a
+    -- corpse's pockets on the floor the way the real one does, so a test that
+    -- leaned on that would pass whether the respawn re-armed anybody or not.
+    local s = newServer(sevenTiers)
+    s.play(3)
+    t.equals(s.row(1).tier, 1, 'everybody should open on the first rung')
+
+    -- The first rung of this ladder is a knife, so there are no loose rounds
+    -- to spend. The supplies the tier issues are what a top-up restores, and
+    -- a fighter with no bandages left is exactly a fighter who has used a
+    -- life.
+    local bandages = s.ox.count(1, 'bandage')
+    t.isTrue(bandages > 0, 'the ladder issued no supplies, so there is nothing to spend')
+    s.ox:RemoveItem(1, 'bandage', bandages)
+    t.equals(s.ox.count(1, 'bandage'), 0, 'the fixture did not really spend them')
+
+    -- Killed by somebody else, with no kill of their own: no tier to lose and
+    -- no promotion coming, so settleTier will return at its first line.
+    s.kill(1, 2)
+    s.step(6)
+
+    t.isTrue(s.row(1).alive, 'the respawn thread did not run')
+    t.equals(s.row(1).tier, 1, 'a death on the first rung has no tier to take')
+    t.equals(s.ox.count(1, 'bandage'), bandages,
+        'THE CLIMBER CAME BACK WITH NOTHING and no promotion is coming to arm them')
+end)
+
 t.test('and it is a top-up, not a second issue', function()
     -- A REFRESH THAT DOUBLED THE KIT WOULD BE WORSE THAN NONE: dying would be
     -- the way to get rich, and in a mode with respawns that is the whole

@@ -80,9 +80,16 @@ if command -v lua5.4 >/dev/null 2>&1 && [ -d tools/harness ]; then
 else skip "lua5.4 or tools/harness missing"; fi
 
 head_ "6. the spec suite"
-# NOT shipped -- stripped for production on purpose. Recover it into place with
-#   git archive 566171c Crimson-Arena/tests | tar -x
-# and it is picked up here automatically. Absent is normal, not a failure.
+# TRACKED, and still not shipped: the production strip leaves tests/ where it
+# is and the release does not carry it, but the repository does -- so the suite
+# behind every claim in this project's history can be re-run by anyone who
+# clones it. Running from a stripped copy rather than a clone is the one case
+# where it is absent, and absent stays a skip rather than a failure.
+#
+# (The line that used to sit here told you to recover it with
+#  'git archive 566171c Crimson-Arena/tests | tar -x'. That commit holds 74
+#  specs; the suite is well past that now, so following it would have quietly
+#  restored an old one over a newer one.)
 if command -v lua5.4 >/dev/null 2>&1 && [ -d $R/tests ]; then
     p=0; f=0; bad_specs=""
     for s in $R/tests/*_spec.lua; do

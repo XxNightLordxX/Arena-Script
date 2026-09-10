@@ -1,0 +1,915 @@
+--[[
+    crimson_arena/tests/hoursgate_spec.lua
+
+    WHERE OPENING HOURS BITE, AND -- just as load-bearing -- WHERE THEY DO
+    NOT. Exercised through the real server files, not through the rule.
+
+    tests/schedule_spec.lua already proves the arithmetic: which minutes are
+    open, when the next window is, what a wrap over midnight does. None of
+    that says anything about whether the gate is wired to the right doors,
+    and the wrong door here is expensive:
+
+      Arena.CanStartMatch      goLive answers a refusal with ArenaMatch.Abort
+                               and the countdown re-asks every second, so a
+                               term there tears a round down mid-freeze and
+                               strands a readied lobby the idle sweep cannot
+                               collect -- it requires readyCount == 0 -- with
+                               every stake escrowed for good.
+
+      ArenaLobby.AddSpectator  server/match.lua calls it on EVERY elimination
+                               to hand a knocked-out fighter their camera. A
+                               refusal at the stroke of the hour stands them
+                               back up, visible and unfrozen, in a live round.
+
+      ArenaLobby.SetReady      readying is intent inside a lobby that is
+                               allowed to exist while shut. The refusal a
+                               ready room needs is Begin's, and the auto-start
+                               already forwards it.
+
+    So there are as many NEGATIVE assertions here as positive ones.
+
+    HOW THE CLOCK IS PINNED. ArenaHoursOpen reads the SERVER's real clock, so
+    a spec that hard-coded an hour would pass in the morning and fail in the
+    afternoon. Every test here builds its windows RELATIVE to the hour it is
+    actually running in -- openNow() and shutNow() below -- which is
+    deterministic at any time of day.
+]]
+
+local t = dofile('testkit.lua')
+local Sandbox = dofile('fixtures/sandbox.lua')
+
+print('hoursgate_spec')
+
+--- A window list that is open at whatever time this suite is running.
+--- @return table
+local function openNow()
+    local hour = tonumber(os.date('*t').hour)
+    -- The whole hour we are standing in. `to` is exclusive, so this is open
+    -- for every minute of it and shut on the hour after.
+    return { { from = hour, to = (hour + 1) % 24 } }
+end
+
+--- A window list that is SHUT at whatever time this suite is running.
+--- @return table
+local function shutNow()
+    local hour = tonumber(os.date('*t').hour)
+    -- Two hours ahead, so neither this hour nor the boundary minute of the
+    -- next one is covered.
+    return { { from = (hour + 2) % 24, to = (hour + 3) % 24 } }
+end
+
+--- Wallets and jobs for a set of server ids, in the shape
+--- Sandbox.newQbxCore wants.
+--- @param wallets table<integer, integer> -- [serverId] = starting cash
+--- @param jobs table<integer, string>? -- [serverId] = job name; unemployed otherwise
+--- @return table<integer, table>
+local function roster(wallets, jobs)
+    local players = {}
+    for id, cash in pairs(wallets) do
+        players[id] = {
+            citizenid = ('CID%03d'):format(id),
+            name = ('Fighter %d'):format(id),
+            money = { cash = cash, bank = 0 },
+            job = { name = (jobs or {})[id] or 'unemployed', grade = { level = 0 } },
+        }
+    end
+    return players
+end
+
+--- One whole arena server. Fresh per test: escrow, the match registry and
+--- the snapshot cache are all module state, so two tests sharing an env
+--- would share a pot.
+--- @param wallets table<integer, integer>
+--- @param mutate fun(config: table)? -- applied before any file that reads config at LOAD time
+--- @param jobs table<integer, string>?
+--- @return table server
+--- @param wallets table<integer, integer>
+--- @param mutate fun(config: table)?
+--- @param jobs table<integer, string>?
+--- @param admins table<integer, boolean>? -- who IsPlayerAceAllowed says yes for
+local function newArena(wallets, mutate, jobs, admins)
+    admins = admins or {}
+    --- Who the dispatch flag says has been teleported into a round.
+    local inArena = {}
+    local qbx = Sandbox.newQbxCore(roster(wallets, jobs))
+    local oxlib = Sandbox.newOxLib()
+    local threads = Sandbox.newThreadRunner()
+    local console, sent, netEvents, handlers, commands = {}, {}, {}, {}, {}
+    local clock = 0
+
+    local env = Sandbox.newArenaEnv({
+        exports = qbx.exports,
+        lib = oxlib,
+
+        CreateThread = threads.CreateThread,
+        Wait = threads.Wait,
+        SetTimeout = threads.SetTimeout,
+
+        -- Captured, not silenced: half of what this file asserts is that a
+        -- refusal or a forfeit is LOUD, and the console is where that lands.
+        print = function(line) console[#console + 1] = line end,
+
+        TriggerClientEvent = function(event, target, payload)
+            sent[#sent + 1] = { event = event, target = target, payload = payload }
+        end,
+        RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
+        AddEventHandler = function(name, fn) handlers[name] = fn end,
+        RegisterCommand = function(name, fn) commands[name] = fn end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+
+        -- Well past every RATE bucket in main.lua on every call: this spec is
+        -- about permissions and money, and a throttled event would look
+        -- exactly like a refused one.
+        GetGameTimer = function() clock = clock + 60000; return clock end,
+
+        -- An id with no wallet is somebody who has left the server, which is
+        -- how ArenaLobby.Broadcast prunes them.
+        GetPlayerName = function(src)
+            local record = qbx.players[src]
+            return record and record.name or ''
+        end,
+        GetPlayerPed = function(src) return src end,
+        -- Where a live opponent is, which the respawn picker reads so a
+        -- player who lost a life does not come back next to whoever took it.
+        -- Spread apart by server id so "furthest from the nearest threat" has
+        -- a real answer rather than a tie between identical points.
+        GetEntityCoords = function(ped)
+            -- INSIDE THE ARENA THESE FIGHTERS ARE SUPPOSED TO BE IN, which
+            -- this used to be nowhere near: it answered a point 1,450m from
+            -- the Trailer Park, so every fighter in every one of these specs
+            -- was standing well outside the fence they were fighting inside.
+            -- Nothing read it until Config.Match.serverChecks did, and then
+            -- it read as the whole roster having walked out of the round.
+            --
+            -- Spread three metres apart, so they are also close enough for
+            -- the kill-distance ceiling -- the other thing that reads this.
+            return {
+                x = 2344.4 + ((tonumber(ped) or 0) % 16) * 3.0,
+                y = 2565.1,
+                z = 46.7,
+            }
+        end,
+        GetVehiclePedIsIn = function() return 0 end,
+        -- Nobody holds an ACE here. Source 0 -- the server console -- is an
+        -- admin without one, which is what the admin test leans on.
+        IsPlayerAceAllowed = function(src) return admins[tonumber(src)] == true end,
+        -- Needed by the admin tablet's stash view, which the doors switch
+        -- pushes a fresh copy of.
+        GetPlayers = function()
+            local out = {}
+            for id in pairs(wallets) do out[#out + 1] = tostring(id) end
+            table.sort(out)
+            return out
+        end,
+
+        ArenaStats = {
+            GetLeaderboard = function(callback) callback({}) end,
+            EnsureSchema = function() end,
+            RecordMatch = function() end,
+            Flush = function() end,
+        },
+        -- The arena flag, and the routing bucket a round is fought in. Both
+        -- ride the same two choke points in server/match.lua, so a stub
+        -- missing either half fails as a nil call naming it.
+        ArenaAmmo = {
+            -- No-op double. server/ammo.lua is exercised directly by
+            -- tests/ammo_spec.lua; here it only has to exist, because
+            -- server/match.lua calls it at both arena choke points.
+            IsEnabled = function() return false end,
+            -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
+            -- THROWS inside the respawn thread -- so leaving it out here
+            -- breaks every spec that lets a fighter come back to life.
+            Refresh = function() return true end,
+            -- THE ADMIN TABLET'S STASH SWEEP. The doors switch pushes a fresh
+            -- tablet payload, and a stub missing this throws out of the
+            -- handler rather than failing an assertion.
+            AllStashes = function(cb, scanned)
+                if scanned then scanned(0, 0) end
+                cb({})
+            end,
+            HeldFor = function() return nil end,
+            Issue = function() return {} end,
+            Reclaim = function() return 0 end,
+            ReclaimAll = function() return 0 end,
+            Clear = function() return true end,
+            OnLoan = function() return 0 end,
+            -- THE OTHER HALF OF THE TABLET'S DEBT VIEW. server/main.lua asks
+            -- for the outstanding-kit slate in the same payload as the stash
+            -- sweep above, so a stub missing these throws out of the handler
+            -- rather than failing an assertion.
+            OwedKit = function() return {} end,
+            OwedKitIsSaved = function() return false end,
+        },
+        ArenaDispatch = {
+            -- WHO IS ACTUALLY IN THE ARENA, tracked rather than answered.
+            --
+            -- IsPlayerInArena used to be a hard-wired `false`, which is the
+            -- shape of double this codebase has been bitten by more than once:
+            -- it answers, so nothing throws, and every question put to it gets
+            -- the same reply whether the fighters are standing in the arena or
+            -- have never been near it. The bell's "a live round is left alone"
+            -- test leaned on it and proved nothing.
+            Set = function(src, matchId) inArena[src] = matchId end,
+            Clear = function(src) inArena[src] = nil end,
+            -- Recorded like the rest: the exit path now tells whatever handles
+            -- death that the player is alive again, and a stub missing it is a
+            -- nil call rather than a silent no-op.
+            Revive = function() end,
+            IsPlayerInArena = function(src) return inArena[src] ~= nil end,
+            ClearDownState = function() return 0 end,
+            EnterBucket = function() end,
+            ExitBucket = function() end,
+            GetBucket = function() end,
+            ReleaseBucket = function() end,
+        },
+    })
+
+    -- Before the loads below, not after: server/lobby.lua reads
+    -- Config.Match.idleLobbyTimeoutSeconds once, at load, to decide whether
+    -- its sweep thread is worth starting at all.
+    if mutate then mutate(env.Config) end
+
+    Sandbox.loadInto('../server/util.lua', env)
+    Sandbox.loadInto('../server/betting.lua', env)
+    Sandbox.loadInto('../server/lobby.lua', env)
+    Sandbox.loadInto('../server/match.lua', env)
+    Sandbox.loadInto('../server/main.lua', env)
+
+    local server = {
+        env = env,
+        qbx = qbx,
+        config = env.Config,
+        betting = env.ArenaBetting,
+        lobby = env.ArenaLobby,
+        match = env.ArenaMatch,
+    }
+
+    --- One client -> server event, as the client sends it.
+    --- @param event string -- the tail of crimson_arena:server:*
+    --- @param src integer
+    --- @param data table?
+    function server.fire(event, src, data)
+        local name = 'crimson_arena:server:' .. event
+        local handler = netEvents[name]
+        if not handler then error('no handler registered for ' .. name, 2) end
+        env.source = src
+        handler(data)
+    end
+
+    --- A player losing their connection, through main.lua's own handler.
+    --- @param src integer
+    function server.drop(src)
+        env.source = src
+        handlers['playerDropped']()
+    end
+
+    --- /arenaadmin from the server console, which always qualifies.
+    --- @param ... string
+    function server.adminCommand(...)
+        commands['arenaadmin'](0, { ... })
+    end
+
+    --- Resumes every captured thread once. The sweeps call Wait first, so a
+    --- full pass is two steps.
+    function server.step()
+        threads.step()
+        threads.step()
+    end
+
+    --- @return integer
+    function server.cash(id) return qbx.players[id].money.cash end
+
+    --- @return integer
+    function server.movements(id) return qbx.movements(id) end
+
+    --- Every client event this server has pushed, in order.
+    --- @return table[]
+    function server.sent() return sent end
+
+    --- The notify payloads sent to one player, oldest first.
+    ---
+    --- The KEY, not the rendered sentence: ArenaNotifyKey forwards a locale
+    --- key and the sandbox's locale() hands it straight back, so asserting on
+    --- the key is asserting on what the server actually chose to say.
+    --- @param id integer
+    --- @return string[]
+    function server.notices(id)
+        local out = {}
+        for _, message in ipairs(sent) do
+            if message.target == id and tostring(message.event):find('notify', 1, true) then
+                out[#out + 1] = tostring(type(message.payload) == 'table'
+                    and (message.payload.description or message.payload.key)
+                    or message.payload)
+            end
+        end
+        return out
+    end
+
+    --- Only what was said AFTER a mark taken with server.notices(id).
+    --- Written because a whole-session search finds the join and the stake as
+    --- readily as the thing under test.
+    --- @param id integer
+    --- @param mark integer
+    --- @return string[]
+    function server.noticesSince(id, mark)
+        local all, out = server.notices(id), {}
+        for index = mark + 1, #all do out[#out + 1] = all[index] end
+        return out
+    end
+
+    return server
+end
+
+--- The server with opening hours switched ON and the given windows.
+--- @param windows table
+--- @param wallets table?
+--- @return table
+local function arenaWithHours(windows, wallets, admins)
+    return newArena(wallets or { [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Schedule = { enabled = true, windows = windows, offsetHours = 0 }
+    end, nil, admins)
+end
+
+-- ======================================================================
+-- THE TWO DOORS
+-- ======================================================================
+
+t.test('while the arena is OPEN, a match can be created and joined', function()
+    local s = arenaWithHours(openNow())
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNotNil(id, 'an open arena refused a match')
+    t.isTrue((s.lobby.Join(2, id, nil, nil)), 'an open arena refused a join')
+end)
+
+t.test('and while it is SHUT, creating one is refused by name', function()
+    local s = arenaWithHours(shutNow())
+    local id, reason = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNil(id, 'a shut arena let a match be created')
+    t.equals(reason, 'error.arena_shut')
+end)
+
+t.test('and the refused creation leaves NO half-built match behind', function()
+    -- Create funnels its host through Join and unwinds on a refusal. A design
+    -- that gated Create separately would leave the record standing.
+    local s = arenaWithHours(shutNow())
+    s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.equals(#s.lobby.All(), 0, 'a refused creation left a match in the registry')
+end)
+
+t.test('and joining an existing lobby is refused too', function()
+    -- The lobby formed while the arena was open; the doors shut afterwards.
+    local s = arenaWithHours(openNow())
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNotNil(id)
+
+    s.config.Schedule.windows = shutNow()
+    local ok, reason = s.lobby.Join(2, id, nil, nil)
+    t.isFalse(ok, 'a shut arena let somebody join')
+    t.equals(reason, 'error.arena_shut')
+end)
+
+t.test('and STARTING a lobby that formed while it was open is refused', function()
+    local s = arenaWithHours(openNow())
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isTrue((s.lobby.Join(2, id, nil, nil)))
+
+    s.config.Schedule.windows = shutNow()
+    local ok, reason = s.match.Begin(id, 1)
+    t.isFalse(ok, 'a shut arena started a round')
+    t.equals(reason, 'error.arena_shut')
+    -- Refused ABOVE assignMissingTeams, so the roster is untouched.
+    t.equals(s.lobby.Get(id).state, 'lobby', 'a refused Begin still moved the match on')
+end)
+
+-- ======================================================================
+-- THE THREE DELIBERATE NON-PLACEMENTS
+-- ======================================================================
+
+t.test('readying up is NOT refused while shut', function()
+    local s = arenaWithHours(openNow())
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isTrue((s.lobby.Join(2, id, nil, nil)))
+
+    s.config.Schedule.windows = shutNow()
+    local ok = s.lobby.SetReady(1, true)
+    t.isTrue(ok, 'a shut arena refused a player their own ready tick box')
+end)
+
+t.test('and a ready room is told WHY it is not starting', function()
+    -- The auto-start branch forwards ArenaMatch.Begin's refusal key to every
+    -- player in the roster, so the sentence a full lobby needs arrives
+    -- through code that already exists rather than a second gate.
+    local s = arenaWithHours(openNow())
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isTrue((s.lobby.Join(2, id, nil, nil)))
+
+    s.config.Schedule.windows = shutNow()
+    local before = #s.notices(1)
+    s.lobby.SetReady(1, true)
+    s.lobby.SetReady(2, true)
+
+    -- Compared against what the LOCALE resolves the key to, not against the
+    -- key: ArenaNotifyKey renders before it sends, so asserting on the raw
+    -- key would pass against a key that resolves to nothing at all.
+    local wanted = s.env.locale('error.arena_shut')
+    t.isTrue(wanted ~= nil and wanted ~= '' and wanted ~= 'error.arena_shut',
+        'error.arena_shut does not resolve to a sentence')
+
+    local said = false
+    for _, notice in ipairs(s.noticesSince(1, before)) do
+        if tostring(notice) == wanted then said = true end
+    end
+    t.isTrue(said, 'a full, readied lobby sat still and was told nothing')
+end)
+
+t.test('and WATCHING a live round is never refused by the clock', function()
+    -- server/match.lua calls AddSpectator on every elimination. A refusal
+    -- here is an eliminated fighter standing back up inside a live round.
+    local s = arenaWithHours(openNow())
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isTrue((s.lobby.Join(2, id, nil, nil)))
+    t.isTrue((s.match.Begin(id, 1)))
+    s.step()
+    s.step()
+
+    s.config.Schedule.windows = shutNow()
+    local ok = s.lobby.AddSpectator(3, id)
+    t.isTrue(ok, 'the clock refused a spectator a camera on a round already being fought')
+end)
+
+-- ======================================================================
+-- THE BELL
+-- ======================================================================
+
+t.test('THE BELL: a waiting lobby is closed when the doors shut, and every stake goes back', function()
+    local s = arenaWithHours(openNow(), { [1] = 5000, [2] = 5000, [3] = 5000 })
+    s.config.Betting.enabled = true
+    s.config.Betting.entryFee.enabled = true
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 500, nil, nil, nil)
+    t.isNotNil(id, 'the lobby could not be opened')
+    t.isTrue((s.lobby.Join(2, id, nil, nil)))
+
+    local staked = s.cash(1) + s.cash(2)
+    t.isTrue(staked < 10000, 'no stake was taken, so this test proves nothing about refunds')
+
+    -- One sweep to record the doors as open, then shut them and sweep again.
+    s.step()
+    s.config.Schedule.windows = shutNow()
+    s.step()
+
+    t.equals(#s.lobby.All(), 0, 'the bell left a lobby standing that could never start')
+    t.equals(s.cash(1) + s.cash(2), 10000, 'the bell closed a lobby without giving the stakes back')
+end)
+
+t.test('and a round already being fought is left alone', function()
+    local s = arenaWithHours(openNow())
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isTrue((s.lobby.Join(2, id, nil, nil)))
+    t.isTrue((s.match.Begin(id, 1)))
+
+    -- STEPPED UNTIL IT IS REALLY LIVE. Begin runs a lobby countdown, Start
+    -- runs a freeze countdown after it, and each is its own thread -- so a
+    -- fixed handful of steps got as far as `countdown` and stopped there,
+    -- which is a different match state with a different rule.
+    for _ = 1, 40 do
+        if s.lobby.Get(id) and s.lobby.Get(id).state == 'live' then break end
+        s.step()
+    end
+
+    -- THE ROUND IS ACTUALLY BEING FOUGHT, asserted rather than assumed.
+    -- Without this the test reads as "a live round survives" while the match
+    -- may still have been sitting in its lobby countdown, where surviving is
+    -- not the rule at all -- nobody has been placed there and closing the
+    -- doors is supposed to take it away.
+    t.equals(s.lobby.Get(id).state, 'live',
+        'the match never went live, so this proves nothing about live rounds')
+
+    s.config.Schedule.windows = shutNow()
+    s.step()
+
+    -- Widening the bell's filter to catch a round anybody has been PLACED in
+    -- is the mutation this kills, and it is the one that aborts live rounds.
+    t.isNotNil(s.lobby.Get(id), 'the bell tore down a round that was already being fought')
+end)
+
+-- ======================================================================
+-- THE FAIL-OPEN RULE
+-- ======================================================================
+
+t.test('THE UPGRADE RULE: no Config.Schedule at all leaves every door open', function()
+    -- A server that pulls this code before its config has the block must
+    -- keep an arena that works. This single assertion is why the rest of the
+    -- suite is green: reverse it and every existing install goes dark.
+    local s = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Schedule = nil
+    end)
+    t.isNotNil(s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil),
+        'a server with no Config.Schedule had its arena shut')
+end)
+
+t.test('and so does the switch being off, whatever the windows say', function()
+    local s = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Schedule = { enabled = false, windows = shutNow(), offsetHours = 0 }
+    end)
+    t.isNotNil(s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil),
+        'enabled = false still shut the arena')
+end)
+
+t.test('and a rule that answers with nothing at all', function()
+    -- The direction the guard fails in, asserted rather than assumed.
+    -- Arena.ScheduleStatus sets `open` on every path it has today, so this
+    -- is the only way to reach the branch -- and the branch is the reason
+    -- the arena cannot be taken offline for everybody by a shape change.
+    local s = newArena({ [1] = 5000 }, function(config)
+        config.Schedule = { enabled = true, windows = shutNow(), offsetHours = 0 }
+    end)
+    t.isFalse(s.env.ArenaHoursOpen(), 'the setup did not actually shut the arena')
+
+    s.env.Arena.ScheduleStatus = function() return nil end
+    t.isTrue(s.env.ArenaHoursOpen(),
+        'a rule that answered with nothing shut the arena instead of leaving it open')
+
+    s.env.Arena.ScheduleStatus = function() return {} end
+    t.isTrue(s.env.ArenaHoursOpen(),
+        'a rule that answered with no verdict shut the arena instead of leaving it open')
+end)
+
+t.test('and a window list where nothing is usable', function()
+    local s = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Schedule = { enabled = true, offsetHours = 0, windows = {
+            { from = 99, to = 3 }, { from = 5, to = 5 },
+        } }
+    end)
+    t.isNotNil(s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil),
+        'a schedule with no usable window shut the arena instead of leaving it open')
+end)
+
+-- ======================================================================
+-- THE OFFSET
+-- ======================================================================
+
+t.test('offsetHours moves the hour the schedule is judged against', function()
+    local s = newArena({ [1] = 5000 }, function(config)
+        config.Schedule = { enabled = true, windows = openNow(), offsetHours = 0 }
+    end)
+    t.isTrue(s.env.ArenaHoursOpen(), 'the arena was shut inside its own window')
+
+    -- Five hours out of step, so the window this hour is no longer this hour.
+    s.config.Schedule.offsetHours = 5
+    t.isFalse(s.env.ArenaHoursOpen(), 'offsetHours changed nothing')
+end)
+
+t.test('and an offset outside the band is ignored rather than honoured', function()
+    local s = newArena({ [1] = 5000 }, function(config)
+        config.Schedule = { enabled = true, windows = openNow(), offsetHours = 500 }
+    end)
+    -- Silently honouring 500 would put the arena's day somewhere nobody
+    -- asked for. The validator has already named it.
+    t.isTrue(s.env.ArenaHoursOpen(), 'a nonsense offsetHours was applied instead of ignored')
+end)
+
+-- ======================================================================
+-- THE WIRE
+-- ======================================================================
+
+t.test('the schedule reaches the panel on BOTH payloads', function()
+    -- keepOut was missing from Broadcast for its whole life and the fence was
+    -- dead in production as a result: it worked on a panel opening and was
+    -- gone one broadcast later. Both payloads are assembled by hand, so both
+    -- are asserted.
+    local s = arenaWithHours(openNow())
+
+    local built = s.lobby.BuildState(1)
+    t.isNotNil(built.schedule, 'BuildState sent no schedule block')
+    t.isTrue(built.schedule.open, 'BuildState reported an open arena as shut')
+    t.isNotNil(built.schedule.line, 'BuildState sent no window line while hours are enforced')
+
+    local seen = nil
+    s.lobby.MarkPanelOpen(1)
+    s.lobby.Broadcast()
+    for _, message in ipairs(s.sent()) do
+        if message.event == 'crimson_arena:client:state' and message.target == 1 then
+            seen = message.payload.schedule
+        end
+    end
+    t.isNotNil(seen, 'Broadcast sent no schedule block')
+    t.equals(tostring(seen.open), tostring(built.schedule.open),
+        'the two payloads disagree about the same instant')
+end)
+
+t.test('and carries NO window line when hours are not being enforced', function()
+    -- The panel must never advertise a schedule the server is not keeping.
+    local s = newArena({ [1] = 5000 }, function(config) config.Schedule = nil end)
+    local built = s.lobby.BuildState(1)
+    t.isTrue(built.schedule.open)
+    t.isNil(built.schedule.line, 'a server keeping no hours advertised a schedule')
+end)
+
+-- ======================================================================
+-- AND AN ADMIN DECIDES THE DOORS, EITHER WAY
+--
+-- Config.Schedule can have the arena shut at four in the morning, and an
+-- operator running something at four in the morning needs a way in that is
+-- not editing config and restarting the resource. The same operator needs to
+-- be able to close it mid-afternoon without one either.
+--
+-- THREE STATES, AND THE THIRD IS THE ABSENCE OF A DECISION: held open,
+-- closed, or handed back to the clock.
+-- ======================================================================
+
+t.test('THE REQUEST: an admin can open a shut arena from the tablet', function()
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    t.isNil((s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'the arena is not shut, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'open' })
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNotNil(id, 'the doors were held open and a match still could not be created')
+    t.isTrue((s.lobby.Join(2, id, nil, nil)), 'and nobody could join it')
+end)
+
+t.test('THE REQUEST: and can close an arena its own hours say is open', function()
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    t.isNotNil((s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'the arena is not open, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    -- A DIFFERENT PLAYER, because the one above is now in the match they
+    -- just opened and would be refused for that instead -- which would pass
+    -- this test without the doors having done anything.
+    local id, reason = s.lobby.Create(3, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNil(id, 'the arena was closed and a match could still be created')
+    t.equals(reason, 'error.arena_shut')
+end)
+
+t.test('THE REQUEST: closing it shuts the lobbies that are still waiting', function()
+    -- A lobby is people standing about waiting to be let in, and the doors
+    -- have just been shut on them. Leaving it open would be a queue for a
+    -- round that cannot start -- and its host would be left holding an entry
+    -- fee for it.
+    --
+    -- DESTROY, NEVER CANCEL. Cancel is the one way of closing a lobby an
+    -- operator can make cost something, and an operator who chose to punish a
+    -- host for calling their own match off has not asked to punish a lobby the
+    -- SERVER closed. Destroy refunds every stake unconditionally.
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    t.isNotNil(s.lobby.Get(id), 'the lobby never opened, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+    s.step()
+
+    t.isNil(s.lobby.Get(id),
+        'the arena was closed and a lobby was left queueing for a round that cannot start')
+end)
+
+t.test('and hands every stake back when it does', function()
+    local s = arenaWithHours(openNow(), { [1] = 5000, [2] = 5000, [3] = 5000 }, { [1] = true })
+    s.config.Betting.enabled = true
+    s.config.Betting.entryFee = { enabled = true, min = 0, max = 5000, default = 500 }
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 500, nil, nil, 'cash')
+    t.isNotNil(id, 'the lobby never opened')
+    s.lobby.Join(2, id, nil, 'cash')
+
+    local paid = s.cash(1)
+    t.isTrue(paid < 5000, 'no entry fee was taken, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+    s.step()
+
+    t.equals(s.cash(1), 5000, 'the host was left out of pocket for a lobby the SERVER closed')
+    t.equals(s.cash(2), 5000, 'and so was everybody who had joined it')
+end)
+
+t.test('THE STUCK CASE: a lobby mid-COUNTDOWN is closed too, not left to start', function()
+    -- `countdown` is two different states wearing one name. ArenaMatch.Begin
+    -- sets it for the lobby countdown, where nobody has moved and everybody
+    -- may still back out; ArenaMatch.Start sets it again for the freeze,
+    -- where everybody is standing in the arena. The first is a waiting lobby
+    -- in every sense that matters here.
+    --
+    -- Left alone, that countdown ran to completion and teleported everybody
+    -- into an arena an admin had just closed.
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    t.isTrue((s.match.Begin(id, 1)))
+    t.equals(s.lobby.Get(id).state, 'countdown', 'the countdown never started')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    t.isNil(s.lobby.Get(id),
+        'a lobby counting down was left to finish and drop everybody into a closed arena')
+end)
+
+t.test('and even if the countdown somehow finishes, the start is refused', function()
+    -- The belt to the braces above. ArenaMatch.Begin checks the doors and
+    -- then waits; nothing re-asked, so a lobby that was legal when the clock
+    -- started could open a round after they shut. Folded into Start's own
+    -- failure path, so the lobby goes back to WAITING rather than sticking in
+    -- `countdown` for ever.
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+
+    s.env.ArenaSetHoursOverride('shut')
+
+    local ok, reason = s.match.Start(id)
+    t.isFalse(ok, 'a round started inside a closed arena')
+    t.equals(reason, 'error.arena_shut')
+    t.equals(s.lobby.Get(id).state, 'lobby',
+        'the lobby was left stuck in its countdown with no way out')
+end)
+
+t.test('THE STUCK CASE: a round in its FREEZE countdown is left alone', function()
+    -- The other half of `countdown`, and the dangerous half. By this point
+    -- ArenaMatch.Start has teleported everybody into the arena and they are
+    -- standing frozen waiting for the guns to go live -- so tearing the match
+    -- down here would leave people in an arena with no round to be in and
+    -- nothing to end it.
+    --
+    -- THE DISPATCH FLAG is what tells the two countdowns apart, and this is
+    -- the test that proves it is being read: from the outside the freeze
+    -- countdown and the lobby countdown are the same word.
+    --
+    -- START IS CALLED DIRECTLY, and the freeze given a real length, because
+    -- the two countdowns are separate threads and on the shipped numbers the
+    -- freeze can be over inside a single tick -- a window that does not exist
+    -- is one no test can stand in.
+    local s = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Schedule = { enabled = true, windows = openNow(), offsetHours = 0 }
+        config.Match.startCountdownSeconds = 30
+    end, nil, { [1] = true })
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    t.isTrue((s.match.Start(id)))
+
+    t.equals(s.lobby.Get(id).state, 'countdown', 'the round is not in its freeze')
+    t.isTrue(s.env.ArenaDispatch.IsPlayerInArena(1),
+        'nobody was placed, so this is the lobby countdown and proves the wrong thing')
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    t.isNotNil(s.lobby.Get(id),
+        'closing the arena tore down a round whose fighters were already standing in it')
+end)
+
+t.test('and a server that cannot ask the flag keeps its rounds anyway', function()
+    -- server/dispatch.lua loads AFTER server/match.lua, so it is asked for
+    -- rather than assumed -- the idiom every other guard in these files
+    -- keeps. The direction of the fallback is the whole point: unable to tell
+    -- whether anybody is in there, the answer must be that they ARE, so a
+    -- round is never torn down on a guess.
+    local s = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Schedule = { enabled = true, windows = openNow(), offsetHours = 0 }
+        config.Match.startCountdownSeconds = 30
+    end, nil, { [1] = true })
+
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    t.isTrue((s.match.Start(id)))
+    t.equals(s.lobby.Get(id).state, 'countdown')
+
+    -- Taken away AFTER the round was placed, which is the only way to model
+    -- "this question cannot be answered" from out here.
+    s.env.ArenaDispatch = nil
+
+    s.env.ArenaMatch.CloseWaitingLobbies('notify.hours_lobby_closed')
+
+    t.isNotNil(s.lobby.Get(id),
+        'a round was torn down because nothing could say whether anybody was in it')
+end)
+
+t.test('and closing it does NOT end a round already being fought', function()
+    -- Shutting the arena is about who may come IN. A fight already happening
+    -- is fought to the end -- the same rule the schedule itself keeps when a
+    -- window closes mid-round.
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    s.lobby.Join(2, id, nil, nil)
+    s.match.Start(id)
+    s.step()
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+    s.step()
+
+    t.isNotNil(s.lobby.Get(id), 'closing the arena tore down a round being fought in it')
+end)
+
+t.test('and the panel is told, so it does not call the arena shut', function()
+    -- This block is what the panel, the lobby NPC and the ground marker are
+    -- all drawn from. An override the server honours and the snapshot does
+    -- not is an arena letting people in through a door every screen calls
+    -- locked.
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    t.isFalse(s.env.ArenaHoursSnapshot().open, 'the arena is not shut, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = 'open' })
+
+    local block = s.env.ArenaHoursSnapshot()
+    t.isTrue(block.open, 'the snapshot still says the arena is shut')
+    t.equals(block.forced, 'open', 'and does not say the doors are being HELD open')
+end)
+
+t.test('and told the other way round too', function()
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    local block = s.env.ArenaHoursSnapshot()
+    t.isFalse(block.open, 'the snapshot still says an arena an admin closed is open')
+    t.equals(block.forced, 'shut', 'and does not say who closed it')
+end)
+
+t.test('and the ordinary hours are still on the snapshot to be read', function()
+    -- `line` is the schedule this server keeps. Overriding it for one evening
+    -- does not make it untrue, and a player still deserves to be told when
+    -- the arena normally runs.
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    s.fire('adminHours', 1, { forced = 'open' })
+    t.isNotNil(s.env.ArenaHoursSnapshot().line,
+        'overriding the doors threw away the hours the server actually keeps')
+end)
+
+t.test('and handing it back gives the clock its say', function()
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    s.fire('adminHours', 1, { forced = 'open' })
+    t.isNotNil((s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'the doors never opened, so this proves nothing')
+
+    s.fire('adminHours', 1, { forced = nil })
+
+    -- A different player, for the reason given in the closing test above.
+    local id, reason = s.lobby.Create(3, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
+    t.isNil(id, 'the schedule did not get its say back')
+    t.equals(reason, 'error.arena_shut')
+    t.isNil(s.env.ArenaHoursOverride(), 'the override was not actually cleared')
+end)
+
+t.test('and a word the server does not know follows the schedule', function()
+    -- A malformed payload must hand the arena back to its own hours rather
+    -- than invent a fourth state nothing downstream knows how to read.
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    s.fire('adminHours', 1, { forced = 'open' })
+
+    s.fire('adminHours', 1, { forced = 'ajar' })
+
+    t.isNil(s.env.ArenaHoursOverride(), 'a word nobody knows was stored as a door state')
+    t.isNil((s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'and the arena was left open on it')
+end)
+
+t.test('and a player who is not an admin cannot touch it', function()
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+
+    s.fire('adminHours', 2, { forced = 'open' })
+
+    t.isNil(s.env.ArenaHoursOverride(), 'a player who is not an admin opened the arena')
+    t.isNil((s.lobby.Create(2, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'and got a match out of it')
+end)
+
+t.test('and nor can they close one', function()
+    local s = arenaWithHours(openNow(), nil, { [1] = true })
+
+    s.fire('adminHours', 2, { forced = 'shut' })
+
+    t.isNil(s.env.ArenaHoursOverride(), 'a player who is not an admin closed the arena')
+    t.isNotNil((s.lobby.Create(2, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)),
+        'and shut everybody else out of it')
+end)
+
+t.test('and everybody is told, not just the admin who pressed it', function()
+    -- The doors decide what the lobby NPC says, whether the ground marker is
+    -- drawn and what line the panel puts under Create Match.
+    -- COUNTED FOR SOMEBODY WHO IS NOT THE ADMIN, and that is the whole
+    -- assertion. The handler ends by pushing a fresh tablet payload to
+    -- whoever pressed the button, so counting every client event proved only
+    -- that the admin heard about their own press -- and removing the
+    -- broadcast entirely left this test green while the lobby NPC, the ground
+    -- marker and every other player's Create Match line went on calling the
+    -- arena shut.
+    local s = arenaWithHours(shutNow(), nil, { [1] = true })
+    s.fire('requestState', 2, { panel = true })   -- player 2 has the panel OPEN, so is a broadcast recipient
+    local before = 0
+    for _, row in ipairs(s.sent()) do
+        if row.target ~= 1 then before = before + 1 end
+    end
+
+    s.fire('adminHours', 1, { forced = 'open' })
+
+    local after = 0
+    for _, row in ipairs(s.sent()) do
+        if row.target ~= 1 then after = after + 1 end
+    end
+    t.isTrue(after > before,
+        'the doors opened and nobody but the admin was told -- every other screen '
+        .. 'still says shut')
+end)
+
+os.exit(t.summary())

@@ -56,7 +56,7 @@ local function newServer(mutate)
 
     local qbx = Sandbox.newQbxCore(players)
     local threads = Sandbox.newThreadRunner()
-    local netEvents, console, sent = {}, {}, {}
+    local netEvents, console, sent, handlers = {}, {}, {}, {}
     local clock = 0
 
     local env = Sandbox.newArenaEnv({
@@ -71,7 +71,11 @@ local function newServer(mutate)
         end,
         TriggerEvent = function() end,
         RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
-        AddEventHandler = function() end,
+        -- CAPTURED RATHER THAN DISCARDED. server/main.lua registers
+        -- playerDropped here, and that handler is the whole of what happens
+        -- to a round when somebody's connection goes -- there is no other way
+        -- to make a fighter leave the way a real one does.
+        AddEventHandler = function(name, fn) handlers[name] = fn end,
         RegisterCommand = function() end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         GetGameTimer = function() clock = clock + 60000 return clock end,
@@ -193,6 +197,17 @@ local function newServer(mutate)
 
     --- A round fought to a SCORE LIMIT rather than to the last fighter
     --- standing: it ends the moment somebody reaches the number.
+    --- Drops a player the way a lost connection does: through the real
+    --- playerDropped handler, with `source` set, and not by editing a roster.
+    server.step = function(n) for _ = 1, (n or 1) do threads.step() end end
+
+    function server.dropPlayer(src)
+        env.source = src
+        assert(handlers.playerDropped, 'server/main.lua registered no playerDropped handler')
+        handlers.playerDropped()
+        for _ = 1, 8 do threads.step() end
+    end
+
     function server.playToScore(fee, limit)
         server.fire('createMatch', 1, {
             arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = fee, account = 'cash',
@@ -411,6 +426,33 @@ t.test('a round fought to a SCORE LIMIT pays the fighter who reached it', functi
     t.equals(server.cash(1), start - 5000 + 10000, 'the fighter who reached the limit was not paid the pot')
     t.equals(server.cash(2), start - 5000, 'the loser is out their stake and no more')
     t.equals(purse(server), before)
+end)
+
+t.test('a fighter who DISCONNECTS mid-round leaves the money where it belongs', function()
+    -- The exit nobody chooses, and the one a paid round has to survive: a
+    -- connection goes in the middle of a fight. The betting layer's own specs
+    -- crash a player and check the ledger; nothing played a ROUND and then
+    -- pulled somebody out of it, so the handoff between the disconnect and
+    -- the settlement -- roster, escrow, payout -- had no test at the wallet.
+    local server = newServer()
+    local before = purse(server)
+    local start = server.cash(1)
+
+    local matchId = server.playMatch(5000)
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.match.Start(matchId)
+    server.step()
+
+    -- And their connection goes.
+    server.dropPlayer(2)
+
+    t.isTrue(server.cash(1) >= start - 5000,
+        'the fighter still standing was charged more than their stake by somebody else leaving')
+    t.equals(purse(server), before,
+        'a disconnect mid-round created or destroyed money')
+    t.isNil(server.lobby.Get(matchId),
+        'the round outlived the only two people in it')
 end)
 
 os.exit(t.summary())

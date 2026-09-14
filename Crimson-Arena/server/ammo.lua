@@ -778,6 +778,23 @@ end
 --- only after the write that moves them has been read.
 --- @return integer restored
 --- @return integer failures
+--- How many rows of one item name an inventory is holding, or nil when it
+--- could not be read -- which is never the same answer as none.
+---
+--- A SMALL LOCAL RATHER THAN copiesOf, which answers the same question but is
+--- defined further down this file than this is. Moving it would reorder a
+--- file whose load order is already load-bearing; eight lines here does not.
+local function rowsNamed(ox, who, name)
+    local ok, items = pcall(function() return ox:GetInventoryItems(who) end)
+    if not ok or type(items) ~= 'table' then return nil end
+
+    local seen = 0
+    for _, item in ipairs(itemsIn(items)) do
+        if item.name == name then seen = seen + 1 end
+    end
+    return seen
+end
+
 local function refillContainers(ox, src, keys, citizenid)
     if type(keys) ~= 'table' then return 0, 0 end
 
@@ -836,27 +853,81 @@ local function refillContainers(ox, src, keys, citizenid)
 
             if #rows == 0 then goto nextKey end
 
+            -- THE BAG IF IT CAN BE REACHED, THEIR POCKETS IF IT CANNOT.
+            --
+            -- THE PROMISE IS THAT EVERYTHING COMES BACK, and it is not
+            -- conditional on the bag surviving the round. A bag can fail to
+            -- come back for reasons that have nothing to do with what was in
+            -- it: the exit could not empty the belongings stash, the stash
+            -- jammed, ox_inventory will not open the container. Every one of
+            -- those used to leave the CONTENTS sitting in a holding stash
+            -- with a log line -- safe, but not back, and the owner has no way
+            -- to reach a stash the arena named in a console they cannot see.
+            --
+            -- So the bag is preferred, because getting it back packed is the
+            -- whole point, and their pockets are the fallback. Loose in their
+            -- hands is a nuisance; still in a stash is a loss they have to
+            -- ask an admin about.
             local slot, foundName = slotOfContainer(ox, src, key)
             bagName = foundName or bagName
-            if not slot then
-                ArenaLog('door: %s is not carrying the bag that %d item(s) in stash %s came out of, so '
-                    .. 'they stay there. That bag may still be in their belongings stash if the exit '
-                    .. 'could not finish.', tostring(src), #rows, stash)
-                failures = failures + 1
-                goto nextKey
-            end
 
-            if not wakeContainer(ox, src, slot) then
-                ArenaLog('door: ox_inventory would not open the container behind %s\'s %s, so its %d '
-                    .. 'item(s) stay in stash %s.', tostring(src), tostring(bagName), #rows, stash)
-                failures = failures + 1
-                goto nextKey
+            local target = key
+            if not slot or not wakeContainer(ox, src, slot) then
+                target = src
+                ArenaLog('door: %s could not be given their %s back to put %d item(s) into%s, so those '
+                    .. 'items are going into their pockets instead. Nothing is lost -- they are just '
+                    .. 'not packed the way they left them.',
+                    tostring(src), tostring(bagName or 'bag'), #rows,
+                    slot and ' (ox_inventory would not open it)' or ' (they are not carrying it)')
             end
 
             for _, held in ipairs(rows) do
+                -- COUNTED BEFORE, BECAUSE THE SECOND CHANCE BELOW IS EXACTLY
+                -- THE SHAPE THAT DUPLICATES.
+                --
+                -- oxGave demands PROOF and reads a nil answer as "no" -- the
+                -- right rule everywhere else in this file, because everywhere
+                -- else "no" means leave the item where it is. Here "no" means
+                -- try somewhere else, and if the bag actually DID take it and
+                -- merely answered nil, handing a second one to their pockets
+                -- makes two. That is the very defect this whole file has been
+                -- chasing, reintroduced by a convenience.
+                --
+                -- So a refusal is verified before it is believed: if the bag
+                -- is holding one more of that item than it was a moment ago,
+                -- it landed, whatever it said.
+                local before = rowsNamed(ox, target, held.name)
+
                 local landed, why, answer = oxGave(function()
-                    return ox:AddItem(key, held.name, held.count, held.metadata)
+                    return ox:AddItem(target, held.name, held.count, held.metadata)
                 end)
+
+                -- AND A BAG THAT REFUSES ONE ITEM DOES NOT COST THEM THAT
+                -- ITEM. A container has its own size and weight, and a bag
+                -- that has been refilled by something else in the meantime
+                -- can be too full for what came out of it. Their pockets are
+                -- tried before it is left behind.
+                if not landed and target ~= src then
+                    local after = rowsNamed(ox, target, held.name)
+
+                    if before ~= nil and after ~= nil and after > before then
+                        -- It went in. The answer was just one this file does
+                        -- not recognise, and a second copy is not the fix.
+                        landed = true
+                        ArenaDebug('door: %s\'s %s answered nothing useful for %s but is holding it, '
+                            .. 'so no second copy was handed over.',
+                            tostring(src), tostring(bagName or 'bag'), tostring(held.name))
+                    else
+                        landed, why, answer = oxGave(function()
+                            return ox:AddItem(src, held.name, held.count, held.metadata)
+                        end)
+                        if landed then
+                            ArenaLog('door: %s\'s %s would not take %s x%s back, so it went into their '
+                                .. 'pockets instead.', tostring(src), tostring(bagName or 'bag'),
+                                tostring(held.name), tostring(held.count))
+                        end
+                    end
+                end
 
                 if not landed then
                     ArenaLog('door: %s x%s would not go back into %s\'s %s (%s). It stays in stash %s.',

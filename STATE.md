@@ -453,6 +453,53 @@ produces the same answer in all four: the player leaves with exactly their own t
 bag packed the way they left it. The database is where a round is written down. It is not
 what makes a round work.
 
+### 3m. Two live reports, one cause, and it was mine
+
+Reported as the arena **"not clearing the inventory"** and **"it still cleared the leo bag"**.
+One cause, both symptoms.
+
+When the exit finds more in a stash than the door put there it refuses the surplus and
+**jams** that stash. Correct, and tested. But a jam also stops the door putting anything
+**into** that stash, and the stash name was the character's and nothing else -- so a jammed
+player was **never stripped again**. And `holdContainers` sits below the jam check, so their
+bags stopped being protected at the same moment, which is the second report exactly. On a
+server where the thing that causes a jam happens routinely, that is every player, one long
+round each.
+
+The jam is right; tying it to the only name the door could use was not. A jammed stash is
+left for `/arenaunjam` and the next round goes into the next name along, bounded at fifty.
+
+**And the one silent failure is loud now.** The single reason the container mechanism can do
+nothing -- an ox_inventory without `GetContainerFromSlot` -- was an `ArenaDebug`, which only
+prints with `Config.Debug` on. An operator on such a build saw bags emptied exactly as
+before and no explanation anywhere.
+
+### 3n. It is the same one back, not one like it
+
+"They got a pistol back" is not the promise; "they got THEIR pistol back" is. Every test
+that compares `carrying` is a count of names and cannot tell those apart. So: a player's own
+weapon comes back with its **serial, its rounds and its attachments**; an item whose
+identity is a name on it comes back as theirs; a weapon kept **inside a bag** keeps its
+serial through the holding stash and back; and two players carrying the same weapon do not
+swap them. Handing items back without their metadata makes **24 tests fire**.
+
+### 3o. Everything comes back, bag or not -- and still exactly once
+
+The contents of a bag used to be left in a holding stash whenever the bag itself could not
+be reached -- the exit could not empty the belongings stash, the stash jammed, ox_inventory
+would not open the container. Safe, but not **back**: the owner cannot reach a stash the
+arena named in a console they never see. The bag is still preferred, because getting it back
+packed is the point, but their pockets are the fallback, and only when they cannot take it
+either does it stay in a stash.
+
+**That fallback is the exact shape that duplicates, and it nearly did.** `oxGave` demands
+proof and reads a nil answer as "no" -- the right rule everywhere else in this file, because
+everywhere else "no" means leave the item alone. Here "no" means *try somewhere else*, so a
+bag that took the item and merely answered nil would have got them a second copy: the very
+defect this whole file has been chasing, reintroduced by a convenience. A refusal is now
+verified against the container's own contents before it is believed. Removing that check
+makes the player walk out with a second `radio` while the bag keeps the first.
+
 ### 4. And no match duplicates anything, asserted rather than argued
 
 The general form of every defect above is "it is in two places now", and a test that looks

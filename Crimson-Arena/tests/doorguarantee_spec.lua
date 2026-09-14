@@ -95,6 +95,9 @@ local function newServer(ids, mutate, extra, opts)
     --- Inventories that refuse everything offered to them.
     local refusingAdds = {}
 
+    --- Inventories that ACCEPT everything and answer nothing.
+    local lyingAdds = {}
+
     --- Server convars, as this box has them.
     local convars = { ['inventory:cleartime'] = tonumber(opts.cleartime) or 5 }
 
@@ -198,6 +201,18 @@ local function newServer(ids, mutate, extra, opts)
             -- single most ordinary refusal at the exit, a full inventory,
             -- untested.
             if refusingAdds[id] then return false end
+            -- TAKES IT AND ANSWERS NOTHING. ox_inventory has code paths that
+            -- return nil where a true belongs, and oxGave deliberately reads
+            -- nil as "no" -- the right rule when "no" means leave the item
+            -- alone, and a DUPLICATION HAZARD anywhere "no" means try
+            -- somewhere else. The fixture could refuse and it could accept;
+            -- it had no way to accept quietly, which is the one shape that
+            -- matters for the bag refill's second chance.
+            if lyingAdds[id] then
+                local silently = bucket(id)
+                silently[#silently + 1] = { name = name, count = count, metadata = metadata }
+                return nil
+            end
             local into = bucket(id)
             into[#into + 1] = { name = name, count = count, metadata = metadata }
             return true
@@ -409,9 +424,9 @@ local function newServer(ids, mutate, extra, opts)
 
     --- Puts an item straight into a player's pockets, the way a payout does
     --- on a server where cash is an ox_inventory item.
-    function server.give(src, name, count)
+    function server.give(src, name, count, metadata)
         inv[src] = inv[src] or {}
-        inv[src][#inv[src] + 1] = { name = name, count = count }
+        inv[src][#inv[src] + 1] = { name = name, count = count, metadata = metadata }
     end
 
     function server.log() return table.concat(console, '\n') end
@@ -459,6 +474,12 @@ local function newServer(ids, mutate, extra, opts)
             if item.name == name then return item.metadata end
         end
         return nil
+    end
+
+    --- Makes one inventory take everything offered and answer nothing, the
+    --- way some ox_inventory code paths do.
+    function server.lieOnAdds(id, on)
+        lyingAdds[id] = (on ~= false) or nil
     end
 
     --- What is in ANY stash, by its real name -- including the bag holding
@@ -2099,7 +2120,13 @@ t.test('an exit that cannot hand everything over keeps it, says so, and comes ba
     t.equals(server.stashed(1), '', 'and the stash was not emptied')
 end)
 
-t.test('a bag that will not take its contents back keeps them in the holding stash', function()
+t.test('a bag that will not take its contents back hands them over loose instead', function()
+    -- EVERYTHING COMES BACK, AND IT IS NOT CONDITIONAL ON THE BAG. A
+    -- container has its own size and weight and can be too full for what came
+    -- out of it. Leaving the items in a holding stash was safe but it was not
+    -- BACK -- and the owner cannot reach a stash the arena named in a console
+    -- they never see. Loose in their hands is a nuisance; still in a stash is
+    -- something they have to ask an admin about.
     local server = newServer({ 1, 2 })
     server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
 
@@ -2109,16 +2136,43 @@ t.test('a bag that will not take its contents back keeps them in the holding sta
     server.fire('setReady', 1, { ready = true })
     server.fire('setReady', 2, { ready = true })
     server.step(6)
+    local matchId = match.id
 
     server.purgeContainer('k1')
     server.refuseAdds('k1')        -- the bag is full and will not take them
-    server.match.End(match.id, 'match.ended')
-    server.step(10)
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.contentsOf('crimson_arena_bag_k1'), '',
+        'the contents were left in a stash the player cannot reach')
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1,radiox1',
+        'THEY DID NOT GET IT BACK AT ALL')
+    t.contains(server.log(), 'went into their pockets instead')
+end)
+
+t.test('and only when THEY cannot take it either does it stay in the stash', function()
+    -- The last resort, and it must still never destroy anything.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+    local matchId = match.id
+
+    server.purgeContainer('k1')
+    server.refuseAdds('k1')
+    server.refuseAdds(1)           -- and their pockets are full too
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
 
     t.equals(server.contentsOf('crimson_arena_bag_k1'), 'radiox1',
-        'THE BAG CONTENTS WERE DESTROYED rather than left in a stash that can be opened')
-    t.equals(server.carrying(1), INTACT .. ',police_bagx1',
-        'the rest of the exit stopped working because a bag was full')
+        'it was destroyed rather than left where it is safe')
 end)
 
 t.test('a different character on the same server id gets nothing of the last one\'s', function()
@@ -2423,6 +2477,124 @@ t.test('DEFECT: a jam must not stop the door stripping the NEXT round, or protec
 
     -- And the jammed stash is untouched, still waiting for an admin.
     t.equals(jamsStanding(server), 1, 'the jam was quietly dropped instead of left to be settled')
+end)
+
+-- ========================================================================
+-- IT IS THE SAME ONE BACK, NOT ONE LIKE IT
+--
+-- On a server where a weapon carries a serial and a phone carries a number,
+-- "they got a pistol back" is not the promise -- "they got THEIR pistol
+-- back" is. A count of names cannot tell those apart, and every test above
+-- that compares `carrying` is a count of names.
+--
+-- ox_inventory keeps that identity in the item's metadata, so the whole
+-- question is whether metadata survives the round trip into the stash and
+-- out again -- and, separately, into a bag's holding stash and back into
+-- the bag.
+-- ========================================================================
+
+-- NOT A SECOND PHONE. OWN already carries one, and metaOf answers on the
+-- first item of that name -- so adding another here reads the metadata of
+-- the wrong one and the test fails for a reason that is not the code's. A
+-- licence is an item nothing else in this file uses.
+local OWNED_GUN = {
+    { name = 'WEAPON_PISTOL', count = 1,
+      metadata = { serial = 'MINE-0001', ammo = 12, components = { 'flashlight' } } },
+    { name = 'licence', count = 1, metadata = { holder = 'John Allday' } },
+}
+
+t.test('a player\'s own weapon comes back with its own serial, ammo and components', function()
+    local server = newServer({ 1, 2 }, nil, OWNED_GUN)
+
+    local matchId = bagRound(server, { 1, 2 })
+    t.isNil(server.metaOf(1, 'WEAPON_PISTOL'), 'the door did not take their own weapon off them')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    local gun = server.metaOf(1, 'WEAPON_PISTOL')
+    t.isNotNil(gun, 'they did not get their own weapon back at all')
+    t.equals(gun.serial, 'MINE-0001', 'THEY GOT SOMEBODY ELSE\'S WEAPON BACK')
+    t.equals(gun.ammo, 12, 'the rounds in it were not the rounds they left with')
+    t.equals(gun.components and gun.components[1], 'flashlight', 'its attachments were lost')
+end)
+
+t.test('and an item whose identity is a name on it comes back as theirs', function()
+    local server = newServer({ 1, 2 }, nil, OWNED_GUN)
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    local licence = server.metaOf(1, 'licence')
+    t.isNotNil(licence, 'it did not come back')
+    t.equals(licence.holder, 'John Allday', 'THEY GOT SOMEBODY ELSE\'S PAPERS BACK')
+end)
+
+t.test('and a weapon kept INSIDE a bag keeps its serial too', function()
+    -- The bag's contents take a different route entirely -- out of the
+    -- container, into a holding stash, back into the container -- so the
+    -- identity question has to be asked of that route separately.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', {
+        { 'WEAPON_PISTOL', 1, { serial = 'INBAG-0002', ammo = 7 } },
+    })
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.purgeContainer('k1')
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    local gun = server.bagMetaOf('k1', 'WEAPON_PISTOL')
+    t.isNotNil(gun, 'the weapon did not come back to the bag')
+    t.equals(gun.serial, 'INBAG-0002', 'THE WEAPON IN THEIR BAG CAME BACK AS A DIFFERENT ONE')
+    t.equals(gun.ammo, 7, 'its rounds were not what they left in it')
+end)
+
+t.test('and two players\' identical weapons do not swap owners', function()
+    -- Same item name, different serials, one round. A hand-back that matched
+    -- on name alone would be invisible to every other test in this file.
+    local server = newServer({ 1, 2 })
+    server.give(1, 'WEAPON_PISTOL', 1, { serial = 'P1-GUN' })
+    server.give(2, 'WEAPON_PISTOL', 1, { serial = 'P2-GUN' })
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.metaOf(1, 'WEAPON_PISTOL').serial, 'P1-GUN',
+        'a player was handed the other fighter\'s weapon')
+    t.equals(server.metaOf(2, 'WEAPON_PISTOL').serial, 'P2-GUN',
+        'and the other one got the first player\'s')
+end)
+
+t.test('DEFECT: a bag that takes the item and answers nothing must not produce a second one', function()
+    -- THE DUPLICATION HAZARD IN THE FALLBACK ITSELF. oxGave demands proof and
+    -- reads a nil answer as "no" -- correct everywhere else in this file,
+    -- because everywhere else "no" means leave the item where it is. In the
+    -- refill "no" means try their pockets instead, so a bag that took the
+    -- item and merely answered nil would get them a second copy. That is the
+    -- exact defect this whole file exists to stop, reintroduced by a
+    -- convenience, so the refusal is verified before it is believed.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.purgeContainer('k1')
+    server.lieOnAdds('k1')         -- it takes them, and says nothing
+
+    server.match.End(match.id, 'match.ended')
+    server.step(12)
+
+    t.equals(server.bagContents('k1'), 'radiox1', 'the bag did not end up with it')
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1',
+        'THEY WERE HANDED A SECOND COPY because the bag did not say it took the first')
 end)
 
 os.exit(t.summary())

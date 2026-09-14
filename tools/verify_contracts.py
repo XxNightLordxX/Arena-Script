@@ -258,6 +258,50 @@ elif mapped:
 else:
     fail.append('config.lua line map: found no entries to check -- the format has changed')
 
+# ----------------------------------------------------------------------
+# 12. THE SCHEMA FILES KNOW ABOUT EVERY TABLE THE CODE CREATES
+#
+# All three tables are created at runtime with CREATE TABLE IF NOT EXISTS,
+# so a database user that MAY create tables never notices a gap here. The
+# whole reason sql/install.sql exists is the user that MAY NOT -- and that
+# operator gets exactly the tables this file lists. crimson_arena_unpaid was
+# missing from it, so on those servers every write of an unpaid debt failed
+# and the money the arena owed people was quietly lost.
+#
+# uninstall.sql is held to the same list, for the opposite reason: a table
+# it forgets is one left behind on a server that asked to be rid of this.
+# ----------------------------------------------------------------------
+runtime_tables = set()
+for rel in ('server/ammo.lua', 'server/betting.lua',
+            'server/stats.lua'):
+    for name in re.findall(r'CREATE TABLE IF NOT EXISTS\s+(\w+)', read(rel)):
+        runtime_tables.add(name)
+
+if not runtime_tables:
+    fail.append('the schema contract found no CREATE TABLE statements -- the format has changed')
+else:
+    install_sql = read('sql/install.sql')
+    uninstall_sql = read('sql/uninstall.sql')
+
+    installs = set(re.findall(r'CREATE TABLE IF NOT EXISTS\s+(\w+)', install_sql))
+    drops = set(re.findall(r'DROP TABLE IF EXISTS\s+(\w+)', uninstall_sql))
+
+    missing_install = sorted(runtime_tables - installs)
+    missing_drop = sorted(runtime_tables - drops)
+    extra_install = sorted(installs - runtime_tables)
+
+    if missing_install:
+        fail.append('sql/install.sql does not create: ' + ', '.join(missing_install)
+                    + ' -- an operator whose database user cannot CREATE TABLE gets a broken install')
+    if missing_drop:
+        fail.append('sql/uninstall.sql does not drop: ' + ', '.join(missing_drop)
+                    + ' -- it would be left behind')
+    if extra_install:
+        fail.append('sql/install.sql creates tables the code never uses: ' + ', '.join(extra_install))
+    if not (missing_install or missing_drop or extra_install):
+        note.append('%d database table(s) created at runtime, every one in install.sql and uninstall.sql'
+                    % len(runtime_tables))
+
 for line in note:
     print('  ok   ' + line)
 for line in fail:

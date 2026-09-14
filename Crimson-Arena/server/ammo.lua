@@ -867,8 +867,23 @@ local function stow(src, citizenid)
     -- which is the same outcome as any other stash the door cannot use, and
     -- the one path in this file that has never cost anybody anything.
     if jammedStash[stash] then
+        -- AND THEIR BAGS ARE NOT PROTECTED EITHER, WHICH IS WORTH SAYING.
+        --
+        -- holdContainers is below this line on purpose: a jammed stash means
+        -- the door is not managing this player's belongings this round at
+        -- all, and taking their bag contents into a holding stash while
+        -- refusing to take anything else would be half a job. So the bag
+        -- travels as it is -- which is the behaviour before any of this
+        -- existed, and safe in itself.
+        --
+        -- What it is NOT safe against is ox_inventory's idle purge, because
+        -- nothing is holding those contents for them. That is the one thing
+        -- an operator reading this line needs to know, and it is why
+        -- keepStashesAliveMinutes matters most for exactly these players.
         ArenaLog('door: stash %s has a removal outstanding and is NOT being added to -- %s keeps '
-            .. 'their own kit rather than have it locked in there too.', stash, tostring(src))
+            .. 'their own kit rather than have it locked in there too. Anything in a bag they are '
+            .. 'carrying is NOT being held for them this round either. Clear it with /arenaunjam '
+            .. 'once you have settled that stash.', stash, tostring(src))
         return false, 0
     end
 
@@ -4657,6 +4672,86 @@ end
 -- The swapItems guard was already asking through ownRecord. This is the rest
 -- of the file agreeing with it, rather than half of it rejecting a record the
 -- other half prints. DO NOT read `stashed` directly anywhere.
+--- Asks ox_inventory to keep an idle stash in memory long enough to outlive
+--- a round, so a fighter's belongings never round-trip through the database
+--- while they are still in the arena.
+---
+--- WHY THIS EXISTS AT ALL. ox_inventory drops any inventory nobody has open
+--- after `inventory:cleartime` -- five minutes by default -- and reads it
+--- back from the database on the next touch. Nobody ever opens the arena's
+--- belongings stash, because it is a holding pen rather than storage, so
+--- every round longer than that sends somebody's belongings and their bag
+--- contents on a database round trip mid-match. With a healthy database that
+--- is lossless; when the write does not land it is an older copy of the
+--- stash coming back, or nothing coming back at all.
+---
+--- The door catches both of those now -- the exit refuses to hand back more
+--- rows than it put in, and says so when a holding stash comes back short --
+--- but catching a thing is not as good as it not happening.
+---
+--- ONLY EVER RAISES IT. An operator who has already set a longer window in
+--- server.cfg has said what they want and is left alone; this is a floor,
+--- not an opinion.
+---
+--- AND IT SAYS WHETHER IT LANDED, which is the whole difference between this
+--- and a line in a readme. ox_inventory reads the convar ONCE, when it
+--- starts, so setting it afterwards changes nothing until something
+--- restarts. If ox_inventory is already running by the time this runs, the
+--- log says so and prints the server.cfg line to use instead of quietly
+--- doing nothing.
+local function keepStashesAlive()
+    local minutes = Arena.ToInt(doorConfig().keepStashesAliveMinutes) or 0
+    if minutes <= 0 then return end
+
+    if type(GetConvarInt) ~= 'function' or type(SetConvar) ~= 'function' then return end
+
+    local wanted = minutes * 60
+
+    -- READ THROUGH tonumber AND A DEFAULT, because a native is not a promise.
+    -- GetConvarInt is documented to honour its fallback and does on a real
+    -- server. boot_spec runs this file against natives that return NOTHING AT
+    -- ALL -- not nil, no value -- which is also what an older build or a
+    -- stripped environment looks like, and which `tonumber()` will not even
+    -- accept as an argument. Captured first, then read, so a native that
+    -- answers nothing, answers nil, or throws all end up at the default.
+    -- Nothing in this file is worth failing to start over, least of all a
+    -- convenience.
+    local read, raw = pcall(GetConvarInt, 'inventory:cleartime', 5)
+    local current = ((read and tonumber(raw)) or 5) * 60
+
+    if current >= wanted then
+        ArenaDebug('door: inventory:cleartime is already %d minute(s), which outlives a round. Left alone.',
+            math.floor(current / 60))
+        return
+    end
+
+    -- ALREADY RUNNING MEANS ALREADY TOO LATE, and saying so is the point.
+    local tooLate = GetResourceState('ox_inventory') == 'started'
+
+    SetConvar('inventory:cleartime', tostring(minutes))
+
+    if tooLate then
+        ArenaLog('door: ox_inventory keeps an idle stash for only %d minute(s), so a round longer '
+            .. 'than that sends every fighter\'s belongings -- and their bag contents -- through the '
+            .. 'database while they are still fighting. It has been asked for %d, but ox_inventory '
+            .. 'reads that setting once when IT starts and it was already running, so this will not '
+            .. 'take effect until the next restart. To make it stick, put this in server.cfg ABOVE '
+            .. 'ensure ox_inventory:  set inventory:cleartime %d',
+            math.floor(current / 60), minutes, minutes)
+    else
+        ArenaLog('door: inventory:cleartime raised from %d minute(s) to %d so a round cannot outlive '
+            .. 'ox_inventory\'s memory of a stash. Set Config.Loadouts.inventory.'
+            .. 'keepStashesAliveMinutes to 0 to leave it alone.', math.floor(current / 60), minutes)
+    end
+end
+
+-- AT LOAD, NOT ON A THREAD. The whole value of this is being early:
+-- ox_inventory reads the convar once, when it starts, so every tick spent
+-- waiting is a tick this can arrive too late. There is nothing here that
+-- needs ox_inventory to be up -- it reads a convar and writes a convar --
+-- so the earliest possible moment is also the correct one.
+keepStashesAlive()
+
 --- Every stash the door has stopped touching, newest problem last.
 ---
 --- A JAM IS A DEAD END UNTIL SOMEBODY CAN SEE IT. Three separate failures in

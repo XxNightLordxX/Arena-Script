@@ -371,7 +371,17 @@ local warnedNoDb = {}
 function ArenaDbReady(subject)
     if Config.Database.enabled ~= true then return false end
 
-    if GetResourceState('oxmysql') ~= 'started' then
+    -- ASKED THROUGH pcall, BECAUSE THIS IS THE GATE EVERY DATABASE PATH
+    -- GOES THROUGH. A bare call here takes down whatever was being written --
+    -- a payout being recorded, a debt being filed -- and it does it only on
+    -- the servers that turned the database ON, which is the opposite of how
+    -- an optional feature should fail. GetResourceState is always there on a
+    -- real server; it is not always there in a stripped environment, and this
+    -- function is far too load-bearing to find that out the hard way. An
+    -- unanswerable question is treated as "no database", which is the same
+    -- safe answer as the flag being off.
+    local known, state = pcall(GetResourceState, 'oxmysql')
+    if not known or state ~= 'started' then
         -- SAID ONCE PER OUTAGE, NOT ONCE PER PROCESS. An operator who turned
         -- the database on and has not started oxmysql needs telling; they do
         -- not need telling per write. It re-arms below the moment oxmysql

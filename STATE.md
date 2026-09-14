@@ -370,6 +370,89 @@ cannot move anything into or out of one mid-round, because the swapItems hook re
 move whose other end is not their own inventory and a container's id is not their server id.
 So nothing can be hidden in a bag during a round, and nothing can be taken out of one.
 
+### 3j. Forty-five minutes, set by the resource rather than by you
+
+`Config.Loadouts.inventory.keepStashesAliveMinutes` ships at **45**, and the resource now
+raises ox_inventory's `inventory:cleartime` to match at load. That removes the cause the
+door was catching: on the shipped ox_inventory setting of five minutes, every round longer
+than that sends a fighter's belongings -- and their bag contents -- on a database round trip
+while they are still fighting.
+
+Three things make it safe rather than rude:
+
+- **It only ever raises.** An operator who already set 90 in `server.cfg` has said what they
+  want and is left alone. A floor, not an opinion.
+- **0 turns it off**, and the config says plainly that the cost is memory and that the cost
+  is not only the arena's -- this is ox_inventory's global setting, so every idle stash,
+  glovebox and trunk on the server stays in memory that long.
+- **It says whether it actually landed.** ox_inventory reads that convar once, when *it*
+  starts, so setting it afterwards changes nothing until something restarts. If ox_inventory
+  is already up, the log says so and prints the `server.cfg` line to use instead of quietly
+  doing nothing -- a fix that silently fails to apply is worse than no fix, because the
+  operator believes it worked.
+
+It runs at load rather than on a thread, because the whole value is being early and there is
+nothing in it that needs ox_inventory to be running.
+
+### 3k. Four more inventory cases, and one consequence made visible
+
+- **A holding stash that refuses the contents at the door** leaves them in the bag. If the
+  arena cannot take them, the right answer is to leave them exactly where they are.
+- **A player's own copy of an arena item, inside their bag** -- their own `ammo-rifle-ap`,
+  which is something this arena issues -- comes back to the bag, and the exit's by-name
+  reclaim does not treat it as the arena's just because the name matches. Both halves had to
+  be true and both are.
+- **A bag still comes back packed when the belongings stash jams at the exit**, with the
+  surplus still parked.
+- **A jammed stash leaves bags unprotected too, and now says so.** `holdContainers` sits
+  below the jam check on purpose: a jammed stash means the door is not managing that
+  player's belongings at all, and taking their bag contents while refusing everything else
+  is half a job. The bag travels as it is, which is safe in itself -- but nothing is holding
+  those contents against the idle purge, and that is exactly the player for whom
+  `keepStashesAliveMinutes` matters most. The log says it now instead of leaving it to be
+  discovered.
+
+### 3l. The database, on and off
+
+**A table was missing from `sql/install.sql`, and the omission bit exactly the operators
+that file exists for.** All three tables -- `crimson_arena_stats`, `crimson_arena_owed_kit`
+and `crimson_arena_unpaid` -- are created at runtime with `CREATE TABLE IF NOT EXISTS`, so a
+database user that *may* create tables never noticed. A user that **may not** -- which is the
+whole reason to import that file by hand -- got two tables out of three, and from then on
+every write of money the arena still owed somebody failed. `crimson_arena_unpaid` is in both
+`install.sql` and `uninstall.sql` now, and **a contract holds the three runtime statements
+and the two SQL files together** so it cannot drift again. Removing the table from the file
+again makes that contract name it.
+
+**Nothing conflicts with anything else.** Every table this resource writes is named
+`crimson_arena_*`. The one foreign table it goes near is `ox_inventory`, to find stashes a
+restart forgot, and it only ever **reads** -- there is no INSERT, UPDATE or DELETE against
+it anywhere. That is now asserted against the statements themselves, not just the schema
+files: a round is played with the database on and every statement it sends is checked for a
+table that is not its own.
+
+**And a real defect on the database-on path.** `ArenaDbReady` -- the gate every database
+path goes through -- called `GetResourceState` unguarded. Running the whole suite with
+`Config.Database.enabled` forced on took `earnings_spec` down entirely: thirteen failures,
+all `attempt to call a nil value (global 'GetResourceState')`. It is always present on a
+real server, so this is not a crash an operator would see -- but it is a load-bearing gate
+failing hard rather than safely, and only on the servers that turned the database ON, which
+is the wrong way round for an optional feature. It answers "no database" now when it cannot
+ask, which is the same safe answer as the flag being off. With that fixed, `earnings_spec`
+passes with the database on.
+
+**Every feature works with the database on.** The full suite forced on leaves exactly two
+files failing, and both are asking about the shipped default on purpose: `dropin_spec`
+asserts the database ships off so a drop-in install needs no SQL imported, and
+`leaderboard_spec` is built around the in-memory board that exists *because* it ships off --
+it asserts the flag is `false` at line 196. Neither is a feature that stops working.
+
+The door is now driven in all four states an operator can be in -- off; on and working; on
+with oxmysql up and every statement refused; on with oxmysql not started -- and a round
+produces the same answer in all four: the player leaves with exactly their own things and a
+bag packed the way they left it. The database is where a round is written down. It is not
+what makes a round work.
+
 ### 4. And no match duplicates anything, asserted rather than argued
 
 The general form of every defect above is "it is in two places now", and a test that looks

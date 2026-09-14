@@ -95,6 +95,9 @@ local function newServer(ids, mutate, extra, opts)
     --- Inventories that refuse everything offered to them.
     local refusingAdds = {}
 
+    --- Server convars, as this box has them.
+    local convars = { ['inventory:cleartime'] = tonumber(opts.cleartime) or 5 }
+
     --- Every id this fixture knows to be a CONTAINER rather than a stash,
     --- so the reads above can tell the two apart.
     local containerKeys = {}
@@ -133,6 +136,25 @@ local function newServer(ids, mutate, extra, opts)
     --- Set by a test to model an ox_inventory build old enough not to have
     --- GetContainerFromSlot at all.
     local noContainerExport = false
+
+    --- Every statement the resource sends, in order, so a test can say which
+    --- tables it touched -- and refuse anything that is not its own.
+    local queries = {}
+
+    --- oxmysql, when a test asks for one. `opts.dbFails` models the case an
+    --- operator actually hits: the database is connected and every statement
+    --- is refused -- a read-only user, a missing table, a full disk.
+    local oxmysql = {
+        query = function(_self, sql, params, cb)
+            queries[#queries + 1] = sql
+            if cb then cb(opts.dbFails and nil or {}) end
+            return opts.dbFails and nil or {}
+        end,
+    }
+    oxmysql.execute = oxmysql.query
+    oxmysql.scalar = oxmysql.query
+    oxmysql.insert = oxmysql.query
+    oxmysql.update = oxmysql.query
 
     local ox = {
         RegisterStash = function() return true end,
@@ -216,7 +238,7 @@ local function newServer(ids, mutate, extra, opts)
     }
 
     local env = Sandbox.newArenaEnv({
-        exports = setmetatable({ ox_inventory = ox, qbx_core = qbx.exports.qbx_core },
+        exports = setmetatable({ ox_inventory = ox, oxmysql = oxmysql, qbx_core = qbx.exports.qbx_core },
             { __call = function() end }),
         lib = Sandbox.newOxLib(),
         CreateThread = threads.CreateThread,
@@ -232,7 +254,24 @@ local function newServer(ids, mutate, extra, opts)
         -- it, and /arenaunjam is the only thing that can.
         RegisterCommand = function(name, fn) commands[name] = fn end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
-        GetResourceState = function(name) return name == 'ox_inventory' and 'started' or 'missing' end,
+        -- WHETHER ox_inventory IS ALREADY UP, which decides whether a convar
+        -- set now can still reach it. Started unless a test says otherwise,
+        -- because that is the ordinary case for everything else in here.
+        GetResourceState = function(name)
+            if name == 'oxmysql' then
+                -- A DATABASE ONLY EXISTS WHEN A TEST ASKS FOR ONE. The whole
+                -- suite runs on the SHIPPED config, which has the database
+                -- off -- so the on-path was barely driven anywhere.
+                return opts.database and 'started' or 'missing'
+            end
+            if name ~= 'ox_inventory' then return 'missing' end
+            return opts.oxStarted == false and 'starting' or 'started'
+        end,
+        GetConvarInt = function(name, fallback)
+            local value = tonumber(convars[name])
+            return value or fallback
+        end,
+        SetConvar = function(name, value) convars[name] = tonumber(value) or value end,
         GetGameTimer = (function()
             local c = 0
             local step = tonumber(opts.tickMs) or 60000
@@ -383,6 +422,30 @@ local function newServer(ids, mutate, extra, opts)
     function server.forgetStash(src, on)
         forgotten['crimson_arena_CID' .. src] = (on ~= false) or nil
     end
+
+    --- Every statement sent to the database, as one string.
+    function server.queries() return table.concat(queries, '\n') end
+
+    --- Every table named in a statement that is NOT this resource's own.
+    function server.foreignTables()
+        local out = {}
+        for _, sql in ipairs(queries) do
+            for verb, name in sql:gmatch('(%a+)%s+([%w_]+)') do
+                local v = verb:upper()
+                if (v == 'FROM' or v == 'INTO' or v == 'UPDATE')
+                    and not name:match('^crimson_arena')
+                    and name ~= 'EXISTS' and name ~= 'NOT'
+                then
+                    out[#out + 1] = v .. ' ' .. name
+                end
+            end
+        end
+        table.sort(out)
+        return table.concat(out, ',')
+    end
+
+    --- What a convar says right now.
+    function server.convar(name) return convars[name] end
 
     --- Makes one inventory refuse every item offered to it, the way a full
     --- one does. `false` lets it accept again.
@@ -2211,6 +2274,221 @@ t.test('CONTROL: with the door switched off entirely, the bag is never touched',
 
     t.equals(server.bagContents('k1'), 'radiox1')
     t.equals(server.contentsOf('crimson_arena_bag_k1'), '', 'it held contents for a round that never stripped')
+end)
+
+-- ========================================================================
+-- KEEPING A STASH ALIVE LONG ENOUGH TO OUTLIVE A ROUND
+--
+-- ox_inventory drops any inventory nobody has open after
+-- `inventory:cleartime` -- five minutes by default -- and reads it back from
+-- the database on the next touch. Nobody ever opens the arena's belongings
+-- stash, so on the shipped setting every round longer than five minutes
+-- sends somebody's belongings through the database mid-match.
+--
+-- The door catches what that costs. This stops it happening.
+-- ========================================================================
+
+t.test('the shipped setting is raised to outlive a round', function()
+    local server = newServer({ 1, 2 }, nil, nil, { oxStarted = false })
+
+    t.equals(server.convar('inventory:cleartime'), 45,
+        'a round can still outlive ox_inventory\'s memory of the stash it is held in')
+    t.contains(server.log(), 'raised from 5 minute(s) to 45')
+end)
+
+t.test('and a longer one an operator already chose is left alone', function()
+    -- A floor, not an opinion. Somebody who set 90 in server.cfg has said
+    -- what they want.
+    local server = newServer({ 1, 2 }, nil, nil, { oxStarted = false, cleartime = 90 })
+
+    t.equals(server.convar('inventory:cleartime'), 90, 'it overrode an operator\'s own setting')
+    t.isNil(server.log():find('raised from', 1, true))
+end)
+
+t.test('and 0 means do not touch ox_inventory\'s setting at all', function()
+    local server = newServer({ 1, 2 }, function(config)
+        config.Loadouts.inventory.keepStashesAliveMinutes = 0
+    end, nil, { oxStarted = false })
+
+    t.equals(server.convar('inventory:cleartime'), 5, 'it changed a setting it was told to leave')
+end)
+
+t.test('DEFECT: if ox_inventory is already up it says so, rather than doing nothing quietly', function()
+    -- ox_inventory reads that convar ONCE, when IT starts. Setting it
+    -- afterwards changes nothing until something restarts -- and a fix that
+    -- silently does not apply is worse than no fix, because the operator
+    -- believes it did.
+    local server = newServer({ 1, 2 }, nil, nil, { oxStarted = true })
+
+    t.contains(server.log(), 'will not take effect until the next restart')
+    t.contains(server.log(), 'set inventory:cleartime 45',
+        'it did not print the line an operator needs for server.cfg')
+end)
+
+t.test('a holding stash that refuses the contents leaves them in the bag', function()
+    -- THE FAIL-SAFE DIRECTION. If the arena cannot take a bag's contents into
+    -- its own keeping, the right answer is to leave them exactly where they
+    -- are -- which is the behaviour this resource had before any of this
+    -- existed, and costs nothing.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+    server.refuseAdds('crimson_arena_bag_k1')
+
+    local matchId = bagRound(server, { 1, 2 })
+    t.equals(server.bagContents('k1'), 'radiox1', 'it took them out of the bag with nowhere to put them')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.bagContents('k1'), 'radiox1', 'THE CONTENTS WERE LOST between the bag and nowhere')
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1', 'the rest of the exit stopped working')
+end)
+
+t.test('a player\'s OWN copy of an arena item, inside their bag, comes back and is not billed', function()
+    -- ammo-rifle-ap is something this arena issues, and the exit takes the
+    -- arena's own rounds back by name. Their own copy is in their bag. Both
+    -- halves have to be true: it comes back, AND the reclaim does not treat
+    -- it as the arena's just because the name matches.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'ammo-rifle-ap', 25 } })
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.purgeContainer('k1')
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.bagContents('k1'), 'ammo-rifle-apx25',
+        'THE ARENA TOOK A PLAYER\'S OWN AMMUNITION OUT OF THEIR BAG')
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1',
+        'and what they were carrying changed too')
+end)
+
+t.test('a bag still comes back packed when the belongings stash jams at the exit', function()
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.purgeContainer('k1')
+    server.stashItem('crimson_arena_CID1', 'lockpick', 2)   -- surplus, so the stash jams
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.bagContents('k1'), 'radiox1',
+        'a jam on the belongings stash cost them their bag contents as well')
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1')
+    t.equals(server.stashed(1), 'lockpickx2', 'the surplus was not left parked')
+end)
+
+t.test('and a jammed stash says that bags are not protected that round either', function()
+    -- holdContainers sits BELOW the jam check on purpose: a jammed stash
+    -- means the door is not managing that player's belongings at all, and
+    -- taking their bag contents while refusing everything else is half a
+    -- job. The bag travels as it is, which is safe in itself -- but nothing
+    -- is holding those contents against ox_inventory's idle purge, and that
+    -- is the one thing an operator needs to know.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+
+    local first = bagRound(server, { 1, 2 })
+    server.stashItem('crimson_arena_CID1', 'lockpick', 2)
+    server.match.End(first, 'match.ended')
+    server.step(12)
+
+    bagRound(server, { 1, 2 })     -- the next round, with the stash jammed
+
+    t.contains(server.log(), 'NOT being held for them this round either',
+        'it left a bag unprotected without saying so')
+    t.equals(server.bagContents('k1'), 'radiox1', 'it emptied a bag it had decided not to manage')
+end)
+
+-- ========================================================================
+-- THE DATABASE, IN ALL FOUR STATES AN OPERATOR CAN ACTUALLY BE IN
+--
+-- Config.Database ships OFF, which means the whole of this suite has always
+-- run on the off-path. The on-path was driven by two stats specs and
+-- nowhere else -- so "does a round still work with the database on" had no
+-- answer, and neither did "does it work when the database is on but
+-- refusing every statement", which is the state a read-only user or a
+-- missing table puts a server in.
+--
+-- The four: off; on with a working database; on with oxmysql up and every
+-- statement refused; on with oxmysql not started at all.
+-- ========================================================================
+
+local function dbRound(server)
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+    server.match.End(match.id, 'match.ended')
+    server.step(12)
+end
+
+--- Every state gets the same round, with a packed bag, and must produce the
+--- same answer: the player leaves with exactly their own things and a bag
+--- packed the way they left it. The database is where a round is WRITTEN
+--- DOWN; it is not what makes a round work, and that is the claim.
+local DB_STATES = {
+    { 'the database off, as shipped', {} },
+    { 'the database on and working',  { database = true } },
+    { 'the database on and refusing every statement', { database = true, dbFails = true } },
+    { 'the database on with oxmysql not started',     { database = false } },
+}
+
+for _, state in ipairs(DB_STATES) do
+    local label, opts = state[1], state[2]
+
+    t.test(('a round is unaffected by %s'):format(label), function()
+        local wantsDb = label:find('on', 1, true) ~= nil
+        local server = newServer({ 1, 2 }, wantsDb and function(config)
+            config.Database.enabled = true
+        end or nil, nil, opts)
+
+        server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+        dbRound(server)
+
+        t.equals(server.carrying(1), INTACT .. ',police_bagx1',
+            ('a player did not get their own things back with %s'):format(label))
+        t.equals(server.bagContents('k1'), 'radiox1',
+            ('a bag was not packed the way they left it with %s'):format(label))
+        t.equals(server.stashed(1), '', 'and their stash was left holding something')
+    end)
+end
+
+t.test('and with the database on it touches ONLY its own tables', function()
+    -- The conflict question, asked of the statements themselves rather than
+    -- of the schema files. Everything this resource writes is named
+    -- crimson_arena_*; the one foreign table it goes near -- ox_inventory,
+    -- to find stashes a restart forgot -- it only ever READS.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+    end, nil, { database = true })
+
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+    dbRound(server)
+
+    local foreign = server.foreignTables()
+    for entry in foreign:gmatch('[^,]+') do
+        t.isTrue(entry:match('^FROM ox_inventory$') ~= nil,
+            ('it touched a table that is not its own: %s'):format(entry))
+    end
+end)
+
+t.test('and a database that refuses everything is said out loud, not swallowed', function()
+    -- An operator whose database user cannot write needs to know. The one
+    -- thing worse than a failed write is a failed write nobody mentions.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+    end, nil, { database = false })
+
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+    dbRound(server)
+
+    t.contains(server.log(), 'oxmysql is not started',
+        'the database was on, unusable, and nothing said so')
 end)
 
 os.exit(t.summary())

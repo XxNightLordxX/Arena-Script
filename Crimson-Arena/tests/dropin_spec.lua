@@ -288,8 +288,15 @@ t.test('stats go through the oxmysql export, so the database is a run-time quest
     -- ArenaDbReady in server/util.lua now, which fxmanifest.lua loads first.
     -- So the run-time check is asserted where it lives, and stats.lua is
     -- asserted to reach the database only through it.
+    --
+    -- MATCHED ON THE QUESTION, NOT ON ONE SPELLING OF IT. This looked for the
+    -- literal `GetResourceState('oxmysql')` and broke the moment that call was
+    -- wrapped in a pcall -- which was a fix, not a regression: a bare call
+    -- there takes down whatever was being written, and only on servers that
+    -- turned the database ON. A test that fails when the code gets safer is
+    -- asserting the wrong thing.
     local util = readFile('server/util.lua')
-    t.contains(util, "GetResourceState('oxmysql')",
+    t.isNotNil(util:find("GetResourceState", 1, true) and util:find("'oxmysql'", 1, true),
         'server/util.lua does not check oxmysql is running before querying it')
     t.contains(util, 'exports.oxmysql',
         'the one gate no longer reaches the database through the export')

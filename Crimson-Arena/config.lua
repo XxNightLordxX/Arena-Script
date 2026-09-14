@@ -28,9 +28,9 @@
      1210   Permissions   Who may open a match, who may force-stop one
      1296   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1730   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2100   Database      Optional: leaderboard, and what players still owe the arena
-     2110   Webhook       Optional: a Discord line per finished match
-     2142   Dispatch      Optional: keeping police and EMS out of the arena
+     2136   Database      Optional: leaderboard, and what players still owe the arena
+     2146   Webhook       Optional: a Discord line per finished match
+     2178   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -102,7 +102,7 @@ Config.Lobby = {
         --
         -- This is only where players come to JOIN. The fighting happens
         -- wherever Config.Arenas puts it.
-        coords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
+        coords = vector4(-274.5401, -2045.4486, 29.9460, 132.0204),
         -- An idle animation so the NPC is not a statue. Set to nil for none.
         scenario = 'WORLD_HUMAN_GUARD_STAND',
         freeze = true,
@@ -118,7 +118,7 @@ Config.Lobby = {
         type = 27,
         -- The same spot as the NPC, so 'both' does not send players to two
         -- different places.
-        coords = vector3(-282.0125, -2030.4575, 30.1457),
+        coords = vector3(-274.5401, -2045.4486, 29.9460),
         size = vector3(1.6, 1.6, 0.6),
         color = { r = 200, g = 16, b = 32, a = 140 },
         bobUpAndDown = false,
@@ -141,7 +141,7 @@ Config.Lobby = {
     -- Where a player is put back when they leave, die out, or the match
     -- ends -- and where they land if the resource restarts mid-match. It
     -- must be somewhere safe to stand.
-    returnCoords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
+    returnCoords = vector4(-274.5401, -2045.4486, 29.9460, 132.0204),
 }
 
 -- ======================================================================
@@ -1836,6 +1836,42 @@ Config.Loadouts = {
         -- existed. Turn it off only if your inventory does not use containers
         -- at all, or if you would rather chase `inventory:cleartime` instead.
         emptyContainers = true,
+
+        -- HOW LONG ox_inventory SHOULD KEEP AN IDLE STASH IN MEMORY, in
+        -- minutes. 0 leaves ox_inventory's own setting alone.
+        --
+        -- WHAT THIS IS FOR. ox_inventory throws any inventory nobody has open
+        -- out of memory after `inventory:cleartime` -- FIVE MINUTES by
+        -- default -- and reads it back from the database on the next touch.
+        -- Nobody ever opens the arena's belongings stash: it is a holding pen,
+        -- not storage. So on the shipped ox_inventory setting, EVERY ROUND
+        -- LONGER THAN FIVE MINUTES sends a player's belongings, and their
+        -- bag contents, on a round trip through the database while they are
+        -- still fighting.
+        --
+        -- With a healthy database that trip is lossless and you would never
+        -- know. It costs something only when the write does not land, and
+        -- then it costs the wrong things: an older copy of that stash coming
+        -- back, or nothing coming back at all. The door catches both now --
+        -- it refuses to hand back more than it put in, and it says so when a
+        -- stash comes back short -- but catching it is not as good as it not
+        -- happening.
+        --
+        -- 45 minutes comfortably outlives any round this resource will run,
+        -- so the trip never happens mid-match.
+        --
+        -- THE COST IS MEMORY, AND IT IS NOT ONLY THE ARENA'S. This is
+        -- ox_inventory's own global setting: raising it keeps every idle
+        -- stash, glovebox and trunk on the server in memory for that long,
+        -- not just this resource's. On a busy server that is real. Set it to
+        -- 0 if you would rather not, or put your own number in server.cfg.
+        --
+        -- IT ONLY LANDS IF THIS RESOURCE STARTS FIRST. ox_inventory reads the
+        -- convar once, when IT starts, so setting it afterwards changes
+        -- nothing until something restarts. The startup log says plainly
+        -- which of those happened, and prints the server.cfg line to use if
+        -- it was too late.
+        keepStashesAliveMinutes = 45,
 
         -- WHAT STAYS IN A PLAYER'S POCKETS ON THE WAY IN, instead of going
         -- into the stash. Empty, and it should stay that way.

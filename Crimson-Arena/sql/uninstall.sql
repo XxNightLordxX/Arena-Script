@@ -39,3 +39,7 @@ DROP TABLE IF EXISTS crimson_arena_stats;
 -- not yet handed back. That is usually what you want when removing the
 -- resource, and never what you want while it is still running.
 DROP TABLE IF EXISTS crimson_arena_owed_kit;
+
+-- Money the arena still owed somebody. Dropping this FORGIVES those debts:
+-- nobody is paid what was outstanding. Settle them first if that matters.
+DROP TABLE IF EXISTS crimson_arena_unpaid;

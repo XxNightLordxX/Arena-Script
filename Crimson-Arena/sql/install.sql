@@ -214,3 +214,39 @@ CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
     written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (citizenid, ledger_key)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------
+-- crimson_arena_unpaid -- MONEY THE ARENA STILL OWES SOMEBODY
+--
+-- Winnings, refunds and returned side-bets that could not be paid at the
+-- moment they were decided: the player had gone, or the framework refused
+-- the credit. One row per character per debt, added to rather than
+-- replaced, and deleted the moment it is settled.
+--
+-- THIS TABLE WAS MISSING FROM THIS FILE, and the omission bit exactly the
+-- operators this file exists for. All three tables are created at runtime
+-- with CREATE TABLE IF NOT EXISTS, so a database user that may create
+-- tables never noticed. A user that MAY NOT -- which is the whole reason to
+-- import this file by hand -- got two tables out of three, and every write
+-- of an unpaid debt failed from then on. A contract test now holds this
+-- file and the three runtime statements together so it cannot drift again.
+--
+--   citizenid   the character the money is owed to.
+--   ledger_key  what the debt is, so the same one cannot be written twice.
+--   name        the player's name when it was written down, for the log.
+--   account     'cash' or 'bank' -- where it was meant to land.
+--   reason      what it was: winnings, a refund, a side-bet coming back.
+--   amount      the outstanding total, added to on a duplicate key.
+-- ----------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS crimson_arena_unpaid (
+    citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    ledger_key VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    name VARCHAR(128) NOT NULL DEFAULT '',
+    account VARCHAR(32) NOT NULL DEFAULT '',
+    reason VARCHAR(64) NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL DEFAULT 0,
+    written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (citizenid, ledger_key)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

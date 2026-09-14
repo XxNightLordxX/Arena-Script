@@ -482,6 +482,8 @@ files['server/'] = {
         -- Routing buckets need OneSync; without it every bucket native is
         -- inert and silent. This is how the resource finds out.
         'GetConvar',
+        'GetConvarInt',
+        'SetConvar',
         'SetPlayerRoutingBucket',
         'SetRoutingBucketEntityLockdownMode',
         'SetRoutingBucketPopulationEnabled',

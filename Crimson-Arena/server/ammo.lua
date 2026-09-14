@@ -300,10 +300,47 @@ end
 local STASH_SLOTS = 500
 local STASH_WEIGHT = 10000000
 
+--- A JAMMED STASH MUST NOT STOP THE DOOR WORKING, and this is the line that
+--- makes sure it does not.
+---
+--- THE CLIFF THIS EXISTS TO REMOVE, reported off a live server as the arena
+--- simply "not clearing the inventory". A jam stops the door putting anything
+--- into that stash -- deliberately, because a stash holding something the
+--- arena cannot account for must not have more locked in beside it. But the
+--- stash name was the character's and nothing else, so a jam meant that
+--- player was NEVER STRIPPED AGAIN: every later round they walked in carrying
+--- their own kit, and on a server where the thing that causes a jam happens
+--- routinely -- ox_inventory reloading a stash mid-round from a database row
+--- that missed its write -- that is every player, one long round each, until
+--- an admin noticed.
+---
+--- The jam is right; tying it to the only name the door could use was not.
+--- A jammed stash is left exactly as it is for `/arenaunjam` to settle, and
+--- the next round goes into the next name along. Both are found by the sweep
+--- and by the admin screen, which scan on the prefix rather than on the exact
+--- name, so nothing is lost by the rename.
+---
+--- BOUNDED, because an unbounded search is a hang. Fifty jammed stashes for
+--- one character is not a case worth serving -- it is a server that needs
+--- somebody to look at it -- so the base name comes back and the door refuses
+--- as it did before.
 local function stashFor(citizenid)
     local prefix = doorConfig().stashPrefix
     if not Arena.IsKey(prefix) then prefix = 'crimson_arena_' end
-    return prefix .. citizenid
+
+    local base = prefix .. citizenid
+    if not jammedStash[base] then return base end
+
+    for attempt = 2, 50 do
+        local alt = base .. '_' .. attempt
+        if not jammedStash[alt] then
+            ArenaDebug('door: %s is jammed, so this round uses %s instead. The jammed one is '
+                .. 'untouched and waiting for /arenaunjam.', base, alt)
+            return alt
+        end
+    end
+
+    return base
 end
 
 --- Calls one ox_inventory export and answers the only question that
@@ -588,6 +625,9 @@ end
 --- a refusal means it was never taken out of the container, which is exactly
 --- the behaviour this resource has always had and costs nothing.
 --- @return string[] keys -- the containers that were emptied, to refill later
+--- Said once per run, not per bag: it is a fact about the ox_inventory build.
+local warnedNoContainerExport = false
+
 local function holdContainers(ox, src, citizenid)
     local keys = {}
     if doorConfig().emptyContainers == false then return keys end
@@ -605,8 +645,26 @@ local function holdContainers(ox, src, citizenid)
             -- answering nil. Such a server keeps the behaviour it has always
             -- had, which is the bag travelling with its reference.
             if not wakeContainer(ox, src, slot) then
-                ArenaDebug('door: this build of ox_inventory has no GetContainerFromSlot, so %s\'s %s '
-                    .. 'travels as it is.', tostring(src), tostring(bag.name))
+                -- SAID OUT LOUD, ONCE. This is the single reason the whole
+                -- container mechanism can silently do nothing, and it was an
+                -- ArenaDebug -- which only prints with Config.Debug on. So an
+                -- operator on a build without that export saw bags emptied
+                -- exactly as before and no explanation anywhere. Reported off
+                -- a live server as the arena still clearing the police bag.
+                --
+                -- Once per run rather than per bag per round: it is a fact
+                -- about the build, not about this player, and it does not
+                -- change until something is updated.
+                if not warnedNoContainerExport then
+                    warnedNoContainerExport = true
+                    ArenaLog('door: this build of ox_inventory has no GetContainerFromSlot, so the '
+                        .. 'arena CANNOT hold the contents of a bag while its owner fights. Bags '
+                        .. 'travel with nothing but a reference, and if ox_inventory drops that '
+                        .. 'container from memory mid-round -- see inventory:cleartime -- they come '
+                        .. 'back empty. Update ox_inventory, or set '
+                        .. 'Config.Loadouts.inventory.emptyContainers = false to stop the arena '
+                        .. 'trying. First seen on %s\'s %s.', tostring(src), tostring(bag.name))
+                end
                 goto nextBag
             end
 

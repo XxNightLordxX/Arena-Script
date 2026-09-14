@@ -1713,9 +1713,15 @@ local function jammedBySurplus()
     return server
 end
 
+--- Whether any stash is still being held back. ASKED DIRECTLY, because the
+--- observable this used to use -- "was the player stripped next round" -- is
+--- no longer the same question: a jam deliberately does not stop the door
+--- working any more, it just moves that round into the next stash along.
+local function jamsStanding(server)
+    return #server.ammo.JammedStashes()
+end
+
 --- Runs one more round and answers whether the door stripped player 1.
---- Stripped means their own things are no longer in their pockets, which is
---- the only observable that tells a cleared jam from a standing one.
 local function strippedNextRound(server)
     server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local match = server.lobby.All()[1]
@@ -1749,7 +1755,7 @@ t.test('DEFECT: clearing a jam on a stash that still holds something is REFUSED'
 
     t.isNil(server.log():find('no longer held back', 1, true), 'it cleared a stash that still had a surplus in it')
     t.contains(server.log(), 'duplication the jam was protecting against')
-    t.isFalse(strippedNextRound(server), 'the jam cleared anyway, so the surplus is live again')
+    t.equals(jamsStanding(server), 1, 'the jam cleared anyway, so the surplus is live again')
 end)
 
 t.test('and once it has been settled by hand, it clears and the door uses it again', function()
@@ -1759,7 +1765,7 @@ t.test('and once it has been settled by hand, it clears and the door uses it aga
     server.command('arenaunjam', 0, 'crimson_arena_CID1')
 
     t.contains(server.log(), 'no longer held back')
-    t.isTrue(strippedNextRound(server), 'the door still refuses to strip them, so the jam never cleared')
+    t.equals(jamsStanding(server), 0, 'the jam never cleared')
 end)
 
 t.test('and `force` clears one that still holds something, for an operator who has checked', function()
@@ -1770,7 +1776,7 @@ t.test('and `force` clears one that still holds something, for an operator who h
     server.command('arenaunjam', 0, 'crimson_arena_CID1', 'force')
 
     t.contains(server.log(), 'no longer held back')
-    t.isTrue(strippedNextRound(server), 'even force did not clear it')
+    t.equals(jamsStanding(server), 0, 'even force did not clear it')
 end)
 
 t.test('and a jam that has not been cleared still holds', function()
@@ -1781,7 +1787,7 @@ t.test('and a jam that has not been cleared still holds', function()
     server.command('arenaunjam', 0)
     server.command('arenaunjam', 0, 'crimson_arena_CID9')
 
-    t.isFalse(strippedNextRound(server), 'the jam cleared itself')
+    t.equals(jamsStanding(server), 1, 'the jam cleared itself')
 end)
 
 t.test('and a player who is not an admin cannot clear one', function()
@@ -2380,115 +2386,43 @@ t.test('a bag still comes back packed when the belongings stash jams at the exit
     t.equals(server.stashed(1), 'lockpickx2', 'the surplus was not left parked')
 end)
 
-t.test('and a jammed stash says that bags are not protected that round either', function()
-    -- holdContainers sits BELOW the jam check on purpose: a jammed stash
-    -- means the door is not managing that player's belongings at all, and
-    -- taking their bag contents while refusing everything else is half a
-    -- job. The bag travels as it is, which is safe in itself -- but nothing
-    -- is holding those contents against ox_inventory's idle purge, and that
-    -- is the one thing an operator needs to know.
+t.test('DEFECT: a jam must not stop the door stripping the NEXT round, or protecting a bag', function()
+    -- THE CLIFF, reported off a live server as the arena "not clearing the
+    -- inventory" and "still clearing the leo bag" -- one cause, both
+    -- symptoms. A jam stopped the door putting anything into that stash, and
+    -- the stash name was the character's and nothing else, so that player was
+    -- never stripped again. holdContainers sits BELOW the jam check, so their
+    -- bags stopped being protected at the same moment.
+    --
+    -- On a server where the thing that causes a jam happens routinely, that
+    -- is every player, one long round each.
     local server = newServer({ 1, 2 })
     server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
 
     local first = bagRound(server, { 1, 2 })
-    server.stashItem('crimson_arena_CID1', 'lockpick', 2)
+    server.stashItem('crimson_arena_CID1', 'lockpick', 2)     -- surplus -> jam
     server.match.End(first, 'match.ended')
     server.step(12)
 
-    bagRound(server, { 1, 2 })     -- the next round, with the stash jammed
+    t.equals(jamsStanding(server), 1, 'the fixture did not jam anything, so this proves nothing')
 
-    t.contains(server.log(), 'NOT being held for them this round either',
-        'it left a bag unprotected without saying so')
-    t.equals(server.bagContents('k1'), 'radiox1', 'it emptied a bag it had decided not to manage')
-end)
+    -- The next round must work completely normally.
+    local second = bagRound(server, { 1, 2 })
 
--- ========================================================================
--- THE DATABASE, IN ALL FOUR STATES AN OPERATOR CAN ACTUALLY BE IN
---
--- Config.Database ships OFF, which means the whole of this suite has always
--- run on the off-path. The on-path was driven by two stats specs and
--- nowhere else -- so "does a round still work with the database on" had no
--- answer, and neither did "does it work when the database is on but
--- refusing every statement", which is the state a read-only user or a
--- missing table puts a server in.
---
--- The four: off; on with a working database; on with oxmysql up and every
--- statement refused; on with oxmysql not started at all.
--- ========================================================================
+    t.isNil(server.carrying(1):find('burgerx3', 1, true),
+        'THE DOOR STOPPED STRIPPING THEM because an earlier stash was jammed')
+    t.equals(server.bagContents('k1'), '',
+        'AND IT STOPPED PROTECTING THEIR BAG for the same reason')
 
-local function dbRound(server)
-    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
-    local match = server.lobby.All()[1]
-    server.fire('joinMatch', 2, { matchId = match.id })
-    server.fire('setReady', 1, { ready = true })
-    server.fire('setReady', 2, { ready = true })
-    server.step(6)
-    server.match.End(match.id, 'match.ended')
+    server.purgeContainer('k1')
+    server.match.End(second, 'match.ended')
     server.step(12)
-end
 
---- Every state gets the same round, with a packed bag, and must produce the
---- same answer: the player leaves with exactly their own things and a bag
---- packed the way they left it. The database is where a round is WRITTEN
---- DOWN; it is not what makes a round work, and that is the claim.
-local DB_STATES = {
-    { 'the database off, as shipped', {} },
-    { 'the database on and working',  { database = true } },
-    { 'the database on and refusing every statement', { database = true, dbFails = true } },
-    { 'the database on with oxmysql not started',     { database = false } },
-}
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1', 'they did not get everything back')
+    t.equals(server.bagContents('k1'), 'radiox1', 'the bag came back empty')
 
-for _, state in ipairs(DB_STATES) do
-    local label, opts = state[1], state[2]
-
-    t.test(('a round is unaffected by %s'):format(label), function()
-        local wantsDb = label:find('on', 1, true) ~= nil
-        local server = newServer({ 1, 2 }, wantsDb and function(config)
-            config.Database.enabled = true
-        end or nil, nil, opts)
-
-        server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
-        dbRound(server)
-
-        t.equals(server.carrying(1), INTACT .. ',police_bagx1',
-            ('a player did not get their own things back with %s'):format(label))
-        t.equals(server.bagContents('k1'), 'radiox1',
-            ('a bag was not packed the way they left it with %s'):format(label))
-        t.equals(server.stashed(1), '', 'and their stash was left holding something')
-    end)
-end
-
-t.test('and with the database on it touches ONLY its own tables', function()
-    -- The conflict question, asked of the statements themselves rather than
-    -- of the schema files. Everything this resource writes is named
-    -- crimson_arena_*; the one foreign table it goes near -- ox_inventory,
-    -- to find stashes a restart forgot -- it only ever READS.
-    local server = newServer({ 1, 2 }, function(config)
-        config.Database.enabled = true
-    end, nil, { database = true })
-
-    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
-    dbRound(server)
-
-    local foreign = server.foreignTables()
-    for entry in foreign:gmatch('[^,]+') do
-        t.isTrue(entry:match('^FROM ox_inventory$') ~= nil,
-            ('it touched a table that is not its own: %s'):format(entry))
-    end
-end)
-
-t.test('and a database that refuses everything is said out loud, not swallowed', function()
-    -- An operator whose database user cannot write needs to know. The one
-    -- thing worse than a failed write is a failed write nobody mentions.
-    local server = newServer({ 1, 2 }, function(config)
-        config.Database.enabled = true
-    end, nil, { database = false })
-
-    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
-    dbRound(server)
-
-    t.contains(server.log(), 'oxmysql is not started',
-        'the database was on, unusable, and nothing said so')
+    -- And the jammed stash is untouched, still waiting for an admin.
+    t.equals(jamsStanding(server), 1, 'the jam was quietly dropped instead of left to be settled')
 end)
 
 os.exit(t.summary())

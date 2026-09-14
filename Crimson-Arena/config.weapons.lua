@@ -15,6 +15,17 @@ Config.Loadouts.weapons = {
     -- are separate items. That is exactly the per-weapon override
     -- config.lua's Config.Loadouts.defaultAmmoTypes note describes.
     --
+    -- `components` ON AN ENTRY IS A HAND-WRITTEN ATTACHMENT LIST, separate
+    -- from Config.Loadouts.weaponAttachments further down and appended to
+    -- whatever that fits. Every name in it -- and every `component` on an
+    -- ammoTypes line -- is an ox_inventory component ITEM name, the same as
+    -- that table: `at_scope_medium`, not `COMPONENT_AT_SCOPE_MEDIUM`. A GTA
+    -- name here is not a component that fails to appear, it is a weapon the
+    -- game will not draw; the note above that table says why at length.
+    -- server/ammo.lua drops any name this server's ox_inventory does not
+    -- have and says so in the console, so a mistake costs an attachment
+    -- rather than the weapon -- but it is still a mistake.
+    --
     -- NINETY-THREE OF THE 96 ENTRIES BELOW ARE `enabled = true`, INCLUDING ALL
     -- THIRTEEN HEAVY WEAPONS -- the RPG, the homing, grenade, EMP, compact
     -- and firework launchers, the minigun, both railguns, the Unholy
@@ -1149,11 +1160,47 @@ Config.Loadouts.weapons = {
 -- actually take. A weapon that is not listed, or that has no entry for a
 -- kind, is simply issued without it.
 --
--- EVERY NAME BELOW IS THE GAME'S OWN, read out of a dump of GTA's weapon
--- data rather than typed from memory, and each one is listed against the
--- weapon that really accepts it. A component fitted to a weapon it does not
--- belong to does not error -- it just silently does not appear, which is the
--- worst way for this to be wrong, so none of it was guessed.
+-- EVERY NAME BELOW IS AN ox_inventory COMPONENT ITEM -- `at_scope_medium`,
+-- `at_grip`, `at_suppressor_heavy` -- and NOT one of GTA's own
+-- `COMPONENT_...` names. That distinction is the whole reason this block
+-- was rewritten, and getting it wrong does not fail quietly:
+--
+--   ox_inventory's equip path does `Items[name].client.component`. A name
+--   it does not know is nil, indexing nil throws, and the throw happens
+--   AFTER GiveWeaponToPed but BEFORE SetCurrentPedWeapon -- so the player
+--   holds a weapon the game will not draw. On a live server that read as
+--   "the gun does nothing", and turning every attachment off in the picker
+--   was the only way to fire it.
+--
+--   This table shipped full of GTA names, so every single weapon in it was
+--   affected. It is fixed by naming the ox_inventory item instead.
+--
+-- ox_inventory MAPS THE ITEM TO THE RIGHT GTA COMPONENT ITSELF. Each of its
+-- component items carries a list of the game components it covers, and it
+-- fits whichever of them `DoesWeaponTakeWeaponComponent` accepts for the
+-- weapon in hand. So `at_clip_extended_rifle` is the right answer for
+-- fourteen different rifles, and naming a component the weapon cannot take
+-- fits nothing rather than breaking anything.
+--
+-- WHICH NAMES EXIST is decided by YOUR ox_inventory, in its
+-- `data/weapons.lua` under `Components`. The shipped set is:
+--
+--   sights      at_scope_macro, at_scope_small, at_scope_medium,
+--               at_scope_large, at_scope_advanced, at_scope_holo
+--   magazines   at_clip_extended_pistol / _smg / _shotgun / _rifle / _mg /
+--               _sniper, at_clip_drum_smg / _shotgun / _rifle
+--   muzzles     at_suppressor_light, at_suppressor_heavy, at_compensator,
+--               at_muzzle_flat / _tactical / _fat / _precision / _heavy /
+--               _slanted / _split / _squared / _bell
+--   grip        at_grip
+--   barrel      at_barrel
+--   flashlight  at_flashlight
+--
+-- A NAME THIS SERVER'S ox_inventory DOES NOT HAVE IS DROPPED, not fitted:
+-- server/ammo.lua checks each one against the live item list before it
+-- writes any of them onto a weapon, and says in the console exactly which
+-- name it threw away and for which weapon. So a typo here costs you an
+-- attachment, never a weapon that will not come out.
 --
 -- WHERE A WEAPON OFFERS SEVERAL OF A KIND the plainest is taken: the first
 -- scope rather than the biggest, the first clip rather than the drum. An
@@ -1161,70 +1208,74 @@ Config.Loadouts.weapons = {
 --
 -- THREE FAMILIES ARE DELIBERATELY ABSENT and should stay absent:
 --
---   Mk2 AMMO CLIPS -- incendiary, hollow point, FMJ, tracer. Those change
---   what a bullet DOES. Fitting them automatically would quietly rewrite
---   the damage every fight is balanced around.
+--   DRUM MAGAZINES AND Mk2 AMMO CLIPS -- incendiary, hollow point, FMJ,
+--   tracer. Those change what a bullet DOES. Fitting them automatically
+--   would quietly rewrite the damage every fight is balanced around.
 --
---   THERMAL AND NIGHT SCOPES. Seeing a heat signature through the dark is
---   not a scope, it is a different game.
+--   THERMAL AND NIGHT SCOPES (`at_scope_thermal`, `at_scope_nv`). Seeing a
+--   heat signature through the dark is not a scope, it is a different game.
 --
---   CAMO, LIVERIES AND VARMOD SKINS. Cosmetic, and several are tied to
---   ownership the arena has no business granting.
+--   CAMO, LIVERIES AND VARMOD SKINS (`at_skin_...`). Cosmetic, and several
+--   are tied to ownership the arena has no business granting.
 --
--- ADDING ONE: find the weapon, add `kind = 'COMPONENT_...'`. The suite
--- checks every name here is spelled like a component and that no weapon
--- names the same component twice.
+-- WEAPON_HEAVYSNIPER HAS NO ROW, unlike its Mk2. The only scope that fits
+-- it is COMPONENT_AT_SCOPE_LARGE, and stock ox_inventory ships no component
+-- item covering that one -- `at_scope_large` is the Mk2 scope. Add an item
+-- for it in your own data/weapons.lua and a row here will work.
+--
+-- ADDING ONE: find the weapon, add `kind = 'at_...'`. The suite checks every
+-- name here is an ox_inventory component item spelled the way ox_inventory
+-- spells one, and that no weapon names the same component twice.
 -- ======================================================================
 
 Config.Loadouts.weaponAttachments = {
-    ['WEAPON_APPISTOL'] = { extendedclip = 'COMPONENT_APPISTOL_CLIP_02', flashlight = 'COMPONENT_AT_PI_FLSH', suppressor = 'COMPONENT_AT_PI_SUPP' },
-    ['WEAPON_CERAMICPISTOL'] = { extendedclip = 'COMPONENT_CERAMICPISTOL_CLIP_02', suppressor = 'COMPONENT_CERAMICPISTOL_SUPP' },
-    ['WEAPON_COMBATPISTOL'] = { extendedclip = 'COMPONENT_COMBATPISTOL_CLIP_02', flashlight = 'COMPONENT_AT_PI_FLSH', suppressor = 'COMPONENT_AT_PI_SUPP' },
-    ['WEAPON_HEAVYPISTOL'] = { extendedclip = 'COMPONENT_HEAVYPISTOL_CLIP_02', flashlight = 'COMPONENT_AT_PI_FLSH', suppressor = 'COMPONENT_AT_PI_SUPP' },
-    ['WEAPON_MACHINEPISTOL'] = { extendedclip = 'COMPONENT_MACHINEPISTOL_CLIP_02', suppressor = 'COMPONENT_AT_PI_SUPP' },
-    ['WEAPON_PISTOL'] = { extendedclip = 'COMPONENT_PISTOL_CLIP_02', flashlight = 'COMPONENT_AT_PI_FLSH', suppressor = 'COMPONENT_AT_PI_SUPP_02' },
-    ['WEAPON_PISTOL50'] = { extendedclip = 'COMPONENT_PISTOL50_CLIP_02', flashlight = 'COMPONENT_AT_PI_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_PISTOL_MK2'] = { extendedclip = 'COMPONENT_PISTOL_MK2_CLIP_02', muzzle = 'COMPONENT_AT_PI_COMP', flashlight = 'COMPONENT_AT_PI_RAIL', suppressor = 'COMPONENT_AT_PI_SUPP_02' },
-    ['WEAPON_REVOLVER_MK2'] = { scope = 'COMPONENT_AT_SIGHTS', muzzle = 'COMPONENT_AT_PI_COMP_03', flashlight = 'COMPONENT_AT_PI_FLSH' },
-    ['WEAPON_SNSPISTOL'] = { extendedclip = 'COMPONENT_SNSPISTOL_CLIP_02' },
-    ['WEAPON_SNSPISTOL_MK2'] = { extendedclip = 'COMPONENT_SNSPISTOL_MK2_CLIP_02', muzzle = 'COMPONENT_AT_PI_COMP_02', flashlight = 'COMPONENT_AT_PI_FLSH_03', suppressor = 'COMPONENT_AT_PI_SUPP_02' },
-    ['WEAPON_TECPISTOL'] = { scope = 'COMPONENT_AT_SCOPE_MACRO', extendedclip = 'COMPONENT_TECPISTOL_CLIP_02', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_VINTAGEPISTOL'] = { extendedclip = 'COMPONENT_VINTAGEPISTOL_CLIP_02', suppressor = 'COMPONENT_AT_PI_SUPP' },
-    ['WEAPON_PISTOLXM3'] = { suppressor = 'COMPONENT_PISTOLXM3_SUPP' },
-    ['WEAPON_ADVANCEDRIFLE'] = { scope = 'COMPONENT_AT_SCOPE_SMALL', extendedclip = 'COMPONENT_ADVANCEDRIFLE_CLIP_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_ASSAULTRIFLE'] = { scope = 'COMPONENT_AT_SCOPE_MACRO', extendedclip = 'COMPONENT_ASSAULTRIFLE_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_ASSAULTRIFLE_MK2'] = { scope = 'COMPONENT_AT_SIGHTS', extendedclip = 'COMPONENT_ASSAULTRIFLE_MK2_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP_02', muzzle = 'COMPONENT_AT_MUZZLE_01', barrel = 'COMPONENT_AT_AR_BARREL_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_ASSAULTSMG'] = { scope = 'COMPONENT_AT_SCOPE_MACRO', extendedclip = 'COMPONENT_ASSAULTSMG_CLIP_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_BATTLERIFLE'] = { extendedclip = 'COMPONENT_BATTLERIFLE_CLIP_02', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_BULLPUPRIFLE'] = { scope = 'COMPONENT_AT_SCOPE_SMALL', extendedclip = 'COMPONENT_BULLPUPRIFLE_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_BULLPUPRIFLE_MK2'] = { scope = 'COMPONENT_AT_SIGHTS', extendedclip = 'COMPONENT_BULLPUPRIFLE_MK2_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP_02', muzzle = 'COMPONENT_AT_MUZZLE_01', barrel = 'COMPONENT_AT_BP_BARREL_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_CARBINERIFLE'] = { scope = 'COMPONENT_AT_SCOPE_MEDIUM', extendedclip = 'COMPONENT_CARBINERIFLE_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_CARBINERIFLE_MK2'] = { scope = 'COMPONENT_AT_SIGHTS', extendedclip = 'COMPONENT_CARBINERIFLE_MK2_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP_02', muzzle = 'COMPONENT_AT_MUZZLE_01', barrel = 'COMPONENT_AT_CR_BARREL_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_COMBATMG'] = { scope = 'COMPONENT_AT_SCOPE_MEDIUM', extendedclip = 'COMPONENT_COMBATMG_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP' },
-    ['WEAPON_COMBATMG_MK2'] = { scope = 'COMPONENT_AT_SIGHTS', extendedclip = 'COMPONENT_COMBATMG_MK2_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP_02', muzzle = 'COMPONENT_AT_MUZZLE_01', barrel = 'COMPONENT_AT_MG_BARREL_02' },
-    ['WEAPON_COMBATPDW'] = { scope = 'COMPONENT_AT_SCOPE_SMALL', extendedclip = 'COMPONENT_COMBATPDW_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH' },
-    ['WEAPON_COMPACTRIFLE'] = { muzzle = 'COMPONENT_COMPACTRIFLE_CLIP_02' },
-    ['WEAPON_GUSENBERG'] = { extendedclip = 'COMPONENT_GUSENBERG_CLIP_02' },
-    ['WEAPON_HEAVYRIFLE'] = { scope = 'COMPONENT_AT_SCOPE_MEDIUM', extendedclip = 'COMPONENT_HEAVYRIFLE_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_MG'] = { scope = 'COMPONENT_AT_SCOPE_SMALL_02', extendedclip = 'COMPONENT_MG_CLIP_02' },
-    ['WEAPON_MICROSMG'] = { scope = 'COMPONENT_AT_SCOPE_MACRO', extendedclip = 'COMPONENT_MICROSMG_CLIP_02', flashlight = 'COMPONENT_AT_PI_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_MILITARYRIFLE'] = { scope = 'COMPONENT_AT_SCOPE_SMALL', extendedclip = 'COMPONENT_MILITARYRIFLE_CLIP_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_MINISMG'] = { extendedclip = 'COMPONENT_MINISMG_CLIP_02' },
-    ['WEAPON_SMG'] = { scope = 'COMPONENT_AT_SCOPE_MACRO_02', extendedclip = 'COMPONENT_SMG_CLIP_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_PI_SUPP' },
-    ['WEAPON_SMG_MK2'] = { scope = 'COMPONENT_AT_SCOPE_MACRO_02_SMG_MK2', extendedclip = 'COMPONENT_SMG_MK2_CLIP_02', muzzle = 'COMPONENT_AT_MUZZLE_01', barrel = 'COMPONENT_AT_SB_BARREL_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_PI_SUPP' },
-    ['WEAPON_SPECIALCARBINE'] = { scope = 'COMPONENT_AT_SCOPE_MEDIUM', extendedclip = 'COMPONENT_SPECIALCARBINE_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_SPECIALCARBINE_MK2'] = { scope = 'COMPONENT_AT_SIGHTS', extendedclip = 'COMPONENT_SPECIALCARBINE_MK2_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP_02', muzzle = 'COMPONENT_AT_MUZZLE_01', barrel = 'COMPONENT_AT_SC_BARREL_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_TACTICALRIFLE'] = { extendedclip = 'COMPONENT_TACTICALRIFLE_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH_REH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_ASSAULTSHOTGUN'] = { extendedclip = 'COMPONENT_ASSAULTSHOTGUN_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_BULLPUPSHOTGUN'] = { grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_COMBATSHOTGUN'] = { flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_HEAVYSHOTGUN'] = { extendedclip = 'COMPONENT_HEAVYSHOTGUN_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_PUMPSHOTGUN'] = { flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_SR_SUPP' },
-    ['WEAPON_PUMPSHOTGUN_MK2'] = { scope = 'COMPONENT_AT_SIGHTS', muzzle = 'COMPONENT_AT_MUZZLE_08', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_SR_SUPP_03' },
-    ['WEAPON_HEAVYSNIPER'] = { scope = 'COMPONENT_AT_SCOPE_LARGE' },
-    ['WEAPON_HEAVYSNIPER_MK2'] = { scope = 'COMPONENT_AT_SCOPE_LARGE_MK2', extendedclip = 'COMPONENT_HEAVYSNIPER_MK2_CLIP_02', muzzle = 'COMPONENT_AT_MUZZLE_08', barrel = 'COMPONENT_AT_SR_BARREL_02', suppressor = 'COMPONENT_AT_SR_SUPP_03' },
-    ['WEAPON_MARKSMANRIFLE'] = { extendedclip = 'COMPONENT_MARKSMANRIFLE_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_MARKSMANRIFLE_MK2'] = { scope = 'COMPONENT_AT_SIGHTS', extendedclip = 'COMPONENT_MARKSMANRIFLE_MK2_CLIP_02', grip = 'COMPONENT_AT_AR_AFGRIP_02', muzzle = 'COMPONENT_AT_MUZZLE_01', barrel = 'COMPONENT_AT_MRFL_BARREL_02', flashlight = 'COMPONENT_AT_AR_FLSH', suppressor = 'COMPONENT_AT_AR_SUPP' },
-    ['WEAPON_SNIPERRIFLE'] = { scope = 'COMPONENT_AT_SCOPE_MAX', suppressor = 'COMPONENT_AT_AR_SUPP_02' },
-    ['WEAPON_GRENADELAUNCHER'] = { scope = 'COMPONENT_AT_SCOPE_SMALL', grip = 'COMPONENT_AT_AR_AFGRIP', flashlight = 'COMPONENT_AT_AR_FLSH' },
+    ['WEAPON_APPISTOL'] = { extendedclip = 'at_clip_extended_pistol', flashlight = 'at_flashlight', suppressor = 'at_suppressor_light' },
+    ['WEAPON_CERAMICPISTOL'] = { extendedclip = 'at_clip_extended_pistol', suppressor = 'at_suppressor_light' },
+    ['WEAPON_COMBATPISTOL'] = { extendedclip = 'at_clip_extended_pistol', flashlight = 'at_flashlight', suppressor = 'at_suppressor_light' },
+    ['WEAPON_HEAVYPISTOL'] = { extendedclip = 'at_clip_extended_pistol', flashlight = 'at_flashlight', suppressor = 'at_suppressor_light' },
+    ['WEAPON_MACHINEPISTOL'] = { extendedclip = 'at_clip_extended_smg', suppressor = 'at_suppressor_light' },
+    ['WEAPON_PISTOL'] = { extendedclip = 'at_clip_extended_pistol', flashlight = 'at_flashlight', suppressor = 'at_suppressor_light' },
+    ['WEAPON_PISTOL50'] = { extendedclip = 'at_clip_extended_pistol', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_PISTOL_MK2'] = { scope = 'at_scope_holo', extendedclip = 'at_clip_extended_pistol', muzzle = 'at_compensator', flashlight = 'at_flashlight', suppressor = 'at_suppressor_light' },
+    ['WEAPON_REVOLVER_MK2'] = { scope = 'at_scope_holo', muzzle = 'at_compensator', flashlight = 'at_flashlight' },
+    ['WEAPON_SNSPISTOL'] = { extendedclip = 'at_clip_extended_pistol' },
+    ['WEAPON_SNSPISTOL_MK2'] = { extendedclip = 'at_clip_extended_pistol', muzzle = 'at_compensator', flashlight = 'at_flashlight', suppressor = 'at_suppressor_light' },
+    ['WEAPON_TECPISTOL'] = { scope = 'at_scope_macro', extendedclip = 'at_clip_extended_pistol', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_VINTAGEPISTOL'] = { extendedclip = 'at_clip_extended_pistol', suppressor = 'at_suppressor_light' },
+    ['WEAPON_PISTOLXM3'] = { suppressor = 'at_suppressor_light' },
+    ['WEAPON_ADVANCEDRIFLE'] = { scope = 'at_scope_small', extendedclip = 'at_clip_extended_rifle', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_ASSAULTRIFLE'] = { scope = 'at_scope_macro', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_ASSAULTRIFLE_MK2'] = { scope = 'at_scope_holo', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', muzzle = 'at_muzzle_flat', barrel = 'at_barrel', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_ASSAULTSMG'] = { scope = 'at_scope_macro', extendedclip = 'at_clip_extended_smg', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_BATTLERIFLE'] = { extendedclip = 'at_clip_extended_rifle', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_BULLPUPRIFLE'] = { scope = 'at_scope_small', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_BULLPUPRIFLE_MK2'] = { scope = 'at_scope_holo', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', muzzle = 'at_muzzle_flat', barrel = 'at_barrel', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_CARBINERIFLE'] = { scope = 'at_scope_medium', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_CARBINERIFLE_MK2'] = { scope = 'at_scope_holo', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', muzzle = 'at_muzzle_flat', barrel = 'at_barrel', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_COMBATMG'] = { scope = 'at_scope_medium', extendedclip = 'at_clip_extended_mg', grip = 'at_grip' },
+    ['WEAPON_COMBATMG_MK2'] = { scope = 'at_scope_holo', extendedclip = 'at_clip_extended_mg', grip = 'at_grip', muzzle = 'at_muzzle_flat', barrel = 'at_barrel' },
+    ['WEAPON_COMBATPDW'] = { scope = 'at_scope_small', extendedclip = 'at_clip_extended_smg', grip = 'at_grip', flashlight = 'at_flashlight' },
+    ['WEAPON_COMPACTRIFLE'] = { extendedclip = 'at_clip_extended_rifle' },
+    ['WEAPON_GUSENBERG'] = { extendedclip = 'at_clip_extended_mg' },
+    ['WEAPON_HEAVYRIFLE'] = { scope = 'at_scope_medium', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_MG'] = { scope = 'at_scope_small', extendedclip = 'at_clip_extended_mg' },
+    ['WEAPON_MICROSMG'] = { scope = 'at_scope_macro', extendedclip = 'at_clip_extended_smg', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_MILITARYRIFLE'] = { scope = 'at_scope_small', extendedclip = 'at_clip_extended_rifle', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_MINISMG'] = { extendedclip = 'at_clip_extended_smg' },
+    ['WEAPON_SMG'] = { scope = 'at_scope_macro', extendedclip = 'at_clip_extended_smg', flashlight = 'at_flashlight', suppressor = 'at_suppressor_light' },
+    ['WEAPON_SMG_MK2'] = { scope = 'at_scope_macro', extendedclip = 'at_clip_extended_smg', muzzle = 'at_muzzle_flat', barrel = 'at_barrel', flashlight = 'at_flashlight', suppressor = 'at_suppressor_light' },
+    ['WEAPON_SPECIALCARBINE'] = { scope = 'at_scope_medium', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_SPECIALCARBINE_MK2'] = { scope = 'at_scope_holo', extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', muzzle = 'at_muzzle_flat', barrel = 'at_barrel', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_TACTICALRIFLE'] = { extendedclip = 'at_clip_extended_rifle', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_ASSAULTSHOTGUN'] = { extendedclip = 'at_clip_extended_shotgun', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_BULLPUPSHOTGUN'] = { grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_COMBATSHOTGUN'] = { flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_HEAVYSHOTGUN'] = { extendedclip = 'at_clip_extended_shotgun', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_PUMPSHOTGUN'] = { flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_PUMPSHOTGUN_MK2'] = { scope = 'at_scope_holo', muzzle = 'at_muzzle_squared', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_HEAVYSNIPER_MK2'] = { scope = 'at_scope_large', extendedclip = 'at_clip_extended_sniper', muzzle = 'at_muzzle_squared', barrel = 'at_barrel', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_MARKSMANRIFLE'] = { extendedclip = 'at_clip_extended_sniper', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_MARKSMANRIFLE_MK2'] = { scope = 'at_scope_holo', extendedclip = 'at_clip_extended_sniper', grip = 'at_grip', muzzle = 'at_muzzle_flat', barrel = 'at_barrel', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_SNIPERRIFLE'] = { scope = 'at_scope_advanced', suppressor = 'at_suppressor_heavy' },
+    ['WEAPON_GRENADELAUNCHER'] = { scope = 'at_scope_small', grip = 'at_grip', flashlight = 'at_flashlight' },
 }

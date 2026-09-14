@@ -543,7 +543,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, so the admin tablet's Police & EMS tool shows exactly what /arenadispatch prints to the console. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 22 functions
+#### `server/ammo.lua` — 23 functions
 
 | Function | What it does |
 |---|---|
@@ -569,6 +569,7 @@ listed; the source documents them where they are.
 | `ArenaAmmo.OwedKit()` | Every arena weapon and item stack that left with a character and has not come back, one row per character. |
 | `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
 | `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
+| `ArenaAmmo.AttachmentReport()` | Every attachment name the config can fit, checked against this server's ox_inventory item list, as lines. Printed at start; a name ox_inventory does not have is dropped rather than fitted, because handing it one leaves the weapon undrawable. |
 
 #### `server/stats.lua` — 6 functions
 

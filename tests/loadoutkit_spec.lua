@@ -46,6 +46,17 @@ local function newKit(opts)
     local fail = {}
     local calls = {}          -- every AddItem, in order, arguments kept
 
+    --- The component items this server's ox_inventory has. The default is
+    --- the handful the tests below fit; a test that wants an unknown name
+    --- passes its own set.
+    local knownItems = opts.knownItems or {
+        at_scope_medium = { name = 'at_scope_medium' },
+        at_suppressor_heavy = { name = 'at_suppressor_heavy' },
+        at_grip = { name = 'at_grip' },
+        at_flashlight = { name = 'at_flashlight' },
+        at_clip_extended_rifle = { name = 'at_clip_extended_rifle' },
+    }
+
     local function bucket(id)
         if type(id) == 'number' then
             inv[id] = inv[id] or {}
@@ -126,12 +137,30 @@ local function newKit(opts)
             if type(id) == 'number' then inv[id] = {} else stashes[id] = {} end
             return true
         end,
+        --- THE ITEM REGISTRY, which decides whether an attachment equips or
+        --- takes the weapon out of the fight.
+        ---
+        --- ox_inventory fits a component with `Items[name].client.component`
+        --- and does not guard that index. A name it does not know is nil,
+        --- the index throws, and the throw lands between GiveWeaponToPed and
+        --- SetCurrentPedWeapon -- so the player ends up holding a weapon the
+        --- game will not draw. Modelled here as a plain set of names,
+        --- because the name is the only part of it server/ammo.lua can see:
+        --- the server's copy of an item has its `client` table stripped.
+        Items = function(_self, name)
+            if fail.noRegistry then error('this build has no Items export') end
+            if name == nil then return knownItems end
+            return knownItems[name]
+        end,
         registerHook = function() return true end,
     }
 
     local env = Sandbox.newArenaEnv({
         exports = setmetatable({ ox_inventory = ox }, { __call = function() end }),
-        GetResourceState = function(name) return name == 'ox_inventory' and 'started' or 'missing' end,
+        GetResourceState = function(name)
+            if name ~= 'ox_inventory' then return 'missing' end
+            return fail.noInventory and 'missing' or 'started'
+        end,
         Wait = function() end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         AddEventHandler = function() end,
@@ -160,6 +189,8 @@ local function newKit(opts)
         config = env.Config,
         calls = calls,
         breakOn = function(what, value) fail[what] = value == nil and true or value end,
+        --- A server where ox_inventory never started.
+        stopInventory = function() fail.noInventory = true end,
         --- One item as it sits in a player's inventory, metadata and all.
         itemNamed = function(src, name)
             for _, item in ipairs(inv[src] or {}) do
@@ -297,12 +328,244 @@ t.test('attachments an operator configured reach the item', function()
     -- with nothing to say why.
     local f = newKit()
 
-    f.ammo.Issue(1, 'match-1', oneWeapon({ components = { 'COMPONENT_AT_AR_SUPP', 'COMPONENT_AT_SCOPE' } }))
+    f.ammo.Issue(1, 'match-1', oneWeapon({ components = { 'at_suppressor_heavy', 'at_scope_medium' } }))
 
     local parts = f.itemNamed(1, 'WEAPON_TEST').metadata.components
     t.isNotNil(parts, 'the attachments were dropped between config and the item')
     t.equals(#parts, 2)
-    t.equals(parts[1], 'COMPONENT_AT_AR_SUPP')
+    t.equals(parts[1], 'at_suppressor_heavy')
+end)
+
+-- ========================================================================
+-- THE ATTACHMENT THAT TOOK THE WEAPON OUT OF THE FIGHT
+--
+-- Reported from a live server: "when using components it does not allow the
+-- weapon to be pulled out -- I can go in the picker, click the components
+-- off, and the weapon is able to be used."
+--
+-- ox_inventory's equip path, verbatim:
+--
+--     GiveWeaponToPed(playerPed, data.hash, 0, false, true)
+--     ...
+--     local components = Items[item.metadata.components[i]].client.component
+--     ...
+--     SetCurrentPedWeapon(playerPed, data.hash, true)
+--     SetPedCurrentWeaponVisible(playerPed, true, false, false, false)
+--
+-- A name Items does not know is nil. Indexing it throws. The throw is AFTER
+-- the weapon is given and BEFORE it is made current and made visible -- so
+-- the weapon is in the inventory, in the hands, and will not come out. Every
+-- symptom in that report, in that order.
+--
+-- What put an unknown name there: Config.Loadouts.weaponAttachments shipped
+-- GTA's own COMPONENT_ names, and ox_inventory has never accepted those. The
+-- config is fixed. These tests are the other half -- so the NEXT wrong name,
+-- whatever puts it there, costs an attachment instead of the weapon.
+-- ========================================================================
+
+t.test('a component ox_inventory does not know is DROPPED, not fitted', function()
+    local f = newKit()
+
+    f.ammo.Issue(1, 'match-1', oneWeapon({
+        components = { 'at_scope_medium', 'COMPONENT_AT_SCOPE_MEDIUM' },
+    }))
+
+    local parts = f.itemNamed(1, 'WEAPON_TEST').metadata.components
+    t.isNotNil(parts, 'the good attachment went with the bad one')
+    t.equals(#parts, 1, ('%d attachment(s) were written, so a name ox_inventory throws on '
+        .. 'reached the weapon'):format(#parts))
+    t.equals(parts[1], 'at_scope_medium', 'the wrong one of the two was kept')
+end)
+
+t.test('and the weapon is still issued, which is the whole point', function()
+    -- Dropping the attachment must not turn into dropping the weapon: a
+    -- fighter with no scope is in the round, a fighter with no gun is not.
+    local f = newKit()
+
+    local failed = f.ammo.Issue(1, 'match-1', oneWeapon({
+        components = { 'COMPONENT_AT_AR_SUPP' },
+    }))
+
+    t.equals(#failed, 0, 'a bad attachment name stopped the weapon being issued')
+    t.isNotNil(f.itemNamed(1, 'WEAPON_TEST'), 'the fighter went in unarmed')
+end)
+
+t.test('and a weapon whose attachments are ALL unknown carries no components field', function()
+    -- Not an empty list: ox_inventory reads an empty components list as a
+    -- weapon whose attachments were deliberately stripped, which is a
+    -- different thing from one that was never given any.
+    local f = newKit()
+
+    f.ammo.Issue(1, 'match-1', oneWeapon({
+        components = { 'COMPONENT_AT_AR_SUPP', 'COMPONENT_AT_SCOPE_MEDIUM' },
+    }))
+
+    t.isNil(f.itemNamed(1, 'WEAPON_TEST').metadata.components,
+        'an all-rubbish attachment list reached ox_inventory as an empty one')
+end)
+
+t.test('and the console names the component, the weapon and the fix', function()
+    -- An operator reading this line has a weapon that will not draw and no
+    -- idea which of their config rows did it. The name is the answer.
+    local f = newKit()
+
+    f.ammo.Issue(1, 'match-1', oneWeapon({ components = { 'COMPONENT_AT_SCOPE_MEDIUM' } }))
+
+    local log = f.log()
+    t.contains(log, 'COMPONENT_AT_SCOPE_MEDIUM', 'the console did not say which name was dropped')
+    t.contains(log, 'WEAPON_TEST', 'the console did not say which weapon it was on')
+    t.contains(log, 'at_scope_medium', 'the console did not show what a real name looks like')
+end)
+
+t.test('and it says so ONCE, not once per weapon per fighter per round', function()
+    -- Eight fighters with the same loadout is the normal case. A per-issue
+    -- warning turns one config mistake into a console nobody can read.
+    local f = newKit()
+
+    for src = 1, 4 do
+        f.ammo.Issue(src, 'match-1', oneWeapon({ components = { 'COMPONENT_AT_AR_SUPP' } }))
+    end
+
+    local seen = select(2, f.log():gsub('DROPPED attachment', ''))
+    t.equals(seen, 1, ('the same bad name was reported %d times'):format(seen))
+end)
+
+t.test('a build whose registry cannot be read keeps the names, and says why', function()
+    -- The check must not become its own outage. An ox_inventory with no
+    -- Items export cannot tell a good name from a bad one -- and silently
+    -- stripping every attachment off every weapon because of that would be a
+    -- worse failure than the one being guarded against.
+    local f = newKit()
+    f.breakOn('noRegistry')
+
+    f.ammo.Issue(1, 'match-1', oneWeapon({ components = { 'at_scope_medium' } }))
+
+    local parts = f.itemNamed(1, 'WEAPON_TEST').metadata.components
+    t.isNotNil(parts, 'a build with no readable registry lost its attachments')
+    t.equals(parts[1], 'at_scope_medium')
+    t.contains(f.log(), 'NOT checked',
+        'the console did not say the attachment names were going through unchecked')
+end)
+
+t.test('and THAT is said once too', function()
+    local f = newKit()
+    f.breakOn('noRegistry')
+
+    for src = 1, 4 do
+        f.ammo.Issue(src, 'match-1', oneWeapon({ components = { 'at_scope_medium' } }))
+    end
+
+    local seen = select(2, f.log():gsub('would not answer Items', ''))
+    t.equals(seen, 1, ('the unreadable registry was reported %d times'):format(seen))
+end)
+
+t.test('THE LOG NAMES WHAT WENT ON THE GUN', function()
+    -- When fitting a component stopped the weapon being drawn, the line that
+    -- recorded the issue said nothing about what had been fitted -- so the
+    -- log of a server with the bug was identical to the log of one without
+    -- it, and the operator had nothing to send anybody.
+    local f = newKit()
+
+    f.ammo.Issue(1, 'match-1', oneWeapon({
+        components = { 'at_scope_medium', 'at_grip' },
+    }))
+
+    t.contains(f.log(), 'at_scope_medium+at_grip',
+        'the issue line still does not say what was fitted')
+end)
+
+t.test('and says so plainly when nothing was', function()
+    local f = newKit()
+
+    f.ammo.Issue(1, 'match-1', oneWeapon())
+
+    t.contains(f.log(), 'fitted nothing',
+        'a bare weapon was logged without saying it was bare')
+end)
+
+t.test('THE START-UP CHECK names every configured attachment ox_inventory lacks', function()
+    -- The alternative is what happened: the mistake stays invisible until a
+    -- fighter is standing in the arena holding a weapon that will not come
+    -- out. A name that is wrong is wrong at boot.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', grip = 'COMPONENT_AT_AR_AFGRIP' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'COMPONENT_AT_AR_AFGRIP', 'the report did not name the bad attachment')
+    t.contains(report, 'WEAPON_TEST', 'the report did not say which weapon carries it')
+    t.contains(report, 'grip', 'the report did not say which kind it was configured as')
+    t.notContains(report, 'at_scope_medium (', 'the report listed a name ox_inventory does have')
+end)
+
+t.test('and it reads the hand-written lists and the ammunition components too', function()
+    -- Three places can name a component and an operator editing any of them
+    -- can make the same mistake. A check that reads only the attachment
+    -- table passes a server that is still broken.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = {}
+        config.Loadouts.weapons = {
+            {
+                key = 'w1', weapon = 'WEAPON_TEST', enabled = true,
+                components = { 'COMPONENT_BY_HAND' },
+                ammoTypes = { { key = 'fmj', item = 'ammo-fmj', component = 'COMPONENT_FMJ_CLIP' } },
+            },
+        }
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'COMPONENT_BY_HAND', "a weapon's own components list was not checked")
+    t.contains(report, 'COMPONENT_FMJ_CLIP', "an ammunition type's component was not checked")
+end)
+
+t.test('and says everything is fine when it is', function()
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', grip = 'at_grip' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'every one is an item this ox_inventory has')
+    t.notContains(report, 'DROPPED', 'a clean config was reported as broken')
+end)
+
+t.test('and does NOT report a pass when it could not check anything', function()
+    -- The check lets names through when it cannot read the item list, which
+    -- is right -- stripping every attachment because an export is missing
+    -- would be worse. Rounding that up to "all present" in a REPORT is not:
+    -- an operator reading it would believe their names had been checked.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'COMPONENT_AT_SCOPE_MEDIUM' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+    f.breakOn('noRegistry')
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'NONE checked', 'an unchecked config was reported as checked')
+    t.notContains(report, 'every one is an item', 'an unchecked config was reported as clean')
+end)
+
+t.test('and says so plainly when ox_inventory is not running at all', function()
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { scope = 'at_scope_medium' } }
+        config.Loadouts.weapons = {}
+    end })
+    f.stopInventory()
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'ox_inventory is not running')
 end)
 
 t.test('but an EMPTY attachment list is left off entirely', function()

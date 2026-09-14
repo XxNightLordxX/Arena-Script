@@ -2212,19 +2212,98 @@ local function splitRounds(entry)
     return loaded, total - loaded
 end
 
+--- Component names already reported as unknown, so the console is told once
+--- per name rather than once per weapon per fighter per round.
+local warnedComponents = {}
+--- Set once the item registry has been found unreadable, so THAT is said once
+--- too. Kept separate from the table above: one is a config mistake, the
+--- other is a build of ox_inventory this check cannot use.
+local registryUnreadable = false
+
+--- Whether ox_inventory knows an item by this name.
+---
+--- THE CHECK THAT STOPS A TYPO TAKING A WEAPON OUT OF THE FIGHT. ox_inventory
+--- equips a weapon's attachments with
+---
+---     Items[metadata.components[i]].client.component
+---
+--- and there is no guard on that index. A name it does not know is nil, the
+--- index throws, and the throw lands BETWEEN GiveWeaponToPed and
+--- SetCurrentPedWeapon -- so the fighter is holding a weapon the game will
+--- never draw. From the player's side the gun simply does nothing, and
+--- turning every attachment off in the picker is the only way to fire it.
+---
+--- That is not a hypothetical: this resource shipped GTA's own COMPONENT_
+--- names in Config.Loadouts.weaponAttachments, which ox_inventory has never
+--- accepted, so it happened to every weapon in the table on every server
+--- running attachments. The config is fixed; this exists so the next name
+--- that is wrong -- a typo, a component item the operator has not installed,
+--- a name copied from a different inventory -- costs an attachment and not
+--- the weapon.
+---
+--- WHAT IS NOT DECIDED HERE: whether the weapon in hand can actually take
+--- the component. ox_inventory asks DoesWeaponTakeWeaponComponent itself and
+--- fits only what fits, and a component a weapon will not take is a no-op
+--- rather than an error. Only the NAME has to be real.
+--- @param name string
+--- @return boolean
+local function inventoryKnowsItem(name)
+    local ox = inventory()
+    if ox == nil then return true end
+
+    local ok, item = pcall(function() return ox:Items(name) end)
+    if not ok then
+        -- The registry cannot be read on this build, so nothing here can
+        -- tell a good name from a bad one. Let the names through rather than
+        -- silently stripping every attachment off every weapon, and say so
+        -- once so an operator whose attachments stop appearing knows this
+        -- check is not the reason.
+        if not registryUnreadable then
+            registryUnreadable = true
+            ArenaLog('weapons: ox_inventory would not answer Items() -- %s. Attachment names '
+                .. 'are being used as configured and NOT checked. A name ox_inventory does '
+                .. 'not know will stop the weapon being drawn.', tostring(item))
+        end
+        return true
+    end
+
+    return item ~= nil
+end
+
+--- The configured components for one weapon, minus any name ox_inventory
+--- would throw on.
+--- @param entry table
+--- @return string[]
+local function usableComponents(entry)
+    local parts = {}
+    if type(entry.components) ~= 'table' then return parts end
+
+    for _, component in ipairs(entry.components) do
+        if Arena.IsKey(component) then
+            if inventoryKnowsItem(component) then
+                parts[#parts + 1] = component
+            elseif not warnedComponents[component] then
+                warnedComponents[component] = true
+                ArenaLog('weapons: DROPPED attachment "%s" on %s -- ox_inventory has no item by '
+                    .. 'that name, and fitting it would leave the weapon undrawable. Name the '
+                    .. 'ox_inventory component ITEM in Config.Loadouts.weaponAttachments '
+                    .. '(at_scope_medium, at_grip, at_suppressor_heavy ...), not GTA\'s '
+                    .. 'COMPONENT_ name.', tostring(component), tostring(entry.weapon or entry.key))
+            end
+        end
+    end
+
+    return parts
+end
+
 local function weaponMetadata(entry)
     local metadata = {}
 
     local loaded = select(1, splitRounds(entry))
     if loaded > 0 then metadata.ammo = loaded end
 
-    if type(entry.components) == 'table' and #entry.components > 0 then
-        local parts = {}
-        for _, component in ipairs(entry.components) do
-            if Arena.IsKey(component) then parts[#parts + 1] = component end
-        end
-        if #parts > 0 then metadata.components = parts end
-    end
+    local parts = usableComponents(entry)
+    if #parts > 0 then metadata.components = parts end
 
     local tint = Arena.ToInt(entry.tint) or 0
     if tint > 0 then metadata.tint = tint end
@@ -2639,8 +2718,17 @@ local function issueWeapons(ox, src, matchId, loadout)
             local ok, issued = giveWeapon(ox, src, name, metadata)
             if ok then
                 given[#given + 1] = issued
-                ArenaLog('weapons: gave %s x1 to %s (ammo %d, serial %s).',
-                    name, tostring(src), loaded, tostring(issued.serial or 'unread'))
+                -- THE ATTACHMENTS ARE NAMED HERE, and they were not before.
+                -- When fitting one stopped the weapon being drawn, this line
+                -- was the only record of the issue and it said nothing at all
+                -- about what had been fitted -- so the log of a server with
+                -- the bug in it was indistinguishable from the log of a
+                -- server without it. What goes onto the gun is now in the
+                -- line that says the gun was handed over.
+                ArenaLog('weapons: gave %s x1 to %s (ammo %d, serial %s, fitted %s).',
+                    name, tostring(src), loaded, tostring(issued.serial or 'unread'),
+                    (metadata.components and #metadata.components > 0)
+                        and table.concat(metadata.components, '+') or 'nothing')
             else
                 failed[#failed + 1] = entry.key or name
                 ArenaLog('weapons: ox_inventory would not give %s to %s. Check that item exists in your ox_inventory weapon data -- the player is in the arena unarmed.',
@@ -7042,6 +7130,133 @@ CreateThread(function()
             .. '`stripOnEntry` off -- on the shipped setting there is nothing in their '
             .. 'pockets the arena did not issue.')
     end
+end)
+
+--- Every attachment name the config can put on a weapon, and where it came
+--- from, as { [name] = 'where' }.
+---
+--- THREE PLACES CAN NAME ONE, and an operator editing any of them can make
+--- the same mistake:
+---
+---   Config.Loadouts.weaponAttachments  -- the per-weapon table
+---   an entry's own `components` list   -- hand-written, appended to the above
+---   an ammoTypes line's `component`    -- the Mk2 magazine path
+---
+--- @return table named
+local function everyConfiguredComponent()
+    local named = {}
+
+    local function note(name, where)
+        if Arena.IsKey(name) and named[name] == nil then named[name] = where end
+    end
+
+    for weapon, row in pairs(Config.Loadouts.weaponAttachments or {}) do
+        if type(row) == 'table' then
+            for kind, name in pairs(row) do
+                note(name, ('%s (%s)'):format(weapon, tostring(kind)))
+            end
+        end
+    end
+
+    for _, entry in ipairs(Config.Loadouts.weapons or {}) do
+        for _, name in ipairs(entry.components or {}) do
+            note(name, ('%s (its own components list)'):format(tostring(entry.weapon or entry.key)))
+        end
+        for _, ammoType in ipairs(entry.ammoTypes or {}) do
+            if type(ammoType) == 'table' then
+                note(ammoType.component, ('%s (%s ammunition)')
+                    :format(tostring(entry.weapon or entry.key), tostring(ammoType.key)))
+            end
+        end
+    end
+
+    return named
+end
+
+--- What the start-up check found, as lines.
+---
+--- SPLIT OUT OF THE THREAD so it can be read without restarting the server,
+--- the same way ArenaDispatch.IsolationReport and ArenaDispatch.CompatReport
+--- are. Everything the thread below prints, it prints from here.
+--- @return string[]
+function ArenaAmmo.AttachmentReport()
+    local lines = {}
+    local function say(fmt, ...)
+        local ok, text = pcall(string.format, fmt, ...)
+        lines[#lines + 1] = ok and text or fmt
+    end
+
+    local named = everyConfiguredComponent()
+    local total = 0
+    for _ in pairs(named) do total = total + 1 end
+
+    if total == 0 then
+        say('attachments: nothing in the config fits a component to anything.')
+        return lines
+    end
+
+    if inventory() == nil then
+        say('attachments: %d name(s) configured, none checked -- ox_inventory is not running.', total)
+        return lines
+    end
+
+    local missing = {}
+    for name, where in pairs(named) do
+        if not inventoryKnowsItem(name) then missing[#missing + 1] = { name = name, where = where } end
+    end
+    table.sort(missing, function(a, b) return a.name < b.name end)
+
+    -- SAID PLAINLY RATHER THAN REPORTED AS A PASS. inventoryKnowsItem lets a
+    -- name through when it cannot read the item list, which is the right
+    -- call there -- stripping every attachment off every weapon because an
+    -- export is missing would be worse than the fault being guarded against.
+    -- It is the wrong thing for a REPORT to round up to "all present": an
+    -- operator reading that would believe their names had been checked.
+    if registryUnreadable then
+        say('attachments: %d name(s) configured, NONE checked -- this ox_inventory would not '
+            .. 'answer Items(). A name it does not know will stop the weapon being drawn, and '
+            .. 'nothing here can tell you which.', total)
+        return lines
+    end
+
+    if #missing == 0 then
+        say('attachments: %d name(s) checked, every one is an item this ox_inventory has.', total)
+        return lines
+    end
+
+    say('attachments: %d of %d configured name(s) are NOT items in this ox_inventory and will be '
+        .. 'DROPPED rather than fitted:', #missing, total)
+    for _, row in ipairs(missing) do
+        say('  %-34s from %s', row.name, row.where)
+    end
+    say('  ox_inventory equips an attachment with Items[name].client.component and does not guard')
+    say('  that lookup, so handing it one of these would leave the weapon in the fighter\'s hands')
+    say('  and undrawable. They are dropped for that reason, and the weapon still goes out.')
+    say('  Fix: name the ox_inventory component ITEM -- at_scope_medium, at_grip,')
+    say('       at_suppressor_heavy -- not GTA\'s COMPONENT_ name. Your own list is in')
+    say('       ox_inventory/data/weapons.lua under Components.')
+
+    return lines
+end
+
+-- THE CHECK RUNS AT START, BEFORE ANYBODY FIGHTS.
+--
+-- The alternative is what actually happened: the mistake is invisible until
+-- a fighter is standing in the arena holding a weapon that will not come
+-- out, mid-round, with no console line naming the attachment that did it.
+-- A name that is wrong is wrong at boot, so boot is when to say so.
+CreateThread(function()
+    -- ox_inventory may not be up yet: start order is not guaranteed and this
+    -- resource is deliberately asked to start early. Same thirty-second
+    -- patience the drops hook gives it, and the same giving up out loud --
+    -- except here giving up is silent-by-report rather than a warning, since
+    -- a server with no ox_inventory hands out no weapons either.
+    for _ = 1, 30 do
+        if inventory() ~= nil then break end
+        Wait(1000)
+    end
+
+    for _, line in ipairs(ArenaAmmo.AttachmentReport()) do ArenaLog('%s', line) end
 end)
 
 AddEventHandler('onResourceStop', function(resource)

@@ -381,14 +381,16 @@ GTA's own special rounds — FMJ, hollow point, armour-piercing, incendiary, tra
 ```lua
 { key = 'fmj', label = 'FMJ',
   item = 'ammo-rifle-fmj',
-  component = 'COMPONENT_ASSAULTRIFLE_MK2_CLIP_FMJ' },
+  component = 'at_clip_fmj_rifle' },
 ```
+
+**That `component` is an `ox_inventory` component *item* name, not one of GTA's `COMPONENT_` names.** ox_inventory equips an attachment with `Items[name].client.component` and does not guard that lookup: a name it does not know is `nil`, indexing it throws, and the throw lands *after* the weapon is given and *before* it is made current — so the player holds a weapon the game will not draw. Whatever you put here has to exist in your `ox_inventory/data/weapons.lua` under `Components`. Stock ox_inventory ships no FMJ or hollow-point item, so using this at all means adding one first. If you get the name wrong the arena drops it and names it in the console rather than handing ox_inventory something that will throw — but the attachment will not be fitted.
 
 The two are independent and you can have either, both, or neither:
 
 | Carries | What happens |
 |---|---|
-| `component` only | The magazine is attached to the weapon on entry. **This needs no inventory and works with `ammoItems.enabled = false`.** The mechanism is live in code, but **nothing in the shipped config uses it** — `COMPONENT_` does not appear in the catalogue at all. |
+| `component` only | The magazine is attached to the weapon on entry, and **works with `ammoItems.enabled = false`** — the arena hands no ammo item over, the magazine simply comes with the gun. It does still need `ox_inventory`, because that is what fits a component now: nothing in this resource calls `GiveWeaponComponentToPed` any more, and the name goes onto the weapon's own item metadata. The mechanism is live in code, but **nothing in the shipped config uses it** — no `component` appears on any ammo type in the catalogue. |
 | `item` only | Your ammo script's item is handed over and reclaimed. Works on any weapon that takes ammunition. |
 | both | Both. The magazine is attached *and* the item is issued. |
 | neither | The type still resolves and is still named in the loadout, and nothing is handed over. |

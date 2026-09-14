@@ -59,14 +59,30 @@ t.test('every weapon the attachment table names is one the arena hands out', fun
     t.isTrue(checked > 0, 'the attachment table is empty, so this test checks nothing')
 end)
 
-t.test('and every name in it is shaped like a component', function()
+t.test('and every name in it is an ox_inventory component item, not a GTA one', function()
+    -- THE SHAPE IS THE BUG. ox_inventory equips an attachment with
+    -- `Items[name].client.component`, unguarded: a name it does not know is
+    -- nil, the index throws, and the throw lands between GiveWeaponToPed and
+    -- SetCurrentPedWeapon -- so the fighter holds a weapon the game will not
+    -- draw. This table shipped full of GTA's own COMPONENT_ names, which
+    -- ox_inventory has never accepted, so every weapon in it was affected on
+    -- every server with attachments on.
+    --
+    -- ox_inventory's own names are lower case and start `at_`. Asserting the
+    -- shape is not the same as asserting the name exists -- only the running
+    -- server's item list can say that, and server/ammo.lua asks it before it
+    -- writes anything onto a weapon -- but a COMPONENT_ name is wrong here on
+    -- sight, and that is the mistake that got made.
     local checked = 0
     for weapon, row in pairs(attachmentTable()) do
         t.equals(type(row), 'table', ('%s has a %s, not a table'):format(weapon, type(row)))
         for kind, component in pairs(row) do
             checked = checked + 1
-            t.isTrue(type(component) == 'string' and component:match('^COMPONENT_%u') ~= nil,
-                ('%s.%s is "%s", which is not a COMPONENT_ name'):format(weapon, kind, tostring(component)))
+            t.isTrue(type(component) == 'string' and component:match('^at_%l') ~= nil,
+                ('%s.%s is "%s", which is not an ox_inventory component item -- those are '
+                    .. 'named at_scope_medium, at_grip, at_suppressor_heavy and so on. A GTA '
+                    .. 'COMPONENT_ name here stops the weapon being drawn at all.')
+                    :format(weapon, kind, tostring(component)))
         end
     end
     t.isTrue(checked > 20, ('only %d component(s) checked'):format(checked))
@@ -100,8 +116,10 @@ t.test('THE THREE THAT MUST STAY OUT: no ammo clips, no thermal, no camo', funct
         { 'CLIP_HOLLOWPOINT',   'a hollow-point clip' },
         { 'CLIP_INCENDIARY',    'an incendiary clip' },
         { 'CLIP_TRACER',        'a tracer clip' },
+        { 'CLIP_DRUM',          'a drum magazine' },
         { 'SCOPE_THERMAL',      'a thermal scope' },
         { 'SCOPE_NV',           'a night scope' },
+        { 'AT_SKIN_',           'a weapon skin' },
         { 'CAMO',               'camo' },
         { 'LIVERY',             'a livery' },
         { 'VARMOD',             'a varmod skin' },
@@ -139,7 +157,7 @@ t.test('a weapon that can take them is issued with them fitted', function()
         'the carbine was issued with nothing fitted at all')
 
     local joined = table.concat(entry.components, ',')
-    t.contains(joined, 'COMPONENT_AT_SCOPE',
+    t.contains(joined, 'at_scope',
         ('the carbine came without its scope: %s'):format(joined))
 end)
 
@@ -187,7 +205,7 @@ t.test('asking for one kind fits exactly that kind', function()
     Config.Loadouts.attachments = was
 
     t.equals(#fitted, 1, ('asked for one kind and got %d'):format(#fitted))
-    t.contains(fitted[1], 'CLIP', ('%s is not a magazine'):format(fitted[1]))
+    t.contains(fitted[1], 'clip', ('%s is not a magazine'):format(fitted[1]))
 end)
 
 t.test('a component named by two kinds is fitted once, not twice', function()
@@ -265,7 +283,7 @@ end)
 t.test('ticking one fits exactly that one', function()
     local fitted = Arena.AttachmentsFor('WEAPON_CARBINERIFLE', { 'scope' })
     t.equals(#fitted, 1, ('asked for a scope and got %d thing(s)'):format(#fitted))
-    t.contains(fitted[1], 'SCOPE', ('%s is not a scope'):format(fitted[1]))
+    t.contains(fitted[1], 'scope', ('%s is not a scope'):format(fitted[1]))
 end)
 
 t.test('and taking everything off really fits nothing', function()
@@ -317,7 +335,7 @@ t.test('a loadout request carries the choice through to the weapon', function()
     local entry = resolved.weapons[1]
     t.equals(#entry.components, 1,
         ('one attachment was asked for and %d arrived'):format(#entry.components))
-    t.contains(entry.components[1], 'SCOPE')
+    t.contains(entry.components[1], 'scope')
 end)
 
 t.test('and two weapons in one loadout are fitted separately', function()
@@ -377,6 +395,53 @@ t.test('THE POINT: a picked list is IGNORED, not honoured', function()
     local asked = A.AttachmentsFor('WEAPON_CARBINERIFLE', { 'scope' })
     t.equals(table.concat(asked, ','), table.concat(full, ','),
         'a player picked one kind and got one kind on a server that fits them all')
+end)
+
+t.test('WITH THE PICKER ON, a client naming components rather than kinds fits nothing', function()
+    -- The other half of the same guarantee, on the SHIPPED setting.
+    --
+    -- What reaches the player's weapon is written into ox_inventory's
+    -- `metadata.components`, and ox_inventory equips that with
+    -- `Items[name].client.component`, unguarded -- a name it does not know
+    -- throws, and the throw leaves the weapon undrawable. So the question is
+    -- not only "can a client fit itself something it should not", it is "can
+    -- a client put an arbitrary STRING in front of that lookup".
+    --
+    -- It cannot, and the reason is structural rather than a filter: what a
+    -- client sends is only ever used to ask `ticked[kind]`, and the string
+    -- that goes on the gun is always read out of the config row. Every
+    -- payload below is a kind that does not exist, so it ticks nothing.
+    for _, payload in ipairs({
+        { 'COMPONENT_AT_SCOPE_MEDIUM' },   -- a GTA component name
+        { 'at_scope_medium' },             -- the real item name, sent as a kind
+        { 'at_scope_thermal' },            -- a component the arena excludes
+        { 'water' },                       -- a real ox_inventory item
+        { 'WEAPON_RPG' },                  -- a weapon
+        { 42, {}, false, '' },             -- not strings at all
+    }) do
+        local fitted = Arena.AttachmentsFor('WEAPON_CARBINERIFLE', payload)
+        t.equals(#fitted, 0,
+            ('a client sent %s and got %s onto the weapon')
+                :format(tostring(payload[1]), table.concat(fitted, ',')))
+    end
+end)
+
+t.test('and the same payloads through ResolveWeaponEntry, which is what builds the loadout', function()
+    local weapon
+    for _, w in ipairs(catalogue()) do
+        if w.weapon == 'WEAPON_CARBINERIFLE' then weapon = w end
+    end
+    t.isNotNil(weapon, 'the carbine is not in the catalogue, so this proves nothing')
+
+    for _, payload in ipairs({
+        { 'COMPONENT_AT_SCOPE_MEDIUM' },
+        { 'at_scope_medium' },
+        { 'os.exit()' },
+    }) do
+        local entry = Arena.ResolveWeaponEntry(weapon, nil, nil, payload)
+        t.equals(#entry.components, 0,
+            ('%s reached the weapon through the loadout path'):format(tostring(payload[1])))
+    end
 end)
 
 t.test('and an EMPTY list cannot strip a gun either', function()

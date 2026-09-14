@@ -28,10 +28,10 @@
      1237   Permissions   Who may open a match, who may force-stop one
      1323   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1757   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2269   Database      Optional: leaderboard, and what players still owe the arena
-     2300   Leaderboard   Which matches count towards the board, and which do not
-     2366   Webhook       Optional: a Discord line per finished match
-     2398   Dispatch      Optional: keeping police and EMS out of the arena
+     2284   Database      Optional: leaderboard, and what players still owe the arena
+     2315   Leaderboard   Which matches count towards the board, and which do not
+     2381   Webhook       Optional: a Discord line per finished match
+     2413   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1837,6 +1837,21 @@ Config.Loadouts = {
 
         fit = { 'scope', 'extendedclip', 'grip', 'muzzle', 'barrel', 'flashlight' },
     },
+
+    -- WHAT GOES ON THE GUN IS NAMED IN config.weapons.lua, under
+    -- Config.Loadouts.weaponAttachments, and every name there is an
+    -- ox_inventory component ITEM -- `at_scope_medium`, `at_grip` -- not one
+    -- of GTA's `COMPONENT_` names. That distinction is not cosmetic: handing
+    -- ox_inventory a name it does not know throws inside its equip path,
+    -- after the weapon is given and before it is made current, so the
+    -- fighter holds a weapon the game will not draw.
+    --
+    -- The console says so at start rather than leaving you to find out
+    -- mid-round: every configured name is checked against this server's own
+    -- ox_inventory item list when the resource comes up, and any that is not
+    -- there is named, with the weapon it was configured on. One that slips
+    -- through anyway is dropped at issue rather than fitted, so the cost is
+    -- an attachment and never the weapon.
 
     -- SWITCH A WHOLE KIND OFF. The weapons stay in config.weapons.lua ready
     -- to switch back on, and the picker drops the section rather than showing

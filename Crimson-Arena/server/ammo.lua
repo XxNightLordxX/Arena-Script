@@ -514,6 +514,291 @@ local function unstow(ox, stash, before)
     return undone
 end
 
+--- Where the arena holds the contents of one container item while its owner
+--- is in a round. One stash per container, named from the container's own
+--- id, so two bags can never be refilled out of each other.
+local function bagStashFor(key)
+    local prefix = doorConfig().stashPrefix
+    if not Arena.IsKey(prefix) then prefix = 'crimson_arena_' end
+    return prefix .. 'bag_' .. key
+end
+
+--- The slot a particular container item is sitting in, in one inventory, and
+--- what it is called. Found by the container KEY rather than by name, because
+--- a player can be carrying two identical bags and only one of them is this
+--- one.
+--- @return integer|nil slot
+--- @return string|nil name
+local function slotOfContainer(ox, who, key)
+    local read, items = pcall(function() return ox:GetInventoryItems(who) end)
+    if not read or type(items) ~= 'table' then return nil end
+
+    for _, item in ipairs(itemsIn(items)) do
+        if type(item.metadata) == 'table' and item.metadata.container == key then
+            return Arena.ToInt(item.slot), item.name
+        end
+    end
+    return nil
+end
+
+--- Makes sure ox_inventory is actually holding the container inventory for
+--- one bag, and answers whether it is.
+---
+--- THIS IS THE ONLY WAY TO REVIVE ONE, and it is why both halves of this run
+--- while the bag is in somebody's hands rather than in a stash.
+--- `GetInventoryItems(containerId)` answers NOTHING for a container
+--- ox_inventory has unloaded: an id that is not a registered stash resolves
+--- to nothing at all, so a container cannot be reached by name once it has
+--- been dropped from memory. `GetContainerFromSlot` is the one export that
+--- CREATES it when it is missing -- and it needs the slot the bag occupies.
+--- @return boolean
+local function wakeContainer(ox, who, slot)
+    local reached = pcall(function() return ox:GetContainerFromSlot(who, slot) end)
+    return reached == true
+end
+
+--- Takes the contents of every container item a player is carrying into the
+--- arena's own keeping for the length of the round, and answers which
+--- containers it emptied.
+---
+--- WHY THE ARENA HAS TO TOUCH THIS AT ALL. A container item does not carry
+--- its contents in its metadata. ox_inventory keeps them in a SEPARATE
+--- inventory keyed by `metadata.container`, and the bag item holds nothing
+--- but that key. So putting the bag in the belongings stash puts a REFERENCE
+--- there, and whether the thing it refers to still exists at the end of the
+--- round is not something this resource has any say in: a container
+--- inventory is never open and never a player, so it sits in ox_inventory's
+--- idle purge -- `inventory:cleartime`, five minutes by default -- like
+--- anything else, is written out, and is read back from the database on the
+--- next touch. Reported off a live server as a match emptying a police bag.
+---
+--- Held in a stash of this resource's own instead, the contents are ordinary
+--- items in an inventory the door already knows how to protect, and they go
+--- back into the bag at the exit. The player gets their bag back packed the
+--- way they left it.
+---
+--- IT IS NOT AN EXPLOIT ROUTE. A fighter cannot open a bag mid-round: the
+--- swapItems hook refuses every move whose other end is not their own
+--- inventory, and a container's inventory id is not their server id. This
+--- runs at the door, before any of that, and the bag is empty for the whole
+--- of the round.
+---
+--- EVERY FAILURE LEAVES THE ITEM IN THE BAG. Proof that it landed in the
+--- holding stash comes first, the way every other write in this file is read;
+--- a refusal means it was never taken out of the container, which is exactly
+--- the behaviour this resource has always had and costs nothing.
+--- @return string[] keys -- the containers that were emptied, to refill later
+local function holdContainers(ox, src)
+    local keys = {}
+    if doorConfig().emptyContainers == false then return keys end
+
+    local read, items = pcall(function() return ox:GetInventoryItems(src) end)
+    if not read or type(items) ~= 'table' then return keys end
+
+    for _, bag in ipairs(itemsIn(items)) do
+        local key = type(bag.metadata) == 'table' and bag.metadata.container or nil
+        local slot = Arena.ToInt(bag.slot)
+
+        if Arena.IsKey(key) and slot then
+            -- WHETHER THIS BUILD HAS THE EXPORT AT ALL. Older ox_inventory
+            -- does not, and asking for one it has not got throws rather than
+            -- answering nil. Such a server keeps the behaviour it has always
+            -- had, which is the bag travelling with its reference.
+            if not wakeContainer(ox, src, slot) then
+                ArenaDebug('door: this build of ox_inventory has no GetContainerFromSlot, so %s\'s %s '
+                    .. 'travels as it is.', tostring(src), tostring(bag.name))
+                goto nextBag
+            end
+
+            local got, contents = pcall(function() return ox:GetInventoryItems(key) end)
+            if not got or type(contents) ~= 'table' then
+                ArenaLog('door: %s\'s %s could not be read, so whatever is in it is travelling inside '
+                    .. 'the bag rather than in the arena\'s keeping.', tostring(src), tostring(bag.name))
+                goto nextBag
+            end
+
+            local inside = itemsIn(contents)
+            if #inside == 0 then goto nextBag end
+
+            local stash = bagStashFor(key)
+            if not oxDid('registering bag stash ' .. stash, function()
+                return ox:RegisterStash(stash, 'Arena Bag Contents', STASH_SLOTS, STASH_WEIGHT)
+            end) then
+                ArenaLog('door: could not register a holding stash for %s\'s %s -- it travels as it is.',
+                    tostring(src), tostring(bag.name))
+                goto nextBag
+            end
+
+            local took = 0
+            for _, held in ipairs(inside) do
+                local landed, why, answer = oxGave(function()
+                    return ox:AddItem(stash, held.name, held.count, held.metadata)
+                end)
+
+                if not landed then
+                    ArenaLog('door: %s x%s would not go into the holding stash for %s\'s %s (%s) -- it '
+                        .. 'stays in the bag.', tostring(held.name), tostring(held.count),
+                        tostring(src), tostring(bag.name), gaveWhy(why, answer))
+                else
+                    -- IT IS IN TWO PLACES UNTIL THIS LANDS. The filter is
+                    -- tried first and the slot is the address, for the reason
+                    -- handBack sets out at length.
+                    local out = oxDid(('taking %s x%s out of container %s'):format(
+                            tostring(held.name), tostring(held.count), tostring(key)),
+                        function() return ox:RemoveItem(key, held.name, held.count, held.metadata) end)
+
+                    if not out and Arena.ToInt(held.slot) then
+                        out = oxDid(('taking %s x%s out of slot %d of container %s'):format(
+                                tostring(held.name), tostring(held.count),
+                                Arena.ToInt(held.slot), tostring(key)),
+                            function()
+                                return ox:RemoveItem(key, held.name, held.count, nil, Arena.ToInt(held.slot))
+                            end)
+                    end
+
+                    if out then
+                        took = took + 1
+                    else
+                        -- IT IS NOW IN BOTH PLACES, so the copy this function
+                        -- just made is taken back out of the holding stash.
+                        -- Undoing our OWN write is the only move here that
+                        -- cannot cost anybody anything: leaving it would put a
+                        -- second one back in the bag at the exit.
+                        local undone = oxDid(('putting %s x%s back out of %s'):format(
+                                tostring(held.name), tostring(held.count), stash),
+                            function() return ox:RemoveItem(stash, held.name, held.count, held.metadata) end)
+
+                        ArenaLog('door: %s x%s could not be taken out of %s\'s %s. %s',
+                            tostring(held.name), tostring(held.count), tostring(src), tostring(bag.name),
+                            undone and 'The copy in the holding stash has been taken back out, so it is '
+                                .. 'still in the bag and nothing is lost.'
+                                or ('IT IS NOW IN THE BAG AND IN STASH ' .. stash .. '. Settle it by hand.'))
+                    end
+                end
+            end
+
+            if took > 0 then
+                keys[#keys + 1] = key
+                ArenaDebug('door: holding %d item(s) out of %s\'s %s for the round.',
+                    took, tostring(src), tostring(bag.name))
+            end
+        end
+
+        ::nextBag::
+    end
+
+    return keys
+end
+
+--- Puts back what holdContainers took, into the same bag it came out of.
+---
+--- RUN AFTER THE BELONGINGS ARE BACK IN THEIR HANDS, and that ordering is
+--- the whole of it: the bag has to be in an inventory this can name a slot
+--- in before the container behind it can be woken at all.
+---
+--- MATCHED ON THE CONTAINER KEY, never on the item's name. A player can be
+--- carrying two identical bags and only one of them is the one these
+--- contents came out of.
+---
+--- ANYTHING THAT WILL NOT GO BACK STAYS IN A REAL STASH with a name in the
+--- log, the same as every other half-finished return in this file. Nothing
+--- here ever destroys and nothing here ever creates: items only move, and
+--- only after the write that moves them has been read.
+--- @return integer restored
+--- @return integer failures
+local function refillContainers(ox, src, keys)
+    if type(keys) ~= 'table' then return 0, 0 end
+
+    local restored, failures = 0, 0
+
+    for _, key in ipairs(keys) do
+        if Arena.IsKey(key) then
+            local stash = bagStashFor(key)
+
+            if not oxDid('registering bag stash ' .. stash, function()
+                return ox:RegisterStash(stash, 'Arena Bag Contents', STASH_SLOTS, STASH_WEIGHT)
+            end) then
+                failures = failures + 1
+                goto nextKey
+            end
+
+            local read, waiting = pcall(function() return ox:GetInventoryItems(stash) end)
+            if not read or type(waiting) ~= 'table' then
+                ArenaLog('door: the holding stash %s could not be read. %s\'s bag contents are still '
+                    .. 'in it -- it is a real ox_inventory stash and can be opened.', stash, tostring(src))
+                failures = failures + 1
+                goto nextKey
+            end
+
+            local rows = itemsIn(waiting)
+            if #rows == 0 then goto nextKey end
+
+            local slot, bagName = slotOfContainer(ox, src, key)
+            if not slot then
+                ArenaLog('door: %s is not carrying the bag that %d item(s) in stash %s came out of, so '
+                    .. 'they stay there. That bag may still be in their belongings stash if the exit '
+                    .. 'could not finish.', tostring(src), #rows, stash)
+                failures = failures + 1
+                goto nextKey
+            end
+
+            if not wakeContainer(ox, src, slot) then
+                ArenaLog('door: ox_inventory would not open the container behind %s\'s %s, so its %d '
+                    .. 'item(s) stay in stash %s.', tostring(src), tostring(bagName), #rows, stash)
+                failures = failures + 1
+                goto nextKey
+            end
+
+            for _, held in ipairs(rows) do
+                local landed, why, answer = oxGave(function()
+                    return ox:AddItem(key, held.name, held.count, held.metadata)
+                end)
+
+                if not landed then
+                    ArenaLog('door: %s x%s would not go back into %s\'s %s (%s). It stays in stash %s.',
+                        tostring(held.name), tostring(held.count), tostring(src), tostring(bagName),
+                        gaveWhy(why, answer), stash)
+                    failures = failures + 1
+                else
+                    local out = oxDid(('clearing %s x%s from %s'):format(
+                            tostring(held.name), tostring(held.count), stash),
+                        function() return ox:RemoveItem(stash, held.name, held.count, held.metadata) end)
+
+                    if not out and Arena.ToInt(held.slot) then
+                        out = oxDid(('clearing %s x%s from slot %d of %s'):format(
+                                tostring(held.name), tostring(held.count),
+                                Arena.ToInt(held.slot), stash),
+                            function()
+                                return ox:RemoveItem(stash, held.name, held.count, nil, Arena.ToInt(held.slot))
+                            end)
+                    end
+
+                    if out then
+                        restored = restored + 1
+                    else
+                        -- The same stop handBack makes, for the same reason:
+                        -- the item is in the bag AND in the holding stash, and
+                        -- the arena cannot fix that without risking taking one
+                        -- of the two off them.
+                        jammedStash[stash] = true
+                        failures = failures + 1
+                        ArenaLog('door: %s x%s went back into %s\'s %s but could NOT be taken out of '
+                            .. 'stash %s. There is a copy in both places and the door is touching that '
+                            .. 'stash no further -- settle it by hand.',
+                            tostring(held.name), tostring(held.count), tostring(src),
+                            tostring(bagName), stash)
+                        break
+                    end
+                end
+            end
+        end
+
+        ::nextKey::
+    end
+
+    return restored, failures
+end
+
 local function stow(src, citizenid)
     local ox = inventory()
     if not ox then
@@ -548,6 +833,18 @@ local function stow(src, citizenid)
         ArenaLog('door: could not register the stash for %s -- they keep their own kit.', tostring(src))
         return false, 0
     end
+
+    -- THE BAGS ARE EMPTIED BEFORE THEIR POCKETS ARE READ, and the order is
+    -- load-bearing twice over. A container can only be woken through the SLOT
+    -- its bag occupies, so this has to happen while the bag is still in their
+    -- hands and not once it is in the stash. And the read below must see the
+    -- inventory as it is AFTER this, or the rollback's snapshot describes a
+    -- world that no longer exists.
+    --
+    -- Its own failures are its own: every one of them leaves the item in the
+    -- bag, which is what this resource has always done, so nothing here can
+    -- stop a stow that would otherwise have worked.
+    local bagKeys = holdContainers(ox, src)
 
     local ok, items = pcall(function() return ox:GetInventoryItems(src) end)
     if not ok or type(items) ~= 'table' then
@@ -717,7 +1014,7 @@ local function stow(src, citizenid)
         if read > rows then rows = read end
     end
 
-    return true, stowed, rows
+    return true, stowed, rows, bagKeys
 end
 
 --- @param allowed integer|nil -- how many rows the door itself put in this
@@ -1002,6 +1299,20 @@ local function restore(src, record)
             'the stash is a real one and can be opened.',
             tostring(src), record.stash, Arena.ToInt(record.stowedCount) or 0)
         return false, wiped
+    end
+
+    -- AND THE BAGS ARE PACKED BACK UP, after handBack and not before it: the
+    -- container behind a bag can only be woken through the slot that bag is
+    -- sitting in, so it has to be in their hands first. Its own failures do
+    -- not fail the exit -- the belongings are already back, and anything that
+    -- would not go into a bag is named in a real stash by refillContainers
+    -- itself.
+    if record.containers ~= nil then
+        local packed, bagFailures = refillContainers(ox, src, record.containers)
+        if packed > 0 then
+            ArenaDebug('door: put %d item(s) back into %s\'s bags.', packed, tostring(src))
+        end
+        if bagFailures == 0 then record.containers = nil end
     end
 
     if failures > 0 then
@@ -3936,7 +4247,7 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                 carried = math.max(0, Arena.ToInt(held.stowedCount) or 0)
             end
 
-            local put, count, rowsInStash = stow(src, citizenid)
+            local put, count, rowsInStash, bagKeys = stow(src, citizenid)
             if put then
                 stashed[src] = {
                     stash = stashFor(citizenid),
@@ -3957,6 +4268,11 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                     -- it is still sitting in there. Nil when the stash could
                     -- not be read back, and nil means no ceiling at all.
                     allowed = rowsInStash,
+
+                    -- THE CONTAINERS THE DOOR EMPTIED, so the exit can put
+                    -- each one back into the bag it came out of. holdContainers
+                    -- says why the arena holds them at all.
+                    containers = bagKeys,
                 }
                 ArenaDebug('door: stashed %d item(s) of %s\'s for match %s',
                     count, tostring(src), tostring(matchId))
@@ -4454,6 +4770,34 @@ function ArenaAmmo.ReturnLeftovers(src)
         readable, failures, returned = handBack(ox, src, stash)
         if not readable then return false, 0, false end
     end
+
+    -- AND ANY BAG CONTENTS THE ARENA IS STILL HOLDING, which is the half
+    -- restore() cannot do on this path because there is no record here to
+    -- read them off.
+    --
+    -- IT DOES NOT NEED ONE. A bag names its own container, and the holding
+    -- stash is named from that container -- so the keys can be read straight
+    -- off whatever bags the player is carrying, including after a restart
+    -- that took every record with it. That is the case this exists for:
+    -- restore() refills on the ordinary way out, and an exit that could not
+    -- finish, or a server that went down mid-round, would otherwise leave
+    -- somebody's bag contents in a stash nothing ever came back for.
+    --
+    -- AFTER the hand-back, because the bag itself may be one of the things
+    -- that just came out of the belongings stash, and a container can only be
+    -- woken through the slot its bag is sitting in.
+    --
+    -- Cheap when there is nothing to do: no container item means no keys, and
+    -- refillContainers returns on an empty list without a single call.
+    local bagKeys = {}
+    local sawBags, carried = pcall(function() return ox:GetInventoryItems(src) end)
+    if sawBags and type(carried) == 'table' then
+        for _, item in ipairs(itemsIn(carried)) do
+            local key = type(item.metadata) == 'table' and item.metadata.container or nil
+            if Arena.IsKey(key) then bagKeys[#bagKeys + 1] = key end
+        end
+    end
+    if #bagKeys > 0 then refillContainers(ox, src, bagKeys) end
 
     -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY -- and this is
     -- the same guard restore() applies, standing here because THIS is the

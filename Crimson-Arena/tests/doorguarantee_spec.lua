@@ -78,6 +78,10 @@ local function newServer(ids, mutate, extra)
     local threads = Sandbox.newThreadRunner()
     local console, netEvents, handlers = {}, {}, {}
 
+    --- Every id this fixture knows to be a CONTAINER rather than a stash,
+    --- so the reads above can tell the two apart.
+    local containerKeys = {}
+
     local function bucket(id)
         if type(id) == 'number' then
             inv[id] = inv[id] or {}
@@ -101,10 +105,47 @@ local function newServer(ids, mutate, extra)
     --- guard applies to unanswerable from in here.
     local hook
 
+    --- Which container inventories ox_inventory is currently holding. A
+    --- container is NOT reachable by id until something wakes it -- see
+    --- wakeContainer in server/ammo.lua -- so this models the one thing that
+    --- makes the police-bag defect possible: `GetInventoryItems(containerId)`
+    --- answers nothing for a container that has been dropped from memory, and
+    --- only GetContainerFromSlot can bring one back.
+    local livingContainers = {}
+
+    --- Set by a test to model an ox_inventory build old enough not to have
+    --- GetContainerFromSlot at all.
+    local noContainerExport = false
+
     local ox = {
         RegisterStash = function() return true end,
+        --- ox_inventory's own export, modelled on its real body: find the
+        --- item in that slot, and if the inventory behind its container key
+        --- is not in memory, CREATE it -- empty.
+        GetContainerFromSlot = function(_self, id, slot)
+            if noContainerExport then error('no such export GetContainerFromSlot', 2) end
+
+            local holder = bucket(id)
+            local item = holder[slot]
+            if type(item) ~= 'table' then return nil end
+
+            local key = type(item.metadata) == 'table' and item.metadata.container or nil
+            if key == nil then return nil end
+
+            if not livingContainers[key] then
+                -- Woken from nothing, which is what a container reloaded out
+                -- of a database that did not answer looks like.
+                livingContainers[key] = true
+                stashes[key] = stashes[key] or {}
+            end
+            return { id = key }
+        end,
         GetInventoryItems = function(_self, id)
             local out = {}
+            -- A CONTAINER NOBODY HAS WOKEN IS NOT READABLE, and that is not
+            -- the same answer as an empty one. ox_inventory resolves an id
+            -- that is not a registered stash to nothing at all.
+            if containerKeys[id] and not livingContainers[id] then return nil end
             if forgotten[id] then return out end
             for _, item in ipairs(bucket(id)) do
                 out[#out + 1] = { name = item.name, count = item.count, metadata = item.metadata }
@@ -294,6 +335,71 @@ local function newServer(ids, mutate, extra)
     function server.forgetStash(src, on)
         forgotten['crimson_arena_CID' .. src] = (on ~= false) or nil
     end
+
+    --- EVERY ITEM THIS WHOLE SERVER IS HOLDING, wherever it is: pockets,
+    --- belongings stashes, bag-holding stashes, the insides of bags. As
+    --- name -> count, so two of these can be compared.
+    ---
+    --- The point is conservation. A match must not be able to make an item
+    --- appear or disappear, and the only way to say that with confidence is
+    --- to count everything rather than the one inventory a test is looking at.
+    function server.ledger()
+        local total = {}
+        local function add(list)
+            for _, item in ipairs(list or {}) do
+                if type(item) == 'table' and type(item.name) == 'string' then
+                    total[item.name] = (total[item.name] or 0) + (tonumber(item.count) or 0)
+                end
+            end
+        end
+        for _, list in pairs(inv) do add(list) end
+        for _, list in pairs(stashes) do add(list) end
+        return total
+    end
+
+    --- Gives a player a CONTAINER item -- a police bag -- with things
+    --- already in it. ox_inventory keeps a bag's contents in a separate
+    --- inventory keyed by `metadata.container`; the item itself holds only
+    --- the key.
+    function server.giveBag(src, name, key, contents)
+        containerKeys[key] = true
+        livingContainers[key] = true
+        inv[src] = inv[src] or {}
+        inv[src][#inv[src] + 1] = { name = name, count = 1, metadata = { container = key } }
+        stashes[key] = {}
+        for _, entry in ipairs(contents or {}) do
+            stashes[key][#stashes[key] + 1] = { name = entry[1], count = entry[2] }
+        end
+    end
+
+    --- What is in one bag right now.
+    function server.bagContents(key)
+        local names = {}
+        for _, item in ipairs(stashes[key] or {}) do
+            names[#names + 1] = item.name .. 'x' .. tostring(item.count)
+        end
+        table.sort(names)
+        return table.concat(names, ',')
+    end
+
+    --- Whether a player is carrying the bag with that key at all.
+    function server.hasBag(src, key)
+        for _, item in ipairs(inv[src] or {}) do
+            if type(item.metadata) == 'table' and item.metadata.container == key then return true end
+        end
+        return false
+    end
+
+    --- ox_inventory's idle purge taking a container out of memory, and the
+    --- database not giving it back. THIS IS THE DEFECT: five minutes of a
+    --- round with nobody holding the bag open is all it takes.
+    function server.purgeContainer(key)
+        livingContainers[key] = nil
+        stashes[key] = {}
+    end
+
+    --- An ox_inventory old enough to have no GetContainerFromSlot.
+    function server.oldOxBuild() noContainerExport = true end
 
     --- Puts an item straight into a stash, the way an earlier run of this
     --- resource left one behind.
@@ -1204,6 +1310,211 @@ t.test('CONTROL: a stash that reads EMPTY the instant after it is filled is not 
     t.equals(server.carrying(1), INTACT, 'A PLAYER WAS REFUSED THEIR OWN BELONGINGS')
     t.isNil(server.log():find('appeared while', 1, true),
         'it called their own kit a surplus and shut the stash on them')
+end)
+
+-- ========================================================================
+-- THE POLICE BAG, WHICH CAME BACK EMPTY
+--
+-- A container item does not carry its contents in its metadata. ox_inventory
+-- keeps them in a SEPARATE inventory keyed by metadata.container, and the bag
+-- holds nothing but that key. So stashing the bag stashes a REFERENCE -- and
+-- that inventory is never open and never a player, which puts it in the same
+-- five-minute idle purge as everything else. Written out, dropped, and read
+-- back from the database on the next touch; if that does not come back, the
+-- bag returns with nothing in it.
+--
+-- The arena now holds the contents itself for the length of the round.
+-- ========================================================================
+
+local BAG = 'police_bag'
+local KEY = 'bagkey123'
+
+--- A round fought by somebody carrying a packed bag.
+local function roundWithBag(contents)
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, BAG, KEY, contents or { { 'radio', 1 }, { 'handcuffs', 2 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+    return server, match.id
+end
+
+t.test('DEFECT: a bag whose container is purged mid-round still comes back packed', function()
+    local server, matchId = roundWithBag()
+
+    -- Five minutes into the round, with nobody holding the bag open.
+    server.purgeContainer(KEY)
+
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.isTrue(server.hasBag(1, KEY), 'they did not get their bag back at all')
+    t.equals(server.bagContents(KEY), 'handcuffsx2,radiox1',
+        'THE BAG CAME BACK EMPTY -- its contents were never in the arena\'s keeping')
+end)
+
+t.test('and the contents are in the BAG, not loose in their pockets', function()
+    local server, matchId = roundWithBag()
+    server.purgeContainer(KEY)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    -- INTACT is what they own outside the bag. Anything from inside it
+    -- turning up here means the exit unpacked their bag for them.
+    t.equals(server.carrying(1), INTACT .. ',' .. BAG .. 'x1',
+        'the bag contents were tipped into their pockets instead of put back')
+end)
+
+t.test('CONTROL: an ordinary round with a bag changes nothing about it', function()
+    -- Without this the tests above pass on a build that hands out contents
+    -- from nowhere. Nothing is purged here: the bag must come back exactly
+    -- as it went in, with no extra copies anywhere.
+    local server, matchId = roundWithBag()
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.bagContents(KEY), 'handcuffsx2,radiox1', 'the bag came back wrong')
+    t.equals(server.carrying(1), INTACT .. ',' .. BAG .. 'x1', 'they gained or lost something')
+    t.equals(server.stashed(1), '', 'and the belongings stash was left holding something')
+end)
+
+t.test('CONTROL: an empty bag is left alone entirely', function()
+    local server, matchId = roundWithBag({})
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.bagContents(KEY), '')
+    t.equals(server.carrying(1), INTACT .. ',' .. BAG .. 'x1')
+end)
+
+t.test('CONTROL: with emptyContainers off the bag travels as it always did', function()
+    local server = newServer({ 1, 2 }, function(config)
+        config.Loadouts.inventory.emptyContainers = false
+    end)
+    server.giveBag(1, BAG, KEY, { { 'radio', 1 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    -- The arena never took them, so a purge still costs them -- which is the
+    -- behaviour an operator is choosing when they turn this off.
+    server.purgeContainer(KEY)
+    server.match.End(match.id, 'match.ended')
+    server.step(8)
+
+    t.isTrue(server.hasBag(1, KEY), 'they lost the bag itself, which is not what off means')
+    t.equals(server.bagContents(KEY), '', 'the arena held contents it was told not to touch')
+end)
+
+t.test('CONTROL: an ox_inventory with no GetContainerFromSlot costs nothing', function()
+    -- The export is not on every build. A server without it keeps the
+    -- behaviour it has always had, and above all the door still works.
+    local server = newServer({ 1, 2 })
+    server.oldOxBuild()
+    server.giveBag(1, BAG, KEY, { { 'radio', 1 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.match.End(match.id, 'match.ended')
+    server.step(8)
+
+    t.equals(server.carrying(1), INTACT .. ',' .. BAG .. 'x1', 'the door stopped working on an older build')
+    t.equals(server.bagContents(KEY), 'radiox1', 'it lost a bag it could not reach into')
+end)
+
+--- Anything the arena itself issues, which is legitimately created at the
+--- door and destroyed at the exit. Conservation is asserted over everything
+--- else -- the things players actually own.
+local function ownedOnly(ledger, issued)
+    local out = {}
+    for name, count in pairs(ledger) do
+        if not issued[name] then out[name] = count end
+    end
+    return out
+end
+
+local function ledgerDiff(before, after)
+    local lines = {}
+    local seen = {}
+    for name in pairs(before) do seen[name] = true end
+    for name in pairs(after) do seen[name] = true end
+    local names = {}
+    for name in pairs(seen) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        local was, now = before[name] or 0, after[name] or 0
+        if was ~= now then
+            lines[#lines + 1] = ('%s %d -> %d'):format(name, was, now)
+        end
+    end
+    return table.concat(lines, '; ')
+end
+
+t.test('A WHOLE MATCH CONSERVES WHAT PLAYERS OWN, on every way out of one', function()
+    -- THE GENERAL FORM OF EVERY DUPLICATION DEFECT IN THIS FILE, asserted
+    -- rather than reasoned about: count every item this server is holding --
+    -- pockets, belongings stashes, bag-holding stashes, the insides of bags
+    -- -- before a match and after it, and nothing players own may have
+    -- appeared or gone. Anything the ARENA issues is excluded: that is
+    -- created at the door and destroyed at the exit on purpose.
+    --
+    -- It is deliberately not about one inventory. The defects this file has
+    -- had were all of the shape "it is in two places now", and only a total
+    -- can see that.
+    local shapes = {
+        ['a match that ends normally'] = function(server, matchId)
+            server.match.End(matchId, 'match.ended')
+        end,
+        ['a fighter leaving mid-round'] = function(server)
+            server.fire('leaveMatch', 2)
+        end,
+        ['a fighter disconnecting'] = function(server)
+            server.drop(2)
+        end,
+        ['the resource stopping mid-round'] = function(server)
+            server.stopResource()
+        end,
+    }
+
+    for label, finish in pairs(shapes) do
+        local server = newServer({ 1, 2 })
+        server.giveBag(1, 'police_bag', 'k_' .. #label, { { 'radio', 1 } })
+
+        local issued = {}
+        local before = server.ledger()
+
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+        local match = server.lobby.All()[1]
+        server.fire('joinMatch', 2, { matchId = match.id })
+        server.fire('setReady', 1, { ready = true })
+        server.fire('setReady', 2, { ready = true })
+        server.step(6)
+
+        -- Whatever the arena handed out during placement is its own and is
+        -- meant to vanish at the exit; conservation is about the rest.
+        for name in pairs(server.ledger()) do
+            if before[name] == nil then issued[name] = true end
+        end
+
+        finish(server, match.id)
+        server.step(10)
+
+        local diff = ledgerDiff(ownedOnly(before, issued), ownedOnly(server.ledger(), issued))
+        t.equals(diff, '', ('%s did not conserve what players own'):format(label))
+    end
 end)
 
 os.exit(t.summary())

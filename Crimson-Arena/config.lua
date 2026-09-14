@@ -28,9 +28,9 @@
      1210   Permissions   Who may open a match, who may force-stop one
      1296   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1730   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2075   Database      Optional: leaderboard, and what players still owe the arena
-     2085   Webhook       Optional: a Discord line per finished match
-     2117   Dispatch      Optional: keeping police and EMS out of the arena
+     2100   Database      Optional: leaderboard, and what players still owe the arena
+     2110   Webhook       Optional: a Discord line per finished match
+     2142   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1811,6 +1811,31 @@ Config.Loadouts = {
         -- can never open another's. Change it only if it collides with
         -- something you already use.
         stashPrefix = 'crimson_arena_',
+
+        -- EMPTY CONTAINER ITEMS AT THE DOOR AND PACK THEM BACK AT THE EXIT.
+        --
+        -- A bag -- a police bag, a paper bag, anything ox_inventory calls a
+        -- container -- does not carry its contents in its metadata. They live
+        -- in a SEPARATE ox_inventory inventory, and the bag holds nothing but
+        -- a key naming it. So stashing the bag stashes a REFERENCE, and that
+        -- inventory is never open and never a player, which puts it in
+        -- ox_inventory's idle purge: after `inventory:cleartime` (five
+        -- minutes by default) it is written out and dropped, and read back
+        -- from the database on the next touch. If that round trip does not
+        -- come back, the bag returns empty -- reported off a live server
+        -- exactly that way.
+        --
+        -- On, the arena takes the contents into a stash of its own for the
+        -- length of the round and puts them back in the same bag afterwards,
+        -- so the player gets it back packed the way they left it. Every move
+        -- is read before the item is taken out of where it was, and anything
+        -- that will not go back is left in a real stash the log names.
+        --
+        -- Off, the bag travels with its reference and its contents are
+        -- ox_inventory's business, which is the behaviour before this
+        -- existed. Turn it off only if your inventory does not use containers
+        -- at all, or if you would rather chase `inventory:cleartime` instead.
+        emptyContainers = true,
 
         -- WHAT STAYS IN A PLAYER'S POCKETS ON THE WAY IN, instead of going
         -- into the stash. Empty, and it should stay that way.

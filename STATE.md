@@ -104,25 +104,61 @@ are the player's and a ceiling that refused them would be worse than the defect.
 the duplication; raising the idle window stops the round-trip that causes it, and it is
 also the only thing that helps the police bag below.
 
-### 3. The police bag comes back empty -- mitigation only, not fixed in code
+### 3. The police bag comes back empty -- FIXED
 
 A container item does not carry its contents in its metadata. ox_inventory keeps them in a
 **separate inventory** keyed by `metadata.container` (`modules/inventory/server.lua:294`
--`:298`), of type `container`, persisted and reloaded through the same stash table
-(`:757`, `:868`).
+-`:298`), and the bag holds nothing but that key. So stashing the bag stashes a
+**reference** -- and that inventory is never open and never a player, which puts it in the
+same five-minute idle purge as everything else: written out, dropped, and read back from
+the database on the next touch (`:757`, `:868`). If that round trip does not come back, the
+bag returns with nothing in it.
 
-This resource never touches container metadata and does not need to: `AddItem` preserves
-`metadata.container` (`modules/items/server.lua:194`-`:199`), so the bag keeps its link
-when it is moved into the stash and back. But that container inventory is also never open
-and never a player, so it sits in the same five-minute purge, and is reloaded out of the
-database on the next touch. **When the database cannot answer, it comes back with nothing
-in it.** The bag returns; what was in it does not.
+The arena now takes the contents into its own keeping for the length of the round, one
+holding stash per container (`crimson_arena_bag_<container id>`), and puts them back into
+the same bag at the exit. The player gets it back packed the way they left it.
 
-Nothing in this resource can put those contents back -- they are gone from ox_inventory's
-memory and were never written down. `set inventory:cleartime 60` stops the purge from
-happening inside a round, which is the whole of the fix available from outside
-ox_inventory. The duplicate items the bag report also mentioned are a separate defect and
-are covered by the ceiling in 2.
+Three things make it safe:
+
+- **Reached through the slot, never the id.** `GetInventoryItems(containerId)` answers
+  nothing for a container ox_inventory has unloaded -- an id that is not a registered stash
+  resolves to nothing at all, so a container cannot be revived by name. `GetContainerFromSlot`
+  is the one export that creates it when missing, and it needs the slot the bag occupies.
+  That is why both halves run while the bag is in somebody's hands rather than in a stash.
+- **Nothing is created and nothing is destroyed.** Items only move, and every move is read
+  before the item is taken out of where it was. A refusal at the door leaves the item in the
+  bag, which is exactly the behaviour this resource has always had. A refusal at the exit
+  leaves it in a real stash the log names.
+- **It is not an exploit route.** A fighter cannot open a bag mid-round: the swapItems hook
+  already refuses every move whose other end is not their own inventory, and a container's
+  inventory id is not their server id. The bag is empty for the whole round.
+
+The sweep refills too, without needing a record: a bag names its own container and the
+holding stash is named from that container, so the keys are read straight off whatever bags
+the player is carrying. That covers the exit that could not finish and the server that went
+down mid-round.
+
+Six tests in `doorguarantee_spec.lua`, four of them controls -- an ordinary round must
+change nothing about the bag, an empty bag is left alone, `emptyContainers = false` keeps
+the old behaviour, and an ox_inventory with no `GetContainerFromSlot` costs nothing. Two
+separate mutations were used: switching the custody off (the bag comes back empty) and
+aiming the refill at the player's pockets instead of the bag (the contents come back loose).
+
+`Config.Loadouts.inventory.emptyContainers` turns it off.
+
+### 4. And no match duplicates anything, asserted rather than argued
+
+The general form of every defect above is "it is in two places now", and a test that looks
+at one inventory cannot see it. So there is now a total: every item this server holds --
+pockets, belongings stashes, bag-holding stashes, the insides of bags -- counted before a
+match and after it, across **four** ways out (a normal end, a fighter leaving mid-round, a
+fighter disconnecting, the resource stopping mid-round). Nothing players own may appear or
+go; what the arena issues is excluded, because that is created at the door and destroyed at
+the exit on purpose.
+
+Proved by mutation: making the hand-back give an item over without taking it out of the
+stash tripled everything, and the assertion names it item by item -- `ammo-rifle-ap 80 ->
+240; burger 6 -> 18; phone 2 -> 6; police_bag 1 -> 3`.
 
 ---
 

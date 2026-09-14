@@ -2874,6 +2874,32 @@ t.test('and a bag whose id is RE-MINTED mid-round follows the bag, not the old n
         .. 'nothing will ever open again -- to its owner that reads as emptied')
 end)
 
+t.test('a server that went down mid-round does not strand a bag\'s contents for ever', function()
+    -- THE GAP THE CUSTODY ITSELF OPENED, and it would have been a worse
+    -- version of the defect it was written to fix. The record of what was
+    -- taken lives in memory, so a restart mid-round takes it with it -- and
+    -- without this the contents sit in a holding stash nothing ever comes
+    -- back for, while the bag their owner is carrying opens an empty one.
+    --
+    -- It needs no record. The holding stash is named from the bag's own id,
+    -- so the whole list rebuilds off whatever bags the player is carrying.
+    local server = newServer({ 1, 2 }, nil, {
+        { name = 'leo_bag', count = 1, metadata = { bagId = 'CID1-LEO-7' } },
+    })
+
+    -- Exactly what a restart leaves behind: the player holding their bag,
+    -- their things in the arena's holding stash, and no record anywhere.
+    server.stashItem('crimson_arena_bag_leo_bag_CID1-LEO-7', 'handcuffs', 2)
+    server.stashItem('crimson_arena_bag_leo_bag_CID1-LEO-7', 'radio', 1)
+
+    t.isTrue((server.env.ArenaAmmo.ReturnLeftovers(1)), 'the sweep could not settle this character')
+
+    t.equals(server.contentsOf('leo_bag_CID1-LEO-7'), 'handcuffsx2,radiox1',
+        'the contents were left in a holding stash nothing will ever come back for')
+    t.equals(server.contentsOf('crimson_arena_bag_leo_bag_CID1-LEO-7'), '',
+        'and the holding stash was not emptied, so the next sweep hands them over again')
+end)
+
 t.test('CONTROL: a bag the operator has NOT listed is still left entirely alone', function()
     -- The rule this replaced is still the rule for anything not named in
     -- Config.Loadouts.inventory.stashBags. The arena does not go looking for

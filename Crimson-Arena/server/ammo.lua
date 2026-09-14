@@ -5867,6 +5867,45 @@ function ArenaAmmo.ReturnLeftovers(src)
     end
     if #bagKeys > 0 then refillContainers(ox, src, bagKeys, citizenid) end
 
+    -- AND THE STASH-BACKED BAGS, for exactly the same reason and by the same
+    -- trick: the holding stash is named from the bag's own id, so the whole
+    -- list can be rebuilt off what the player is carrying with no record at
+    -- all. Without this a server that went down mid-round left a police bag's
+    -- contents in a holding stash nothing ever came back for -- which is a
+    -- worse version of the defect the custody was written to fix.
+    --
+    -- NO `took` IS RECORDED HERE and that is deliberate: this path cannot
+    -- know how many went in, and a count it invented would be read as
+    -- measured fact by the shortfall warning. Absent means do not check,
+    -- never expected none -- the same rule refillContainers follows.
+    --
+    -- THE ONE CASE IT CANNOT REACH, said plainly: a bag whose id was re-made
+    -- while the server was down. The holding stash is named after the OLD id
+    -- and nothing carries the new one back to it, so those contents stay put
+    -- with a line in the log rather than following the bag. The ordinary exit
+    -- does follow it -- see refillStashBags -- because there the bag is read
+    -- in the same breath. /arenaadmin names the stash either way.
+    local stranded = {}
+    local rules = stashBagRules()
+    if next(rules) ~= nil and sawBags and type(carried) == 'table' then
+        for _, item in ipairs(itemsIn(carried)) do
+            local theirs, rule = stashBagOf(rules, item)
+            if theirs then
+                stranded[#stranded + 1] = {
+                    item = item.name,
+                    metaKey = rule.metaKey,
+                    prefix = rule.stashPrefix,
+                    label = rule.label,
+                    slots = rule.slots,
+                    weight = rule.weight,
+                    was = theirs,
+                    holding = bagStashFor(theirs),
+                }
+            end
+        end
+    end
+    if #stranded > 0 then refillStashBags(ox, src, stranded, citizenid) end
+
     -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY -- and this is
     -- the same guard restore() applies, standing here because THIS is the
     -- function that actually retries.

@@ -290,6 +290,30 @@ local function rankedReason(match)
     return true, nil
 end
 
+--- Would this match move anybody's ranking, asked from outside?
+---
+--- FOR THE ONE ROW THAT DOES NOT COME THROUGH RecordMatch. ArenaLobby.Leave
+--- records a fighter who walks out of a live round itself -- their row is
+--- gone from the roster by the time the round ends, so RecordMatch will never
+--- see them -- and that call went straight to Record, around the gate.
+---
+--- What it cost: two accounts, a four-second round, and the farmer presses
+--- Leave before it settles. Every round is refused by minSeconds, the
+--- surviving fighter is shown "This round does not count towards the ladder"
+--- -- and the walker's KILL is written to the board anyway, one per round,
+--- without limit. The board's second sort key is kills, so it climbs.
+---
+--- ASKED, NOT NOTED. This does not write anything down against the repeat
+--- rule: the round is still being fought and RecordMatch will make that
+--- decision properly when it ends. Reading the window prunes rows that have
+--- expired, which is true whoever asks.
+--- @param match table
+--- @return boolean
+function ArenaStats.WouldRank(match)
+    if type(match) ~= 'table' then return true end
+    return (rankedReason(match))
+end
+
 --- Writes this result down against the repeat rule, once it has counted.
 local function noteRanked(match)
     local rules = Config.Leaderboard

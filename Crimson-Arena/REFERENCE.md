@@ -568,11 +568,12 @@ listed; the source documents them where they are.
 | `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
 | `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
 
-#### `server/stats.lua` — 5 functions
+#### `server/stats.lua` — 6 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaStats.Record(entry)` | Folds one player's finished match into the totals. |
+| `ArenaStats.WouldRank(match)` | Whether this match would move anybody's ranking, for the one row ArenaLobby.Leave books itself. |
 | `ArenaStats.RecordMatch(match)` | Records every player of a finished match in one call. |
 | `ArenaStats.GetLeaderboard(cb)` | Hands the top rows to `cb`. |
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |

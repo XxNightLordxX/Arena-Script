@@ -1345,7 +1345,25 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
     -- past MayLeave's refusal and onto the forfeit rule, both of which are
     -- right for it -- so without this flag the fence would have been the one
     -- way to walk out of a round you are losing with no defeat on the board.
-    if liveRound and not (dropped and wasFighting and not ejected)
+    --
+    -- AND ONLY IF THE ROUND WOULD HAVE COUNTED. This is the one row that does
+    -- not go through ArenaStats.RecordMatch -- the leaver is off the roster
+    -- before the round ends, so RecordMatch will never see them -- and it went
+    -- straight past Config.Leaderboard's gate.
+    --
+    -- What it cost: two accounts, a four-second round, and the farmer presses
+    -- Leave before it settles. Every round is refused by minSeconds, the
+    -- fighter still standing is shown "This round does not count towards the
+    -- ladder", and the walker's KILL reached the board anyway, one per round,
+    -- for ever. The board's second sort key is kills.
+    --
+    -- The same rule, asked the same way, so a genuine five-minute round
+    -- somebody rage-quits still costs them the loss it always did.
+    local wouldRank = type(ArenaStats) ~= 'table'
+        or type(ArenaStats.WouldRank) ~= 'function'
+        or ArenaStats.WouldRank(match) ~= false
+
+    if liveRound and wouldRank and not (dropped and wasFighting and not ejected)
         and type(ArenaStats) == 'table' and type(ArenaStats.Record) == 'function'
     then
         ArenaStats.Record({

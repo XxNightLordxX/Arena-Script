@@ -592,6 +592,67 @@ t.test('a refused match does not stop the NEXT one being recorded', function()
 end)
 
 -- ========================================================================
+-- THE ONE ROW THAT DOES NOT COME THROUGH RecordMatch
+--
+-- ArenaLobby.Leave books a quitter's loss itself -- they are off the roster
+-- before the round ends, so RecordMatch never sees them -- and that call went
+-- straight to Record, around this gate entirely. Two accounts, a four-second
+-- round and a Leave before it settled put the farmer's KILL on the board once
+-- per round, without limit, while the fighter still standing was being told
+-- the round did not count. The board's second sort key is kills.
+--
+-- ArenaStats.WouldRank is what Leave asks instead.
+-- ========================================================================
+
+t.test('WouldRank gives the same answer RecordMatch would', function()
+    -- The point of it is that it is not a SECOND rule. If it could disagree
+    -- with RecordMatch, a round would count on one path and not the other.
+    local s = newStats()
+
+    t.isTrue(s.S.WouldRank(duel()), 'a real round was judged unrankable')
+    t.isFalse(s.S.WouldRank(duel({ ranAgo = 2 })), 'a two-second round was judged rankable')
+    t.isFalse(s.S.WouldRank(match({ ADA }, { fought = { 'char:A' } })),
+        'a walkover was judged rankable')
+    t.isFalse(s.S.WouldRank(duel({ startsAt = 0 })),
+        'a round that never went live was judged rankable')
+end)
+
+t.test('and it reads the repeat rule too, not just the two floors', function()
+    local s = newStats()
+    for round = 1, 3 do s.S.RecordMatch(duel({ id = 'm' .. round })) end
+
+    t.isFalse(s.S.WouldRank(duel({ id = 'm4' })),
+        'the fourth round against the same pair was judged rankable')
+end)
+
+t.test('THE TRAP: asking must not WRITE, or the window fills twice as fast', function()
+    -- Leave asks this mid-round and RecordMatch will decide it again properly
+    -- when the round ends. If asking also wrote a row, every round a player
+    -- walked out of would count against the pair TWICE, and the cap would be
+    -- reached in half the rounds it is meant to allow.
+    local s = newStats()
+
+    -- Asked twenty times over. Nothing should have been written down.
+    for _ = 1, 20 do s.S.WouldRank(duel()) end
+
+    for round = 1, 3 do
+        t.equals(s.S.RecordMatch(duel({ id = 'r' .. round })), 2,
+            ('round %d was refused -- asking filled the window'):format(round))
+    end
+    t.equals(s.S.RecordMatch(duel({ id = 'r4' })), 0,
+        'the window never filled at all, so the guard above proves nothing')
+end)
+
+t.test('and it refuses to throw on rubbish, because Leave calls it on every exit', function()
+    local s = newStats()
+    for _, junk in ipairs({ 'a match', 42, true }) do
+        t.isTrue(s.S.WouldRank(junk),
+            ('WouldRank(%s) did not fall open'):format(tostring(junk)))
+    end
+    t.isTrue(s.S.WouldRank(nil), 'WouldRank(nil) did not fall open')
+end)
+
+-- ========================================================================
 -- AND THE HISTORY DOES NOT GROW FOR EVER
 -- ========================================================================
 

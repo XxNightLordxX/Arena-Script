@@ -1149,6 +1149,59 @@ t.test('quitting a live round is still recorded as a loss', function()
     t.isFalse(rows[1].won, 'a quit was recorded as a win')
 end)
 
+t.test('THE HOLE: ...but not out of a round the board would refuse to count', function()
+    -- THE ONE ROW THAT DOES NOT COME THROUGH ArenaStats.RecordMatch. A
+    -- quitter is off the roster before the round ends, so RecordMatch never
+    -- sees them -- and this call went straight to Record, around
+    -- Config.Leaderboard's gate entirely.
+    --
+    -- What it cost: two accounts and a four-second round, with the farmer
+    -- pressing Leave before it settles. Every round is refused by minSeconds,
+    -- the fighter still standing is shown "This round does not count towards
+    -- the ladder", and the walker's KILL reached the board anyway, one per
+    -- round, without limit. The board's second sort key is kills, so it
+    -- climbs.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    server.env.ArenaStats.WouldRank = function() return false end
+    server.fire('leaveMatch', 3, {})
+
+    t.equals(#server.recorded(), 0,
+        'A ROUND THE BOARD REFUSED STILL WROTE THE QUITTER TO IT')
+end)
+
+t.test('and a round it WOULD count still costs the quitter their loss', function()
+    -- The half that must not follow. The gate is the same rule asked the same
+    -- way, so a genuine round somebody rage-quits is unchanged -- and a fix
+    -- that simply stopped recording quitters would pass the test above.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    server.env.ArenaStats.WouldRank = function() return true end
+    server.fire('leaveMatch', 3, {})
+
+    local rows = server.recorded()
+    t.equals(#rows, 1, ('a quit from a countable round was recorded %d time(s)'):format(#rows))
+    t.isFalse(rows[1].won, 'a quit was recorded as a win')
+end)
+
+t.test('and a stats layer that has never heard of the rule still records', function()
+    -- The fixture above deliberately stubs ArenaStats WITHOUT WouldRank,
+    -- which is what an older server/stats.lua looks like from here. A guard
+    -- that read a missing function as "do not record" would take the quit
+    -- penalty away from everybody on a mismatched pair.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    liveRound(server)
+
+    t.equals(type(server.env.ArenaStats.WouldRank), 'nil',
+        'the fixture now supplies WouldRank, so this proves nothing')
+
+    server.fire('leaveMatch', 3, {})
+    t.equals(#server.recorded(), 1,
+        'a stats layer with no WouldRank stopped recording quits altogether')
+end)
+
 t.test('THE CHANGE: but a player whose connection DROPS is spared', function()
     local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
     liveRound(server)

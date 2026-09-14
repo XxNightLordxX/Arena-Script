@@ -609,7 +609,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.SideBetTotals(matchId)` | The same money broken down as pool -> pick -> amount, so the Bets tab can show whether anybody is backing the other side. Keyed by SETTLEMENT pool (see poolKeyFor): with `betPayout.sharedPool` off the two kinds are paid out of separate pools, and a flat book would credit a bettor with money they cannot win. Built with GetSideBetPool's filter, so within one pool the parts add up. |
 | `ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)` | Takes a spectator's side-bet on a team or a fighter. |
 | `ArenaBetting.CountSideBets(matchId)` | How many unsettled side-bets are riding on a match, so a mode change can be refused rather than voiding the whole book. |
-| `ArenaBetting.MarkWalkedOut(matchId, src)` | Marks this player's unsettled bets as placed by somebody who then left, so the dead-pick refund never hands them back, and trims a fighter's stake to what a non-fighter may hold. |
+| `ArenaBetting.MarkWalkedOut(matchId, src, citizenid)` | Marks this player's unsettled bets as placed by somebody who then left, so the dead-pick refund never hands them back, and trims a fighter's stake to what a non-fighter may hold. |
 | `ArenaBetting.ReturnBetsOn(matchId, pick)` | Hands back every unsettled side-bet on one pick, because that pick can no longer win. |
 | `ArenaBetting.SettleSpectatorBets(matchId, winningPick)` | Settles every side-bet on a match. |
 | `ArenaBetting.PayOutstanding(src)` | Pays one character everything this resource owes them from a refund that could not be delivered. |

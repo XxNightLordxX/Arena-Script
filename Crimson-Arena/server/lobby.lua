@@ -1416,7 +1416,12 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
     -- before a shot is fired, and closing the game would be the way out of
     -- it. Standing up is already refused for the same reason (see MayLeave),
     -- so sparing the drop would leave one door open and the other shut.
-    ArenaBetting.MarkWalkedOut(match.id, target)
+    --
+    -- THEIR NAME GOES WITH THEM, and it has to come from here. On a drop the
+    -- framework has usually forgotten the player by now, so betting.lua
+    -- cannot look it up -- read the note beside `walkedOutOf`. This row was
+    -- captured when they joined and is still in hand.
+    ArenaBetting.MarkWalkedOut(match.id, target, player.citizenid)
 
     if leftTeam then
         -- THROUGH PlayerArray, LIKE THE OTHER TWO CALLERS, and not because it

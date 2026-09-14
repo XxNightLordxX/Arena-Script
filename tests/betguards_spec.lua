@@ -997,6 +997,143 @@ t.test('and the walker is still refused on a FRESH seat, which is the half that 
     t.equals(s.qbx.players[4].money.cash, 50000, 'money moved on a refused bet')
 end)
 
+t.test('THE REGRESSION: the flag survives a DROP, where nothing can name the player', function()
+    -- THE TRAP IN KEYING THIS ON THE CHARACTER. `citizenIdOf` reaches into
+    -- the framework, and on a genuine disconnect the framework has usually
+    -- forgotten the player before this resource's playerDropped handler runs.
+    -- Written with no name and read with one, the two never match -- and the
+    -- fighter who dropped out of a live round and reconnected was sold a bet
+    -- on it. Measured, when this was keyed on the character alone: refused on
+    -- a clean Leave, SOLD on a drop.
+    --
+    -- The roster row still holds their name at that moment, so ArenaLobby
+    -- passes it in rather than leaving betting.lua to look up something that
+    -- is already gone.
+    local s, matchId = liveRoundWithGrace()
+    local match = s.lobby.Get(matchId)
+
+    -- THE FRAMEWORK HAS ALREADY LET GO OF THEM. This is what a real drop
+    -- looks like from inside this resource, and it is the whole test: with
+    -- the roster row still in hand the name survives it.
+    s.qbx.players[2] = nil
+    s.lobby.Leave(2, 'match.left', true)
+
+    -- ...and they reconnect on the same id.
+    s.qbx.players[2] = {
+        citizenid = 'CID002', name = 'Fighter 2',
+        money = { cash = 50000, bank = 0 },
+        job = { name = 'unemployed', grade = { level = 0 } },
+    }
+
+    local ok, err = s.betting.PlaceSpectatorBet(2, matchId, 1, 2000, 'cash')
+    t.isFalse(ok, 'A FIGHTER WHO DROPPED OUT OF A LIVE ROUND RECONNECTED AND WAS SOLD A BET ON IT')
+    t.equals(err, 'error.bets_closed')
+    t.equals(match.state, 'live', 'the round stopped being fought, so this proves nothing')
+end)
+
+t.test('and on a fresh seat after a drop, which neither identity alone catches', function()
+    -- The seat key cannot answer this one and the character key could not be
+    -- written. Both halves are held now, so it is answered.
+    local s, matchId = liveRoundWithGrace()
+    local walker = s.qbx.players[2].citizenid
+
+    s.qbx.players[2] = nil
+    s.lobby.Leave(2, 'match.left', true)
+
+    s.qbx.players[4].citizenid = walker
+
+    local ok, err = s.betting.PlaceSpectatorBet(4, matchId, 1, 2000, 'cash')
+    t.isFalse(ok, 'the walker came back on another id after a drop and was sold the bet')
+    t.equals(err, 'error.bets_closed')
+end)
+
+t.test('CONTROL: a drop does not shut the book on the watchers', function()
+    -- Every refusal above has to be about the walker. A flag that shut the
+    -- round to everybody would pass all three and be a worse bug.
+    local s, matchId = liveRoundWithGrace()
+
+    s.qbx.players[2] = nil
+    s.lobby.Leave(2, 'match.left', true)
+
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'),
+        'somebody who never fought was refused because a fighter dropped')
+end)
+
+t.test('and a caller that passes no name still falls back to looking one up', function()
+    -- MarkWalkedOut's third argument is optional. A caller with nothing to
+    -- pass must still get the rule, not a silent no-op.
+    local s, matchId = liveRoundWithGrace()
+    local match = s.lobby.Get(matchId)
+
+    s.betting.MarkWalkedOut(matchId, 2)
+    match.players[2] = nil
+
+    local ok, err = s.betting.PlaceSpectatorBet(2, matchId, 1, 2000, 'cash')
+    t.isFalse(ok, 'MarkWalkedOut recorded nothing when it was handed no name')
+    t.equals(err, 'error.bets_closed')
+end)
+
+t.test('and a name passed in beats a framework that would answer differently', function()
+    -- The argument is the authority, not a hint. If it were only consulted
+    -- when the lookup failed, a framework mid-swap could overwrite it.
+    local s, matchId = liveRoundWithGrace()
+    local match = s.lobby.Get(matchId)
+
+    s.betting.MarkWalkedOut(matchId, 2, 'CID-FROM-THE-ROSTER')
+    match.players[2] = nil
+
+    -- Somebody else is on that seat now, with a different name.
+    s.qbx.players[2].citizenid = 'CID999'
+    t.isTrue(s.betting.PlaceSpectatorBet(2, matchId, 1, 2000, 'cash'),
+        'a stranger on the freed seat was refused')
+
+    -- ...and the character the roster named is still caught, on any seat.
+    s.qbx.players[4].citizenid = 'CID-FROM-THE-ROSTER'
+    t.isFalse(s.betting.PlaceSpectatorBet(4, matchId, 1, 2000, 'cash'),
+        'the name the roster passed in was not the one remembered')
+end)
+
+t.test('and a walker NOBODY can name still holds their seat shut', function()
+    -- THE LAST FALLBACK, and two mutations survived until it was written.
+    --
+    -- Every test above has a name available from one side or the other, so
+    -- the character half of the rule answered all of them and the seat half
+    -- could be deleted with the suite still green. This is the case it
+    -- exists for: no name on the roster row, and a framework that cannot
+    -- supply one either. The seat is then the whole of what is known, and
+    -- the seat is what answers -- which is what this did before it knew any
+    -- names at all.
+    --
+    -- IT ERRS TOWARDS REFUSING, deliberately. Somebody handed the freed id
+    -- is turned down here, and that is the cost: refusing one newcomer a
+    -- bet is a smaller wrong than selling a wager on a round the person in
+    -- front of you abandoned, and there is nothing left to tell the two
+    -- apart.
+    local s, matchId = liveRoundWithGrace()
+    local match = s.lobby.Get(matchId)
+
+    s.qbx.players[2] = nil
+    s.betting.MarkWalkedOut(matchId, 2)
+    match.players[2] = nil
+
+    -- Somebody is on that seat now -- named, but there is no name on record
+    -- to compare theirs against.
+    s.qbx.players[2] = {
+        citizenid = 'CID404', name = 'Anybody',
+        money = { cash = 50000, bank = 0 },
+        job = { name = 'unemployed', grade = { level = 0 } },
+    }
+
+    local ok, err = s.betting.PlaceSpectatorBet(2, matchId, 1, 2000, 'cash')
+    t.isFalse(ok, 'a seat nobody could put a name to was left open on a live round')
+    t.equals(err, 'error.bets_closed')
+
+    -- AND ONLY THAT SEAT. An unnamed walker must not shut the book on the
+    -- rest of the server -- that would be the worse half of the same bug.
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'),
+        'an unnamed walker shut the round to everybody')
+end)
+
 t.test('and the panel is told, so it stops selling a bet the server refuses', function()
     -- THE RULE WAS RIGHT AND INVISIBLE. The roster no longer holds a walker,
     -- so the panel saw an ordinary onlooker: it drew an enabled Place Bet

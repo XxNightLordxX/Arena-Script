@@ -134,19 +134,66 @@ local sideSettled = {}
 ---   flag was written to close.
 ---
 --- Narrow on the shipped 30-second grace and wide open on any longer one.
+---
+--- SHAPE: { [matchId] = { [serverId] = citizenid | true } }. THE SEAT IS THE
+--- KEY AND THE CHARACTER IS THE VALUE, and it has to be both.
+---
+--- Keying on the character ALONE looks tidier and loses the commonest case.
+--- The key would have to be computed twice -- once when they leave, once when
+--- somebody asks -- and `citizenIdOf` reaches into the framework, which on a
+--- DISCONNECT has usually forgotten them already by the time this resource's
+--- playerDropped handler runs. Written with no character and read with one,
+--- the two never match, and the fighter who dropped out of a live round and
+--- reconnected was sold a bet on it. Measured: refused on a clean Leave,
+--- SOLD on a drop.
+---
+--- Keying on the seat alone is what this used to do, and it answers about
+--- whoever holds that id NOW -- so the next player handed it was refused a
+--- bet on a match they have never been near.
+---
+--- Holding both means neither question has to be answered from one half of
+--- an identity. `true` is the honest value for a walker nobody could name at
+--- the time, and it reads as "this seat, whoever is in it" -- which is the
+--- old behaviour, kept deliberately for the case where there is nothing
+--- better. See `hasWalkedOut`.
 local walkedOutOf = {}
 
---- How a departed fighter is remembered, once their seat is gone.
+--- Did the player now sitting on `id` walk out of this round?
 ---
---- The character where there is one, and the seat only where there is not --
---- which is the same order `betIsHeldBy` reads identity in, and the reason
---- this is a function rather than two call sites that have to agree.
+--- Two questions, because there are two ways back into a round you left: the
+--- seat you left from, and a new seat with your own name on it.
+--- @param matchId string
 --- @param id integer
---- @param citizenid string|nil
---- @return string
-local function walkedOutKey(id, citizenid)
-    if Arena.IsKey(citizenid) then return 'char:' .. citizenid end
-    return 'src:' .. tostring(id)
+--- @param citizenid string|nil -- who holds `id` now; read once by the caller
+--- @return boolean
+local function hasWalkedOut(matchId, id, citizenid)
+    local walkers = walkedOutOf[matchId]
+    if walkers == nil then return false end
+
+    local atSeat = walkers[id]
+    if atSeat ~= nil then
+        -- NAMED ON BOTH SIDES is the only case that can tell a returning
+        -- walker from a stranger handed their id. Anything less and the seat
+        -- is all there is, so the seat is what answers -- refusing a wager on
+        -- a round somebody abandoned matters more than sparing a newcomer one
+        -- turned-down bet, and it is what this did before it knew any names.
+        if type(atSeat) == 'string' and Arena.IsKey(citizenid) then
+            if atSeat == citizenid then return true end
+        else
+            return true
+        end
+    end
+
+    -- AND ANY OTHER SEAT THE SAME CHARACTER LEFT FROM. This is the half a
+    -- seat key cannot answer: reconnecting on a fresh id was a way back into
+    -- the book on the very round you walked out of.
+    if Arena.IsKey(citizenid) then
+        for _, who in pairs(walkers) do
+            if who == citizenid then return true end
+        end
+    end
+
+    return false
 end
 
 --- Has this match's pot payout begun?
@@ -1878,9 +1925,12 @@ function ArenaBetting.MatchesWalkedOutOf(src)
     local out = {}
     if not id then return out end
 
-    local key = walkedOutKey(id, citizenIdOf(id))
-    for matchId, walkers in pairs(walkedOutOf) do
-        if walkers[key] == true then out[#out + 1] = matchId end
+    -- READ ONCE, OUTSIDE THE LOOP. It reaches into the framework for the
+    -- player, and this walks every match on the server -- the same reason
+    -- MatchesBackedBy below hoists its own.
+    local citizenid = citizenIdOf(id)
+    for matchId in pairs(walkedOutOf) do
+        if hasWalkedOut(matchId, id, citizenid) then out[#out + 1] = matchId end
     end
     return out
 end
@@ -2092,7 +2142,7 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     -- this function: the band, the own-side test and the one-bet limit are
     -- all a departed player's spectator ones. This is the single question
     -- their old seat still answers.
-    local walkedOut = (walkedOutOf[matchId] or {})[walkedOutKey(id, citizenIdOf(id))] == true
+    local walkedOut = hasWalkedOut(matchId, id, citizenIdOf(id))
 
     if not betsAreOpen(match, isFighter or walkedOut) then return false, 'error.bets_closed' end
 
@@ -2251,7 +2301,7 @@ end
 --- @param src any
 --- @return integer marked
 --- @return integer returned -- money handed back because the band lapsed
-function ArenaBetting.MarkWalkedOut(matchId, src)
+function ArenaBetting.MarkWalkedOut(matchId, src, citizenid)
     local id = serverId(src)
     if not id or not Arena.IsKey(matchId) then return 0, 0 end
 
@@ -2268,10 +2318,20 @@ function ArenaBetting.MarkWalkedOut(matchId, src)
     --
     -- Above the loop, because the loop only ever visits their BETS and this
     -- has to be true of a fighter who never placed one. DO NOT fold it in.
+    --
+    -- WHO THEY WERE IS TAKEN FROM THE CALLER, NOT LOOKED UP HERE. This is the
+    -- one moment in the whole rule where the answer can be lost: on a genuine
+    -- DISCONNECT the framework has usually forgotten the player before this
+    -- resource's playerDropped handler runs, so `citizenIdOf` comes back nil
+    -- and the walker is remembered as a bare seat. ArenaLobby.Leave still
+    -- holds their roster row -- captured when they joined, and nothing can
+    -- take it away mid-call -- so it passes the name in. The lookup below is
+    -- the fallback for a caller that has nothing to pass.
     local match = lobbyMatch(matchId)
     if match and roundIsBeingFought(match) then
+        local who = Arena.IsKey(citizenid) and citizenid or citizenIdOf(id)
         walkedOutOf[matchId] = walkedOutOf[matchId] or {}
-        walkedOutOf[matchId][walkedOutKey(id, citizenIdOf(id))] = true
+        walkedOutOf[matchId][id] = Arena.IsKey(who) and who or true
     end
 
     local ceiling = spectatorCeiling()

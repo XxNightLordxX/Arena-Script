@@ -836,6 +836,73 @@ t.test('a routing native that throws for a player already gone still frees the r
 end)
 
 -- ========================================================================
+-- AND WHETHER THE WAY OUT ACTUALLY HAPPENED
+--
+-- Entering proves itself -- moveTo reads the bucket back and says at length
+-- why. Leaving did not: it called the native inside a pcall and looked only
+-- for a THROW, so a native that was accepted and did nothing read as a clean
+-- exit. A player left behind in the match's bucket is invisible to every
+-- other player on the server and every one of them is invisible to them.
+-- Reported off a live server as players "coming out of the arena invisible".
+-- ========================================================================
+
+t.test('DEFECT: a restore that is accepted and does nothing leaves the player stranded, and it is said out loud', function()
+    local f = newFixture()
+
+    t.isTrue(f.D.EnterBucket(1, 'm1'))
+    t.equals(f.bucketOf(1), 4210)
+
+    -- The natives stop working between the way in and the way out, which is
+    -- the only shape this can take: a server where they never worked never
+    -- got the player into the bucket in the first place.
+    f.goInert()
+
+    t.isTrue(f.D.ExitBucket(1), 'the record must still be released either way')
+    t.equals(f.bucketOf(1), 4210, 'they are still in the arena bucket, which is the bug')
+    t.contains(f.log(), 'INVISIBLE TO EVERYBODY ON THIS SERVER',
+        'a player left alone on the server was not reported anywhere')
+end)
+
+t.test('and it tries the move a second time before giving up on it', function()
+    local f = newFixture()
+    f.D.EnterBucket(1, 'm1')
+    f.goInert()
+    f.D.ExitBucket(1)
+
+    -- One on the way in, two on the way out.
+    t.equals(f.count('move'), 3, 'the cheapest answer to a write that did not land is the same write')
+end)
+
+t.test('CONTROL: an exit that lands says nothing about anybody being invisible', function()
+    -- Without this the test above passes on a build that simply shouts on
+    -- every exit, which would be worse than saying nothing.
+    local f = newFixture(nil, { [1] = 91 })
+    f.D.EnterBucket(1, 'm1')
+    f.D.ExitBucket(1)
+
+    t.equals(f.bucketOf(1), 91)
+    t.isNil(f.log():find('INVISIBLE', 1, true), 'it shouted about a player who left perfectly normally')
+    t.equals(f.count('move'), 2, 'it moved them a second time for no reason')
+end)
+
+t.test('and a player who has already gone is never reported as stranded', function()
+    -- The disconnect path reaches ExitBucket after the id has stopped
+    -- meaning anything. A read that cannot answer is not proof of a player
+    -- standing in an empty instance -- there is no player.
+    local f = newFixture(nil, nil, nil, { connected = 'absent' })
+
+    f.D.EnterBucket(1, 'm1')
+    f.goInert()
+
+    t.isTrue(f.D.ExitBucket(1))
+    t.isNil(f.log():find('INVISIBLE', 1, true),
+        'it reported a disconnected player as stranded on the server')
+    -- And the number still goes back, which is the part that must never be
+    -- skipped on the disconnect path.
+    t.equals(f.D.GetBucket('m2'), 4210)
+end)
+
+-- ========================================================================
 -- HANDING THE NUMBER BACK
 --
 -- The one failure a bucket allocator can have is dropping a fresh match
@@ -990,7 +1057,11 @@ t.test('the buckets are returned before the flags are cleared', function()
 
     local after = {}
     for index = before + 1, #f.calls do after[#after + 1] = f.calls[index].kind end
-    t.equals(table.concat(after, ','), 'move,bag')
+    -- The `get` between them is ExitBucket reading the bucket back to prove
+    -- the move landed, and it is deliberately INSIDE the move's half of this
+    -- order rather than after the flag: a restore that did nothing is found
+    -- and retried before anything else in the shutdown can fail.
+    t.equals(table.concat(after, ','), 'move,get,bag')
 end)
 
 t.test('another resource stopping leaves everybody exactly where they are', function()

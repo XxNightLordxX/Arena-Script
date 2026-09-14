@@ -756,6 +756,46 @@ function ArenaDispatch.ExitBucket(src)
             record.previous, tostring(src))
     end
 
+    -- AND THE WAY OUT IS PROVED, THE SAME WAY THE WAY IN IS.
+    --
+    -- moveTo reads the bucket back after writing it and says at length why:
+    -- setting a routing bucket is a synchronous write to a field the server
+    -- keeps for that client, so a disagreement is never "not yet", it is the
+    -- write having done nothing. THIS SIDE NEVER ASKED. The pcall above only
+    -- ever noticed a THROW, and a call that returns quietly without moving
+    -- anybody read here as a clean exit.
+    --
+    -- WHAT THAT COSTS IS THE WHOLE POINT OF BUCKETS, INVERTED. A player left
+    -- in the match's bucket while the rest of the server is in the world is
+    -- invisible to every one of them, and every one of them is invisible to
+    -- them. They get their own kit back, they are stood at the lobby ped,
+    -- their panel works -- and they are alone on the server. Reported off a
+    -- live server as players "coming out of the arena invisible", with not
+    -- one line in any log, because nothing on this path ever looked.
+    --
+    -- TRIED AGAIN ONCE FIRST, because the cheapest answer to a write that did
+    -- not land is the same write, and a single retry costs nothing on the
+    -- overwhelmingly common path where the first one worked and this branch
+    -- is never entered at all.
+    --
+    -- ASKED ONLY OF A PLAYER WHO IS STILL HERE. The disconnect path reaches
+    -- this function after the id has stopped meaning anything, and a read
+    -- that cannot answer must not be reported as a stranded player.
+    if ok and stillConnected(src) and currentBucket(src) ~= record.previous then
+        pcall(SetPlayerRoutingBucket, src, record.previous)
+
+        if currentBucket(src) ~= record.previous then
+            ArenaLog('dispatch: %s IS STILL IN ROUTING BUCKET %d after being sent back to %d, twice. '
+                .. 'THEY ARE INVISIBLE TO EVERYBODY ON THIS SERVER AND EVERYBODY ON IT IS INVISIBLE TO '
+                .. 'THEM -- that is what a routing bucket does, and they are still in one. Nothing else '
+                .. 'about their exit failed: they have their own kit and they are stood where they '
+                .. 'should be. Run /arenaisolation for what the routing natives are actually doing on '
+                .. 'this box; the usual cause is OneSync, and the server currently reports it as "%s". '
+                .. 'The player can be freed by reconnecting.',
+                tostring(src), currentBucket(src), record.previous, tostring(oneSyncMode()))
+        end
+    end
+
     ArenaDispatch.ReleaseBucket(record.matchId)
     return true
 end

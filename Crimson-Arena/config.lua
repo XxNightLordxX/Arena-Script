@@ -2470,10 +2470,10 @@ Config.Dispatch = {
     },
 
     -- There are exports too, for a script that would rather ask than listen:
-    --     exports.crimson_arena:IsPlayerInArena(src)     -- server
-    --     exports.crimson_arena:GetPlayerMatchId(src)    -- server
-    --     exports.crimson_arena:GetArenaPlayers()        -- server
-    --     exports.crimson_arena:IsInArena()              -- client
+    --     exports['Crimson-Arena']:IsPlayerInArena(src)  -- server
+    --     exports['Crimson-Arena']:GetPlayerMatchId(src) -- server
+    --     exports['Crimson-Arena']:GetArenaPlayers()     -- server
+    --     exports['Crimson-Arena']:IsInArena()           -- client
     -- Those exist whether or not anything here is switched on. They report;
     -- they do not enforce.
 

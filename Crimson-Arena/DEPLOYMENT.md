@@ -195,7 +195,8 @@ what to watch for, because most failures here are silent.
 Two of these are in the **server console**, two are in **F8** on a client. They
 are separate places and the client ones cannot appear in the server log.
 
-- [ ] Console shows no Lua error on `ensure crimson_arena`.
+- [ ] Console shows no Lua error on `ensure Crimson-Arena` (or whatever you
+      named the folder -- the resource reads its own name, it is not hardcoded).
 - [ ] The config validator printed nothing, or printed only things you expect.
 - [ ] The dispatch report lists your real dispatch and ambulance scripts. If it
       says nothing was detected and you know you run one, the resource does not

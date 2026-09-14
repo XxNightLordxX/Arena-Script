@@ -1055,11 +1055,11 @@ The arena owns its own state, so it exposes only the one fact another resource h
 
 | Export | Realm | Returns |
 |---|---|---|
-| `exports.crimson_arena:IsPlayerInArena(src)` | server | `true` while that player is in a live match |
-| `exports.crimson_arena:GetPlayerMatchId(src)` | server | the match id, or `nil` |
-| `exports.crimson_arena:GetArenaPlayers()` | server | `{ [serverId] = matchId }` for everyone currently fighting |
-| `exports.crimson_arena:IsInArena()` | client | `true` while *you* are in a live match |
-| `exports.crimson_arena:GetArenaMatchId()` | client | your match id, or `nil` |
+| `exports['Crimson-Arena']:IsPlayerInArena(src)` | server | `true` while that player is in a live match |
+| `exports['Crimson-Arena']:GetPlayerMatchId(src)` | server | the match id, or `nil` |
+| `exports['Crimson-Arena']:GetArenaPlayers()` | server | `{ [serverId] = matchId }` for everyone currently fighting |
+| `exports['Crimson-Arena']:IsInArena()` | client | `true` while *you* are in a live match |
+| `exports['Crimson-Arena']:GetArenaMatchId()` | client | your match id, or `nil` |
 
 These report; they do not enforce. Calling them changes nothing.
 

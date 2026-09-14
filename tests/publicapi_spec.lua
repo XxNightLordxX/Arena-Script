@@ -4,7 +4,7 @@
     THE FIVE EXPORTS OTHER RESOURCES CALL.
 
     Everything else in this suite tests what the arena does to itself. This
-    file tests the one surface it offers OUTWARDS: `exports['crimson_arena']`,
+    file tests the one surface it offers OUTWARDS: `exports['Crimson-Arena']`,
     which a server's dispatch, ambulance or anti-cheat script calls to ask
     whether a player is in a match. README.md names all five, so an operator
     reading it writes them into their own script and expects them to be there.
@@ -292,16 +292,35 @@ t.test('every export README names is really registered, and vice versa', functio
         t.contains(text, name, ('the resource exports "%s" and README never mentions it'):format(name))
     end
 
-    -- AND THE OTHER DIRECTION, in the spelling README really uses:
-    -- `exports.crimson_arena:Name(...)`. The first version of this matched
-    -- the bracket spelling, found nothing, and looped zero times -- a check
-    -- that could not fail is not a check.
+    -- AND THE OTHER DIRECTION, IN EITHER SPELLING.
+    --
+    -- This matched only `exports.crimson_arena:Name(...)` -- the dotted form
+    -- with a hard-coded resource name -- and that was wrong twice over. The
+    -- first version matched the BRACKET spelling, found nothing, and looped
+    -- zero times, which is why the count below exists. Then README was
+    -- corrected to `exports['Crimson-Arena']:Name(...)`, because FiveM names a
+    -- resource after its FOLDER and this folder is Crimson-Arena, and the
+    -- dotted pattern went back to finding nothing.
+    --
+    -- The resource name is not the thing under test here -- whether every
+    -- export README promises is really registered is -- so the pattern no
+    -- longer cares how the namespace is spelled.
+    -- SCOPED TO THIS RESOURCE'S NAMESPACE, in either spelling and either
+    -- separator. Widening it to any `exports.<word>:` was worse than the
+    -- hard-coded name it replaced: README shows qbx_core's exports too, and
+    -- the check then demanded this resource register GetPlayer.
     local named = 0
-    for name in text:gmatch('exports%.crimson_arena:(%w+)') do
-        named = named + 1
-        t.isTrue(registered[name] == true,
-            ('README tells an operator to call "%s", which is not registered'):format(name))
+    local seen = {}
+    local function count(pattern)
+        for name in text:gmatch(pattern) do
+            if not seen[name] then seen[name] = true named = named + 1 end
+            t.isTrue(registered[name] == true,
+                ('README tells an operator to call "%s", which is not registered'):format(name))
+        end
     end
+
+    count("exports%['[Cc]rimson[%-_][Aa]rena'%]:(%w+)")
+    count('exports%.[Cc]rimson[%-_][Aa]rena:(%w+)')
     t.equals(named, 5, 'README stopped listing the five exports, so this checked nothing')
 end)
 

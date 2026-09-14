@@ -27,7 +27,9 @@
       * a replicated state bag on the player, keyed by
         Config.Dispatch.custom.stateBagKey, holding
         { active = true, matchId = ... }
-      * an export, `exports.crimson_arena:IsInArena()`
+      * an export, `exports['Crimson-Arena']:IsInArena()` -- the namespace is
+        the FOLDER NAME, so it changes if the folder is renamed; the state
+        bag above does not, which is why it is the one to prefer
 
     THE STATE BAG IS WRITTEN BY THE SERVER, NOT HERE -- see server/dispatch.lua.
     That is a security decision, not a structural one. A replicated bag set

@@ -2586,7 +2586,7 @@ function ArenaBetting.Outstanding()
 end
 
 --- ONE ATTEMPT AT START IS NOT ENOUGH, and this is why it is a thread of
---- its own rather than a line in the sweep below. `ensure crimson_arena`
+--- its own rather than a line in the sweep below. `ensure Crimson-Arena`
 --- above `ensure oxmysql` in a server.cfg is an ordinary mistake, at which
 --- point a single read at load never happens, every debt from previous runs
 --- sits in the table unread, and new ones begin writing fine the moment

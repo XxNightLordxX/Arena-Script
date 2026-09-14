@@ -235,20 +235,31 @@ setting that adds a second way in.
 
 ## Exports for other resources
 
+> **The name in front of the colon is your FOLDER name, not a fixed string.**
+> FiveM names a resource after the directory it sits in, so these read
+> `exports['Crimson-Arena']` because that is what this folder is called. Rename
+> the folder and every line below changes with it -- and an export that names a
+> resource which does not exist does not raise anything, it just quietly does
+> nothing, which is the worst way for an integration to fail.
+>
+> **If you would rather not care, use the state bag at the bottom of this
+> section.** It is keyed on `Config.Dispatch.custom.stateBagKey`, not on the
+> folder, so it keeps working whatever anybody calls this resource.
+
 **Server**
 
 | Export | Returns |
 |---|---|
-| `exports.crimson_arena:IsPlayerInArena(src)` | Whether that player is in a match right now. |
-| `exports.crimson_arena:GetPlayerMatchId(src)` | The match id they are in, or nil. |
-| `exports.crimson_arena:GetArenaPlayers()` | Every player in a match, as a `src -> matchId` map. A copy. |
+| `exports['Crimson-Arena']:IsPlayerInArena(src)` | Whether that player is in a match right now. |
+| `exports['Crimson-Arena']:GetPlayerMatchId(src)` | The match id they are in, or nil. |
+| `exports['Crimson-Arena']:GetArenaPlayers()` | Every player in a match, as a `src -> matchId` map. A copy. |
 
 **Client**
 
 | Export | Returns |
 |---|---|
-| `exports.crimson_arena:IsInArena()` | Whether this player is in a match. |
-| `exports.crimson_arena:GetArenaMatchId()` | The match id, or nil. |
+| `exports['Crimson-Arena']:IsInArena()` | Whether this player is in a match. |
+| `exports['Crimson-Arena']:GetArenaMatchId()` | The match id, or nil. |
 
 **State bag**, readable from either realm with no call and no event:
 

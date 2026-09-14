@@ -2858,7 +2858,7 @@ local PENDING_LIMIT = 4000
 --- Whether the read-back has been attempted and succeeded.
 ---
 --- ONE ATTEMPT AT START WAS NOT ENOUGH. LoadOwedKit is called from
---- onResourceStart, and `ensure crimson_arena` above `ensure oxmysql` in a
+--- onResourceStart, and `ensure Crimson-Arena` above `ensure oxmysql` in a
 --- server.cfg is an ordinary mistake -- at which point the read never
 --- happened, every debt from previous runs sat in the table unread, and new
 --- ones began writing fine the moment oxmysql came up. The operator saw a

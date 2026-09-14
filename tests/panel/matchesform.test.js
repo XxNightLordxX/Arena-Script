@@ -251,6 +251,53 @@ test('and in a free-for-all it still names the individual rule', () => {
         'the individual rule was lost: ' + panel.text('create-limit-hint'));
 });
 
+// ------------------------------------------------------------------
+// THREE: joining moves you to Lobby. Reading a card does not.
+// ------------------------------------------------------------------
+
+test('DEFECT: clicking another card in a lobby does not throw you off Matches', () => {
+    /* The move to Lobby fired whenever the SELECTION differed from the match
+       you are in -- and every card click writes the selection. So a player
+       sitting in a lobby who clicked another match to read it was dragged
+       onto the Lobby tab by the next broadcast, having asked for nothing. */
+    const panel = loadPanel(ROOT);
+    const snap = baseSnapshot();
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    // join m1: the next snapshot carries the membership
+    const joined = baseSnapshot();
+    joined.player.matchId = 'm1';
+    panel.send('state', joined);
+
+    // the player walks back to Matches themselves and clicks the other card
+    panel.fire('tab-btn-matches', 'click');
+    clickNode(cardTitled(panel, 'Second'));
+
+    // and another broadcast lands, with nothing changed about their membership
+    panel.send('state', joined);
+
+    assert.ok(!panel.node('tab-matches').classList.contains('hidden'),
+        'A BROADCAST DRAGGED THE PLAYER OFF THE MATCHES TAB FOR CLICKING A CARD');
+});
+
+test('and joining one still does move you there, which is what the rule is for', () => {
+    const panel = loadPanel(ROOT);
+    const snap = baseSnapshot();
+    panel.send('open', snap);
+    panel.send('state', snap);
+    panel.fire('tab-btn-matches', 'click');
+
+    const joined = baseSnapshot();
+    joined.player.matchId = 'm1';
+    panel.send('state', joined);
+
+    assert.ok(!panel.node('tab-lobby').classList.contains('hidden'),
+        'joining a match no longer takes the player to the lobby');
+    assert.ok(panel.node('tab-matches').classList.contains('hidden'),
+        'the Matches tab was left showing after a join');
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 if (failures.length > 0) {

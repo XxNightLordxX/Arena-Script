@@ -296,4 +296,39 @@ t.test('and a match that does not exist is refused rather than raising', functio
     end
 end)
 
+-- ========================================================================
+-- AND THE LOBBY IS NAMED AFTER WHOEVER IS HOSTING IT NOW
+-- ========================================================================
+
+t.test('DEFECT: the title follows the host when the first one walks out', function()
+    -- `label` is built from the host's name at creation and was written in
+    -- only two places in the file -- creation, and the host pressing Apply.
+    -- The handoff moved hostSource and hostName and left the heading alone,
+    -- so a lobby kept the departed host's name in its title while the line
+    -- underneath it named the player who had actually inherited it. That
+    -- heading is what a stranger reads on the Matches tab before joining.
+    local s, matchId = lobbyOfTwo()
+
+    local before = s.lobby.Get(matchId).label
+    t.isNotNil(before, 'the match was created without a title')
+
+    t.isTrue(s.lobby.Leave(1, 'left'), 'the host could not leave')
+
+    local match = s.lobby.Get(matchId)
+    t.isNotNil(match, 'the match died when the host left')
+    t.isNotNil(match.label, 'the handoff cleared the title instead of rewriting it')
+    t.isTrue(match.label:find(match.hostName, 1, true) ~= nil,
+        'THE TITLE STILL NAMES THE HOST WHO LEFT: "' .. tostring(match.label)
+            .. '" while the host is ' .. tostring(match.hostName))
+    t.isTrue(match.label ~= before, 'the title did not change at all')
+end)
+
+t.test('and a lobby whose host stays keeps the title it was made with', function()
+    local s, matchId = lobbyOfTwo()
+    local before = s.lobby.Get(matchId).label
+    t.isTrue(s.lobby.Leave(2, 'left'), 'the guest could not leave')
+    t.equals(s.lobby.Get(matchId).label, before,
+        'a guest leaving rewrote the title')
+end)
+
 os.exit(t.summary())

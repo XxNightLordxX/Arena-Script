@@ -102,6 +102,9 @@
 
         createLives: null,
         createWin: null,
+        /* The match you were in on the LAST snapshot, so joining one can be
+           told from merely being in one. See the note in applySnapshot. */
+        lastMatchId: null,
         createTiers: {},
         createLimit: null,
         createRound: null,
@@ -1049,11 +1052,26 @@
             state.createTiers = {};
         }
 
+        /* JOINING A MATCH MOVES YOU TO THE LOBBY TAB. ONCE, ON THE JOIN.
+
+           This fired whenever the SELECTION differed from the match you are
+           in -- and clicking any card writes the selection, so a player
+           sitting in a lobby who clicked another match on the Matches tab to
+           read it was thrown onto Lobby by the very next broadcast, with
+           nothing they did in between. Re-armed by every click, it fired
+           again and again.
+
+           What it is for is the transition, so that is what it watches now.
+           The selection is free to point somewhere else afterwards: the Bets
+           tab reads focusedMatch(), which prefers the match you are fighting
+           in regardless, and the card that claims the tab's attention checks
+           the same function before saying so. */
         var current = playerMatchId();
-        if (current && state.selectedMatchId !== current) {
+        if (current && state.lastMatchId !== current) {
             state.selectedMatchId = current;
             if (state.tab === 'matches') state.tab = 'lobby';
         }
+        state.lastMatchId = current;
         if (!current && state.tab === 'lobby' && !spectatingMatchId()) {
             state.tab = 'matches';
         }
@@ -5064,10 +5082,22 @@
 
     bind('arena-close', 'click', closePanel);
 
-    document.querySelectorAll('.arena-tab').forEach(function (button) {
-        button.addEventListener('click', function () {
-            var name = button.getAttribute('data-tab');
-            if (TABS.indexOf(name) < 0) return;
+    /* BOUND BY ID, WALKING TABS, like renderTabs above it.
+
+       This was a querySelectorAll('.arena-tab') walk, and the panel's test
+       harness stubs querySelectorAll to return an empty list -- so in every
+       panel test ever written the tab buttons carried NO click handler at
+       all. A test could press one, watch nothing happen, and have no way to
+       tell that from a tab that was correctly refusing to move. renderTabs
+       was moved off the same selector earlier for the same reason; this is
+       the other half of it, and it is what makes a tab a thing a test can
+       press.
+
+       The name now comes from TABS rather than from a data-tab attribute, so
+       the guard that checked one against the other is gone with it: there is
+       nothing left to disagree. */
+    TABS.forEach(function (name) {
+        bind('tab-btn-' + name, 'click', function () {
             if (name !== state.tab) play('tab');
             state.tab = name;
             if (name === 'board') post('refresh');
@@ -5093,6 +5123,17 @@
     bind('create-round', 'input', function (event) {
         var choice = (cfg().match || {}).roundTimeChoice || {};
         state.createRound = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
+        /* AND REDRAW, because this is the one field on the form whose hint
+           quotes the value back: "How long a round runs, in seconds -- 10:00".
+           Without this the clock beside the box kept whatever it said at the
+           last render, so a host typing 300 was still being told 10:00 --
+           the number they were about to rely on, wrong, right next to the
+           box they had just changed. `create-limit` beside it already does
+           this; `create-lives` does not need to, because its hint names only
+           the band. Safe here: this input is static markup in index.html, so
+           a render updates its value rather than replacing the node, and the
+           caret stays where it is. */
+        render();
     });
 
     bind('admin-close', 'click', function () {

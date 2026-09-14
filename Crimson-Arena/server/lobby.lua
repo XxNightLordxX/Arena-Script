@@ -1426,6 +1426,14 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
         if heir then
             match.hostSource = heir
             match.hostName = match.players[heir].name
+            -- AND THE TITLE, which is built from the host's name and was
+            -- written once at creation and never again. A lobby whose host
+            -- walked out kept their name in the heading -- "Dave's Team
+            -- Deathmatch" -- while the line under it named the player who
+            -- had actually inherited it, on the card a stranger reads to
+            -- decide whether to join.
+            match.label = locale('match.label', match.hostName,
+                (Arena.GetModeByKey(match.modeKey) or {}).label or match.modeKey)
             ArenaNotifyKey(heir, 'notify.you_are_host', 'info')
         end
     end

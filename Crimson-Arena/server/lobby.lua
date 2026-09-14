@@ -1983,7 +1983,20 @@ function ArenaLobby.SetLoadout(src, request)
         end
     end
 
-    if changed or #rejected > 0 then pushState(target) end
+    -- AND THE ASKER IS ALWAYS ANSWERED, even when nothing moved.
+    --
+    -- This was `if changed or #rejected > 0`, and the third case -- a save
+    -- that resolves to exactly what the player already had, with nothing
+    -- refused -- pushed nothing at all. The panel sets `loadoutSaving` when
+    -- it posts and clears it on the next snapshot, and there is no periodic
+    -- broadcast to rescue it: the idle sweep never broadcasts, and the panel
+    -- only asks for state again on open or on the leaderboard tab. So a
+    -- player who dropped a weapon and took it straight back, or retyped the
+    -- round count they already had, was left reading "Saving -- waiting for
+    -- the server." with Save greyed out, until some unrelated lobby event
+    -- happened along. One snapshot to one player is the cost of never
+    -- leaving them there.
+    pushState(target)
     return true, nil
 end
 

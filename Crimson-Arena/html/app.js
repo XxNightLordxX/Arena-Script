@@ -639,6 +639,24 @@
     }
 
     function seedDraft() {
+        /* A DRAFT YOU CAN NO LONGER SAVE IS NOT A DRAFT.
+
+           The dirty flag holds the reseed off so a broadcast cannot wipe out
+           what somebody is in the middle of choosing -- right inside a lobby,
+           and wrong the moment the round leaves one. The save row is hidden
+           once the loadout locks, and that row holds the ONLY "Unsaved --
+           press Save Loadout" warning; so a player who picked a rifle and
+           did not save watched the warning vanish at the countdown while the
+           rifle stayed on screen under "what you are carrying is locked in".
+           The server had never been sent it. They walked into the round a
+           weapon short, having been shown the opposite.
+
+           Once it cannot be saved, the screen goes back to what the server
+           actually holds. */
+        if (state.loadoutDirty && !canChooseLoadout()) {
+            state.loadoutDirty = false;
+            state.loadoutSaving = false;
+        }
         if (state.loadoutDirty) return;
 
         var loadout = player().loadout || {};
@@ -1902,8 +1920,18 @@
             roundTime > 0 ? 'Round lasts ' + clock(roundTime) : 'No round clock',
             tiers > 0
                 ? 'Win by topping the ' + tiers + '-tier ladder — a kill climbs, a death drops'
+                /* AND THE LIMIT IS A NUMBER, so say the number.
+                   `match.scoreLimit` has always been on the wire and was read
+                   only by the host's own edit form -- never by a display. So
+                   this line and the lives line above it both said "the limit"
+                   without either of them ever naming it, on the card somebody
+                   reads to decide whether to join. */
                 : 'Win by ' + labelFor(winWords(match.teams === true),
                     keyOr(match.winCondition, matchCfg.winCondition), 'the mode rules')
+                  + (keyOr(match.winCondition, matchCfg.winCondition) === 'score_limit'
+                      && int(match.scoreLimit, 0) > 0
+                        ? ' (' + int(match.scoreLimit, 0) + ' kills)'
+                        : '')
         ];
         if (bettingOn()) {
             bits.push('Entry ' + money(match.entryFee));
@@ -2385,10 +2413,24 @@
         return draftCount(undefined);
     }
 
+    /* THE MOST WEAPONS THE WIRE WILL CARRY, whatever the operator's slot
+       setting says. server/main.lua reads at most MAX_WEAPON_ENTRIES = 32
+       entries out of a setLoadout payload and stops; the rest never reach
+       Arena.ResolveLoadout, so they are not in `rejected` either and nothing
+       is sent to say they were dropped.
+
+       Config.Loadouts.slots = 0 is documented as "no limit", and the panel
+       honoured that literally: a player on a 96-weapon catalogue could pick
+       forty, be told "40 weapons", press Save, and have eight of them vanish
+       with no message anywhere. Unlimited means unlimited up to what can be
+       sent. KEEP THIS IN STEP with MAX_WEAPON_ENTRIES. */
+    var WIRE_WEAPON_CAP = 32;
+
     function poolIsFull(melee) {
         if (!kindAllowed(melee)) return true;
         var limit = slotLimit();
-        return limit > 0 && draftTotal() >= limit;
+        if (limit > 0) return draftTotal() >= limit;
+        return draftTotal() >= WIRE_WEAPON_CAP;
     }
 
     function poolCounterText() {

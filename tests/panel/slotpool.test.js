@@ -251,6 +251,38 @@ test('and the counter drops the "of N" it has nothing to count against', () => {
     assert.ok(/1 weapon/.test(text), 'an unlimited pool did not say what is carried: "' + text + '"');
 });
 
+test('DEFECT: "no limit" still stops at what the wire will carry', () => {
+    /* server/main.lua reads at most MAX_WEAPON_ENTRIES = 32 entries out of a
+       setLoadout payload and stops. The rest never reach Arena.ResolveLoadout
+       and so are not in `rejected` either -- nothing is sent to say they were
+       dropped. With slots = 0 the panel honoured "no limit" literally: forty
+       weapons picked, "40 weapons" on the counter, and eight of them gone
+       after the save with no message anywhere. */
+    const many = [];
+    for (let i = 0; i < 40; i += 1) {
+        many.push({
+            key: 'gun' + i, label: 'Gun ' + i, category: 'sidearm', melee: false,
+            ammo: { default: 60, options: [60], max: 250 }, ammoTypes: [],
+        });
+    }
+
+    const panel = opened({ slots: 0, weapons: many });
+    many.forEach((w) => panel.fire('weapon-card-' + w.key, 'click'));
+
+    const sent = drafted(panel);
+    assert.ok(sent.length <= 32,
+        'THE PANEL SENT ' + sent.length + ' WEAPONS, of which the server reads 32');
+    assert.strictEqual(sent.length, 32,
+        'an unlimited pool stopped short of what the wire can actually carry: ' + sent.length);
+});
+
+test('and a real slot cap still binds below that', () => {
+    const panel = opened({ slots: 4 });
+    WEAPONS.forEach((weapon) => panel.fire('weapon-card-' + weapon.key, 'click'));
+    assert.strictEqual(drafted(panel).length, 4,
+        'the wire cap was applied in place of the operator\u2019s own smaller one');
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

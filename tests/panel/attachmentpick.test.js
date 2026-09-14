@@ -304,6 +304,53 @@ test('and an EMPTY list from the server means exactly that: none of them', () =>
         'a player who took everything off was handed the grip back');
 });
 
+// ------------------------------------------------------------------
+// A DRAFT YOU CAN NO LONGER SAVE IS NOT A DRAFT
+// ------------------------------------------------------------------
+
+test('DEFECT: an unsaved pick is dropped once the loadout locks', () => {
+    /* seedDraft holds the reseed off while the draft is dirty, so a
+       broadcast cannot wipe out what somebody is choosing. Right in a lobby;
+       wrong the moment the round leaves one. The save row is hidden when the
+       loadout locks and that row holds the ONLY "Unsaved" warning -- so the
+       warning vanished at the countdown while the unsaved pick stayed on
+       screen under "what you are carrying is locked in". The server had
+       never been sent it, and the player walked in a weapon short. */
+    const snap = snapshot(false, {
+        attachments: [{ key: 'scope', label: 'Scope' }, { key: 'grip', label: 'Grip' }],
+    });
+    const panel = opened(snap);
+
+    // pick it and do NOT save
+    panel.fire('weapon-card-pistol', 'click');
+    assert.ok(/Pistol/.test(panel.text('loadout-slots')),
+        'the pick never reached the draft at all');
+
+    // the round leaves the lobby, and the server still holds nothing
+    const started = JSON.parse(JSON.stringify(snap));
+    started.matches[0].state = 'countdown';
+    started.player.loadout = { weapons: [], armor: 100, health: 200, supplies: [] };
+    panel.send('state', started);
+
+    assert.ok(!/Pistol/.test(panel.text('loadout-slots')),
+        'A LOCKED LOADOUT STILL SHOWED A WEAPON THE SERVER WAS NEVER SENT: '
+        + panel.text('loadout-slots'));
+});
+
+test('and inside a lobby an unsaved pick is still protected from a broadcast', () => {
+    /* The other half, and the reason the guard exists. */
+    const snap = snapshot(false, {
+        attachments: [{ key: 'scope', label: 'Scope' }, { key: 'grip', label: 'Grip' }],
+    });
+    const panel = opened(snap);
+    panel.fire('weapon-card-pistol', 'click');
+
+    panel.send('state', JSON.parse(JSON.stringify(snap)));   // still a lobby
+
+    assert.ok(/Pistol/.test(panel.text('loadout-slots')),
+        'a broadcast wiped out a pick the player was still making');
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

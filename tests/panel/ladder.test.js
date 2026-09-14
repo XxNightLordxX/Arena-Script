@@ -343,6 +343,40 @@ test('and on a server with supplies switched off, nobody is issued anything', ()
         'and should say plainly that nothing is carried: ' + slots);
 });
 
+// ------------------------------------------------------------------
+// AND A KILL LIMIT IS A NUMBER, so the card says the number
+// ------------------------------------------------------------------
+
+test('DEFECT: the lobby names the kill limit, not just "the limit"', () => {
+    /* `match.scoreLimit` has always been on the wire. Its only readers were
+       the host's own create/edit form -- never a display -- so the card said
+       "No lives -- respawn until somebody reaches the limit" and "Win by
+       first to the kill limit" without either line ever naming it, on the
+       card a stranger reads to decide whether to join. */
+    const panel = loadPanel(ROOT);
+    const snap = snapshot('ffa', []);
+    snap.matches[0].winCondition = 'score_limit';
+    snap.matches[0].scoreLimit = 25;
+    snap.matches[0].livesSpent = false;
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    const meta = panel.text('lobby-meta');
+    assert.ok(/25/.test(meta), 'THE LIMIT WAS NEVER NAMED: ' + meta);
+});
+
+test('and a match with no limit does not invent one', () => {
+    const panel = loadPanel(ROOT);
+    const snap = snapshot('ffa', []);
+    snap.matches[0].winCondition = 'last_standing';
+    snap.matches[0].scoreLimit = 25;
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.ok(!/25 kills/.test(panel.text('lobby-meta')),
+        'a kill limit was quoted on a last-one-standing match: ' + panel.text('lobby-meta'));
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

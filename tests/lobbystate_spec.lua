@@ -1042,4 +1042,34 @@ t.test('EXPLOIT: the broadcast state carries no citizen id, and nobody else\'s w
     t.isTrue(rows >= 2, 'no roster rows were sent, so this proves nothing')
 end)
 
+-- ========================================================================
+-- THE ASKER IS ALWAYS ANSWERED
+-- ========================================================================
+
+t.test('DEFECT: a save that changes nothing still answers the player who asked', function()
+    -- The panel sets `loadoutSaving` when it posts and clears it on the next
+    -- snapshot. SetLoadout pushed only when the loadout CHANGED or something
+    -- was rejected -- and there is no periodic broadcast to rescue the third
+    -- case, so a player who dropped a weapon and took it straight back was
+    -- left reading "Saving -- waiting for the server." with Save greyed out
+    -- until some unrelated lobby event happened along.
+    local s = twoInLobby(function(config)
+        config.Loadouts.allowChoose = true
+        config.Loadouts.chooser = 'player'
+    end)
+
+    local weapons = s.env.Arena.GetEnabledWeapons()
+    t.isTrue(#weapons > 0, 'no weapons are enabled in this config')
+    local request = { weapons = { { key = weapons[1].key } } }
+
+    t.isTrue(s.lobby.SetLoadout(1, request), 'the first save was refused')
+
+    local mark = s.mark()
+    t.isTrue(s.lobby.SetLoadout(1, request), 'the identical save was refused')
+
+    t.isTrue(s.mark() > mark,
+        'A SAVE THAT CHANGED NOTHING SENT THE ASKER NOTHING BACK -- the panel '
+            .. 'is left saying "Saving, waiting for the server" for ever')
+end)
+
 os.exit(t.summary())

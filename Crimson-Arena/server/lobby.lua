@@ -1002,6 +1002,14 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
         tierPlan = resolvedTiers,
         scoreLimit = resolvedLimit,
         createdAt = os.time(),
+        -- THE LAST TIME ANYBODY DID ANYTHING TO THIS LOBBY, which is not the
+        -- same question as when it was made. The idle sweep below wants to
+        -- close ABANDONED lobbies, and it was measuring from `createdAt` --
+        -- so a lobby people had been drifting in and out of for a quarter of
+        -- an hour was one un-ticked Ready away from being closed under them.
+        -- Refreshed by ArenaLobby.UpdateMatch; see the sweep for why that one
+        -- matters most.
+        idleSince = os.time(),
         startsAt = 0,
         endsAt = 0,
         players = {},
@@ -1926,6 +1934,19 @@ function ArenaLobby.UpdateMatch(src, data)
     match.label = locale('match.label', match.hostName,
         (Arena.GetModeByKey(modeKey) or {}).label or modeKey)
 
+    -- AND EDITING A LOBBY IS NOT ABANDONING IT.
+    --
+    -- THE DEFECT, AND IT IS MINE: the rule below clears Ready, and the idle
+    -- sweep closes any lobby that has had nobody ready since it was CREATED.
+    -- Put together, a host editing a quarter-hour-old lobby into a team mode
+    -- had it destroyed under them and everybody in it ejected -- measured, on
+    -- autoAssignIfUnchosen = false: alive before this line existed, closed
+    -- after. The host asked for a mode change and got their lobby shut.
+    --
+    -- The sweep is right about what it is for and was asking the wrong
+    -- question. Somebody who just rewrote the rules is the opposite of absent.
+    match.idleSince = os.time()
+
     -- A RULES REWRITE TAKES EVERYBODY ELSE'S READY BACK. Ready is consent
     -- to a particular match -- this arena, this mode, these lives, this way
     -- of winning -- and it did not move when the match did. A player who
@@ -2293,7 +2314,7 @@ if idleTimeout > 0 then
             for id, match in pairs(matches) do
                 if match.state == 'lobby'
                     and readyCount(match) == 0
-                    and (now - match.createdAt) >= idleTimeout then
+                    and (now - (match.idleSince or match.createdAt)) >= idleTimeout then
                     expired[#expired + 1] = id
                 end
             end

@@ -599,4 +599,111 @@ t.test('a plain bystander may still watch a match they are in no part of', funct
 end)
 
 print('lobbyexit_spec')
+-- ========================================================================
+-- THE IDLE SWEEP CLOSES ABANDONED LOBBIES, NOT BUSY ONES
+--
+-- The sweep destroys any lobby that has had NOBODY ready since it was
+-- created. That is right for a lobby somebody opened and wandered away from,
+-- and it asked the question by measuring from `createdAt` -- so it could not
+-- tell a lobby nobody had touched in a quarter of an hour from one people
+-- had been drifting in and out of the whole time.
+--
+-- That only became reachable when ArenaLobby.UpdateMatch started clearing
+-- the HOST's Ready as well as everybody else's (it has to: SetReady refuses
+-- to mint a ready-with-no-side row, and a mode change wipes sides). Put the
+-- two together and a host editing a fifteen-minute-old lobby into team
+-- deathmatch had it destroyed under them, with everybody in it ejected.
+--
+-- Measured: alive without the ready-clearing, CLOSED with it.
+-- ========================================================================
+
+--- A lobby of two that has been open longer than the idle timeout.
+--- @return table server, string matchId
+local function staleLobby(mutate)
+    local server = newServer(function(config)
+        config.Match.idleLobbyTimeoutSeconds = 900
+        config.Match.autoStartWhenAllReady = false
+        config.Teams.autoAssignIfUnchosen = false
+        config.Betting.enabled = false
+        config.Betting.entryFee.enabled = false
+        if mutate then mutate(config) end
+    end)
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.GetByPlayer(1)
+    t.isNotNil(match, 'the host could not open a lobby')
+    server.fire('joinMatch', 2, { matchId = match.id })
+
+    -- Sixteen minutes of people drifting in and out.
+    match.createdAt = os.time() - 1000
+    match.idleSince = match.createdAt
+
+    return server, match.id
+end
+
+t.test('THE DEFECT: editing a stale lobby does not hand it to the sweep', function()
+    local server, matchId = staleLobby()
+    server.fire('setReady', 1, { ready = true })
+
+    -- The host changes the mode to a team one, which wipes every side and --
+    -- with auto-assignment off -- must take their own Ready with it.
+    t.isTrue(server.lobby.UpdateMatch(1, { matchId = matchId, modeKey = 'tdm' }),
+        'the mode could not be changed')
+    t.isFalse(server.lobby.Get(matchId).players[1].ready == true,
+        'the host kept a Ready they cannot legally hold, so this proves nothing')
+
+    server.step(40)
+
+    t.isNotNil(server.lobby.Get(matchId),
+        'THE HOST ASKED FOR A MODE CHANGE AND HAD THEIR LOBBY CLOSED UNDER THEM')
+end)
+
+t.test('and a lobby opened SECONDS ago is never swept, whatever nobody has done in it', function()
+    -- THE STARTING VALUE, which every other test here overwrites by hand to
+    -- age the lobby -- so a mutation that seeded it at zero survived the lot.
+    -- Seeded wrong, the very first sweep would destroy every lobby on the
+    -- server the moment it was opened, because nobody has readied up yet in
+    -- the first fifteen seconds of any lobby that ever existed.
+    local server = newServer(function(config)
+        config.Match.idleLobbyTimeoutSeconds = 900
+        config.Match.autoStartWhenAllReady = false
+        config.Betting.enabled = false
+        config.Betting.entryFee.enabled = false
+    end)
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.GetByPlayer(1)
+    t.isNotNil(match, 'the host could not open a lobby')
+    server.fire('joinMatch', 2, { matchId = match.id })
+
+    -- Nothing is aged. Nobody readies. This is a lobby two people are
+    -- standing in, right now.
+    t.equals(server.lobby.Get(match.id).players[1].ready, false,
+        'somebody readied up, so this proves nothing')
+
+    server.step(40)
+
+    t.isNotNil(server.lobby.Get(match.id),
+        'A LOBBY OPENED SECONDS AGO WAS SWEPT AWAY')
+end)
+
+t.test('CONTROL: a lobby nobody has touched at all is still closed', function()
+    -- The sweep must keep doing its job. A fix that simply stopped it would
+    -- pass the test above and leave dead lobbies on the server for ever.
+    local server, matchId = staleLobby()
+
+    server.step(40)
+
+    t.isNil(server.lobby.Get(matchId),
+        'an abandoned lobby was left standing -- the sweep has stopped working')
+end)
+
+t.test('and a lobby somebody readied in is never swept, edited or not', function()
+    local server, matchId = staleLobby()
+    server.fire('setReady', 1, { ready = true })
+
+    server.step(40)
+
+    t.isNotNil(server.lobby.Get(matchId),
+        'a lobby with somebody ready in it was swept')
+end)
+
 os.exit(t.summary())

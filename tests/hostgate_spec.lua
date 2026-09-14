@@ -588,6 +588,36 @@ t.test('and with auto-assignment ON the host keeps their tick, as the rule says'
         'the host lost a tick the rule says they keep')
 end)
 
+t.test('and a lives-only edit IN A TEAM MODE leaves the host ticked', function()
+    -- THE NARROW ONE, and a mutation sample found it: writing `needsSide =
+    -- ruleChanged` instead of `teamsChanged` passed every test there was.
+    -- The two differ only here -- an edit that changes a rule WITHOUT
+    -- changing the mode, in a mode that already uses teams.
+    --
+    -- Nothing has been wiped: the host still holds the side they picked, and
+    -- SetReady would take their tick right now. Clearing it would be the
+    -- server unticking a box for no reason the player can see.
+    local s, matchId = editableLobby(false)
+
+    t.isTrue(s.lobby.UpdateMatch(1, { matchId = matchId, modeKey = 'tdm' }),
+        'the lobby could not be made a team match')
+
+    local sides = s.env.Arena.GetEnabledTeams()
+    t.isTrue(s.lobby.SetTeam(1, sides[1].key), 'the host could not pick a side')
+    t.isTrue(s.lobby.SetTeam(2, sides[2].key), 'the guest could not pick a side')
+    t.isTrue(s.lobby.SetReady(1, true), 'the host could not ready up in the team match')
+
+    -- A lives-only edit. The mode does not move, so no side is wiped.
+    t.isTrue(s.lobby.UpdateMatch(1, { matchId = matchId, modeKey = 'tdm', lives = 5 }),
+        'the lives could not be changed')
+
+    local match = s.lobby.Get(matchId)
+    t.equals(match.players[1].team, sides[1].key,
+        'a lives-only edit wiped the host\'s side')
+    t.isTrue(match.players[1].ready,
+        'THE HOST WAS UNTICKED BY AN EDIT THAT TOOK NOTHING AWAY FROM THEM')
+end)
+
 t.test('and a rewrite that changes no mode leaves every tick alone', function()
     local s, matchId = editableLobby(false)
 

@@ -95,8 +95,218 @@ function ArenaStats.Record(entry)
     return true
 end
 
+--- WHO HAS BEATEN WHOM, LATELY. { [citizenid] = { { set = 'A|B', at = 123 } } }
+---
+--- The repeat rule needs to know that this is the fourth time tonight you
+--- have beaten the same two people. Kept in memory on purpose: it is a
+--- fairness heuristic, not an accounting record, and a restart forgiving a
+--- few repeats is a far smaller problem than a table nobody knew to migrate.
+local recentWins = {}
+
+--- The characters who fought a match, deduplicated and sorted.
+---
+--- BY CITIZEN ID, NOT BY SERVER ID. Two logins on one character is one
+--- person, and counting the ids would make the smallest farm legal again.
+---
+--- `match.contestantIds` FIRST, and the fallback is only for a match that
+--- never went live. ArenaMatch writes that list at go-live -- read the note
+--- there -- and it is the honest answer to "who was in this round": the
+--- table below is the roster at the END, and ArenaLobby.Leave takes a
+--- quitter out of it. Judging on the leftovers would let one player's
+--- disconnect strip a real three-way of its result, and would let a farm
+--- rotate who walks out to keep changing the set the repeat rule keys on.
+--- @return string[] ids, integer count
+local function charactersIn(match)
+    local listed = match.contestantIds
+    if type(listed) == 'table' and #listed > 0 then
+        -- DEDUPLICATED HERE TOO, not only in the fallback below.
+        --
+        -- ArenaMatch writes this list already deduplicated, so on every path
+        -- that produces one honestly the loop below changes nothing -- which
+        -- is exactly why it has to be here. The one thing this whole rule
+        -- exists to refuse is one person counting as two, and leaving the
+        -- guard to the writer means the rule holds only as long as every
+        -- future writer remembers. It does not cost anything to be certain.
+        local seen, copy = {}, {}
+        for _, id in ipairs(listed) do
+            if Arena.IsKey(id) and not seen[id] then
+                seen[id] = true
+                copy[#copy + 1] = id
+            end
+        end
+        table.sort(copy)
+        if #copy > 0 then return copy, #copy end
+    end
+
+    local seen, out = {}, {}
+    for _, player in pairs(match.players or {}) do
+        local id = player.citizenid
+        if Arena.IsKey(id) and not seen[id] then
+            seen[id] = true
+            out[#out + 1] = id
+        end
+    end
+    table.sort(out)
+    return out, #out
+end
+
+--- How long the round actually ran, in seconds, or nil when it never went
+--- live.
+---
+--- `startsAt` MEANS TWO THINGS and this has to tell them apart. Begin sets it
+--- to a time in the FUTURE -- the second the countdown is due to finish --
+--- and goLive overwrites it with the second the round actually started. So a
+--- match that died during its countdown still carries a `startsAt`, and
+--- subtracting it from now gives a NEGATIVE number rather than a short round.
+--- Negative is the tell, and it means nothing was fought at all.
+local function secondsFought(match)
+    local started = Arena.ToInt(match.startsAt) or 0
+    if started <= 0 then return nil end
+    local ran = os.time() - started
+    if ran < 0 then return nil end
+    return ran
+end
+
+--- Whether the repeat rule is switched on AND watching a roster this size.
+---
+--- TWO SEPARATE WAYS OF BEING OFF, and they mean different things. A ceiling
+--- or a window of zero is an operator turning the rule off. `repeatAppliesUpTo`
+--- is the rule declining to watch: a roster larger than that is not something
+--- anybody can stage repeatedly, and applying the rule to it would stop
+--- counting the rounds of the regulars who play together every evening --
+--- which is the opposite of the job. See the note above Config.Leaderboard.
+--- @param rules table
+--- @param count integer -- how many characters were in the match
+--- @return boolean
+local function repeatRuleApplies(rules, count)
+    if (Arena.ToInt(rules.maxPerOpponentSet) or 0) <= 0 then return false end
+    if (Arena.ToInt(rules.repeatWindowMinutes) or 0) <= 0 then return false end
+
+    local watched = math.max(0, Arena.ToInt(rules.repeatAppliesUpTo) or 0)
+    if watched > 0 and count > watched then return false end
+
+    return true
+end
+
+--- Whether this result should move anybody's ranking, and why not when it
+--- should not.
+---
+--- NOTHING HERE STOPS A MATCH. The round has already happened, the money has
+--- already moved and the kit is already back. This decides only whether the
+--- board hears about it -- see the note above Config.Leaderboard.
+--- @param match table
+--- @return boolean ranked
+--- @return string? why -- the reason it is not, for the log
+local function rankedReason(match)
+    local rules = Config.Leaderboard
+    if type(rules) ~= 'table' or rules.rankedOnly ~= true then return true, nil end
+
+    local characters, count = charactersIn(match)
+
+    local floor = math.max(0, Arena.ToInt(rules.minFighters) or 0)
+    if count < floor then
+        return false, ('only %d character(s) fought it, and the board counts %d or more')
+            :format(count, floor)
+    end
+
+    local shortest = math.max(0, Arena.ToInt(rules.minSeconds) or 0)
+    if shortest > 0 then
+        local ran = secondsFought(match)
+        if ran == nil then
+            return false, 'it never went live, so there is nothing to rank'
+        end
+        if ran < shortest then
+            return false, ('it lasted %ds, and the board counts %ds or more'):format(ran, shortest)
+        end
+    end
+
+    if not repeatRuleApplies(rules, count) then return true, nil end
+
+    -- THE SAME PEOPLE, AGAIN. Keyed on the whole roster rather than on the
+    -- loser, so three friends taking turns are one set and not three.
+    local ceiling = math.max(0, Arena.ToInt(rules.maxPerOpponentSet) or 0)
+    local window = math.max(0, Arena.ToInt(rules.repeatWindowMinutes) or 0) * 60
+    local key = table.concat(characters, '|')
+    local now = os.time()
+
+    -- ASKED OF EVERY MEMBER, and answered by the first one that is full.
+    --
+    -- One row is written per character per counted match, so on a set that
+    -- has not changed every member holds the same count and the loop is
+    -- redundant. It stops being redundant the moment somebody's history
+    -- differs -- a character who joined the group late has fewer rows than
+    -- the regulars, and reading only the first would let the group carry on
+    -- counting by keeping one fresh face in the lobby.
+    for _, id in ipairs(characters) do
+        local rows, kept = recentWins[id] or {}, {}
+        local seenSet = 0
+        for _, row in ipairs(rows) do
+            if now - row.at < window then
+                kept[#kept + 1] = row
+                if row.set == key then seenSet = seenSet + 1 end
+            end
+        end
+        recentWins[id] = kept
+        if seenSet >= ceiling then
+            return false, ('these same %d fighters have already counted %d time(s) in the last %d minute(s)')
+                :format(count, seenSet, window // 60)
+        end
+    end
+
+    return true, nil
+end
+
+--- Writes this result down against the repeat rule, once it has counted.
+local function noteRanked(match)
+    local rules = Config.Leaderboard
+    if type(rules) ~= 'table' or rules.rankedOnly ~= true then return end
+
+    local characters, count = charactersIn(match)
+
+    -- THE SAME PREDICATE THE RULE READS, and it has to be: a match written
+    -- down that the rule will never look at is a row that can only ever fill
+    -- somebody else's window up, and a match the rule WILL look at that was
+    -- never written down is a free win every time.
+    if not repeatRuleApplies(rules, count) then return end
+
+    local key = table.concat(characters, '|')
+    local now = os.time()
+    for _, id in ipairs(characters) do
+        recentWins[id] = recentWins[id] or {}
+        table.insert(recentWins[id], { set = key, at = now })
+    end
+end
+
 function ArenaStats.RecordMatch(match)
     if type(match) ~= 'table' or type(match.players) ~= 'table' then return 0 end
+
+    -- DOES THIS RESULT MOVE ANYBODY'S RANKING?
+    --
+    -- Asked here and nowhere else, because this is the only door into the
+    -- board that a whole match comes through. A round that does not qualify
+    -- is not penalised and is not hidden: it was fought, it was paid, the
+    -- results screen shows every number it always did. It simply writes
+    -- nothing down -- no win, no loss, no kills, no earnings -- so it cannot
+    -- be used to climb.
+    --
+    -- The answer rides home on the match so ArenaMatch.End can put it on the
+    -- results screen. Telling the player is the point: a rule nobody is told
+    -- about reads as the board being broken.
+    local ranked, why = rankedReason(match)
+    match.ranked = ranked
+    match.rankedWhy = why
+
+    if not ranked then
+        ArenaDebug('leaderboard: match %s does not count -- %s', tostring(match.id), tostring(why))
+        return 0
+    end
+
+    -- WRITTEN DOWN BEFORE THE ROWS ARE, and only when it counted. The repeat
+    -- rule is what stops the patient farm, and it can only count results it
+    -- was told about -- so a match that failed one of the rules above must
+    -- not fill the window up as well, or two friends could keep a third
+    -- honest pairing out of the board by playing four-second rounds.
+    noteRanked(match)
 
     local won = {}
     for _, id in ipairs(match.winners or {}) do won[id] = true end

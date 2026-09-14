@@ -223,6 +223,22 @@ local function newServer(mutate)
         server.fire('setReady', 2, { ready = true })
         server.match.Start(matchId)
         threads.step()
+
+        -- AND THE ROUND TOOK FIVE MINUTES, because otherwise it took none.
+        --
+        -- `startsAt` is written from the REAL os.time() at go-live and this
+        -- sandbox steps its threads instantly, so every round here begins and
+        -- ends inside the same second. Config.Leaderboard.minSeconds reads
+        -- that as a round nobody fought and keeps it off the board -- which
+        -- is the right answer to the question it is asked, and the wrong
+        -- answer for a file about whether the money on the screen matches the
+        -- money on the record.
+        --
+        -- Wound back rather than switched off, so these tests are still
+        -- judged under the config this resource ships.
+        local match = server.lobby.Get(matchId)
+        if match then match.startsAt = (tonumber(match.startsAt) or os.time()) - 300 end
+
         server.match.OnDeath(loser, loser == 1 and 2 or 1)
         for _ = 1, 8 do threads.step() end
     end

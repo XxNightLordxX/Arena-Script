@@ -177,8 +177,51 @@ end
 
 --- A finished match record shaped the way server/match.lua leaves one.
 --- Players are keyed by server id, which is what RecordMatch iterates.
-local function match(players, winners, payouts)
-    return { players = players, winners = winners, payouts = payouts }
+---
+--- `startsAt` IS PART OF THE SHAPE, and leaving it out was not an option
+--- once Config.Leaderboard existed. The shipped rules only count a round
+--- that actually ran -- see the note above that block -- and a record with
+--- no start time reads as a round that never went live, which would have
+--- made every test in this file pass vacuously against a RecordMatch that
+--- returned zero and wrote nothing.
+---
+--- Five minutes ago, which is a perfectly ordinary round, so every test
+--- below is judged under the config this resource ships rather than under
+--- one written to make them pass.
+local function match(players, winners, payouts, fought)
+    local ids = fought
+    if ids == nil then
+        -- WHO WENT LIVE, which is not the same list as who is still here.
+        --
+        -- ArenaMatch writes `contestantIds` at go-live and ArenaLobby.Leave
+        -- takes a quitter out of `players`, so a record reaching RecordMatch
+        -- with one character in it is a round somebody WALKED OUT OF, not a
+        -- round one person fought alone. Modelled here rather than asserted
+        -- on, because that is not what any test in this file is about: the
+        -- eleven single-player records below are all "everybody else left",
+        -- and a fixture that dropped the fighter who left would have had the
+        -- shipped rules refuse the lot of them as walkovers.
+        --
+        -- Pass `fought` explicitly to say otherwise.
+        ids = {}
+        local seen = {}
+        for _, p in pairs(players) do
+            if p.citizenid and not seen[p.citizenid] then
+                seen[p.citizenid] = true
+                ids[#ids + 1] = p.citizenid
+            end
+        end
+        if #ids < 2 then ids[#ids + 1] = 'char:walked-out' end
+        table.sort(ids)
+    end
+
+    return {
+        players = players,
+        winners = winners,
+        payouts = payouts,
+        startsAt = os.time() - 300,
+        contestantIds = ids,
+    }
 end
 
 --- One player record inside that match.
@@ -430,6 +473,8 @@ t.test('the player\'s own src wins over the table key it is stored under', funct
         players = { ['slot-1'] = player(4, 'char:A', 'Ada') },
         winners = { 4 },
         payouts = { { id = 4, amount = 200, reason = 'payout' } },
+        startsAt = os.time() - 300,
+        contestantIds = { 'char:A', 'char:walked-out' },
     })
 
     local board = s.board()
@@ -444,6 +489,8 @@ t.test('and the table key is used when the record carries no src', function()
         players = { [9] = { citizenid = 'char:A', name = 'Ada', kills = 0, deaths = 0 } },
         winners = { 9 },
         payouts = { { id = 9, amount = 200, reason = 'payout' } },
+        startsAt = os.time() - 300,
+        contestantIds = { 'char:A', 'char:walked-out' },
     })
 
     local board = s.board()
@@ -513,7 +560,11 @@ end)
 t.test('a missing winners or payouts array is empty, not a crash', function()
     local s = newStats()
 
-    local recorded = s.S.RecordMatch({ players = { [1] = player(1, 'char:A', 'Ada') } })
+    local recorded = s.S.RecordMatch({
+        players = { [1] = player(1, 'char:A', 'Ada') },
+        startsAt = os.time() - 300,
+        contestantIds = { 'char:A', 'char:walked-out' },
+    })
 
     t.equals(recorded, 1, 'a match with no winners or payouts arrays was not recorded')
     t.equals(s.board()['Ada'].earnings, 0)

@@ -17,20 +17,21 @@
     ------------------------------------------------------------------------------
      line   setting       what it is
     ------------------------------------------------------------------------------
-       88   Lobby         The NPC players walk up to
-      158   Schedule      Opening hours: when the door is actually open
-      194   Match         Lives, timers, player counts, win condition
-      499   Teams         The sides, and whether they may be uneven
-      632   Modes         Free-for-all, team deathmatch and gun game
-      936   DefaultMode   Which of them a new lobby opens on
-      955   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1178   UI            Panel colours, logo and title
-     1236   Permissions   Who may open a match, who may force-stop one
-     1322   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1756   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2243   Database      Optional: leaderboard, and what players still owe the arena
-     2253   Webhook       Optional: a Discord line per finished match
-     2285   Dispatch      Optional: keeping police and EMS out of the arena
+       89   Lobby         The NPC players walk up to
+      159   Schedule      Opening hours: when the door is actually open
+      195   Match         Lives, timers, player counts, win condition
+      500   Teams         The sides, and whether they may be uneven
+      633   Modes         Free-for-all, team deathmatch and gun game
+      937   DefaultMode   Which of them a new lobby opens on
+      956   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1179   UI            Panel colours, logo and title
+     1237   Permissions   Who may open a match, who may force-stop one
+     1323   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1757   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2244   Database      Optional: leaderboard, and what players still owe the arena
+     2275   Leaderboard   Which matches count towards the board, and which do not
+     2341   Webhook       Optional: a Discord line per finished match
+     2373   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -2245,6 +2246,93 @@ Config.Database = {
     -- Flush queued stat writes this often, in ms. Also flushed on stop.
     flushIntervalMs = 60000,
     leaderboardSize = 25,
+}
+
+-- ======================================================================
+-- WHICH MATCHES COUNT TOWARDS THE BOARD
+--
+-- NOTHING HERE LIMITS A MATCH. Every round still runs, still pays out, still
+-- hands weapons back, still shows every number on the results screen. This
+-- decides one thing only: whether the result moves anybody's ranking.
+--
+-- WHY IT EXISTS. The board ranks on wins, then kills, then earnings, and it
+-- counted every match equally -- so the quickest way to the top was two
+-- accounts, a lobby nobody else could see, and a round decided in four
+-- seconds, over and over. That is not a contest and it should not outrank
+-- people who fight real ones.
+--
+-- AN UNRANKED MATCH COUNTS FOR NOTHING on the board: no win, no loss, no
+-- kills, no deaths, no earnings. It is not a penalty -- the round happened,
+-- the money moved, the kit came back -- and the player is told, on the
+-- results screen, that it did not count and why.
+--
+-- THE RULES ARE DELIBERATELY NOT HEADCOUNT RULES. A 1v1 between two real
+-- people is a real match and ranks like one; the thing worth catching is not
+-- "few players" but THE SAME few players, in a closed loop, forever. So the
+-- floors below are set low enough to leave honest play alone, and the repeat
+-- rule underneath them does the actual work.
+-- ======================================================================
+Config.Leaderboard = {
+    -- Off, every match counts, which is how this behaved before it existed.
+    -- Leave it on unless you would rather police the board by hand.
+    rankedOnly = true,
+
+    -- HOW MANY DIFFERENT PEOPLE HAVE TO HAVE BEEN IN IT.
+    --
+    -- TWO, not three, ON PURPOSE. Three would have been the tidier number
+    -- and it would have unranked every duel on the server -- a 1v1 is the
+    -- oldest real contest there is, and a rule that refuses to count it is
+    -- limiting matches, which is the one thing this block does not do.
+    --
+    -- One is what this is actually for: a "match" that only ever had one
+    -- character in it is a walkover, not a win.
+    --
+    -- Counted as distinct CHARACTERS and counted at GO-LIVE, so two logins
+    -- on one citizen id count once, and somebody quitting halfway does not
+    -- strip the result from the players who stayed.
+    minFighters = 2,
+
+    -- HOW LONG IT HAD TO LAST, in seconds, measured from the round going
+    -- live. 0 turns this off.
+    --
+    -- THIRTY, and the number is a compromise worth understanding. A real
+    -- duel between two good players on one life each can genuinely be over
+    -- in fifteen seconds, so a minute -- the obvious choice -- would have
+    -- thrown away honest results by the hundred. Thirty catches the thing
+    -- that is actually worth catching: the round that ends before anybody
+    -- could plausibly have fought it.
+    minSeconds = 30,
+
+    -- AND BEATING THE SAME PEOPLE OVER AND OVER STOPS COUNTING.
+    --
+    -- THIS IS THE RULE THAT MATTERS. The two floors above cost a farmer
+    -- thirty seconds and a second account; this one is what makes the farm
+    -- not work. A result against the same SET of characters counts
+    -- `maxPerOpponentSet` times inside the window and then stops until the
+    -- window rolls past.
+    --
+    -- KEYED ON THE WHOLE ROSTER, not on who lost, so three friends taking
+    -- turns winning are one set rather than three.
+    --
+    -- Set maxPerOpponentSet = 0 to turn the repeat rule off entirely.
+    repeatWindowMinutes = 60,
+    maxPerOpponentSet = 3,
+
+    -- ...AND ONLY WHERE THE ROSTER IS SMALL ENOUGH TO STAGE.
+    --
+    -- WITHOUT THIS THE REPEAT RULE PUNISHES REGULARS. Eight people who play
+    -- each other every evening are the healthiest thing a server has, and
+    -- they are also one set -- so the rule above would have stopped counting
+    -- their fourth round of the night. That is limiting matches by the back
+    -- door.
+    --
+    -- A farm needs every player in the room to be in on it, and that stops
+    -- being arrangeable very quickly. Rosters larger than this are left
+    -- alone by the repeat rule; they are policed by the fact that you cannot
+    -- get nine people to throw rounds for you all night.
+    --
+    -- 0 applies the repeat rule to every size.
+    repeatAppliesUpTo = 3,
 }
 
 -- ======================================================================

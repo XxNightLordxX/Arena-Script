@@ -1817,6 +1817,32 @@ local function goLive(matchId)
     -- gone home.
     match.contestants = #players
 
+    -- AND WHO THEY WERE, BY CHARACTER, for the leaderboard's ranked rule.
+    --
+    -- The line above counts server ids and is counted here for the pot. This
+    -- one is a different question with a different answer: ArenaStats reads
+    -- `match.players` at the END of the round, and a fighter who walks out
+    -- mid-round is taken off that table (ArenaLobby.Leave, which records
+    -- their loss on the way past). So the roster the board would otherwise
+    -- judge is "whoever was still standing", and a three-way that one player
+    -- quit would read as a two-man duel -- unranked, and the two who stayed
+    -- would lose a real result to somebody else's disconnect.
+    --
+    -- Written at go-live, where the answer is settled: nobody else can join
+    -- from here. By CITIZEN ID rather than by server id because two logins on
+    -- one character is one person, and it is the count that a farm is trying
+    -- to inflate.
+    local seen = {}
+    match.contestantIds = {}
+    for _, player in ipairs(players) do
+        local id = player.citizenid
+        if Arena.IsKey(id) and not seen[id] then
+            seen[id] = true
+            match.contestantIds[#match.contestantIds + 1] = id
+        end
+    end
+    table.sort(match.contestantIds)
+
     local roundTime = Arena.RoundSecondsFor(match.modeKey, match.roundTimeSeconds)
     match.endsAt = roundTime > 0 and (match.startsAt + roundTime) or nil
 
@@ -2555,6 +2581,18 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
             earnings = earned[player.src] or 0,
             scoreboard = board,
+
+            -- AND WHETHER IT COUNTED TOWARDS THE LADDER.
+            --
+            -- Written by ArenaStats.RecordMatch a few lines up -- read the
+            -- note above Config.Leaderboard for the rule. Always a boolean,
+            -- never left out: the panel draws the warning off `ranked ===
+            -- false`, so a field that went missing on the way would read as
+            -- "this counted" rather than as "nobody said", and a player
+            -- whose result was quietly dropped would have nothing to go on
+            -- but a board that did not move.
+            ranked = match.ranked ~= false,
+            rankedNote = type(match.rankedWhy) == 'string' and match.rankedWhy or nil,
         }
 
         -- THE BOARD GOES OUT TWICE, and the second one is the one a player

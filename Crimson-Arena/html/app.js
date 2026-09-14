@@ -5121,6 +5121,24 @@
         resultsNode = null;
     }
 
+    // WHAT TO SAY WHEN A ROUND DID NOT COUNT TOWARDS THE LADDER.
+    //
+    // Only when it did not. A line on every result saying "this counted" is
+    // noise nobody reads, and the warning stops being read with it -- so the
+    // absence of this line is what says the win landed. See the note above
+    // Config.Leaderboard for which rounds qualify.
+    //
+    // The reason comes from the server already written out in plain English
+    // ("it lasted 12s, and the board counts 60s or more"), because the rule
+    // that produced it is the only thing that knows which of the three
+    // thresholds was missed and by how much.
+    function ladderNote(results) {
+        if (!results || results.ranked !== false) return '';
+        var why = typeof results.rankedNote === 'string' ? results.rankedNote.trim() : '';
+        var said = 'This round does not count towards the ladder';
+        return why === '' ? said + '.' : said + ' \u2014 ' + why + '.';
+    }
+
     function resultsSummary(results) {
         var bits = [];
         if (results.placement) bits.push('Placed #' + int(results.placement, 0));
@@ -5198,6 +5216,20 @@
             }));
         }
 
+        var ladder = ladderNote(results);
+        if (ladder !== '') {
+            root.appendChild(styled(makeEl('div', null, ladder), {
+                marginTop: '0.5rem',
+                padding: '0.35rem 0.5rem',
+                textAlign: 'center',
+                fontSize: '0.85rem',
+                lineHeight: '1.35',
+                color: 'var(--text)',
+                background: 'var(--surface-raised)',
+                borderLeft: '2px solid var(--accent-bright)'
+            }));
+        }
+
         var rows = arrayOf(results.scoreboard);
         if (rows.length > 0) {
             var board = styled(makeEl('div', null), {
@@ -5220,6 +5252,7 @@
                 ? results.reason
                 : (won ? 'You won.' : 'Match over.');
             var said = reason + (summary === '' ? '' : '  ·  ' + summary);
+            if (ladder !== '') said = said + '  \u00b7  ' + ladder;
             toast(said, won ? 'success' : 'info');
         }
     }

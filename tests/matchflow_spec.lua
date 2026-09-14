@@ -2753,4 +2753,282 @@ t.test('and a scatter radius, where a server sends one, still spreads people out
         t.equals(placed.y, 20.0, 'the scatter did not move the fighter to the point it drew')
     end)
 
+-- ======================================================================
+-- A SPRAY IS A KILL, AND FOR A LONG TIME IT WAS NOBODY'S
+--
+-- IN THE OWNER'S WORDS: "Also its not registering kills when using sprays
+-- etc" and "ensure headshots etc actually give kills".
+--
+-- And from their own server console, on a round whose only ranged weapon
+-- was an acid spray:
+--
+--   UNATTRIBUTED: 2 died in match mb4973 with nobody named -- inside the
+--   arena, where something should have been able to kill them. The client
+--   says nothing it could name hit them -- a fall, a drowning, the boundary
+--   bleed or a fire.
+--
+-- Twice in forty seconds. The reading is right and the conclusion in it is
+-- wrong: a spray IS a fire as far as the engine's death reading goes.
+--
+-- Damage over time does not kill with a blow the engine calls fatal. The
+-- health bar reaches nought on a tick that carries victimDied = 0, so:
+--
+--   the damage hook returned before it looked at anything, because its
+--   very first test was the fatal flag;
+--   the watch loop found the body a frame later and called handleDeath with
+--   NO attacker, because it has none to give;
+--   GET_PED_SOURCE_OF_DEATH answers 0 for damage of that kind.
+--
+-- Three readings, three nils, on a death somebody plainly caused. The only
+-- part of this client that saw it happen was the damage hook, several ticks
+-- before the death -- so it writes every hit down now, and the death asks it
+-- LAST, after all three of the readings that can say something better.
+-- ======================================================================
+
+--- A round, a hit that hurts without killing, and then the death itself --
+--- found by the watch loop, with the engine naming nobody. This is what an
+--- acid spray, a fire or a bleed-out looks like from this file.
+--- @param attacker integer|nil -- who landed the non-fatal hit
+--- @param gapMs integer|nil -- how long between that hit and the death
+local function sprayedToDeath(f, attacker, gapMs)
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    -- ONE TICK OF THE SPRAY. Note the fourth field: the engine does NOT
+    -- call this blow fatal, because it is not the one that killed them.
+    f.fire('gameEventTriggered', 'CEventNetworkEntityDamage', { f.ped, attacker, nil, 0 })
+
+    f.clock = f.clock + (gapMs or 400)
+
+    -- AND THE DEATH, with nothing to read off it. The watch loop is what
+    -- finds the body; there is no second damage event to catch.
+    f.sourceOfDeath = 0
+    f.dead = true
+    f.step()
+end
+
+t.test('THE DEFECT: a fighter sprayed to death credits the player who sprayed them', function()
+    local f = newClientFixture()
+    f.playerIndexOf = { [901] = 3 }
+    f.serverIdOf = { [3] = 42 }
+
+    sprayedToDeath(f, 901)
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the death was not reported at all')
+    t.equals(reports[1].payload.killerServerId, 42,
+        'the only thing that saw the kill was the damage hook, and it threw the hit away '
+        .. 'for not being flagged fatal -- so the sprayer was paid nothing')
+end)
+
+t.test('and a hit too long ago is NOT turned into a kill', function()
+    -- The safety on the whole mechanism. A spray refreshes this on every
+    -- tick right up to the death, so the real gap is one tick; anything
+    -- beyond the window is somebody who grazed this player and left, and
+    -- paying them for a death they had no part in is worse than paying
+    -- nobody. HURT_MEMORY_MS is four seconds.
+    local f = newClientFixture()
+    f.playerIndexOf = { [901] = 3 }
+    f.serverIdOf = { [3] = 42 }
+
+    sprayedToDeath(f, 901, 9000)
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the death was not reported')
+    t.isNil(reports[1].payload.killerServerId,
+        'a hit nine seconds before the death was counted as the kill')
+end)
+
+t.test('and the victim hurting themselves names nobody, however long ago', function()
+    -- The boundary bleed and a player's own grenade both arrive at the hook
+    -- naming the victim. Neither is a kill, and neither may be remembered.
+    local f = newClientFixture()
+
+    sprayedToDeath(f, f.ped)
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1)
+    t.isNil(reports[1].payload.killerServerId, 'the victim was credited with killing themselves')
+end)
+
+t.test('and the fatal blow still outranks a hit somebody else landed first', function()
+    -- ORDER IS THE WHOLE SAFETY OF THIS. Two players hit the same victim;
+    -- the one who struck the blow the engine calls fatal is the killer, and
+    -- the remembered hit must not be able to take that away.
+    local f = newClientFixture()
+    f.playerIndexOf = { [901] = 3, [902] = 4 }
+    f.serverIdOf = { [3] = 42, [4] = 43 }
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    -- 901 sprays them, 902 finishes them.
+    f.fire('gameEventTriggered', 'CEventNetworkEntityDamage', { f.ped, 901, nil, 0 })
+    f.clock = f.clock + 200
+    f.sourceOfDeath = 0
+    f.dead = true
+    f.fire('gameEventTriggered', 'CEventNetworkEntityDamage', { f.ped, 902, nil, 1 })
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1)
+    t.equals(reports[1].payload.killerServerId, 43,
+        'the kill went to whoever hit them FIRST rather than whoever killed them')
+end)
+
+t.test('and the engine\'s own source of death still outranks it too', function()
+    -- The third reading, which is still better evidence than "somebody hit
+    -- them a moment ago": it is the engine's summary of the death itself.
+    local f = newClientFixture()
+    f.playerIndexOf = { [901] = 3, [903] = 4 }
+    f.serverIdOf = { [3] = 42, [4] = 44 }
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    f.fire('gameEventTriggered', 'CEventNetworkEntityDamage', { f.ped, 901, nil, 0 })
+    f.clock = f.clock + 200
+    f.sourceOfDeath = 903
+    f.dead = true
+    f.step()
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1)
+    t.equals(reports[1].payload.killerServerId, 44,
+        'a remembered hit overruled the engine\'s own reading of the death')
+end)
+
+t.test('and a hit from the LAST life cannot be credited for a death in this one', function()
+    -- TWO GUARDS HOLD THIS AND EITHER ONE IS ENOUGH, which is why removing
+    -- just one of them leaves this test green. Stated rather than left as a
+    -- surprise for whoever deletes one: handleDeath CONSUMES the memory when
+    -- it reads it, so one hit can only ever pay for one death; and
+    -- forgetAttribution clears it on respawn. The test below is the one that
+    -- needs the second guard on its own.
+    local f = newClientFixture()
+    f.playerIndexOf = { [901] = 3 }
+    f.serverIdOf = { [3] = 42 }
+
+    sprayedToDeath(f, 901)
+    t.equals(f.eventsNamed('crimson_arena:server:reportDeath')[1].payload.killerServerId, 42,
+        'the first death did not go the way the rest of this test assumes')
+
+    -- Back on their feet, and then killed by the arena itself a moment later.
+    f.dead = false
+    f.respawn()
+    f.step()
+    f.step()
+
+    f.clock = f.clock + 200
+    f.sourceOfDeath = 0
+    f.dead = true
+    f.step()
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 2, 'the second death was never reported')
+    t.isNil(reports[2].payload.killerServerId,
+        'a hit from the fighter\'s PREVIOUS life was credited with killing them in this one')
+end)
+
+t.test('and a hit in a round they SURVIVED cannot pay out in the next round', function()
+    -- THE ONE ONLY forgetAttribution CAN HOLD, and the reason it exists
+    -- rather than leaving the stamps to do the whole job.
+    --
+    -- handleDeath never runs on this path -- the fighter walks out of the
+    -- round alive -- so nothing consumes the remembered hit. All that stood
+    -- between a graze in one round and a free kill in the next was four
+    -- seconds on a clock, and two arena rounds can start closer together
+    -- than that: a rematch off the same lobby is one message.
+    local f = newClientFixture()
+    f.playerIndexOf = { [901] = 3 }
+    f.serverIdOf = { [3] = 42 }
+
+    local function enter()
+        f.fire('crimson_arena:client:enterArena', {
+            matchId = 'match-1',
+            modeKey = 'ffa',
+            spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+            scatterRadius = 0.0,
+            freezeSeconds = 0,
+            loadout = { weapons = {}, health = 200, armor = 0 },
+        })
+        f.fire('crimson_arena:client:matchLive')
+    end
+
+    enter()
+    -- Sprayed, but they live, and the round ends with them on their feet.
+    f.fire('gameEventTriggered', 'CEventNetworkEntityDamage', { f.ped, 901, nil, 0 })
+    f.clock = f.clock + 200
+    f.fire('crimson_arena:client:exitArena', {})
+
+    -- Straight into the next one, and off the edge of it.
+    f.clock = f.clock + 200
+    enter()
+    f.clock = f.clock + 200
+    f.sourceOfDeath = 0
+    f.dead = true
+    f.step()
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'the death in the second round was never reported')
+    t.isNil(reports[1].payload.killerServerId,
+        'a graze in a round this fighter WALKED OUT OF paid somebody for a fall in the next one')
+end)
+
+t.test('CONTROL: an ordinary shooting death is unchanged by any of this', function()
+    -- Without this the six above pass on a build that credits the last
+    -- person to look at you, which is far worse than the defect.
+    local f = newClientFixture()
+    f.playerIndexOf = { [901] = 3 }
+    f.serverIdOf = { [3] = 42 }
+
+    killedInOneShot(f, 901)
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1)
+    t.equals(reports[1].payload.killerServerId, 42)
+end)
+
+t.test('CONTROL: and a death with nobody anywhere near still names nobody', function()
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    f.sourceOfDeath = 0
+    f.dead = true
+    f.step()
+
+    local reports = f.eventsNamed('crimson_arena:server:reportDeath')
+    t.equals(#reports, 1, 'a fall was not reported as a death')
+    t.isNil(reports[1].payload.killerServerId, 'a fall was pinned on somebody')
+end)
+
 os.exit(t.summary())

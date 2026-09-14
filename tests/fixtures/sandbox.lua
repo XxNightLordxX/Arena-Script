@@ -50,12 +50,60 @@ end
 --- it is a fallback. Four such guards shipped, and the sky arena's floor was
 --- built out of eighty-one overlapping blocks because of one of them.
 --- See Sandbox.type.
+--- THE DIFFERENCE BETWEEN TWO POINTS, which is a vector with a LENGTH.
+---
+--- `#(GetEntityCoords(ped) - center) > radius` is how FiveM code asks "how
+--- far away is this", and it is the line the arena boundary is built on --
+--- the fence the fighters are bled for leaving, and the thing that makes
+--- stepping off a sky platform fatal. Without `-` it does not run at all;
+--- without `#` on what `-` hands back it runs and answers nought, which
+--- reads as everybody standing dead in the middle of every arena.
+---
+--- THE LENGTH IS ON THE DIFFERENCE, NOT ON THE POINT, and that is on
+--- purpose. `#v` on a plain vector3 stays exactly what it was -- the array
+--- length, nought -- because changing what `#` means on a coordinate is a
+--- change to every spec that holds one, and nothing production does needs
+--- it. Only what subtraction produces knows how long it is.
+--- @param x number
+--- @param y number
+--- @param z number
+--- @return table
+local function difference(x, y, z)
+    local magnitude = math.sqrt(x * x + y * y + z * z)
+    return setmetatable({ x = x, y = y, z = z }, {
+        __len = function() return magnitude end,
+        __sub = function(a, b) return difference(a.x - b.x, a.y - b.y, a.z - b.z) end,
+        __add = function(a, b) return difference(a.x + b.x, a.y + b.y, a.z + b.z) end,
+    })
+end
+
+--- The arithmetic a coordinate is allowed to take part in.
+---
+--- STRICTLY ADDITIVE, and deliberately short. `-` and `+` used to RAISE on
+--- one of these, so nothing in this suite can have been relying on what they
+--- did. `==` and `tostring` are left alone for the opposite reason: they
+--- both work today, on identity and on the address, and giving them a
+--- meaning would quietly change what existing assertions mean.
+local VECTOR_MATHS = {
+    __sub = function(a, b) return difference(a.x - b.x, a.y - b.y, a.z - b.z) end,
+    __add = function(a, b) return difference(a.x + b.x, a.y + b.y, a.z + b.z) end,
+}
+
 local function makeVector(fields, kind)
     return function(...)
         local vector, args = {}, { ... }
         for index, name in ipairs(fields) do vector[name] = args[index] end
         VECTOR_KINDS[vector] = kind
-        return vector
+        -- x and y alone have a difference too: a vector2 subtracted from a
+        -- vector2 reads .z as nil, so it is given a nought rather than
+        -- erroring inside math.sqrt on a nil.
+        if vector.z == nil and kind == 'vector2' then
+            return setmetatable(vector, {
+                __sub = function(a, b) return difference(a.x - b.x, a.y - b.y, 0.0) end,
+                __add = function(a, b) return difference(a.x + b.x, a.y + b.y, 0.0) end,
+            })
+        end
+        return setmetatable(vector, VECTOR_MATHS)
     end
 end
 

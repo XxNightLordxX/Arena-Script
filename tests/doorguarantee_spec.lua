@@ -105,6 +105,37 @@ local function newServer(ids, mutate, extra, opts)
     --- so the reads above can tell the two apart.
     local containerKeys = {}
 
+    --- Every AddItem this run, in order: which inventory, what, and WHICH
+    --- SLOT the caller asked for.
+    local addCalls = {}
+
+    --- Per inventory, the slot numbers the last ClearInventory told the
+    --- client about. An empty list here means the player's screen still
+    --- shows everything that was just taken off them.
+    local clientTold = {}
+
+    --- CitizenFX's `table.type`, which is not Lua's and is not ox_lib's.
+    ---
+    --- It answers 'empty', 'array', 'hash' or 'mixed', and the case that
+    --- matters is the first one: an EMPTY table is 'empty', NOT 'array'.
+    --- ox_inventory's Clear tests for 'array' exactly, so `{}` misses it --
+    --- which is the entire defect this fixture now reproduces. Written out
+    --- here rather than stubbed to a constant because getting this one
+    --- answer wrong is what made the bug invisible.
+    local function cfxTableType(tbl)
+        if next(tbl) == nil then return 'empty' end
+
+        local count = 0
+        for _ in pairs(tbl) do count = count + 1 end
+
+        local sequence = 0
+        for _ in ipairs(tbl) do sequence = sequence + 1 end
+
+        if sequence == count then return 'array' end
+        if sequence == 0 then return 'hash' end
+        return 'mixed'
+    end
+
     local function bucket(id)
         if type(id) == 'number' then
             inv[id] = inv[id] or {}
@@ -194,7 +225,20 @@ local function newServer(ids, mutate, extra, opts)
             end
             return out
         end,
-        AddItem = function(_self, id, name, count, metadata)
+        AddItem = function(_self, id, name, count, metadata, slot)
+            -- THE SLOT THE DOOR ASKED FOR, recorded whether or not this
+            -- fixture can honour it.
+            --
+            -- ox_inventory's AddItem takes a slot as its fifth argument and
+            -- USES it when that slot is free -- `if not slotData then toSlot
+            -- = slot end` -- falling back to the first slot it fits in
+            -- otherwise. This fixture stores an inventory as a plain array,
+            -- so it cannot model a hole in one; what it CAN say, exactly, is
+            -- which slot each call named. That is the whole of what the door
+            -- controls, and the half that was being thrown away: every add
+            -- in this file went out with no slot at all, so a player's items
+            -- came back renumbered and the fixture had no way to notice.
+            addCalls[#addCalls + 1] = { id = id, name = name, slot = slot }
             -- A PLAYER WHO CANNOT BE GIVEN ANYTHING MORE. ox_inventory refuses
             -- by returning false when an inventory is out of slots or over
             -- weight, and this fixture had no way to say so -- which left the
@@ -233,18 +277,72 @@ local function newServer(ids, mutate, extra, opts)
         -- one and a resource that did not looked identical here -- which is
         -- exactly how money could be cleared out of a player's pockets with
         -- every test still green.
+        --- MODELS ox_inventory's Inventory.Clear LINE FOR LINE, INCLUDING
+        --- THE BRANCH THAT DOES NOT RUN.
+        ---
+        --- The old stub built a lookup out of `keep` and filtered by it,
+        --- which is what the function MEANS -- and it is not what the
+        --- function DOES. ox_inventory's real body is:
+        ---
+        ---     if keep then
+        ---         if type(keep) == 'string' then           ... fills updateSlots ...
+        ---         elseif type(keep) == 'table'
+        ---             and table.type(keep) == 'array' then ... fills updateSlots ...
+        ---         end
+        ---         table.wipe(inv.items); inv.items = keptItems
+        ---     else                                         ... fills updateSlots ...
+        ---         table.wipe(inv.items)
+        ---     end
+        ---     inv:syncSlotsWithClients(updateSlots, true)
+        ---
+        --- `table.type` is CitizenFX's and answers 'empty' for `{}`, so an
+        --- EMPTY keep list matches NEITHER branch. The wipe on the next line
+        --- still happens; `updateSlots` never gets filled; and the sync that
+        --- follows tells the client to update nothing at all. Server empty,
+        --- screen full.
+        ---
+        --- A stub that filters by intent cannot express that, and did not:
+        --- the door shipped handing this call an empty table, every test in
+        --- this file passed, and on a live server the fighters walked into
+        --- the arena looking at every item they owned. WHAT THE CLIENT WAS
+        --- TOLD IS NOW RECORDED, because it is the only half that was wrong.
         ClearInventory = function(_self, id, keep)
-            local safe = {}
-            for _, name in ipairs(type(keep) == 'table' and keep or { keep }) do
-                if type(name) == 'string' then safe[name] = true end
-            end
             local from = type(id) == 'number' and (inv[id] or {}) or (stashes[id] or {})
-            local left = {}
-            for _, item in ipairs(from) do
-                if safe[item.name] then left[#left + 1] = item end
+
+            -- `if not inv or not next(inv.items) then return end`
+            if #from == 0 then return end
+
+            local told, left = {}, {}
+
+            if keep ~= nil then
+                local keepType = type(keep)
+                if keepType == 'string' then
+                    for slot, item in ipairs(from) do
+                        if item.name == keep then left[#left + 1] = item
+                        else told[#told + 1] = slot end
+                    end
+                elseif keepType == 'table' and cfxTableType(keep) == 'array' then
+                    for slot, item in ipairs(from) do
+                        local kept = false
+                        for index = 1, #keep do
+                            if item.name == keep[index] then kept = true break end
+                        end
+                        if kept then left[#left + 1] = item
+                        else told[#told + 1] = slot end
+                    end
+                end
+                -- AND NO `else`. An empty list, or a hash, falls straight
+                -- through to the wipe below with `told` still empty. This
+                -- gap is the defect, reproduced rather than described.
+            else
+                for slot in ipairs(from) do told[#told + 1] = slot end
             end
+
             if type(id) == 'number' then inv[id] = left else stashes[id] = left end
-            return true
+            clientTold[id] = told
+            -- ox_inventory's Clear returns nothing at all. oxDid reads that
+            -- as success, which is the right rule for a clear; returning
+            -- `true` here made this fixture kinder than the real thing.
         end,
         registerHook = function(_self, name, fn)
             if name == 'swapItems' then hook = fn end
@@ -494,8 +592,46 @@ local function newServer(ids, mutate, extra, opts)
         return table.concat(names, ',')
     end
 
+    --- HOW MANY SLOTS THE CLIENT WAS TOLD ABOUT by the last clear of one
+    --- inventory, or nil if it was never cleared at all.
+    ---
+    --- Zero is the answer that matters, and it is not the same as nil: it
+    --- means ox_inventory emptied the inventory on the server and sent the
+    --- player's screen an empty update list, so their inventory UI goes on
+    --- showing every item they no longer have.
+    function server.clientToldAbout(id)
+        local told = clientTold[id]
+        return told and #told or nil
+    end
+
+    --- The slot each AddItem asked for, for one inventory and one item name,
+    --- in call order, as a comma-separated string.
+    ---
+    --- A CALL THAT NAMED NO SLOT READS AS '-', deliberately, rather than
+    --- being left out or left as a boolean. That is the whole failure mode
+    --- being measured -- "the door did not say where this goes" -- so it has
+    --- to be visible in the assertion message. A nil would make a slotless
+    --- call and an absent call look the same; a boolean makes the failure a
+    --- crash inside table.concat, which says nothing to whoever broke it.
+    function server.slotsAskedFor(id, name)
+        local out = {}
+        for _, call in ipairs(addCalls) do
+            if call.id == id and call.name == name then
+                out[#out + 1] = call.slot and tostring(call.slot) or '-'
+            end
+        end
+        return table.concat(out, ',')
+    end
+
     --- The routing bucket a player is in right now. 0 is the open world.
     function server.bucketOf(src) return buckets[tonumber(src)] or 0 end
+
+    --- Empties a player's pockets WITHOUT going through ox_inventory, so a
+    --- test can set up an empty-handed fighter without that setup itself
+    --- counting as the clear the test is about.
+    function server.wipe(src)
+        inv[src] = {}
+    end
 
     --- An admin emptying a stash by hand, which is what the jam message tells
     --- them to do before clearing it.
@@ -2656,6 +2792,172 @@ t.test('and the arena never touches the stash that bag opens', function()
         'THE ARENA EMPTIED A BAG STASH IT DOES NOT OWN')
     t.equals(server.carrying(1), 'ammo-rifle-apx40,burgerx3,leo_bagx1,phonex1',
         'and the player did not come out with exactly their own things')
+end)
+
+
+-- ========================================================================
+-- THE SCREEN AND THE SERVER SAID DIFFERENT THINGS
+--
+-- IN THE OWNER'S OWN WORDS, off a live server, four ways in one night:
+--
+--   "It still brings in the items i had before a match start so thats a
+--    big issue"
+--   "It was in my inventory but stated it was unable to find this item or
+--    something to that effect when trying to use it"
+--   [the LEO bag answering] "Could not find this bag"
+--   "the invetory stuff should be a top priorty it should make sure they
+--    do not bring anything that was with them before a match into a match"
+--
+-- And the server log, the same night, for the same round:
+--
+--   door: put 14 item(s) of 2's away for match mb4972.
+--
+-- Both true. stow() reads the pockets, proves every item into the stash,
+-- clears the inventory, and then READS THE POCKETS BACK to prove they are
+-- empty -- and they were. The server was right. The PLAYER'S SCREEN was
+-- never told, so it went on showing all fourteen items in the slots they
+-- had been in, and every one of them was a ghost: use it and the server
+-- has nothing there; open the LEO bag and fm-firstresponderbag's
+-- `GetSlot(src, slot)` answers nil for the slot the client sent.
+--
+-- One argument, in ox_inventory's Inventory.Clear. See keepArg in
+-- server/ammo.lua and the ClearInventory stub above, which now reproduces
+-- the branch rather than the intent.
+-- ========================================================================
+
+t.test('THE DEFECT: the player\'s screen is told about every item the door took', function()
+    -- The shipped config names nothing in `neverStash`, so the keep list is
+    -- empty -- and an empty list is the one shape ox_inventory's Clear
+    -- silently skips the sync for. This is the exact configuration every
+    -- operator runs.
+    local server = liveMatch({ 1, 2 })
+
+    -- Their OWN three items are gone from the server; what they are holding
+    -- now is the kit the arena issued after the clear.
+    t.isNil(server.carrying(1):find('phone', 1, true), 'the server did not empty their pockets')
+    t.equals(server.clientToldAbout(1), 3,
+        'the server emptied their pockets and told the client about NOTHING -- '
+        .. 'the player is standing in the arena looking at every item they walked in with')
+end)
+
+t.test('and the same is true of the second fighter, so it is not one unlucky source', function()
+    local server = liveMatch({ 1, 2 })
+
+    t.isNil(server.carrying(2):find('phone', 1, true))
+    t.equals(server.clientToldAbout(2), 3, 'the other fighter was left looking at a ghost inventory')
+end)
+
+t.test('and an operator who DOES name something in neverStash still gets a synced screen', function()
+    -- The other half of the fix, and the half a naive `if #keep == 0 then
+    -- pass nil` could get wrong: a non-empty list must still go through as
+    -- a list, because it is what keeps the named item in their pockets.
+    local server = liveMatch({ 1, 2 }, nil, function(config)
+        config.Loadouts.inventory.neverStash = { 'phone' }
+    end)
+
+    local holding = server.carrying(1)
+    t.isNotNil(holding:find('phonex1', 1, true), 'the item the operator protected was taken anyway')
+    t.isNil(holding:find('burger', 1, true), 'an item NOT on the list was left in their pockets')
+    t.equals(server.clientToldAbout(1), 2,
+        'the two items that WERE taken were not synced to the screen')
+end)
+
+t.test('and the exit clear syncs too, even when nothing is protected from it', function()
+    -- Config.Loadouts.inventory.neverDestroy defaults to money, so this path
+    -- has always had a non-empty list and has always synced -- which is
+    -- exactly why the way OUT of a round worked while the way in did not.
+    -- An operator can empty that list, and if they do this must not quietly
+    -- become the same bug on the other side of the round.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Loadouts.inventory.neverDestroy = {}
+    end)
+
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.carrying(1), INTACT, 'their own belongings did not come back')
+    t.isNotNil(server.clientToldAbout(1), 'the exit never cleared anything at all')
+end)
+
+t.test('CONTROL: a player carrying nothing needs no sync, and is not a failure', function()
+    -- ox_inventory returns immediately for an inventory with nothing in it,
+    -- so there is no clear and nothing to tell the client. An empty-handed
+    -- player is still stripped-and-restored correctly; they simply have
+    -- nothing. Without this the assertion above could be satisfied by a
+    -- door that reports a sync it never performed.
+    local server = newServer({ 1, 2 })
+    server.wipe(1)
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    -- What they are holding is the kit the arena issued them; none of it is
+    -- theirs, and none of it existed before the door ran.
+    t.isNil(server.carrying(1):find('phone', 1, true),
+        'an empty-handed player ended up holding something of their own')
+    t.isNil(server.clientToldAbout(1), 'an inventory with nothing in it was cleared anyway')
+end)
+
+
+-- ========================================================================
+-- AN ITEM'S SLOT IS AN ADDRESS OTHER RESOURCES HOLD
+--
+-- fm-firstresponderbag opens the LEO bag like this, and it is not unusual:
+--
+--     local item = ox_inventory:GetSlot(src, slot)
+--     if not item then ... 'Could not find this bag.' ... end
+--
+-- The slot comes from the client, off what it is showing. Renumber a
+-- player's inventory underneath that -- which plain AddItem calls do, since
+-- ox_inventory drops an item in the first slot it fits -- and every hotbar
+-- binding, usable item and context menu on the server is aimed at the wrong
+-- row. See addAt in server/ammo.lua.
+-- ========================================================================
+
+t.test('THE DEFECT: the door puts each item into the stash at the slot it came from', function()
+    local server = liveMatch({ 1, 2 })
+
+    -- OWN is phone, burger, ammo-rifle-ap -- slots 1, 2 and 3 in that order.
+    -- INTACT reads them back alphabetically, which is not the same thing.
+    t.equals(server.slotsAskedFor('crimson_arena_CID1', 'phone'), '1',
+        'the phone went into the stash at whatever slot happened to be free, '
+        .. 'so the number it had in the player\'s pockets is gone for good')
+    t.equals(server.slotsAskedFor('crimson_arena_CID1', 'ammo-rifle-ap'), '3')
+end)
+
+t.test('and hands it back to the player at that same slot', function()
+    local server, matchId = liveMatch({ 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.carrying(1), INTACT, 'the round trip lost something')
+    t.equals(server.slotsAskedFor(1, 'phone'), '1',
+        'their phone came back in a different slot than it went in, so anything '
+        .. 'on this server that opens an item BY SLOT is now aimed at the wrong one')
+end)
+
+t.test('and a bag carried through a round comes back in the slot it was carried in', function()
+    -- THE ONE THE OWNER HIT. A LEO bag in slot 4 that comes back in slot 1
+    -- is a bag the client asks for at slot 4 and the server cannot find.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'bagkey', { { 'radio', 1 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.match.End(match.id, 'match.ended')
+    server.step(8)
+
+    t.equals(server.slotsAskedFor(1, 'police_bag'), '4',
+        'the bag was handed back without a slot, so it landed wherever it fitted')
 end)
 
 os.exit(t.summary())

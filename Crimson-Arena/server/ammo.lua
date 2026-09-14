@@ -229,6 +229,62 @@ end
 --- @return table<string, boolean> skipMap -- left out of the stash on entry
 --- @return string[] skipList -- the same names, for the ENTRY clear
 --- @return string[] keepList -- left alone by the EXIT clear
+--- The `keep` argument to ox_inventory's ClearInventory, or nil when there is
+--- nothing to keep. NEVER AN EMPTY TABLE.
+---
+--- THE DEFECT THIS EXISTS TO KILL, and it is the one reported off a live
+--- server four separate ways at once: "it still brings in the items i had
+--- before a match start", "it was in my inventory but stated it was unable to
+--- find this item when trying to use it", the LEO bag answering "Could not
+--- find this bag", and the door printing a clean `put 14 item(s) away` for
+--- every one of them.
+---
+--- All four are one line in ox_inventory's Inventory.Clear:
+---
+---     if keep then
+---         local keepType = type(keep)
+---         if keepType == 'string' then         ... fills updateSlots ...
+---         elseif keepType == 'table' and table.type(keep) == 'array' then
+---                                              ... fills updateSlots ...
+---         end
+---         table.wipe(inv.items)
+---         inv.items = keptItems
+---     else                                     ... fills updateSlots ...
+---         table.wipe(inv.items)
+---     end
+---     inv:syncSlotsWithClients(updateSlots, true)
+---
+--- `table.type` is CitizenFX's, and for `{}` it answers 'empty' -- not
+--- 'array'. So an EMPTY keep list matches neither branch: `updateSlots` is
+--- never filled, and the sync that follows tells the client to update
+--- NOTHING. The server-side wipe still happens on the line below it, which is
+--- why every check this resource makes passed and the log said the door had
+--- worked.
+---
+--- The player's inventory UI was therefore still showing every item they
+--- owned, in the slots they owned them in, while the server held none of
+--- them. They walk into the round apparently carrying their whole kit;
+--- anything they click answers "not found"; and any resource that opens
+--- something BY SLOT NUMBER off what the client is showing -- which is how
+--- fm-firstresponderbag opens the LEO bag, `GetSlot(src, slot)` -- is handed
+--- a slot number for an item that is not there.
+---
+--- `neverStash` ships empty, so THE DEFAULT CONFIGURATION IS THE BROKEN ONE.
+--- The exit's list is not: it defaults to money, is never empty, takes the
+--- array branch, and syncs correctly -- which is exactly why the way out of a
+--- round has always worked and the way in has not.
+---
+--- nil takes the `else` branch, which fills updateSlots from every occupied
+--- slot. It is the same wipe and the correct sync. DO NOT hand this call an
+--- empty table again, and do not "simplify" this away: `#list > 0` is the
+--- whole of the fix.
+--- @param list string[]|nil
+--- @return string[]|nil
+local function keepArg(list)
+    if type(list) ~= 'table' or #list == 0 then return nil end
+    return list
+end
+
 local function untouchable()
     local door = doorConfig()
     local _, rawSkip = nameSet(door.neverStash, DEFAULT_NEVER_STASH)
@@ -798,6 +854,73 @@ local function rowsNamed(ox, who, name)
     return seen
 end
 
+--- AddItem, aimed at a particular slot, falling back to wherever it fits.
+---
+--- SLOTS ARE AN ADDRESS OTHER RESOURCES HOLD ON TO, and the door was
+--- shuffling them every round. It read a player's pockets, put everything in
+--- a stash with plain AddItem calls, and handed it all back with plain
+--- AddItem calls -- and ox_inventory decides on its own where an item lands,
+--- which is the first slot it fits in. A player who walked in with their bag
+--- in slot 7 walked out with it in slot 2.
+---
+--- IN THE OWNER'S OWN WORDS, off a live server: "It was in my inventory but
+--- stated it was unable to find this item when trying to use it". That is
+--- one line of somebody else's resource, and it is worth quoting because it
+--- is not unusual at all --
+---
+---     local item = ox_inventory:GetSlot(src, slot)
+---     if not item then ... 'Could not find this bag.' ... end
+---
+--- fm-firstresponderbag's LEO bag opens BY SLOT NUMBER, which the client
+--- sends from what it is showing. Any resource with a hotbar, a usable item
+--- or a context menu does the same thing. Renumber somebody's inventory
+--- underneath all of that and the items are all present, all correct, and
+--- every one of them answers "not found" when it is used.
+---
+--- SO THE SLOT TRAVELS WITH THE ITEM. The belongings stash is five hundred
+--- slots wide against a player inventory of fifty, so a player's slot number
+--- is always a legal stash slot: the stow puts each item in the stash at the
+--- number it had in their pockets, and the exit reads that number back off
+--- the stash row and asks for it again. It costs nothing, it survives a
+--- restart because the number is in the stash's own database row, and it
+--- makes the manifest match in handBack stricter rather than weaker.
+---
+--- THE FALLBACK IS THE OLD BEHAVIOUR, EXACTLY. A slot can be occupied --
+--- leftovers from an exit that could not finish, money the player earned
+--- while they were in there -- and a refused AddItem must never mean an item
+--- left behind. So a slot that will not take it is followed by the same
+--- call this file has always made, and the item goes wherever it fits.
+---
+--- AND THE READ-BACK BETWEEN THE TWO IS NOT OPTIONAL. `oxGave` demands a
+--- literal true and reads nil as a refusal, which is the right rule for a
+--- write whose failure costs somebody their property -- but it means a build
+--- that lands the item and answers nil would be followed by a SECOND add,
+--- and the player would leave with two. So a refusal is checked against the
+--- inventory before it is believed: one more row of that name than there was
+--- means it landed, whatever the answer said. This is the same guard
+--- refillContainers uses, for the same reason, and it must not be dropped.
+--- @return boolean landed
+--- @return string|nil why
+--- @return any answer
+local function addAt(ox, who, name, count, metadata, slot)
+    local wanted = Arena.ToInt(slot)
+    if wanted == nil then
+        return oxGave(function() return ox:AddItem(who, name, count, metadata) end)
+    end
+
+    local before = rowsNamed(ox, who, name)
+
+    local landed, why, answer = oxGave(function()
+        return ox:AddItem(who, name, count, metadata, wanted)
+    end)
+    if landed then return true, nil, answer end
+
+    local after = rowsNamed(ox, who, name)
+    if before ~= nil and after ~= nil and after > before then return true, nil, answer end
+
+    return oxGave(function() return ox:AddItem(who, name, count, metadata) end)
+end
+
 local function refillContainers(ox, src, keys, citizenid)
     if type(keys) ~= 'table' then return 0, 0 end
 
@@ -1101,9 +1224,12 @@ local function stow(src, citizenid)
             -- DESTROYED. ox_inventory answers nil for an inventory it has not
             -- loaded, and a stash it has just been asked to register is
             -- exactly such an inventory. DO NOT relax this to oxDid.
-            local moved, why, answer = oxGave(function()
-                return ox:AddItem(stash, item.name, item.count, item.metadata)
-            end)
+            -- INTO THE SAME NUMBERED SLOT IT CAME OUT OF. See addAt: the
+            -- stash is the only place the slot number can be kept for the
+            -- length of a round, and keeping it is what stops every other
+            -- resource on the box losing track of the player's items.
+            local moved, why, answer = addAt(
+                ox, stash, item.name, item.count, item.metadata, item.slot)
             if not moved then
                 rollback(('could not stash %s x%s for %s (%s)'):format(
                     tostring(item.name), tostring(item.count), tostring(src), gaveWhy(why, answer)))
@@ -1114,7 +1240,11 @@ local function stow(src, citizenid)
     end
 
     local cleared = oxDid('clearing ' .. tostring(src) .. "'s inventory", function()
-        return ox:ClearInventory(src, keep)
+        -- keepArg, NOT `keep`. An empty list here clears the server and
+        -- leaves the player's screen showing everything they walked in with.
+        -- See keepArg -- this is the whole of "it still brings in the items I
+        -- had before a match start".
+        return ox:ClearInventory(src, keepArg(keep))
     end)
     if not cleared then
         rollback(('stashed %s\'s kit but could not clear their inventory'):format(tostring(src)))
@@ -1369,9 +1499,14 @@ local function handBack(ox, src, stash, allowed, manifest)
         -- The cost of being wrong in this direction is a loud line and an
         -- item still sitting in a stash the player can be pointed at. The
         -- cost of being wrong in the other direction is their belongings.
-        local landed, why, answer = oxGave(function()
-            return ox:AddItem(src, item.name, item.count, item.metadata)
-        end)
+        -- BACK INTO THE SLOT IT WAS TAKEN FROM. The stash row's own slot
+        -- number IS the number it had in their pockets, because stow put it
+        -- there -- so this needs no record of its own and works just as well
+        -- on a stash reached by the sweep after a restart. addAt says at
+        -- length why it falls back rather than failing, and why the fallback
+        -- is read against the inventory before it is taken.
+        local landed, why, answer = addAt(
+            ox, src, item.name, item.count, item.metadata, item.slot)
 
         if not landed then
             ArenaLog('door: returning %s x%s to %s did not happen -- %s. It stays in stash %s. '
@@ -1496,7 +1631,11 @@ local function restore(src, record)
     if not record.cleared then
         local _, _, keep = untouchable()
         if not oxDid('clearing the arena kit from ' .. tostring(src), function()
-            return ox:ClearInventory(src, keep)
+            -- This list defaults to money and so has never been empty, which
+            -- is why the exit worked while the entry did not. It is guarded
+            -- anyway: an operator who sets `neverDestroy = {}` would get the
+            -- same silent half-clear here. See keepArg.
+            return ox:ClearInventory(src, keepArg(keep))
         end) then
             ArenaLog('door: %s LEFT THE ARENA STILL HOLDING THE KIT IT ISSUED -- their own is being returned on top of it, and the arena kit is being taken back one weapon at a time, by the serial each was issued with.',
                 tostring(src))

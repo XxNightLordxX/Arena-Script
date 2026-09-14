@@ -681,6 +681,68 @@ local FATAL_MEMORY_MS = 2000
 local lastFatalEntity
 local lastFatalAt = 0
 
+--- THE LAST THING THAT HURT THIS PLAYER AT ALL, whether or not the engine
+--- called that blow fatal. The LAST resort, and it exists for one report:
+--- "its not registering kills when using sprays".
+---
+--- A SPRAY DOES NOT KILL WITH THE BLOW THAT KILLS. Acid, fire, an
+--- extinguisher -- they are damage over time, and the difference matters
+--- here because of which of this file's readings survives it:
+---
+---   the damage hook only remembers an attacker when the event says
+---   victimDied, and the tick that empties the health bar is usually not
+---   flagged fatal -- the ped dies because the bar reached nought, not
+---   because that tick was the killing one, so `lastFatalEntity` is never
+---   set and the hook never calls handleDeath at all;
+---
+---   the watch loop picks the body up on its next pass and calls
+---   handleDeath with NO attacker, because it has none to give;
+---
+---   GET_PED_SOURCE_OF_DEATH answers 0 for damage of that kind. WHY_TEXT
+---   above has said so in plain words the whole time -- "a fall, a drowning,
+---   the arena boundary OR A FIRE" -- and a spray is a fire as far as the
+---   engine's death reading is concerned.
+---
+--- All three readings come back empty on a death somebody plainly caused, so
+--- the sprayer was paid nothing, the victim's F8 said nobody was seen, and
+--- from a seat that is "sprays do not count". The only party that saw the
+--- kill happen is the damage hook, several ticks earlier -- so it writes
+--- down every hit now, not only the ones the engine calls fatal.
+---
+--- FOURTH, AND IT MUST STAY FOURTH. This is the most second-hand reading in
+--- the file: it does not claim the blow killed anybody, only that it landed.
+--- It is consulted after the fatal attacker, after the remembered one and
+--- after the engine's own summary, and only when every one of those named
+--- nobody -- so it can turn "nobody credited" into "the right person
+--- credited" and can never overrule a better answer.
+---
+--- FOUR SECONDS, AND DO NOT WIDEN IT. A spray refreshes this on every tick
+--- right up to the death, so the gap it actually has to cover is one tick
+--- and the frames the engine takes to finalise the corpse. The window is
+--- long only to be safe on a loaded server. Every millisecond past the real
+--- gap is a millisecond in which somebody who grazed you and left can be
+--- paid for a death they had no part in, and a wrong credit in an arena that
+--- pays out on kills is worse than no credit.
+local HURT_MEMORY_MS = 4000
+local lastHurtEntity
+local lastHurtAt = 0
+
+--- WHEN THE ARENA ITSELF WAS LAST THE ONE DOING THE DAMAGE.
+---
+--- The boundary bleed is the one death in this match that has a cause and
+--- still must not have a killer, and it is exactly the case the memory above
+--- would get wrong: somebody shoots you, you run out of the fence, and the
+--- fence finishes you. The shooter did not kill you. The fence did, and it
+--- belongs to nobody.
+---
+--- ApplyDamageToPed from startBoundaryThread stamps this, and the last-hurt
+--- reading is refused while the stamp is fresh. The fatal, remembered and
+--- source-of-death readings are NOT refused -- if one of those names a
+--- player then a player really did land the killing blow and the fence
+--- merely happened to be bleeding them at the same time.
+local BLED_MEMORY_MS = 3000
+local bledByArenaAt = 0
+
 --- The server id of the PLAYER behind one entity, or nil and the reason why.
 ---
 --- A VEHICLE IS AN ANSWER AND NOT A DEAD END. Run down, or killed by a car
@@ -741,6 +803,25 @@ local function playerBehind(entity, victim)
     if not id or id <= 0 then return nil, WHY_NOT_NETWORKED end
 
     return id, WHY_NOTHING
+end
+
+--- Forget everything this client remembers about who has been hitting it.
+---
+--- THE STAMPS WERE THE ONLY THING KEEPING THESE HONEST, and a stamp is a
+--- guess about how long a gap can be. FATAL_MEMORY_MS says in as many words
+--- "DO NOT let it survive a respawn" -- and nothing made that true; it was
+--- true because two seconds is usually longer than it takes to respawn, and
+--- "usually" is not a guarantee on a server under load. A round ending, a
+--- round starting and a fighter respawning are the three moments where the
+--- last life's damage stops being evidence about this one, so they say so
+--- outright now and the windows are left to cover only the frames they were
+--- written for.
+local function forgetAttribution()
+    lastFatalEntity = nil
+    lastFatalAt = 0
+    lastHurtEntity = nil
+    lastHurtAt = 0
+    bledByArenaAt = 0
 end
 
 local function handleDeath(ped, attacker)
@@ -819,6 +900,24 @@ local function handleDeath(ped, attacker)
         killerServerId, why = id, math.max(why, third)
     end
 
+    -- LAST, AND ONLY ONCE THE OTHER THREE HAVE NAMED NOBODY. See
+    -- HURT_MEMORY_MS: this is the reading that makes a spray count, and it
+    -- is the weakest one in the file, so it goes last and it is refused
+    -- outright while the arena boundary is the thing doing the bleeding.
+    local hurt
+    if lastHurtEntity
+        and (GetGameTimer() - lastHurtAt) <= HURT_MEMORY_MS
+        and (GetGameTimer() - bledByArenaAt) > BLED_MEMORY_MS
+    then
+        hurt = lastHurtEntity
+    end
+    lastHurtEntity = nil
+
+    if not killerServerId then
+        local id, fourth = playerBehind(hurt, ped)
+        killerServerId, why = id, math.max(why, fourth)
+    end
+
     -- DO NOT put this back behind Config.Debug. THE REPORT this whole change
     -- exists for is a player quoting this line -- "it said nobody was seen as
     -- the killer in my f8" -- and what it said was two raw entity handles,
@@ -850,9 +949,26 @@ AddEventHandler('gameEventTriggered', function(event, data)
     if not currentMatch or deathReported then return end
 
     local victim, attacker, victimDied = data[1], data[2], data[4]
-    if victimDied ~= 1 and victimDied ~= true then return end
+
+    -- THE VICTIM CHECKS MOVED ABOVE THE FATAL CHECK, and that reordering is
+    -- the whole of the spray fix. They decide whether this event is about
+    -- THIS player at all, which is a question worth answering for every hit;
+    -- the fatal flag only decides whether the death can be reported from
+    -- here. Asked in the old order, a non-fatal hit was thrown away before
+    -- anybody looked at who it landed on.
     if not victim or not DoesEntityExist(victim) then return end
     if victim ~= PlayerPedId() then return end
+
+    -- Written down on EVERY hit. See HURT_MEMORY_MS for why, and for why
+    -- this is the last reading consulted rather than the first. Self-damage
+    -- is not somebody else hitting you, so it is not recorded: the boundary
+    -- bleed and your own grenade both arrive here naming you.
+    if attacker and attacker ~= 0 and attacker ~= victim then
+        lastHurtEntity = attacker
+        lastHurtAt = GetGameTimer()
+    end
+
+    if victimDied ~= 1 and victimDied ~= true then return end
 
     -- REMEMBERED BEFORE IT IS HANDED OVER, and that order is the fix.
     -- handleDeath refuses a ped the engine has not finished killing, and on
@@ -1022,6 +1138,12 @@ local function startBoundaryThread(boundary)
                     leftAt = GetGameTimer()
                     notify('match.boundary_warning', 'error', boundary.warningSeconds or 0)
                 elseif GetGameTimer() - leftAt >= graceMs then
+                    -- STAMPED BEFORE THE DAMAGE, not after, so the flag is
+                    -- already standing when the event this raises is
+                    -- handled. See BLED_MEMORY_MS: a fighter the fence is
+                    -- bleeding must not hand a kill to the last person who
+                    -- shot at them.
+                    bledByArenaAt = GetGameTimer()
                     ApplyDamageToPed(ped, damage, false)
                 end
             elseif leftAt then
@@ -2007,6 +2129,7 @@ local function leaveArena(returnCoords)
     currentMatch = nil
     matchLive = false
     deathReported = false
+    forgetAttribution()
     matchToken = matchToken + 1
 
     removeAllPlayerBlips()
@@ -2127,6 +2250,7 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     matchToken = matchToken + 1
     matchLive = false
     deathReported = false
+    forgetAttribution()
     currentMatch = {
         id = data.matchId,
         boundary = data.boundary,
@@ -2281,6 +2405,7 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     local ped = PlayerPedId()
 
     deathReported = false
+    forgetAttribution()
 
     holdFriendlyFire(ped)
 

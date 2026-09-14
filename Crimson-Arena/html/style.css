@@ -355,7 +355,8 @@ option {
     background: var(--accent);
 }
 
-.weapon-grid {
+#loadout-lists,
+#loadout-slots {
     scrollbar-width: thin;
     scrollbar-color: var(--text-muted) var(--bg);
 }
@@ -705,6 +706,12 @@ option {
        go. */
     overflow-y: auto;
     overscroll-behavior: contain;
+
+    /* ROOM UNDER THE LAST ROW. Without it the bottom card is sliced flush
+       against the panel edge, which is the picture people describe as cut
+       off even when it scrolls perfectly well. A row's worth of space lets
+       the end of the list arrive as an end rather than as a cut. */
+    padding-bottom: 1.2rem;
 }
 
 .loadout-section {
@@ -714,22 +721,35 @@ option {
     min-height: 0;
 }
 
-#loadout-firearms {
-    flex: 1 1 0;
-}
+/* BOTH SECTIONS SIZE TO WHAT THEY HOLD.
 
+   The firearms list used to take a share of a bounded row and the melee
+   list was floored at 12.5rem and capped at 46% of it -- numbers that exist
+   only to stop two competing scrollers squeezing each other to nothing.
+   With one scroller above there is nothing to compete over: each section is
+   as tall as its own contents and the column carries the overflow. */
+#loadout-firearms,
 #loadout-melee {
-    flex: 0 1 auto;
-    min-height: 12.5rem;
-    max-height: 46%;
+    flex: 0 0 auto;
 }
 
+/* PINNED WHILE THE COLUMN SCROLLS. With both catalogues in one scroller,
+   a heading that scrolls away leaves you looking at a grid of cards with
+   nothing saying whether they are firearms or melee -- and the counter that
+   tells you how many picks you have left goes with it. Both are worth more
+   at the top of the screen than at the top of the document.
+
+   Opaque on purpose: the cards would otherwise slide visibly underneath. */
 .loadout-section-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 0.8rem;
-    padding-bottom: 0.3rem;
+    padding: 0.2rem 0 0.3rem;
+    background: var(--bg);
     border-bottom: 1px solid var(--border);
 }
 
@@ -756,15 +776,26 @@ option {
     gap: 0.4rem;
 }
 
+/* THE LIST FLOWS; IT DOES NOT SCROLL ON ITS OWN.
+
+   THE COMPLAINT: "the weapons and stuff get cut off". The left-hand column
+   used to carry THREE nested scrollers -- #loadout-lists, and a scrolling
+   grid inside each of the two sections. Nested scrollers are the thing that
+   reads as cut off: each inner list showed a row and a half of a catalogue
+   dozens long, the wheel moved whichever one the pointer happened to be
+   over, and reaching the bottom of the firearms meant scrolling the grid to
+   its end and then the column past it. Every weapon was reachable and
+   almost none of them were findable.
+
+   One scroller now -- #loadout-lists -- and these grow to whatever they
+   hold. Same content, one wheel, and the section headings stay put above it
+   so you can always see which list you are in. */
 .weapon-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr));
     align-content: start;
     gap: 0.6rem;
-    min-height: 0;
-    padding-right: 0.4rem;
-    overflow-y: auto;
-    overscroll-behavior: contain;
+    padding-right: 0.2rem;
 }
 
 /* THE TYPED AMOUNT, sitting in the same row as the preset chips.
@@ -821,11 +852,16 @@ option {
     opacity: 0.8;
 }
 
+/* A LONG NAME WRAPS RATHER THAN LEAVING THE CARD. Uppercase display type
+   with letter-spacing is wide, and the catalogue has entries like
+   "Heavy Sniper Mk II" and "Combat MG Mk II" -- past the card's width they
+   used to run out of its side rather than on to a second line. */
 .weapon-name {
     font-family: var(--font-display);
     font-size: 1.15rem;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+    overflow-wrap: break-word;
 }
 
 .weapon-category {
@@ -1316,8 +1352,11 @@ option {
         grid-row: auto;
     }
 
+    /* .weapon-grid is deliberately NOT capped here any more. The whole tab
+       scrolls at this width, so a cap on the grid put the inner scroller
+       straight back -- two-fifths of the screen of weapons and the rest
+       behind a second wheel, which is the cut-off this change is about. */
     #match-list,
-    .weapon-grid,
     #bet-list,
     #roster {
         max-height: 40vh;
@@ -1326,6 +1365,15 @@ option {
     #loadout-firearms,
     #loadout-melee {
         flex: 0 0 auto;
+    }
+
+    /* ONE PAGE AT THIS WIDTH, not a scrolling box inside a scrolling page.
+       The tab itself scrolls here (above), so a second scroller on the list
+       inside it is the nesting this whole change removes -- reintroduced by
+       a rule that only looks harmless because it is in a media query. */
+    #loadout-lists {
+        overflow: visible;
+        padding-bottom: 0;
     }
 
     #loadout-slots {

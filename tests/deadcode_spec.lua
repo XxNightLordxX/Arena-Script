@@ -99,7 +99,7 @@ t.test('every public function is called, tested, exported or documented', functi
 
     -- And the operator-facing documentation: a function named in README.md
     -- is a promise to somebody outside this repo.
-    for _, doc in ipairs({ '../Crimson-Arena/README.md', '../Crimson-Arena/DEPLOYMENT.md' }) do
+    for _, doc in ipairs({ '../Crimson-Arena/README.md' }) do
         local text = read(doc)
         if text then haystack[#haystack + 1] = text end
     end

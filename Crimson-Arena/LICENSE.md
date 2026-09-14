@@ -36,5 +36,4 @@ not liable for any loss arising from its use — including, since this resource
 moves in-game currency, any loss of that currency through a defect, a
 misconfiguration, or a server failure.
 
-Test it on a development server before putting it in front of players. See
-`DEPLOYMENT.md`.
+Test it on a development server before putting it in front of players.

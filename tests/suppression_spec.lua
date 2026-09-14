@@ -13,8 +13,8 @@
     THE FAILURE THIS FILE IS ABOUT IS THE ONE NOBODY REPORTS. A suppression
     that does not come back off is invisible: the player walks out of the
     arena permanently ignored by the police, with their wanted level pinned
-    at zero, and everything looks fine. DEPLOYMENT.md calls the check for
-    it "the test people skip", and it was the check no spec made either --
+    at zero, and everything looks fine. It is the check people skip when they
+    try the resource out, and it was the check no spec made either --
     a mutation sample found thirty-two survivors in this file, and the
     largest cluster is the three `restore.touched*` flags that decide
     whether anything is undone at all.

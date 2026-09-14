@@ -36,8 +36,8 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 --- cannot see each other -- config names a setting, the stylesheet draws it,
 --- the script decides which -- text is enough to prove the three ends still
 --- agree, which is the failure that actually happens. It does not prove a
---- browser lays the result out correctly; DEPLOYMENT.md's smoke checklist
---- is where that is answered.
+--- browser lays the result out correctly; only opening the panel on a
+--- running server answers that.
 --- @param name string -- e.g. 'app.js'
 --- @return string body
 local function readPanelFile(name)

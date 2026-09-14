@@ -2300,9 +2300,50 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
         local readable = type(IsEntityVisible) == 'function'
         local ok, showing = false, nil
         if readable then ok, showing = pcall(IsEntityVisible, PlayerPedId()) end
-        -- UNREADABLE MEANS DO NOTHING LATER, not "assume visible": a guess
-        -- here would be an unconditional write wearing a disguise.
-        enteredVisible = (readable and ok) and (showing ~= false) or nil
+        -- WRITTEN OUT RATHER THAN `a and b or c`, BECAUSE THAT IDIOM CANNOT
+        -- EXPRESS THIS. `(readable and ok) and (showing ~= false) or nil`
+        -- reads correctly and is wrong: when `showing` is false the middle
+        -- term is false, the `or` takes over, and the answer is NIL -- so
+        -- "this player is invisible" and "this native could not be read"
+        -- became the same answer. The check on the way out treats both as
+        -- do-nothing, so nothing misbehaved; what was lost is the ability to
+        -- TELL THEM APART, and the difference is a player stuck invisible
+        -- for every round they will ever play. Caught by the test below it.
+        --
+        -- UNREADABLE STAYS nil, and nil means do nothing later: a guess there
+        -- would be an unconditional write wearing a disguise.
+        if readable and ok then
+            enteredVisible = showing ~= false
+        else
+            enteredVisible = nil
+        end
+
+        -- WALKING IN ALREADY INVISIBLE IS WORTH SAYING OUT LOUD.
+        --
+        -- THE FLAW IN THE PROMISE BELOW, AND IT IS SELF-PERPETUATING. The
+        -- check on the way out honours this reading in BOTH directions, on
+        -- purpose: a player who was invisible before the arena touched them
+        -- must not be put on show, which is the god-mode regression
+        -- client/dispatch.lua carries a long comment about.
+        --
+        -- But there are two ways to arrive invisible and they look identical
+        -- from here. One is deliberate -- an admin who meant it. The other is
+        -- a player a PREVIOUS round left that way, and for them this reading
+        -- is the bug writing itself into the record: every later round reads
+        -- "they were invisible on the way in" and faithfully leaves them so,
+        -- for ever, and the arena is the reason they are stuck.
+        --
+        -- The arena cannot read intent and must not guess at it, so it does
+        -- not act -- it TELLS them, because they are the only party who knows
+        -- which of the two it is. An admin who meant it ignores one line; a
+        -- player stuck from an older build learns why, and that reconnecting
+        -- once clears it.
+        if enteredVisible == false then
+            print('[crimson_arena] you were already invisible when this round started, so the arena '
+                .. 'will leave you that way on the way out -- it does not put people on show who did '
+                .. 'not ask to be. If you did NOT do that on purpose, an older round left you like '
+                .. 'this: reconnect once to clear it, and tell the server owner it happened.')
+        end
     end
 
     matchToken = matchToken + 1

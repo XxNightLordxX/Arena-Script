@@ -3119,6 +3119,35 @@ t.test('CONTROL: a player who was DELIBERATELY invisible before the round stays 
     t.isFalse(f.visible, 'the arena put a deliberately invisible player on show')
 end)
 
+t.test('and a player who arrives ALREADY invisible is told why they stay that way', function()
+    -- THE FLAW IN THE PROMISE, AND IT IS SELF-PERPETUATING. The check on the
+    -- way out honours the door reading in both directions on purpose -- a
+    -- deliberately hidden player must not be put on show. But a player a
+    -- PREVIOUS round left invisible arrives looking exactly the same, and
+    -- for them that reading is the bug writing itself into the record: every
+    -- later round reads "invisible on the way in" and leaves them so for
+    -- ever, with the arena as the reason.
+    --
+    -- The arena cannot tell the two apart and must not guess, so it does not
+    -- act. It tells the one party who CAN tell them apart.
+    local f = newClientFixture()
+    f.visible = false
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+
+    local said = table.concat(f.printed or {}, '\n')
+    t.contains(said, 'already invisible',
+        'a player walked into a round invisible and nothing anywhere said so, which is how '
+        .. 'somebody stays stuck for every round they ever play')
+end)
+
 t.test('CONTROL: an ordinary round that hid nobody says nothing at all', function()
     -- Without this the assertions above are satisfied by a build that prints
     -- the warning on every exit, which would train an operator to ignore it.

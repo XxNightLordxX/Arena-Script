@@ -1062,8 +1062,29 @@ option {
     line-height: 1.35;
 }
 
+/* SPANS THE SPARE ROW AND THE SAVE ROW, so its height is taken out of the
+   column it is IN and not out of the one beside it.
+
+   Sitting in row 3 alone, this box set the height of row 3 -- and row 3 is
+   shared with #loadout-save-row in column 1, which is a 38px button. So
+   every pixel of supplies came straight out of row 2's minmax(0, 1fr), which
+   is the weapon catalogue, and was then left blank underneath the Save
+   button. Measured at 1600x900: the catalogue squeezed from 565px to 372px
+   and 192px of empty panel under a button that needed 38. At 1600x760 the
+   catalogue was pushed into scrolling at 243px of a 338px list.
+
+   Spanning rows 2 and 3 lets it draw on the flexible row it shares with the
+   catalogue instead of forcing the fixed one. Both columns then get what
+   they need: measured back to 565px of catalogue and a 38px save row, with
+   the supplies box unchanged at its full height. It scrolls rather than
+   overflow if a server ever enables more supplies than fit. */
 #supplies-picker {
-    grid-row: 3;
+    grid-row: 2 / span 2;
+    align-self: end;
+    min-height: 0;
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 0.45rem;
@@ -1082,6 +1103,10 @@ option {
 #loadout-save-row {
     grid-column: 1;
     grid-row: 3;
+    /* NOT STRETCHED. Row 3 is content-sized and this is a 38px button; left
+       to stretch it claimed whatever height the row had been given and put
+       the hint beside it in the middle of a tall empty box. */
+    align-self: start;
     display: flex;
     align-items: center;
     gap: 0.9rem;
@@ -1266,7 +1291,10 @@ option {
 #bet-list {
     grid-column: 2;
     grid-row: 3;
-    min-height: 0;
+    /* A FLOOR, so the rules block below can never squeeze this to nothing.
+       See the note on #bet-note. Roughly three rows plus the header, which
+       is enough to read as a list rather than as a sliver. */
+    min-height: 8rem;
     padding-right: 0.4rem;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -1417,11 +1445,27 @@ option {
 
 /* ---- The rules, at the foot of the form ---- */
 
+/* THE RULES YIELD TO THE ROSTER, not the other way round.
+
+   This block's height depends only on its width, never on the space going
+   spare, and it sits in its own content-sized row -- so on a short panel it
+   took its full height and the roster above it, whose min-height is 0 and
+   which is the only track that can give, was squeezed into nothing. Measured
+   at 1600x560: six pixels of roster under a hundred and eighty of rules.
+
+   Two lines fix it. The list keeps a floor it cannot be pushed below, and
+   these rules scroll once there is no longer room for all of them -- which
+   is the right way round: the roster is live state, and this is reference
+   text that is the same every time you read it. */
 #bet-note {
     grid-column: 2;
     grid-row: 4;
     align-self: end;
     width: 100%;
+    min-height: 0;
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding-top: 0.7rem;
     border-top: 1px solid var(--border);
 }
@@ -1766,8 +1810,41 @@ option {
         border-left: 0;
     }
 
+    /* AND THE RULES BLOCK LETS GO OF ITS OWN SCROLLER TOO. It has one on a
+       wide screen so it can yield height to the roster beside it; here there
+       is no roster beside it -- the tab is one column and the tab scrolls --
+       so keeping it would just be the second wheel this breakpoint exists to
+       remove. */
+    #bet-note {
+        max-height: none;
+        overflow: visible;
+
+        /* AND min-height WITH THEM. This is the third box in this file to
+           need the same three lines together, so it is worth saying plainly:
+           a grid item carrying `min-height: 0` to be a scroller on a wide
+           screen MUST have it cleared here as well. Leave it and the row
+           collapses -- 12px of row under a 180px block -- and `overflow:
+           visible`, which is the other half of the cure, then paints the
+           whole thing over whatever is above it. Measured: 156px of rules
+           drawn across the roster at 1000 wide. */
+        min-height: auto;
+    }
+
     #loadout-slots {
         max-height: none;
+    }
+
+    /* AND THE SUPPLIES BOX, the fourth in this file to need exactly these
+       three lines together. It carries `min-height: 0` and a scroller so it
+       can share the flexible row with the weapon catalogue on a wide screen;
+       here the tab is the scroller and the rows are content-sized, so both
+       have to go or the row collapses and the box paints over its neighbour.
+       If you are adding a fifth grid item with `min-height: 0`, add it here
+       at the same time. */
+    #supplies-picker {
+        max-height: none;
+        min-height: auto;
+        overflow: visible;
     }
 
     #create-fee-presets,

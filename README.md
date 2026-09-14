@@ -11,15 +11,74 @@ By John Allday, for Crimson Roleplay.
 1. Download this repository and open the archive.
 2. Find the folder called **`Crimson-Arena`** inside it.
 3. Drag that folder into your server's `resources/` folder. Do not rename it — it is already named the way it should be. (It does work under another name, but then you have to change the export lines at the bottom of this page to match.)
-4. Open `server.cfg` and add this line **below** the line that says `ensure qbx_core`:
+4. Open `server.cfg` and add this one line:
 
    ```cfg
    ensure Crimson-Arena
    ```
 
-5. Start the server.
+5. Put it in the right place — see below.
+6. Start the server.
 
-That is the whole install. When it starts you will see `[crimson_arena]` lines in your server console telling you what it found and what it did not.
+When it starts you will see `[crimson_arena]` lines in your server console telling you what it found and what it did not.
+
+### Where the line goes in `server.cfg`
+
+**The rule that is never optional:** it must come **after** the things it needs.
+
+```cfg
+ensure qbx_core
+ensure ox_lib
+ensure ox_target
+ensure ox_inventory
+ensure oxmysql          # only if you switch the database on
+
+# ... the rest of your resources ...
+
+ensure Crimson-Arena    # <- here, at the BOTTOM
+```
+
+Put it at the very bottom of `server.cfg` and it is after everything, which
+satisfies that rule without you having to think about it. **That is the
+recommended spot, and for most servers it is the end of the story.**
+
+#### The one case where the position matters beyond that
+
+If you run a dispatch or ambulance script (sc-dispatch, sc-ambulance,
+ps-dispatch, anything that pages police and EMS), two things pull in
+**opposite directions** and you cannot have both by moving one line:
+
+| Put `ensure Crimson-Arena` | You get | You lose |
+|---|---|---|
+| **LAST** (bottom of the file) | The **team outline** draws in the arena's colour | Their death handler runs before the arena's, so an EMS page can be sent from the dying player's own client before anything here runs |
+| **FIRST** (above the dispatch lines) | The arena's death handler goes first | The outline colour is one game-wide setting and the **last** resource to write it each frame wins — so the arena loses it, and teammates are outlined in somebody else's colour or not visibly at all |
+
+**Which to pick:** if your team outline is working and you like it, leave
+`Crimson-Arena` **last** and do not move it. Moving it up to chase alerts is
+the single most common way to break an outline that was working.
+
+**How to get both.** Order only matters because the other script does not
+know a fighter is in the arena. Tell it, and the order stops mattering — one
+line at the top of whatever raises the alert:
+
+```lua
+if Player(src).state.crimsonArena then return end        -- server realm
+if LocalPlayer.state.crimsonArena then return end        -- client realm
+```
+
+That flag is set by the arena and is `nil` the moment a player leaves a
+round. With those lines in place the alert is never raised at all, which is
+the only way to get true silence — and then you are free to put
+`ensure Crimson-Arena` wherever the outline wants it.
+
+If you would rather not touch the other script, the arena still **withdraws**
+the call after it is filed (`Config.Dispatch.custom.retract`). Your responders
+get the ping and then watch it clear. That is a real difference from never
+being paged, and it is worth knowing which of the two you have.
+
+**Whatever you choose, restart the server** — `refresh`/`restart` does not
+re-order anything, and the arena reports the order it actually saw in the
+console at the first death of a round.
 
 ### Do I need a database?
 

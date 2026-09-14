@@ -995,4 +995,109 @@ t.test('and an admin closing it is reported back as an admin closing it', functi
     t.equals(payload.hoursForced, 'shut', 'and cannot tell an admin closed it')
 end)
 
+-- ========================================================================
+-- THE REPORTS: /arenaadmin's third screen
+--
+-- Three readings an operator used to have to type a console command for --
+-- instancing, opening hours, held-back stashes -- moved onto the tablet.
+-- The handler is gated like every other action here, answers only the three
+-- names it knows, and runs each report through pcall because they read live
+-- server state (routing buckets, the clock, ox_inventory) and one of them
+-- throwing must not take the tablet down with it.
+--
+-- AND EVERY ANSWER NAMES THE TOOL IT IS ANSWERING. The panel drops a report
+-- whose name is not the one on screen, so an operator who presses Instancing,
+-- changes their mind and presses Opening hours does not have the slower of
+-- the two land on top of what they are reading. That only works if the
+-- server says which one it ran.
+-- ========================================================================
+
+t.test('a player who is not an admin gets no report at all', function()
+    local s = newArena({ [1] = true })
+    for _, tool in ipairs({ 'isolation', 'hours', 'jams' }) do
+        s.fire('adminTool', 2, { tool = tool })
+        t.isNil(s.lastNamed('adminTool'),
+            'a player who is not an admin was sent the ' .. tool .. ' report')
+    end
+end)
+
+t.test('and an admin gets all three, each naming itself', function()
+    local s = newArena({ [1] = true })
+    for _, tool in ipairs({ 'isolation', 'hours', 'jams' }) do
+        s.fire('adminTool', 1, { tool = tool })
+        s.step()
+        local sent = (s.lastNamed('adminTool') or {}).payload
+        t.isNotNil(sent, 'the ' .. tool .. ' report was never sent')
+        t.equals(sent.tool, tool,
+            'the report did not say which tool it was answering, so the panel cannot tell '
+                .. 'a late one from the one on screen')
+        t.equals(type(sent.title), 'string', 'the ' .. tool .. ' report carried no title')
+        t.equals(type(sent.lines), 'table', 'the ' .. tool .. ' report carried no lines')
+    end
+end)
+
+t.test('every line is a string, whatever the report handed back', function()
+    -- The panel prints these straight out. A number or a table reaching it
+    -- is a screen that says "table: 0x..." to an operator looking at a
+    -- server they already believe is broken.
+    local s = newArena({ [1] = true })
+    for _, tool in ipairs({ 'isolation', 'hours', 'jams' }) do
+        s.fire('adminTool', 1, { tool = tool })
+        s.step()
+        for index, line in ipairs((s.lastNamed('adminTool') or {}).payload.lines) do
+            t.equals(type(line), 'string',
+                ('%s line %d reached the panel as a %s'):format(tool, index, type(line)))
+        end
+    end
+end)
+
+t.test('a tool name the server does not know is refused, not answered', function()
+    local s = newArena({ [1] = true })
+    for _, junk in ipairs({ 'nope', 'ISOLATION', '', 'hours ', 'jams;drop' }) do
+        s.fire('adminTool', 1, { tool = junk })
+        t.isNil(s.lastNamed('adminTool'),
+            'the server answered a tool it does not have: "' .. tostring(junk) .. '"')
+    end
+end)
+
+t.test('and a payload with no tool in it at all is refused rather than thrown', function()
+    local s = newArena({ [1] = true })
+    for _, payload in ipairs({ {}, { tool = 5 }, { tool = true }, { tool = {} } }) do
+        local ok = pcall(s.fire, 'adminTool', 1, payload)
+        t.isTrue(ok, 'a malformed tool payload threw instead of being refused')
+        t.isNil(s.lastNamed('adminTool'), 'a malformed tool payload was answered anyway')
+    end
+    local ok = pcall(s.fire, 'adminTool', 1, nil)
+    t.isTrue(ok, 'no payload at all threw instead of being refused')
+end)
+
+t.test('a report that throws is reported, not swallowed and not fatal', function()
+    -- The isolation report reaches into ArenaDispatch. Break it and the
+    -- tablet must still answer -- with the failure written down, because an
+    -- operator pressing this is already looking for what is wrong.
+    local s = newArena({ [1] = true })
+    s.env.ArenaDispatch.IsolationReport = function() error('boom', 0) end
+
+    local ok = pcall(s.fire, 'adminTool', 1, { tool = 'isolation' })
+    t.isTrue(ok, 'a throwing report took the handler down with it')
+
+    local sent = (s.lastNamed('adminTool') or {}).payload
+    t.isNotNil(sent, 'a throwing report left the tablet with no answer at all')
+    t.equals(sent.tool, 'isolation')
+    t.isTrue(#sent.lines > 0, 'a throwing report came back with nothing to read')
+    t.isTrue(table.concat(sent.lines, ' '):find('could not be taken', 1, true) ~= nil,
+        'the failure was not written down: ' .. table.concat(sent.lines, ' '))
+end)
+
+t.test('and a build with no isolation report at all says so rather than throwing', function()
+    local s = newArena({ [1] = true })
+    s.env.ArenaDispatch.IsolationReport = nil
+
+    local ok = pcall(s.fire, 'adminTool', 1, { tool = 'isolation' })
+    t.isTrue(ok, 'a missing report threw')
+    local sent = (s.lastNamed('adminTool') or {}).payload
+    t.isNotNil(sent, 'a missing report left the tablet with no answer')
+    t.isTrue(#sent.lines > 0, 'a missing report came back empty')
+end)
+
 os.exit(t.summary())

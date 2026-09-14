@@ -587,7 +587,7 @@ An arena is a place where people shoot each other on purpose. Left alone, every 
 
 **What do you have to do?** One thing, and only for one case: a dispatch script that watches the *arena player's own client* for gunfire. That is the one thing no resource can reach, and it takes one line in that script. It is spelled out under [the one limit](#the-one-limit-nothing-here-gets-past) below.
 
-**How do you tell whether it is working?** Read the console at start, or type `/arenadispatch`. Layer 3 exists for exactly that question and answers it by name.
+**How do you tell whether it is working?** Read the console at start, type `/arenadispatch`, or open `/arenaadmin` → **Tools** → **Police & EMS**. Layer 3 exists for exactly that question and answers it by name.
 
 #### Layer 1 — the match is fought in its own network instance
 
@@ -684,7 +684,9 @@ Reading it:
 | `Isolation is off` | Layer 1 is switched off, so every client on the server can see arena gunfire and arena bodies. |
 | `Isolation is CONFIGURED ON BUT NOT IN FORCE` | You asked for it and the server is not doing it. The report says which of the two it is: OneSync off, or a routing bucket the server accepted and then ignored. Run `/arenaisolation` for the readings. |
 
-`/arenadispatch` runs the whole detection again, live, and prints the same block — after installing a dispatch script, or after pasting the line it asked for, without a restart. It is gated on `Config.Permissions.adminGroups`, and the server console always qualifies. An admin who runs it in-game has no console to read, so they get the block as one notification as well.
+`/arenadispatch` runs the whole detection again, live, and prints the same block — after installing a dispatch script, or after pasting the line it asked for, without a restart. It is gated on `Config.Permissions.adminGroups`, and the server console always qualifies.
+
+**An admin who is in the game rather than at a console reads it on the tablet instead.** Open `/arenaadmin`, go to **Tools**, and press **Police & EMS**: the same lines, from the same function, scrollable. The report's whole job is to name the resource that still needs the line pasted into it, and a resource name is not something anyone can read out of a notification that clears itself after a few seconds — so in-game `/arenadispatch` prints the report to the console and answers you with where to read it.
 
 **Nothing in the catalogue ships with a mute call, deliberately.** A third-party script's export names cannot be verified from inside this resource, and a guessed export name is the worst outcome available: it detects as present, reports itself as handled, and silently does nothing — strictly worse than admitting the resource is unhandled. Detection is what drives the report, and the report is the point.
 
@@ -1042,8 +1044,13 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 | `/arenaadmin list` | server | admins. Lists every match with its state, head count and pot. |
 | `/arenaadmin stop <id>` | server | admins. Aborts one match and refunds everybody. |
 | `/arenaadmin wipe` | server | admins. Aborts every match and refunds everybody. |
-| `/arenadispatch` | server | admins. Re-runs the police/EMS detection and reprints the startup report. See [Layer 3](#layer-3--the-startup-report-so-you-never-have-to-guess). |
+| `/arenadispatch` | server | admins. Re-runs the police/EMS detection and reprints the startup report. Also on the admin tablet, under **Tools → Police & EMS**. See [Layer 3](#layer-3--the-startup-report-so-you-never-have-to-guess). |
 | `/arenahours` | server | admins. Prints what the server thinks the time is, the offset applied to it, the opening hours and whether the doors are open right now. See [Opening hours](#opening-hours). |
+| `/arenaisolation` | server | admins. Prints the routing-bucket readings for every live match — measurements, not intentions. Also on the admin tablet, under **Tools → Instancing**. |
+| `/arenarevive <id>` | server | admins. Runs the end-of-match revive against one player, so you can see what your medical script does with it without staging a death. Blank means yourself. |
+| `/arenaunjam [stash]` | server | admins. Lists the stashes the arena is holding back, and releases one — but only once it is empty. Also on the admin tablet, under **Tools → Held-back stashes**. |
+
+**Every one of these offers itself to chat autocomplete.** Type `/arena` and the list appears with what each one does and what it takes. That is the only thing the client half registers: suggestions, not commands. It went in because an operator reported "there is no `/arenadispatch` command" — it had been registered since the file was written, and nothing in this resource had ever told the chat box any of its names existed.
 
 "Admins" means the ACE groups in `Config.Permissions.adminGroups`, checked as both `group.<name>` and a bare `<name>` because servers hand admin out both ways. The server console (source 0) always qualifies.
 
@@ -1230,7 +1237,7 @@ are client-side because only a client can ask the game what models it has.
 
 ### Police or EMS are still being called
 
-- **Type `/arenadispatch` first.** It names every police and EMS resource running on your server and says, per resource, whether the arena reaches it. A row reading `NOT muted -- needs the line below` is the answer, and the line it prints is the fix.
+- **Type `/arenadispatch` first** (or open `/arenaadmin` → **Tools** → **Police & EMS**, which shows the same report on screen). It names every police and EMS resource running on your server and says, per resource, whether the arena reaches it. A row reading `NOT muted -- needs the line below` is the answer, and the line it prints is the fix.
 - A resource the report does not list is one the catalogue does not know by name. Add the name in `shared/compat/dispatch.lua` and it appears from the next restart.
 - `Isolation is off` in the report means `Config.Dispatch.isolation.enabled` is `false`, so every client on the server can see arena gunfire and arena bodies. That is the layer that works without anybody's cooperation — turn it back on.
 - **With isolation on, an alert that still arrives almost certainly came from the fighter's own client.** No other machine on the server was sent the fight, so there is nothing else it could have been watching. That narrows it to one file, and the state bag line goes in it.

@@ -1001,6 +1001,43 @@ function ArenaDispatch.IsolationReport()
     return lines
 end
 
+--- THE DISPATCH COMPAT REPORT, reachable from the admin tablet.
+---
+--- shared/compat/dispatch.lua builds the whole block -- which police and EMS
+--- resources are actually running on THIS server, which of them the arena can
+--- mute on its own, and the exact line to paste into the ones it cannot. It
+--- already prints twice: once on resource start, and again on /arenadispatch.
+--- Both of those go to the SERVER CONSOLE. An operator who runs the server
+--- from a panel, or who is in-game when the alert fires, sees neither -- and
+--- in-game /arenadispatch answers with the whole report crushed into a single
+--- notification toast, which is not something anyone can read a resource name
+--- out of.
+---
+--- So this accessor hands the same lines to the tablet's Tools tab, where
+--- they are a scrollable report like Instancing and Opening hours already
+--- are. Same text, same order, same source -- only the way out is new.
+---
+--- Why the operator needs it at all: the retract layer clears an EMS call
+--- AFTER it is filed, so the alert still lands on a medic's screen for the
+--- second or two before it goes. This report is the only thing that names
+--- WHICH of their scripts still needs the state-bag line pasted into it.
+--- @return string[]
+function ArenaDispatch.CompatReport()
+    if type(ArenaCompat) ~= 'table' or type(ArenaCompat.Report) ~= 'function' then
+        return { 'this build has no dispatch compat report.' }
+    end
+
+    local ok, lines = pcall(ArenaCompat.Report)
+    if not ok or type(lines) ~= 'table' then
+        return { 'the dispatch compat report could not be taken: ' .. tostring(lines) }
+    end
+
+    local out = {}
+    for _, line in ipairs(lines) do out[#out + 1] = tostring(line) end
+    if #out == 0 then out[1] = 'the dispatch compat report came back empty.' end
+    return out
+end
+
 RegisterCommand('arenaisolation', function(src, _args)
     if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
         if src ~= 0 and type(ArenaNotifyKey) == 'function' then

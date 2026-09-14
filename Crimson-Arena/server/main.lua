@@ -797,6 +797,15 @@ local ADMIN_TOOLS = {
         title = 'Opening hours',
         run = function() return hoursReport() end,
     },
+    dispatch = {
+        title = 'Police & EMS',
+        run = function()
+            if type(ArenaDispatch) ~= 'table' or type(ArenaDispatch.CompatReport) ~= 'function' then
+                return { 'this build has no dispatch compat report.' }
+            end
+            return ArenaDispatch.CompatReport()
+        end,
+    },
     jams = {
         title = 'Held-back stashes',
         run = function()

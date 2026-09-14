@@ -288,3 +288,72 @@ AddEventHandler('onResourceStop', function(resource)
     removeLobbyPed()
     removeBlip()
 end)
+
+-- ======================================================================
+-- CHAT AUTOCOMPLETE
+--
+-- AN OPERATOR REPORTED "there is no /arenadispatch command". It was
+-- registered the whole time -- shared/compat/dispatch.lua, inside the
+-- server half, since the file was written. What did not exist was any way
+-- to FIND it: nothing in this resource had ever called chat:addSuggestion,
+-- so typing /arenad offered nothing, and the only way to learn the name of
+-- any of the six commands here was to read the source or the README.
+--
+-- Suggestions are a client-side list owned by the `chat` resource, so this
+-- runs in the client realm and needs no networking. Sending them from the
+-- server instead would mean racing a joining player's chat resource for
+-- the right moment, and a suggestion that arrives early is simply dropped.
+-- If `chat` is not running the event goes nowhere and nothing breaks.
+--
+-- EVERY COMMAND IS LISTED, including the admin-only ones. A command name
+-- is not a secret -- all six refuse a non-admin on their own, in their own
+-- files, and none of them takes an action before that check. Gating this
+-- list would mean asking the server "am I an admin" at a moment when ACE
+-- may not have been applied yet, and a list that silently comes back empty
+-- is exactly the bug being fixed here.
+--
+-- tests/commands_spec.lua reads every RegisterCommand call out of the Lua
+-- sources and fails if this table and that set ever drift apart, so a
+-- renamed or added command cannot quietly lose its autocomplete.
+-- ======================================================================
+local COMMAND_HELP = {
+    {
+        name = 'arenaadmin',
+        help = 'Open the arena admin tablet. (admin)',
+        params = {
+            { name = 'action', help = 'blank opens the tablet. list | stop <matchId> | wipe from the console.' },
+        },
+    },
+    {
+        name = 'arenahours',
+        help = 'Report whether the arena is open now, and when it next opens. (admin)',
+    },
+    {
+        name = 'arenadispatch',
+        help = 'Report which police/EMS scripts are running and which still need muting. (admin)',
+    },
+    {
+        name = 'arenaisolation',
+        help = 'Report the routing-bucket isolation of every live match. (admin)',
+    },
+    {
+        name = 'arenarevive',
+        help = 'Run the end-of-match revive against one player, to test your medical script. (admin)',
+        params = {
+            { name = 'serverId', help = 'Server id to revive. Blank means yourself.' },
+        },
+    },
+    {
+        name = 'arenaunjam',
+        help = 'Report stashes the arena is holding back, and release one once it is empty. (admin)',
+        params = {
+            { name = 'stashId', help = 'Blank lists them. A stash id releases that one.' },
+        },
+    },
+}
+
+CreateThread(function()
+    for _, command in ipairs(COMMAND_HELP) do
+        TriggerEvent('chat:addSuggestion', '/' .. command.name, command.help, command.params)
+    end
+end)

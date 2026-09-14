@@ -1019,6 +1019,158 @@ print('panel_spec')
 -- index.html -- so the guard has to live here, on the markup itself.
 -- ======================================================================
 
+-- ======================================================================
+-- THE ADMIN TOOLS, SPELLED OUT IN THREE FILES THAT CANNOT SEE EACH OTHER
+--
+-- One tool on the tablet's Tools tab is four separate pieces of text: a key
+-- in ADMIN_TOOLS in server/main.lua, a button id in index.html, and TWO
+-- lists in app.js -- one that lights the pressed button up, one that binds
+-- it. Nothing connects them but the name.
+--
+-- Every way that can go wrong is silent. A button with no entry in the bind
+-- list does nothing when pressed. An entry in the bind list with no button
+-- binds nothing. A name in the bind list but not the render list is a button
+-- that never shows as selected. A name in all three but not in ADMIN_TOOLS
+-- is refused by the server as an invalid request, which the panel shows as a
+-- spinner that never stops.
+--
+-- Police & EMS, added because an operator had no way to read the dispatch
+-- compat report anywhere but the server console, is the fourth tool and the
+-- first added since these lists were written -- which is when it became
+-- worth asserting that all four ends still name the same set.
+-- ======================================================================
+
+--- The keys of ADMIN_TOOLS, read out of server/main.lua.
+---
+--- admintablet_spec parses the same table for a different reason -- to loop
+--- its gate tests over every tool rather than a hand-kept three. Each spec is
+--- its own process with no shared state, so the parse lives in both rather
+--- than in a fixture neither of them would own.
+--- @return table set
+local function adminToolsInServer()
+    local handle = assert(io.open('../Crimson-Arena/server/main.lua', 'r'),
+        'server/main.lua is missing')
+    local body = handle:read('a')
+    handle:close()
+
+    local literal = body:match('local ADMIN_TOOLS = {\n(.-)\n}\n')
+    assert(literal, 'ADMIN_TOOLS is no longer a flat table literal in server/main.lua')
+
+    local names = {}
+    -- Leading newline: the capture starts past the one that opens the table,
+    -- so without it the FIRST tool is invisible and the set is one short.
+    for name in ('\n' .. literal):gmatch('\n    ([%a_][%w_]*) = {') do names[name] = true end
+    return names
+end
+
+--- The tool buttons in index.html, by the name in their id.
+--- @return table set
+local function toolButtonsInMarkup()
+    local names = {}
+    for id in readPanelFile('index.html'):gmatch('<button id="admin%-tool%-([%w_]+)"') do
+        names[id] = true
+    end
+    return names
+end
+
+--- Both of app.js's tool-name lists, in source order.
+---
+--- Found by their USE rather than by a line number: a list literal counts
+--- only if the code just after it reaches for 'admin-tool-' + name, which is
+--- what makes it a tool list rather than one of the other arrayOf calls in
+--- that file.
+--- @return table[] lists
+local function toolListsInScript()
+    local body = readPanelFile('app.js')
+    local lists, at = {}, 1
+
+    while true do
+        local from, to, inner = body:find('arrayOf%(%[(.-)%]%)', at)
+        if not from then break end
+        at = to + 1
+
+        if body:sub(to, to + 300):find('admin%-tool%-') then
+            local set, order = {}, {}
+            for name in inner:gmatch("'([%w_]+)'") do
+                set[name] = true
+                order[#order + 1] = name
+            end
+            lists[#lists + 1] = { set = set, order = order }
+        end
+    end
+
+    return lists
+end
+
+--- @param set table
+--- @return string
+local function sortedNames(set)
+    local out = {}
+    for name in pairs(set) do out[#out + 1] = name end
+    table.sort(out)
+    return table.concat(out, ', ')
+end
+
+t.test('app.js still has exactly the two tool lists these tests read', function()
+    -- The guard on the guard: if the search above stops matching the file it
+    -- returns nothing, and every comparison below passes over an empty set.
+    local lists = toolListsInScript()
+    t.equals(#lists, 2, 'app.js no longer has two tool-name lists -- these tests have come '
+        .. 'unstuck from the file they are checking')
+    t.isTrue(#lists[1].order >= 4, 'the first tool list parsed as fewer than four names')
+end)
+
+t.test('the render list and the bind list are the same list, in the same order', function()
+    local lists = toolListsInScript()
+    t.equals(table.concat(lists[1].order, ','), table.concat(lists[2].order, ','),
+        'app.js lights up one set of tool buttons and binds another')
+end)
+
+t.test('every tool the server will run has a button', function()
+    local buttons = toolButtonsInMarkup()
+    local missing = {}
+    for name in pairs(adminToolsInServer()) do
+        if not buttons[name] then missing[#missing + 1] = name end
+    end
+    table.sort(missing)
+    t.equals(#missing, 0, ('the server runs these reports and nothing on the tablet asks for '
+        .. 'them: %s'):format(table.concat(missing, ', ')))
+end)
+
+t.test('every button asks for a tool the server will actually run', function()
+    local server = adminToolsInServer()
+    local orphans = {}
+    for name in pairs(toolButtonsInMarkup()) do
+        if not server[name] then orphans[#orphans + 1] = name end
+    end
+    table.sort(orphans)
+    t.equals(#orphans, 0, ('these buttons ask for a report the server refuses, which the panel '
+        .. 'shows as a spinner that never stops: %s'):format(table.concat(orphans, ', ')))
+end)
+
+t.test('and app.js names that same set, so every button is bound and lights up', function()
+    local buttons = toolButtonsInMarkup()
+    for index, list in ipairs(toolListsInScript()) do
+        t.equals(sortedNames(list.set), sortedNames(buttons),
+            ('app.js tool list %d does not match the buttons in index.html'):format(index))
+    end
+end)
+
+t.test('the Police & EMS tool is wired at all four ends', function()
+    -- Named rather than left to the set comparisons above: those would still
+    -- pass if this tool were deleted from all four at once, and the reason it
+    -- exists -- an operator with no way to read the dispatch compat report --
+    -- does not go away if it is.
+    t.isTrue(adminToolsInServer().dispatch == true, 'ADMIN_TOOLS has no dispatch report')
+    t.isTrue(toolButtonsInMarkup().dispatch == true, 'index.html has no Police & EMS button')
+    for index, list in ipairs(toolListsInScript()) do
+        t.isTrue(list.set.dispatch == true,
+            ('app.js tool list %d does not carry the dispatch tool'):format(index))
+    end
+    t.contains(readPanelFile('index.html'), 'Police &amp; EMS',
+        'the dispatch button has lost its label')
+end)
+
 t.test('nothing in index.html hides with the attribute this panel cannot clear', function()
     local handle = assert(io.open('../Crimson-Arena/html/index.html', 'r'), 'cannot open index.html')
     local markup = handle:read('a')

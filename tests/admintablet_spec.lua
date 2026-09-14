@@ -1012,18 +1012,57 @@ end)
 -- server says which one it ran.
 -- ========================================================================
 
+--- Every key of ADMIN_TOOLS, read out of server/main.lua's source.
+---
+--- A HAND-KEPT LIST WAS THE BUG HERE. These three tests used to loop over
+--- { 'isolation', 'hours', 'jams' } written out by hand, so a fourth tool
+--- added to the tablet -- Police & EMS was the one that exposed it -- was
+--- gated, rate-limited, pcall-wrapped and covered by nothing. Reading the
+--- set out of the file means the next tool is covered the moment it exists,
+--- and a renamed one fails here rather than silently dropping its coverage.
+--- @return string[]
+local function adminToolNames()
+    local handle = assert(io.open('../Crimson-Arena/server/main.lua', 'r'),
+        'server/main.lua is missing')
+    local body = handle:read('a')
+    handle:close()
+
+    local block = body:match('local ADMIN_TOOLS = {\n(.-)\n}\n')
+    assert(block, 'ADMIN_TOOLS is no longer a flat table literal in server/main.lua')
+
+    local names = {}
+    -- The leading newline matters: the capture above starts just past the
+    -- one that opens the table, so without it the FIRST tool is invisible to
+    -- this pattern and the list comes back one short and plausible.
+    for name in ('\n' .. block):gmatch('\n    ([%a_][%w_]*) = {') do names[#names + 1] = name end
+    assert(#names > 0, 'no tools were found in ADMIN_TOOLS')
+    table.sort(names)
+    return names
+end
+
+t.test('every tool on the tablet is covered by the three tests below', function()
+    -- The guard on the guard: if the parse above ever stops matching the
+    -- file, it comes back with a plausible-looking short list and the loops
+    -- go quietly green over less than they used to.
+    local names = adminToolNames()
+    t.isTrue(#names >= 4, ('only %d admin tool(s) were parsed out of server/main.lua -- '
+        .. 'the parse has come unstuck from the file'):format(#names))
+    t.contains(table.concat(names, ','), 'dispatch',
+        'the Police & EMS tool is not in ADMIN_TOOLS')
+end)
+
 t.test('a player who is not an admin gets no report at all', function()
     local s = newArena({ [1] = true })
-    for _, tool in ipairs({ 'isolation', 'hours', 'jams' }) do
+    for _, tool in ipairs(adminToolNames()) do
         s.fire('adminTool', 2, { tool = tool })
         t.isNil(s.lastNamed('adminTool'),
             'a player who is not an admin was sent the ' .. tool .. ' report')
     end
 end)
 
-t.test('and an admin gets all three, each naming itself', function()
+t.test('and an admin gets every one of them, each naming itself', function()
     local s = newArena({ [1] = true })
-    for _, tool in ipairs({ 'isolation', 'hours', 'jams' }) do
+    for _, tool in ipairs(adminToolNames()) do
         s.fire('adminTool', 1, { tool = tool })
         s.step()
         local sent = (s.lastNamed('adminTool') or {}).payload
@@ -1041,7 +1080,7 @@ t.test('every line is a string, whatever the report handed back', function()
     -- is a screen that says "table: 0x..." to an operator looking at a
     -- server they already believe is broken.
     local s = newArena({ [1] = true })
-    for _, tool in ipairs({ 'isolation', 'hours', 'jams' }) do
+    for _, tool in ipairs(adminToolNames()) do
         s.fire('adminTool', 1, { tool = tool })
         s.step()
         for index, line in ipairs((s.lastNamed('adminTool') or {}).payload.lines) do

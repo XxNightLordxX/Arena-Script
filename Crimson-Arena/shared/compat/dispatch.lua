@@ -664,8 +664,21 @@ if IS_SERVER then
         local lines = ArenaCompat.Report()
         printReport(lines)
 
+        -- IN-GAME, THIS USED TO ANSWER WITH THE WHOLE REPORT IN ONE TOAST.
+        -- Twenty-odd lines, a pasteable code snippet and a server.cfg
+        -- instruction, concatenated into a single notification that shows
+        -- for a few seconds in a corner. Nobody has ever read a resource
+        -- name out of that, which is the only thing the report is FOR -- so
+        -- the operator who ran it in-game came away thinking the command had
+        -- done nothing, or did not exist.
+        --
+        -- The report itself has not changed and still goes to the console in
+        -- full. What an in-game admin gets now is where to read it: the
+        -- tablet's Tools tab carries the same lines, scrollable, from the
+        -- same ArenaCompat.Report() call.
         if src ~= 0 and type(ArenaNotify) == 'function' then
-            ArenaNotify(src, table.concat(lines, '\n'), 'info')
+            ArenaNotify(src, ('dispatch compat: %d line(s) printed to the server console. The same report is in the arena tablet under Tools -> Police & EMS, where you can scroll it.')
+                :format(#lines), 'info')
         end
     end, false)
 end

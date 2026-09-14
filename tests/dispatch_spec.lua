@@ -2202,5 +2202,159 @@ t.test('and a revive for a player who is not in a match withdraws nothing', func
         'an ordinary player being revived had their real medical call withdrawn')
 end)
 
+-- ========================================================================
+-- THE COMPAT REPORT, AND THE TWO WAYS OUT OF IT
+--
+-- An operator reported "there is no /arenadispatch command" while EMS alerts
+-- were still firing out of their arena. The command was registered the whole
+-- time -- in shared/compat/dispatch.lua, inside the `if IS_SERVER then` half
+-- -- which is why a search of server/*.lua does not find it and why this
+-- block asserts the registration rather than assuming it.
+--
+-- What they could not do was READ it. Both existing routes end at the server
+-- console: the start-up print and the command's own print. In-game the
+-- command answered with the entire report concatenated into a single
+-- notification toast, and the one thing the report exists to tell you is
+-- WHICH of your scripts still needs the state-bag line pasted into it -- a
+-- resource name, in a wall of text, in a corner, for a few seconds.
+--
+-- So the tablet gets the same lines through ArenaDispatch.CompatReport. The
+-- tests below are mostly about SAMENESS: two ways out of one report is only
+-- an improvement while they cannot disagree.
+-- ========================================================================
+
+--- shared/compat/dispatch.lua and server/dispatch.lua loaded together, which
+--- is the pairing the tablet path actually runs through: the compat layer
+--- builds the report, the server file hands it to the panel.
+--- @param running table -- { ['sc-dispatch'] = true, ... }
+--- @return table fixture
+local function newCompatAndServer(running)
+    running = running or {}
+    local commands, console = {}, {}
+
+    local env = Sandbox.newArenaEnv({
+        IsDuplicityVersion = function() return true end,
+        GetResourceState = function(name) return running[name] and 'started' or 'missing' end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        GetNumResources = function() return 0 end,
+        GetPlayerName = function() return 'an admin' end,
+        GetVehiclePedIsIn = function() return 0 end,
+        IsPlayerAceAllowed = function() return true end,
+        CreateThread = function() end,
+        Wait = function() end,
+        SetTimeout = function() end,
+        AddEventHandler = function() end,
+        RegisterNetEvent = function() end,
+        TriggerClientEvent = function() end,
+        RegisterCommand = function(name, fn) commands[name] = fn end,
+        print = function(line) console[#console + 1] = tostring(line) end,
+        ArenaIsAdmin = function() return true end,
+        ArenaNotify = function() end,
+        ArenaNotifyKey = function() end,
+        ArenaLog = function(fmt, ...)
+            console[#console + 1] = (select('#', ...) > 0) and fmt:format(...) or fmt
+        end,
+        ArenaDebug = function() end,
+        ArenaLobby = { Get = function() return nil end, All = function() return {} end },
+        exports = setmetatable({}, {
+            __call = function() end,
+            __index = function()
+                return setmetatable({}, { __index = function() return function() end end })
+            end,
+        }),
+    })
+
+    Sandbox.loadInto('../Crimson-Arena/config.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
+    env.Config.Dispatch = env.Config.Dispatch or {}
+    env.Config.Dispatch.downState = env.Config.Dispatch.downState or {}
+    env.Config.Dispatch.downState.holdIntervalMs = 0
+
+    -- MANIFEST ORDER: the shared script is loaded by the game before any
+    -- server script, so ArenaCompat exists by the time server/dispatch.lua
+    -- reaches for it. Loading them the other way round here would test a
+    -- build the game never produces.
+    Sandbox.loadInto('../Crimson-Arena/shared/compat/dispatch.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/server/dispatch.lua', env)
+
+    return { env = env, commands = commands, console = console }
+end
+
+t.test('/arenadispatch is registered on the server, which is what the operator was told did not exist', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    t.equals(type(f.commands.arenadispatch), 'function',
+        '/arenadispatch is not registered -- the operator who reported it missing was right after all')
+end)
+
+t.test('the tablet and the console read the same report, line for line', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+
+    local fromCompat = f.env.ArenaCompat.Report()
+    local fromPanel = f.env.ArenaDispatch.CompatReport()
+
+    t.equals(#fromPanel, #fromCompat,
+        'the tablet and the console disagree on how long the report is')
+    for index, line in ipairs(fromCompat) do
+        t.equals(fromPanel[index], line,
+            ('tablet line %d is not the console line %d'):format(index, index))
+    end
+end)
+
+t.test('and it names the unwired scripts and the start-order fix an operator has to make by hand', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'sc-dispatch', 'the tablet report does not name sc-dispatch')
+    t.contains(report, 'sc-ambulance', 'the tablet report does not name sc-ambulance')
+    t.contains(report, 'Player(src).state.crimsonArena',
+        'the tablet report does not carry the line an operator is supposed to paste')
+    t.contains(report, 'ensure crimson_arena',
+        'the tablet report does not carry the server.cfg fix, which is the one thing '
+            .. 'that cannot be fixed from inside this resource')
+end)
+
+t.test('every line reaches the panel as a string', function()
+    -- The panel prints these straight out. Anything else is "table: 0x..."
+    -- on the screen of an operator who already believes their server is broken.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    for index, line in ipairs(f.env.ArenaDispatch.CompatReport()) do
+        t.equals(type(line), 'string', ('compat report line %d reached the panel as a %s')
+            :format(index, type(line)))
+    end
+end)
+
+t.test('a build with no compat layer answers the panel instead of crashing it', function()
+    -- shared/compat/dispatch.lua is a shared_script. Drop it from the
+    -- manifest, or have it die on load, and ArenaCompat is simply absent --
+    -- at which point an admin pressing Police & EMS must get a sentence, not
+    -- a tablet that stops responding.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.ArenaCompat = nil
+
+    local lines = f.env.ArenaDispatch.CompatReport()
+    t.equals(type(lines), 'table', 'the panel got no lines back at all')
+    t.isTrue(#lines > 0, 'the panel got an empty report with nothing explaining why')
+    t.equals(type(lines[1]), 'string', 'the explanation was not a string')
+end)
+
+t.test('a compat layer that throws is caught, and the panel is told what threw', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.ArenaCompat = { Report = function() error('a native this build does not have') end }
+
+    local lines = f.env.ArenaDispatch.CompatReport()
+    t.equals(type(lines), 'table', 'a throwing report took the panel down with it')
+    t.contains(table.concat(lines, '\n'), 'a native this build does not have',
+        'the panel was told the report failed but not what failed')
+end)
+
+t.test('a compat layer that hands back nothing says so rather than showing a blank screen', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.ArenaCompat = { Report = function() return {} end }
+
+    local lines = f.env.ArenaDispatch.CompatReport()
+    t.equals(#lines, 1, 'an empty report reached the panel as an empty screen')
+    t.equals(type(lines[1]), 'string', 'the explanation was not a string')
+end)
+
 
 os.exit(t.summary())

@@ -221,7 +221,7 @@ one deliberately does not.
 
 | Command | What it does |
 |---|---|
-| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Tools** tab shows the `/arenaisolation`, `/arenahours` and `/arenaunjam` readings on screen, built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
+| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Tools** tab shows the `/arenaisolation`, `/arenahours`, `/arenadispatch` and `/arenaunjam` readings on screen, built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
 | `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without a restart. |
 | `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
 | `/arenaisolation` | Prints what instancing is really doing: the mode the server reports for `onesync`, whether a routing bucket has been caught not landing, the bucket each live match was allocated, and the bucket the server says each of those players is standing in right now. |
@@ -521,7 +521,7 @@ listed; the source documents them where they are.
 | `ArenaDbReady(subject)` | Whether a query can be sent right now: `Config.Database.enabled` on and oxmysql started. Says so once per outage, per subject, and re-arms when the database comes back. |
 | `ArenaDb(subject, sql, params, cb)` | Sends one query. Never lets a database failure take the round down, and always calls `cb` — with nil on every path that did not reach oxmysql. |
 
-#### `server/dispatch.lua` — 16 functions
+#### `server/dispatch.lua` — 17 functions
 
 | Function | What it does |
 |---|---|
@@ -540,6 +540,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 | `ArenaDispatch.IsolationReport()` | Everything /arenaisolation reports, as lines, so the admin tablet can show the same reading without a console. |
+| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, so the admin tablet's Police & EMS tool shows exactly what /arenadispatch prints to the console. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
 #### `server/ammo.lua` — 22 functions

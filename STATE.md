@@ -146,6 +146,32 @@ aiming the refill at the player's pockets instead of the bag (the contents come 
 
 `Config.Loadouts.inventory.emptyContainers` turns it off.
 
+### 3b. Two rough edges in the fixes above, found by reviewing them
+
+**A jam was a dead end.** Three separate failures in `server/ammo.lua` stop the door
+touching a stash, and all three print "settle it by hand" -- but nothing cleared the flag,
+which lived and died with the resource. An operator could follow those instructions exactly
+and the stash stayed dead, which also meant that player was never stripped at the door
+again for the rest of the server's uptime. `/arenaunjam` now lists what is held back and
+clears it, by name or `all`. Admin-gated, and deliberately **not** automatic: "clear it when
+the stash reads empty" would key the recovery to the one answer this whole file refuses to
+trust, since that is exactly what ox_inventory says about an inventory it has not loaded.
+
+**The ceiling refused the wrong rows.** It kept the first `allowed` rows in slot order, and
+slot order is not ownership -- a stale copy in a lower slot was handed over and the real row
+was the one left behind. The exit now takes a manifest of what was in which slot when the
+door shut, and refuses the rows that do **not** match it first. The manifest only chooses;
+it never counts, because a reload can renumber slots and a manifest that decided *how many*
+would then refuse everything and clear a player out. Measured by inverting the ordering
+alone: the player came out with `burgerx3,lockpickx2,phonex1` -- their rifle ammo gone, a
+lockpick they never owned in its place.
+
+**And the bag holding stashes were registered with no owner**, which in ox_inventory means
+*shared* -- unlike the belongings stash, which is owned by citizenid precisely so one player
+cannot open another's. They are owned now, on both the way in and the way out; a stash
+registered under a different owner is a different stash, and on the refill path that would
+have read empty and quietly never given the contents back.
+
 ### 4. And no match duplicates anything, asserted rather than argued
 
 The general form of every defect above is "it is in two places now", and a test that looks

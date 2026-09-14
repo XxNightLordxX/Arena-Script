@@ -523,7 +523,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
 
-#### `server/ammo.lua` — 17 functions
+#### `server/ammo.lua` — 19 functions
 
 | Function | What it does |
 |---|---|
@@ -535,6 +535,8 @@ listed; the source documents them where they are.
 | `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |
+| `ArenaAmmo.JammedStashes()` | Every stash the door has stopped touching, because something is in it the arena cannot account for. |
+| `ArenaAmmo.Unjam(stash)` | Lets the door use one of those stashes again, once a human has settled it. Never automatic: an empty read is what ox_inventory says about an inventory it has not loaded, so only a person can say a jam is over. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server: outstanding stashes handed back, and any arena kit that left with a character taken off them. |

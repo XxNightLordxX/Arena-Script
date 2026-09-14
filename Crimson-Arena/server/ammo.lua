@@ -588,7 +588,7 @@ end
 --- a refusal means it was never taken out of the container, which is exactly
 --- the behaviour this resource has always had and costs nothing.
 --- @return string[] keys -- the containers that were emptied, to refill later
-local function holdContainers(ox, src)
+local function holdContainers(ox, src, citizenid)
     local keys = {}
     if doorConfig().emptyContainers == false then return keys end
 
@@ -620,9 +620,14 @@ local function holdContainers(ox, src)
             local inside = itemsIn(contents)
             if #inside == 0 then goto nextBag end
 
+            -- OWNED BY THE CHARACTER, exactly as the belongings stash is and
+            -- for the same reason: an owner is what stops one player opening
+            -- another's. Registered with none, a stash is SHARED -- which for
+            -- a stash holding the contents of somebody's bag is the wrong
+            -- answer even if nothing in this resource ever opens it.
             local stash = bagStashFor(key)
             if not oxDid('registering bag stash ' .. stash, function()
-                return ox:RegisterStash(stash, 'Arena Bag Contents', STASH_SLOTS, STASH_WEIGHT)
+                return ox:RegisterStash(stash, 'Arena Bag Contents', STASH_SLOTS, STASH_WEIGHT, citizenid)
             end) then
                 ArenaLog('door: could not register a holding stash for %s\'s %s -- it travels as it is.',
                     tostring(src), tostring(bag.name))
@@ -706,7 +711,7 @@ end
 --- only after the write that moves them has been read.
 --- @return integer restored
 --- @return integer failures
-local function refillContainers(ox, src, keys)
+local function refillContainers(ox, src, keys, citizenid)
     if type(keys) ~= 'table' then return 0, 0 end
 
     local restored, failures = 0, 0
@@ -715,8 +720,12 @@ local function refillContainers(ox, src, keys)
         if Arena.IsKey(key) then
             local stash = bagStashFor(key)
 
+            -- THE SAME OWNER IT WAS PUT AWAY UNDER. A stash registered with a
+            -- different owner is a different stash, and this one would read
+            -- empty -- which on this path means somebody's bag contents
+            -- quietly never come back.
             if not oxDid('registering bag stash ' .. stash, function()
-                return ox:RegisterStash(stash, 'Arena Bag Contents', STASH_SLOTS, STASH_WEIGHT)
+                return ox:RegisterStash(stash, 'Arena Bag Contents', STASH_SLOTS, STASH_WEIGHT, citizenid)
             end) then
                 failures = failures + 1
                 goto nextKey
@@ -844,7 +853,7 @@ local function stow(src, citizenid)
     -- Its own failures are its own: every one of them leaves the item in the
     -- bag, which is what this resource has always done, so nothing here can
     -- stop a stow that would otherwise have worked.
-    local bagKeys = holdContainers(ox, src)
+    local bagKeys = holdContainers(ox, src, citizenid)
 
     local ok, items = pcall(function() return ox:GetInventoryItems(src) end)
     if not ok or type(items) ~= 'table' then
@@ -1014,13 +1023,19 @@ local function stow(src, citizenid)
         if read > rows then rows = read end
     end
 
-    return true, stowed, rows, bagKeys
+    -- AND WHAT WAS IN WHICH SLOT, handed on so the exit can tell the door's
+    -- own rows from anything that turns up beside them. handBack says at
+    -- length why that is a different question from how many.
+    return true, stowed, rows, bagKeys, settled
 end
 
 --- @param allowed integer|nil -- how many rows the door itself put in this
 ---   stash, or nil when nothing knows (the sweep after a restart), which is
 ---   the one case that must stay uncapped.
-local function handBack(ox, src, stash, allowed)
+--- @param manifest table|nil -- slot -> { name } as the stash stood when the
+---   door shut it, used to choose WHICH rows are refused when there are too
+---   many. Advisory only: it never changes how many go back.
+local function handBack(ox, src, stash, allowed, manifest)
     if jammedStash[stash] then
         ArenaLog('door: stash %s is NOT being handed back. A removal from it was refused earlier, '
             .. 'so the door cannot tell what it has already given out and will not risk handing the '
@@ -1106,9 +1121,49 @@ local function handBack(ox, src, stash, allowed)
             .. 'from a database row that never got its last write -- raise `inventory:cleartime`.',
             tostring(stash), #rows, allowed, refused, tostring(src))
 
-        local capped = {}
-        for index = 1, allowed do capped[index] = rows[index] end
-        rows = capped
+        -- WHICH ROWS GO BACK, NOT MERELY HOW MANY.
+        --
+        -- This kept the first `allowed` rows in slot order, and slot order is
+        -- not ownership: a stale copy that landed in a lower slot than the
+        -- real thing was handed over and the REAL one was the row left
+        -- behind. For a burger that is invisible; for a phone it is somebody
+        -- else's number, and this file has a test devoted to the fact that an
+        -- item's identity is its metadata.
+        --
+        -- So the rows the door actually shut in here are preferred, matched
+        -- on slot AND name against the manifest taken at that moment, and
+        -- anything that does not match is what gets refused first.
+        --
+        -- THE MANIFEST ONLY CHOOSES, IT NEVER COUNTS. A reload can renumber
+        -- slots, and then nothing matches -- so if this decided how many to
+        -- refuse it would refuse everything and clear a player out. The
+        -- number is still `#rows - allowed` and comes from the ceiling above;
+        -- all this does is order the queue. DO NOT let it set `refused`.
+        local known, strangers = {}, {}
+        for _, row in ipairs(rows) do
+            local slot = Arena.ToInt(row.slot)
+            local was = (manifest ~= nil and slot ~= nil) and manifest[slot] or nil
+            if was ~= nil and was.name == row.name then
+                known[#known + 1] = row
+            else
+                strangers[#strangers + 1] = row
+            end
+        end
+
+        local queue = {}
+        for _, row in ipairs(strangers) do queue[#queue + 1] = row end
+        for _, row in ipairs(known) do queue[#queue + 1] = row end
+
+        local drop = {}
+        for index = 1, refused do
+            if queue[index] ~= nil then drop[queue[index]] = true end
+        end
+
+        local kept = {}
+        for _, row in ipairs(rows) do
+            if not drop[row] then kept[#kept + 1] = row end
+        end
+        rows = kept
     end
 
     local failures, returned = 0, 0
@@ -1275,7 +1330,8 @@ local function restore(src, record)
         record.wiped = wiped
     end
 
-    local readable, failures, returned = handBack(ox, src, record.stash, record.allowed)
+    local readable, failures, returned =
+        handBack(ox, src, record.stash, record.allowed, record.manifest)
     if not readable then return false, wiped end
 
     -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY.
@@ -1308,7 +1364,7 @@ local function restore(src, record)
     -- would not go into a bag is named in a real stash by refillContainers
     -- itself.
     if record.containers ~= nil then
-        local packed, bagFailures = refillContainers(ox, src, record.containers)
+        local packed, bagFailures = refillContainers(ox, src, record.containers, record.citizenid)
         if packed > 0 then
             ArenaDebug('door: put %d item(s) back into %s\'s bags.', packed, tostring(src))
         end
@@ -4247,7 +4303,7 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                 carried = math.max(0, Arena.ToInt(held.stowedCount) or 0)
             end
 
-            local put, count, rowsInStash, bagKeys = stow(src, citizenid)
+            local put, count, rowsInStash, bagKeys, manifest = stow(src, citizenid)
             if put then
                 stashed[src] = {
                     stash = stashFor(citizenid),
@@ -4273,6 +4329,11 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                     -- each one back into the bag it came out of. holdContainers
                     -- says why the arena holds them at all.
                     containers = bagKeys,
+
+                    -- SLOT -> WHAT WAS IN IT when the door shut this stash.
+                    -- Advisory: it decides WHICH rows the exit refuses when
+                    -- there are more than there should be, never how many.
+                    manifest = manifest,
                 }
                 ArenaDebug('door: stashed %d item(s) of %s\'s for match %s',
                     count, tostring(src), tostring(matchId))
@@ -4559,6 +4620,98 @@ end
 -- The swapItems guard was already asking through ownRecord. This is the rest
 -- of the file agreeing with it, rather than half of it rejecting a record the
 -- other half prints. DO NOT read `stashed` directly anywhere.
+--- Every stash the door has stopped touching, newest problem last.
+---
+--- A JAM IS A DEAD END UNTIL SOMEBODY CAN SEE IT. Three separate failures in
+--- this file set `jammedStash` -- a rollback that could not be undone, a
+--- hand-back whose removal was refused, and a stash holding more than the
+--- door put in it -- and every one of them prints "settle it by hand". Until
+--- this existed there was no way to see WHICH stashes were in that state
+--- without reading the console back, and no way at all to tell the door the
+--- settling was done: the flag lived and died with the resource. An operator
+--- could follow the instructions exactly and the stash stayed dead, which
+--- also meant that player was never stripped at the door again -- they
+--- fought every later round in their own gear.
+--- @return string[]
+function ArenaAmmo.JammedStashes()
+    local out = {}
+    for stash in pairs(jammedStash) do out[#out + 1] = stash end
+    table.sort(out)
+    return out
+end
+
+--- Lets the door use a stash again, once a human has settled it.
+---
+--- DELIBERATELY NOT AUTOMATIC, and specifically not "clear it when the stash
+--- reads empty". An empty read is the one answer this whole file refuses to
+--- trust: ox_inventory gives exactly that for an inventory it has not
+--- loaded, which is the state a jam is most likely to coincide with. The
+--- only thing that can say a jam is settled is the person who looked.
+--- @param stash string
+--- @return boolean cleared
+function ArenaAmmo.Unjam(stash)
+    if not Arena.IsKey(stash) or not jammedStash[stash] then return false end
+    jammedStash[stash] = nil
+    ArenaLog('door: stash %s is no longer held back. The door will put belongings in it and hand '
+        .. 'them out of it again.', stash)
+    return true
+end
+
+--- Shows the jams and clears them. `/arenaunjam` on its own lists; with a
+--- stash name, or `all`, it clears.
+---
+--- GUARDED, because this file is not only loaded by a server. The six
+--- harnesses under tools/harness build the smallest environment that can run
+--- the ledger and the door, and a command surface is not part of it -- so
+--- registering unconditionally took all six down at load. Every other thing
+--- this file reaches for outside itself (ArenaIsAdmin, ArenaNotifyKey,
+--- ArenaDispatch) is asked for by type for the same reason.
+if type(RegisterCommand) == 'function' then
+RegisterCommand('arenaunjam', function(src, args)
+    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
+        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
+            ArenaNotifyKey(src, 'error.no_permission', 'error')
+        end
+        return
+    end
+
+    local stashes = ArenaAmmo.JammedStashes()
+
+    if #stashes == 0 then
+        ArenaLog('arenaunjam: no stash is being held back.')
+        return
+    end
+
+    local wanted = type(args) == 'table' and type(args[1]) == 'string' and args[1] or nil
+
+    if wanted == nil then
+        ArenaLog('arenaunjam: %d stash(es) are being held back. Open each with /arenaadmin, compare '
+            .. 'it against what the player is carrying, and then run /arenaunjam <name> -- or '
+            .. '/arenaunjam all once every one of them has been settled.', #stashes)
+        for _, stash in ipairs(stashes) do
+            ArenaLog('arenaunjam:   %s', stash)
+        end
+        return
+    end
+
+    if wanted == 'all' then
+        local cleared = 0
+        for _, stash in ipairs(stashes) do
+            if ArenaAmmo.Unjam(stash) then cleared = cleared + 1 end
+        end
+        ArenaLog('arenaunjam: cleared %d stash(es).', cleared)
+        return
+    end
+
+    if ArenaAmmo.Unjam(wanted) then
+        ArenaLog('arenaunjam: cleared %s.', wanted)
+    else
+        ArenaLog('arenaunjam: %s is not one of the stashes being held back. Run /arenaunjam with '
+            .. 'nothing after it to see the list.', tostring(wanted))
+    end
+end, false)
+end
+
 function ArenaAmmo.HeldFor(src)
     local record = ownRecord(src)
     if type(record) ~= 'table' then return nil end
@@ -4797,7 +4950,7 @@ function ArenaAmmo.ReturnLeftovers(src)
             if Arena.IsKey(key) then bagKeys[#bagKeys + 1] = key end
         end
     end
-    if #bagKeys > 0 then refillContainers(ox, src, bagKeys) end
+    if #bagKeys > 0 then refillContainers(ox, src, bagKeys, citizenid) end
 
     -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY -- and this is
     -- the same guard restore() applies, standing here because THIS is the

@@ -78,6 +78,9 @@ local function newServer(ids, mutate, extra)
     local threads = Sandbox.newThreadRunner()
     local console, netEvents, handlers = {}, {}, {}
 
+    --- The console commands the resource registers.
+    local commands = {}
+
     --- Every id this fixture knows to be a CONTAINER rather than a stash,
     --- so the reads above can tell the two apart.
     local containerKeys = {}
@@ -204,8 +207,10 @@ local function newServer(ids, mutate, extra)
         TriggerEvent = function() end,
         RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
         AddEventHandler = function(name, fn) handlers[name] = fn end,
-        -- Captured nowhere: this file drives events, not commands.
-        RegisterCommand = function() end,
+        -- CAPTURED, because one of them is now part of the door's promise:
+        -- a jammed stash is a dead end until an admin can see it and clear
+        -- it, and /arenaunjam is the only thing that can.
+        RegisterCommand = function(name, fn) commands[name] = fn end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         GetResourceState = function(name) return name == 'ox_inventory' and 'started' or 'missing' end,
         GetGameTimer = (function() local c = 0 return function() c = c + 60000 return c end end)(),
@@ -336,6 +341,14 @@ local function newServer(ids, mutate, extra)
         forgotten['crimson_arena_CID' .. src] = (on ~= false) or nil
     end
 
+    --- Runs a console command, the way an operator at the server would.
+    --- Source 0 is the console, which ArenaIsAdmin always accepts.
+    function server.command(name, src, ...)
+        local fn = commands[name]
+        if not fn then error('no command registered called ' .. tostring(name), 2) end
+        fn(src or 0, { ... }, name)
+    end
+
     --- EVERY ITEM THIS WHOLE SERVER IS HOLDING, wherever it is: pockets,
     --- belongings stashes, bag-holding stashes, the insides of bags. As
     --- name -> count, so two of these can be compared.
@@ -406,6 +419,15 @@ local function newServer(ids, mutate, extra)
     function server.stashItem(stash, name, count)
         stashes[stash] = stashes[stash] or {}
         stashes[stash][#stashes[stash] + 1] = { name = name, count = count }
+    end
+
+    --- Puts an item into a stash AT A GIVEN POSITION, pushing everything at
+    --- or after it down a slot. That is what a stash reloaded from an older
+    --- database row looks like: the rows that come back are not necessarily
+    --- after the ones already there.
+    function server.stashItemAt(stash, index, name, count)
+        stashes[stash] = stashes[stash] or {}
+        table.insert(stashes[stash], index, { name = name, count = count })
     end
 
     --- Hands a server id to a different character, the way FiveM does when a
@@ -1231,6 +1253,12 @@ t.test('DEFECT: rows that appear in the stash mid-round are NOT handed over', fu
         'it handed back only what it took and said nothing about the rest')
 end)
 
+-- The assertion above is also what holds the CHOICE of refused rows: the
+-- three stale rows land after the player's own, and a ceiling that simply
+-- kept the first `allowed` in slot order refused the player's rifle ammo and
+-- handed them a lockpick instead. Measured by inverting the ordering alone:
+-- `burgerx3,lockpickx2,phonex1`.
+
 t.test('and the sweep does not come back and hand the surplus over a tick later', function()
     -- ArenaAmmo.ReturnLeftovers is UNCAPPED on purpose -- after a restart
     -- nothing knows what went into a stash, and a ceiling of zero there
@@ -1515,6 +1543,88 @@ t.test('A WHOLE MATCH CONSERVES WHAT PLAYERS OWN, on every way out of one', func
         local diff = ledgerDiff(ownedOnly(before, issued), ownedOnly(server.ledger(), issued))
         t.equals(diff, '', ('%s did not conserve what players own'):format(label))
     end
+end)
+
+-- ========================================================================
+-- A JAM IS ONLY USEFUL IF SOMEBODY CAN CLEAR IT
+--
+-- Three failures in server/ammo.lua stop the door touching a stash: a
+-- rollback that could not be undone, a hand-back whose removal was refused,
+-- and a stash holding more than the door put in it. All three print "settle
+-- it by hand" -- and there was nothing to run afterwards to say the settling
+-- was done. The flag lived and died with the resource, so following the
+-- instructions exactly still left the stash dead, and that player was never
+-- stripped at the door again for the rest of the server's uptime.
+-- ========================================================================
+
+t.test('DEFECT: a jammed stash can be listed and cleared, and the door uses it again', function()
+    local server, matchId = liveMatch({ 1, 2 })
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    -- The surplus jammed it, which is the point of that guard.
+    t.contains(server.log(), 'touching that stash no further')
+
+    -- AND IT IS VISIBLE. Without the listing an operator has to read the
+    -- console back to find out which stash is stuck.
+    server.command('arenaunjam', 0)
+    t.contains(server.log(), 'crimson_arena_CID1')
+    t.contains(server.log(), 'being held back')
+
+    server.command('arenaunjam', 0, 'crimson_arena_CID1')
+    t.contains(server.log(), 'no longer held back')
+
+    -- THE PROOF IT ACTUALLY CLEARED: the door strips them again. While the
+    -- jam stood, stow refused and they fought in their own gear.
+    local server2 = server
+    server2.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server2.lobby.All()[1]
+    server2.fire('joinMatch', 2, { matchId = match.id })
+    server2.fire('setReady', 1, { ready = true })
+    server2.fire('setReady', 2, { ready = true })
+    server2.step(6)
+
+    -- STRIPPED MEANS THEIR OWN THINGS ARE GONE FROM THEIR POCKETS. Comparing
+    -- against INTACT proves nothing either way: a fighter who was NOT
+    -- stripped is carrying their own kit AND the one the arena just issued,
+    -- so that is not INTACT either.
+    t.isNil(server2.carrying(1):find('burgerx3', 1, true),
+        'the door still refuses to strip them, so the jam never cleared')
+end)
+
+t.test('and a jam that has not been cleared still holds', function()
+    -- The control: listing must not clear anything by itself.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    server.command('arenaunjam', 0)          -- listed only
+    server.command('arenaunjam', 0, 'crimson_arena_CID9')  -- a name that is not jammed
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    t.isNotNil(server.carrying(1):find('burgerx3', 1, true),
+        'the door stripped them, so the jam cleared itself and the surplus is live again')
+end)
+
+t.test('and a player who is not an admin cannot clear one', function()
+    local server, matchId = liveMatch({ 1, 2 })
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    -- 1 is a player, not the console, and holds no admin group here.
+    server.command('arenaunjam', 1, 'crimson_arena_CID1')
+
+    t.isNil(server.log():find('no longer held back', 1, true),
+        'a player cleared a jam on their own stash')
 end)
 
 os.exit(t.summary())

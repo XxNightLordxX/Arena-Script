@@ -92,6 +92,9 @@ local function newServer(ids, mutate, extra, opts)
     --- Which routing bucket each player is standing in.
     local buckets = {}
 
+    --- Inventories that refuse everything offered to them.
+    local refusingAdds = {}
+
     --- Every id this fixture knows to be a CONTAINER rather than a stash,
     --- so the reads above can tell the two apart.
     local containerKeys = {}
@@ -167,6 +170,12 @@ local function newServer(ids, mutate, extra, opts)
             return out
         end,
         AddItem = function(_self, id, name, count, metadata)
+            -- A PLAYER WHO CANNOT BE GIVEN ANYTHING MORE. ox_inventory refuses
+            -- by returning false when an inventory is out of slots or over
+            -- weight, and this fixture had no way to say so -- which left the
+            -- single most ordinary refusal at the exit, a full inventory,
+            -- untested.
+            if refusingAdds[id] then return false end
             local into = bucket(id)
             into[#into + 1] = { name = name, count = count, metadata = metadata }
             return true
@@ -375,6 +384,32 @@ local function newServer(ids, mutate, extra, opts)
         forgotten['crimson_arena_CID' .. src] = (on ~= false) or nil
     end
 
+    --- Makes one inventory refuse every item offered to it, the way a full
+    --- one does. `false` lets it accept again.
+    function server.refuseAdds(id, on)
+        refusingAdds[id] = (on ~= false) or nil
+    end
+
+    --- The metadata on the first item of that name inside a bag.
+    function server.bagMetaOf(key, name)
+        for _, item in ipairs(stashes[key] or {}) do
+            if item.name == name then return item.metadata end
+        end
+        return nil
+    end
+
+    --- What is in ANY stash, by its real name -- including the bag holding
+    --- stashes, which `bagContents` cannot see because that reads the
+    --- container itself.
+    function server.contentsOf(stash)
+        local names = {}
+        for _, item in ipairs(stashes[stash] or {}) do
+            names[#names + 1] = item.name .. 'x' .. tostring(item.count)
+        end
+        table.sort(names)
+        return table.concat(names, ',')
+    end
+
     --- The routing bucket a player is in right now. 0 is the open world.
     function server.bucketOf(src) return buckets[tonumber(src)] or 0 end
 
@@ -424,7 +459,11 @@ local function newServer(ids, mutate, extra, opts)
         inv[src][#inv[src] + 1] = { name = name, count = 1, metadata = { container = key } }
         stashes[key] = {}
         for _, entry in ipairs(contents or {}) do
-            stashes[key][#stashes[key] + 1] = { name = entry[1], count = entry[2] }
+            -- METADATA COMES WITH IT. An item whose identity IS its metadata
+            -- -- a phone with a number, a licence with a name -- is the case
+            -- a count of names cannot see, and a bag is exactly where people
+            -- keep those.
+            stashes[key][#stashes[key] + 1] = { name = entry[1], count = entry[2], metadata = entry[3] }
         end
     end
 
@@ -1958,6 +1997,220 @@ t.test('and a bag holding stash that comes back short says so, by count', functi
         'a player\'s bag was emptied by the arena and nothing said so')
     -- And it still does not make anything up, or take anything else.
     t.equals(server.carrying(1), INTACT .. ',police_bagx1')
+end)
+
+-- ========================================================================
+-- THE REFUSALS NOBODY HAD DRIVEN
+--
+-- A full inventory is the most ordinary refusal there is at an exit, and
+-- nothing here could say it: the fixture had no way to make ox_inventory
+-- turn an item down. Neither could it show what was sitting in a bag
+-- holding stash. Both are levers now, and these are the three cases they
+-- open up.
+-- ========================================================================
+
+t.test('an exit that cannot hand everything over keeps it, says so, and comes back for it', function()
+    local server, matchId = liveMatch({ 1, 2 })
+
+    server.refuseAdds(1)          -- their pockets are full
+    server.match.End(matchId, 'match.ended')
+    server.step(10)
+
+    t.equals(server.carrying(1), '', 'items were handed to somebody who could not take them')
+    t.equals(server.stashed(1), 'ammo-rifle-apx40,burgerx3,phonex1',
+        'THEIR BELONGINGS WERE DESTROYED rather than left where they were safe')
+    t.contains(server.log(), 'did not happen', 'nothing said their kit could not be returned')
+
+    -- AND THE SWEEP GOES BACK FOR IT. A refusal that is never retried is the
+    -- same as a loss with a nicer log line.
+    server.refuseAdds(1, false)
+    server.step(12)
+
+    t.equals(server.carrying(1), INTACT, 'they never got their belongings once they had room')
+    t.equals(server.stashed(1), '', 'and the stash was not emptied')
+end)
+
+t.test('a bag that will not take its contents back keeps them in the holding stash', function()
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.purgeContainer('k1')
+    server.refuseAdds('k1')        -- the bag is full and will not take them
+    server.match.End(match.id, 'match.ended')
+    server.step(10)
+
+    t.equals(server.contentsOf('crimson_arena_bag_k1'), 'radiox1',
+        'THE BAG CONTENTS WERE DESTROYED rather than left in a stash that can be opened')
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1',
+        'the rest of the exit stopped working because a bag was full')
+end)
+
+t.test('a different character on the same server id gets nothing of the last one\'s', function()
+    -- FiveM reuses server ids. Everything the door remembers is keyed on the
+    -- SERVER ID, and the only thing that says whether it still means the same
+    -- person is the citizen id. This is that guard, over both halves at once:
+    -- the belongings stash and the bag holding stash.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    t.equals(server.contentsOf('crimson_arena_bag_k1'), 'radiox1', 'the door did not take the bag contents')
+
+    -- They drop with everything still held, and their pockets stay shut so
+    -- the exit cannot empty the stash on the way out.
+    server.refuseAdds(1)
+    server.drop(1)
+    server.step(4)
+    t.equals(server.stashed(1), 'ammo-rifle-apx40,burgerx3,phonex1,police_bagx1',
+        'the fixture handed it all back before the newcomer arrived, so this proves nothing')
+
+    -- Somebody else connects onto that id.
+    server.refuseAdds(1, false)
+    server.reseat(1, 'CID999')
+    server.step(12)
+
+    t.equals(server.carrying(1), '',
+        'A NEWCOMER WAS HANDED THE PREVIOUS CHARACTER\'S BELONGINGS')
+    t.equals(server.stashed(1), 'ammo-rifle-apx40,burgerx3,phonex1,police_bagx1',
+        'the previous character\'s stash was emptied by somebody else taking their id')
+    t.equals(server.contentsOf('crimson_arena_bag_k1'), 'radiox1',
+        'and their bag contents went with it')
+end)
+
+-- ========================================================================
+-- A BAG IS NEVER EMPTIED, ON ANY WAY OUT OF A ROUND
+--
+-- The container fix is tested above on the ordinary exit. A bag does not
+-- care how the round ended, and neither should its contents -- so this
+-- section runs the same claim through every other way out there is, plus
+-- the shapes a bag itself can take: two of them at once, ten items in one,
+-- and an item whose identity is its metadata rather than its name.
+-- ========================================================================
+
+--- Opens and starts a round at the trailer park. Returns the match id.
+local function bagRound(server, ids)
+    server.fire('createMatch', ids[1], { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    for n = 2, #ids do server.fire('joinMatch', ids[n], { matchId = match.id }) end
+    for _, src in ipairs(ids) do server.fire('setReady', src, { ready = true }) end
+    server.step(6)
+    return match.id
+end
+
+--- Every one of these purges the container mid-round, which is the failure
+--- the whole mechanism exists for: without the arena holding the contents,
+--- the bag comes back empty.
+local WAYS_OUT = {
+    { 'the round ends',        function(server, m) server.match.End(m, 'match.ended') end },
+    { 'the round is aborted',  function(server, m) server.match.Abort(m, 'match.aborted') end },
+    { 'the fighter leaves',    function(server) server.fire('leaveMatch', 1) end },
+    { 'the fighter drops',     function(server) server.drop(1) end },
+    { 'the resource stops',    function(server) server.stopResource() end },
+}
+
+for _, way in ipairs(WAYS_OUT) do
+    local label, finish = way[1], way[2]
+
+    t.test(('a bag comes back packed when %s'):format(label), function()
+        local server = newServer({ 1, 2 })
+        server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 }, { 'handcuffs', 2 } })
+
+        local matchId = bagRound(server, { 1, 2 })
+        t.equals(server.bagContents('k1'), '', 'the door did not empty the bag on the way in')
+
+        server.purgeContainer('k1')
+        finish(server, matchId)
+        server.step(12)
+
+        t.equals(server.bagContents('k1'), 'handcuffsx2,radiox1',
+            ('THE BAG WAS EMPTIED when %s'):format(label))
+        t.equals(server.contentsOf('crimson_arena_bag_k1'), '',
+            'the contents were left behind in the holding stash')
+    end)
+end
+
+t.test('two bags on one player never pour into each other', function()
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'ka', { { 'radio', 1 } })
+    server.giveBag(1, 'police_bag', 'kb', { { 'handcuffs', 2 } })
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.purgeContainer('ka')
+    server.purgeContainer('kb')
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.bagContents('ka'), 'radiox1', 'the first bag came back with the wrong things')
+    t.equals(server.bagContents('kb'), 'handcuffsx2', 'the second bag came back with the wrong things')
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1,police_bagx1', 'they lost or gained a bag')
+end)
+
+t.test('and an item whose identity is its metadata keeps it inside a bag', function()
+    -- A count of names cannot see this, and a bag is exactly where people
+    -- keep the things it matters for.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'phone', 1, { number = '555-REAL' } } })
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.purgeContainer('k1')
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    local meta = server.bagMetaOf('k1', 'phone')
+    t.isNotNil(meta, 'the phone did not come back to the bag at all')
+    t.equals(meta.number, '555-REAL', 'THEY GOT SOMEBODY ELSE\'S PHONE BACK')
+end)
+
+t.test('and ten items in one bag all come back', function()
+    local server = newServer({ 1, 2 })
+    local stuff = {}
+    for n = 1, 10 do stuff[n] = { 'item' .. n, n } end
+    server.giveBag(1, 'police_bag', 'k1', stuff)
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.purgeContainer('k1')
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    local back = {}
+    for _, entry in ipairs(stuff) do
+        if not server.bagContents('k1'):find(entry[1] .. 'x' .. entry[2], 1, true) then
+            back[#back + 1] = entry[1]
+        end
+    end
+    t.equals(table.concat(back, ','), '', 'these did not come back to the bag')
+end)
+
+t.test('CONTROL: with the door switched off entirely, the bag is never touched', function()
+    -- stripOnEntry off means no stow, so no hold and no refill. The bag must
+    -- travel exactly as it is -- and nothing may be left in a holding stash
+    -- for a round that never took anything.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Loadouts.inventory.stripOnEntry = false
+    end)
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+
+    local matchId = bagRound(server, { 1, 2 })
+    t.equals(server.bagContents('k1'), 'radiox1', 'the door emptied a bag it was told not to touch')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.bagContents('k1'), 'radiox1')
+    t.equals(server.contentsOf('crimson_arena_bag_k1'), '', 'it held contents for a round that never stripped')
 end)
 
 os.exit(t.summary())

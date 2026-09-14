@@ -309,6 +309,67 @@ four -- anything in their own subject that touches instancing was being asked of
 that had none. All four now model buckets properly and all four still pass, so nothing was
 hiding behind it; they are simply faithful now instead of inert.
 
+### 3h. The refusals nobody had driven, and four more attacks
+
+**Two fixture capabilities were missing, and one of them hid the most ordinary failure
+there is.** Nothing in the door suite could make ox_inventory turn an item *down* -- so **a
+full inventory at the exit**, which is the commonest refusal a real server produces, had
+never been driven. Nor could anything read a bag holding stash by name. Both are levers now,
+and three tests came out of them, each proved by inverting a different guard:
+
+- **An exit that cannot hand everything over** keeps it in the stash, says so, and the sweep
+  comes back for it the moment the player has room. Nothing is destroyed to make space.
+- **A bag that will not take its contents back** leaves them in the holding stash rather
+  than dropping them on the floor of a failed refill.
+- **A different character on the same server id gets nothing of the last one's** -- neither
+  the belongings stash nor the bag contents. FiveM reuses server ids, and everything the
+  door remembers is keyed on one.
+
+**Four more money and betting attacks, all already refused:**
+
+| attack | outcome |
+|---|---|
+| Back both fighters in one match, harvesting other punters' stakes risk-free | refused -- "One side-bet per match. Yours is down." |
+| Back a fighter, then join that match yourself | refused -- `error.bet_then_join` |
+| Back a fighter who then walks out of the lobby | bet returned, nothing stranded |
+| Settle the side-bets, then destroy the lobby | money conserved either way |
+
+Each refusal was already pinned by an existing test, so nothing new was written for them.
+The money side genuinely is in better shape than the inventory side was.
+
+**Two more probe premises were wrong before the code was**, which is worth recording because
+it keeps happening and is the main way this work produces false alarms. The character-reuse
+probe swapped the character record without firing a disconnect, so the player was still
+flagged as being in the arena and the sweep correctly refused to touch them -- that read as
+"a returning player never gets their kit back". And an economy delta measured over wallets
+reads escrowed money as missing, so a host still sitting in their own lobby with a stake in
+looked like a 1,000 leak. Neither was real. **Print the state and check the premise before
+calling anything a defect.**
+
+### 3i. A bag is never emptied, on ANY way out of a round
+
+The container fix was tested on the ordinary exit. A bag does not care how the round ended
+and neither should its contents, so the same claim now runs through **every** other way out
+-- the round ending, the round being aborted, the fighter leaving, the fighter dropping, and
+the resource stopping mid-round -- each with the container purged mid-round, which is the
+failure the whole mechanism exists for. Plus the shapes a bag itself can take:
+
+- **Two bags on one player** never pour into each other.
+- **An item whose identity is its metadata** -- a phone with a number -- keeps it inside a
+  bag. A count of names cannot see that, and a bag is exactly where people keep the things
+  it matters for.
+- **Ten items in one bag** all come back.
+- **With the door switched off entirely** (`stripOnEntry = false`) the bag is never touched,
+  and nothing is left behind in a holding stash for a round that never stripped.
+
+Disabling the custody makes **seventeen** tests fire, and the conservation one names it item
+by item: `handcuffs 2 -> 0; radio 1 -> 0`.
+
+The powergaming question for a bag is settled separately and was re-checked here: a fighter
+cannot move anything into or out of one mid-round, because the swapItems hook refuses every
+move whose other end is not their own inventory and a container's id is not their server id.
+So nothing can be hidden in a bag during a round, and nothing can be taken out of one.
+
 ### 4. And no match duplicates anything, asserted rather than argued
 
 The general form of every defect above is "it is in two places now", and a test that looks

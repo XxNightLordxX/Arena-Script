@@ -1753,17 +1753,35 @@ end
 --- Config.Teams.autoAssignIfUnchosen is applied at start rather than at join
 --- time on purpose: "smallest team" means smallest when the fighting starts,
 --- not smallest when the first player wandered in.
+---
+--- WHO IT PLACED COMES BACK WITH IT, so a refusal further down Begin can put
+--- them back. This function is not the last word on whether the round starts
+--- -- CanStartMatch and arenaIsFree are still to come -- and leaving somebody
+--- on a side after a start that did not happen is a commitment they never
+--- made. What it cost: a host pressing "Start Match Now" before the second
+--- player arrived was told 'error.not_enough_players' and was silently put on
+--- Crimson, with their tile lit and their roster row beside it. Worse than
+--- cosmetic, because the placement then SHAPES the next attempt: the second
+--- player picks the host's side to be with them, and a lobby that would have
+--- begun as a 1v1 -- the host auto-placed on the empty side -- is refused
+--- 'error.need_two_teams' instead.
 --- @param match table
 --- @return boolean ok -- false only when the setting is off and somebody has no side
+--- @return table placed -- the players this call gave a side to, in order
 local function assignMissingTeams(match)
-    if not Arena.ModeUsesTeams(match.modeKey) then return true end
+    if not Arena.ModeUsesTeams(match.modeKey) then return true, {} end
 
     local players = ArenaLobby.PlayerArray(match)
-    local assigned = 0
+    local assigned, placed = 0, {}
     for _, player in ipairs(players) do
         if not Arena.GetTeamByKey(player.team) then
-            if Config.Teams.autoAssignIfUnchosen == false then return false end
+            -- NOTHING HAS BEEN WRITTEN YET ON THIS PATH. The setting being
+            -- off means this returns on the FIRST player without a side,
+            -- before assigning anybody -- so the empty list is the truth and
+            -- not an omission.
+            if Config.Teams.autoAssignIfUnchosen == false then return false, placed end
             player.team = Arena.SuggestTeam(players)
+            placed[#placed + 1] = player
             assigned = assigned + 1
         end
     end
@@ -1780,10 +1798,12 @@ local function assignMissingTeams(match)
     for _, key in ipairs(order) do
         parts[#parts + 1] = ('%s %d'):format(key, counts[key])
     end
-    ArenaDebug('teams: match %s starts %s (%d assigned, %d chose their own). Anyone alone on a side has no teammate to outline.',
+    -- "WOULD START", not "starts". Two gates below this one can still turn
+    -- the start down, and everything above is put back when they do.
+    ArenaDebug('teams: match %s would start %s (%d assigned, %d chose their own). Anyone alone on a side has no teammate to outline.',
         tostring(match.id), table.concat(parts, ' v '), assigned, #players - assigned)
 
-    return true
+    return true, placed
 end
 
 local function goLive(matchId)
@@ -1956,16 +1976,32 @@ function ArenaMatch.Begin(matchId, requestedBy)
         return false, 'error.start_held'
     end
 
-    if not assignMissingTeams(match) then return false, 'error.no_team_chosen' end
+    local teamsOk, placed = assignMissingTeams(match)
+    if not teamsOk then return false, 'error.no_team_chosen' end
+
+    -- AND PUT THEM BACK IF THE START DOES NOT HAPPEN. Read the note above
+    -- assignMissingTeams: a side nobody chose, on a round that never began,
+    -- is both a lie on their screen and a constraint on the next attempt.
+    -- Everything above this line already leaves the roster alone on a
+    -- refusal, and says so; these two are the ones that did not.
+    local function unplace()
+        for _, player in ipairs(placed) do player.team = nil end
+    end
 
     local ok, reason = Arena.CanStartMatch({
         arenaKey = match.arenaKey,
         modeKey = match.modeKey,
         players = ArenaLobby.PlayerArray(match),
     })
-    if not ok then return false, reason end
+    if not ok then
+        unplace()
+        return false, reason
+    end
 
-    if not arenaIsFree(match) then return false, 'error.arena_in_use' end
+    if not arenaIsFree(match) then
+        unplace()
+        return false, 'error.arena_in_use'
+    end
 
     local countdown = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
     match.state = 'countdown'

@@ -331,4 +331,174 @@ t.test('and a lobby whose host stays keeps the title it was made with', function
         'a guest leaving rewrote the title')
 end)
 
+-- ========================================================================
+-- A START THAT DOES NOT HAPPEN LEAVES THE ROSTER ALONE
+--
+-- ArenaMatch.Begin auto-places anybody who has not picked a side, so the
+-- smallest team is smallest WHEN THE FIGHTING STARTS rather than when the
+-- first player wandered in. That is right, and it ran before two gates that
+-- can still turn the start down -- so a start that never happened committed
+-- players to sides they never chose.
+--
+-- Not merely cosmetic. The placement SHAPES THE NEXT ATTEMPT: a host frozen
+-- onto a side is a side the second player can then join, and a lobby that
+-- would have begun as a 1v1 -- the host auto-placed onto the empty side --
+-- is refused 'error.need_two_teams' instead.
+--
+-- Begin's other refusals already say in their own comments that a refusal
+-- must leave the roster exactly as it found it. These two did not.
+-- ========================================================================
+
+--- A team-deathmatch lobby with `count` fighters in it, none of whom has
+--- picked a side.
+local function tdmLobby(count, mutate)
+    local s = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 }, mutate)
+    local matchId, err = s.lobby.Create(1, anArena(s), 'tdm', nil, nil, nil, nil)
+    t.isNotNil(matchId, 'the team match could not be created: ' .. tostring(err))
+    for src = 2, count do
+        t.isTrue(s.lobby.Join(src, matchId, nil, nil),
+            ('fighter %d could not join'):format(src))
+    end
+
+    local match = s.lobby.Get(matchId)
+    for _, player in pairs(match.players) do player.team = nil end
+
+    s.admins = {}
+    s.env.ArenaIsAdmin = function(src) return s.admins[src] == true end
+    return s, matchId
+end
+
+t.test('THE DEFECT: a start refused for too few players leaves nobody on a side', function()
+    -- The host presses "Start Match Now" before the second player arrives.
+    -- They never touched the team picker.
+    local s, matchId = tdmLobby(1)
+
+    local ok, reason = s.match.Begin(matchId, 1)
+    t.isFalse(ok, 'a one-player team match started')
+    t.equals(reason, 'error.not_enough_players')
+
+    t.isNil(s.lobby.Get(matchId).players[1].team,
+        'A REFUSED START PUT THE HOST ON A SIDE THEY NEVER CHOSE')
+    t.isNil(s.rowFor(1, 1).team, 'and the panel was shown it')
+end)
+
+t.test('and neither does one refused because the arena is already in use', function()
+    -- The auto-start path reaches this with no client-side gate in front of
+    -- it: two players tick Ready, Begin fires, the arena is busy.
+    local s, matchId = tdmLobby(2)
+
+    -- A second lobby holding the same ground, live.
+    local other = s.lobby.Create(3, anArena(s), 'tdm', nil, nil, nil, nil)
+    t.isNotNil(other, 'the second lobby could not be created')
+    s.lobby.Get(other).state = 'live'
+
+    local ok, reason = s.match.Begin(matchId, 1)
+    t.isFalse(ok, 'a match started on ground another round is being fought on')
+    t.equals(reason, 'error.arena_in_use')
+
+    local match = s.lobby.Get(matchId)
+    t.isNil(match.players[1].team, 'A REFUSED START PUT THE HOST ON A SIDE')
+    t.isNil(match.players[2].team, 'and the guest with them')
+end)
+
+t.test('CONTROL: a start that DOES happen still places everybody', function()
+    -- Without this the two above pass just as well against a Begin that
+    -- never assigns anybody, which would break the rule they are guarding.
+    local s, matchId = tdmLobby(2)
+
+    local ok, reason = s.match.Begin(matchId, 1)
+    t.isTrue(ok, 'a startable team match was refused: ' .. tostring(reason))
+
+    local match = s.lobby.Get(matchId)
+    t.isNotNil(match.players[1].team, 'a started team match left the host with no side')
+    t.isNotNil(match.players[2].team, 'and the guest with none either')
+    t.isTrue(match.players[1].team ~= match.players[2].team,
+        'both fighters were put on the same side of a two-player team match')
+end)
+
+t.test('and a side somebody CHOSE is never taken off them by a refusal', function()
+    -- The rollback undoes this call's own placements and nothing else.
+    local s, matchId = tdmLobby(1)
+    local chosen = s.env.Arena.GetEnabledTeams()[2].key
+    s.lobby.Get(matchId).players[1].team = chosen
+
+    t.isFalse(s.match.Begin(matchId, 1), 'a one-player team match started')
+    t.equals(s.lobby.Get(matchId).players[1].team, chosen,
+        'a refused start wiped a side the player had picked themselves')
+end)
+
+-- ========================================================================
+-- AND A RULES REWRITE DOES NOT MINT A ROW SetReady WOULD REFUSE
+-- ========================================================================
+
+--- A lobby a host can actually rewrite: no stake to lock the rules behind,
+--- and no auto-start to run the round out from under the test.
+--- @param autoAssign boolean
+local function editableLobby(autoAssign)
+    return lobbyOfTwo(function(config)
+        config.Teams.autoAssignIfUnchosen = autoAssign
+        -- ArenaLobby.UpdateMatch refuses a mode change once money is riding
+        -- on the result -- 'error.rules_locked_by_stakes' -- which is its own
+        -- rule and not the one under test here.
+        config.Betting.enabled = false
+        config.Betting.entryFee.enabled = false
+        -- And two ticked boxes would otherwise START the round, which makes
+        -- every assertion below 'error.match_in_progress'.
+        config.Match.autoStartWhenAllReady = false
+    end)
+end
+
+t.test('THE DEFECT: switching a readied FFA lobby to teams unticks the host too', function()
+    -- SetReady refuses 'error.pick_a_team' to anybody ticking Ready in a
+    -- team mode with no side, while autoAssignIfUnchosen is off. Changing the
+    -- mode wipes teams and deliberately keeps the HOST's tick -- they wrote
+    -- the change, they know what it is -- which produced exactly the row
+    -- SetReady will not mint.
+    --
+    -- What it cost: the guest picks a side and readies, the auto-start fires,
+    -- Begin refuses 'error.no_team_chosen', and BOTH players are told
+    -- somebody has not picked a side -- while the one player who has to act
+    -- is the one whose roster row says they are done.
+    local s, matchId = editableLobby(false)
+
+    t.isTrue(s.lobby.SetReady(1, true), 'the host could not ready up in a free-for-all')
+    t.isTrue(s.lobby.Get(matchId).players[1].ready, 'the tick did not stick')
+
+    local ok, reason = s.lobby.UpdateMatch(1, { matchId = matchId, modeKey = 'tdm' })
+    t.isTrue(ok, 'the mode could not be changed: ' .. tostring(reason))
+
+    local match = s.lobby.Get(matchId)
+    t.isNil(match.players[1].team, 'the mode change did not wipe the sides')
+    t.isFalse(match.players[1].ready == true,
+        'THE HOST IS READY IN A TEAM MODE WITH NO SIDE -- a row SetReady refuses to mint')
+
+    -- AND THEY CAN GET BACK TO IT THE ORDINARY WAY.
+    local retick, why = s.lobby.SetReady(1, true)
+    t.isFalse(retick, 'SetReady accepted the very row this test says it refuses')
+    t.equals(why, 'error.pick_a_team', 'and it refused for the wrong reason')
+end)
+
+t.test('and with auto-assignment ON the host keeps their tick, as the rule says', function()
+    -- The exemption is deliberate and is not being taken away. On the shipped
+    -- config Begin places them, so the row is one they could have reached.
+    local s, matchId = editableLobby(true)
+
+    t.isTrue(s.lobby.SetReady(1, true), 'the host could not ready up')
+    t.isTrue(s.lobby.UpdateMatch(1, { matchId = matchId, modeKey = 'tdm' }))
+
+    t.isTrue(s.lobby.Get(matchId).players[1].ready,
+        'the host lost a tick the rule says they keep')
+end)
+
+t.test('and a rewrite that changes no mode leaves every tick alone', function()
+    local s, matchId = editableLobby(false)
+
+    t.isTrue(s.lobby.SetReady(1, true))
+    t.isTrue(s.lobby.SetReady(2, true))
+    t.isTrue(s.lobby.UpdateMatch(1, { matchId = matchId, lives = 2 }))
+
+    local match = s.lobby.Get(matchId)
+    t.isTrue(match.players[1].ready, 'a lives change unticked the host')
+end)
+
 os.exit(t.summary())

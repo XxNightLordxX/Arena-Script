@@ -1861,10 +1861,32 @@ function ArenaLobby.UpdateMatch(src, data)
     -- the change, they know what it is. Only an ACTUAL change does this --
     -- ruleChanged, not the press of Apply -- so re-applying the same form
     -- disturbs nobody.
+    --
+    -- AND THE HOST'S EXEMPTION STOPS AT A STATE SetReady WOULD REFUSE.
+    -- SetReady will not let anybody tick Ready in a team mode with no side
+    -- picked while autoAssignIfUnchosen is off -- 'error.pick_a_team' -- and
+    -- wiping teams underneath a host who is already ticked minted exactly
+    -- that row through the back door. What it cost: the host readies in a
+    -- free-for-all, edits the mode to team deathmatch, and their own tick
+    -- survives with their side gone. The guest picks a side, readies, the
+    -- auto-start fires, and Begin refuses 'error.no_team_chosen' -- so BOTH
+    -- players are told somebody has not picked a side while the one player
+    -- who has to act is the one whose roster row says they are done. Only
+    -- their own Ready toggle names them, and there is no reason to tick a
+    -- box that is already ticked.
+    --
+    -- Narrow on purpose: only where the wipe actually leaves them in a state
+    -- they could not have reached themselves. Everywhere else the host keeps
+    -- their tick, which is the rule above and is not being changed.
+    local needsSide = teamsChanged
+        and Arena.ModeUsesTeams(modeKey)
+        and Config.Teams.autoAssignIfUnchosen == false
+
     for _, player in pairs(match.players) do
         player.lives = lives
         if teamsChanged then player.team = nil end
         if ruleChanged and player.src ~= match.hostSource then player.ready = false end
+        if needsSide then player.ready = false end
     end
 
     ArenaLobby.Broadcast()

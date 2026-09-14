@@ -927,6 +927,101 @@ t.test('POWERGAMING: walking out of a live round does not turn you into a specta
     t.equals(s.qbx.players[2].money.cash, 50000, 'money moved on a refused bet')
 end)
 
+--- The setup the three tests below share: a live round, a grace window that
+--- is genuinely open, and one fighter about to walk out of it.
+--- @return table server, string matchId
+local function liveRoundWithGrace()
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.entryFee.enabled = false
+        config.Betting.spectatorBets = config.Betting.spectatorBets or {}
+        config.Betting.spectatorBets.enabled = true
+        config.Betting.spectatorBets.closeAfterStartSeconds = 60
+    end)
+    local matchId = s.lobby.Create(1, anArena(s), nil, 0, nil, nil, 'cash')
+    t.isNotNil(matchId, 'the match could not be created')
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'), 'the second fighter could not join')
+
+    local match = s.lobby.Get(matchId)
+    match.state = 'live'
+    match.startsAt = os.time()
+
+    return s, matchId
+end
+
+t.test('THE DEFECT: the walked-out flag was a SEAT, and a seat is handed to whoever connects next', function()
+    -- A server id is not a person. It is a slot the framework reuses the
+    -- moment it is free, and this was the only gate in the file that did not
+    -- ask `betIsHeldBy` who is holding it now.
+    --
+    -- THE STRANGER'S HALF. Player 2 quits the live round. The next player to
+    -- connect is handed id 2 -- a different character, who has never been
+    -- near this match -- and their bet comes back refused, with a message
+    -- about a book that is open for everybody else in the same instant.
+    local s, matchId = liveRoundWithGrace()
+    local match = s.lobby.Get(matchId)
+
+    s.betting.MarkWalkedOut(matchId, 2)
+    match.players[2] = nil
+
+    -- The framework hands id 2 to somebody else entirely.
+    s.qbx.players[2].citizenid = 'CID999'
+    s.qbx.players[2].name = 'Somebody Else'
+
+    local ok, err = s.betting.PlaceSpectatorBet(2, matchId, 1, 2000, 'cash')
+    t.isTrue(ok, 'A PLAYER WHO HAS NEVER BEEN NEAR THIS MATCH WAS REFUSED: ' .. tostring(err))
+
+    -- THE CONTROL, in the same instant, from a seat nobody walked out of.
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'),
+        'the window is shut anyway, so the assertion above proves nothing')
+end)
+
+t.test('and the walker is still refused on a FRESH seat, which is the half that costs money', function()
+    -- The mirror, and the one the rule was written for. The same character
+    -- reconnects on a new id and asks for the spectator ceiling on the round
+    -- they abandoned seconds ago -- precisely the "a wager you can cancel
+    -- once it is going badly" trade the flag exists to close.
+    local s, matchId = liveRoundWithGrace()
+    local match = s.lobby.Get(matchId)
+
+    local walker = s.qbx.players[2].citizenid
+    s.betting.MarkWalkedOut(matchId, 2)
+    match.players[2] = nil
+
+    -- They come back on id 4.
+    s.qbx.players[4].citizenid = walker
+
+    local ok, err = s.betting.PlaceSpectatorBet(4, matchId, 1, 2000, 'cash')
+    t.isFalse(ok, 'THE FIGHTER WHO WALKED OUT RECONNECTED AND WAS SOLD THE BET')
+    t.equals(err, 'error.bets_closed')
+    t.equals(s.qbx.players[4].money.cash, 50000, 'money moved on a refused bet')
+end)
+
+t.test('and the panel is told, so it stops selling a bet the server refuses', function()
+    -- THE RULE WAS RIGHT AND INVISIBLE. The roster no longer holds a walker,
+    -- so the panel saw an ordinary onlooker: it drew an enabled Place Bet
+    -- button with the stake and the account written out underneath, and the
+    -- server answered error.bets_closed on the click. Nothing on the wire
+    -- carried the one question their old seat still answers.
+    local s, matchId = liveRoundWithGrace()
+    local match = s.lobby.Get(matchId)
+
+    t.equals(#s.state(2).player.walkedOut, 0,
+        'somebody still fighting is listed as having walked out')
+
+    s.betting.MarkWalkedOut(matchId, 2)
+    match.players[2] = nil
+
+    local listed = s.state(2).player.walkedOut
+    t.equals(#listed, 1, 'the panel was not told the player walked out of anything')
+    t.equals(listed[1], matchId, 'the panel was told about the wrong match')
+
+    -- AND NOT EVERYBODY ELSE. A shared field would shut the book for the
+    -- watchers too, which is the opposite defect.
+    t.equals(#s.state(3).player.walkedOut, 0,
+        'a watcher was told THEY had walked out of the round')
+end)
+
 -- ========================================================================
 -- THE SERVER DOES NOT FUND BETS, AND THAT IS NOT A DEFAULT -- IT IS A GATE
 --

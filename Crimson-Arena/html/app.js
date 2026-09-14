@@ -3409,6 +3409,24 @@
         return !!match && playerMatchId() === match.id;
     }
 
+    /* A FIGHTER WHO WALKED OUT OF A LIVE ROUND, whom the roster no longer
+       holds.
+
+       THE DEFECT: it did not hold them, so the panel saw an ordinary
+       onlooker. The server does not -- PlaceSpectatorBet judges a departed
+       fighter against the FIGHTERS' book, which shuts the moment the round
+       goes live, precisely so that walking out is not a way to open a wager
+       you can cancel once it is going badly. The panel offered them the
+       watcher's thirty-second grace instead: an enabled Place Bet button, the
+       stake and the account written out underneath it, and `error.bets_closed`
+       from the server on the click. The rule was right and invisible.
+
+       The server now sends the list; this is the only reader. */
+    function betWalkedOutOf(match) {
+        if (!match) return false;
+        return arrayOf(player().walkedOut).indexOf(match.id) !== -1;
+    }
+
     /* THE STAKE BAND, WORKED OUT THE WAY THE SERVER WORKS IT OUT.
 
        The panel had invented a rule of its own: "max of 0 means no limit".
@@ -3994,6 +4012,25 @@
         }
 
         if (match.state === 'ended') return 'This match has finished.';
+
+        /* THE FIGHTERS' BOOK APPLIES TO A WALKER TOO, which is the rule the
+           server holds them to: PlaceSpectatorBet asks betsAreOpen with the
+           FIGHTER flag for anybody marked walked-out.
+
+           MIRRORED RATHER THAN ASSUMED -- the same field the server's own
+           answer is built from, not a flat refusal on the flag. Everything
+           else about them really is a watcher's: the stake band, the one-bet
+           limit and the own-side rule are all read as a spectator's above and
+           below, exactly as the server reads them. This is the single
+           question their old seat still answers.
+
+           Said in their own words rather than the fighters'. "The book closed
+           when this round went live" is true and reads as somebody else's
+           message to a player standing outside the fence. */
+        if (betWalkedOutOf(match) && match.fighterBetsOpen === false) {
+            return 'You walked out of this round, so the book is closed to you '
+                + 'the way it is to everybody still fighting it.';
+        }
 
         if (fighting && match.fighterBetsOpen === false) {
             return 'The book closed when this round went live.';

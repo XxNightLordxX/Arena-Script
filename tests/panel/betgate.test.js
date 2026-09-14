@@ -73,6 +73,7 @@ function snapshot(options) {
         ],
     };
     if (o.betsOpen !== undefined) match.betsOpen = o.betsOpen;
+    if (o.fighterBetsOpen !== undefined) match.fighterBetsOpen = o.fighterBetsOpen;
 
     const player = {
         serverId: SELF,
@@ -86,6 +87,7 @@ function snapshot(options) {
         team: false,
     };
     if (o.backing !== undefined) player.backing = o.backing;
+    if (o.walkedOut !== undefined) player.walkedOut = o.walkedOut;
 
     return {
         config: {
@@ -399,6 +401,83 @@ test('and still names the payout rule where it really is the pot on its own', ()
     });
     assert.strictEqual(summaryValue(panel, 'Pot goes to'), 'Winner takes all',
         'the strip ignored the payout rule on a server where it is the one that runs');
+});
+
+/*
+    A FIGHTER WHO WALKED OUT OF A LIVE ROUND.
+
+    THE DEFECT. ArenaLobby.Leave drops their roster row, so the panel saw an
+    ordinary onlooker and offered them the watcher's grace window: an enabled
+    Place Bet button, the stake and the account written out under it, and
+    `error.bets_closed` from the server on the click. The server judges a
+    departed fighter against the FIGHTERS' book -- which shut the moment the
+    round went live, precisely so that walking out is not a way to open a
+    wager you can cancel once it is going badly. The rule was right; nothing
+    on the wire carried it.
+*/
+
+test('THE DEFECT: the watcher grace is not sold to somebody who walked out of the round', () => {
+    const panel = opened({
+        state: 'live',
+        betsOpen: true,
+        fighterBetsOpen: false,
+        walkedOut: ['m1'],
+    });
+
+    assert.ok(/walked out/i.test(panel.text('bet-hint')),
+        'the panel offered the round to a player who abandoned it: '
+        + panel.text('bet-hint'));
+    assert.strictEqual(tryToBet(panel).length, 0,
+        'the panel posted a bet the server had already refused them');
+    assert.strictEqual(panel.node('bet-submit').disabled, true,
+        'and left Place Bet lit under the reason it will not work');
+});
+
+test('and a watcher in the same instant is still taken', () => {
+    /* THE CONTROL. Without it the test above passes just as well against a
+       panel that has shut the book for everybody. */
+    const panel = opened({ state: 'live', betsOpen: true, fighterBetsOpen: false });
+
+    assert.strictEqual(tryToBet(panel).length, 1,
+        'an ordinary watcher was refused inside the grace window: '
+        + panel.text('bet-hint'));
+});
+
+test('and a walker whose fighters\' book is still open is not refused either', () => {
+    /* MIRRORED, NOT ASSUMED. The panel asks the same field the server builds
+       its own answer from rather than refusing flat on the flag -- so a
+       configuration where the fighters' book is open answers the same on both
+       sides. */
+    const panel = opened({
+        state: 'lobby',
+        betsOpen: true,
+        fighterBetsOpen: true,
+        walkedOut: ['m1'],
+    });
+
+    assert.ok(!/walked out/i.test(panel.text('bet-hint')),
+        'the panel refused against a book the server would have taken: '
+        + panel.text('bet-hint'));
+});
+
+test('and walking out of a DIFFERENT match says nothing about this one', () => {
+    const panel = opened({
+        state: 'live',
+        betsOpen: true,
+        fighterBetsOpen: false,
+        walkedOut: ['someOtherMatch'],
+    });
+
+    assert.ok(!/walked out/i.test(panel.text('bet-hint')),
+        'one abandoned round shut the book on every other: ' + panel.text('bet-hint'));
+});
+
+test('and an older server that sends no list at all changes nothing', () => {
+    const panel = opened({ state: 'live', betsOpen: true, fighterBetsOpen: false });
+
+    assert.ok(!/walked out/i.test(panel.text('bet-hint')),
+        'an absent list was read as everybody having walked out: '
+        + panel.text('bet-hint'));
 });
 
 console.log('');

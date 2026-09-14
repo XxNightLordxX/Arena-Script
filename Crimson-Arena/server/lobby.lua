@@ -527,6 +527,15 @@ local function snapshotPlayer(src)
         -- wire and the panel can tell "no bet" from "not sent".
         bet = (betOn and ArenaBetting.GetSideBet(betOn, src)) or false,
         backing = ArenaBetting.MatchesBackedBy(src),
+        -- THE ROUNDS THEY WALKED OUT OF WHILE THEY WERE BEING FOUGHT.
+        --
+        -- The server judges a departed fighter's bet against the FIGHTERS'
+        -- book, not the watchers' -- see ArenaBetting.MatchesWalkedOutOf --
+        -- and nothing carried that here, so the panel offered them the
+        -- watcher's grace on the round they had just abandoned, wrote out the
+        -- stake and the account, and the server refused it. Always an array,
+        -- so the panel can tell "walked out of nothing" from "not sent".
+        walkedOut = ArenaBetting.MatchesWalkedOutOf(src),
         isHost = match ~= nil and match.hostSource == src,
         -- HOW MANY OF THEIR EDITS THIS SERVER HAS TURNED DOWN.
         --

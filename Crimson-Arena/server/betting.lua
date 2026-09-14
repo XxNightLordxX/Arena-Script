@@ -115,7 +115,39 @@ local sideSettled = {}
 --- Recorded rather than derived, because by the time MarkWalkedOut runs the
 --- roster row is already gone and nothing else remembers they were ever on
 --- it. Dropped with the match in Clear.
+---
+--- KEYED ON THE CHARACTER, NOT ON THE SEAT. It was keyed on the raw server
+--- id -- the only gate in this file that did not go through `betIsHeldBy` --
+--- and a server id is a seat the framework hands to whoever connects next.
+--- Both halves of that were wrong and in opposite directions:
+---
+---   THE STRANGER WAS REFUSED. A fighter on id 2 quits, the next player to
+---   connect is given id 2, and their bet on that round comes back
+---   `error.bets_closed` while an identical bet from id 3 in the same instant
+---   is taken. Somebody who has never been near the match, refused, with a
+---   message about a book that is open for everybody else.
+---
+---   AND THE WALKER WAS SOLD IT ANYWAY. The mirror: the same character
+---   reconnects on a fresh id, and the arena sells them the full spectator
+---   ceiling on the round they abandoned seconds earlier -- which is exactly
+---   the "a wager you can cancel once it is going badly" case this whole
+---   flag was written to close.
+---
+--- Narrow on the shipped 30-second grace and wide open on any longer one.
 local walkedOutOf = {}
+
+--- How a departed fighter is remembered, once their seat is gone.
+---
+--- The character where there is one, and the seat only where there is not --
+--- which is the same order `betIsHeldBy` reads identity in, and the reason
+--- this is a function rather than two call sites that have to agree.
+--- @param id integer
+--- @param citizenid string|nil
+--- @return string
+local function walkedOutKey(id, citizenid)
+    if Arena.IsKey(citizenid) then return 'char:' .. citizenid end
+    return 'src:' .. tostring(id)
+end
 
 --- Has this match's pot payout begun?
 ---
@@ -1826,6 +1858,33 @@ end
 --- lobbies at once.
 --- @param src any
 --- @return string[] matchIds
+--- Every match this player walked out of while it was being fought.
+---
+--- FOR THE PANEL, WHICH COULD NOT SEE THIS RULE AT ALL. PlaceSpectatorBet
+--- judges a departed fighter against the FIGHTERS' book -- see the note
+--- beside `walkedOutOf` -- and the roster no longer holds them, so the panel
+--- saw an ordinary onlooker and offered them the watcher's grace period.
+--- It drew an enabled Place Bet button, wrote out the stake and the account
+--- it would come from, and the server answered `error.bets_closed`. The rule
+--- is right; the only thing wrong with it was that it was invisible.
+---
+--- A LIST RATHER THAN A FLAG, and on the player rather than on the match,
+--- because `snapshotMatches` is built once and sent to everybody -- the
+--- answer here is different for every viewer.
+--- @param src any
+--- @return string[]
+function ArenaBetting.MatchesWalkedOutOf(src)
+    local id = serverId(src)
+    local out = {}
+    if not id then return out end
+
+    local key = walkedOutKey(id, citizenIdOf(id))
+    for matchId, walkers in pairs(walkedOutOf) do
+        if walkers[key] == true then out[#out + 1] = matchId end
+    end
+    return out
+end
+
 function ArenaBetting.MatchesBackedBy(src)
     local id = serverId(src)
     local out = {}
@@ -2033,7 +2092,7 @@ function ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)
     -- this function: the band, the own-side test and the one-bet limit are
     -- all a departed player's spectator ones. This is the single question
     -- their old seat still answers.
-    local walkedOut = (walkedOutOf[matchId] or {})[id] == true
+    local walkedOut = (walkedOutOf[matchId] or {})[walkedOutKey(id, citizenIdOf(id))] == true
 
     if not betsAreOpen(match, isFighter or walkedOut) then return false, 'error.bets_closed' end
 
@@ -2212,7 +2271,7 @@ function ArenaBetting.MarkWalkedOut(matchId, src)
     local match = lobbyMatch(matchId)
     if match and roundIsBeingFought(match) then
         walkedOutOf[matchId] = walkedOutOf[matchId] or {}
-        walkedOutOf[matchId][id] = true
+        walkedOutOf[matchId][walkedOutKey(id, citizenIdOf(id))] = true
     end
 
     local ceiling = spectatorCeiling()

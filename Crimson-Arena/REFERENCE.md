@@ -578,7 +578,7 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 33 functions
+#### `server/betting.lua` — 34 functions
 
 | Function | What it does |
 |---|---|
@@ -603,6 +603,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.GetPrizePool(matchId)` | Everything a winner of this match stands to be paid from, as one figure. |
 | `ArenaBetting.GetSideBet(matchId, src)` | One player's own side-bet on a match, or nil. |
 | `ArenaBetting.HoldsSideBet(matchId, src)` | Whether this player is holding an UNSETTLED side-bet on this match. |
+| `ArenaBetting.MatchesWalkedOutOf(src)` | Every round this player walked out of while it was being fought, so the panel stops offering them the watcher's grace on it. |
 | `ArenaBetting.MatchesBackedBy(src)` | Every match this player currently has an unsettled side-bet on, so the panel can refuse a Join the server would refuse. |
 | `ArenaBetting.HasSpectatorBet(matchId, src)` | Whether this player holds any side-bet on this match, settled or not. |
 | `ArenaBetting.SideBetTotals(matchId)` | The same money broken down as pool -> pick -> amount, so the Bets tab can show whether anybody is backing the other side. Keyed by SETTLEMENT pool (see poolKeyFor): with `betPayout.sharedPool` off the two kinds are paid out of separate pools, and a flat book would credit a bettor with money they cannot win. Built with GetSideBetPool's filter, so within one pool the parts add up. |

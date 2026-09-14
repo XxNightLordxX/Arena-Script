@@ -447,8 +447,14 @@ t.test('an idle-timeout close refunds even with refundOnCancel off', function()
     local matchId = openLobby(server, 1000, { 1, 2 })
 
     -- Aged rather than waited out: the sweep reads os.time() against the
-    -- record's own createdAt.
-    server.lobby.Get(matchId).createdAt = os.time() - 600
+    -- record's own `idleSince` -- the last time anybody did anything to this
+    -- lobby, which is seeded from createdAt and moved on by an edit. It used
+    -- to read createdAt directly; ageing only that now leaves the sweep
+    -- looking at a lobby somebody touched a moment ago. Both are set here so
+    -- this really is a lobby nobody has been near.
+    local match = server.lobby.Get(matchId)
+    match.createdAt = os.time() - 600
+    match.idleSince = match.createdAt
     server.step()
 
     t.isNil(server.lobby.Get(matchId), 'the idle lobby was never swept')

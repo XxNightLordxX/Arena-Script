@@ -133,12 +133,32 @@ local function record(stats, citizenid, name, wins, kills, earnings)
     })
 end
 
+--- The same fixture with the database explicitly OFF.
+---
+--- PINNED RATHER THAN INHERITED. Every test below that is about the
+--- in-memory path used to reach it by taking the SHIPPED default, which
+--- made each one a silent assertion about config.lua as well as about the
+--- code -- so switching Config.Database.enabled on to check that path took
+--- ten of them down with it, reading as ten conflicts where there were
+--- none. One test still asks what the shipped default IS, on purpose, and
+--- it is the only one that should care.
+--- @param mutate function? -- applied after the switch is pinned off
+--- @param control table?
+--- @return table
+local function offStats(mutate, control)
+    return newStats(function(config)
+        config.Database.enabled = false
+        if mutate then mutate(config) end
+    end, control)
+end
+
+
 -- ======================================================================
 -- THE ORDER IS THE BOARD
 -- ======================================================================
 
 t.test('DEFECT: the board is sorted by wins, best first', function()
-    local s = newStats()
+    local s = offStats()
     record(s, 'A', 'Loser', 0, 0, 0)
     record(s, 'B', 'Winner', 1, 0, 0)
 
@@ -148,7 +168,7 @@ t.test('DEFECT: the board is sorted by wins, best first', function()
 end)
 
 t.test('and kills break a tie on wins', function()
-    local s = newStats()
+    local s = offStats()
     record(s, 'A', 'Fewer', 1, 2, 0)
     record(s, 'B', 'More', 1, 9, 0)
 
@@ -156,7 +176,7 @@ t.test('and kills break a tie on wins', function()
 end)
 
 t.test('and earnings break a tie on kills', function()
-    local s = newStats()
+    local s = offStats()
     record(s, 'A', 'Poorer', 1, 3, 100)
     record(s, 'B', 'Richer', 1, 3, 900)
 
@@ -167,7 +187,7 @@ t.test('and citizenid breaks the last one, so the board is never unstable', func
     -- Without it the order comes from `pairs`, and two reads of identical
     -- data can render the panel differently -- which reads as the board
     -- being wrong rather than as the board being arbitrary.
-    local s = newStats()
+    local s = offStats()
     record(s, 'zzz', 'Last', 1, 1, 1)
     record(s, 'aaa', 'First', 1, 1, 1)
 
@@ -181,7 +201,7 @@ t.test('and citizenid breaks the last one, so the board is never unstable', func
 end)
 
 t.test('and the board is capped at leaderboardSize', function()
-    local s = newStats(function(config) config.Database.leaderboardSize = 3 end)
+    local s = offStats(function(config) config.Database.leaderboardSize = 3 end)
     for index = 1, 8 do
         record(s, ('C%d'):format(index), ('P%d'):format(index), 1, index, 0)
     end
@@ -201,13 +221,13 @@ t.test('DEFECT: with it off, EnsureSchema creates nothing', function()
     -- An operator running without a database must never find a table they
     -- did not ask for -- and calling oxmysql when it is not running is a
     -- stack trace, not a wrong number.
-    local s = newStats()
+    local s = offStats()
     t.isFalse(s.S.EnsureSchema(), 'EnsureSchema reported that it ran with the database off')
     t.equals(#s.queries, 0, 'a schema query went out with the database off')
 end)
 
 t.test('DEFECT: and Flush writes nothing', function()
-    local s = newStats()
+    local s = offStats()
     record(s, 'A', 'Somebody', 1, 5, 100)
     t.equals(s.S.Flush(), 0, 'Flush reported rows written with the database off')
     t.equals(#s.queries, 0, 'an upsert went out with the database off')
@@ -215,7 +235,7 @@ end)
 
 t.test('and the board still answers, from memory', function()
     -- The whole point: off is a working configuration, not a broken one.
-    local s = newStats()
+    local s = offStats()
     record(s, 'A', 'Somebody', 1, 5, 100)
 
     local board = names(s)
@@ -392,7 +412,7 @@ t.test('GetLeaderboard calls back exactly once, in both modes', function()
 end)
 
 t.test('and an empty board is an empty array, never nil', function()
-    local s = newStats()
+    local s = offStats()
     local rows
     s.S.GetLeaderboard(function(result) rows = result end)
     t.isNotNil(rows, 'an empty board came back as nil')
@@ -400,7 +420,7 @@ t.test('and an empty board is an empty array, never nil', function()
 end)
 
 t.test('and a caller that is not a function is refused rather than called', function()
-    local s = newStats()
+    local s = offStats()
     s.S.GetLeaderboard(nil)
     s.S.GetLeaderboard('not a function')
     t.equals(#s.queries, 0, 'a junk callback still went to the database')

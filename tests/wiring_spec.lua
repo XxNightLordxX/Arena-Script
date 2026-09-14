@@ -361,6 +361,47 @@ t.test('setLoadout: the request is REBUILT -- 32 weapons at most, keys only, amm
     t.equals(request.supplies[1].count, 2)
 end)
 
+t.test('setLoadout: the chosen attachments survive the rebuild, and junk in them does not', function()
+    -- EVERY FIELD HERE IS REBUILT rather than passed on, which is the whole
+    -- point of loadoutArg -- and a field that is rebuilt can be rebuilt
+    -- WRONG. A mutation that simply dropped `attachments` on the way through
+    -- failed nothing: attachments_spec proves the rules about a choice, and
+    -- every one of its tests calls Arena directly, so all of them stayed
+    -- green while the choice stopped arriving at all.
+    local s = newFunnel()
+    s.answers['ArenaLobby.SetLoadout'] = function() return true end
+
+    s.fire('setLoadout', 2, { weapons = {
+        { key = 'carbine', ammo = 30, attachments = { 'scope', 'grip' } },
+        { key = 'pistol',  ammo = 12, attachments = {} },
+        { key = 'bat' },
+        { key = 'smg', ammo = 30, attachments = { 'scope', 42, {}, true, 'grip' } },
+    } })
+
+    local request = s.last('ArenaLobby', 'SetLoadout').args[2]
+
+    t.equals(#request.weapons[1].attachments, 2, 'the ticked attachments did not arrive')
+    t.equals(request.weapons[1].attachments[1], 'scope')
+    t.equals(request.weapons[1].attachments[2], 'grip')
+
+    -- EMPTY IS AN ANSWER: a player who took everything off. It must not be
+    -- read as "they said nothing", which is what makes the server fit the
+    -- default set.
+    t.isNotNil(request.weapons[2].attachments, 'an empty choice was dropped entirely')
+    t.equals(#request.weapons[2].attachments, 0, 'an empty choice came back non-empty')
+
+    -- AND SAYING NOTHING IS ALSO AN ANSWER, the other one.
+    t.equals(request.weapons[3].attachments, nil,
+        'a pick that named no attachments was given a list it never sent')
+
+    -- Junk stops the list at the first thing that is not a key, exactly the
+    -- way the weapon list itself stops at the first entry that is not a
+    -- table. Nothing non-string travels.
+    for _, kind in ipairs(request.weapons[4].attachments or {}) do
+        t.equals(type(kind), 'string', ('a %s reached the server as an attachment'):format(type(kind)))
+    end
+end)
+
 t.test('setLoadout: a stranger\'s junk gets a refusal and NO state push; a drafter gets their draft back', function()
     local s = newFunnel()
     s.fire('setLoadout', 2, 'junk')

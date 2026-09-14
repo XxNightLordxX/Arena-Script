@@ -28,9 +28,9 @@
      1210   Permissions   Who may open a match, who may force-stop one
      1296   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1730   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2178   Database      Optional: leaderboard, and what players still owe the arena
-     2188   Webhook       Optional: a Discord line per finished match
-     2220   Dispatch      Optional: keeping police and EMS out of the arena
+     2217   Database      Optional: leaderboard, and what players still owe the arena
+     2227   Webhook       Optional: a Discord line per finished match
+     2259   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1746,6 +1746,45 @@ Config.Loadouts = {
     -- Raise it for loadout-style play. Drop it to 1 for a duel server.
     -- 0 MEANS NO LIMIT, the same as every other count in this file.
     slots = 4,
+
+    -- ==================================================================
+    -- ATTACHMENTS, FITTED FOR YOU
+    --
+    -- NOBODY PICKS AN ATTACHMENT ON A GUN. Every weapon the arena hands out
+    -- arrives already fitted with the kinds listed below, wherever that
+    -- particular weapon can take them. There is nothing to set per weapon
+    -- and nothing for a player to click: a carbine comes with its scope and
+    -- its grip, a pistol comes with what a pistol can take, and a weapon
+    -- that takes none of it is handed over plain.
+    --
+    -- WHICH COMPONENT EACH WEAPON GETS is in config.weapons.lua, under
+    -- `Config.Loadouts.weaponAttachments`, read out of the game's own weapon
+    -- data. You do not need to touch it to use this.
+    --
+    -- TO CHANGE WHAT EVERYTHING COMES WITH, edit the one list below. Delete
+    -- a word and no weapon is fitted with that kind again; add one back and
+    -- every weapon that can take it gets it. The kinds are:
+    --
+    --   'scope'        a sight. Never a thermal or night scope -- those are
+    --                  left out of the data on purpose.
+    --   'extendedclip' a bigger magazine. Capacity only.
+    --   'grip'         a foregrip. Steadier.
+    --   'muzzle'       a brake or compensator. Less climb.
+    --   'barrel'       a heavy barrel, on the Mk2 weapons that have one.
+    --   'flashlight'   a torch on the rail.
+    --   'suppressor'   SHIPS OFF, and on purpose. A suppressed shot does not
+    --                  put the shooter on the minimap, which is a real
+    --                  change to how a round is fought rather than a change
+    --                  to the gun. Add the word if you want that.
+    --
+    -- A player is never charged for any of this and never keeps it: the
+    -- attachment is part of the weapon the arena issues and it goes back out
+    -- the door with the weapon.
+    -- ==================================================================
+    attachments = {
+        enabled = true,
+        fit = { 'scope', 'extendedclip', 'grip', 'muzzle', 'barrel', 'flashlight' },
+    },
 
     -- SWITCH A WHOLE KIND OFF. The weapons stay in config.weapons.lua ready
     -- to switch back on, and the picker drops the section rather than showing

@@ -464,6 +464,59 @@ t.test('a weapon filed under melee is melee even if its ammo block says otherwis
 end)
 
 -- ======================================================================
+-- ATTACHMENTS
+-- ======================================================================
+
+t.test('a weapon carries the attachments it can take, across the seam', function()
+    -- THE SEAM, AND NOTHING WAS WATCHING IT. attachments_spec proves the
+    -- rules and the panel tests prove the chips, but both seed their own
+    -- data -- so a mutation that made server/lobby.lua send an EMPTY list
+    -- for every weapon failed neither. The picker would have drawn nothing,
+    -- on every gun, and the whole feature would have been invisible with a
+    -- green suite behind it.
+    local server = newArena()
+    local Arena = server.Arena
+    local loadouts = server.loadouts()
+
+    local checked, withAny = 0, 0
+    for _, weapon in ipairs(Arena.GetEnabledWeapons()) do
+        local sent = snapWeapon(loadouts, weapon.key)
+        t.isNotNil(sent, ('%s never reached the panel'):format(weapon.key))
+        t.equals(type(sent.attachments), 'table',
+            ('%s: attachments is not a list'):format(weapon.key))
+
+        -- WHAT THE SERVER SENDS AND WHAT THE SERVER FITS ARE ONE ANSWER.
+        -- The picker may only ever offer what Arena.AttachmentOptionsFor
+        -- allows, because that is the function the fitting reads too.
+        local allowed = Arena.AttachmentOptionsFor(weapon.weapon)
+        t.equals(#sent.attachments, #allowed,
+            ('%s: the panel was offered %d attachment(s) and the server allows %d')
+                :format(weapon.key, #sent.attachments, #allowed))
+
+        for index, option in ipairs(sent.attachments) do
+            t.equals(option.key, allowed[index].key,
+                ('%s: offered %s where the server allows %s')
+                    :format(weapon.key, tostring(option.key), tostring(allowed[index].key)))
+            t.isTrue(Arena.IsKey(option.label),
+                ('%s: %s has no label to draw'):format(weapon.key, tostring(option.key)))
+
+            -- AND NEVER A COMPONENT NAME. Which component a kind means is
+            -- the server's business; a client that was told would be a
+            -- client that could ask.
+            t.isNil(tostring(option.key):upper():find('COMPONENT_', 1, true),
+                ('%s: a COMPONENT name crossed to the panel'):format(weapon.key))
+        end
+
+        checked = checked + 1
+        if #sent.attachments > 0 then withAny = withAny + 1 end
+    end
+
+    t.isTrue(checked > 0, 'no weapons were checked at all')
+    t.isTrue(withAny > 0,
+        'not one weapon offered an attachment -- the panel would draw no picker anywhere')
+end)
+
+-- ======================================================================
 -- AMMO TYPES
 -- ======================================================================
 

@@ -1097,15 +1097,145 @@ end
 --- was issued as though ammo items were switched off, the whole pick sat in
 --- the magazine and no loose rounds were ever handed over -- so nothing was
 --- recorded as issued, and the exit had nothing to take back.
+--- What each kind of attachment is called on screen.
+---
+--- HERE RATHER THAN IN CONFIG, because these seven are the kinds the weapon
+--- data is classified into -- renaming one would change the word and not
+--- what it fits. What a server CHOOSES from is Config.Loadouts.attachments.
+local ATTACHMENT_LABELS = {
+    scope = 'Scope',
+    extendedclip = 'Extended Mag',
+    grip = 'Grip',
+    muzzle = 'Muzzle',
+    barrel = 'Heavy Barrel',
+    flashlight = 'Flashlight',
+    suppressor = 'Suppressor',
+}
+
+--- Which kinds of attachment this server allows at all, in order.
+--- @return string[]
+function Arena.AttachmentKinds()
+    local block = (Config.Loadouts or {}).attachments
+    if type(block) ~= 'table' or block.enabled ~= true then return {} end
+
+    local out = {}
+    for _, kind in ipairs(type(block.fit) == 'table' and block.fit or {}) do
+        if Arena.IsKey(kind) then out[#out + 1] = kind end
+    end
+    return out
+end
+
+--- The components one weapon is fitted with, given what the operator asked
+--- for and what that weapon can actually take.
+---
+--- FITTED, NOT PICKED. Nobody chooses an attachment on a gun: the kinds come
+--- from one list in config.lua and the component for each kind comes from
+--- the weapon's own row in config.weapons.lua. A weapon with no row, or no
+--- entry for a kind, is simply handed over without it -- which is why this
+--- can be switched on for a whole server without auditing 96 weapons.
+---
+--- A COMPONENT IS ONLY EVER OFFERED TO THE WEAPON IT BELONGS TO. The table
+--- is keyed by weapon name, so a pistol suppressor cannot reach a rifle.
+--- That matters more than it looks: a component fitted to a weapon that does
+--- not accept it raises nothing at all, it just silently does not appear.
+--- @param weaponName string
+--- @return string[]
+--- What this weapon may be OFFERED, for the picker.
+---
+--- RESOLVED THROUGH THE SAME TABLE THE SERVER FITS FROM, exactly the way the
+--- ammo types are. The picker therefore cannot show an attachment the server
+--- would refuse, and a weapon that takes none shows no attachment row at all
+--- rather than an empty one.
+--- @param weaponName string
+--- @return table[] -- { { key = 'scope', label = 'Scope' }, ... }
+function Arena.AttachmentOptionsFor(weaponName)
+    if not Arena.IsKey(weaponName) then return {} end
+
+    local map = (Config.Loadouts or {}).weaponAttachments
+    local row = type(map) == 'table' and map[weaponName] or nil
+    if type(row) ~= 'table' then return {} end
+
+    local out = {}
+    for _, kind in ipairs(Arena.AttachmentKinds()) do
+        if Arena.IsKey(row[kind]) then
+            out[#out + 1] = { key = kind, label = ATTACHMENT_LABELS[kind] or kind }
+        end
+    end
+    return out
+end
+
+--- The components one weapon is fitted with.
+---
+--- `chosen` IS A LIST OF KIND KEYS -- 'scope', 'grip' -- AND NEVER COMPONENT
+--- NAMES. That is the whole security of this. A client picks from seven
+--- words; which component each word means for this particular weapon is
+--- decided here, from the operator's own table. A hostile client cannot ask
+--- for a component at all, let alone one belonging to a different weapon.
+---
+--- NIL MEANS "WHATEVER THE OPERATOR SET", not "nothing". The gun-game ladder
+--- and every other caller that deals in no player choice keeps behaving
+--- exactly as it did, and a loadout saved before any of this existed still
+--- arrives fitted the way its server is configured.
+--- @param weaponName string
+--- @param chosen string[]|nil -- kind keys ticked, or nil for this server's default
+--- @return string[]
+function Arena.AttachmentsFor(weaponName, chosen)
+    if not Arena.IsKey(weaponName) then return {} end
+
+    local kinds = Arena.AttachmentKinds()
+    if #kinds == 0 then return {} end
+
+    local map = (Config.Loadouts or {}).weaponAttachments
+    local row = type(map) == 'table' and map[weaponName] or nil
+    if type(row) ~= 'table' then return {} end
+
+    -- WHAT WAS TICKED, or nil when nobody was asked. An EMPTY list is a real
+    -- answer and not the same as nil: it is a player who took everything off.
+    local ticked = nil
+    if type(chosen) == 'table' then
+        ticked = {}
+        for _, kind in ipairs(chosen) do
+            if Arena.IsKey(kind) then ticked[kind] = true end
+        end
+    end
+
+    local out, seen = {}, {}
+    for _, kind in ipairs(kinds) do
+        -- nil chosen: every kind this server allows, which is what the
+        -- shipped `fit` list already means.
+        local wanted = (ticked == nil) or (ticked[kind] == true)
+        local component = row[kind]
+
+        -- DEDUPED, because two kinds can name the same component on a weapon
+        -- whose data lists it twice, and ox_inventory would be handed it
+        -- twice.
+        if wanted and Arena.IsKey(component) and not seen[component] then
+            seen[component] = true
+            out[#out + 1] = component
+        end
+    end
+    return out
+end
+
 --- @param weapon table -- a catalogue entry
 --- @param ammoType table|nil -- an Arena.ResolveAmmoType result, already chosen
 --- @param ammo any -- rounds asked for, or nil for this weapon's own default
+--- @param attachments string[]|nil -- kind keys ticked, or nil for the default set
 --- @return table entry
-function Arena.ResolveWeaponEntry(weapon, ammoType, ammo)
+
+function Arena.ResolveWeaponEntry(weapon, ammoType, ammo, attachments)
     local components = {}
     for _, component in ipairs(type(weapon.components) == 'table' and weapon.components or {}) do
         components[#components + 1] = component
     end
+
+    -- AND WHATEVER THIS WEAPON IS FITTED WITH. Appended rather than
+    -- replacing, so a per-weapon `components` list an operator wrote by hand
+    -- still arrives -- this adds to it, it does not take it over.
+    for _, component in ipairs(Arena.AttachmentsFor(weapon.weapon, attachments)) do
+        components[#components + 1] = component
+    end
+
     if ammoType and ammoType.component then
         components[#components + 1] = ammoType.component
     end
@@ -1180,7 +1310,9 @@ function Arena.ResolveLoadout(request)
                 end
 
                 resolved[#resolved + 1] = Arena.ResolveWeaponEntry(weapon, ammoType,
-                    type(entry) == 'table' and entry.ammo or nil)
+                    type(entry) == 'table' and entry.ammo or nil,
+                    type(entry) == 'table' and type(entry.attachments) == 'table'
+                        and entry.attachments or nil)
             end
         end
     end

@@ -371,7 +371,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 99 functions
+#### `shared/arena.lua` — 102 functions
 
 | Function | What it does |
 |---|---|
@@ -431,6 +431,9 @@ listed; the source documents them where they are.
 | `Arena.StartingKitFor(modeKey)` | The supplies a mode hands everybody at the start of a round, whatever they picked -- or nil when it names none. |
 | `Arena.ResolveSupplies(requested)` | Turns whatever a client asked to carry into a list the server will hand over. |
 | `Arena.SlotsPerPlayer()` | How many weapons one player may carry, guns and blades together. 0 is no limit. |
+| `Arena.AttachmentKinds()` | Which kinds of attachment the operator wants fitted, in order. Empty when the feature is switched off. |
+| `Arena.AttachmentOptionsFor(weaponName)` | What this weapon may be offered in the picker -- key and label per kind, resolved through the same table the server fits from, so a chip can never offer what the server would refuse. |
+| `Arena.AttachmentsFor(weaponName, chosen)` | The components one weapon is fitted with. `chosen` is a list of KIND keys and never component names, which is what stops a client fitting itself anything it likes; nil means whatever this server fits by default. |
 | `Arena.ResolveWeaponEntry(weapon, ammoType, ammo)` | One weapon of a loadout, built -- policy-free, so the gun-game ladder can use it without being judged as a player request. |
 | `Arena.ResolveLoadout(request)` | Validates a whole loadout request and returns the concrete thing to hand a player -- real GTA weapon names and real ammo counts, nothing the caller supplied passed through untouched. |
 | `Arena.BoundaryOf(arena)` | The arena's boundary block when it is switched on -- the one reading of `enabled`. |

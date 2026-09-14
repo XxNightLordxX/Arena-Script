@@ -38,6 +38,14 @@ local MAX_KEY_LENGTH = 64
 
 local MAX_WEAPON_ENTRIES = 32
 
+--- The most attachment kinds one weapon may be asked for.
+---
+--- There are seven kinds in total, so this is already generous. It exists
+--- because the list arrives from a client and every list that does needs an
+--- end: without it, one weapon entry could carry a million strings and this
+--- function would dutifully copy all of them.
+local MAX_ATTACHMENT_ENTRIES = 8
+
 local MAX_SUPPLY_ENTRIES = 16
 
 local function tableArg(value)
@@ -78,10 +86,36 @@ local function loadoutArg(data)
 
             local key = keyArg(entry.key)
             if key then
+                -- ATTACHMENTS, REBUILT KEY BY KEY LIKE EVERYTHING ELSE HERE.
+                --
+                -- ABSENT AND EMPTY ARE DIFFERENT ANSWERS and both have to
+                -- survive: nil means "fit what this server fits by default",
+                -- which is what an untouched pick and every loadout saved
+                -- before attachments existed should get; an empty list means
+                -- a player deliberately took everything off. Rebuilding into
+                -- a fresh table only when one was actually sent is what keeps
+                -- those two apart.
+                --
+                -- WHAT ARRIVES IS KIND KEYS -- 'scope', 'grip' -- never
+                -- component names, and Arena.AttachmentsFor will only ever
+                -- look them up in the operator's own table. A key that names
+                -- nothing resolves to nothing rather than being handed on.
+                local fitted = nil
+                local asked = tableArg(entry.attachments)
+                if asked then
+                    fitted = {}
+                    for slot = 1, MAX_ATTACHMENT_ENTRIES do
+                        local kind = keyArg(asked[slot])
+                        if kind == nil then break end
+                        fitted[#fitted + 1] = kind
+                    end
+                end
+
                 weapons[#weapons + 1] = {
                     key = key,
                     ammo = intArg(entry.ammo),
                     ammoType = keyArg(entry.ammoType),
+                    attachments = fitted,
                 }
             end
         end

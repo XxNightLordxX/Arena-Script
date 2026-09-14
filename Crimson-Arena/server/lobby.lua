@@ -282,6 +282,17 @@ local function snapshotConfig()
             -- needs, and it is the sort of detail worth not broadcasting.
             ammoTypes = ammoTypesFor(weapon),
             defaultAmmoType = defaultAmmoTypeFor(weapon),
+            -- The attachments this weapon can take, resolved through the
+            -- same table the server fits from -- so the picker cannot offer
+            -- one the server would then refuse, exactly as with the ammo
+            -- types above. Empty for anything that takes none, and the
+            -- panel draws no attachment row at all in that case.
+            --
+            -- KIND KEYS AND LABELS ONLY. The COMPONENT names stay on the
+            -- server: a client never needs one and never sends one, which is
+            -- what stops a picked attachment being anything but one of
+            -- these.
+            attachments = Arena.AttachmentOptionsFor(weapon.weapon),
         }
     end
 

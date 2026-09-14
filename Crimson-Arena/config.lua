@@ -2492,6 +2492,37 @@ Config.Dispatch = {
             -- player's own.
             clockSlack = 1,
 
+            -- HOW LONG AFTER A FIGHTER GOES DOWN TO KEEP WITHDRAWING, in
+            -- milliseconds. 0 switches this half off and leaves Form 5 doing
+            -- only what it used to.
+            --
+            -- WHAT THIS IS FOR, and it is the gap that let alerts through on
+            -- a live server. Everything above is reached from inside a
+            -- `cancelEvents` handler -- so it can only withdraw a call whose
+            -- event you listed. sc-dispatch has THREE separate ways to file a
+            -- person-down call and only two of them are events an operator
+            -- would think to name; the third is a second polling loop in the
+            -- same file that fires when a downed player presses a key. An
+            -- operator cannot list what they have not read, and a script they
+            -- update can grow a fourth path overnight.
+            --
+            -- So on every arena death the arena also asks by ID rather than
+            -- by event: every shape in `idTemplates` is
+            -- `<something>_<server id>_<unix time>`, so knowing who went down
+            -- and when names every call that could have been filed about
+            -- them, whoever filed it.
+            --
+            -- IT IS SWEPT RATHER THAN FIRED ONCE because the alert does not
+            -- exist yet when they go down -- the medical script has to
+            -- notice and the dispatch script has to poll. Each id is asked
+            -- for exactly once, so four seconds over four templates is a
+            -- couple of dozen calls and never the same one twice.
+            --
+            -- It cannot reach anybody else's call: the server id in the
+            -- middle of every id is the arena player's own, and a clear for
+            -- an id that was never filed does nothing.
+            sweepMs = 4000,
+
             -- The id shape each event's call is filed under. The first '%d'
             -- is the player's server id, the second the unix timestamp.
             --

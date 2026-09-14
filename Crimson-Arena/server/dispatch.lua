@@ -4,6 +4,16 @@ ArenaDispatch = {}
 
 local active = {}
 
+--- When each player last LEFT a match, as os.time(), for the withdrawal
+--- window below. Not a second flag: nothing reads it but RetractCallsFor.
+local leftAt = {}
+
+--- How long after leaving a match a call may still be withdrawn, in seconds.
+--- Long enough to cover server/match.lua's post-match revive sweep, which
+--- runs after the flag comes down; short enough that it is nowhere near the
+--- next time this player is genuinely shot in the city.
+local RETRACT_GRACE_S = 60
+
 local function customConfig()
     return (Config.Dispatch and Config.Dispatch.custom) or {}
 end
@@ -45,6 +55,7 @@ function ArenaDispatch.Clear(src)
     if type(src) ~= 'number' or src <= 0 then return end
 
     local matchId = active[src]
+    if matchId ~= nil then leftAt[src] = os.time() end
     active[src] = nil
 
     local ok = pcall(function()
@@ -56,6 +67,23 @@ function ArenaDispatch.Clear(src)
 
     announce(customConfig().exitEvent, src, matchId)
 end
+
+--- Forgets the withdrawal window for a player who has left the server.
+---
+--- SERVER IDS ARE REUSED, and quickly on a busy box. Without this, a fighter
+--- leaving a match and then the server hands their id to the next person to
+--- connect -- who, shot in the city and stood up by an admin inside the same
+--- minute, would have their REAL ambulance withdrawn on the strength of
+--- somebody else's round. The window is short, but the harm is the exact one
+--- the gate in RetractCallsFor exists to prevent.
+---
+--- Registered here rather than added to server/main.lua's playerDropped
+--- handler because leftAt is this file's own, and nothing outside it should
+--- have to know the table exists.
+AddEventHandler('playerDropped', function()
+    local src = tonumber(source)
+    if src then leftAt[src] = nil end
+end)
 
 -- ======================================================================
 -- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS, AND RUNS NO COMMANDS
@@ -208,6 +236,21 @@ function ArenaDispatch.Revive(src)
 
     clearDownMetadata(src)
 
+    -- AND ANY CALL THE DISPATCH SCRIPT HAS ALREADY FILED ABOUT THEM IS
+    -- WITHDRAWN, whether or not this resource ever saw it being filed. See
+    -- ArenaDispatch.RetractCallsFor -- it is defined further down this file
+    -- and resolved when this runs, which is the same way HoldDownState is
+    -- reached from the thread above.
+    --
+    -- HERE BECAUSE THIS IS THE ONE FUNCTION EVERY ARENA DEATH GOES THROUGH.
+    -- Every path that puts a fighter down calls it -- the death itself, the
+    -- respawn, the elimination, the post-match sweep, an admin revive -- so
+    -- an alert filed in the seconds around any of them is caught, and a
+    -- fourth code path in somebody else's script that nobody has listed is
+    -- caught with them.
+    if type(ArenaDispatch.RetractCallsFor) == 'function' then
+        ArenaDispatch.RetractCallsFor(src)
+    end
 end
 
 RegisterCommand('arenarevive', function(src, args)
@@ -843,40 +886,46 @@ function ArenaDispatch.IsolationState()
     }
 end
 
-RegisterCommand('arenaisolation', function(src, _args)
-    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
-        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
-            ArenaNotifyKey(src, 'error.no_permission', 'error')
-        end
-        return
+--- Everything /arenaisolation reports, as a list of console-ready lines.
+---
+--- SPLIT OUT OF THE COMMAND so the admin tablet can show the same reading
+--- without an operator having to be at a console to get it. The command
+--- below is now nothing but "build this and print it", which is the only
+--- way the two can be guaranteed to say the same thing.
+--- @return string[]
+function ArenaDispatch.IsolationReport()
+    local lines = {}
+    local function say(fmt, ...)
+        local ok, text = pcall(string.format, fmt, ...)
+        lines[#lines + 1] = ok and text or fmt
     end
 
     local state = ArenaDispatch.IsolationState()
-    ArenaLog('arenaisolation: config says %s, server reports onesync "%s", a move has %sbeen caught not landing.',
+    say('config says %s, server reports onesync "%s", a move has %sbeen caught not landing.',
         state.wanted and 'ON' or 'OFF', tostring(state.oneSync), state.provenInert and '' or 'NOT ')
-    ArenaLog('arenaisolation: isolation is %s right now, %s.',
+    say('isolation is %s right now, %s.',
         state.inForce and 'IN FORCE' or 'NOT IN FORCE',
         state.perMatch and 'one bucket per match' or 'one bucket shared by every match')
 
     local matches = 0
     for matchId, bucket in pairs(matchBuckets) do
         matches = matches + 1
-        ArenaLog('arenaisolation:   match %s was allocated bucket %d.', tostring(matchId), bucket)
+        say('  match %s was allocated bucket %d.', tostring(matchId), bucket)
     end
     if matches == 0 then
-        ArenaLog('arenaisolation:   no match holds a bucket at the moment.')
+        say('  no match holds a bucket at the moment.')
     end
 
     local players = 0
     for player, record in pairs(held) do
         players = players + 1
         local actually = currentBucket(player)
-        ArenaLog('arenaisolation:   %s (match %s) should be in %d and the server says %d%s',
+        say('  %s (match %s) should be in %d and the server says %d%s',
             tostring(player), tostring(record.matchId), record.bucket, actually,
             actually == record.bucket and '.' or '  <-- NOT INSTANCED')
     end
     if players == 0 then
-        ArenaLog('arenaisolation:   nobody is being held in an arena bucket.')
+        say('  nobody is being held in an arena bucket.')
     end
 
     -- AND EVERY CONNECTED PLAYER, WHETHER THIS RESOURCE KNOWS THEM OR NOT.
@@ -886,67 +935,82 @@ RegisterCommand('arenaisolation', function(src, _args)
     -- the arena is deliberately keeping in an instance -- and the player who
     -- matters is the one who is NOT in it. A fighter left in an arena bucket
     -- with no record is invisible to every check this file makes, including
-    -- that one and including ExitBucket's own read-back, which returns early
-    -- for anybody it has no record of. `held` is memory, so a resource
-    -- restart empties it while the buckets it wrote stay exactly where they
-    -- were.
+    -- ExitBucket's own read-back, which returns early for anybody it has no
+    -- record of. `held` is memory, so a resource restart empties it while the
+    -- buckets it wrote stay exactly where they were.
     --
     -- WHAT IT IS FOR, in the operator's words: "I am not invisible in my
     -- eyes but the other person is", and a relog fixes it. Two players in
     -- two different buckets is precisely that -- each sees themselves, both
     -- are invisible to the other -- and a reconnect clears it because a
-    -- routing bucket does not survive one. The whole roll-call is printed
+    -- routing bucket does not survive one. The whole roll-call is reported
     -- rather than only the odd ones out, because who can see whom is decided
     -- by the WHOLE set and a line saying "player 4 is in 4210" means nothing
     -- until you can see that player 2 is in 0.
     local list = connectedPlayers()
     if not list then
-        ArenaLog('arenaisolation:   this server would not say who is connected, so the roll-call below '
+        say('  this server would not say who is connected, so the roll-call below '
             .. 'cannot be taken. That is the reading, not a failure of the arena.')
-    else
-        local occupied, stranded, counted = {}, 0, 0
+        return lines
+    end
 
-        for _, id in ipairs(list) do
-            local player = Arena.ToInt(id)
-            if player then
-                counted = counted + 1
-                local bucket = currentBucket(player)
-                occupied[bucket] = (occupied[bucket] or 0) + 1
+    local occupied, stranded, counted = {}, 0, 0
 
-                local name = type(ArenaPlayerName) == 'function'
-                    and ArenaPlayerName(player) or tostring(player)
-                local note = ''
-                if bucket ~= 0 and not held[player] then
-                    stranded = stranded + 1
-                    note = '  <-- STRANDED: the arena has NO RECORD of putting them there, so nothing '
-                        .. 'here will ever take them out. They can be freed by reconnecting.'
-                end
+    for _, id in ipairs(list) do
+        local player = Arena.ToInt(id)
+        if player then
+            counted = counted + 1
+            local bucket = currentBucket(player)
+            occupied[bucket] = (occupied[bucket] or 0) + 1
 
-                ArenaLog('arenaisolation:   %s (%s) is in bucket %d%s', tostring(player), name, bucket, note)
+            local name = type(ArenaPlayerName) == 'function'
+                and ArenaPlayerName(player) or tostring(player)
+            local note = ''
+            if bucket ~= 0 and not held[player] then
+                stranded = stranded + 1
+                note = '  <-- STRANDED: the arena has NO RECORD of putting them there, so nothing '
+                    .. 'here will ever take them out. They can be freed by reconnecting.'
             end
-        end
 
-        local rooms = 0
-        for _ in pairs(occupied) do rooms = rooms + 1 end
-
-        if counted == 0 then
-            ArenaLog('arenaisolation:   nobody is connected.')
-        elseif rooms > 1 then
-            ArenaLog('arenaisolation: %d player(s) are spread across %d DIFFERENT routing buckets. '
-                .. 'Anybody in one cannot see anybody in another, and each of them can still see '
-                .. 'THEMSELVES -- which is what "everyone else is invisible" looks like from inside. '
-                .. 'If a match is live that is correct and expected; if no match is live, it is not.',
-                counted, rooms)
-        else
-            ArenaLog('arenaisolation: all %d connected player(s) are in the same bucket, so routing '
-                .. 'is not what is hiding anybody from anybody.', counted)
+            say('  %s (%s) is in bucket %d%s', tostring(player), name, bucket, note)
         end
+    end
 
-        if stranded > 0 then
-            ArenaLog('arenaisolation: %d player(s) are STRANDED in an arena bucket with no record. '
-                .. 'That is a defect in this resource and worth reporting -- the usual cause is the '
-                .. 'resource being restarted while they were in a round.', stranded)
+    local rooms = 0
+    for _ in pairs(occupied) do rooms = rooms + 1 end
+
+    if counted == 0 then
+        say('  nobody is connected.')
+    elseif rooms > 1 then
+        say('%d player(s) are spread across %d DIFFERENT routing buckets. '
+            .. 'Anybody in one cannot see anybody in another, and each of them can still see '
+            .. 'THEMSELVES -- which is what "everyone else is invisible" looks like from inside. '
+            .. 'If a match is live that is correct and expected; if no match is live, it is not.',
+            counted, rooms)
+    else
+        say('all %d connected player(s) are in the same bucket, so routing '
+            .. 'is not what is hiding anybody from anybody.', counted)
+    end
+
+    if stranded > 0 then
+        say('%d player(s) are STRANDED in an arena bucket with no record. '
+            .. 'That is a defect in this resource and worth reporting -- the usual cause is the '
+            .. 'resource being restarted while they were in a round.', stranded)
+    end
+
+    return lines
+end
+
+RegisterCommand('arenaisolation', function(src, _args)
+    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
+        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
+            ArenaNotifyKey(src, 'error.no_permission', 'error')
         end
+        return
+    end
+
+    for _, line in ipairs(ArenaDispatch.IsolationReport()) do
+        ArenaLog('arenaisolation: %s', line)
     end
 end, false)
 
@@ -1709,6 +1773,141 @@ local function retractFor(entry, src)
         local shown, sample = pcall(string.format, template, src, at)
         ArenaDebug('retract: asked %s to clear "%s" (+/-%ds) for %s.',
             config.resource, shown and sample or tostring(template), slack, tostring(src))
+    end)
+end
+
+--- Withdraw every call this server's dispatch script could have filed for
+--- one player, WITHOUT having seen the event that filed it.
+---
+--- THE LIMIT IN FORM 5 THAT THIS EXISTS TO REMOVE. retractFor is reached
+--- from inside a cancelEvents handler and nowhere else, so it can only
+--- withdraw a call whose event this resource was listening to. That is fine
+--- until an alert is raised by a path nobody named -- and on a live server
+--- it was. sc-dispatch carries THREE separate ways to file a person-down
+--- call, and only two of them go through the events an operator would think
+--- to list:
+---
+---   a 500ms loop polling the down metadata, which raises
+---   sc-dispatch:server:PlayerDown -- listed, cancelled, withdrawn;
+---
+---   a SECOND loop, in the same file, that files `mydispatch:requestEMS`
+---   when a downed player presses a key -- listed here too, and only fires
+---   if they press it;
+---
+---   and its server side, which any other resource can trigger directly.
+---
+--- Being told about an event is a promise nobody made. An operator cannot
+--- list what they have not read, and a script they update can grow a fourth
+--- path overnight.
+---
+--- SO THIS ASKS BY ID INSTEAD OF BY EVENT. Every id shape in `idTemplates`
+--- is `<something>_<server id>_<unix time>` -- read out of the script that
+--- builds them -- so knowing WHO went down and WHEN is enough to name every
+--- call that could have been filed about them, whoever filed it. The arena
+--- knows both.
+---
+--- IT CANNOT REACH ANYBODY ELSE'S CALL. The server id in the middle of every
+--- id is this player's own, and the only ids asked for are the shapes the
+--- operator listed. A clear for an id that was never filed does nothing.
+---
+--- SWEPT RATHER THAN FIRED ONCE, because the alert does not exist yet when
+--- the fighter goes down: the medical script has to notice, the dispatch
+--- script has to poll, and on a loaded server that is a second or two. Each
+--- id is asked for ONCE -- a set, not a loop -- so a four-second window over
+--- four templates is a couple of dozen calls and never the same one twice.
+--- @param src number
+function ArenaDispatch.RetractCallsFor(src)
+    if type(src) ~= 'number' or src <= 0 then return end
+
+    -- ONLY FOR SOMEBODY THIS ROUND HAS A CLAIM ON. This sweep does not read
+    -- an event -- it asks for ids blind -- so nothing else stops it clearing
+    -- a REAL medical call. /arenarevive is the path that reaches it: an
+    -- admin standing up an ordinary player who genuinely needs an ambulance
+    -- would otherwise take that ambulance off the responders' screen.
+    --
+    -- RECENTLY-LEFT COUNTS, because the post-match sweep in server/match.lua
+    -- runs seconds AFTER the flag comes down, and that sweep is the safety
+    -- net this whole layer exists to be. A minute is far longer than the
+    -- sweep and far shorter than a session.
+    local left = leftAt[src]
+    if active[src] == nil and (left == nil or os.time() - left > RETRACT_GRACE_S) then
+        ArenaDebug('retract: %s is not in a match and did not just leave one -- withdrew nothing.',
+            tostring(src))
+        return
+    end
+
+    local config = retractConfig()
+    if not Arena.IsKey(config.resource) or not Arena.IsKey(config.export) then return end
+
+    local templates = config.idTemplates
+    if type(templates) ~= 'table' or next(templates) == nil then return end
+
+    local window = Arena.ToInt(config.sweepMs)
+    if window == nil then window = 4000 end
+    if window <= 0 then return end
+    if window > 30000 then window = 30000 end
+
+    -- ASKED THROUGH pcall, BECAUSE A NATIVE IS NOT A PROMISE. retractFor
+    -- calls this bare and gets away with it: it is only ever reached from
+    -- inside a cancelEvents handler, which needs a live event to fire. THIS
+    -- one is reached from Revive, which every arena death goes through -- so
+    -- it runs in places that native does not exist, and an unguarded call
+    -- there takes the whole revive down with it. Measured: nine spec files
+    -- went red on "attempt to call a nil value (global 'GetResourceState')".
+    --
+    -- UNREADABLE IS TREATED AS NOT RUNNING, which is the safe direction: the
+    -- sweep does nothing and the alert is left standing, exactly as it would
+    -- be on a server with no dispatch script at all.
+    local known, state = pcall(GetResourceState, config.resource)
+    if not known or state ~= 'started' then
+        if known and not sawFiring['retract:' .. config.resource] then
+            sawFiring['retract:' .. config.resource] = true
+            ArenaLog('retract: Config.Dispatch.custom.retract names "%s", which is not started. Arena alerts will be raised and left standing.',
+                config.resource)
+        end
+        return
+    end
+
+    local slack = Arena.ToInt(config.clockSlack) or 0
+    if slack < 0 then slack = 0 end
+    if slack > 5 then slack = 5 end
+
+    CreateThread(function()
+        local asked, cleared = {}, 0
+        local deadline = GetGameTimer() + window
+
+        repeat
+            local now = os.time()
+
+            for _, template in pairs(templates) do
+                for offset = -slack, slack do
+                    local built, id = pcall(string.format, template, src, now + offset)
+
+                    if built and not asked[id] then
+                        asked[id] = true
+                        cleared = cleared + 1
+
+                        local ok, err = pcall(function()
+                            exports[config.resource][config.export](nil, id)
+                        end)
+                        if not ok then
+                            if not sawFiring['retract:err:' .. config.resource] then
+                                sawFiring['retract:err:' .. config.resource] = true
+                                ArenaLog('retract: %s:%s failed (%s). Check that export name against that resource\'s own documentation.',
+                                    config.resource, config.export, tostring(err))
+                            end
+                            return
+                        end
+                    end
+                end
+            end
+
+            Wait(500)
+        until GetGameTimer() > deadline
+
+        ArenaDebug('retract: swept %d call id(s) for %s over %dms -- every shape listed in '
+            .. 'idTemplates, whether or not this resource saw the event that filed one.',
+            cleared, tostring(src), window)
     end)
 end
 

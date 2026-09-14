@@ -41,6 +41,7 @@ local function newFixture(dispatchConfig)
     local metadata = {}            -- [src] = { key = value }, as the framework holds it
     local metaWrites = {}          -- every SetMetaData, in order
     local playerObjects = {}       -- [src] = a framework player, or absent
+    local gameClock = 0            -- ms, advanced only by Wait()
 
     local env = Sandbox.newEnv({
         ExecuteCommand = function(line) commands[#commands + 1] = line end,
@@ -53,7 +54,7 @@ local function newFixture(dispatchConfig)
         -- load would test a different order to the real one. step() below is
         -- how a test asks for it.
         CreateThread = function(fn) threads[#threads + 1] = fn end,
-        Wait = function() end,
+        Wait = function(ms) gameClock = gameClock + (tonumber(ms) or 0) end,
         -- The cancel layer registers each alert event for the network before
         -- listening: without that, FXServer never delivers a client-triggered
         -- event to this resource at all. Recorded so a spec can assert it.
@@ -80,6 +81,12 @@ local function newFixture(dispatchConfig)
             handlers[name][#handlers[name] + 1] = fn
         end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
+        -- THE SWEEP'S CLOCK. RetractCallsFor loops until this passes its
+        -- deadline, so a constant would hang the spec and the wall clock
+        -- would make the number of passes depend on how fast the box is.
+        -- Advanced by Wait() instead -- exactly what the server does, one
+        -- tick per yield, only deterministically.
+        GetGameTimer = function() return gameClock end,
         -- 'missing' unless a spec says otherwise, which is the state the
         -- retract layer has to survive: an operator naming a resource they do
         -- not run must get one console line, never a broken alert handler.
@@ -1875,5 +1882,141 @@ t.test('and stays silent on a server that started this resource first', function
         'a correctly ordered server was told its ambulance job would be paged')
     t.notContains(env.consoleText(), 'ANSWERED FIRST', 'it printed the warning anyway')
 end)
+
+
+-- ========================================================================
+-- Withdrawing by PLAYER rather than by event
+-- ========================================================================
+--
+-- The cancel layer can only withdraw a call it SAW being filed. The medical
+-- alert that actually reached EMS on this server never reaches this resource
+-- at all -- it is raised by a third path in the dispatch script that the
+-- arena has no handler for -- so the revive has to withdraw by server id,
+-- blind, over every id shape the operator listed.
+
+t.test('the revive withdraws every id shape listed, for that player', function()
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.D.Revive(7)
+    f.step()
+
+    t.isTrue(#f.exportCalls > 0,
+        'the revive withdrew nothing, so an alert nobody saw filed is left standing')
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    local joined = table.concat(ids, ',')
+
+    -- THE ONE THAT MATTERS. emshelp_ is the shape the ungated third path
+    -- files under, and it is the reason this function exists at all.
+    for _, shape in ipairs({ 'emshelp', 'playerdown', 'playerdead', 'shots' }) do
+        t.contains(joined, ('%s_7_%d'):format(shape, at),
+            ('the revive never asked for a %s id, so that alert survives it'):format(shape))
+    end
+end)
+
+t.test('and it can never reach a call belonging to somebody else', function()
+    -- The same safety the cancel layer has, arrived at from the other
+    -- direction: this one fires with no event to read, so the only thing
+    -- stopping it clearing a stranger's alert is that the id is built out of
+    -- the revived player's own server id.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    f.D.Revive(7)
+    f.step()
+
+    for _, call in ipairs(f.exportCalls) do
+        t.contains(tostring(call.args[1]), '_7_',
+            'the revive withdrew a call filed for somebody other than the revived player')
+    end
+end)
+
+t.test('and no id is asked for twice, however long the sweep runs', function()
+    -- SWEPT, NOT FIRED ONCE: the alert does not exist yet when the fighter
+    -- goes down. A sweep that re-asked for the same id every pass would be
+    -- hundreds of exports per revive on a full server.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    f.D.Revive(7)
+    f.step()
+
+    local seen = {}
+    for _, call in ipairs(f.exportCalls) do
+        local id = tostring(call.args[1])
+        t.isNil(seen[id], ('%s was withdrawn more than once'):format(id))
+        seen[id] = true
+    end
+end)
+
+t.test('and a dispatch resource that is not running costs nothing', function()
+    -- Revive runs on EVERY arena death. An unguarded native or a bare export
+    -- here does not fail politely -- it takes the revive down and leaves the
+    -- fighter on the floor.
+    local f = newFixture()          -- GetResourceState reports 'missing'
+    f.D.Set(7, 'match-1')
+
+    f.D.Revive(7)
+    f.step()
+
+    t.equals(#f.exportCalls, 0,
+        'a resource this server does not run was exported into anyway')
+end)
+
+t.test('and the post-match sweep still withdraws, after the flag has come down', function()
+    -- THE WINDOW THE GATE ABOVE HAS TO LEAVE OPEN. server/match.lua revives
+    -- the whole roster seconds AFTER the match ends, by which time Clear has
+    -- run -- and that sweep is the safety net this entire layer exists to
+    -- be. A gate on the live flag alone would switch it off.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+    f.D.Clear(7)
+
+    f.D.Revive(7)
+    f.step()
+
+    t.isTrue(#f.exportCalls > 0,
+        'the post-match sweep withdrew nothing, so an alert filed at the last death survives the match')
+end)
+
+t.test('and the window does not survive the server id being handed to somebody else', function()
+    -- SERVER IDS ARE REUSED. A fighter leaves a match, disconnects, and the
+    -- next person to connect gets their number -- then that person is shot
+    -- in the city and stood up by an admin, inside the same minute. Without
+    -- the drop handler their real ambulance is withdrawn on the strength of
+    -- a round they were never in.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+    f.D.Clear(7)
+
+    f.env.source = 7
+    f.fire('playerDropped', nil)
+
+    f.D.Revive(7)
+    f.step()
+
+    t.equals(#f.exportCalls, 0,
+        'a stranger who inherited the server id had their real medical call withdrawn')
+end)
+
+t.test('and a revive for a player who is not in a match withdraws nothing', function()
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+
+    f.D.Revive(7)
+    f.step()
+
+    t.equals(#f.exportCalls, 0,
+        'an ordinary player being revived had their real medical call withdrawn')
+end)
+
 
 os.exit(t.summary())

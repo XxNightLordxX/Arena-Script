@@ -536,7 +536,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.IsolationReport()` | Everything /arenaisolation reports, as lines, so the admin tablet can show the same reading without a console. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 20 functions
+#### `server/ammo.lua` — 22 functions
 
 | Function | What it does |
 |---|---|
@@ -545,6 +545,8 @@ listed; the source documents them where they are.
 | `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies -- or takes the weapon away, where `allowWeaponWithoutAmmoItem` is off and its rounds could not be issued. |
 | `ArenaAmmo.GrantRounds(src, matchId, item, count)` | A flat grant of ammunition onto the arena's ledger, for a kill reward. Hands over nothing where `Config.Loadouts.ammoItems.enabled` is off, like every other issue path. |
 | `ArenaAmmo.GrantSupply(src, matchId, item, count)` | Hands one player one supply mid-round and puts it on the arena's books. |
+| `markWeaponOut(record)` | Writes the row that says this exact weapon is OUT, the moment it is handed over, so a crash leaves evidence. Forward-declared near `giveWeapon`; assigned here, below the SQL it needs. |
+| `strikeWeaponOff(record)` | Removes that row when the weapon actually comes back. |
 | `ArenaAmmo.Issue(src, matchId, loadout)` | Puts the player's own kit away, then gives them what the loadout says. |
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |

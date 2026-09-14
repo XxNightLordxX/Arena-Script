@@ -229,6 +229,8 @@ local function newFixture(dispatchConfig)
         --- Tells GetResourceState that `name` is running.
         setResource = function(name, state) resourceStates[name] = state or 'started' end,
         --- Runs every SetTimeout body this load queued, once, in order.
+        --- How many SetTimeout bodies are waiting, without running them.
+        pendingTimeouts = function() return #timeouts end,
         runTimeouts = function()
             local pending = timeouts
             timeouts = {}
@@ -1893,6 +1895,49 @@ end)
 -- at all -- it is raised by a third path in the dispatch script that the
 -- arena has no handler for -- so the revive has to withdraw by server id,
 -- blind, over every id shape the operator listed.
+
+t.test('an event with no id shape schedules nothing at all', function()
+    -- NOT A WARNING, AND NOT A NO-OP EITHER. An event listed for cancelling
+    -- with no shape beside it is an ordinary, deliberate state -- Form 4
+    -- covers it and Form 5 does not claim to -- so the withdrawal returns
+    -- early and says nothing.
+    --
+    -- WHAT THE EARLY RETURN IS ACTUALLY WORTH, which is the reason this test
+    -- exists: without it the retry ladder still arms, so every such alert
+    -- leaves four timers behind that wake up, walk an empty list and go back
+    -- to sleep. On a busy arena that is four dead timers per alert per
+    -- fighter. A mutation sweep found nothing noticed when the guard was
+    -- removed; this is what notices.
+    local f = newFixture({
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = {
+            enabled = true,
+            disableExports = {},
+            cancelEvents = { { event = 'sc-dispatch:server:PlayerDown' } },
+            retract = {
+                resource = 'sc-dispatch',
+                export = 'ClearNotification',
+                -- Listed for cancelling, with no shape of its own.
+                idTemplates = { ['something:else'] = 'other_%d_%d' },
+            },
+        },
+        vanillaPolice = { enabled = false },
+        revive = { enabled = false, commands = {}, serverEvents = {}, clientEvents = {}, exports = {} },
+    })
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    f.env.source = 7
+    f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+
+    local armed = f.pendingTimeouts()
+    t.equals(armed, 0,
+        ('%d timer(s) were armed for an event with no id shape to withdraw'):format(armed))
+
+    f.runTimeouts()
+    t.equals(#f.exportCalls, 0, 'and nothing was withdrawn either')
+end)
 
 t.test('THE FIFTH SHAPE: an event may file under more than one id', function()
     -- READ OFF A LIVE CONSOLE. The operator had four shapes listed, the

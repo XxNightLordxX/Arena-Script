@@ -2020,8 +2020,17 @@ t.test('a slot holding false rather than nothing is skipped, not thrown over', f
     -- `item.name` on a boolean throws, which would take the whole stow down
     -- and cost the player everything rather than one slot.
     local s = newServer({ [1] = OWN })
-    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    -- IN THE STASH BEFORE THE DOOR SHUTS, which is what a leftover of an
+    -- earlier exit that could not finish looks like. It used to go in AFTER
+    -- Issue, and the exit's ceiling -- see handBack -- now correctly refuses
+    -- a row that appeared while the player was in the round, so putting it
+    -- there was testing two things at once and failing on the wrong one.
+    -- Three entries are the point: the false slot is INSERTED, and one real
+    -- item either side of it proves the skip did not eat a neighbour.
     s.putInStash('CID1', 'burger', 1)
+
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
     s.pokeStashSlot('CID1')
 
     s.ammo.Reclaim(1, 'match ended')

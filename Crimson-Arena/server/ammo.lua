@@ -573,6 +573,10 @@ local function stow(src, citizenid)
     -- different sentences, and only the second is a rollback. DO NOT roll back
     -- against anything but a snapshot taken here.
     local before = slotMap(ox, stash)
+    local hadBefore = 0
+    if before ~= nil then
+        for _ in pairs(before) do hadBefore = hadBefore + 1 end
+    end
     if before == nil then
         ArenaLog('door: could not read the stash %s before filling it, so nothing was put in it and '
             .. '%s keeps their own kit. A stow that cannot be undone must not be started.',
@@ -671,10 +675,55 @@ local function stow(src, citizenid)
         return false, 0
     end
 
-    return true, stowed
+    -- WHAT THE STASH PHYSICALLY HOLDS NOW THE DOOR HAS SHUT, which is the
+    -- ceiling the exit hands back up to. handBack says at length what it is
+    -- for; this is why it is READ rather than counted.
+    --
+    -- The obvious ceiling is "what was already in there, plus the number of
+    -- items this stow put in", and it is wrong in both directions.
+    -- ox_inventory decides for itself how an item lands: a count over the
+    -- item's stack size is SPLIT across slots, and two compatible stacks are
+    -- MERGED into one. Either way the number of AddItem calls stops matching
+    -- the number of rows, and the exit counts rows -- so a counted ceiling
+    -- shuts a stash on a player who did nothing but carry a big stack.
+    --
+    -- One read settles it, off the thing the exit will actually be looking
+    -- at, at the only moment nothing else can have touched it.
+    --
+    -- NIL WHEN IT CANNOT BE READ, and nil means no ceiling. An unreadable
+    -- stash must not become a ceiling of zero: that would refuse a player
+    -- their whole kit at the exit, which is the one outcome this file exists
+    -- to prevent. DO NOT give this an `or 0`.
+    --
+    -- AND THE LARGER OF THE TWO MEASURES WINS, because every way of being
+    -- wrong here has a safe direction and it is the same one: too generous
+    -- refuses nothing and costs at worst one round of a duplicate; too mean
+    -- shuts a stash on somebody who did nothing, and at zero it refuses a
+    -- player their entire kit.
+    --
+    --   a merge makes the READ smaller than the count  -> the count wins
+    --   a split makes the COUNT smaller than the read  -> the read wins
+    --   a stash ox has unloaded reads as EMPTY, which is
+    --   this file's oldest trap and would be a ceiling
+    --   of zero on its own                             -> the count wins
+    --
+    -- DO NOT reduce this to whichever one looks more authoritative. Neither
+    -- is; that is the point.
+    local settled = slotMap(ox, stash)
+    local rows = hadBefore + stowed
+    if settled ~= nil then
+        local read = 0
+        for _ in pairs(settled) do read = read + 1 end
+        if read > rows then rows = read end
+    end
+
+    return true, stowed, rows
 end
 
-local function handBack(ox, src, stash)
+--- @param allowed integer|nil -- how many rows the door itself put in this
+---   stash, or nil when nothing knows (the sweep after a restart), which is
+---   the one case that must stay uncapped.
+local function handBack(ox, src, stash, allowed)
     if jammedStash[stash] then
         ArenaLog('door: stash %s is NOT being handed back. A removal from it was refused earlier, '
             .. 'so the door cannot tell what it has already given out and will not risk handing the '
@@ -690,8 +739,83 @@ local function handBack(ox, src, stash)
         return false, 0, 0
     end
 
+    local rows = itemsIn(items)
+
+    -- MORE IN THE STASH THAN THE DOOR PUT IN IT IS NOT THEIRS TO BE GIVEN.
+    --
+    -- THE DEFECT THIS EXISTS TO KILL, reproduced end to end through the real
+    -- door: a player owning `ammo-rifle x40, burger x3, phone x1` walked out
+    -- of one round holding `ammo-rifle x40, burger x3, burger x3, lockpick
+    -- x2, phone x1, phone x1` -- two of most of it and one item they had
+    -- never owned -- because three extra rows had appeared in their stash
+    -- while they were fighting. This loop hands over WHATEVER IS IN THE
+    -- STASH, and nothing above it ever asked whether the stash was holding
+    -- what the door left there.
+    --
+    -- Things appear in it. ox_inventory throws an idle inventory out of
+    -- memory after `inventory:cleartime` (five minutes by default) and
+    -- reloads it from the database on the next touch, so every round longer
+    -- than that round-trips these belongings through a row that may not have
+    -- had the last write -- and what comes back is an OLDER round's
+    -- contents. It is a real ox_inventory stash with a predictable name, so
+    -- an admin tool, another resource, or the player themselves can put
+    -- things in it too.
+    --
+    -- WHAT IS NOT REFUSED: the leftovers of an earlier exit that could not
+    -- finish. Those are already in the stash when stow() looks, it counts
+    -- them, and they are inside the ceiling on purpose -- refusing them
+    -- would strand the one thing the record is kept open for.
+    --
+    -- AND THE REMAINDER IS NOT DESTROYED. It stays exactly where it is, in a
+    -- stash the admin screen names and anybody can open, with a line saying
+    -- so. The one thing this file never does is decide on its own that
+    -- somebody's property is not real.
+    --
+    -- UNCAPPED WHEN NOTHING KNOWS. ArenaAmmo.ReturnLeftovers reaches a stash
+    -- after a restart with no record of what went into it, and a ceiling of
+    -- zero there would refuse a player their entire kit. `allowed` is nil on
+    -- that path and this branch does not run. DO NOT give it a default.
+    local refused = 0
+    if allowed ~= nil and #rows > allowed then
+        refused = #rows - allowed
+        -- AND THE STASH IS SHUT, WHICH IS THE HALF THAT MAKES THIS WORK.
+        --
+        -- Leaving the surplus behind and saying so is not enough on its own:
+        -- ArenaAmmo.ReturnLeftovers comes back for any stash with anything in
+        -- it, and it is UNCAPPED on purpose -- after a restart nothing knows
+        -- what went in, and a ceiling of zero there would refuse a player
+        -- their whole kit. So the sweep collected the exact rows this branch
+        -- had just refused, and the player got them a tick later. Measured:
+        -- the refusal printed and they still walked out with two phones.
+        --
+        -- The second round is worse than the first. `hadBefore` counts what
+        -- is physically in the stash when the door shuts, so a surplus left
+        -- lying there is inside NEXT round's ceiling and becomes legitimate.
+        --
+        -- jammedStash is the mechanism this file already has for "something
+        -- is in here that the arena cannot account for": nothing is handed
+        -- out of it, nothing more is put into it, and it says to settle it by
+        -- hand. The cost is that this player fights with their own kit until
+        -- somebody looks, which is this file's oldest and safest fallback and
+        -- has never cost anybody anything. DO NOT drop this line and leave
+        -- the refusal to the log.
+        jammedStash[stash] = true
+
+        ArenaLog('door: stash %s is holding %d item(s) and the door only put %d in it. The extra %d '
+            .. 'appeared while %s was in the round and are NOT being handed over -- handing back more '
+            .. 'than was taken is how a player leaves with two of everything. The door is touching '
+            .. 'that stash no further: open it with /arenaadmin, compare it against what they are '
+            .. 'carrying, and settle it by hand. The usual cause is ox_inventory reloading the stash '
+            .. 'from a database row that never got its last write -- raise `inventory:cleartime`.',
+            tostring(stash), #rows, allowed, refused, tostring(src))
+
+        local capped = {}
+        for index = 1, allowed do capped[index] = rows[index] end
+        rows = capped
+    end
+
     local failures, returned = 0, 0
-    for _, item in ipairs(itemsIn(items)) do
+    for _, item in ipairs(rows) do
         -- PROOF, NOT MERELY THE ABSENCE OF A DENIAL, and this is the one
         -- call in the file that has to be read that way.
         --
@@ -854,7 +978,7 @@ local function restore(src, record)
         record.wiped = wiped
     end
 
-    local readable, failures, returned = handBack(ox, src, record.stash)
+    local readable, failures, returned = handBack(ox, src, record.stash, record.allowed)
     if not readable then return false, wiped end
 
     -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY.
@@ -3812,13 +3936,27 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                 carried = math.max(0, Arena.ToInt(held.stowedCount) or 0)
             end
 
-            local put, count = stow(src, citizenid)
+            local put, count, rowsInStash = stow(src, citizenid)
             if put then
                 stashed[src] = {
                     stash = stashFor(citizenid),
                     matchId = matchId,
                     citizenid = citizenid,
                     stowedCount = carried + count,
+                    -- THE CEILING THE EXIT HANDS BACK UP TO: every row that
+                    -- is in the stash the moment the door shuts, read off the
+                    -- stash itself. That includes the leftovers of an earlier
+                    -- exit that could not finish -- those are the player's and
+                    -- must come back -- so anything ABOVE it arrived while
+                    -- they were in the round. handBack says what that costs
+                    -- and stow says why it is read rather than counted.
+                    --
+                    -- NOT carried forward the way stowedCount above is: this
+                    -- is a statement about the stash as it physically is, and
+                    -- a previous round's remainder is already counted because
+                    -- it is still sitting in there. Nil when the stash could
+                    -- not be read back, and nil means no ceiling at all.
+                    allowed = rowsInStash,
                 }
                 ArenaDebug('door: stashed %d item(s) of %s\'s for match %s',
                     count, tostring(src), tostring(matchId))

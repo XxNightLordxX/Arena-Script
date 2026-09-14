@@ -8,94 +8,121 @@ unproven it says so.
 
 ## Reported from live play, and what is actually causing it
 
-Three defects reported off a running server. One is fixed. The other two share a root
-cause that is **not in this resource** -- it is ox_inventory's idle-purge, and there is a
-one-line server.cfg change that stops both of them today.
+Three defects reported off a running server. Two are fixed and proven; the third is
+diagnosed and has a one-line server.cfg mitigation.
 
 ### 1. Players come out of the arena invisible -- FIXED
 
 **It was the routing bucket, which was the right instinct.**
 
-`ArenaDispatch.EnterBucket` proves its move landed: `moveTo` writes the bucket, reads it
-back, and says at length why -- setting a routing bucket is a synchronous write, so a
-disagreement is never "not yet", it is the native having done nothing.
+`EnterBucket` proves its move landed: `moveTo` writes the bucket, reads it back, and says
+at length why -- setting a routing bucket is a synchronous write, so a disagreement is
+never "not yet", it is the native having done nothing. **`ExitBucket` never asked.** It
+called `SetPlayerRoutingBucket` inside a `pcall` and looked only for a *throw*, so a
+native that is accepted and does nothing -- exactly what FXServer does with these when
+routing buckets are unavailable -- read as a clean exit.
 
-`ArenaDispatch.ExitBucket` never asked. It called `SetPlayerRoutingBucket` inside a
-`pcall` and looked only for a **throw**. A native that is accepted and does nothing --
-which is exactly what FXServer does with these when routing buckets are unavailable --
-read as a clean exit.
+A player left in the match's bucket is invisible to every other player on the server and
+every one of them is invisible to them. Kit back, stood at the lobby ped, panel working,
+alone on the server -- and not one line in any log, because nothing on that path ever
+looked.
 
-A player left behind in the match's bucket is invisible to every other player on the
-server, and every one of them is invisible to them. Their kit comes back, they are stood
-at the lobby ped, their panel works, and they are alone on the server. **Nothing in any
-log said so, because nothing on that path ever looked.**
+Now read back, retried once, and reported with the player, both bucket numbers and the
+OneSync mode. Four tests in `isolation_spec.lua`, two of them controls; the guard was
+inverted in a worktree and three tests fired.
 
-Fixed: the restore is now read back, tried a second time if it did not land, and reported
-loudly with the player's id, both bucket numbers and the server's OneSync mode. Four tests
-in `isolation_spec.lua`, two of them controls; the guard was inverted in a worktree and
-three tests fired.
+**The rest of the bucket bookkeeping was then double-checked by measurement**, driving the
+real server stack (`util` + `dispatch` + `betting` + `lobby` + `match` + `main`) rather
+than reasoning about it. Every way out returns the player to bucket 0:
 
-### 2. Belongings duplicated after a match, "when SQL is off"
-
-**Not fixed -- diagnosed, and it needs one fact from you before a fix is safe.**
-
-The arena holds a player's belongings in a real ox_inventory stash for the length of a
-round. That stash is **persisted through MySQL**, and ox_inventory throws it out of memory
-while the round is still running:
-
-| ox_inventory (`modules/inventory/server.lua`, current `main`) | What it does |
+| Path | Bucket after |
 |---|---|
-| `:2411` | `inventoryClearTime = GetConvarInt('inventory:cleartime', 5) * 60` -- **five minutes** |
-| `:2463` | `lib.cron.new('*/5 * * * *', ...)` -- the purge runs every five minutes |
-| `:2449`-`:2457` | any inventory that is **not open** and **not a player** and has been idle that long is removed from memory |
-| `:625`, `:351` | `inv.time` is stamped at creation and refreshed **only when the inventory is closed**. `AddItem`, `RemoveItem` and `GetInventoryItems` do not touch it |
-| `:678` | on removal it is saved to the database, then dropped |
-| `:640`, `:868` | on the next access it is re-created and **loaded back out of the database** |
+| fighter leaves by the panel | 0 |
+| fighter disconnects mid-round | 0 |
+| spectator disconnects while watching | 0 |
+| fighter disconnects during the countdown | never bucketed |
+| the resource stops mid-round | 0 |
+| **restore native accepted and inert** | **stays in the arena bucket -- now reported** |
 
-Nobody ever opens the arena's belongings stash -- it is a holding pen, not storage. So its
-`time` is stamped once, at entry, and **every round longer than about five minutes
-round-trips the player's belongings through the database while they are fighting.**
+So the bookkeeping is sound and the only hole was the unverified write. If players are
+still coming out invisible after this, the log will now say so outright; if it says
+nothing, the cause is not the bucket.
 
-With MySQL healthy that round-trip is lossless and none of this is visible. When the save
-does not land -- the database off, oxmysql down, a SELECT-only database user, a missing
-`ox_inventory` table -- the row stays at whatever it last was, and what comes back at the
-exit is **an older snapshot of that same stash**. Handed over on top of what they are
-already carrying, that is precisely "items they had and items they didn't have", and it
-repeats every round.
+### 2. Belongings duplicated after a match -- FIXED
 
-**What stops it today, with no code change:** put `set inventory:cleartime 60` in
-`server.cfg`. That raises the idle window to an hour, so a normal round never reaches the
-purge and the belongings never round-trip at all. Do this first -- it is reversible and it
-costs nothing.
+**Reproduced end to end through the real door, and it has nothing to do with
+`Config.Database.enabled`.** That flag only governs the leaderboard and the outstanding-kit
+slate; it never touches ox_inventory.
 
-**The fact I need from you:** "SQL off" has two meanings on this box and they lead to
-different fixes.
+The exit handed over **whatever was in the belongings stash**. Nothing anywhere asked
+whether the stash was still holding what the door left there. A player owning
+`ammo-rifle x40, burger x3, phone x1` walked out of one round holding:
 
-- If you mean **`Config.Database.enabled = false`** in the arena's own config -- that is
-  the default, and it only governs the leaderboard and the outstanding-kit slate. It does
-  **not** touch ox_inventory, so it cannot cause this, and something else is wrong.
-- If you mean **oxmysql stopped, or ox_inventory's own database writes failing** -- that
-  is this, exactly, and the fix is for the door to refuse to use a stash that cannot be
-  persisted and let the player keep their own kit instead.
+```
+ammo-rifle x40, burger x3, burger x3, lockpick x2, phone x1, phone x1
+```
 
-### 3. The police bag comes back empty -- same root, different item
+Two of most of it and one item they had never owned -- "the items they had and didn't
+have", precisely.
+
+**How things get into that stash while a round is running.** ox_inventory throws an idle
+inventory out of memory after `inventory:cleartime` (**five minutes** by default;
+`modules/inventory/server.lua:2411`, purge cron at `:2463`, the sweep at `:2449`-`:2457`)
+and reloads it from the database on the next touch (`:678`, `:640`, `:868`). `inv.time` is
+stamped at creation and refreshed **only when an inventory is closed** (`:625`, `:351`) --
+and nobody ever opens the arena's belongings stash, because it is a holding pen. So every
+round longer than about five minutes round-trips the player's belongings through a
+database row, and a row that did not get its last write comes back holding an **older
+round's contents**. It is also a real stash with a predictable name, so an admin tool or
+another resource can write to it.
+
+**The fix is in this resource, not in the mitigation.** `stow` now reports how many rows
+are in the stash the moment the door shuts, the record carries that as `allowed`, and
+`handBack` will not hand over more rows than that. The surplus is **never destroyed** -- it
+stays in the stash, and the stash is shut the way `jammedStash` shuts one the arena cannot
+account for: nothing more goes in or out of it until somebody looks.
+
+That ceiling is the **larger** of a read-back of the stash and a count of what went in,
+because every way of being wrong here has a safe direction and it is the same one. A merge
+makes the read smaller than the count; a split makes the count smaller than the read; and a
+stash ox_inventory has unloaded answers an **empty list** rather than an error, which on a
+read alone would be a ceiling of zero -- refusing a player their entire kit. Removing the
+count floor and running the suite does exactly that: the control test's player walks out
+with nothing at all.
+
+All three guards are load-bearing and each was proved by inverting it alone in a worktree.
+Leaving the surplus behind without shutting the stash was not enough: `ReturnLeftovers` is
+uncapped on purpose (after a restart nothing knows what went in, and a ceiling of zero
+there would refuse a player their whole kit), so the sweep collected the exact rows the
+exit had just refused and handed them over a tick later.
+
+Four tests in `doorguarantee_spec.lua`, **two of them controls** -- the one that matters is
+that the leftovers of an earlier exit that could not finish still come back, because those
+are the player's and a ceiling that refused them would be worse than the defect.
+
+**Still worth doing:** put `set inventory:cleartime 60` in `server.cfg`. The ceiling stops
+the duplication; raising the idle window stops the round-trip that causes it, and it is
+also the only thing that helps the police bag below.
+
+### 3. The police bag comes back empty -- mitigation only, not fixed in code
 
 A container item does not carry its contents in its metadata. ox_inventory keeps them in a
-**separate inventory** keyed by `metadata.container`
-(`modules/inventory/server.lua:294`-`:298`), of type `container`, persisted and reloaded
-through the same stash table (`:757`, `:868`).
+**separate inventory** keyed by `metadata.container` (`modules/inventory/server.lua:294`
+-`:298`), of type `container`, persisted and reloaded through the same stash table
+(`:757`, `:868`).
 
 This resource never touches container metadata and does not need to: `AddItem` preserves
 `metadata.container` (`modules/items/server.lua:194`-`:199`), so the bag keeps its link
-when it is moved into the stash and back.
+when it is moved into the stash and back. But that container inventory is also never open
+and never a player, so it sits in the same five-minute purge, and is reloaded out of the
+database on the next touch. **When the database cannot answer, it comes back with nothing
+in it.** The bag returns; what was in it does not.
 
-But that container inventory is also never open and never a player, so it sits in the same
-five-minute purge as everything else, and is reloaded out of the database on the next
-touch. **When the database cannot answer, it comes back with nothing in it.** The bag
-returns; what was in it does not.
-
-Same root cause as 2, same `inventory:cleartime` mitigation, and the same question about
-what "SQL off" means decides the same fix.
+Nothing in this resource can put those contents back -- they are gone from ox_inventory's
+memory and were never written down. `set inventory:cleartime 60` stops the purge from
+happening inside a round, which is the whole of the fix available from outside
+ox_inventory. The duplicate items the bag report also mentioned are a separate defect and
+are covered by the ceiling in 2.
 
 ---
 

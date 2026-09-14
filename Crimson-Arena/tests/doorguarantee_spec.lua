@@ -1088,4 +1088,122 @@ t.test('and the same names still reach the stash, so nobody loses their own', fu
         'and it did not come back: ' .. server.carrying(1))
 end)
 
+-- ========================================================================
+-- MORE IN THE STASH THAN THE DOOR PUT IN IT
+--
+-- The exit handed over WHATEVER was in the belongings stash. Nothing asked
+-- whether the stash was still holding what the door left there, and things
+-- get into it: ox_inventory throws an idle inventory out of memory after
+-- `inventory:cleartime` (five minutes by default) and reloads it from the
+-- database on the next touch, so any round longer than that round-trips
+-- these belongings through a row that may not have had the last write. It is
+-- also a real stash with a predictable name that an admin tool or another
+-- resource can write to.
+--
+-- Reported off a live server as a match "duplicating the items they had and
+-- didn't have", and that is exactly what it produced here.
+-- ========================================================================
+
+t.test('DEFECT: rows that appear in the stash mid-round are NOT handed over', function()
+    local server, matchId = liveMatch({ 1, 2 })
+
+    -- An older snapshot of this same stash coming back, which is what a
+    -- reload from a stale row looks like -- two of what they own and one
+    -- thing they never did.
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.stashItem('crimson_arena_CID1', 'burger', 3)
+    server.stashItem('crimson_arena_CID1', 'lockpick', 2)
+
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.carrying(1), INTACT,
+        'THEY WALKED OUT WITH TWO OF EVERYTHING AND A LOCKPICK THEY NEVER OWNED')
+    t.equals(server.stashed(1), 'burgerx3,lockpickx2,phonex1',
+        'the surplus was not left where an admin can settle it')
+    t.contains(server.log(), 'appeared while',
+        'it handed back only what it took and said nothing about the rest')
+end)
+
+t.test('and the sweep does not come back and hand the surplus over a tick later', function()
+    -- ArenaAmmo.ReturnLeftovers is UNCAPPED on purpose -- after a restart
+    -- nothing knows what went into a stash, and a ceiling of zero there
+    -- would refuse a player their whole kit. So refusing the rows and
+    -- leaving them lying there was not enough on its own: the sweep
+    -- collected the exact rows the exit had just refused. The refusal shuts
+    -- the stash, which is what makes it stick.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+
+    for _ = 1, 6 do server.step(8) end
+
+    t.equals(server.carrying(1), INTACT, 'the sweep handed over what the exit refused')
+    t.equals(server.stashed(1), 'phonex1', 'and the surplus is still there to be settled')
+end)
+
+t.test('CONTROL: the leftovers of an earlier exit that could not finish still come back', function()
+    -- THE REGRESSION THIS CEILING COULD CAUSE, and it is the unforgivable
+    -- one. A stash can already have things in it when the door shuts -- an
+    -- exit that could not finish leaves them there on purpose, and they are
+    -- the player's. stow() counts them, so they are INSIDE the ceiling.
+    -- Without that this test fails and somebody loses their property.
+    local server = newServer({ 1, 2 })
+    server.stashItem('crimson_arena_CID1', 'lockpick', 2)
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.match.End(match.id, 'match.ended')
+    server.step(8)
+
+    t.equals(server.carrying(1), 'ammo-rifle-apx40,burgerx3,lockpickx2,phonex1',
+        'a player lost belongings that were legitimately waiting in their stash')
+    t.equals(server.stashed(1), '', 'and the stash was not emptied')
+end)
+
+t.test('CONTROL: an ordinary round is untouched by any of this', function()
+    -- Without this the three above pass on a build that simply refuses
+    -- everything, which is worse than the defect.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.carrying(1), INTACT)
+    t.equals(server.stashed(1), '')
+    t.isNil(server.log():find('appeared while', 1, true),
+        'it refused something on a round where nothing appeared')
+end)
+
+t.test('CONTROL: a stash that reads EMPTY the instant after it is filled is not a ceiling of zero', function()
+    -- THE TRAP THIS FILE IS BUILT AROUND, aimed at the new ceiling. A stash
+    -- ox_inventory has not loaded answers an EMPTY list rather than an
+    -- error, and reading the ceiling off the stash alone would therefore set
+    -- it to zero for exactly that case -- and a ceiling of zero refuses the
+    -- player their entire kit at the exit. The count is kept as the floor
+    -- for this reason and no other.
+    local server = newServer({ 1, 2 })
+    server.forgetStash(1)          -- it fills, and every read of it says empty
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.forgetStash(1, false)   -- ox loads it again, and it was full all along
+
+    server.match.End(match.id, 'match.ended')
+    server.step(8)
+
+    t.equals(server.carrying(1), INTACT, 'A PLAYER WAS REFUSED THEIR OWN BELONGINGS')
+    t.isNil(server.log():find('appeared while', 1, true),
+        'it called their own kit a surplus and shut the stash on them')
+end)
+
 os.exit(t.summary())

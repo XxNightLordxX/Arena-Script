@@ -928,6 +928,37 @@ local function sendExitArena(src, payload)
     ArenaAmmo.Reclaim(src, 'left the arena')
 
     ArenaDispatch.Clear(src)
+
+    -- AND THEY ARE NO LONGER WATCHING IT EITHER, which this choke point did
+    -- not say and had to.
+    --
+    -- THE DEFECT, traced off a live server through the client's own console.
+    -- An eliminated fighter is made a SPECTATOR of the round that just put
+    -- them out -- AddSpectator sets spectatorIndex[src] and the client starts
+    -- its camera, which hides their ped. That is correct while the round runs.
+    -- What was missing is the other half: being sent home did not stop them
+    -- being a watcher, so `spectating` was still set in the very next state
+    -- broadcast -- and client/spectate.lua starts watching whatever that
+    -- field names. So the client was told to start spectating a match it had
+    -- just been sent home from, and hid the player's ped again AFTER
+    -- leaveArena had finished putting them right.
+    --
+    -- The tell in the client log, one frame apart:
+    --
+    --   you left the arena invisible and this resource has just put you back
+    --   arena scenery: 87 of 87 piece(s) built
+    --
+    -- The second line is the spectator camera building the arena to look at.
+    --
+    -- IT BELONGS HERE AND NOWHERE ELSE, for the reason this function's own
+    -- header gives about the dispatch flag and the bucket: there are five
+    -- ways out of a round and a flag cleared at only some of them is a flag
+    -- that outlives the round. Quiet, because the player is not being told
+    -- they stopped watching -- they are being told they left.
+    if type(ArenaLobby) == 'table' and type(ArenaLobby.RemoveSpectator) == 'function' then
+        ArenaLobby.RemoveSpectator(src, true)
+    end
+
     ArenaDispatch.ExitBucket(src)
     instanced[src] = nil
 

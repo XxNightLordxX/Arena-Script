@@ -2251,6 +2251,7 @@ local function leaveArena(returnCoords)
         visibilityToken = visibilityToken + 1
         local token = visibilityToken
         local until_ = GetGameTimer() + VISIBILITY_WATCH_MS
+        local said = false
 
         CreateThread(function()
             while visibilityToken == token and GetGameTimer() < until_ do
@@ -2259,16 +2260,30 @@ local function leaveArena(returnCoords)
 
                 if ok and showing == false then
                     SetEntityVisible(here, true, false)
-                    -- SAID ONCE AND THEN THE WATCH STOPS. A correction here
-                    -- means something is still hiding them after the round,
-                    -- and the player standing there unable to see themselves
-                    -- is the only one who can say what they were doing when
-                    -- it happened. NOT behind Config.Debug, for that reason.
-                    print('[crimson_arena] you left the arena invisible and this resource has just '
-                        .. 'put you back. Something on this server hides a player when they die and '
-                        .. 'does not put them back -- please tell the server owner it happened, and '
-                        .. 'whether you were eliminated, watching, or died on the last kill.')
-                    return
+
+                    -- SAID ONCE, BUT PUT RIGHT EVERY TIME IT HAPPENS INSIDE
+                    -- THE WINDOW.
+                    --
+                    -- This used to correct once and return, and once was not
+                    -- enough: the thing hiding them landed AFTER the
+                    -- correction, so the arena put them back and was then
+                    -- overruled a fraction of a second later with nothing
+                    -- left watching. Measured on a live server -- the player
+                    -- read this line in their own console and was still
+                    -- invisible.
+                    --
+                    -- It is still bounded: the window closes on its own and a
+                    -- new round cancels it, so this cannot become a loop that
+                    -- argues with another resource for ever. Only the LINE is
+                    -- once, because one is a report and twenty is noise.
+                    if not said then
+                        said = true
+                        print('[crimson_arena] you left the arena invisible and this resource has '
+                            .. 'just put you back. Something on this server hides a player when they '
+                            .. 'die and does not put them back -- please tell the server owner it '
+                            .. 'happened, and whether you were eliminated, watching, or died on the '
+                            .. 'last kill.')
+                    end
                 end
 
                 Wait(250)

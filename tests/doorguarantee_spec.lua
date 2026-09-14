@@ -136,6 +136,11 @@ local function newServer(ids, mutate, extra, opts)
         return 'mixed'
     end
 
+    --- Set by server.watchClientEvents, called for every TriggerClientEvent.
+    --- Declared HERE rather than on the fixture table because the env closure
+    --- below is built before that table exists.
+    local clientEventHook = nil
+
     local function bucket(id)
         if type(id) == 'number' then
             inv[id] = inv[id] or {}
@@ -358,7 +363,14 @@ local function newServer(ids, mutate, extra, opts)
         Wait = threads.Wait,
         SetTimeout = threads.SetTimeout,
         print = function(line) console[#console + 1] = line end,
-        TriggerClientEvent = function() end,
+        -- INTERCEPTABLE, so a test can ask what the SERVER's own state was at
+        -- the instant a particular message went out. Some defects are purely
+        -- about ordering -- a flag cleared a moment too late is still cleared
+        -- by the time anything asks afterwards -- and the only way to catch
+        -- those is to look while the message is being sent.
+        TriggerClientEvent = function(name, target, payload)
+            if clientEventHook then clientEventHook(name, target, payload) end
+        end,
         TriggerEvent = function() end,
         RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
         AddEventHandler = function(name, fn) handlers[name] = fn end,
@@ -637,6 +649,16 @@ local function newServer(ids, mutate, extra, opts)
     --- them to do before clearing it.
     function server.emptyStash(stash)
         stashes[stash] = {}
+    end
+
+    --- Watches every message the server sends a client, so a test can ask what
+    --- the SERVER's own state was at the instant a particular one went out.
+    --- Some defects are purely about ORDER -- a flag cleared a moment too late
+    --- is still cleared by the time anything asks afterwards -- and looking
+    --- while the message is in flight is the only way to catch those.
+    --- @param fn fun(name: string, target: any, payload: any)|nil
+    function server.watchClientEvents(fn)
+        clientEventHook = fn
     end
 
     --- Runs a console command, the way an operator at the server would.
@@ -3144,6 +3166,67 @@ t.test('CONTROL: a player standing in the lobby is not refused, and no reason is
 
     t.isTrue(ok, 'somebody who is nowhere near a round could not be settled')
     t.isNil(why, 'a clean settle came back carrying a refusal reason')
+end)
+
+-- ========================================================================
+-- SENT HOME MEANS SENT HOME, INCLUDING FROM THE CAMERA
+--
+-- An eliminated fighter is made a SPECTATOR of the round that just put them
+-- out: AddSpectator sets the flag and their client starts a camera, which
+-- hides their ped. Correct while the round runs.
+--
+-- What was missing is the other half. Being sent home did not stop them
+-- being a watcher, so `spectating` was still set in the very next state
+-- broadcast -- and client/spectate.lua starts watching whatever that field
+-- names. The client was told to start spectating a match it had just been
+-- sent home from, and hid the player's ped again AFTER leaveArena had
+-- finished putting them right. From the player's own console, one frame
+-- apart:
+--
+--   you left the arena invisible and this resource has just put you back
+--   arena scenery: 87 of 87 piece(s) built
+--
+-- The second line is the spectator camera building the arena to look at.
+--
+-- THE CLOSE ALREADY CLEARED IT, WHICH IS WHY THIS IS ABOUT ORDER. Ending a
+-- match walks its spectators and clears every one -- so by the time anything
+-- asks afterwards the flag is gone, and a test that only looks at the end
+-- sees nothing wrong. The window that matters is between the exit being sent
+-- and the match closing, because that is where a state broadcast lands.
+-- ========================================================================
+
+t.test('THE DEFECT: they are no longer watching AT THE MOMENT the exit is sent', function()
+    local server, matchId = liveMatch({ 1, 2 })
+
+    -- Eliminated, and therefore made a watcher of the round that put them out
+    -- -- which is what server/match.lua does on every elimination when
+    -- Config.Match.spectateOnElimination is on.
+    local live = server.lobby.Get(matchId)
+    t.isNotNil(live, 'premise: the match can be reached')
+    t.isNotNil(live.players[2], 'premise: player 2 is in it')
+    live.players[2].alive = false
+    live.players[2].lives = 0
+
+    t.isTrue(server.lobby.AddSpectator(2, matchId) == true,
+        'premise: an eliminated fighter can be made a watcher')
+
+    -- What the server believed about them at the instant it told them to go.
+    local watchingWhenSentHome = nil
+    server.watchClientEvents(function(name, target)
+        if name == 'crimson_arena:client:exitArena' and target == 2 then
+            watchingWhenSentHome = server.lobby.RemoveSpectator(2) == true
+        end
+    end)
+
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+    server.watchClientEvents(nil)
+
+    t.isNotNil(watchingWhenSentHome, 'the exit was never sent to that player at all')
+    t.isFalse(watchingWhenSentHome,
+        'they were sent home STILL FLAGGED as watching the round -- so the next state '
+        .. 'broadcast tells their client to start a spectator camera, which hides their ped '
+        .. 'again after everything else has finished putting them right')
 end)
 
 os.exit(t.summary())

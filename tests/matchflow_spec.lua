@@ -3179,6 +3179,42 @@ t.test('THE DEFECT: something that hides them AFTER the round is still caught', 
         'they were hidden after the arena had finished looking, and nothing was watching')
 end)
 
+t.test('and it keeps putting them back, because ONE correction was not enough', function()
+    -- MEASURED ON A LIVE SERVER: the player read the correction in their own
+    -- console and was STILL invisible. The thing hiding them landed after the
+    -- arena had corrected once and stopped watching -- an eliminated fighter
+    -- was being told to start SPECTATING the round they had just been sent
+    -- home from, and the camera hides the ped.
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+    f.fireThreaded('crimson_arena:client:exitArena', {})
+    f.step()
+
+    -- Hidden, put right, and then hidden AGAIN a beat later.
+    for _ = 1, 3 do
+        f.visible = false
+        f.clock = f.clock + 300
+        for _ = 1, 2 do f.step() end
+        t.isTrue(f.visible, 'it corrected once and then stopped watching')
+    end
+
+    -- And it did not turn the report into a wall of text.
+    local lines = 0
+    for _, line in ipairs(f.printed or {}) do
+        if line:find('just put you back', 1, true) then lines = lines + 1 end
+    end
+    t.equals(lines, 1, 'it said its piece once per round, not once per correction')
+end)
+
 t.test('and the watch gives up rather than fighting forever', function()
     -- It must not become a loop that argues with whatever is doing it: it
     -- corrects once, says so, and stops. Well past the window, a player who

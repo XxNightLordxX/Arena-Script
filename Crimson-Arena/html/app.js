@@ -108,6 +108,12 @@
         createTiers: {},
         createLimit: null,
         createRound: null,
+        /* WHETHER THE HOST HAS TOUCHED THE ROUND LENGTH BOX.
+           Until they do, the box FOLLOWS THE MODE -- see seedRoundForMode.
+           A plain "is it still null" test cannot stand in for this, because
+           the box is seeded on the very first snapshot and is never null
+           again after that. */
+        createRoundTouched: false,
 
         seededFromMatch: null,
 
@@ -279,6 +285,76 @@
         var mins = Math.floor(total / 60);
         var secs = total % 60;
         return String(mins) + ':' + (secs < 10 ? '0' : '') + String(secs);
+    }
+
+    // ==================================================================
+    // ROUND LENGTH: TYPED IN MINUTES, SENT IN SECONDS
+    //
+    // The host thinks in minutes -- "give it ten" -- and the box used to want
+    // 600. Nothing on the screen said which unit it wanted, so a host typing
+    // 10 got a ten SECOND round, and one typing 600 while reading "minutes"
+    // would have got ten hours if the band allowed it.
+    //
+    // THE UNIT CHANGED ON THE SCREEN ONLY. `state.createRound` is still
+    // seconds and still goes out as `roundTimeSeconds`, because that is what
+    // Config.Match, every mode's own override and the round clock all speak.
+    // The two functions below are the whole of the conversion, and they sit
+    // together so neither can drift from the other.
+    // ==================================================================
+
+    // The operator's band expressed in WHOLE MINUTES, or null when no whole
+    // minute fits inside it.
+    //
+    // Rounded INWARDS on both ends -- up for the floor, down for the ceiling
+    // -- so every minute the box will accept is a number the server will too.
+    // Rounding outwards would offer a host a value the create call then
+    // refused, which is the worse failure: the form would be lying.
+    //
+    // Null is not a bug. An operator is allowed to write min = 30, max = 50,
+    // and there is no whole minute in that; the caller falls back to seconds
+    // and says so, rather than presenting an empty band or quietly widening
+    // somebody's rule.
+    function roundMinuteBand(choice) {
+        if (!choice || typeof choice !== 'object') return null;
+        var lo = Math.max(1, int(choice.min, 1));
+        var hi = Math.max(lo, int(choice.max, lo));
+        var loM = Math.max(1, Math.ceil(lo / 60));
+        var hiM = Math.floor(hi / 60);
+        if (hiM < loM) return null;
+        return { min: loM, max: hiM };
+    }
+
+    // Seconds, snapped to something the minutes box can show without lying.
+    //
+    // A config default of 450 is 7.5 minutes, and a box reading 8 over a
+    // state holding 450 is exactly the disagreement this whole change is
+    // about -- so the snap happens on the way IN, at every point the form
+    // seeds or takes a value, and the box and the state always agree.
+    // Clamped last, because rounding to the nearest minute can step outside
+    // a band that rounding inwards had already fitted.
+    function snapRoundSeconds(seconds, choice) {
+        var band = roundMinuteBand(choice);
+        var wanted = Math.max(0, int(seconds, 0));
+        if (!band) {
+            if (!choice || typeof choice !== 'object') return wanted;
+            return clampInt(wanted, Math.max(1, int(choice.min, 1)),
+                Math.max(1, int(choice.max, 1)));
+        }
+        if (wanted <= 0) return band.min * 60;
+        return clampInt(Math.round(wanted / 60), band.min, band.max) * 60;
+    }
+
+    // What the round clock would be for a mode, in seconds.
+    //
+    // THE MODE'S OWN NUMBER FIRST. `Arena.RoundSecondsFor` has already done
+    // this resolution on the server -- gun game ships 480 against a global
+    // default of 600 -- and sends the answer on each mode. Reading it is what
+    // stops the panel proposing the global number for a mode that has its
+    // own.
+    function modeRoundSeconds(mode, config) {
+        var own = mode && mode.roundTimeSeconds;
+        if (own !== undefined && own !== null && int(own, 0) > 0) return int(own, 0);
+        return int((config.match || {}).roundTimeSeconds, 0);
     }
 
     function teamColor(team) {
@@ -1023,8 +1099,22 @@
         if (state.createLives === null) {
             state.createLives = int((config.match || {}).lives, 1);
         }
-        if (state.createRound === null) {
-            state.createRound = int((config.match || {}).roundTimeSeconds, 0);
+        /* THE ROUND LENGTH FOLLOWS THE MODE UNTIL THE HOST TAKES IT OVER.
+           THE DEFECT: this seeded once, from Config.Match.roundTimeSeconds --
+           the GLOBAL default -- and never looked again. The panel posts that
+           number on every create, and the server reads any in-range value as
+           a deliberate choice by the host, so it shadowed the mode's own
+           clock. Gun game ships a designed 480-second ladder and every gun
+           game ever created from this panel ran 600, and an operator who
+           shortened it to 120 still got 600. The mode's own setting was
+           unreachable through the only path a player can create a match by.
+           SNAPPED ON THE WAY IN, not on the way to the box. A mode default of
+           450 is seven and a half minutes and the minutes box can only show 7
+           or 8 -- so the value the form holds is made one the box can show,
+           here, rather than the two disagreeing until the host touches it. */
+        if (!state.createRoundTouched) {
+            var forMode = modeRoundSeconds(modeByKey(state.createMode), config);
+            state.createRound = snapRoundSeconds(forMode, (config.match || {}).roundTimeChoice);
         }
         if (state.createWin === null) {
             state.createWin = keyOr((config.match || {}).winCondition, 'last_standing');
@@ -1057,7 +1147,14 @@
             state.createArena = editable.arenaKey || state.createArena;
             state.createMode = editable.modeKey || state.createMode;
             state.createLives = int(editable.lives, int(state.createLives, 1));
-            state.createRound = int(editable.roundTimeSeconds, int(state.createRound, 0));
+            /* AND AN OPEN LOBBY'S LENGTH IS ALREADY SOMEBODY'S DECISION, so
+               seeding from it counts as touching the box: a host who then
+               changes the mode keeps the length their lobby is running, and
+               does not have it silently rewritten under the players in it. */
+            state.createRound = snapRoundSeconds(
+                int(editable.roundTimeSeconds, int(state.createRound, 0)),
+                (config.match || {}).roundTimeChoice);
+            state.createRoundTouched = true;
             state.createWin = keyOr(editable.winCondition, state.createWin);
             state.createTiers = (editable.tierPlan && typeof editable.tierPlan === 'object')
                 ? editable.tierPlan
@@ -1068,6 +1165,10 @@
             state.seededFromMatch = null;
             state.createRadar = null;
             state.createTiers = {};
+            /* AND THE ROUND LENGTH GOES BACK TO FOLLOWING THE MODE. The lobby
+               that owned that number is gone; keeping it would carry one
+               match's clock into the next host's form. */
+            state.createRoundTouched = false;
         }
 
         /* JOINING A MATCH MOVES YOU TO THE LOBBY TAB. ONCE, ON THE JOIN.
@@ -1664,21 +1765,44 @@
         var roundUsed = !!roundChoice;
         show(byId('create-round-row'), roundUsed);
 
+        /* MINUTES IN THE BOX WHEREVER THE OPERATOR'S BAND HOLDS A WHOLE ONE,
+           which is every shipped configuration and very nearly every other.
+           `roundMinuteBand` answers null only for a band too narrow to hold
+           one -- min 30, max 50, say -- and there the control stays in
+           seconds and the hint says seconds, because an empty minutes box
+           would be worse than an honest one in the smaller unit. */
+        var roundBand = roundUsed ? roundMinuteBand(roundChoice) : null;
+
         var roundInput = byId('create-round');
         if (has(roundInput) && roundUsed) {
-            roundInput.min = String(int(roundChoice.min, 1));
-            roundInput.max = String(int(roundChoice.max, 1));
+            roundInput.min = String(roundBand ? roundBand.min : int(roundChoice.min, 1));
+            roundInput.max = String(roundBand ? roundBand.max : int(roundChoice.max, 1));
+            /* THE STEP GOES BACK TO ONE. The markup ships step="30", which was
+               right for a box counting seconds and is nonsense for one
+               counting minutes -- the arrows would have jumped half an hour
+               at a time, and a typed 11 would have failed the browser's own
+               step validation against a min of 1. */
+            roundInput.step = '1';
             if (document.activeElement !== roundInput) {
-                roundInput.value = String(int(state.createRound, 0));
+                roundInput.value = String(roundBand
+                    ? Math.round(int(state.createRound, 0) / 60)
+                    : int(state.createRound, 0));
             }
         }
 
         var roundHint = byId('create-round-hint');
         if (has(roundHint)) {
-            roundHint.textContent = roundUsed
-                ? 'How long a round runs, in seconds — ' + clock(int(state.createRound, 0))
-                  + '. ' + int(roundChoice.min, 1) + ' to ' + int(roundChoice.max, 1) + '.'
-                : '';
+            if (!roundUsed) {
+                roundHint.textContent = '';
+            } else if (roundBand) {
+                roundHint.textContent = 'How long a round runs, in minutes \u2014 '
+                    + clock(int(state.createRound, 0)) + ' on the round clock. '
+                    + roundBand.min + ' to ' + roundBand.max + '.';
+            } else {
+                roundHint.textContent = 'How long a round runs, in seconds \u2014 '
+                    + clock(int(state.createRound, 0)) + '. '
+                    + int(roundChoice.min, 1) + ' to ' + int(roundChoice.max, 1) + '.';
+            }
         }
 
         var livesNote = byId('create-lives-note');
@@ -5154,6 +5278,21 @@
 
     bind('create-mode', 'change', function (event) {
         state.createMode = event.target.value;
+
+        /* AND THE ROUND LENGTH MOVES WITH IT, until the host says otherwise.
+           Gun game's designed clock is 480 seconds against a global default
+           of 600, so picking it has to move the box -- otherwise the form
+           shows, and then creates, a length the mode never asked for. Done
+           here as well as in applySnapshot because changing the select does
+           not wait for a broadcast, and a box that only caught up on the next
+           one would be the number the host pressed Create against. */
+        if (!state.createRoundTouched) {
+            var config = cfg();
+            state.createRound = snapRoundSeconds(
+                modeRoundSeconds(modeByKey(state.createMode), config),
+                (config.match || {}).roundTimeChoice);
+        }
+
         render();
     });
 
@@ -5163,18 +5302,34 @@
     });
 
     bind('create-round', 'input', function (event) {
-        var choice = (cfg().match || {}).roundTimeChoice || {};
-        state.createRound = clampInt(event.target.value, int(choice.min, 1), int(choice.max, 1));
+        var choice = (cfg().match || {}).roundTimeChoice;
+        var band = roundMinuteBand(choice);
+        var typed = event.target.value;
+
+        /* WHAT THE HOST TYPED IS MINUTES, and sixty times it is what the
+           server is told. Clamped in minutes and multiplied afterwards, so
+           the result is always a whole minute -- clamping in seconds first
+           could land on 3599 and put a number in the box that rounds to a
+           minute the band does not allow. */
+        state.createRound = band
+            ? clampInt(typed, band.min, band.max) * 60
+            : clampInt(typed, Math.max(1, int((choice || {}).min, 1)),
+                Math.max(1, int((choice || {}).max, 1)));
+
+        /* AND FROM HERE THE BOX IS THEIRS. Changing the mode afterwards must
+           not throw away a number the host typed on purpose. */
+        state.createRoundTouched = true;
+
         /* AND REDRAW, because this is the one field on the form whose hint
-           quotes the value back: "How long a round runs, in seconds -- 10:00".
-           Without this the clock beside the box kept whatever it said at the
-           last render, so a host typing 300 was still being told 10:00 --
-           the number they were about to rely on, wrong, right next to the
-           box they had just changed. `create-limit` beside it already does
-           this; `create-lives` does not need to, because its hint names only
-           the band. Safe here: this input is static markup in index.html, so
-           a render updates its value rather than replacing the node, and the
-           caret stays where it is. */
+           quotes the value back: "How long a round runs, in minutes -- 10:00
+           on the round clock". Without this the clock beside the box kept
+           whatever it said at the last render, so a host typing 5 was still
+           being told 10:00 -- the number they were about to rely on, wrong,
+           right next to the box they had just changed. `create-limit` beside
+           it already does this; `create-lives` does not need to, because its
+           hint names only the band. Safe here: this input is static markup in
+           index.html, so a render updates its value rather than replacing the
+           node, and the caret stays where it is. */
         render();
     });
 

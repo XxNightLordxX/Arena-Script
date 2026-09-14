@@ -325,6 +325,19 @@ function loadPanel(root) {
             node.value = String(value);
             this.fire(id, 'input', { target: { value: String(value) } });
         },
+        /**
+         * Chooses an option in a select and fires `change`, as a player does.
+         *
+         * The two-line version of this -- set `.value`, then fire -- is what
+         * every test that drives a dropdown was already writing by hand, and
+         * writing it by hand is how a test ends up setting the value without
+         * firing the event, which passes against a panel nobody told.
+         */
+        pick(id, value) {
+            const node = this.node(id);
+            node.value = String(value);
+            this.fire(id, 'change', { target: { value: String(value) } });
+        },
     };
 }
 

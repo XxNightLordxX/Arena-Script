@@ -1468,6 +1468,7 @@ option {
 #admin-player,
 #admin-stashes,
 #admin-stash-detail,
+#admin-tools,
 #admin-shut {
     display: flex;
     flex-direction: column;
@@ -1490,6 +1491,7 @@ option {
 #admin-detail-title,
 #admin-player-title,
 #admin-stash-title,
+#admin-tool-title,
 #admin-shut-title {
     margin: 0;
     font-family: var(--font-display);
@@ -1691,4 +1693,42 @@ option {
 #admin-shut .hint {
     flex: 0 0 auto;
     font-size: 1rem;
+}
+
+/* THE TOOLS TAB. The admin reports, so an operator reads them on the screen
+   they already have open instead of typing a command at a console they may
+   not be sitting at. */
+#admin-tool-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+}
+
+#admin-tool-picker .btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+#admin-tool-out {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.9rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent-dim);
+}
+
+/* MONOSPACE AND WHITESPACE PRESERVED, because these reports line their
+   columns up with leading spaces and indent their sub-entries by two. In a
+   proportional font with whitespace collapsed, a roll-call of twenty players
+   reads as one paragraph. */
+.admin-tool-line {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
 }

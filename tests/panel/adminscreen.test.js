@@ -810,5 +810,104 @@ test('THE UNTRUTH: a round with no lives still counted them down at the admin', 
         'the rest of the row went with it, so this is passing on an empty screen: ' + facts);
 });
 
+/*
+    THE TOOLS TAB. The operator's ask, in their words: put the admin
+    commands "in there instead of typing stuff out". Three reports, each the
+    same reading the matching console command prints.
+*/
+
+test('the Tools tab opens and closes the other two', () => {
+    const panel = opened();
+    panel.fire('admin-tab-tools', 'click');
+
+    assert.ok(!hidden(panel, 'admin-tools'), 'the Tools tab did not open');
+    assert.ok(hidden(panel, 'admin-list'), 'the match list is still drawn behind Tools');
+    assert.ok(hidden(panel, 'admin-stashes'), 'the stash list is still drawn behind Tools');
+    assert.ok(panel.node('admin-tab-tools').classList.contains('active'),
+        'the Tools tab is open and its tab is not marked active');
+});
+
+test('pressing a report asks the server for exactly that one', () => {
+    const panel = opened();
+    panel.fire('admin-tab-tools', 'click');
+    panel.fire('admin-tool-isolation', 'click');
+
+    const asks = postsNamed(panel, 'adminTool');
+    assert.strictEqual(asks.length, 1, 'the button asked for ' + asks.length + ' reports');
+    assert.strictEqual(asks[0].body.tool, 'isolation',
+        'the button asked for the wrong report: ' + asks[0].body.tool);
+    assert.ok(!hidden(panel, 'admin-tool-waiting'),
+        'nothing told the operator the reading was being taken');
+});
+
+test('and the answer is drawn, one line per line', () => {
+    const panel = opened();
+    panel.fire('admin-tab-tools', 'click');
+    panel.fire('admin-tool-isolation', 'click');
+    panel.send('adminTool', {
+        tool: 'isolation',
+        title: 'Instancing',
+        lines: ['  7 (John Allday) is in bucket 0', '  8 (Someone) is in bucket 4210'],
+    });
+
+    const out = panel.text('admin-tool-out');
+    assert.ok(/bucket 0/.test(out) && /bucket 4210/.test(out),
+        'the report came back and the screen does not show it: ' + out);
+    assert.ok(hidden(panel, 'admin-tool-waiting'),
+        'the answer arrived and the screen still says it is waiting');
+    assert.ok(/Instancing/.test(panel.text('admin-tool-title')),
+        'the report is drawn under no heading');
+});
+
+test('THE RACE: a slow report does not land on top of the one being read', () => {
+    /* Press Instancing, change your mind, press Opening hours. The first
+       answer is still in flight. Drawn, it would replace the report the
+       operator is actually looking at with one they have moved on from --
+       and nothing on screen would say which of the two they were reading. */
+    const panel = opened();
+    panel.fire('admin-tab-tools', 'click');
+    panel.fire('admin-tool-isolation', 'click');
+    panel.fire('admin-tool-hours', 'click');
+
+    panel.send('adminTool', { tool: 'hours', title: 'Opening hours', lines: ['arena hours: ON'] });
+    panel.send('adminTool', { tool: 'isolation', title: 'Instancing', lines: ['bucket roll-call'] });
+
+    const out = panel.text('admin-tool-out');
+    assert.ok(/arena hours: ON/.test(out),
+        'the report the operator asked for last is not the one on screen: ' + out);
+    assert.ok(!/bucket roll-call/.test(out),
+        'a report the operator had moved on from overwrote the one they were reading: ' + out);
+});
+
+test('a player name in a report is text, never markup', () => {
+    /* These lines carry player names, and a name is whatever the player
+       typed. Built as innerHTML, a name could close the tag and write its
+       own -- inside the one screen only admins can open. */
+    const panel = opened();
+    panel.fire('admin-tab-tools', 'click');
+    panel.fire('admin-tool-isolation', 'click');
+    panel.send('adminTool', {
+        tool: 'isolation',
+        title: 'Instancing',
+        lines: ['  7 (<img src=x onerror=alert(1)>) is in bucket 0'],
+    });
+
+    const node = panel.node('admin-tool-out');
+    assert.strictEqual(node.querySelectorAll('img').length, 0,
+        'a player name was rendered as markup inside the admin tablet');
+    assert.ok(/onerror/.test(panel.text('admin-tool-out')),
+        'the name was dropped rather than shown as text, so this is passing on an empty screen');
+});
+
+test('a report with nothing to say is an answer, not a hang', () => {
+    const panel = opened();
+    panel.fire('admin-tab-tools', 'click');
+    panel.fire('admin-tool-jams', 'click');
+    panel.send('adminTool', { tool: 'jams', title: 'Held-back stashes', lines: [] });
+
+    assert.ok(hidden(panel, 'admin-tool-waiting'),
+        'an empty report left the screen saying it was still being taken');
+});
+
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length > 0 ? 1 : 0);

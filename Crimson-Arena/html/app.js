@@ -3485,6 +3485,15 @@
         hoursOpensAt: null,
         tab: null,
         stash: null,
+        /* The Tools tab: which report was asked for, and what came back.
+           `toolWaiting` is not derived from `toolLines` being empty -- a
+           report that genuinely has nothing to say is a real answer, and
+           conflating the two would leave the screen saying "asking..."
+           forever on the quietest possible server. */
+        tool: null,
+        toolTitle: null,
+        toolLines: [],
+        toolWaiting: false,
     };
 
     function adminRefresh() {
@@ -3578,7 +3587,8 @@
         }
 
         var onStashes = admin.tab === 'stashes';
-        var onMatches = !onStashes && !shut;
+        var onTools = admin.tab === 'tools';
+        var onMatches = !onStashes && !onTools && !shut;
 
         var stash = null;
         if (onStashes && admin.stash !== null) {
@@ -3587,9 +3597,9 @@
             });
         }
 
-        var row = onStashes ? null : adminPlayerRow();
+        var row = (onStashes || onTools) ? null : adminPlayerRow();
         var onPlayer = row !== null;
-        var onMatch = !onStashes && !onPlayer && admin.focused !== null;
+        var onMatch = !onStashes && !onTools && !onPlayer && admin.focused !== null;
         var onStash = stash !== null;
 
         show(byId('admin-list'), onMatches && !onPlayer && !onMatch);
@@ -3597,11 +3607,44 @@
         show(byId('admin-player'), onMatches && onPlayer);
         show(byId('admin-stashes'), onStashes && !onStash);
         show(byId('admin-stash-detail'), onStashes && onStash);
+        show(byId('admin-tools'), onTools);
 
         var matchesTab = byId('admin-tab-matches');
         var stashesTab = byId('admin-tab-stashes');
+        var toolsTab = byId('admin-tab-tools');
         if (has(matchesTab)) matchesTab.classList.toggle('active', onMatches);
         if (has(stashesTab)) stashesTab.classList.toggle('active', onStashes);
+        if (has(toolsTab)) toolsTab.classList.toggle('active', onTools);
+
+        if (onTools) {
+            arrayOf(['isolation', 'hours', 'jams']).forEach(function (name) {
+                var button = byId('admin-tool-' + name);
+                if (has(button)) button.classList.toggle('active', admin.tool === name);
+            });
+
+            var heading = byId('admin-tool-title');
+            if (has(heading)) {
+                heading.textContent = admin.toolTitle || '';
+                show(heading, admin.toolTitle !== null);
+            }
+
+            show(byId('admin-tool-waiting'), admin.toolWaiting);
+            show(byId('admin-tool-hint'), admin.tool === null);
+
+            var out = byId('admin-tool-out');
+            if (has(out)) {
+                clear(out);
+                /* ONE ELEMENT PER LINE, textContent not innerHTML. These
+                   lines carry player names, which are player-supplied: built
+                   as markup, a name could close the tag and write its own.
+                   The reports are also pre-indented with spaces, so the CSS
+                   for this block preserves whitespace. */
+                arrayOf(admin.toolLines).forEach(function (line) {
+                    out.appendChild(makeEl('p', 'admin-tool-line', String(line)));
+                });
+                show(out, arrayOf(admin.toolLines).length > 0);
+            }
+        }
 
         var list = byId('admin-matches');
         if (has(list)) {
@@ -3969,6 +4012,23 @@
                     admin.player = null;
                     admin.tab = null;
                     admin.stash = null;
+                    admin.tool = null;
+                    admin.toolTitle = null;
+                    admin.toolLines = [];
+                    admin.toolWaiting = false;
+                    renderAdmin();
+                    break;
+
+                case 'adminTool':
+                    if (!admin.open) break;
+                    /* IGNORED IF IT IS NOT THE ONE ON SCREEN. An operator
+                       who pressed Instancing, changed their mind and
+                       pressed Opening hours must not have the slower of the
+                       two land on top of the one they are reading. */
+                    if (data.tool !== admin.tool) break;
+                    admin.toolTitle = typeof data.title === 'string' ? data.title : null;
+                    admin.toolLines = arrayOf(data.lines);
+                    admin.toolWaiting = false;
                     renderAdmin();
                     break;
 
@@ -4228,6 +4288,26 @@
            line that survives every mutation and reassures nobody. */
         admin.tab = 'matches';
         renderAdmin();
+    });
+
+    bind('admin-tab-tools', 'click', function () {
+        admin.tab = 'tools';
+        admin.stash = null;
+        renderAdmin();
+    });
+
+    /* One binding per report rather than a loop over the three, because the
+       ids are in the markup and a loop would let a renamed button fail
+       silently instead of at the first press. */
+    arrayOf(['isolation', 'hours', 'jams']).forEach(function (name) {
+        bind('admin-tool-' + name, 'click', function () {
+            admin.tool = name;
+            admin.toolTitle = null;
+            admin.toolLines = [];
+            admin.toolWaiting = true;
+            renderAdmin();
+            post('adminTool', { tool: name });
+        });
     });
 
     bind('admin-tab-stashes', 'click', function () {

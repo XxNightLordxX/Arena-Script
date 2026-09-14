@@ -272,6 +272,7 @@
     <nav id="admin-tabs">
         <button id="admin-tab-matches" class="arena-tab" type="button">Matches</button>
         <button id="admin-tab-stashes" class="arena-tab" type="button">Stashes</button>
+        <button id="admin-tab-tools" class="arena-tab" type="button">Tools</button>
     </nav>
 
     <section id="admin-list">
@@ -307,6 +308,28 @@
         <p id="admin-stash-detail-line" class="hint"></p>
         <button id="admin-stash-return" class="btn btn-primary" type="button">Hand it back</button>
         <div id="admin-stash-items"></div>
+    </section>
+
+    <section id="admin-tools" class="hidden">
+        <p class="hint">The admin reports, without typing anything into a console. Each one is
+            the same reading the matching command prints.</p>
+
+        <div id="admin-tool-picker">
+            <button id="admin-tool-isolation" class="btn" type="button">Instancing</button>
+            <button id="admin-tool-hours" class="btn" type="button">Opening hours</button>
+            <button id="admin-tool-jams" class="btn" type="button">Held-back stashes</button>
+        </div>
+
+        <p id="admin-tool-hint" class="hint">Pick a report above.
+            <strong>Instancing</strong> is the one to run when players cannot see each other:
+            it lists the routing bucket every connected player is standing in.
+            <strong>Opening hours</strong> says whether the doors are open and why.
+            <strong>Held-back stashes</strong> lists any kit the arena refused to hand back
+            on its own.</p>
+
+        <p id="admin-tool-waiting" class="hint hidden">Taking that reading&hellip;</p>
+        <h2 id="admin-tool-title" class="hidden"></h2>
+        <div id="admin-tool-out" class="hidden"></div>
     </section>
 
     <section id="admin-player" class="hidden">

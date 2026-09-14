@@ -5502,7 +5502,40 @@ local function rowsIn(stash)
     return n
 end
 
---- Lets the door use a stash again, once a human has settled it.
+---- What /arenaunjam reports when asked for nothing in particular, as lines.
+---
+--- READ-ONLY ON PURPOSE, and it is the reason the admin tablet gets this
+--- and not a button. Clearing a jam on a stash that still holds rows puts
+--- every one of them back inside the next ceiling and the next exit hands
+--- them to the owner -- the exact duplication the jam exists to stop. That
+--- decision needs a human looking at the contents, so the tablet shows the
+--- reading and names the command; it does not offer to do it.
+--- @return string[]
+function ArenaAmmo.JamReport()
+    local lines = {}
+    local stashes = ArenaAmmo.JammedStashes()
+
+    if #stashes == 0 then
+        lines[1] = 'no stash is being held back.'
+        return lines
+    end
+
+    lines[#lines + 1] = ('%d stash(es) are being held back. Open each on the Stashes tab, '):format(#stashes)
+        .. 'compare it against what the player is carrying, take out anything that is not theirs, '
+        .. 'and then run /arenaunjam <name> in the server console.'
+
+    for _, stash in ipairs(stashes) do
+        local rows = rowsIn(stash)
+        lines[#lines + 1] = ('  %s -- %s'):format(stash,
+            rows == nil and 'cannot be read right now'
+                or (rows == 0 and 'empty, safe to clear'
+                    or (rows .. ' item(s) STILL IN IT -- settle those first')))
+    end
+
+    return lines
+end
+
+-- Lets the door use a stash again, once a human has settled it.
 ---
 --- DELIBERATELY NOT AUTOMATIC, and specifically not "clear it when the stash
 --- reads empty". An empty read is the one answer this whole file refuses to

@@ -11,8 +11,8 @@
 
 *Everything this resource does, and every function it does it with.*
 
-`README.md` explains how to run the arena and `DEPLOYMENT.md` is the checklist for
-putting it on a live server. This file is the inventory: what the resource does,
+`README.md` explains how to run the arena and put it on a live server. This file
+is the inventory: what the resource does,
 what it exposes to other scripts, and every public function in every file with a
 line on what it is for. It is written to be read start to finish or searched.
 
@@ -221,7 +221,7 @@ one deliberately does not.
 
 | Command | What it does |
 |---|---|
-| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. |
+| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Tools** tab shows the `/arenaisolation`, `/arenahours` and `/arenaunjam` readings on screen, built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
 | `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without a restart. |
 | `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
 | `/arenaisolation` | Prints what instancing is really doing: the mode the server reports for `onesync`, whether a routing bucket has been caught not landing, the bucket each live match was allocated, and the bucket the server says each of those players is standing in right now. |
@@ -515,7 +515,7 @@ listed; the source documents them where they are.
 | `ArenaDbReady(subject)` | Whether a query can be sent right now: `Config.Database.enabled` on and oxmysql started. Says so once per outage, per subject, and re-arms when the database comes back. |
 | `ArenaDb(subject, sql, params, cb)` | Sends one query. Never lets a database failure take the round down, and always calls `cb` — with nil on every path that did not reach oxmysql. |
 
-#### `server/dispatch.lua` — 14 functions
+#### `server/dispatch.lua` — 16 functions
 
 | Function | What it does |
 |---|---|
@@ -533,8 +533,10 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ExitBucket(src)` | Puts a player back in exactly the bucket EnterBucket found them in, and hands the match's number back once the last person has left it. |
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
+| `ArenaDispatch.IsolationReport()` | Everything /arenaisolation reports, as lines, so the admin tablet can show the same reading without a console. |
+| `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 19 functions
+#### `server/ammo.lua` — 20 functions
 
 | Function | What it does |
 |---|---|
@@ -547,6 +549,7 @@ listed; the source documents them where they are.
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |
 | `ArenaAmmo.JammedStashes()` | Every stash the door has stopped touching, because something is in it the arena cannot account for. |
+| `ArenaAmmo.JamReport()` | The same reading /arenaunjam prints when asked for nothing in particular, as lines. Read-only: clearing a jam still needs a human at the console. |
 | `ArenaAmmo.Unjam(stash)` | Lets the door use one of those stashes again, once a human has settled it. Never automatic: an empty read is what ox_inventory says about an inventory it has not loaded, so only a person can say a jam is over. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |

@@ -93,6 +93,16 @@ RegisterNetEvent('crimson_arena:client:adminState', function(payload)
     ArenaUI.Send('adminState', type(payload) == 'table' and payload or {})
 end)
 
+--- One admin report, on its way to the Tools tab.
+---
+--- GUARDED ON adminOpen like the state push above, and for the same reason:
+--- a report arriving after the operator shut the tablet has no screen to
+--- draw on, and sending it anyway asks the panel to render into nothing.
+RegisterNetEvent('crimson_arena:client:adminTool', function(payload)
+    if not adminOpen then return end
+    ArenaUI.Send('adminTool', type(payload) == 'table' and payload or {})
+end)
+
 --- Safe to call when already closed; the release is unconditional because
 --- releasing focus we do not hold costs nothing and failing to release
 --- focus we do hold costs the player their character.
@@ -272,6 +282,10 @@ end)
 
 register('adminState', function(data)
     TriggerServerEvent('crimson_arena:server:adminState', { matchId = data.matchId })
+end)
+
+register('adminTool', function(data)
+    TriggerServerEvent('crimson_arena:server:adminTool', { tool = data.tool })
 end)
 
 register('adminStop', function(data)

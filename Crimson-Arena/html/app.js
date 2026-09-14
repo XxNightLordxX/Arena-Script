@@ -731,6 +731,59 @@
         render();
     }
 
+    /* Ticks or unticks one attachment on one weapon.
+
+       WORKS LIKE THE ROUNDS CHIPS, deliberately: clicking one on a weapon
+       that is not picked yet picks the weapon first, so there is no state
+       where a chip does nothing. The difference is that rounds are a choice
+       of ONE and attachments are a SET -- so these toggle rather than
+       replace. */
+    function toggleWeaponAttachment(key, kind) {
+        if (!canChooseLoadout()) return;
+        var index = draftIndexOf(key);
+        if (index < 0) {
+            toggleWeapon(key);
+            index = draftIndexOf(key);
+            if (index < 0) return;
+        }
+
+        var pick = state.draftWeapons[index];
+        /* ABSENT MEANS "WHATEVER THE SERVER FITS", and the first click has
+           to turn that into a real list before anything can be taken out of
+           it -- otherwise unticking one attachment on a fresh pick would
+           send nothing, and nothing is what the server reads as "fit them
+           all". The player would click and see no change. */
+        if (!Array.isArray(pick.attachments)) {
+            pick.attachments = defaultAttachmentsFor(key);
+        }
+
+        var at = pick.attachments.indexOf(kind);
+        if (at >= 0) pick.attachments.splice(at, 1);
+        else pick.attachments.push(kind);
+
+        state.loadoutDirty = true;
+        render();
+    }
+
+    /* What a weapon starts with ticked: everything it can take. The server
+       fits exactly this when a pick carries no list of its own, so the
+       screen and the server agree before anybody clicks anything. */
+    function defaultAttachmentsFor(key) {
+        var weapon = weaponByKey(key);
+        return arrayOf(weapon && weapon.attachments).map(function (option) {
+            return String(option.key);
+        });
+    }
+
+    /* What is ticked on a pick right now, for drawing. */
+    function attachmentsOn(key) {
+        var index = draftIndexOf(key);
+        if (index < 0) return defaultAttachmentsFor(key);
+        var pick = state.draftWeapons[index];
+        if (!Array.isArray(pick.attachments)) return defaultAttachmentsFor(key);
+        return pick.attachments;
+    }
+
     function setWeaponAmmoType(key, typeKey) {
         if (!canChooseLoadout()) return;
         var weapon = weaponByKey(key);
@@ -1122,11 +1175,41 @@
         }
     }
 
+    /* Whether a tab can do anything at all right now.
+
+       A TAB THAT CANNOT DO ANYTHING IS A QUESTION THE PLAYER HAS TO ANSWER
+       BEFORE THEY CAN IGNORE IT. Five tabs were drawn at all times: Bets on
+       a server with betting switched off, and Lobby when you are not in one
+       -- which the panel already knew, because joining a match moves you to
+       Lobby and leaving moves you off it. Clicking either landed on a
+       screen whose only content was a sentence explaining why it was empty.
+
+       Only the two that are genuinely unreachable are taken away. Loadout
+       stays even when the host picks the guns -- a player still wants to see
+       what they are being handed -- and Leaderboard stays because an empty
+       board is a real answer to "who is winning". */
+    function tabAvailable(name) {
+        if (name === 'bets') return bettingOn();
+        if (name === 'lobby') return playerMatchId() !== null || spectatingMatchId() !== null;
+        return true;
+    }
+
     function renderTabs() {
-        document.querySelectorAll('.arena-tab').forEach(function (button) {
-            button.classList.toggle('active', button.getAttribute('data-tab') === state.tab);
-        });
+        /* A TAB THAT HAS JUST GONE AWAY MUST NOT STAY SELECTED, or the panel
+           shows a hidden section and every tab reads as inactive. Betting
+           can be switched off under a player standing on the Bets tab. */
+        if (!tabAvailable(state.tab)) state.tab = 'matches';
+
+        /* WALKED BY NAME, NOT BY SELECTOR. Every tab button carries an id
+           now, so this reads them the way the rest of the panel reads
+           everything -- and a control addressed by id is one a test can
+           address too. The selector walk was invisible to the test harness,
+           which is how a tab could have been hidden or left behind with the
+           whole suite green. */
         TABS.forEach(function (name) {
+            show(byId('tab-btn-' + name), tabAvailable(name));
+            var button = byId('tab-btn-' + name);
+            if (has(button)) button.classList.toggle('active', name === state.tab);
             show(byId('tab-' + name), name === state.tab);
         });
     }
@@ -2517,7 +2600,27 @@
         var ammo = weapon.ammo || {};
         var options = arrayOf(ammo.options);
 
-        if (options.length > 0) {
+        /* CONTROLS ONLY ON A WEAPON YOU HAVE ACTUALLY PICKED.
+
+           THE CLUTTER THIS REMOVES. Every card drew its full set of controls
+           whether or not it was in the loadout -- two rows of chips each,
+           across a catalogue of ninety-six. The screen was mostly buttons
+           for guns nobody had chosen, the three that WERE chosen looked
+           identical to the rest, and the one thing a player needs to see at
+           a glance -- what am I taking in -- was the hardest thing on it.
+
+           An unpicked card is now a name, a class, and one quiet line saying
+           what it would come with. Pick it and the controls appear. Nothing
+           is hidden that you cannot get back by clicking the card you were
+           going to click anyway. */
+        if (options.length > 0 && !picked) {
+            var summary = String(int(ammo.default, 0)) + ' rounds';
+            var names = arrayOf(weapon.attachments).map(function (option) {
+                return String(option.label || option.key);
+            });
+            if (names.length > 0) summary += ' · ' + names.join(', ');
+            card.appendChild(makeEl('div', 'weapon-fixed', summary));
+        } else if (options.length > 0) {
             var row = makeEl('div', 'weapon-ammo');
             row.appendChild(makeEl('span', 'weapon-field-label', 'Rounds'));
             var chosen = picked ? state.draftWeapons[index].ammo : int(ammo.default, 0);
@@ -2544,6 +2647,23 @@
                 box.value = String(chosen);
                 box.disabled = !canChooseLoadout();
                 box.title = 'Type any amount up to ' + int(ammo.max, 0);
+                /* A HINT YOU CAN SEE, not one you have to hover to find.
+
+                   The box sat at the end of the preset chips as a bare
+                   four-character field with a `title` and nothing else --
+                   the operator asked outright where the custom amount had
+                   gone, which is the whole answer about how discoverable it
+                   was. A word in front of it and a number in it cost one
+                   line each. */
+                box.placeholder = String(int(ammo.max, 0));
+                /* AND THE CEILING IS THIS WEAPON'S OWN. The box already held
+                   this weapon's chosen amount and was already capped at this
+                   weapon's own maximum -- but it said neither, so it read as
+                   a general-purpose number field and the operator asked what
+                   it was even for. Naming the limit turns it into an answer
+                   to "how much can this gun carry". */
+                row.appendChild(makeEl('span', 'weapon-ammo-or',
+                    'or up to ' + int(ammo.max, 0)));
 
                 /* Clicking into the box must not toggle the weapon card
                    underneath it, which is what every other click here does. */
@@ -2617,6 +2737,48 @@
                     + ', not ' + (wantedLabel === null ? 'your pick' : wantedLabel)
                     + ' — this loadout is already carrying its ' + plural(plan.cap, 'round type') + '.'));
             }
+        }
+
+        /* THE ATTACHMENTS THIS WEAPON CAN TAKE, AND ONLY THOSE.
+
+           The list comes from the server, resolved through the same table
+           the server fits from -- so a chip can never offer something that
+           would then be refused, exactly as with the ammo types above. A
+           weapon that takes none draws no row at all rather than an empty
+           heading. */
+        var fittings = arrayOf(weapon.attachments);
+        if (fittings.length > 0 && picked) {
+            var fitRow = makeEl('div', 'weapon-ammo');
+            fitRow.appendChild(makeEl('span', 'weapon-field-label', 'Attachments'));
+
+            var fittedNow = attachmentsOn(weapon.key);
+            fittings.forEach(function (option) {
+                var kind = String(option.key);
+                /* ITS OWN CLASS, because it does not behave like the row
+                   above it. Rounds are a choice of ONE and read as a dial;
+                   attachments are a set of switches, each independently on
+                   or off. Styling them identically was asking a player to
+                   learn which row behaved which way. */
+                var fitChip = makeEl('button', 'chip attachment-chip',
+                    String(option.label || kind));
+                /* ADDRESSABLE, like the typed-ammo box above. A chip with no
+                   id can only be found by a selector, and a test that leans
+                   on one is testing whatever the selector engine feels like
+                   returning. */
+                fitChip.id = 'attachment-' + weapon.key + '-' + kind;
+                fitChip.type = 'button';
+                if (fittedNow.indexOf(kind) >= 0) fitChip.classList.add('active');
+                fitChip.disabled = !canChooseLoadout();
+                fitChip.title = picked
+                    ? 'Fitted to this weapon for the match'
+                    : 'Pick this weapon to choose its attachments';
+                fitChip.addEventListener('click', function (event) {
+                    event.stopPropagation();
+                    toggleWeaponAttachment(weapon.key, kind);
+                });
+                fitRow.appendChild(fitChip);
+            });
+            card.appendChild(fitRow);
         }
 
         if (poolFull && canChooseLoadout()) {
@@ -2939,6 +3101,16 @@
                 var entry = { key: pick.key, ammo: int(pick.ammo, 0) };
                 var type = keyOr(pick.ammoType, null);
                 if (type !== null) entry.ammoType = type;
+
+                /* SENT ONLY WHEN THE PLAYER TOUCHED IT. Absent means "fit
+                   what this server fits by default", which is what an
+                   untouched pick should get and what every loadout saved
+                   before attachments existed already gets. An EMPTY list is
+                   a different answer -- somebody took it all off -- and it
+                   survives the trip because [] is still a list. */
+                if (Array.isArray(pick.attachments)) {
+                    entry.attachments = pick.attachments.map(String);
+                }
                 return entry;
             }),
             supplies: supplyCatalogue().map(function (supply) {

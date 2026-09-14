@@ -276,13 +276,15 @@ body {
 }
 
 .chip {
-    padding: 0.35rem 0.8rem;
+    padding: 0.4rem 0.85rem;
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
     font-size: 0.9rem;
+    line-height: 1.1;
     cursor: pointer;
+    transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
 }
 
 .chip:hover {
@@ -290,27 +292,52 @@ body {
     color: var(--text);
 }
 
+/* ON reads as ON at a glance: full accent, bright edge, text at full
+   strength. The old --accent-dim fill against --text was close enough to
+   the resting chip that a row of them looked like one control in two
+   slightly different greys. */
 .chip.active {
-    background: var(--accent-dim);
-    border-color: var(--accent);
-    color: var(--text);
+    background: var(--accent);
+    border-color: var(--accent-bright);
+    color: #fff;
 }
 
+/* ONE ROW PER QUESTION: a label that fits on its line, and a control that
+   takes the rest of it.
+
+   THE LABELS WERE BREAKING MID-PHRASE. At 0.85rem uppercase with 0.14em of
+   tracking, "WIN CONDITION" wants about nine rem and the column was seven --
+   so it wrapped, and so did "ROUND LENGTH" and "WEAPON TIERS". Three of the
+   host's questions arrived as two ragged lines each, which made a short form
+   look like a long one and pushed every control out of alignment.
+
+   Wider column, tighter tracking, and the control stretches to the edge, so
+   every row lines up down the form. */
 .field {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.9rem;
+    gap: 0.5rem 0.7rem;
+    margin-bottom: 0.85rem;
 }
 
 .field-label {
     flex: none;
-    width: 7rem;
+    width: 8.25rem;
     color: var(--text-muted);
-    font-size: 0.85rem;
-    letter-spacing: 0.14em;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+    line-height: 1.25;
     text-transform: uppercase;
+}
+
+/* The control takes the rest of the row rather than sitting at whatever
+   width the browser picks for it -- which is what made a select and a number
+   box on consecutive rows different lengths. */
+.field > select,
+.field > input {
+    flex: 1 1 8rem;
+    min-width: 0;
 }
 
 select,
@@ -369,8 +396,17 @@ option {
     flex: 1 1 100%;
     margin: 0;
     color: var(--text-muted);
-    font-size: 0.85rem;
-    line-height: 1.4;
+    font-size: 0.82rem;
+    line-height: 1.45;
+}
+
+/* A hint belongs to the control it sits under, not to the label column it
+   would otherwise start beneath. Indented to the control's own edge so the
+   eye follows one line down the form instead of two. */
+.field > .hint,
+.field > #create-fee-presets,
+.field > #create-account {
+    margin-left: 8.95rem;
 }
 
 #bet-form .hint,
@@ -803,8 +839,22 @@ option {
    Deliberately narrow: it holds at most a four-digit magazine, and a wide
    box beside a row of chips reads as the main control rather than the
    alternative to them. */
+/* The word in front of the typing box. Quiet, but present: without it the
+   box is a nameless field at the end of a row of buttons. */
+.weapon-ammo-or {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 0 0.1rem;
+}
+
 .weapon-ammo-custom {
-    width: 4.5rem;
+    /* HELD AT ITS OWN SIZE. In a wrapping flex row an input will happily
+       take the whole line, and a full-width field reads as the main control
+       rather than the alternative to the chips beside it. */
+    flex: 0 0 auto;
+    width: 5rem;
     padding: 0.25rem 0.4rem;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -812,6 +862,11 @@ option {
     font-family: var(--font-body);
     font-size: 0.85rem;
     font-variant-numeric: tabular-nums;
+}
+
+.weapon-ammo-custom::placeholder {
+    color: var(--text-muted);
+    opacity: 0.6;
 }
 
 .weapon-ammo-custom:focus {
@@ -824,24 +879,35 @@ option {
     cursor: not-allowed;
 }
 
+/* THE CARD. Three bands, in this order, and the spacing is what separates
+   them: what the weapon IS, then what you load it with, then what is bolted
+   to it. They used to run together as six lines of near-identical text.
+
+   THE RAIL DOWN THE LEFT IS THE "PICKED" SIGNAL. A one-pixel border change
+   is not a state you can read across a grid of ninety-six cards -- and
+   picked-vs-not is the single most important thing this screen says. */
 .weapon-card {
-    padding: 0.7rem 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.85rem 0.95rem 0.9rem;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-top: 2px solid var(--border);
+    border-left: 3px solid transparent;
     cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease;
 }
 
 .weapon-card:hover {
     background: var(--surface-raised);
-    border-top-color: var(--accent-dim);
+    border-left-color: var(--accent-dim);
 }
 
 .weapon-card.active {
     background: var(--surface-raised);
-    border-color: var(--accent);
-    border-top-color: var(--accent-bright);
-    box-shadow: 0 0 1.2rem -0.4rem var(--accent);
+    border-color: var(--accent-dim);
+    border-left-color: var(--accent-bright);
+    box-shadow: inset 0 0 0 1px var(--accent-dim);
 }
 
 .weapon-card.blocked {
@@ -859,31 +925,44 @@ option {
 .weapon-name {
     font-family: var(--font-display);
     font-size: 1.15rem;
+    line-height: 1.15;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+    color: var(--text);
     overflow-wrap: break-word;
 }
 
+/* The category closes the identity band: a rule under it separates what the
+   weapon IS from the controls, without spending a whole divider element. */
 .weapon-category {
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
     color: var(--text-muted);
-    font-size: 0.8rem;
-    letter-spacing: 0.12em;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
 }
 
 .weapon-ammo {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 0.35rem;
-    margin-top: 0.5rem;
+    margin-top: 0.65rem;
 }
 
+/* Brighter than the category above it on purpose: this is a label for a
+   control you are about to use, not a fact about the weapon. At 0.7rem in
+   --text-muted it read as disabled text. */
 .weapon-field-label {
     flex: 1 1 100%;
-    color: var(--text-muted);
-    font-size: 0.7rem;
-    letter-spacing: 0.16em;
+    margin-bottom: 0.15rem;
+    color: var(--text);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
+    opacity: 0.75;
 }
 
 .weapon-fixed {
@@ -1779,4 +1858,66 @@ option {
     color: var(--text-muted);
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+/* ATTACHMENT CHIPS ARE SWITCHES, AND THE ROUNDS CHIPS ARE A DIAL.
+
+   They were the same control to look at and they are not the same control
+   to use: one row is a choice of ONE -- pick 60 and 30 lets go -- and the
+   other is a set of independent on/off switches. A player had no way to
+   know which row would do which until they clicked one and watched.
+
+   So these carry a tick when they are on. Not a colour difference, which
+   the active state already spends, and not a different shape, which would
+   just be decoration -- a tick is the one mark that says "this is on, and
+   the one next to it can be on too". */
+.attachment-chip {
+    font-variant-numeric: normal;
+    letter-spacing: 0.02em;
+}
+
+.attachment-chip::before {
+    content: '';
+    display: inline-block;
+    width: 0.85em;
+    margin-right: 0.1em;
+    color: var(--accent-bright);
+}
+
+.attachment-chip.active::before {
+    content: '✓';
+}
+
+/* ON, BUT QUIETLY. The Rounds row above is a choice of ONE and it earns the
+   solid fill -- there is exactly one of them lit per weapon and it is the
+   answer to a question. Attachments are switches, and most of them are on
+   most of the time: filling every one solid turned a picked card into a
+   block of red where nothing stood out, including which magazine was
+   loaded.
+
+   Outline plus the tick says on just as clearly and leaves the solid fill
+   meaning one thing on this screen instead of two. */
+.attachment-chip.active {
+    background: transparent;
+    border-color: var(--accent);
+    color: var(--accent-bright);
+}
+
+.attachment-chip.active:hover {
+    background: var(--accent-dim);
+    color: #fff;
+}
+
+/* AND WHEN IT IS OFF IT LOOKS OFF. An unticked attachment sat at the same
+   weight as a picked one with only the fill to tell them apart, which is
+   the difference a player is least likely to see at a glance across a grid
+   of cards. */
+.attachment-chip:not(.active) {
+    border-style: dashed;
+    opacity: 0.75;
+}
+
+.attachment-chip:not(.active):hover {
+    opacity: 1;
+    border-style: solid;
 }

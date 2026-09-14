@@ -677,6 +677,32 @@ local WHY_TEXT = {
 --- to the death being reported. Two seconds is already far longer than the
 --- gap it covers and shorter than any respawn this arena ships. DO NOT widen
 --- it, and DO NOT let it survive a respawn.
+--- WHETHER THIS PLAYER COULD BE SEEN WHEN THEY WALKED INTO THE ROUND.
+---
+--- THE END-TO-END PROMISE, kept because chasing the individual hiders has
+--- not been enough. Three separate defects have now been found and fixed in
+--- the two places this resource hides a ped -- the dead-state hold and the
+--- spectator camera -- and an operator was still reporting fighters standing
+--- in the lobby invisible to themselves afterwards.
+---
+--- Every one of those fixes was about WHICH restore runs. This is a
+--- different question and a smaller one: a player who could be seen when the
+--- round started must be visible when it ends, whatever happened in between
+--- and whoever hid them. The arena took them out of the world; putting them
+--- back is its job, and it is the only party that knows a round just ended.
+---
+--- IT IS NOT AN UNCONDITIONAL WRITE, which is the trap this file has fallen
+--- into before -- an admin's god mode was switched off by exactly that, and
+--- a deliberately invisible player was put on show. The reading is taken at
+--- the door BEFORE the arena has touched anything, and it is honoured in
+--- both directions: somebody who walked in invisible walks out invisible and
+--- this never fires for them.
+---
+--- AND IT SAYS SO WHEN IT FIRES, loudly and to the player, because a
+--- correction here means something upstream is still wrong and the log line
+--- is the only way anybody will ever know which round it was.
+local enteredVisible = nil
+
 local FATAL_MEMORY_MS = 2000
 local lastFatalEntity
 local lastFatalAt = 0
@@ -2184,6 +2210,25 @@ local function leaveArena(returnCoords)
     FreezeEntityPosition(ped, false)
     ClearPedBloodDamage(ped)
 
+    -- THE LAST THING THE ROUND DOES, after every restore that was going to
+    -- run has run. See enteredVisible for why this exists and why it cannot
+    -- fire for a player who was invisible before they got here.
+    if enteredVisible == true and type(IsEntityVisible) == 'function' then
+        local ok, showing = pcall(IsEntityVisible, ped)
+        if ok and showing == false then
+            SetEntityVisible(ped, true, false)
+            -- NOT BEHIND Config.Debug. This line means a defect that three
+            -- separate fixes have not caught is still live, and the only
+            -- person who can report which round it happened in is the player
+            -- standing there unable to see themselves.
+            print('[crimson_arena] you left the arena invisible and this resource has just put '
+                .. 'you back. That is a bug in the arena, not in anything you did -- please tell '
+                .. 'the server owner, and say whether you had been eliminated, were watching the '
+                .. 'rest of the round, or died on the last kill.')
+        end
+    end
+    enteredVisible = nil
+
     if Config.UI.showMatchHud then
         ArenaUI.UpdateHud({ visible = false })
     end
@@ -2246,6 +2291,19 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     if type(data) ~= 'table' or type(data.spawn) ~= 'table' then return end
 
     captureOwnLoadout()
+
+    -- BEFORE ANYTHING IN THIS RESOURCE HAS TOUCHED THE PED. See
+    -- enteredVisible: this is the only moment the answer is honestly the
+    -- player's own, and it is what stops the check below overriding somebody
+    -- who is invisible on purpose.
+    do
+        local readable = type(IsEntityVisible) == 'function'
+        local ok, showing = false, nil
+        if readable then ok, showing = pcall(IsEntityVisible, PlayerPedId()) end
+        -- UNREADABLE MEANS DO NOTHING LATER, not "assume visible": a guess
+        -- here would be an unconditional write wearing a disguise.
+        enteredVisible = (readable and ok) and (showing ~= false) or nil
+    end
 
     matchToken = matchToken + 1
     matchLive = false

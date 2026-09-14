@@ -2960,4 +2960,63 @@ t.test('and a bag carried through a round comes back in the slot it was carried 
         'the bag was handed back without a slot, so it landed wherever it fitted')
 end)
 
+-- ========================================================================
+-- A REFUSAL THAT LOOKS LIKE A LOSS
+--
+-- From the operator's console, while a round was live:
+--
+--   John Allday handed John Allday 0 item(s) back from the admin tablet
+--                                               (still outstanding)
+--   door: Q71NQ64O's stash (crimson_arena_Q71NQ64O) is queued
+--
+-- Nothing is wrong there. The player was standing in a live round with
+-- fourteen items in that stash, and emptying it into them would have handed
+-- them their own kit to fight with -- so the door refused, and the tablet
+-- put the stash on the queue instead. Both halves are correct.
+--
+-- But "handed 0 item(s) back (still outstanding)" with no reason attached is
+-- indistinguishable from a stash that has lost its contents, and it was read
+-- that way: an afternoon went into looking for a defect that was not there.
+-- One of those outcomes is the door working and the other is somebody's
+-- property missing, and the log has to tell them apart.
+-- ========================================================================
+
+t.test('a fighter mid-round is refused their belongings, and the refusal SAYS WHY', function()
+    local server = liveMatch({ 1, 2 })
+
+    local ok, returned, _, why = server.env.ArenaAmmo.ReturnLeftovers(1)
+
+    t.isFalse(ok, 'the door emptied a live fighter\'s own belongings into them mid-round')
+    t.equals(returned, 0, 'it handed something over anyway')
+    t.isNotNil(why, 'it refused and said nothing at all about why -- which reads as a loss')
+    t.contains(why, 'live match',
+        'the reason does not name the one thing an operator needs to hear: that this is '
+        .. 'the door working, not their stash going missing')
+end)
+
+t.test('and their belongings are still every bit there once the round is over', function()
+    -- The half that makes the refusal safe rather than merely loud. Without
+    -- this the test above passes on a build that refuses and then loses it.
+    local server, matchId = liveMatch({ 1, 2 })
+
+    t.isFalse((server.env.ArenaAmmo.ReturnLeftovers(1)), 'premise: refused mid-round')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.carrying(1), INTACT, 'a refusal mid-round cost them their belongings')
+    t.equals(server.stashed(1), '', 'and the stash was not emptied')
+end)
+
+t.test('CONTROL: a player standing in the lobby is not refused, and no reason is given', function()
+    -- Without this the assertions above are satisfied by a build that
+    -- refuses everybody for ever.
+    local server = newServer({ 1, 2 })
+
+    local ok, _, _, why = server.env.ArenaAmmo.ReturnLeftovers(1)
+
+    t.isTrue(ok, 'somebody who is nowhere near a round could not be settled')
+    t.isNil(why, 'a clean settle came back carrying a refusal reason')
+end)
+
 os.exit(t.summary())

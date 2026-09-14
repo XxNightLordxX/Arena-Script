@@ -5412,22 +5412,29 @@ local function worthTrying(src, citizenid)
 end
 
 function ArenaAmmo.ReturnLeftovers(src)
-    if type(src) ~= 'number' or src <= 0 then return false, 0, false end
-    if midMatch(src) then return false, 0, false end
+    if type(src) ~= 'number' or src <= 0 then return false, 0, false, 'that is not a player' end
+    -- NOT A FAILURE, AND THE CALLER HAS TO BE ABLE TO SAY SO. Emptying a
+    -- belongings stash into somebody standing in a live round would hand
+    -- them their own kit to fight with, so this refusal is the door working
+    -- exactly as intended -- and it read in the operator's log as
+    -- "handed 0 item(s) back (still outstanding)" with no reason attached,
+    -- which is indistinguishable from a stash that had gone missing. It
+    -- cost an afternoon of looking for a defect that was not there.
+    if midMatch(src) then return false, 0, false, 'they are in a live match right now' end
 
     local player = ArenaGetPlayer(src)
     local citizenid = player and player.PlayerData and player.PlayerData.citizenid or nil
-    if not Arena.IsKey(citizenid) then return false, 0, false end
+    if not Arena.IsKey(citizenid) then return false, 0, false, 'their character could not be identified' end
 
     local ox = inventory()
-    if not ox then return false, 0, false end
+    if not ox then return false, 0, false, 'ox_inventory is not running' end
 
     local stash = stashFor(citizenid)
 
     if not oxDid('registering stash ' .. stash, function()
         return ox:RegisterStash(stash, 'Arena Belongings', STASH_SLOTS, STASH_WEIGHT, citizenid)
     end) then
-        return false, 0, false
+        return false, 0, false, 'their stash could not be opened'
     end
 
     local stowedCount = 0
@@ -5452,7 +5459,7 @@ function ArenaAmmo.ReturnLeftovers(src)
     if peek == nil then
         ArenaLog('door: could not read %s\'s stash (%s). THEIR KIT IS STILL IN IT -- it is a real '
             .. 'ox_inventory stash and can be opened.', tostring(src), stash)
-        return false, 0, false
+        return false, 0, false, 'their stash could not be read'
     end
 
     local holding = false
@@ -5483,7 +5490,7 @@ function ArenaAmmo.ReturnLeftovers(src)
     local readable, failures, returned = true, 0, 0
     if holding then
         readable, failures, returned = handBack(ox, src, stash)
-        if not readable then return false, 0, false end
+        if not readable then return false, 0, false, 'their stash could not be read' end
     end
 
     -- AND ANY BAG CONTENTS THE ARENA IS STILL HOLDING, which is the half

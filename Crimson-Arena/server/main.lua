@@ -729,10 +729,21 @@ onClient('crimson_arena:server:adminReturn', RATE.admin, function(src, data)
     -- stash untouched, queued nothing, and said nothing. Nobody's property
     -- went anywhere it should not -- and nobody's came back either.
     if target and target > 0 and holderIs(target, citizenid) then
-        local ok, returned = ArenaAmmo.ReturnLeftovers(target)
+        -- AND WHY, WHEN IT IS NOT COMPLETE.
+        --
+        -- This said "handed 0 item(s) back (still outstanding)" and stopped
+        -- there, which reads exactly like a stash that has lost its contents.
+        -- The commonest reason by far is the least alarming one -- the player
+        -- is standing in a live round, and emptying their belongings into
+        -- them there would hand them their own kit to fight with -- and an
+        -- operator could not tell that from a real failure. One of them is
+        -- the door working; the other is somebody's property missing.
+        local ok, returned, _, why = ArenaAmmo.ReturnLeftovers(target)
         ArenaLog('%s handed %s %d item(s) back from the admin tablet (%s)',
             ArenaPlayerName(src), ArenaPlayerName(target), returned or 0,
-            ok and 'complete' or 'still outstanding')
+            ok and 'complete'
+                or ('still outstanding -- ' .. (why or 'reason not given')
+                    .. '. It has been queued and goes back the next time they are seen.'))
 
         if ok then return pushAdmin(src, keyArg(payload.matchId)) end
     end

@@ -939,6 +939,14 @@ local function newClientFixture(mutate)
         --- Every spawn-clearance probe fired, in order. An arena that builds
         --- its own floor must fire none at all.
         probes = {},
+        --- WHETHER THIS PLAYER CAN BE SEEN. Modelled rather than stubbed to
+        --- a constant, because "did the arena put them back" is the whole of
+        --- the end-to-end promise and a fixture that always answers yes
+        --- cannot tell a working build from a broken one.
+        visible = true,
+        --- Everything printed to F8, which is where the arena talks to the
+        --- player it just corrected.
+        printed = {},
     }
 
     --- The scatter's own dice, replaced only when a test loaded some.
@@ -1100,6 +1108,9 @@ local function newClientFixture(mutate)
         -- kill that landed in one shot named nobody, and every test here
         -- passed.
         GetPedSourceOfDeath = function() return f.sourceOfDeath or 0 end,
+        IsEntityVisible = function() return f.visible end,
+        SetEntityVisible = function(_ped, on) f.visible = on == true end,
+        print = function(line) f.printed[#f.printed + 1] = tostring(line) end,
         IsEntityAPed = function() return true end,
         IsPedAPlayer = function() return true end,
         -- Per ped, so a test can tell WHICH killer was named rather than only
@@ -3029,6 +3040,105 @@ t.test('CONTROL: and a death with nobody anywhere near still names nobody', func
     local reports = f.eventsNamed('crimson_arena:server:reportDeath')
     t.equals(#reports, 1, 'a fall was not reported as a death')
     t.isNil(reports[1].payload.killerServerId, 'a fall was pinned on somebody')
+end)
+
+-- ======================================================================
+-- NOBODY LEAVES THE ARENA INVISIBLE
+--
+-- THE END-TO-END PROMISE, and it exists because chasing the individual
+-- hiders was not enough. Three defects have been found and fixed in the two
+-- places this resource hides a ped -- the dead-state hold and the spectator
+-- camera -- and the operator was STILL reporting fighters standing in the
+-- lobby unable to see themselves afterwards.
+--
+-- Those fixes were all about which restore runs. This is a smaller and
+-- blunter question: a player who could be seen when the round started must
+-- be visible when it ends, whoever hid them and whatever went wrong. The
+-- arena took them out of the world.
+-- ======================================================================
+
+--- Into a round, hidden by something part-way through, and then sent home.
+local function hiddenThenSentHome(f)
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+
+    -- Whatever hid them -- a hold whose release did not land, a camera that
+    -- stopped at the wrong moment, a defect nobody has found yet.
+    f.visible = false
+
+    f.fireThreaded('crimson_arena:client:exitArena', {})
+    for _ = 1, 4 do f.step() end
+end
+
+t.test('THE PROMISE: a fighter who walked in visible is visible again at the lobby', function()
+    local f = newClientFixture()
+    t.isTrue(f.visible, 'premise: they could be seen when they walked in')
+
+    hiddenThenSentHome(f)
+
+    t.isTrue(f.visible,
+        'the round ended with this player invisible and the arena let them walk off like that')
+end)
+
+t.test('and it says so out loud, because a correction means something upstream is still wrong', function()
+    local f = newClientFixture()
+    hiddenThenSentHome(f)
+
+    local said = table.concat(f.printed or {}, '\n')
+    t.contains(said, 'invisible',
+        'it put them back without a word, so nobody will ever learn which round it happened in')
+end)
+
+t.test('CONTROL: a player who was DELIBERATELY invisible before the round stays invisible', function()
+    -- The regression the other way, and this file has learned it before: an
+    -- unconditional write here switched off an admin's god mode and put a
+    -- deliberately hidden player on show. The reading is taken at the door,
+    -- before the arena has touched anything, and it is honoured BOTH ways.
+    local f = newClientFixture()
+    f.visible = false
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+    f.fireThreaded('crimson_arena:client:exitArena', {})
+    for _ = 1, 4 do f.step() end
+
+    t.isFalse(f.visible, 'the arena put a deliberately invisible player on show')
+end)
+
+t.test('CONTROL: an ordinary round that hid nobody says nothing at all', function()
+    -- Without this the assertions above are satisfied by a build that prints
+    -- the warning on every exit, which would train an operator to ignore it.
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+    f.fireThreaded('crimson_arena:client:exitArena', {})
+    for _ = 1, 4 do f.step() end
+
+    t.isTrue(f.visible, 'an ordinary round left somebody invisible')
+    t.notContains(table.concat(f.printed or {}, '\n'), 'you left the arena invisible',
+        'it cried wolf on a round where nothing was wrong')
 end)
 
 os.exit(t.summary())

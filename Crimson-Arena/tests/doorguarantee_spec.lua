@@ -2597,4 +2597,65 @@ t.test('DEFECT: a bag that takes the item and answers nothing must not produce a
         'THEY WERE HANDED A SECOND COPY because the bag did not say it took the first')
 end)
 
+-- ========================================================================
+-- A STASH-BACKED BAG, WHICH IS NOT A CONTAINER AT ALL
+--
+-- fm-firstresponderbag's LEO and EMS bags are NOT ox_inventory containers.
+-- They are ordinary items carrying `metadata.bagId`, and their contents live
+-- in a SEPARATE STASH named `leo_bag_<bagId>` that the bag resource
+-- registers and opens on demand.
+--
+-- So the container custody above does nothing for them, correctly: there is
+-- no `metadata.container` to hold. The arena never touches that stash, and
+-- must not.
+--
+-- WHAT THE ARENA CAN STILL COST THEM is the LINK. The bag is just an item to
+-- this resource -- it goes into the belongings stash and comes back -- and
+-- if `bagId` did not survive that trip, the bag would open a DIFFERENT,
+-- EMPTY stash on the other side. To its owner that is indistinguishable
+-- from the arena having emptied it, and the real contents would still be
+-- sitting in a stash nothing now points at.
+-- ========================================================================
+
+t.test('a stash-backed bag keeps the id its contents hang off', function()
+    local server = newServer({ 1, 2 }, nil, {
+        { name = 'leo_bag', count = 1, metadata = { bagId = 'CID1-LEO-7', label = 'LEO Bag' } },
+    })
+
+    local matchId = bagRound(server, { 1, 2 })
+    t.isNil(server.metaOf(1, 'leo_bag'), 'the door did not take the bag off them')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    local bag = server.metaOf(1, 'leo_bag')
+    t.isNotNil(bag, 'the bag itself did not come back')
+    t.equals(bag.bagId, 'CID1-LEO-7',
+        'THE BAG CAME BACK POINTING AT A DIFFERENT STASH -- to its owner that reads as emptied')
+    t.equals(bag.label, 'LEO Bag', 'the rest of its metadata was lost with it')
+end)
+
+t.test('and the arena never touches the stash that bag opens', function()
+    -- The contents live in leo_bag_<bagId>, registered by the bag resource.
+    -- The arena's own sweep works on its own prefix and must leave this
+    -- alone -- both the items in it and the stash itself.
+    local server = newServer({ 1, 2 }, nil, {
+        { name = 'leo_bag', count = 1, metadata = { bagId = 'CID1-LEO-7' } },
+    })
+    server.stashItem('leo_bag_CID1-LEO-7', 'handcuffs', 2)
+    server.stashItem('leo_bag_CID1-LEO-7', 'radio', 1)
+
+    local matchId = bagRound(server, { 1, 2 })
+    t.equals(server.contentsOf('leo_bag_CID1-LEO-7'), 'handcuffsx2,radiox1',
+        'the door reached into a stash that is not its own')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.contentsOf('leo_bag_CID1-LEO-7'), 'handcuffsx2,radiox1',
+        'THE ARENA EMPTIED A BAG STASH IT DOES NOT OWN')
+    t.equals(server.carrying(1), 'ammo-rifle-apx40,burgerx3,leo_bagx1,phonex1',
+        'and the player did not come out with exactly their own things')
+end)
+
 os.exit(t.summary())

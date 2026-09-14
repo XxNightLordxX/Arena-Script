@@ -500,6 +500,29 @@ defect this whole file has been chasing, reintroduced by a convenience. A refusa
 verified against the container's own contents before it is believed. Removing that check
 makes the player walk out with a second `radio` while the bag keeps the first.
 
+### 3p. The LEO bag is not a container, and that matters
+
+The bag in the report is `fm-firstresponderbag`, and reading it changed the diagnosis. Its
+LEO and EMS bags are **not ox_inventory containers**. They are ordinary items carrying
+`metadata.bagId`, and their contents live in a **separate stash** named
+`leo_bag_<bagId>` that the bag resource registers and opens on demand
+(`server.lua`: `RegisterStash(bagConfig.stashPrefix .. item.metadata.bagId, ...)`).
+
+So the container custody in 3 does nothing for them, and that is correct -- there is no
+`metadata.container` to hold. **The arena never touches that stash and must not**, which is
+now asserted rather than assumed.
+
+What the arena *could* still cost them is the **link**. The bag is just an item here: it
+goes into the belongings stash and comes back. If `bagId` did not survive that trip, the bag
+would open a different, empty stash on the other side -- and to its owner that is
+indistinguishable from the arena having emptied it, with the real contents still sitting in
+a stash nothing points at any more. Pinned now.
+
+**And the exposure that remains is the one already fixed.** That bag stash is nobody's open
+inventory during a round, so it sits in exactly the same ox_inventory idle purge as
+everything else -- which is what `keepStashesAliveMinutes = 45` is for. The bag needed the
+convar fix, not the container fix.
+
 ### 4. And no match duplicates anything, asserted rather than argued
 
 The general form of every defect above is "it is in two places now", and a test that looks

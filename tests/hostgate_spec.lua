@@ -428,6 +428,104 @@ t.test('and a side somebody CHOSE is never taken off them by a refusal', functio
 end)
 
 -- ========================================================================
+-- WHO FOUGHT IT, WRITTEN DOWN AT GO-LIVE
+--
+-- ArenaStats reads `match.players` at the END of a round, and ArenaLobby.Leave
+-- takes a quitter out of it -- so the roster the leaderboard would otherwise
+-- judge is "whoever was still standing". A real three-way one player rage-quit
+-- would reach the board as a two-man duel, and a farm could rotate who walks
+-- out to keep changing the set the repeat rule keys on.
+--
+-- goLive writes the answer down while it is still settled: nobody else can
+-- join from there.
+--
+-- NOTHING WAS HOLDING THIS. Deleting the whole write left all 122 spec files
+-- passing -- rankedboard_spec and recordmatch_spec hand RecordMatch a match
+-- table with the list already filled in, and every spec that drives a real
+-- goLive stubs ArenaStats out. So the field the rule depends on was written
+-- by code no test ran.
+-- ========================================================================
+
+--- A team lobby that goes live the moment everybody is ready, with no
+--- countdown to step through.
+local function liveTeamRound(count, seats)
+    local s = newArena(seats or { [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Match.lobbyCountdownSeconds = 0
+        config.Match.startCountdownSeconds = 0
+        config.Teams.autoAssignIfUnchosen = true
+        config.Betting.enabled = false
+        config.Betting.entryFee.enabled = false
+    end)
+    local matchId, err = s.lobby.Create(1, anArena(s), 'tdm', nil, nil, nil, nil)
+    t.isNotNil(matchId, 'the team match could not be created: ' .. tostring(err))
+    for src = 2, count do
+        t.isTrue(s.lobby.Join(src, matchId, nil, nil), ('fighter %d could not join'):format(src))
+    end
+
+    local ok, why = s.match.Begin(matchId, 1)
+    t.isTrue(ok, 'the round would not begin: ' .. tostring(why))
+
+    -- JUST FAR ENOUGH TO GO LIVE. This fixture answers GetEntityCoords with
+    -- the Trailer Park, and anArena() hands back whichever arena ships first
+    -- -- so keep stepping and Config.Match.serverChecks reads the whole
+    -- roster as having walked a kilometre out of the fence and closes the
+    -- round. One step is the countdown thread; the rest is the fence.
+    s.step()
+
+    local match = s.lobby.Get(matchId)
+    t.equals(match.state, 'live', 'the round never went live')
+    return s, matchId, match
+end
+
+t.test('going live writes down who fought it, by character', function()
+    local s, matchId, match = liveTeamRound(3)
+
+    t.equals(type(match.contestantIds), 'table',
+        'nothing was written down at go-live at all')
+    t.equals(table.concat(match.contestantIds, ','), 'CID001,CID002,CID003',
+        'the go-live roster was recorded as ' .. table.concat(match.contestantIds or {}, ','))
+end)
+
+t.test('and a quitter does not take themselves out of it', function()
+    -- THE WHOLE REASON THE FIELD EXISTS. match.players loses them; this does
+    -- not, so the two who stayed keep a real three-way result.
+    local s, matchId, match = liveTeamRound(3)
+
+    s.lobby.Leave(3, 'match.left', false)
+
+    t.isNil(match.players[3], 'the quitter is still on the roster, so this proves nothing')
+    t.equals(table.concat(match.contestantIds, ','), 'CID001,CID002,CID003',
+        'THE QUITTER WAS ERASED FROM THE ROUND THEY FOUGHT IN')
+end)
+
+t.test('and two logins on one character are one fighter', function()
+    -- The smallest farm there is. Counted by citizen id at the moment it is
+    -- written, not left to the reader to notice.
+    local s, matchId, match = liveTeamRound(3, {
+        [1] = 5000, [2] = 5000, [3] = 5000,
+    })
+    -- Two of the three seats are the same character.
+    t.equals(#match.contestantIds, 3, 'three distinct characters did not produce three ids')
+
+    local again = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Match.lobbyCountdownSeconds = 0
+        config.Match.startCountdownSeconds = 0
+        config.Teams.autoAssignIfUnchosen = true
+        config.Betting.enabled = false
+        config.Betting.entryFee.enabled = false
+    end)
+    again.qbx.players[2].citizenid = again.qbx.players[1].citizenid
+    local id = again.lobby.Create(1, anArena(again), 'tdm', nil, nil, nil, nil)
+    again.lobby.Join(2, id, nil, nil)
+    again.match.Begin(id, 1)
+    again.step()
+
+    local m = again.lobby.Get(id)
+    t.equals(#m.contestantIds, 1,
+        'one character logged in twice was written down as two fighters')
+end)
+
+-- ========================================================================
 -- AND A RULES REWRITE DOES NOT MINT A ROW SetReady WOULD REFUSE
 -- ========================================================================
 

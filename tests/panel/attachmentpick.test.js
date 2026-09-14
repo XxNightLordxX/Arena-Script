@@ -170,6 +170,140 @@ test('and unticking one takes it off what is sent', () => {
     assert.ok(sent.indexOf('grip') >= 0, 'unticking the scope took the grip with it: ' + sent.join(','));
 });
 
+// ------------------------------------------------------------------
+// AND THE CHOICE SURVIVES THE SERVER CONFIRMING IT
+// ------------------------------------------------------------------
+
+/* THE ROUND TRIP LOST THE PICK EVERY TIME, and the screen agreed it never
+   happened. seedDraft rebuilt each draft weapon as {key, ammo, ammoType}
+   only, so the moment the server confirmed a save and pushed state back,
+   `pick.attachments` was undefined again; attachmentsOn() fell back to "every
+   kind this weapon takes" and re-lit every chip. The player was looking at a
+   scope they had deliberately taken off, being told it was fitted.
+
+   It got worse on the next save: saveLoadout only sends the key when it is
+   an array, so the field was omitted, and server/main.lua reads absent as
+   "fit what this server fits by default" -- which put the scope back on the
+   gun for real. Two saves and the choice was gone from both ends.
+
+   Nothing in the snapshot could have restored it either: the resolved entry
+   carried component NAMES and not the KINDS that were ticked.
+   Arena.ResolveWeaponEntry records `attachments` for exactly this. */
+
+/** The entry the server sends back after fitting `kinds`. */
+function confirmed(snap, kinds) {
+    const next = JSON.parse(JSON.stringify(snap));
+    next.player.loadout = {
+        weapons: [{
+            key: 'pistol', weapon: 'WEAPON_PISTOL', label: 'Pistol', ammo: 60,
+            attachments: kinds,
+            components: kinds.map(function (k) { return 'COMPONENT_' + k.toUpperCase(); }),
+        }],
+        armor: 100, health: 200, supplies: [],
+    };
+    return next;
+}
+
+test('DEFECT: a chip says whether IT is fitted, not whether the weapon is picked', () => {
+    /* The title read `picked ? 'Fitted...' : 'Pick this weapon...'`, and the
+       whole block only runs when `picked` is true -- so the second branch was
+       dead and every chip claimed to be fitted, including the ones just
+       switched off. It is the one control whose entire job is to say whether
+       a component is going on the gun. */
+    const panel = opened(snapshot(false, {
+        attachments: [{ key: 'scope', label: 'Scope' }, { key: 'grip', label: 'Grip' }],
+    }));
+    panel.fire('weapon-card-pistol', 'click');
+    panel.fire('attachment-pistol-scope', 'click');   // take the scope off
+
+    const off = panel.node('attachment-pistol-scope').title;
+    const on = panel.node('attachment-pistol-grip').title;
+
+    assert.ok(/not fitted/i.test(off),
+        'AN UNTICKED CHIP STILL CLAIMED TO BE FITTED: ' + off);
+    assert.ok(/^fitted/i.test(on),
+        'the chip that IS fitted stopped saying so: ' + on);
+    assert.notStrictEqual(off, on,
+        'both chips carry the same tooltip, so it says nothing about either');
+});
+
+test('DEFECT: an unticked attachment stays unticked once the server confirms', () => {
+    const snap = snapshot(false, {
+        attachments: [{ key: 'scope', label: 'Scope' }, { key: 'grip', label: 'Grip' }],
+    });
+    const panel = opened(snap);
+    panel.fire('weapon-card-pistol', 'click');
+    panel.fire('attachment-pistol-scope', 'click');
+    panel.fire('loadout-save', 'click');
+
+    // The server fits grip alone and pushes the state back.
+    panel.send('state', confirmed(snap, ['grip']));
+
+    assert.ok(!panel.node('attachment-pistol-scope').classList.contains('active'),
+        'THE SCOPE RE-LIT: the panel claims a component the server did not fit');
+    assert.ok(panel.node('attachment-pistol-grip').classList.contains('active'),
+        'the grip the server DID fit was shown as off');
+});
+
+test('DEFECT: and the next save still carries the choice, rather than dropping it', () => {
+    const snap = snapshot(false, {
+        attachments: [{ key: 'scope', label: 'Scope' }, { key: 'grip', label: 'Grip' }],
+    });
+    const panel = opened(snap);
+    panel.fire('weapon-card-pistol', 'click');
+    panel.fire('attachment-pistol-scope', 'click');
+    panel.fire('loadout-save', 'click');
+    panel.send('state', confirmed(snap, ['grip']));
+
+    /* Change something unrelated -- drop the grip and take it back is the
+       cheapest way to make the draft dirty again without touching the scope.
+       Then save, and the scope must still be absent from the wire. */
+    panel.fire('attachment-pistol-grip', 'click');
+    panel.fire('attachment-pistol-grip', 'click');
+    panel.fire('loadout-save', 'click');
+
+    const saves = panel.posted.filter(function (p) { return p.name === 'setLoadout'; });
+    assert.strictEqual(saves.length, 2, 'the second save never reached the wire');
+
+    const sent = (saves[1].body.weapons[0] || {}).attachments;
+    assert.ok(Array.isArray(sent),
+        'THE SECOND SAVE OMITTED THE ATTACHMENTS KEY -- the server refits everything');
+    assert.ok(sent.indexOf('scope') < 0,
+        'the scope came back on the second save: ' + sent.join(','));
+});
+
+test('a server that sends no kinds back leaves the default set alone', () => {
+    /* An older server, or a loadout saved before attachments existed. Absent
+       must still mean "fit what this server fits by default". */
+    const snap = snapshot(false, {
+        attachments: [{ key: 'scope', label: 'Scope' }, { key: 'grip', label: 'Grip' }],
+    });
+    const panel = opened(snap);
+    const next = JSON.parse(JSON.stringify(snap));
+    next.player.loadout = {
+        weapons: [{ key: 'pistol', weapon: 'WEAPON_PISTOL', label: 'Pistol', ammo: 60 }],
+        armor: 100, health: 200, supplies: [],
+    };
+    panel.send('state', next);
+    panel.fire('weapon-card-pistol', 'click');
+
+    assert.ok(panel.node('attachment-pistol-scope').classList.contains('active'),
+        'a server that said nothing had its silence read as "fit nothing"');
+});
+
+test('and an EMPTY list from the server means exactly that: none of them', () => {
+    const snap = snapshot(false, {
+        attachments: [{ key: 'scope', label: 'Scope' }, { key: 'grip', label: 'Grip' }],
+    });
+    const panel = opened(snap);
+    panel.send('state', confirmed(snap, []));
+
+    assert.ok(!panel.node('attachment-pistol-scope').classList.contains('active'),
+        'a player who took everything off was handed the scope back');
+    assert.ok(!panel.node('attachment-pistol-grip').classList.contains('active'),
+        'a player who took everything off was handed the grip back');
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

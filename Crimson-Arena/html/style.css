@@ -1701,7 +1701,37 @@ option {
     #loadout-lists {
         overflow: visible;
         padding-bottom: 0;
+
+        /* AND min-height WITH IT, which is the half that was still biting.
+           This is a grid item with `min-height: 0` so it can be a scroller
+           inside a fixed row on a wide screen. Here the rows are sized by
+           their contents and the TAB scrolls -- and an item allowed to
+           shrink below its own content is one the grid will shrink. It did:
+           the weapon lists were squeezed to a fraction of their height and,
+           with overflow now visible, drawn straight over the slots panel
+           underneath them. Measured at 1100, 1000, 900 and 420 wide. */
+        min-height: auto;
     }
+
+    /* AND THE SLOTS PANEL STOPS BEING A SCROLLER, for the same reason one
+       line up. Left as one it kept the height its own contents wanted while
+       the grid row it sits in was squeezed smaller, so it was drawn past the
+       bottom of its row and over Save Loadout -- by 38px at 1000 wide, which
+       is most of the button. The tab is the scroller at this width; nothing
+       inside it needs to be. */
+    #loadout-slots {
+        overflow: visible;
+    }
+
+    /* #create-panel DELIBERATELY KEEPS ITS OWN SCROLLER HERE, and this note
+       is the reason not to "fix" it again. It looks like the nested-scroller
+       the comment above #loadout-lists is about, and it is not: #match-list
+       beside it is capped at 40vh and carries `min-height: 0`, so it is the
+       one track in this column that can give. Let the create form take its
+       full content height and the grid takes that space straight out of the
+       match list -- measured at 91px of list at 1000 wide, and 0px at 900x700,
+       against a form that was merely scrollable before. A second wheel on a
+       fixed set of fields is the cheaper of the two. */
 
     /* THE BETS FORM HAD THE SAME NESTED SCROLLER and it cost more than a
        second wheel: capped at the height of a row that is now sized by its

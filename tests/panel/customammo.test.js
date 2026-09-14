@@ -348,6 +348,52 @@ test('and typing still reaches the wire across a push', () => {
     assert.strictEqual(entry.ammo, 119, 'the amount typed across a snapshot was not what was sent');
 });
 
+test('DEFECT: leaving the box does not rebuild the grid under a pending click', () => {
+    /* THE FIRST CLICK ON ANYTHING ELSE WAS SWALLOWED.
+
+       The blur handler called render(). Blur fires on MOUSEDOWN, before
+       mouseup -- so the grid was cleared and rebuilt while a click was
+       already on its way, the node the mousedown landed on was detached, and
+       the browser had no common target left to dispatch a click to. With the
+       caret in this box, the first click on a preset chip, an attachment, an
+       ammo type, another weapon card or a category chip did nothing at all.
+       Measured in a real browser before and after the fix; this shim has no
+       mousedown/mouseup split and cannot see the click being lost.
+
+       What it CAN see is the cause: node identity. A full render replaces
+       every node in the grid, so if the card and the chips are the same
+       objects after a blur as before it, nothing was torn out. */
+    const panel = opened(snapshot(true));
+    panel.fire('weapon-card-pistol', 'click');
+
+    const box = panel.node('weapon-ammo-custom-pistol');
+    const card = panel.node('weapon-card-pistol');
+
+    box.value = '99';
+    panel.fire('weapon-ammo-custom-pistol', 'input', { target: { value: '99' } });
+    panel.fire('weapon-ammo-custom-pistol', 'blur', { target: box });
+
+    assert.strictEqual(panel.node('weapon-card-pistol'), card,
+        'THE CARD WAS REBUILT ON BLUR -- in a browser that eats the click that caused it');
+    assert.strictEqual(panel.node('weapon-ammo-custom-pistol'), box,
+        'the box itself was rebuilt on blur');
+});
+
+test('and it still clamps the typed amount into the box on the way out', () => {
+    /* The clamp is what the render was for, and it has to survive losing it.
+       250 is this weapon's own ceiling. */
+    const panel = opened(snapshot(true));
+    panel.fire('weapon-card-pistol', 'click');
+
+    const box = panel.node('weapon-ammo-custom-pistol');
+    box.value = '9999';
+    panel.fire('weapon-ammo-custom-pistol', 'input', { target: { value: '9999' } });
+    panel.fire('weapon-ammo-custom-pistol', 'blur', { target: box });
+
+    assert.strictEqual(box.value, '250',
+        'the box kept an amount the weapon cannot carry: ' + box.value);
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

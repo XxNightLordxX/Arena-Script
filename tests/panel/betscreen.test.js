@@ -75,7 +75,10 @@ function snapshot(over) {
             playerCount: 4, hostName: 'Dave', pot: 2000, entryFee: 500,
             betsOpen: true, fighterBetsOpen: true,
             bets: 2, betPool: 2600,
-            betsByPick: teams ? { crimson: 1800, ash: 800 } : { 11: 1800, 12: 800 },
+            /* NESTED BY SETTLEMENT POOL, as server/lobby.lua sends it.
+               'all' is the shared pool, which is what betPayout.sharedPool
+               ships. The split-pool cases are at the foot of this file. */
+            betsByPick: { all: teams ? { crimson: 1800, ash: 800 } : { 11: 1800, 12: 800 } },
             teamCounts: teams ? { crimson: 2, ash: 2 } : {},
             players: [
                 { id: 11, name: 'Rico', alive: true, team: teams ? 'crimson' : null },
@@ -172,7 +175,7 @@ test('the summary quotes the SERVER pool, never the panel’s own sum', () => {
     /* betPool is what settlement divides. If a bet ever carries no pick the
        breakdown under-counts, and the figure on screen must still be the
        one the server will actually pay out of. */
-    const panel = opened({ edit(s) { s.matches[0].betsByPick = { 11: 100 }; } });
+    const panel = opened({ edit(s) { s.matches[0].betsByPick = { all: { 11: 100 } }; } });
     assert.ok(/\$2,600/.test(textOf(panel.node('bet-summary'))),
         'the panel quoted its own sum instead of betPool: ' + textOf(panel.node('bet-summary')));
 });
@@ -323,6 +326,208 @@ test('with no match picked it says that, rather than showing an empty pot', () =
     const panel = opened({ edit(s) { s.matches = []; } });
     assert.ok(/No match picked/i.test(textOf(panel.node('bet-match'))),
         'it did not say there is nothing selected: ' + textOf(panel.node('bet-match')));
+});
+
+// ------------------------------------------------------------------
+// Two books, where the operator asked for two
+// ------------------------------------------------------------------
+
+/* betPayout.sharedPool off makes the server settle fighters and spectators
+   in separate pools and pay each bet a share of its own. A panel reading the
+   whole book then describes a contest that is not happening -- measured
+   against the real settlement: a fighter staking 1,800 on themselves and a
+   spectator staking 800 against them are EACH handed their stake back. */
+function splitPools(over) {
+    return opened({
+        teams: (over || {}).teams,
+        edit(s) {
+            s.config.betting.betPayout.sharedPool = false;
+            s.matches[0].betsByPick = { fighter: { 11: 1800 }, spectator: { 12: 800 } };
+            s.matches[0].betPool = 2600;
+            s.matches[0].bets = 2;
+            if (over && over.edit) over.edit(s);
+        },
+    });
+}
+
+test('DEFECT: a spectator is shown the SPECTATOR pool, not the whole book', () => {
+    const panel = splitPools();
+    const chipText = chips(panel).map(textOf).join(' | ');
+    assert.ok(/\$800/.test(chipText), 'the spectator pool did not reach the chips: ' + chipText);
+    assert.ok(!/\$1,800/.test(chipText),
+        'THE FIGHTERS\u2019 STAKES WERE SHOWN AS MONEY A SPECTATOR CAN WIN: ' + chipText);
+});
+
+test('and the summary quotes that pool, not the flat betPool beside it', () => {
+    const panel = splitPools();
+    const summary = textOf(panel.node('bet-summary'));
+    assert.ok(/\$800/.test(summary), 'the spectator pool is not in the summary: ' + summary);
+    assert.ok(!/\$2,600/.test(summary),
+        'the flat total was quoted as the money this bettor is playing for: ' + summary);
+    assert.ok(/In your pool/.test(summary), 'the figure was not named as one pool: ' + summary);
+});
+
+test('a fighter in the same match is shown the FIGHTER pool instead', () => {
+    const panel = splitPools({ edit(s) {
+        s.player.matchId = 'm1';
+        s.matches[0].players.push({ id: SELF, name: 'You', alive: true, team: null });
+        s.config.betting.fighterBets.ownSideOnly = false;
+    } });
+    const summary = textOf(panel.node('bet-summary'));
+    assert.ok(/\$1,800/.test(summary), 'the fighter pool is not in the summary: ' + summary);
+    assert.ok(!/\$800\b/.test(summary.replace(/\$1,800/g, '')),
+        'a fighter was shown the spectators\u2019 money: ' + summary);
+});
+
+test('and the rules say out loud that there are two books', () => {
+    const panel = splitPools();
+    const note = textOf(panel.node('bet-note'));
+    assert.ok(/settled separately/i.test(note),
+        'nothing on screen said the two kinds do not contest each other: ' + note);
+});
+
+test('a shared-pool server says none of that, because it is not true there', () => {
+    const panel = opened();
+    assert.ok(!/settled separately/i.test(textOf(panel.node('bet-note'))),
+        'a shared server was told its pools are split');
+    assert.ok(/On side-bets/.test(textOf(panel.node('bet-summary'))),
+        'a shared server had its figure renamed as one pool');
+});
+
+// ------------------------------------------------------------------
+// The three figures that meant something other than their label
+// ------------------------------------------------------------------
+
+test('DEFECT: the pot header totals the rows under it, not the prize pool', () => {
+    /* `match.pot` is GetPrizePool -- the entry pot PLUS the whole side-bet
+       pool wherever includeEntryPot is on, which is the shipped default. It
+       was printed as the header of a list that itemises ENTRY FEES: measured
+       at 3,000 over two rows of 500. `entryPot` was already on the wire and
+       nothing read it. */
+    const panel = opened({ edit(s) {
+        s.matches[0].pot = 3000;
+        s.matches[0].entryPot = 2000;
+        s.matches[0].entryFee = 500;
+    } });
+
+    const list = textOf(panel.node('bet-list'));
+    assert.ok(/\$2,000/.test(list), 'the entry pot is not on the header: ' + list);
+    assert.ok(!/\$3,000/.test(list),
+        'THE PRIZE POOL WAS PRINTED OVER A LIST OF ENTRY FEES: ' + list);
+});
+
+test('and an older server that sends no entryPot still shows a figure', () => {
+    const panel = opened({ edit(s) {
+        s.matches[0].pot = 3000;
+        delete s.matches[0].entryPot;
+    } });
+    assert.ok(/\$3,000/.test(textOf(panel.node('bet-list'))),
+        'dropping entryPot blanked the header instead of falling back');
+});
+
+test('DEFECT: an odds server shows the bet COUNT, not an always-empty pool', () => {
+    /* betting.lua keeps odds bets out of GetSideBetPool and out of the
+       breakdown -- they are the operator's money, not the pool's -- while
+       CountSideBets counts them. Side by side that read "$0 on side-bets /
+       3 bets" on a match with a real book. */
+    const panel = opened({ edit(s) {
+        s.config.betting.betPayout.spectators = 'odds';
+        s.matches[0].betPool = 0;
+        s.matches[0].betsByPick = {};
+        s.matches[0].bets = 3;
+    } });
+
+    const summary = textOf(panel.node('bet-summary'));
+    assert.ok(/Bets placed/.test(summary), 'the count was not offered: ' + summary);
+    assert.ok(!/On side-bets\s*\$0/.test(summary.replace(/\s+/g, ' ')),
+        'AN EMPTY POOL WAS QUOTED ON A SERVER THAT HAS NO POOL: ' + summary);
+});
+
+test('and its chips quote the payout instead of "no bets yet"', () => {
+    const panel = opened({ edit(s) {
+        s.config.betting.betPayout.spectators = 'odds';
+        s.matches[0].betPool = 0;
+        s.matches[0].betsByPick = {};
+        s.matches[0].bets = 3;
+    } });
+    const chipText = chips(panel).map(textOf).join(' | ');
+    assert.ok(/\u00d72 if they win/.test(chipText),
+        'the chips did not say what a win pays: ' + chipText);
+    assert.ok(!/no bets yet/.test(chipText),
+        'every chip still claimed an empty book: ' + chipText);
+});
+
+test('and the split says there is no pool to contest', () => {
+    const panel = opened({ edit(s) {
+        s.config.betting.betPayout.spectators = 'odds';
+        s.matches[0].betPool = 0;
+        s.matches[0].betsByPick = {};
+        s.matches[0].bets = 3;
+    } });
+    assert.ok(/no pool to share/i.test(textOf(panel.node('bet-split'))),
+        'the split drew an empty book rather than explaining there is none: '
+        + textOf(panel.node('bet-split')));
+});
+
+test('DEFECT: money on an ELIMINATED fighter is still named, not a raw id', () => {
+    /* Nothing returns a side-bet when its pick is eliminated -- only when the
+       backer leaves -- so the stake stays on the book. The label map was
+       built from the OFFER list, which drops the eliminated, so the money
+       showed against a bare server id. */
+    const panel = opened({ edit(s) {
+        s.matches[0].players[0].alive = false;          // Rico is out
+        s.matches[0].betsByPick = { all: { 11: 1800, 12: 800 } };
+    } });
+
+    const split = textOf(panel.node('bet-split'));
+    assert.ok(/Rico/.test(split),
+        'THE ELIMINATED FIGHTER\u2019S STAKE LOST ITS NAME: ' + split);
+    assert.ok(!/\b11\b/.test(split), 'a raw server id reached the screen: ' + split);
+});
+
+test('DEFECT: a max of 0 is the server\u2019s "one stake only", not "no limit"', () => {
+    /* shared/arena.lua: maximum = math.max(minimum, max or minimum). With
+       min 50 and max 0 the server accepts 50 and refuses 51, 100 and 500 --
+       measured. The panel had its own rule, "0 means unlimited", and offered
+       everything up to the player's balance. */
+    const panel = opened({ edit(s) {
+        s.config.betting.spectatorBets.min = 50;
+        s.config.betting.spectatorBets.max = 0;
+    } });
+
+    const buttons = panel.node('bet-quick').children
+        .filter(function (c) { return c.classList && c.classList.contains('bet-quick-chip'); })
+        .map(function (c) { return String(c.textContent); });
+    assert.deepStrictEqual(buttons, ['$50'],
+        'THE PANEL OFFERED STAKES THE SERVER REFUSES: ' + buttons.join(' '));
+
+    assert.ok(/exactly/i.test(textOf(panel.node('bet-quick'))),
+        'the band was not described as the single stake it is: '
+        + textOf(panel.node('bet-quick')));
+});
+
+test('and it refuses anything above that stake, with the reason', () => {
+    const panel = opened({ edit(s) {
+        s.config.betting.spectatorBets.min = 50;
+        s.config.betting.spectatorBets.max = 0;
+    } });
+    const rico = chips(panel).find(function (c) { return /Rico/.test(textOf(c)); });
+    clickNode(rico);
+    panel.type('bet-amount', '500');
+
+    assert.strictEqual(panel.node('bet-submit').disabled, true,
+        'a stake the server refuses was offered as placeable');
+    assert.ok(/one stake only/i.test(panel.text('bet-hint')),
+        'the refusal did not say what the server actually takes: ' + panel.text('bet-hint'));
+});
+
+test('a real ceiling still behaves like a ceiling', () => {
+    const panel = opened();   // min 50, max 1000
+    const buttons = panel.node('bet-quick').children
+        .filter(function (c) { return c.classList && c.classList.contains('bet-quick-chip'); })
+        .map(function (c) { return String(c.textContent); });
+    assert.ok(buttons.length > 1, 'a real band collapsed to one stake: ' + buttons.join(' '));
+    assert.ok(buttons.indexOf('$1,000') !== -1, 'the ceiling was not offered: ' + buttons.join(' '));
 });
 
 console.log('');

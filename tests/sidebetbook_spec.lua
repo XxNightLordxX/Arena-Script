@@ -202,11 +202,23 @@ local function withWatcher(fee, mutate)
 end
 
 --- The breakdown, and the total it is drawn beside, asked for together.
+---
+--- FLATTENED ACROSS POOLS for the tests that are about the FILTER rather
+--- than about the keying: settled bets, odds bets and the empty cases behave
+--- the same whichever pool a bet lands in, and flattening lets those keep
+--- asserting against GetSideBetPool, which is flat too. The split-pool tests
+--- at the bottom of this file read the pools apart, which is the only way to
+--- see the thing they are about.
 --- @return table byPick, integer pool, integer sum
 local function book(s, matchId)
-    local byPick = s.betting.SideBetTotals(matchId)
-    local sum = 0
-    for _, amount in pairs(byPick) do sum = sum + amount end
+    local byPool = s.betting.SideBetTotals(matchId)
+    local byPick, sum = {}, 0
+    for _, side in pairs(byPool) do
+        for pick, amount in pairs(side) do
+            byPick[pick] = (byPick[pick] or 0) + amount
+            sum = sum + amount
+        end
+    end
     return byPick, s.betting.GetSideBetPool(matchId), sum
 end
 
@@ -268,9 +280,9 @@ end)
 
 t.test('and an id that names no match at all is the same empty answer', function()
     local s = withWatcher(0)
-    local byPick = s.betting.SideBetTotals('no-such-match')
-    t.equals(type(byPick), 'table')
-    t.equals(next(byPick), nil, 'an unknown match produced side-bet money')
+    local byPool = s.betting.SideBetTotals('no-such-match')
+    t.equals(type(byPool), 'table')
+    t.equals(next(byPool), nil, 'an unknown match produced side-bet money')
 end)
 
 -- ========================================================================
@@ -323,7 +335,9 @@ t.test('the snapshot carries the breakdown beside the total', function()
     local match = s.onlyMatch(3)
     t.isNotNil(match, 'the watcher was sent no match at all')
     t.equals(type(match.betsByPick), 'table', 'betsByPick never reached the wire')
-    t.equals(match.betsByPick['1'], 2000, 'the wire figure is not the one on the books')
+    -- sharedPool ships ON, so everything settles in the one 'all' pool.
+    t.equals(type(match.betsByPick.all), 'table', 'the wire carried no shared pool')
+    t.equals(match.betsByPick.all['1'], 2000, 'the wire figure is not the one on the books')
     t.equals(match.betPool, 2000, 'the pool on the wire disagrees with the breakdown')
 end)
 
@@ -339,10 +353,99 @@ t.test('and every side on the wire is a pick the panel can draw a chip for', fun
     local ids = {}
     for _, row in ipairs(match.players or {}) do ids[tostring(row.id)] = true end
 
-    for pick in pairs(match.betsByPick or {}) do
-        t.isTrue(ids[pick] == true,
-            'the wire named a side "' .. tostring(pick) .. '" that is nobody in this match')
+    for _, side in pairs(match.betsByPick or {}) do
+        for pick in pairs(side) do
+            t.isTrue(ids[pick] == true,
+                'the wire named a side "' .. tostring(pick) .. '" that is nobody in this match')
+        end
     end
+end)
+
+-- ========================================================================
+-- TWO BOOKS, WHERE THE OPERATOR ASKED FOR TWO
+--
+-- betPayout.sharedPool off makes SettleSpectatorBets build one pool per
+-- KIND and pay each bet a share of its own. A breakdown flat across both
+-- kinds then describes a contest that is not happening: it was measured,
+-- against the real settlement, that a fighter staking 1,800 on themselves
+-- and a spectator staking 800 against them are EACH handed their stake
+-- back -- while a flat book showed 2,600 riding on the match.
+-- ========================================================================
+
+--- A match with a fighter's bet and a spectator's bet on it, under one
+--- sharedPool setting or the other.
+local function twoKinds(shared)
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.spectatorBets.enabled = true
+        config.Betting.fighterBets.enabled = true
+        config.Betting.entryFee.enabled = false
+        config.Betting.betPayout = config.Betting.betPayout or {}
+        config.Betting.betPayout.includeEntryPot = false
+        config.Betting.betPayout.sharedPool = shared
+    end)
+    local matchId = s.lobby.Create(1, anArena(s), nil, 0, nil, nil, 'cash')
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'))
+    -- Fighter 1 backs themselves; watcher 3 backs fighter 2.
+    t.isTrue(s.betting.PlaceSpectatorBet(1, matchId, 1, 1800, 'cash'), 'the fighter bet was refused')
+    t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 2, 800, 'cash'), 'the spectator bet was refused')
+    return s, matchId
+end
+
+t.test('DEFECT: with sharedPool off the two kinds are kept apart', function()
+    local s, matchId = twoKinds(false)
+    local byPool = s.betting.SideBetTotals(matchId)
+
+    t.equals(type(byPool.fighter), 'table', 'the fighters had no pool of their own')
+    t.equals(type(byPool.spectator), 'table', 'the spectators had no pool of their own')
+    t.equals(byPool.fighter['1'], 1800, 'the fighter stake is not in the fighter pool')
+    t.equals(byPool.spectator['2'], 800, 'the spectator stake is not in the spectator pool')
+    t.equals(byPool.all, nil, 'a shared pool was reported on a server that does not run one')
+
+    -- AND THE POOLS REALLY DO SETTLE APART. Neither bettor was contested, so
+    -- the arena hands both stakes straight back -- which is exactly why a
+    -- flat 2,600 on screen would have been a lie.
+    local before1 = s.qbx.players[1].money.cash
+    local before3 = s.qbx.players[3].money.cash
+    local match = s.lobby.Get(matchId)
+    match.state = 'live'
+    for src, player in pairs(match.players) do player.alive = (src == 1) end
+    s.betting.SettleSpectatorBets(matchId, '1')
+
+    t.equals(s.qbx.players[1].money.cash - before1, 1800,
+        'THE WINNER WAS PAID OUT OF A POOL THEY WERE ALONE IN')
+    t.equals(s.qbx.players[3].money.cash - before3, 800,
+        'the loser was not handed back a stake nobody contested')
+end)
+
+t.test('and with sharedPool on they are one pool that really does contest', function()
+    local s, matchId = twoKinds(true)
+    local byPool = s.betting.SideBetTotals(matchId)
+
+    t.equals(type(byPool.all), 'table', 'a shared server did not report one pool')
+    t.equals(byPool.all['1'], 1800)
+    t.equals(byPool.all['2'], 800)
+    t.equals(byPool.fighter, nil, 'a shared server split the kinds anyway')
+
+    local before1 = s.qbx.players[1].money.cash
+    local match = s.lobby.Get(matchId)
+    match.state = 'live'
+    for src, player in pairs(match.players) do player.alive = (src == 1) end
+    s.betting.SettleSpectatorBets(matchId, '1')
+
+    t.equals(s.qbx.players[1].money.cash - before1, 2600,
+        'the shared pool did not pay the whole book to the winner')
+end)
+
+t.test('and the split reaches the panel, pool by pool', function()
+    local s, matchId = twoKinds(false)
+    local match = s.onlyMatch(3)
+    t.isNotNil(match, 'the watcher was sent no match')
+    t.equals(match.betsByPick.fighter['1'], 1800, 'the fighter pool did not reach the wire')
+    t.equals(match.betsByPick.spectator['2'], 800, 'the spectator pool did not reach the wire')
+    -- betPool stays FLAT on purpose: it is still the answer to "how much is
+    -- riding on this match". The panel picks its own pool out of the split.
+    t.equals(match.betPool, 2600, 'the flat total stopped being the whole book')
 end)
 
 os.exit(t.summary())

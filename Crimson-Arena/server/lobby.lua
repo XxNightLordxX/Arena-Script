@@ -588,12 +588,18 @@ local function snapshotMatches()
             entryPot = ArenaBetting.GetPot(match.id),
             betPool = ArenaBetting.GetSideBetPool(match.id),
             bets = ArenaBetting.CountSideBets(match.id),
-            -- WHICH SIDE THE BETTING MONEY IS ON, as pick -> amount. The
-            -- total above says how much is riding on the match and said
+            -- WHICH SIDE THE BETTING MONEY IS ON, as pool -> pick -> amount.
+            -- The total above says how much is riding on the match and said
             -- nothing about how it was split, so the Bets tab could not
             -- answer the one thing a bettor needs to know before staking:
             -- a pool bet is paid out of the OTHER side's money, so backing
             -- a fighter nobody has bet against wins nothing.
+            --
+            -- NESTED BY SETTLEMENT POOL because betPayout.sharedPool can put
+            -- fighters and spectators in separate ones, and then `betPool`
+            -- above -- which is flat across both -- is NOT the money either
+            -- of them is playing for. The panel picks out the pool that
+            -- applies to whoever is looking.
             betsByPick = ArenaBetting.SideBetTotals(match.id),
             playerCount = #roster,
             teamCounts = Arena.CountTeams(roster),

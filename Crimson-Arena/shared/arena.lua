@@ -1199,7 +1199,7 @@ function Arena.AttachmentsFor(weaponName, chosen)
         end
     end
 
-    local out, seen = {}, {}
+    local out, seen, fitted = {}, {}, {}
     for _, kind in ipairs(kinds) do
         -- nil chosen: every kind this server allows, which is what the
         -- shipped `fit` list already means.
@@ -1212,9 +1212,15 @@ function Arena.AttachmentsFor(weaponName, chosen)
         if wanted and Arena.IsKey(component) and not seen[component] then
             seen[component] = true
             out[#out + 1] = component
+            -- AND THE KIND THAT PUT IT THERE. The components are what goes on
+            -- the gun; the KINDS are what the player ticked, and they are the
+            -- only form the panel can draw a chip from. Returning only the
+            -- first meant a saved choice could never be read back -- see the
+            -- note on ResolveWeaponEntry below.
+            fitted[#fitted + 1] = kind
         end
     end
-    return out
+    return out, fitted
 end
 
 --- @param weapon table -- a catalogue entry
@@ -1232,7 +1238,17 @@ function Arena.ResolveWeaponEntry(weapon, ammoType, ammo, attachments)
     -- AND WHATEVER THIS WEAPON IS FITTED WITH. Appended rather than
     -- replacing, so a per-weapon `components` list an operator wrote by hand
     -- still arrives -- this adds to it, it does not take it over.
-    for _, component in ipairs(Arena.AttachmentsFor(weapon.weapon, attachments)) do
+    --
+    -- `fittedKinds` IS THE HALF THE PANEL NEEDS BACK, and dropping it was a
+    -- round trip that lost the player's choice every single time. This entry
+    -- is what lands in player.loadout and what the snapshot ships, and it
+    -- carried only component NAMES -- so the panel reseeding from it had no
+    -- way to know which KINDS had been ticked. It re-lit every chip, told the
+    -- player a scope they had taken off was fitted, and then omitted the
+    -- attachments key from the next save, at which point the server refitted
+    -- everything. Measured end to end before this line existed.
+    local fittedComponents, fittedKinds = Arena.AttachmentsFor(weapon.weapon, attachments)
+    for _, component in ipairs(fittedComponents) do
         components[#components + 1] = component
     end
 
@@ -1244,6 +1260,9 @@ function Arena.ResolveWeaponEntry(weapon, ammoType, ammo, attachments)
         key = weapon.key,
         weapon = weapon.weapon,
         label = weapon.label or weapon.key,
+        -- The kinds actually fitted, so the panel can redraw the player's own
+        -- choice instead of guessing at it. See the note above.
+        attachments = fittedKinds,
         ammo = Arena.ResolveAmmo(weapon, ammo),
         ammoType = ammoType and ammoType.key or nil,
         ammoTypeLabel = ammoType and ammoType.label or nil,

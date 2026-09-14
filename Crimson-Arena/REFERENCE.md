@@ -598,12 +598,12 @@ listed; the source documents them where they are.
 | `ArenaBetting.ForfeitAll(matchId, reasonKey)` | Keeps every held stake and pays nobody. |
 | `ArenaBetting.Settle(matchId, context)` | Pays the pot out. |
 | `ArenaBetting.GetSideBetPool(matchId)` | Everything staked in side-bets that will be settled as a pool. |
-| `ArenaBetting.SideBetTotals(matchId)` | The same money broken down by the side it is on, as pick -> amount, so the Bets tab can show whether anybody is backing the other one. Built with GetSideBetPool's filter, so the parts add up to that total. |
 | `ArenaBetting.GetPrizePool(matchId)` | Everything a winner of this match stands to be paid from, as one figure. |
 | `ArenaBetting.GetSideBet(matchId, src)` | One player's own side-bet on a match, or nil. |
 | `ArenaBetting.HoldsSideBet(matchId, src)` | Whether this player is holding an UNSETTLED side-bet on this match. |
 | `ArenaBetting.MatchesBackedBy(src)` | Every match this player currently has an unsettled side-bet on, so the panel can refuse a Join the server would refuse. |
 | `ArenaBetting.HasSpectatorBet(matchId, src)` | Whether this player holds any side-bet on this match, settled or not. |
+| `ArenaBetting.SideBetTotals(matchId)` | The same money broken down as pool -> pick -> amount, so the Bets tab can show whether anybody is backing the other side. Keyed by SETTLEMENT pool (see poolKeyFor): with `betPayout.sharedPool` off the two kinds are paid out of separate pools, and a flat book would credit a bettor with money they cannot win. Built with GetSideBetPool's filter, so within one pool the parts add up. |
 | `ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)` | Takes a spectator's side-bet on a team or a fighter. |
 | `ArenaBetting.CountSideBets(matchId)` | How many unsettled side-bets are riding on a match, so a mode change can be refused rather than voiding the whole book. |
 | `ArenaBetting.MarkWalkedOut(matchId, src)` | Marks this player's unsettled bets as placed by somebody who then left, so the dead-pick refund never hands them back, and trims a fighter's stake to what a non-fighter may hold. |

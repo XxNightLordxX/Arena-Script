@@ -652,11 +652,35 @@
             if (limit > 0 && used >= limit) return;
             used += 1;
 
-            picks.push({
+            var pick = {
                 key: weapon.key,
                 ammo: int(entry.ammo, int(weapon.ammo && weapon.ammo.default, 0)),
                 ammoType: resolveAmmoType(weapon, entry.ammoType)
-            });
+            };
+
+            /* AND THE ATTACHMENTS THE PLAYER ACTUALLY CHOSE.
+
+               Dropping these was a round trip that lost the choice every
+               time. The draft was rebuilt with key/ammo/ammoType only, so
+               `pick.attachments` came back undefined, attachmentsOn() fell
+               back to "every kind this weapon takes", and every chip re-lit
+               -- telling the player a scope they had deliberately taken off
+               was fitted. Then saveLoadout only sends the key when it is an
+               array, so the NEXT save omitted it entirely, and the server
+               reads absent as "fit everything this server allows". Two
+               saves and the player's choice was gone, with the screen
+               agreeing it had never happened.
+
+               `entry.attachments` is the list of kinds the server really
+               fitted -- Arena.ResolveWeaponEntry records it now, for this.
+               Only taken when it IS a list: an older server that does not
+               send it leaves the default in place, which is what a loadout
+               saved before attachments existed should get. */
+            if (Array.isArray(entry.attachments)) {
+                pick.attachments = entry.attachments.map(String);
+            }
+
+            picks.push(pick);
         });
 
         state.draftWeapons = picks;
@@ -1360,7 +1384,20 @@
 
         if (reason) card.appendChild(makeEl('div', 'match-card-reason', 'Cannot join: ' + reason));
 
-        if (match.id === state.selectedMatchId && bettingOn()
+        /* AND THE BETS TAB HAS TO ACTUALLY BE SHOWING IT.
+
+           This read `state.selectedMatchId`, which is only the LAST of three
+           things focusedMatch() consults: the match you are fighting in wins,
+           then the one you are watching, then the one you clicked. Being in a
+           match self-corrects -- applySnapshot forces the selection back to
+           your own -- but WATCHING one does not, so a spectator who clicked
+           another card was told the Bets tab had followed them there while it
+           sat on the match they were watching. Everything downstream agreed
+           with the tab and not with the card: the heading, the chips, and the
+           matchId in the bet they then placed. The claim is now made against
+           the match the tab is really on. */
+        var focused = focusedMatch();
+        if (focused && match.id === focused.id && bettingOn()
             && (betting().spectatorBets || {}).enabled === true) {
             card.appendChild(makeEl('div', 'match-card-meta', 'Picked — the Bets tab is showing this match.'));
         }
@@ -1447,7 +1484,23 @@
         var livesSpent = winSpendsLives(state.createWin);
 
         var limitChoice = (cfg().match || {}).scoreLimitChoice;
-        var limitUsed = !!limitChoice && winUsed && state.createWin === 'score_limit';
+
+        /* GATED ON THE CONDITION THAT IS RUNNING, NOT ON THE DROPDOWN.
+
+           This read `winUsed`, which is not "is this a kill-limit match" --
+           it is "is the Win Condition dropdown on screen", and it is false
+           the moment the operator FIXES the condition. Fix it the documented
+           plain-string way (Config.Match.winCondition = 'score_limit') and
+           Arena.WinConditionChoice returns nil, so the host was told it was a
+           kill-limit match and then never shown the limit: the row was
+           hidden, its hint was blank, and Create posted the default every
+           time. The operator's own min/max band was unreachable on the one
+           server that had committed to using it.
+
+           `laddered` stays, and it is the part `winUsed` was carrying that
+           was worth keeping: a gun game ends on the ladder or the clock, so
+           a kill limit has nothing to decide there. */
+        var limitUsed = !!limitChoice && !laddered && state.createWin === 'score_limit';
         show(byId('create-limit-row'), limitUsed);
 
         var limitInput = byId('create-limit');
@@ -1461,8 +1514,17 @@
 
         var limitHint = byId('create-limit-hint');
         if (has(limitHint)) {
+            /* A TEAM REACHES THIS LIMIT TOGETHER. reachedScoreLimit in
+               server/match.lua sums teamKills in a team mode and only falls
+               back to one fighter's own kills outside one -- so "the first
+               fighter to this many kills" was the wrong rule on exactly the
+               modes where the number is hardest to guess, and a host setting
+               25 for a 4v4 was setting a target two players reach between
+               them, not one. */
             limitHint.textContent = limitUsed
-                ? 'The first fighter to this many kills takes the round. '
+                ? ((creating && creating.teams === true)
+                    ? 'The first side to this many kills between them takes the round. '
+                    : 'The first fighter to this many kills takes the round. ')
                   + int(limitChoice.min, 1) + ' to ' + int(limitChoice.max, 1) + '.'
                 : '';
         }
@@ -2624,6 +2686,10 @@
             var row = makeEl('div', 'weapon-ammo');
             row.appendChild(makeEl('span', 'weapon-field-label', 'Rounds'));
             var chosen = picked ? state.draftWeapons[index].ammo : int(ammo.default, 0);
+
+            /* HELD ON TO, so the typed-amount box below can re-light the
+               right one WITHOUT a render. See the blur handler. */
+            var presetChips = [];
             options.forEach(function (value) {
                 var amount = int(value, 0);
                 var chip = makeEl('button', 'chip', String(amount));
@@ -2634,6 +2700,7 @@
                     event.stopPropagation();
                     setWeaponAmmo(weapon.key, amount);
                 });
+                presetChips.push({ node: chip, amount: amount });
                 row.appendChild(chip);
             });
 
@@ -2674,7 +2741,33 @@
                     setWeaponAmmo(weapon.key, wanted, true);
                 });
 
-                box.addEventListener('blur', function () { render(); });
+                /* THE FIRST CLICK ON ANYTHING ELSE USED TO BE SWALLOWED.
+
+                   This was `render()`, and a full render is the one thing
+                   that must not happen here: blur fires on MOUSEDOWN, before
+                   mouseup. render() clears the grid and rebuilds every card,
+                   so the node the mousedown landed on was detached, the
+                   browser had no common ancestor to dispatch a click to, and
+                   the click never happened. Measured in a real browser --
+                   with the caret in this box, the first click on a preset
+                   chip, an attachment, an ammo type, another weapon card or
+                   a category chip did nothing at all, and only the second
+                   worked. The DOM shim the panel tests run in cannot see
+                   this: it has no mousedown/mouseup split.
+
+                   What the render was FOR is the two lines below it: the
+                   typed amount has to be clamped into the box, and the
+                   preset chip matching it has to light up. Both are done in
+                   place now, on nodes that already exist, so nothing is
+                   torn out from under a click that is already on its way. */
+                box.addEventListener('blur', function (event) {
+                    var wanted = clampInt(event.target.value, 0, int(ammo.max, 0));
+                    setWeaponAmmo(weapon.key, wanted, true);
+                    event.target.value = String(wanted);
+                    presetChips.forEach(function (entry) {
+                        entry.node.classList.toggle('active', entry.amount === wanted);
+                    });
+                });
 
                 box.addEventListener('keydown', function (event) {
                     if (event.key !== 'Enter' && event.keyCode !== 13) return;
@@ -2769,9 +2862,15 @@
                 fitChip.type = 'button';
                 if (fittedNow.indexOf(kind) >= 0) fitChip.classList.add('active');
                 fitChip.disabled = !canChooseLoadout();
-                fitChip.title = picked
-                    ? 'Fitted to this weapon for the match'
-                    : 'Pick this weapon to choose its attachments';
+                /* SAYS WHAT THIS CHIP IS, not what the row is. The second
+                   branch was dead -- this whole block only runs when `picked`
+                   is true -- so every chip claimed to be fitted, including
+                   the ones the player had just switched off. It is the one
+                   control whose entire job is to say whether a component is
+                   going on the gun. */
+                fitChip.title = fittedNow.indexOf(kind) >= 0
+                    ? 'Fitted for the match — click to take it off'
+                    : 'Not fitted — click to put it on';
                 fitChip.addEventListener('click', function (event) {
                     event.stopPropagation();
                     toggleWeaponAttachment(weapon.key, kind);
@@ -3126,6 +3225,26 @@
         return !!match && playerMatchId() === match.id;
     }
 
+    /* THE STAKE BAND, WORKED OUT THE WAY THE SERVER WORKS IT OUT.
+
+       The panel had invented a rule of its own: "max of 0 means no limit".
+       shared/arena.lua does the opposite --
+
+           local maximum = math.max(minimum, Arena.ToInt(rules.max) or minimum)
+
+       -- so a max of 0, or a max the operator simply deleted, collapses the
+       band to exactly `min`. Measured: with min 50 and max 0 the server
+       accepts 50 and refuses 51, 100 and 500, while the panel offered
+       everything up to the player's balance and told them "50 and up". Every
+       one of those clicks came back a refusal with nothing on screen to
+       explain it. */
+    function betBand(match) {
+        var rules = betRules(match);
+        var min = Math.max(0, int(rules.min, 0));
+        var max = int(rules.max, 0);
+        return { min: min, max: Math.max(min, max) };
+    }
+
     function betRules(match) {
         return betAsFighter(match)
             ? (betting().fighterBets || {})
@@ -3176,6 +3295,34 @@
     function currentPick(match) {
         if (!match || state.betPickMatchId !== match.id) return null;
         return state.betPick;
+    }
+
+    /* A NAME FOR EVERY SIDE ON THE BOOK, including the ones that can no
+       longer win.
+
+       betPickOptions below deliberately drops eliminated fighters -- the
+       server refuses a bet on them, so they must not be offered. But money
+       already staked on them STAYS on the book: nothing returns it on
+       elimination, only on the backer leaving. Reading labels out of the
+       offer list therefore left those stakes labelled with a bare server id
+       -- "1,800 on 47" -- on the one screen that is about whose money is
+       where. */
+    function betSideLabels(match) {
+        var out = {};
+        if (!match) return out;
+
+        if (match.teams === true) {
+            arrayOf((cfg().teams || {}).list).forEach(function (team) {
+                if (team && team.key !== undefined) out[String(team.key)] = team.label || team.key;
+            });
+            return out;
+        }
+
+        arrayOf(match.players).forEach(function (entry) {
+            if (!entry) return;
+            out[String(int(entry.id, 0))] = entry.name || ('#' + int(entry.id, 0));
+        });
+        return out;
     }
 
     function betPickOptions(match) {
@@ -3247,12 +3394,51 @@
        back as an empty object, which every reader below treats as "nothing
        on the board" rather than as missing data. There is nothing to tell
        apart -- no bets and no field both mean there is no money to show. */
+    /* WHETHER FIGHTERS AND SPECTATORS PLAY FOR THE SAME MONEY.
+
+       Not the same question as poolsAreShared() below it, which is about the
+       entry POT joining the betting pool. This one is betPayout.sharedPool:
+       with it off, SettleSpectatorBets builds one pool per KIND and pays
+       each bet a share of its own and no other. */
+    function poolsSplitByKind() {
+        return (betting().betPayout || {}).sharedPool === false;
+    }
+
+    /* Which of those pools the person reading this screen is betting into.
+       Mirrors poolKeyFor() in server/betting.lua, which is the function that
+       decides it at settlement. */
+    function viewerPoolKey(match) {
+        if (!poolsSplitByKind()) return 'all';
+        return betAsFighter(match) ? 'fighter' : 'spectator';
+    }
+
+    /* WHAT IS RIDING ON EACH SIDE OF THIS VIEWER'S OWN POOL, as pick ->
+       amount.
+
+       server/lobby.lua sends this nested by settlement pool and builds it
+       with GetSideBetPool's filter, so within one pool the parts add up.
+
+       READING THE VIEWER'S POOL AND NOT THE WHOLE BOOK IS THE POINT. Where
+       betPayout.sharedPool is off, a fighter staking 1,800 on themselves and
+       a spectator staking 800 against them are each alone in their own pool,
+       and the settlement hands both stakes straight back. A flat book showed
+       2,600 on the match and a 69/31 split -- a contest that was not
+       happening, over money neither of them could win.
+
+       Absent on an older server, or on a match nobody has bet on, or where
+       this viewer's pool is empty: all three come back as an empty object,
+       which every reader below treats as "nothing on the board". There is
+       nothing to tell apart -- they all mean there is no money to show. */
     function betsByPick(match) {
         var raw = match && match.betsByPick;
         var out = {};
         if (!raw || typeof raw !== 'object') return out;
-        Object.keys(raw).forEach(function (pick) {
-            var amount = int(raw[pick], 0);
+
+        var side = raw[viewerPoolKey(match)];
+        if (!side || typeof side !== 'object') return out;
+
+        Object.keys(side).forEach(function (pick) {
+            var amount = int(side[pick], 0);
             if (amount > 0) out[String(pick)] = amount;
         });
         return out;
@@ -3262,6 +3448,13 @@
         var total = 0;
         var byPick = betsByPick(match);
         Object.keys(byPick).forEach(function (pick) { total += byPick[pick]; });
+
+        /* WHERE THE POOLS ARE SPLIT, `betPool` IS THE WRONG NUMBER. It is
+           flat across both kinds, so quoting it here would tell a spectator
+           they are contesting the fighters' stakes as well as their own. The
+           sum of this viewer's own pool is the only honest figure. */
+        if (poolsSplitByKind()) return total;
+
         /* THE SERVER'S OWN TOTAL WINS where the two disagree. `betPool` is
            what settlement will actually divide; the breakdown is a courtesy
            beside it. They are built from one filter and should never differ
@@ -3336,6 +3529,14 @@
                 ? 'Money staked on who wins, by anyone watching. It goes into that same pot.'
                 : 'Money staked on who wins, by anyone watching. Separate from the pot, and it '
                     + 'never changes what the winners take.');
+        }
+
+        /* THE SERVER RUNS TWO BOOKS AND THE PANEL SAID NOTHING. Every figure
+           on this tab is one pool's, and a reader has no way to know that
+           unless it is written down. */
+        if (poolsSplitByKind() && spectator.enabled === true && fighter.enabled === true) {
+            line('Two books', 'Fighters and spectators are settled separately here, so you only '
+                + 'ever win from bets of your own kind. Every figure above is your side of it.');
         }
 
         if (fighter.enabled === true) {
@@ -3416,10 +3617,28 @@
         var fighterBets = betting().fighterBets || {};
         var anyBets = spectator.enabled === true || fighterBets.enabled === true;
 
-        if (anyBets) {
-            stat('On side-bets', money(betsOnBoard(match)), match
-                ? (int(match.bets, 0) === 0 ? 'no bets yet' : plural(int(match.bets, 0), 'bet'))
-                : null);
+        if (anyBets && betMode(match) === 'odds') {
+            /* AN ODDS SERVER HAS NO POOL TO SHOW, and showing one read as an
+               empty book on a match that had bets on it. An odds bet is paid
+               by the operator, so betting.lua keeps it out of GetSideBetPool
+               and out of the breakdown -- while CountSideBets counts it. Put
+               side by side that was "$0 on side-bets / 3 bets", with every
+               chip reading "no bets yet". The count is the figure that means
+               something here. */
+            stat('Bets placed', match ? String(int(match.bets, 0)) : '0',
+                'each paid by the server');
+        } else if (anyBets) {
+            /* `match.bets` COUNTS THE WHOLE BOOK, both kinds together, so it
+               cannot be quoted beside a figure that is one pool's share of
+               it. Where the pools are split the sub-line names the pool
+               instead -- which is the thing the reader needs anyway. */
+            stat(poolsSplitByKind() ? 'In your pool' : 'On side-bets',
+                money(betsOnBoard(match)),
+                poolsSplitByKind()
+                    ? (betAsFighter(match) ? 'fighters only' : 'spectators only')
+                    : (match
+                        ? (int(match.bets, 0) === 0 ? 'no bets yet' : plural(int(match.bets, 0), 'bet'))
+                        : null));
         }
 
         stat('Pot goes to', poolsAreShared()
@@ -3487,8 +3706,14 @@
                it is: the side it backs. */
             var chip = makeEl('button', 'chip bet-chip', option.label);
             chip.type = 'button';
+            /* ON AN ODDS SERVER THE POOL FIGURE IS ALWAYS ZERO by design, so
+               "no bets yet" was printed under every name on a match that had
+               a book. What the chip can honestly say there is the payout. */
             chip.appendChild(makeEl('span', 'bet-chip-money',
-                on > 0 ? money(on) + ' on them' : 'no bets yet'));
+                betMode(match) === 'odds'
+                    ? '\u00d7' + String(Number((betting().spectatorBets || {}).oddsMultiplier) || 2)
+                        + ' if they win'
+                    : (on > 0 ? money(on) + ' on them' : 'no bets yet')));
 
             if (option.color) chip.style.borderLeft = '3px solid ' + option.color;
             if (option.pick === currentPick(match)) chip.classList.add('active');
@@ -3520,11 +3745,22 @@
         show(host, usable);
         if (!usable) return;
 
+        /* AN ODDS SERVER HAS NOTHING TO SPLIT. Each bet is paid by the
+           operator out of their own pocket, so what anybody else backs
+           changes nothing about what you win -- and betting.lua keeps odds
+           bets out of the pool figures entirely, which made this draw an
+           empty book on a match with bets on it. */
+        if (betMode(match) === 'odds') {
+            var fixedOdds = Number((betting().spectatorBets || {}).oddsMultiplier) || 2;
+            host.appendChild(makeEl('div', 'hint',
+                'Every bet here is paid by the server at \u00d7' + String(fixedOdds)
+                + ', so there is no pool to share and nothing to out-bet. What other '
+                + 'people back changes nothing about what you win.'));
+            return;
+        }
+
         var byPick = betsByPick(match);
-        var labels = {};
-        betPickOptions(match).forEach(function (option) {
-            labels[String(option.pick)] = option.label;
-        });
+        var labels = betSideLabels(match);
 
         var sides = Object.keys(byPick).sort(function (a, b) { return byPick[b] - byPick[a]; });
         var total = 0;
@@ -3532,8 +3768,11 @@
 
         if (total <= 0) {
             host.appendChild(makeEl('div', 'hint',
-                'No side-bets on this match yet. The first one in is betting against nobody, '
-                + 'so it only wins once somebody backs another side.'));
+                (poolsSplitByKind()
+                    ? 'No bets in your pool yet. '
+                    : 'No side-bets on this match yet. ')
+                + 'The first one in is betting against nobody, so it only wins once somebody '
+                + 'backs another side.'));
             return;
         }
 
@@ -3597,10 +3836,15 @@
         }
 
         var amount = int(state.betAmount, 0);
-        var min = int(rules.min, 0);
-        var max = int(rules.max, 0);
+        var band = betBand(match);
+        var min = band.min;
+        var max = band.max;
         if (amount < min) return 'The smallest bet is ' + money(min) + '.';
-        if (max > 0 && amount > max) return 'The biggest bet is ' + money(max) + '.';
+        if (amount > max) {
+            return min === max
+                ? 'This server takes one stake only: ' + money(min) + '.'
+                : 'The biggest bet is ' + money(max) + '.';
+        }
         /* THE ACCOUNT THEY PICKED, not their richest one. The server tries
            only the chosen account -- spending the other would be taking money
            out of a pocket they deliberately left alone -- so the panel has to
@@ -3636,8 +3880,9 @@
         var input = byId('bet-amount');
         show(byId('bet-amount-row'), usable);
         if (has(input) && usable) {
-            input.min = String(int(rules.min, 0));
-            if (int(rules.max, 0) > 0) input.max = String(int(rules.max, 0));
+            var inputBand = betBand(match);
+            input.min = String(inputBand.min);
+            input.max = String(inputBand.max);
             /* NAMES THE FLOOR IN THE BOX ITSELF, so an empty field is still
                an answer to "what can I put here". */
             input.placeholder = String(int(rules.min, 0));
@@ -3745,10 +3990,10 @@
         show(host, usable);
         if (!usable) return;
 
-        var min = int(rules.min, 0);
-        var max = int(rules.max, 0);
-        var ceiling = balanceIn(chosenAccount());
-        if (max > 0) ceiling = Math.min(ceiling, max);
+        var band = betBand(match);
+        var min = band.min;
+        var max = band.max;
+        var ceiling = Math.min(balanceIn(chosenAccount()), max);
 
         if (ceiling < min) {
             host.appendChild(makeEl('span', 'hint',
@@ -3779,7 +4024,7 @@
             chip.type = 'button';
             if (value === int(state.betAmount, 0)) chip.classList.add('active');
             chip.title = value === ceiling
-                ? 'The most this account can cover' + (max > 0 && value === max ? ', and the most allowed' : '')
+                ? 'The most this account can cover' + (value === max ? ', and the most allowed' : '')
                 : '';
             chip.addEventListener('click', function () {
                 state.betAmount = value;
@@ -3789,9 +4034,9 @@
         });
 
         host.appendChild(makeEl('span', 'hint bet-quick-range',
-            max > 0
-                ? money(min) + ' to ' + money(max) + ' allowed'
-                : money(min) + ' and up'));
+            min === max
+                ? money(min) + ' exactly \u2014 this server takes no other stake'
+                : money(min) + ' to ' + money(max) + ' allowed'));
     }
 
     /* WHO IS IN THE ROUND, WHAT THEY PAID, AND WHICH ONE YOU ARE ON.
@@ -3817,9 +4062,25 @@
             return;
         }
 
+        /* THE ENTRY POT, WHICH IS WHAT THE ROWS BELOW ADD UP TO.
+
+           This printed `match.pot`, and that is not the entry pot: lobby.lua
+           sends it as GetPrizePool, which with `betPayout.includeEntryPot`
+           -- the shipped default -- is the entry pot PLUS the whole side-bet
+           pool. So the header sat over a list of entry fees and disagreed
+           with their sum: measured at 3,000 above two rows of 500. The
+           entry-fee-only figure was already on the wire as `entryPot` and
+           nothing had ever read it.
+
+           Falling back to `pot` keeps an older server showing the number it
+           always did rather than a zero. */
+        var paidIn = (match.entryPot === undefined || match.entryPot === null)
+            ? int(match.pot, 0)
+            : int(match.entryPot, 0);
+
         var header = makeEl('div', 'bet-row bet-row-head');
         header.appendChild(makeEl('span', 'bet-stat-label', 'Paid into the pot'));
-        header.appendChild(makeEl('span', 'bet-stat-label', money(match.pot)));
+        header.appendChild(makeEl('span', 'bet-stat-label', money(paidIn)));
         host.appendChild(header);
 
         var fee = int(match.entryFee, 0);
@@ -3830,10 +4091,7 @@
            crimson's whole stake with the words "bet on them" beside it -- two
            fighters on a side with 1,800 on it read as 3,600 on the match, on
            a tab whose own summary said 2,600. The side is named instead. */
-        var sideNames = {};
-        betPickOptions(match).forEach(function (option) {
-            sideNames[String(option.pick)] = option.label;
-        });
+        var sideNames = betSideLabels(match);
 
         var mine = player().bet;
         var minePick = (mine && mine.pick !== undefined && mine.pick !== null)

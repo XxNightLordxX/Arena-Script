@@ -103,6 +103,40 @@ end
 --- few repeats is a far smaller problem than a table nobody knew to migrate.
 local recentWins = {}
 
+--- How many matches since the whole history was last swept.
+---
+--- IT ONLY EVER PRUNED THE PEOPLE WHO CAME BACK. The repeat rule drops a
+--- character's expired rows when it reads them, which keeps a regular's
+--- history bounded -- and does nothing at all for the people who played once
+--- and never returned. Nothing visits them again, so their rows sat there for
+--- the life of the server. Measured: twenty thousand matches between pairs
+--- who never came back retained 22 MB, about 1.1 KB a match, for ever. A
+--- FiveM server is expected to run for weeks.
+local sinceSweep = 0
+local SWEEP_EVERY = 100
+
+--- Drops every row the repeat window has rolled past, for everybody.
+---
+--- WHOLESALE, RATHER THAN PER CHARACTER, because the whole point is the
+--- characters nobody is going to ask about. One pass over a table that is
+--- bounded by the window itself, once every SWEEP_EVERY matches -- a cost
+--- nobody can measure against a resource that is settling a round's money in
+--- the same breath.
+---
+--- Setting a field to nil during `pairs` is the one mutation Lua guarantees
+--- is safe mid-traversal, which is why the empty entries go here.
+--- @param window integer -- the repeat window in seconds
+local function sweepRankingHistory(window)
+    local now = os.time()
+    for id, rows in pairs(recentWins) do
+        local kept = {}
+        for _, row in ipairs(rows) do
+            if now - row.at < window then kept[#kept + 1] = row end
+        end
+        recentWins[id] = (#kept > 0) and kept or nil
+    end
+end
+
 --- The characters who fought a match, deduplicated and sorted.
 ---
 --- BY CITIZEN ID, NOT BY SERVER ID. Two logins on one character is one
@@ -292,6 +326,27 @@ function ArenaStats.RecordMatch(match)
     -- The answer rides home on the match so ArenaMatch.End can put it on the
     -- results screen. Telling the player is the point: a rule nobody is told
     -- about reads as the board being broken.
+    -- AND THE HISTORY IS TIDIED, occasionally, from here.
+    --
+    -- HERE RATHER THAN IN noteRanked, which is the tempting place and the
+    -- wrong one: noteRanked returns early whenever the repeat rule is off, so
+    -- an operator who switched the rule off would have frozen whatever had
+    -- already accumulated for the life of the server. This line runs for every
+    -- finished match whatever the rules say.
+    local rules = Config.Leaderboard
+    sinceSweep = sinceSweep + 1
+    if sinceSweep >= SWEEP_EVERY then
+        sinceSweep = 0
+        local window = 0
+        if type(rules) == 'table' then
+            window = math.max(0, Arena.ToInt(rules.repeatWindowMinutes) or 0) * 60
+        end
+        -- A window of zero is the rule switched off, and then EVERY row is
+        -- expired -- which is exactly right: nothing is ever going to read
+        -- them again.
+        sweepRankingHistory(window)
+    end
+
     local ranked, why = rankedReason(match)
     match.ranked = ranked
     match.rankedWhy = why

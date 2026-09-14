@@ -592,6 +592,70 @@ t.test('a refused match does not stop the NEXT one being recorded', function()
 end)
 
 -- ========================================================================
+-- AND THE HISTORY DOES NOT GROW FOR EVER
+-- ========================================================================
+
+t.test('THE LEAK: a pair who never come back do not keep a row for the life of the server', function()
+    -- THE REPEAT RULE ONLY EVER PRUNED THE PEOPLE WHO CAME BACK. It drops a
+    -- character's expired rows when it READS them, which keeps a regular's
+    -- history bounded and does nothing at all for somebody who played once
+    -- and never returned -- nothing visits them again.
+    --
+    -- Measured on this fixture, a fresh pair every three minutes for 25
+    -- simulated days: 6.8 MB retained and still climbing, against 31 KB with
+    -- the sweep. A FiveM server is expected to run for weeks.
+    local s = newStats()
+
+    -- THE SESSION STORE OUT OF THE WAY. ArenaStats.Record keeps one row per
+    -- character for the life of the server -- pre-existing, an order of
+    -- magnitude larger than this, and not what this test is about.
+    s.S.Record = function() return true end
+
+    local ROUNDS, GAP = 4000, 180
+
+    collectgarbage('collect')
+    local before = collectgarbage('count')
+
+    for round = 1, ROUNDS do
+        local a = { ('char:a%06d'):format(round), 'A' }
+        local b = { ('char:b%06d'):format(round), 'B' }
+        s.S.RecordMatch(match({ a, b }, { id = 'm' .. round }))
+        s.advance(GAP)
+    end
+
+    collectgarbage('collect')
+    local retained = collectgarbage('count') - before
+
+    -- GENEROUS ON PURPOSE. With the sweep this lands around 10 KB; without it,
+    -- above 2,000. The number here only has to sit between those two, with
+    -- room for the allocator to breathe.
+    t.isTrue(retained < 400,
+        ('%d matches between pairs who never came back retained %.0f KB -- the repeat-rule '
+         .. 'history is not being swept'):format(ROUNDS, retained))
+end)
+
+t.test('and the rows that are still INSIDE the window are never swept away', function()
+    -- The other direction, and the reason the sweep is not simply "empty it".
+    -- A pair who are at their ceiling must still be at it after a sweep has
+    -- run, or the cap would reset itself every hundred matches.
+    local s = newStats()
+    s.S.Record = function() return true end
+
+    for round = 1, 3 do s.S.RecordMatch(duel({ id = 'd' .. round })) end
+    t.equals(s.S.RecordMatch(duel({ id = 'd4' })), 0, 'the window did not fill')
+
+    -- Enough traffic to force several sweeps, with no time passing at all.
+    for round = 1, 250 do
+        local a = { ('char:x%06d'):format(round), 'X' }
+        local b = { ('char:y%06d'):format(round), 'Y' }
+        s.S.RecordMatch(match({ a, b }, { id = 'f' .. round }))
+    end
+
+    t.equals(s.S.RecordMatch(duel({ id = 'd5' })), 0,
+        'a sweep emptied a window that had not rolled past')
+end)
+
+-- ========================================================================
 -- RUBBISH IS REFUSED, NOT GUESSED AT
 -- ========================================================================
 

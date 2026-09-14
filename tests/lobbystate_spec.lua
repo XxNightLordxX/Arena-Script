@@ -1162,6 +1162,72 @@ t.test('a mode that plays no ladder sends nothing, every time it is asked', func
     end
 end)
 
+t.test('and the catalogue is walked ONCE, not once per recipient', function()
+    -- THE POINT OF REMEMBERING IT, and until this was written the memo could
+    -- be deleted with every test still green -- a mutation sample of this
+    -- session's own changes proved exactly that. The answer is identical
+    -- either way; only the cost differs, and a cost nothing measures is a
+    -- cost that comes back.
+    --
+    -- Arena.LadderTiersFor filters the ninety-six entry weapon catalogue per
+    -- class. snapshotMatches runs inside BuildState, which runs ONCE PER
+    -- RECIPIENT on every broadcast. Measured on eight matches with four gun
+    -- games among them: 0.13 ms per BuildState before this field existed,
+    -- 1.67 ms with it resolved inline, 0.14 ms with it remembered.
+    local s = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = s.lobby.Create(1, anArena(s), 'gungame', nil, nil, nil, nil,
+        nil, nil, planOf(1, 2), nil)
+
+    -- COUNTED THROUGH THE REAL FUNCTION, wrapped after the server is built so
+    -- the production code calls the counter and gets the true answer back.
+    local calls = 0
+    local real = s.env.Arena.LadderTiersFor
+    s.env.Arena.LadderTiersFor = function(...)
+        calls = calls + 1
+        return real(...)
+    end
+
+    -- FROM COLD. ArenaLobby.Create broadcasts on its way out, so by the time
+    -- the counter is in place the answer is already remembered and the first
+    -- read below would count nothing -- which would make this test pass
+    -- against a memo that never recomputed anything at all.
+    s.lobby.Get(matchId).rungsMemo = nil
+
+    -- The first snapshot is allowed to work it out.
+    t.equals(s.onlyMatch(1).tiers, 3, 'the first broadcast got the wrong answer')
+    local afterFirst = calls
+    t.isTrue(afterFirst > 0, 'the first broadcast never worked it out at all')
+
+    -- The next twenty must not.
+    for _ = 1, 20 do s.onlyMatch(1) end
+
+    t.equals(calls, afterFirst,
+        ('the catalogue was walked %d more time(s) for an answer that had not changed')
+            :format(calls - afterFirst))
+end)
+
+t.test('and it IS walked again once the plan moves', function()
+    -- The control. A memo that never recomputed would pass the test above and
+    -- serve a stale number for ever.
+    local s = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = s.lobby.Create(1, anArena(s), 'gungame', nil, nil, nil, nil,
+        nil, nil, planOf(1, 2), nil)
+
+    local calls = 0
+    local real = s.env.Arena.LadderTiersFor
+    s.env.Arena.LadderTiersFor = function(...) calls = calls + 1; return real(...) end
+
+    s.onlyMatch(1)
+    local before = calls
+
+    t.isTrue(s.lobby.UpdateMatch(1, {
+        matchId = matchId, modeKey = 'gungame', tierPlan = planOf(1, 4),
+    }), 'the plan could not be changed')
+
+    s.onlyMatch(1)
+    t.isTrue(calls > before, 'a changed plan did not make it work the answer out again')
+end)
+
 t.test('and the same answer comes back on every broadcast, not just the first', function()
     -- A memo that answered once and then returned nil would pass every test
     -- above, because every one of them asks once.

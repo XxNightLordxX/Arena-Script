@@ -1251,6 +1251,55 @@ t.test('the refusal is reported rather than left silent', function()
     t.equals(s.env.Arena.BetPayoutMode('spectator'), 'pool')
 end)
 
+t.test('and the BOOT LOG says it too, not just the flag behind it', function()
+    -- THE FLAG WAS TESTED AND THE SENTENCE WAS NOT. A mutation sample of this
+    -- session's own changes broke the validator's `if
+    -- Arena.ServerFundedPayoutsRefused() then` and every spec still passed:
+    -- the test above asserts the function, and nothing asserted that anybody
+    -- is ever TOLD. An operator who writes betPayout = 'odds' and gets pool
+    -- settlements in silence has no way to find out why.
+    local s = newArena({ [1] = 1000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.betPayout = { fighters = 'odds', spectators = 'odds' }
+    end)
+
+    local said = table.concat(s.env.Arena.ValidateConfig() or {}, '\n')
+    t.isTrue(said:find('allowServerFundedPayouts', 1, true) ~= nil,
+        'the boot log never mentions the gate that is refusing their setting: ' .. said)
+    t.isTrue(said:find('pool', 1, true) ~= nil,
+        'and never says what is happening instead: ' .. said)
+end)
+
+t.test('and it says whether the odds multiplier is costing anything TODAY', function()
+    -- The other half of the same block, and the other survivor. `onOdds` is
+    -- what decides whether a bad multiplier is a live problem or a dormant
+    -- one, and breaking it changed nothing any spec looked at.
+    local function tailFor(mutate)
+        local s = newArena({ [1] = 1000 }, function(config)
+            config.Betting.enabled = true
+            config.Betting.spectatorBets.oddsMultiplier = 0.5
+            mutate(config)
+        end)
+        return table.concat(s.env.Arena.ValidateConfig() or {}, '\n')
+    end
+
+    -- GATE SHUT: the multiplier is written down and nothing is paid at it.
+    local dormant = tailFor(function(config)
+        config.Betting.betPayout = { fighters = 'odds', spectators = 'odds' }
+        config.Betting.allowServerFundedPayouts = false
+    end)
+    t.isTrue(dormant:find('Nothing is paid at this number today', 1, true) ~= nil,
+        'a dormant multiplier was reported as live: ' .. dormant)
+
+    -- GATE OPEN: it is being paid right now, and the operator needs to know.
+    local live = tailFor(function(config)
+        config.Betting.betPayout = { fighters = 'odds', spectators = 'odds' }
+        config.Betting.allowServerFundedPayouts = true
+    end)
+    t.isTrue(live:find('being paid out right now', 1, true) ~= nil,
+        'a live multiplier was reported as harmless: ' .. live)
+end)
+
 t.test('and an operator on pool is not nagged about a gate they never asked for', function()
     local s = newArena({ [1] = 1000 }, function(config)
         config.Betting.enabled = true

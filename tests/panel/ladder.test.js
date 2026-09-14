@@ -377,6 +377,83 @@ test('and a match with no limit does not invent one', () => {
         'a kill limit was quoted on a last-one-standing match: ' + panel.text('lobby-meta'));
 });
 
+/*
+    THE HEIGHT OF *THIS* LADDER, NOT THE MODE'S DEFAULT.
+
+    THE DEFECT. Three places read `mode.tiers`, which Arena.GetEnabledModes
+    computes with NO tier plan -- the mode's default height. A host who drags
+    the tier rows to melee 1 / sidearms 1 gets a real two-rung ladder and a
+    round that really ends after two net kills, while the lobby card said
+    "Win by topping the 30-tier ladder" and the loadout tab said "You open on
+    tier 1 of 30" -- on the same screen where the create form had just told
+    them "2 tiers in all". A joiner sizing up a thirty-kill climb was joining
+    a round that is over in two.
+
+    The server resolves the plan and sends the answer on the match. Resolved
+    there rather than summed here on purpose: LadderTiersFor drops a class
+    with nothing playable left in it, so adding the plan's rows up in the
+    panel would be a second implementation that agrees until an operator
+    disables a weapon.
+*/
+
+/** The gun game snapshot with a host tier plan cutting it down to `rungs`. */
+function withPlan(rungs) {
+    const snap = snapshot('gungame', []);
+    snap.matches[0].tierPlan = { melee: 1, sidearm: rungs - 1 };
+    snap.matches[0].tiers = rungs;
+    return snap;
+}
+
+test('THE DEFECT: the lobby card quotes the ladder this match is really won on', () => {
+    const panel = loadPanel(ROOT);
+    const snap = withPlan(2);
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.ok(/2-tier ladder/.test(panel.text('lobby-meta')),
+        'the card quotes the mode default over the host\'s own plan: '
+        + panel.text('lobby-meta'));
+    assert.ok(!/7-tier/.test(panel.text('lobby-meta')),
+        'and still names the default alongside it: ' + panel.text('lobby-meta'));
+});
+
+test('and so does the loadout screen the player reads before they commit', () => {
+    const panel = loadPanel(ROOT);
+    const snap = withPlan(3);
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    const said = panel.text('loadout-note') + ' ' + panel.text('loadout-slots');
+    assert.ok(/tier 1 of 3/.test(said) || /3-tier ladder/.test(said),
+        'the loadout screen quotes the mode default: ' + said);
+    assert.ok(!/of 7|7-tier/.test(said),
+        'and names the default too: ' + said);
+});
+
+test('CONTROL: a match with no plan of its own still shows the mode default', () => {
+    /* The fallback, and the reason the two above are not simply "read the
+       match". A snapshot assembled before this field existed, or a lobby the
+       host never touched the picker on, has to keep saying 7. */
+    const panel = loadPanel(ROOT);
+    const snap = snapshot('gungame', []);
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.ok(/7-tier ladder/.test(panel.text('lobby-meta')),
+        'a match with no plan lost the mode default: ' + panel.text('lobby-meta'));
+});
+
+test('and a plan resolved to zero rungs falls back rather than saying zero', () => {
+    const panel = loadPanel(ROOT);
+    const snap = snapshot('gungame', []);
+    snap.matches[0].tiers = 0;
+    panel.send('open', snap);
+    panel.send('state', snap);
+
+    assert.ok(!/0-tier/.test(panel.text('lobby-meta')),
+        'the card offered a nought-rung ladder: ' + panel.text('lobby-meta'));
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

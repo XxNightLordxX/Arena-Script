@@ -601,6 +601,28 @@ local function snapshotMatches()
             livesSpent = Arena.WinConditionSpendsLives(match.winCondition),
             scoreLimit = Arena.ScoreLimitFor(match.scoreLimit),
             tierPlan = match.tierPlan,
+            -- HOW MANY RUNGS THIS MATCH IS ACTUALLY WON ON.
+            --
+            -- THE DEFECT: the panel had only the MODE's rung count to read --
+            -- Arena.GetEnabledModes sends `#Arena.LadderTiersFor(key)` with
+            -- no plan -- so a gun game whose host set melee 1 / sidearm 1 and
+            -- everything else 0 really ended after two net kills while the
+            -- lobby card said "Win by topping the 30-tier ladder" and the
+            -- loadout screen said "You open on tier 1 of 30". A joiner sizing
+            -- up a thirty-kill climb was joining a round that is over in two.
+            --
+            -- Resolved HERE rather than derived in the panel, because the
+            -- resolution is not a sum: LadderTiersFor drops a class with
+            -- nothing playable in it and the plan's floor is applied on top,
+            -- so a panel adding the rows up would be a second implementation
+            -- that agrees until a weapon is disabled.
+            --
+            -- nil for a mode that plays no ladder, which is what the panel
+            -- already tells a ladder mode apart by.
+            tiers = (function()
+                if not Arena.PlaysLadder(match.modeKey) then return nil end
+                return #Arena.LadderTiersFor(match.modeKey, match.tierPlan)
+            end)(),
             pot = ArenaBetting.GetPrizePool(match.id),
             entryPot = ArenaBetting.GetPot(match.id),
             betPool = ArenaBetting.GetSideBetPool(match.id),

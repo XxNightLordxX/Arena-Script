@@ -540,11 +540,33 @@
         return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
     }
 
+    /* HOW MANY RUNGS A PARTICULAR MATCH IS WON ON.
+
+       THE DEFECT: three places read `mode.tiers`, which is the MODE's
+       default height -- Arena.GetEnabledModes computes it with no tier plan.
+       A host who drags the tier rows to melee 1 / sidearms 1 gets a real
+       two-rung ladder, and the round really ends after two net kills, while
+       the lobby card said "Win by topping the 30-tier ladder" and the loadout
+       tab said "You open on tier 1 of 30" -- on the same screen where the
+       host's own create form had just told them "2 tiers in all". Somebody
+       reading the card thinks they need 29 net kills; they need 2.
+
+       THE MATCH'S OWN NUMBER FIRST, resolved by the server against the plan,
+       with the mode default as the fallback for a match that predates the
+       field. Not summed from the plan here: LadderTiersFor drops a class with
+       nothing playable in it, so adding the rows up in the panel would be a
+       second implementation that agrees right up until a weapon is disabled. */
+    function ladderRungs(match, mode) {
+        var own = match && match.tiers;
+        if (own !== undefined && own !== null && int(own, 0) > 0) return int(own, 0);
+        return mode ? int(mode.tiers, 0) : 0;
+    }
+
     function loadoutLockReason() {
         var mode = playerMode();
         if (modeIssuesLoadout(mode)) {
             var text = String(mode.label || 'This mode') + ' hands out its own weapons: a '
-                + int(mode.tiers, 0) + '-tier ladder, drawn fresh every round, so there is '
+                + ladderRungs(matchById(playerMatchId()), mode) + '-tier ladder, drawn fresh every round, so there is '
                 + 'nothing to pick here. Every kill climbs a tier and every death costs you '
                 + 'one, and everybody starts the round on the same rung.';
 
@@ -1998,7 +2020,7 @@
         var max = int(matchCfg.maxPlayers, 0);
 
         var mode = modeByKey(match.modeKey);
-        var tiers = mode ? int(mode.tiers, 0) : 0;
+        var tiers = ladderRungs(match, mode);
         var roundTime = match.roundTimeSeconds !== undefined && match.roundTimeSeconds !== null
             ? int(match.roundTimeSeconds, 0)
             : (mode && mode.roundTimeSeconds !== undefined && mode.roundTimeSeconds !== null
@@ -3091,7 +3113,7 @@
         var ladderMode = playerMode();
         if (modeIssuesLoadout(ladderMode)) {
             host.appendChild(makeEl('div', 'hint',
-                'You open on tier 1 of ' + int(ladderMode.tiers, 0) + ', like everybody else. '
+                'You open on tier 1 of ' + ladderRungs(matchById(playerMatchId()), ladderMode) + ', like everybody else. '
                 + 'What each tier is holding is drawn when the round starts, so it is not the '
                 + 'same ladder twice.'));
 

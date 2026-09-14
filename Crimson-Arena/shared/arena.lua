@@ -390,6 +390,31 @@ function Arena.ResolveTierPlan(modeKey, requested)
     if requested == nil then return nil, nil end
     if type(requested) ~= 'table' then return nil, 'error.invalid_request' end
 
+    -- AN EMPTY TABLE IS "THE HOST CHOSE NOTHING", NOT A REQUEST FOR NOTHING.
+    --
+    -- THE DEFECT: it fell through to the sum below, which adds each class's
+    -- own default for a class the host said nothing about -- so a mode whose
+    -- defaults already total under two rungs was refused
+    -- 'error.ladder_too_short' on EVERY create, including the creates where
+    -- the host never saw a tier picker at all.
+    --
+    -- Reachable on a supported config. An operator running a melee-only
+    -- server disables the firearms in config.weapons.lua -- documented, and
+    -- "a class left with nothing playable is skipped" -- which leaves Melee
+    -- at its shipped one tier. Boot prints the validator's own line: "1
+    -- tier ... so this mode will run as an ordinary free-for-all". It then
+    -- could not run at all: the mode stayed on the list, the picker was
+    -- hidden because the mode plays no ladder, and every host who chose Gun
+    -- Game got a red "A ladder needs at least two tiers" and no match, with
+    -- nothing on the screen they could change. The mode was dead where it
+    -- was designed to degrade -- ArenaMatch already discards a ladder too
+    -- short to climb and plays the round under ordinary rules.
+    --
+    -- The refusal below is kept for what it is for: a host who really did
+    -- ask for a ladder of under two rungs, which is a request with named
+    -- numbers in it.
+    if next(requested) == nil then return nil, nil end
+
     local classes = Arena.GunGameClasses(modeKey)
     if #classes == 0 then return nil, nil end
 

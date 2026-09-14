@@ -3489,4 +3489,73 @@ t.test('and an operator who wants it back gets it back', function()
         'and the climber was not told why they stopped')
 end)
 
+-- ======================================================================
+-- A MODE TOO SHORT TO BE A LADDER DEGRADES. IT DOES NOT DIE.
+--
+-- Arena.ValidateConfig says what is supposed to happen, in its own words:
+-- "1 tier ... so this mode will run as an ordinary free-for-all". ArenaMatch
+-- implements exactly that -- the test above proves a one-tier gun game plays
+-- as ordinary rules. Arena.ResolveTierPlan disagreed with both of them and
+-- refused the match outright.
+--
+-- THE TRIGGER WAS AN EMPTY TABLE. The panel posts `tierPlan = {}` when the
+-- host was shown no picker, and an empty table fell through to the sum of
+-- every class's DEFAULT -- so a mode whose defaults already total under two
+-- rungs was refused on every create, including the creates where the host
+-- had nothing to change.
+--
+-- Reachable on a supported config: a melee-only server disables the firearms
+-- in config.weapons.lua -- documented, "a class left with nothing playable
+-- is skipped" -- leaving Melee at its shipped one tier.
+-- ======================================================================
+
+--- A config whose gun game has one class, of one rung.
+local function oneRungClasses(config)
+    config.Modes.gungame.gunGameTiers = nil
+    config.Modes.gungame.gunGameClasses = {
+        {
+            key = 'melee',
+            label = 'Melee',
+            tiers = 1,
+            maxTiers = 4,
+            weapons = { 'bat', 'knife', 'machete' },
+        },
+    }
+end
+
+t.test('THE DEFECT: an empty tier plan is "the host chose nothing", not a one-rung request', function()
+    local s = newServer(oneRungClasses)
+
+    local plan, err = s.arena.ResolveTierPlan('gungame', {})
+    t.isNil(err, 'an empty plan was refused: ' .. tostring(err))
+    t.isNil(plan, 'an empty plan minted a plan of its own')
+end)
+
+t.test('and a host who really asks for one rung is still refused', function()
+    -- The rule is kept for what it is for: a request with named numbers in
+    -- it. Without this the fix above would simply delete the floor.
+    local s = newServer(oneRungClasses)
+
+    local plan, err = s.arena.ResolveTierPlan('gungame', { melee = 1 })
+    t.isNil(plan, 'a one-rung ladder was accepted')
+    t.equals(err, 'error.ladder_too_short')
+end)
+
+t.test('and the match a melee-only server creates is playable, not refused', function()
+    -- THE WHOLE POINT, end to end. The mode stays on the list, the host
+    -- picks it, and before this they got a red "A ladder needs at least two
+    -- tiers" and no match -- with the picker hidden, so nothing on the
+    -- screen was theirs to change.
+    local s = newServer(oneRungClasses)
+
+    s.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'gungame', entryFee = 0, account = 'cash',
+        tierPlan = {},
+    })
+
+    local matches = s.lobby.All()
+    t.equals(#matches, 1, 'A MELEE-ONLY SERVER COULD NOT CREATE A GUN GAME AT ALL')
+    t.equals(matches[1].modeKey, 'gungame')
+end)
+
 os.exit(t.summary())

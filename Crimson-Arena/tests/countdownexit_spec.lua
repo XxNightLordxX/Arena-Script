@@ -379,5 +379,64 @@ t.test('and dropping from the lobby BEFORE it starts still is one', function()
         'a player who left a lobby nobody had fought in lost their entry fee')
 end)
 
+-- ========================================================================
+-- AND THE WINDOW NEVER CLOSING, which is the other way it goes wrong
+--
+-- goLive() is what promotes a countdown to 'live', and it runs off a thread.
+-- If that thread dies -- an error in anything it touches, a resource hiccup,
+-- placement never finishing -- the match sits at 'countdown' for ever:
+-- players stood in the arena unable to fight, stakes held, the arena itself
+-- occupied so nobody else can book it. Nothing a player or an admin does
+-- from the panel reaches a match in that state.
+--
+-- server/match.lua has a watchdog for exactly this, and its comment ends
+-- "DO NOT delete this branch: it is the only way out of that state."
+-- NOTHING DROVE IT. Neutralising countdownOverran so it always answers false
+-- left all 114 spec files green, which is the same as it not being there.
+-- ========================================================================
+
+t.test('DEFECT: a countdown left overdue is aborted, and its fighters are let out', function()
+    local server, matchId = frozenCountdown()
+    local match = server.lobby.Get(matchId)
+
+    t.equals(match.state, 'countdown', 'the fixture did not leave it frozen')
+    t.equals(server.sentTo('exitArena', 1), 0, 'they were let out before anything went wrong')
+
+    -- The countdown was due to end well over the grace ago and never did. No
+    -- time travel needed: startsAt is what the watchdog measures against.
+    match.startsAt = os.time() - 600
+
+    server.step(4)
+
+    -- ASSERTED ON THE EXIT, NOT ON THE STATE. "It is no longer in countdown"
+    -- is satisfied by the match simply going live, which is what happens on
+    -- this fixture whether the watchdog exists or not -- so a test written
+    -- that way passes with the branch neutralised and proves nothing. Being
+    -- SENT HOME is the thing only the abort does.
+    t.equals(server.sentTo('exitArena', 1), 1, 'a fighter was left standing in the arena')
+    t.equals(server.sentTo('exitArena', 2), 1)
+    t.equals(server.countOf(server.dispatch.cleared, 1), 1,
+        'their dispatch flag stayed up, so their alerts are suppressed for the rest of the session')
+end)
+
+t.test('CONTROL: a countdown that is merely still running is left alone', function()
+    -- Without this the two above pass on a build that aborts every countdown
+    -- the moment it is looked at, which would end every round before it
+    -- started.
+    local server, matchId = frozenCountdown()
+    local match = server.lobby.Get(matchId)
+
+    match.startsAt = os.time()      -- due about now, nothing overdue about it
+    server.step(4)
+
+    -- It goes LIVE, which is the healthy end of this window and the thing an
+    -- over-eager watchdog would have taken away. Either way the point is the
+    -- same: it was not aborted and nobody was sent home.
+    local after = server.lobby.Get(matchId)
+    t.isNotNil(after, 'it aborted a countdown that had only just started')
+    t.equals(after.state, 'live', 'the round did not start')
+    t.equals(server.sentTo('exitArena', 1), 0, 'it sent everybody home mid-countdown')
+end)
+
 print('countdownexit_spec')
 os.exit(t.summary())

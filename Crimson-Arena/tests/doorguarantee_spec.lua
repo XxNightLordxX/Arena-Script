@@ -1627,4 +1627,53 @@ t.test('and a player who is not an admin cannot clear one', function()
         'a player cleared a jam on their own stash')
 end)
 
+t.test('two players with their own bags never get each other\'s contents', function()
+    -- The holding stash is named from the CONTAINER, not the player, and it
+    -- is owned by the character -- both halves of that matter. Registered
+    -- shared, or named from anything two players could collide on, this is
+    -- where it would show.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+    server.giveBag(2, 'police_bag', 'k2', { { 'handcuffs', 2 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.purgeContainer('k1')
+    server.purgeContainer('k2')
+    server.match.End(match.id, 'match.ended')
+    server.step(8)
+
+    t.equals(server.bagContents('k1'), 'radiox1', 'one player\'s bag came back with the wrong things in it')
+    t.equals(server.bagContents('k2'), 'handcuffsx2')
+end)
+
+t.test('and a bag survives two rounds back to back', function()
+    -- The second round finds the bag EMPTY at the door, because the first
+    -- round put its contents back a moment earlier. Nothing to hold means
+    -- nothing to give back, and a refill that fired anyway on a stale list
+    -- would duplicate.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'bagkey123', { { 'radio', 1 } })
+
+    for _ = 1, 2 do
+        server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+        local match = server.lobby.All()[1]
+        server.fire('joinMatch', 2, { matchId = match.id })
+        server.fire('setReady', 1, { ready = true })
+        server.fire('setReady', 2, { ready = true })
+        server.step(6)
+        server.purgeContainer('bagkey123')
+        server.match.End(match.id, 'match.ended')
+        server.step(8)
+    end
+
+    t.equals(server.bagContents('bagkey123'), 'radiox1', 'the bag did not survive two rounds')
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1', 'something accumulated across the two rounds')
+end)
+
 os.exit(t.summary())

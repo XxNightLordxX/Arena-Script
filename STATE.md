@@ -172,6 +172,35 @@ cannot open another's. They are owned now, on both the way in and the way out; a
 registered under a different owner is a different stash, and on the refill path that would
 have read empty and quietly never given the contents back.
 
+### 3c. Re-checking the fixes turned up one thing they had not covered
+
+Every fix above was re-driven in scenarios the original tests did not reach, through the
+real server stack: a bag owner **disconnecting** mid-round, **two rounds back to back** with
+the same bag, **two players each with their own bag**, the belongings stash **jamming** while
+bag contents are held, and the **resource stopping** mid-round. All five come out packed and
+uncrossed; the two most regression-prone are now tests.
+
+**And the countdown watchdog was never being driven.** `server/match.lua` aborts a match
+that sits in `countdown` more than thirty seconds past its start -- the state a match lands
+in if the thread that promotes it to `live` ever dies, where players stand in the arena
+unable to fight, stakes are held, and nothing from the panel can reach them. Its comment
+ends "DO NOT delete this branch: it is the only way out of that state."
+
+Neutralising it left **all 114 spec files green**, which is the same as it not being there.
+It now has a test, in `countdownexit_spec.lua`, plus a control that an over-eager watchdog
+would fail.
+
+Worth recording how that test had to be written, because the first version was worthless:
+asserting "the match is no longer in countdown" passes whether the watchdog fires or not,
+since the countdown simply going **live** satisfies it too. The observable that only the
+abort produces is the fighters being **sent home** -- that is what it asserts now, and that
+version goes red with the branch disabled.
+
+One thing considered and deliberately not guarded: `Arena.IsKey` is only "non-empty string",
+so `crimson_arena_<citizenid>` and `crimson_arena_bag_<container id>` could in principle
+collide if a citizenid began with `bag_`. Framework-generated ids do not, and the guard
+would cost more noise than the risk is worth. Noted rather than fixed.
+
 ### 4. And no match duplicates anything, asserted rather than argued
 
 The general form of every defect above is "it is in two places now", and a test that looks

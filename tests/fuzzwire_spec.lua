@@ -452,7 +452,7 @@ t.test('the surface this file fuzzes is the whole surface, not just net events',
         counts[point.kind] = counts[point.kind] + 1
     end
 
-    t.equals(counts.net, 22, 'the number of client events changed -- update this file with it')
+    t.equals(counts.net, 24, 'the number of client events changed -- update this file with it')
     t.isTrue(counts.callback >= 1, 'the ox_lib callback surface vanished')
     t.isTrue(counts.handler >= 8,
         ('only %d AddEventHandler entry points found'):format(counts.handler))

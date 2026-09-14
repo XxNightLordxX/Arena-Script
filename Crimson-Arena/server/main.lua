@@ -18,7 +18,17 @@ local RATE = {
     -- refreshes it deliberately and every handler behind it re-checks
     -- ArenaIsAdmin -- the rate limit is a flood guard, not the gate.
     admin = 500,
+    -- CLIENT DEBUG LINES. Tight, because this event exists for a switch
+    -- that is off on a finished server and the handler prints to the one
+    -- console every admin reads. A client that floods it gets one line a
+    -- second and nothing else.
+    clientDebug = 1000,
 }
+
+--- The longest client debug line the server will print.
+--- Not a formatting choice: this string arrives from a client, and a
+--- megabyte of it would be a megabyte in the console log on disk.
+local MAX_DEBUG_LINE = 300
 
 local adminScan = {}
 
@@ -472,39 +482,57 @@ local function tell(src, message)
     end
 end
 
+--- Everything /arenahours reports, as a list of ready-to-show lines.
+---
+--- SPLIT OUT OF THE COMMAND so the admin tablet can show the same reading.
+--- The command below builds nothing of its own any more, which is the only
+--- way the console and the screen are guaranteed to agree.
+--- @return string[]
+local function hoursReport()
+    local lines = {}
+    local function say(fmt, ...)
+        local ok, text = pcall(string.format, fmt, ...)
+        lines[#lines + 1] = ok and text or fmt
+    end
+
+    local hours = ArenaHoursState()
+    say('arena hours: %s', hours.enabled and 'ON' or 'OFF')
+    say('  this machine says: %s', hours.serverClock)
+    say('  offsetHours:       %+d', hours.offsetHours)
+    say('  arena is going by: %s', hours.arenaClock)
+    say('  windows:           %s', hours.line or '(none -- open at every hour)')
+
+    if hours.forced then
+        say('  OVERRIDDEN:        an admin has the doors %s.',
+            hours.forced == 'open' and 'HELD OPEN past the schedule'
+                or 'CLOSED inside the schedule')
+    end
+
+    -- NAMED ONLY WHEN THERE IS ONE. `closesAt` is set only while the
+    -- SCHEDULE says open and `opensAt` only while it says shut, so an
+    -- override that disagrees with the clock leaves the matching one absent
+    -- -- and this line used to print the word `nil` at an operator trying to
+    -- work out what was wrong.
+    local when = hours.open and hours.snapshot.closesAt or hours.snapshot.opensAt
+    say('  right now:         %s%s',
+        hours.open and 'OPEN' or 'SHUT',
+        type(when) == 'string' and (hours.open and (', until ' .. when)
+            or (', opens at ' .. when)) or '')
+
+    if hours.line then
+        say('  if "this machine says" is not your local time, put the difference in '
+            .. 'Config.Schedule.offsetHours.')
+    end
+
+    return lines
+end
+
 RegisterCommand('arenahours', function(src)
     if not ArenaIsAdmin(src) then
         return refuse(src, 'error.no_permission')
     end
 
-    local hours = ArenaHoursState()
-    tell(src, ('arena hours: %s'):format(hours.enabled and 'ON' or 'OFF'))
-    tell(src, ('  this machine says: %s'):format(hours.serverClock))
-    tell(src, ('  offsetHours:       %+d'):format(hours.offsetHours))
-    tell(src, ('  arena is going by: %s'):format(hours.arenaClock))
-    tell(src, ('  windows:           %s'):format(hours.line or '(none -- open at every hour)'))
-
-    if hours.forced then
-        tell(src, ('  OVERRIDDEN:        an admin has the doors %s. /arenaadmin puts them back.')
-            :format(hours.forced == 'open' and 'HELD OPEN past the schedule'
-                or 'CLOSED inside the schedule'))
-    end
-
-    local when = hours.open and hours.snapshot.closesAt or hours.snapshot.opensAt
-    tell(src, ('  right now:         %s%s'):format(
-        hours.open and 'OPEN' or 'SHUT',
-        -- NAMED ONLY WHEN THERE IS ONE. `closesAt` is set only while the
-        -- SCHEDULE says open and `opensAt` only while it says shut, so an
-        -- override that disagrees with the clock leaves the matching one
-        -- absent -- and this line used to print the word `nil` at an
-        -- operator trying to work out what was wrong.
-        type(when) == 'string' and (hours.open and (', until ' .. when)
-            or (', opens at ' .. when)) or ''))
-
-    if hours.line then
-        tell(src, '  if "this machine says" is not your local time, put the difference in '
-            .. 'Config.Schedule.offsetHours.')
-    end
+    for _, line in ipairs(hoursReport()) do tell(src, line) end
 end, false)
 
 local function adminMatches()
@@ -667,6 +695,113 @@ local function pushAdmin(src, matchId)
         })
     end, function(found, opened) total, read = found, opened end)
 end
+
+--- A debug line from a client, printed in the SERVER console.
+---
+--- WHY THE CLIENT DOES NOT JUST PRINT IT. The operator's words: the arena's
+--- debug output belongs "into the live console instead of the f8". An F8
+--- console is one player's, is cleared by a relog, and cannot be read by the
+--- person actually diagnosing the server -- so a debug switch that writes
+--- there tells the one person who cannot act on it.
+---
+--- EVERY LINE IS ATTRIBUTED AND EVERY LINE IS UNTRUSTED. The text comes from
+--- a client, so it is cut to MAX_DEBUG_LINE, stripped of everything that is
+--- not printable, and written under the sender's name and id. It decides
+--- nothing and is stored nowhere.
+---
+--- THE SWITCH IS ENFORCED BY ArenaDebug, which is the only thing here that
+--- prints -- so a client with the file edited cannot turn on output a server
+--- has switched off, whatever it sends. The early return below is not that
+--- guard and is not load-bearing: it only saves the name lookup and the
+--- string work on a server that is not going to print the result anyway.
+onClient('crimson_arena:server:clientDebug', RATE.clientDebug, function(src, data)
+    if Config.Debug ~= true then return end
+
+    local payload = tableArg(data)
+    local line = payload and payload.line
+    if type(line) ~= 'string' or line == '' then return end
+
+    if #line > MAX_DEBUG_LINE then line = line:sub(1, MAX_DEBUG_LINE) .. ' [cut]' end
+
+    -- EVERY CONTROL CHARACTER REMOVED, not only the newlines.
+    --
+    -- A client-supplied '\n' would let anybody write a line into the console
+    -- log that does not carry the attribution prefix -- a forged
+    -- '[crimson_arena] ...' line sitting among the real ones. An ESC is
+    -- worse: a console that reads ANSI takes '\27[2J' as "clear the screen"
+    -- and '\27]0;' as "rename the window", so one debug line could wipe the
+    -- output an operator was reading. Neither belongs in a diagnostic
+    -- message, so the whole 0x00-0x1F range and DEL go.
+    line = line:gsub('[%z\1-\31\127]', ' ')
+
+    ArenaDebug('client %s (%s): %s', tostring(src), ArenaPlayerName(src), line)
+end)
+
+--- The admin tools the tablet can run, and what each one answers with.
+---
+--- THE ASK THIS ANSWERS, in the operator's words: put the admin commands
+--- "in there instead of typing stuff out". Each entry is the SAME report the
+--- console command prints, built by the same function -- not a second copy
+--- that can drift from it.
+---
+--- READ-ONLY, EVERY ONE. Nothing here changes anything: the tablet already
+--- has buttons for the actions that change something (stop a match, revive,
+--- hand a stash back, hold the doors), each with the guard that action
+--- needs. /arenaunjam in particular is NOT offered as a button and
+--- ArenaAmmo.JamReport says why at length.
+local ADMIN_TOOLS = {
+    isolation = {
+        title = 'Instancing',
+        run = function()
+            if type(ArenaDispatch) ~= 'table' or type(ArenaDispatch.IsolationReport) ~= 'function' then
+                return { 'this build has no isolation report.' }
+            end
+            return ArenaDispatch.IsolationReport()
+        end,
+    },
+    hours = {
+        title = 'Opening hours',
+        run = function() return hoursReport() end,
+    },
+    jams = {
+        title = 'Held-back stashes',
+        run = function()
+            if type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.JamReport) ~= 'function' then
+                return { 'this build has no jam report.' }
+            end
+            return ArenaAmmo.JamReport()
+        end,
+    },
+}
+
+onClient('crimson_arena:server:adminTool', RATE.admin, function(src, data)
+    if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
+
+    local payload = tableArg(data)
+    local name = payload and keyArg(payload.tool)
+    local tool = name and ADMIN_TOOLS[name]
+    if not tool then return refuse(src, 'error.invalid_request') end
+
+    -- THROUGH pcall. These reports read live server state -- routing
+    -- buckets, the clock, ox_inventory -- and one of them throwing must not
+    -- take the tablet down with it. An operator looking at a broken server
+    -- is exactly who is pressing this.
+    local ok, lines = pcall(tool.run)
+    if not ok or type(lines) ~= 'table' then
+        lines = { 'that report could not be taken: ' .. tostring(lines) }
+    end
+
+    local out = {}
+    for _, line in ipairs(lines) do out[#out + 1] = tostring(line) end
+
+    TriggerClientEvent('crimson_arena:client:adminTool', src, {
+        tool = name,
+        title = tool.title,
+        lines = out,
+    })
+
+    ArenaLog('%s ran the %s report from the admin tablet', ArenaPlayerName(src), name)
+end)
 
 onClient('crimson_arena:server:adminState', RATE.admin, function(src, data)
     if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end

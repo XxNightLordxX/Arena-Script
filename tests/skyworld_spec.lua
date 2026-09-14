@@ -287,8 +287,30 @@ local function newClient(opts)
 
     function c.pos() return world.pedPos end
 
-    --- Everything this client has printed, as one string.
-    function c.console() return table.concat(c.printed, '\n') end
+    --- Everything this client has reported, as one string.
+    ---
+    --- BOTH SINKS, because there are two now and which one a line uses is
+    --- not the subject of any test in this file. A real fault (a model this
+    --- build does not have, a native it is missing) is printed here, where
+    --- the player can read it. The ROUTINE per-round reporting is sent to
+    --- the server instead, so it lands in the one console an operator is
+    --- actually reading rather than in one player's F8 -- and so that
+    --- switching Config.Debug off silences it everywhere at once.
+    ---
+    --- Joined rather than checked apart: a spec that watched only print()
+    --- would have gone quietly green the moment a line moved, which is
+    --- exactly what happened to three tests below.
+    function c.console()
+        local said = {}
+        for _, line in ipairs(c.printed) do said[#said + 1] = line end
+        for _, sent in ipairs(c.serverEvents) do
+            if sent.name == 'crimson_arena:server:clientDebug'
+                and type(sent.payload) == 'table' then
+                said[#said + 1] = tostring(sent.payload.line)
+            end
+        end
+        return table.concat(said, '\n')
+    end
 
     return c
 end
@@ -793,7 +815,7 @@ t.test('DEFECT: and it does not let go of a model it is still building with', fu
             :format(firstRelease, lastCreate))
 end)
 
-t.test('and it says the footprint it measured out loud, so F8 settles it', function()
+t.test('and it says the footprint it measured out loud, so the console settles it', function()
     -- The line is gated on the measurement having happened at all, so its
     -- ABSENCE was the in-game symptom of the defect above -- and its
     -- presence is how an operator confirms the fix in ten seconds without

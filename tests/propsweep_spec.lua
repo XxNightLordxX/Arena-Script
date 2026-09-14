@@ -131,7 +131,7 @@ local function newClient()
     local world = World.new()
     local runner = Sandbox.newThreadRunner()
     local handlers = {}
-    local c = { world = world, printed = {} }
+    local c = { world = world, printed = {}, toServer = {} }
 
     local overrides = {
         CreateThread = runner.CreateThread,
@@ -139,7 +139,14 @@ local function newClient()
         SetTimeout = runner.SetTimeout,
         RegisterNetEvent = function(name, fn) handlers[name] = fn end,
         AddEventHandler = function(name, fn) handlers[name] = fn end,
-        TriggerServerEvent = function() end,
+        -- RECORDED, because the client's debug output no longer goes to
+        -- this player's F8 -- it is sent to the server so it lands in the
+        -- one console an operator is actually reading. A spec that still
+        -- watched print() would have gone quietly green on a line that no
+        -- longer reaches anybody.
+        TriggerServerEvent = function(name, payload)
+            c.toServer[#c.toServer + 1] = { name = name, payload = payload }
+        end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         GetResourceState = function() return 'missing' end,
 
@@ -408,8 +415,15 @@ t.test('and the sweep says so in the console rather than tidying up silently', f
     c.plant('stt_prop_stunt_bblock_huge_01', SKY.x, SKY.y, SKY.z - 10.0)
     c.enter('skydome')
 
-    t.isTrue(table.concat(c.printed, '\n'):find('stray', 1, true) ~= nil,
-        'a stray piece was swept and nothing was printed about it')
+    local said = {}
+    for _, sent in ipairs(c.toServer) do
+        if sent.name == 'crimson_arena:server:clientDebug' and type(sent.payload) == 'table' then
+            said[#said + 1] = tostring(sent.payload.line)
+        end
+    end
+
+    t.isTrue(table.concat(said, '\n'):find('stray', 1, true) ~= nil,
+        'a stray piece was swept and the server console was never told')
 end)
 
 os.exit(t.summary())

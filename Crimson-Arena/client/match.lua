@@ -648,6 +648,55 @@ local WHY_SELF = 2
 local WHY_NOT_A_PLAYER = 3
 local WHY_NOT_NETWORKED = 4
 
+--- A console line that is ROUTINE: written every round, or every death.
+---
+--- THE COMPLAINT THIS EXISTS FOR. Config.Debug ships off and the F8 console
+--- filled up anyway -- the scenery report is printed by every client every
+--- time an arena is built, and on a server running back-to-back rounds that
+--- is a wall of text nobody asked for. A switch that does not switch the
+--- messages off is not a switch.
+---
+--- ArenaLogOnce below is the other half: what is worth saying but not worth
+--- repeating. Neither replaces a plain print() -- a real fault (a model this
+--- build does not have, a native it is missing) is still printed outright,
+--- because that one is not noise, it is the answer.
+--- @param fmt string
+local function ArenaDebugPrint(fmt, ...)
+    if Config.Debug ~= true then return end
+    local ok, text = pcall(string.format, fmt, ...)
+    text = ok and text or fmt
+
+    -- SENT TO THE SERVER CONSOLE, NOT PRINTED HERE. The operator's words:
+    -- with debug on this belongs "into the live console instead of the f8".
+    -- An F8 console is one player's, is wiped by a relog, and is not where
+    -- the person diagnosing the server is looking. The server prints it
+    -- under this player's name, so a report finally says WHO it came from.
+    --
+    -- NOT A SILENT SWAP: server/main.lua re-checks Config.Debug before
+    -- printing, so this is off on a finished server at both ends.
+    TriggerServerEvent('crimson_arena:server:clientDebug', { line = text })
+end
+
+--- Every key ArenaLogOnce has already spoken for, for this session.
+local saidOnce = {}
+
+--- A console line worth printing ONCE, however many times it is reached.
+--- @param key string
+--- @param fmt string
+local function ArenaLogOnce(key, fmt, ...)
+    if saidOnce[key] then return end
+    saidOnce[key] = true
+    -- A MESSAGE THAT IS ALREADY FINISHED IS NOT RE-FORMATTED. Two callers
+    -- pass a line they built themselves; running string.format over one
+    -- carrying a stray %% would throw rather than print it.
+    local text = fmt
+    if select('#', ...) > 0 then
+        local ok, built = pcall(string.format, fmt, ...)
+        text = ok and built or fmt
+    end
+    print(('[crimson_arena] %s'):format(text))
+end
+
 local WHY_TEXT = {
     [WHY_NOTHING] = 'nothing that hit you was an entity this game could name, which is what a fall, '
         .. 'a drowning, the arena boundary or a fire looks like',
@@ -985,11 +1034,19 @@ local function handleDeath(ped, attacker)
     -- "the arena killed me" from "somebody shot me and got nothing for it".
     if not killerServerId then
         local cause = type(GetPedCauseOfDeath) == 'function' and GetPedCauseOfDeath(ped) or nil
-        print(('[crimson_arena] your death could not be pinned on anybody, so nobody was credited '
+        -- ONCE A SESSION, NOT ONCE A DEATH. Still not behind Config.Debug,
+        -- for the reason above -- the report that drove this change was a
+        -- player quoting the line out of their own F8 -- but a fighter dying
+        -- forty times in an evening does not need it forty times, and
+        -- printing it forty times is exactly the noise a switched-off
+        -- Config.Debug is supposed to have stopped. The first one carries
+        -- every fact the fortieth would have.
+        ArenaLogOnce('unattributed-death',
+            'your death could not be pinned on anybody, so nobody was credited '
             .. 'for it -- %s. Cause of death hash %s, attacker %s, source of death %s. If somebody '
-            .. 'shot you, tell the server owner and quote this line.')
-            :format(WHY_TEXT[why] or 'reason unknown',
-                tostring(cause), tostring(attacker), tostring(ofDeath)))
+            .. 'shot you, tell the server owner and quote this line. (Said once a session.)',
+            WHY_TEXT[why] or 'reason unknown',
+            tostring(cause), tostring(attacker), tostring(ofDeath))
     end
 
     local report = { killerServerId = killerServerId }
@@ -1458,9 +1515,8 @@ local lastOutlineReason = nil
 local function outlineReason(reason)
     if reason == lastOutlineReason then return end
     lastOutlineReason = reason
+    ArenaDebugPrint('team outline: %s', reason)
     if Config.Debug then
-        print(('[crimson_arena] [debug] team outline: %s'):format(reason))
-
         TriggerServerEvent('crimson_arena:server:outlineReason', reason)
     end
 end
@@ -1944,8 +2000,8 @@ local function sweepStrayArenaProps(arenaKey, factor)
     end
 
     if removed > 0 then
-        print(('[crimson_arena] arena scenery: swept %d stray piece(s) still standing at \'%s\' from an earlier round.')
-            :format(removed, tostring(arenaKey)))
+        ArenaDebugPrint('arena scenery: swept %d stray piece(s) still standing at \'%s\' from an earlier round.',
+            removed, tostring(arenaKey))
     end
     return removed
 end
@@ -2085,9 +2141,13 @@ local function buildArenaProps(arenaKey, factor, boundary)
 
     for hash in pairs(held) do SetModelAsNoLongerNeeded(hash) end
 
+    -- ONCE PER MODEL: a model this build does not have is not going to
+    -- appear between one round and the next, so the second printing of the
+    -- same line tells nobody anything the first did not.
     for model in pairs(failed) do
-        print(('[crimson_arena] arena scenery: the model \'%s\' would not load, so those pieces are missing. Check it exists on this build.')
-            :format(tostring(model)))
+        ArenaLogOnce('model-failed:' .. tostring(model),
+            'arena scenery: the model \'%s\' would not load, so those pieces are missing. Check it exists on this build.',
+            tostring(model))
     end
 
     -- PRINTED WHENEVER ANYTHING WAS ASKED FOR, not only when the floor could
@@ -2095,11 +2155,11 @@ local function buildArenaProps(arenaKey, factor, boundary)
     -- likely to be misbuilt -- the one whose floor prop this build does not
     -- have -- was also the one that printed nothing about what it did build.
     if #wanted > 0 then
-        print(('[crimson_arena] arena scenery: %d of %d piece(s) built -- %d floor, %d cover, furthest cover %.2fm out.')
-            :format(built, #wanted, builtFloor, builtCover, coverReach))
+        ArenaDebugPrint('arena scenery: %d of %d piece(s) built -- %d floor, %d cover, furthest cover %.2fm out.',
+            built, #wanted, builtFloor, builtCover, coverReach)
         if measured then
-            print(('[crimson_arena] arena scenery: the floor prop measures %.2f x %.2fm and its surface is at %.2f.')
-                :format(measured.x, measured.y, arenaSurfaceZ or 0.0))
+            ArenaDebugPrint('arena scenery: the floor prop measures %.2f x %.2fm and its surface is at %.2f.',
+                measured.x, measured.y, arenaSurfaceZ or 0.0)
         end
 
         -- WHICH PROP THIS CLIENT GOT DECIDES HOW HEAVY THE ARENA IS, AND THE
@@ -2123,7 +2183,14 @@ local function buildArenaProps(arenaKey, factor, boundary)
         -- So it is named. The threshold is deliberately not clever: any floor
         -- that took more than a few dozen pieces came off the small end of a
         -- chain, whatever the arena.
-        if builtFloor > FLOOR_PIECES_WORTH_WARNING_ABOUT then
+        -- ONCE PER ARENA. Twelve lines is a briefing, not a log line, and
+        -- the condition that produces it -- this build not having the large
+        -- floor prop -- does not change between rounds. Printed every round
+        -- it is the single biggest thing in an F8 console, which is what
+        -- turning Config.Debug off was meant to stop.
+        if builtFloor > FLOOR_PIECES_WORTH_WARNING_ABOUT
+            and not saidOnce['floor-pieces:' .. tostring(arenaKey)] then
+            saidOnce['floor-pieces:' .. tostring(arenaKey)] = true
             print(('[crimson_arena] arena scenery: THIS CLIENT BUILT THE FLOOR OUT OF %d PIECES.')
                 :format(builtFloor))
             print('[crimson_arena]   That is the small-prop end of the model chain -- the large prop at the')
@@ -2154,13 +2221,18 @@ local function buildArenaProps(arenaKey, factor, boundary)
             end
         end
 
+        -- ONCE PER ARENA, like the block above and for the same reason:
+        -- this is a misconfiguration in config.lua, and config.lua does not
+        -- change between two rounds at the same arena.
         if radius > 0.0 and reach > radius then
-            print(('[crimson_arena] arena scenery: THE FLOOR REACHES OUTSIDE THE ARENA -- it extends %.2fm from the middle and the boundary is %.2fm. The outer ring is solid ground you bleed on. Raise Config.Arenas["%s"].boundary.radius above %.2fm, or lower platform.radius.')
+            ArenaLogOnce('floor-outside:' .. tostring(arenaKey),
+                ('arena scenery: THE FLOOR REACHES OUTSIDE THE ARENA -- it extends %.2fm from the middle and the boundary is %.2fm. The outer ring is solid ground you bleed on. Raise Config.Arenas["%s"].boundary.radius above %.2fm, or lower platform.radius.')
                 :format(reach, radius, tostring(arenaKey), reach))
         end
 
         if coverReach > 0.0 and reach > coverReach + 0.5 then
-            print(('[crimson_arena] arena scenery: THE WALL DOES NOT ENCLOSE THE FLOOR -- the furthest cover stands %.2fm out and the floor reaches %.2fm, so there is %.2fm of walkable ground OUTSIDE the wall and fighters can walk round it and fall. Either move the cover ring out to %.2fm in Config.Arenas["%s"].cover, or give platform.models a smaller prop so the floor stops short of the wall.')
+            ArenaLogOnce('wall-gap:' .. tostring(arenaKey),
+                ('arena scenery: THE WALL DOES NOT ENCLOSE THE FLOOR -- the furthest cover stands %.2fm out and the floor reaches %.2fm, so there is %.2fm of walkable ground OUTSIDE the wall and fighters can walk round it and fall. Either move the cover ring out to %.2fm in Config.Arenas["%s"].cover, or give platform.models a smaller prop so the floor stops short of the wall.')
                 :format(coverReach, reach, reach - coverReach, reach, tostring(arenaKey)))
         end
     end
@@ -2697,9 +2769,9 @@ CreateThread(function()
         print('[crimson_arena] PROPS MISSING ON THIS BUILD -- an arena below cannot be built and will refuse to start:')
         for _, line in ipairs(missing) do print('    ' .. line) end
         print('[crimson_arena] Add those models to a stream/ folder in this resource, or name props your build does have. See STREAMING.md.')
-    elseif Config.Debug and #checked > 0 then
-        print('[crimson_arena] arena props, checked against this build:')
-        for _, line in ipairs(checked) do print('    ' .. line) end
+    elseif #checked > 0 then
+        ArenaDebugPrint('arena props, checked against this build:')
+        for _, line in ipairs(checked) do ArenaDebugPrint('    %s', line) end
     end
 end)
 
@@ -2739,9 +2811,7 @@ CreateThread(function()
     local canOutline = SetEntityDrawOutlineRenderTechnique ~= nil
 
     if canOutline and MARKER_NATIVES then
-        if Config.Debug then
-            print('[crimson_arena] team outline: this build has SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE, so teammates will be outlined.')
-        end
+        ArenaDebugPrint('team outline: this build has SET_ENTITY_DRAW_OUTLINE_RENDER_TECHNIQUE, so teammates will be outlined.')
         return
     end
 

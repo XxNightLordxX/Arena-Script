@@ -593,20 +593,20 @@ end)
 -- THE WHOLE SURFACE, COUNTED
 -- ----------------------------------------------------------------------
 
-t.test('exactly the 22 wire events STAGE 3 counts are registered, plus the one callback', function()
+t.test('exactly the 24 wire events STAGE 3 counts are registered, plus the one callback', function()
     local s = newFunnel()
     local names = {}
     for name in pairs(s.netEvents) do
         if name:find('^crimson_arena:server:') then names[#names + 1] = name end
     end
     table.sort(names)
-    t.equals(#names, 22, table.concat(names, ' '))
+    t.equals(#names, 24, table.concat(names, ' '))
     t.isTrue(s.env.lib.callbacks['crimson_arena:server:getState'] ~= nil)
     for _, name in ipairs({ 'panelClosed', 'requestState', 'outlineReason', 'createMatch', 'joinMatch',
                             'leaveMatch', 'setTeam', 'setLoadout', 'setReady', 'startMatch', 'holdCountdown',
                             'cancelMatch', 'updateMatch', 'reportDeath', 'spectateMatch', 'stopSpectating',
                             'placeSpectatorBet', 'adminState', 'adminStop', 'adminReturn', 'adminHours',
-                            'adminRevive' }) do
+                            'adminRevive', 'adminTool', 'clientDebug' }) do
         t.isTrue(s.netEvents['crimson_arena:server:' .. name] ~= nil, name)
     end
 end)

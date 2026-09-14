@@ -2,6 +2,12 @@
 #
 # The workflow this replaces ran three gates: parse, luacheck, and the spec
 # suite. Two of the three depended on files the production strip removed --
+# tests/ NOW LIVES BESIDE Crimson-Arena RATHER THAN INSIDE IT, because that
+# folder is what an operator drags into their resources directory and a test
+# suite has no business shipping with it. The gates below scope to
+# 'Crimson-Arena' for everything about the RESOURCE, and the parse gate takes
+# both, because a spec that does not parse is a spec that is not running.
+#
 # tests/ and .luacheckrc are deliberately not shipped -- so it was deleted with
 # them and nothing has checked a push since.
 #
@@ -84,7 +90,7 @@ jobs:
                   echo "::error file=${file}::does not parse under lua5.4"
                   status=1
               fi
-          done < <(find Crimson-Arena -type f -name '*.lua' -print0)
+          done < <(find Crimson-Arena tests -type f -name '*.lua' -print0)
           exit "$status"
 
       # A local referenced ABOVE its own declaration compiles cleanly and is

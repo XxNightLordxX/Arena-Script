@@ -628,6 +628,9 @@ end
 --- Said once per run, not per bag: it is a fact about the ox_inventory build.
 local warnedNoContainerExport = false
 
+--- Said once per run: it is a fact about the config, not about a player.
+local warnedStripOff = false
+
 local function holdContainers(ox, src, citizenid)
     local keys = {}
     if doorConfig().emptyContainers == false then return keys end
@@ -4450,6 +4453,24 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     if ox and doorConfig().stripOnEntry == false then
         ArenaToastKey(src, dropsAreBlocked() and 'notify.kit_kept_blocked'
             or 'notify.kit_kept_open', 'error')
+
+        -- AND THE OPERATOR IS TOLD, NOT JUST THE PLAYER.
+        --
+        -- This was the one way the door can decline to strip somebody that
+        -- said NOTHING in the console. Every refusal below writes a `door:`
+        -- line saying why; a switched-off door wrote none, so a server whose
+        -- fighters were walking in with their own weapons looked exactly like
+        -- a server with a broken door, and the console could not tell them
+        -- apart. Reported as "it still keeps the stuff before the match".
+        --
+        -- Once, not per fighter per round: it is a fact about the config.
+        if not warnedStripOff then
+            warnedStripOff = true
+            ArenaLog('door: Config.Loadouts.inventory.stripOnEntry is FALSE, so the arena is NOT '
+                .. 'taking anybody\'s belongings at the door -- every fighter walks in carrying '
+                .. 'their own weapons, and whatever they are carrying drops on the floor if they '
+                .. 'die. Set it to true if that is not what you meant.')
+        end
     end
 
     if ox then
@@ -4516,7 +4537,15 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                     -- there are more than there should be, never how many.
                     manifest = manifest,
                 }
-                ArenaDebug('door: stashed %d item(s) of %s\'s for match %s',
+                -- SAID AT LOG LEVEL, NOT DEBUG. The door's whole promise is
+                -- that nothing a fighter owns comes into a round with them,
+                -- and this is the only line that says whether it happened.
+                -- At debug level it was invisible on every server that had
+                -- not switched debug on -- which is every server with the
+                -- problem, because the problem is silent by nature. One line
+                -- per fighter per round is a price worth paying for being
+                -- able to answer "did it strip me" from the console.
+                ArenaLog('door: put %d item(s) of %s\'s away for match %s.',
                     count, tostring(src), tostring(matchId))
             else
                 -- THE PLAYER IS TOLD, ON PURPOSE. `stow` puts back

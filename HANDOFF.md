@@ -795,8 +795,8 @@ What I verified afterwards:
 The commit is now `8291f5c`, 43rd from the tip.
 
 > **Since this was written, the suite is tracked in the repository.**
-> `Crimson-Arena/tests/` is in the tree at HEAD and runs with
-> `bash Crimson-Arena/tests/run.sh`. The recovery point below is still a real
+> `tests/` is in the tree at HEAD and runs with
+> `bash tests/run.sh`. The recovery point below is still a real
 > commit and the check below still works, but **do not restore the suite from
 > it**: it holds 77 specs of an older shape and laying them over the 93 that
 > are here now would silently lose every control written since. It remains
@@ -804,12 +804,12 @@ The commit is now `8291f5c`, 43rd from the tip.
 
 **Checked for you, because your recovery depends on it:** `566171c` and
 `7fb527e` **still resolve on origin today**, and `566171c` still contains 104
-files under `Crimson-Arena/tests/` (77 `_spec.lua`). Your recovery point is
+files under `tests/` (77 `_spec.lua`). Your recovery point is
 intact. Confirm it yourself before you trust me:
 
 ```
 git fetch origin claude/fivem-qbox-arena-script-vmoiqt
-git ls-tree -r --name-only 566171c -- Crimson-Arena/tests | wc -l
+git ls-tree -r --name-only 566171c -- tests | wc -l
 ```
 
 **How to bring your one commit across.** Do not plain-rebase without checking —
@@ -983,7 +983,7 @@ Full detail is in `HANDOFF.md` §9 in the repo. Classified the way you asked:
 ## 4. The 81 specs
 
 **(a) No. I never ran the suite.** Not against `ecf7716`, not against anything.
-`Crimson-Arena/tests/` does not exist in my working tree — I inherited the
+`tests/` does not exist in my working tree — I inherited the
 post-strip state and never recovered it. So I have no result to give you, and
 you should not assume any spec still passes.
 
@@ -1421,7 +1421,7 @@ get back is the exact 60 m pocket `566171c` was written to close.
 **But do NOT delete the doc's reasoning.** `config.lua:436-437` still makes the
 same argument in the same words — *"a fighter who steps over the line is being
 bled by the boundary already"* — and the spec that shipped **with** the fix
-(`566171c:Crimson-Arena/tests/serverchecks_spec.lua:262-265`) is titled *"and a
+(`566171c:tests/serverchecks_spec.lua:262-265`) is titled *"and a
 fighter a step past the fence is left alone"*. `566171c` overturned the
 **magnitude**, not the **principle**.
 
@@ -1454,7 +1454,7 @@ Two additions:
 
 ### (iii) 8(c) — the deleted test suite proves this was intended to work
 
-`Crimson-Arena/tests/serverchecks_spec.lua` exists at `7fb527e^`. Its test at
+`tests/serverchecks_spec.lua` exists at `7fb527e^`. Its test at
 lines 226-243, *"and the count has to be CONSECUTIVE, not merely reached"*,
 opens: **"A HITCH IS NOT A CHEAT. A player whose world stalls for a second, OR
 WHO IS BETWEEN A DEATH AND A RESPAWN…"**

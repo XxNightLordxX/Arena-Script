@@ -90,10 +90,10 @@ head_ "6. the spec suite"
 #  'git archive 566171c Crimson-Arena/tests | tar -x'. That commit holds 74
 #  specs; the suite is well past that now, so following it would have quietly
 #  restored an old one over a newer one.)
-if command -v lua5.4 >/dev/null 2>&1 && [ -d $R/tests ]; then
+if command -v lua5.4 >/dev/null 2>&1 && [ -d tests ]; then
     p=0; f=0; bad_specs=""
-    for s in $R/tests/*_spec.lua; do
-        if (cd $R/tests && timeout 120 lua5.4 "$(basename "$s")" >/dev/null 2>&1); then p=$((p+1))
+    for s in tests/*_spec.lua; do
+        if (cd tests && timeout 120 lua5.4 "$(basename "$s")" >/dev/null 2>&1); then p=$((p+1))
         else f=$((f+1)); bad_specs="$bad_specs $(basename "$s")"; fi
     done
     [ "$f" -eq 0 ] && ok "$p specs pass" || bad "$f of $((p+f)) specs fail:$bad_specs"

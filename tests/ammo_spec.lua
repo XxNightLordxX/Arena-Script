@@ -2677,4 +2677,161 @@ t.test('POWERGAMING: a stash the door could not empty is never handed out twice'
         'THE ARENA HANDED OVER A SECOND COPY of everything it could not take out of that stash')
 end)
 
+-- ========================================================================
+-- GrantSupply -- THE KILL REWARD, which nothing was holding
+--
+-- Hands a supply item to a fighter mid-round: a bandage for a kill, armour
+-- for a streak. It is the one way an item enters a player's pockets AFTER
+-- the door has already dressed them, so it is also the one that has to be
+-- recorded, or the exit hands it back as though the player walked in with
+-- it. Every other ArenaAmmo entry point had a spec; this had none.
+-- ========================================================================
+
+t.test('a granted supply reaches the player', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.isTrue(s.ammo.GrantSupply(1, 'm1', 'bandage', 2), 'the grant was refused')
+    t.contains(s.carrying(1), 'bandage', 'the reward never reached the player')
+end)
+
+t.test('and the arena takes it back at the exit, because it was never theirs', function()
+    -- THE PROPERTY THAT MATTERS. A reward the exit does not know about is a
+    -- reward the player keeps, every round, for free.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.ammo.GrantSupply(1, 'm1', 'bandage', 2)
+
+    s.ammo.Reclaim(1, 'match.ended')
+    s.step(4)
+
+    t.equals(s.carrying(1), table.concat({ 'phone', 'water' }, ','),
+        'THE PLAYER WALKED OUT WITH AN ARENA REWARD: ' .. s.carrying(1))
+end)
+
+t.test('every guard on the way in refuses rather than throwing', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    local before = s.carrying(1)
+
+    local BAD = {
+        { nil,  'm1',   'bandage', 1 },
+        { 0,    'm1',   'bandage', 1 },
+        { -3,   'm1',   'bandage', 1 },
+        { 'me', 'm1',   'bandage', 1 },
+        { 1,    nil,    'bandage', 1 },
+        { 1,    '',     'bandage', 1 },
+        { 1,    5,      'bandage', 1 },
+        { 1,    'm1',   nil,       1 },
+        { 1,    'm1',   '',        1 },
+        { 1,    'm1',   5,         1 },
+        { 1,    'm1',   'bandage', 0 },
+        { 1,    'm1',   'bandage', -5 },
+        { 1,    'm1',   'bandage', 'two' },
+        { 1,    'm1',   'bandage', nil },
+    }
+    for index, row in ipairs(BAD) do
+        local ok, result = pcall(s.ammo.GrantSupply, row[1], row[2], row[3], row[4])
+        t.isTrue(ok, ('grant %d threw instead of refusing: %s'):format(index, tostring(result)))
+        t.isFalse(result, ('grant %d was accepted: %s'):format(index, tostring(result)))
+    end
+
+    t.equals(s.carrying(1), before, 'a refused grant still moved items')
+end)
+
+t.test('and two grants of the same item stack rather than replacing', function()
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+
+    t.isTrue(s.ammo.GrantSupply(1, 'm1', 'bandage', 1))
+    t.isTrue(s.ammo.GrantSupply(1, 'm1', 'bandage', 2))
+
+    s.ammo.Reclaim(1, 'match.ended')
+    s.step(4)
+    t.equals(s.carrying(1), table.concat({ 'phone', 'water' }, ','),
+        'a second grant left something behind: ' .. s.carrying(1))
+end)
+
+t.test('DEFECT: the reward still comes off when the belongings swap CANNOT run', function()
+    -- WHERE THE RECORD EARNS ITS KEEP, and the ordinary exit does not prove
+    -- it: that path clears the player wholesale and puts their own kit back,
+    -- so an arena reward comes off whether or not it was written down.
+    --
+    -- Break the stash read and the wholesale clear is off the table -- the
+    -- player keeps what they are holding, and the ONLY thing that can take
+    -- the arena's reward back is the record GrantSupply wrote when it handed
+    -- it over. Without it the player walks away with the reward AND their
+    -- own kit still sitting in a stash: paid twice for a round the arena
+    -- could not close properly.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(s.ammo.GrantSupply(1, 'm1', 'bandage', 3), 'the grant was refused')
+    t.contains(s.carrying(1), 'bandage', 'the reward never landed, so this proves nothing')
+
+    s.breakOn('readStash')
+    s.ammo.Reclaim(1, 'match.ended')
+    s.step(4)
+
+    t.isTrue(s.carrying(1):find('bandage', 1, true) == nil,
+        'THE ARENA REWARD SURVIVED AN EXIT THAT COULD NOT CLEAR THE PLAYER: ' .. s.carrying(1))
+    t.contains(s.stashed(1), 'phone',
+        'and their own kit should still be in the stash, waiting for the retry')
+end)
+
+t.test('a granted supply is written OFF on a character switch, not billed to a stranger', function()
+    -- NOT AN OVERSIGHT -- the rule, and worth pinning because the obvious
+    -- "fix" is worse than the loss it prevents.
+    --
+    -- The exit can only count what is in the pockets in front of it, and on
+    -- this path those pockets belong to whoever took the server id over.
+    -- Counting them would write a debt against the character who left for
+    -- consumables they may never have had, AND hand the newcomer a free
+    -- round of their own stock when the chase collected it. WEAPONS survive
+    -- the switch because each carries a serial, so collecting one can only
+    -- ever take the arena's own copy; consumables carry nothing to tell them
+    -- apart, so the arena eats the loss rather than bill the wrong person.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    t.isTrue(s.ammo.GrantSupply(1, 'm1', 'bandage', 3), 'the grant was refused')
+
+    -- A DIFFERENT CHARACTER now holds server id 1.
+    s.reconnect(2, 1)
+    s.ammo.Reclaim(1, 'match.ended')
+    s.step(4)
+
+    for _, row in ipairs(s.ammo.OwedKit()) do
+        for _, item in ipairs(row.items or {}) do
+            t.isTrue(item.name ~= 'bandage',
+                ('a consumable was billed to %s after the server id changed hands')
+                    :format(tostring(row.citizenid)))
+        end
+    end
+
+    t.contains(s.log(), 'written off rather than charged to the wrong person',
+        'the arena did not say it was eating the loss, so nothing records the decision')
+end)
+
+t.test('and the belongings of the character who left are still queued for them', function()
+    -- The loss is the CONSUMABLES only. Their own kit is not written off: it
+    -- stays in their stash and is queued to come back when they are next seen.
+    local s = newServer({ [1] = OWN })
+    s.ammo.Issue(1, 'm1', { weapons = {}, armor = 100, health = 200 })
+    s.reconnect(2, 1)
+    s.ammo.Reclaim(1, 'match.ended')
+    s.step(4)
+
+    t.contains(s.log(), 'queued to be returned when they are next seen',
+        'the character who left had their own belongings written off too')
+    t.contains(s.stashed(1), 'phone', 'their own kit left the stash')
+end)
+
+t.test('with ox_inventory absent it refuses instead of pretending', function()
+    -- `inventoryStartsAfter` past any wait this test makes keeps ox_inventory
+    -- reading 'missing', which is the state the door already treats as "no
+    -- inventory to work with" rather than as an error.
+    local s = newServer({ [1] = OWN }, nil, { inventoryStartsAfter = 999 })
+    t.isFalse(s.ammo.GrantSupply(1, 'm1', 'bandage', 1),
+        'a reward was reported granted on a server with no inventory to grant it into')
+end)
+
 os.exit(t.summary())

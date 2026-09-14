@@ -3229,4 +3229,103 @@ t.test('THE DEFECT: they are no longer watching AT THE MOMENT the exit is sent',
         .. 'again after everything else has finished putting them right')
 end)
 
+-- ========================================================================
+-- JamReport -- WHAT THE ADMIN TABLET SHOWS, which nothing was holding
+--
+-- The same reading /arenaunjam prints, as lines the tablet can draw. It is
+-- READ-ONLY on purpose and the tablet offers no button: clearing a jam on a
+-- stash that still holds rows puts every one of them back inside the next
+-- ceiling and the next exit hands them to the owner -- the exact duplication
+-- the jam exists to stop. So the report has to tell a human which stashes are
+-- safe to clear and which are not, and be right about it.
+-- ========================================================================
+
+t.test('with nothing held back it says so, in one line', function()
+    local server = liveMatch({ 1, 2 })
+    local lines = server.ammo.JamReport()
+
+    t.equals(type(lines), 'table', 'the report was not a list of lines')
+    t.equals(#lines, 1, 'a clean server produced more than the one line it needs')
+    t.contains(lines[1], 'no stash is being held back',
+        'a clean server did not say so: ' .. tostring(lines[1]))
+end)
+
+t.test('a held-back stash is listed, and named', function()
+    local server = jammedBySurplus()
+    local stashes = server.ammo.JammedStashes()
+    t.isTrue(#stashes > 0, 'the fixture did not jam anything')
+
+    local lines = server.ammo.JamReport()
+    local text = table.concat(lines, '\n')
+
+    t.isTrue(#lines > 1, 'a jammed server reported nothing beyond the header')
+    for _, stash in ipairs(stashes) do
+        t.contains(text, stash, 'the report did not name the stash it is about')
+    end
+end)
+
+t.test('and it says which are safe to clear and which are not', function()
+    -- THE WHOLE POINT. jammedBySurplus leaves rows in the stash, so the
+    -- report must warn rather than invite. A human reading "empty, safe to
+    -- clear" over a stash with a phone in it hands that phone out twice.
+    local server = jammedBySurplus()
+    local text = table.concat(server.ammo.JamReport(), '\n')
+
+    t.contains(text, 'STILL IN IT',
+        'a stash that still holds rows was not flagged: ' .. text)
+    t.isTrue(text:find('empty, safe to clear', 1, true) == nil,
+        'a stash with rows in it was called safe to clear: ' .. text)
+end)
+
+t.test('and it names the command, because the tablet has no button', function()
+    local server = jammedBySurplus()
+    local text = table.concat(server.ammo.JamReport(), '\n')
+    t.contains(text, '/arenaunjam',
+        'the report did not say how to act on it: ' .. text)
+end)
+
+t.test('every line reaches the tablet as a string', function()
+    -- The panel prints these straight out. A number or a table getting
+    -- through is a screen that says "table: 0x..." to an operator already
+    -- looking at a server they believe is broken.
+    local server = jammedBySurplus()
+    for index, line in ipairs(server.ammo.JamReport()) do
+        t.equals(type(line), 'string',
+            ('line %d reached the tablet as a %s'):format(index, type(line)))
+    end
+end)
+
+t.test('and once the jam is cleared the report goes quiet again', function()
+    local server = jammedBySurplus()
+    for _, stash in ipairs(server.ammo.JammedStashes()) do
+        t.isTrue(server.ammo.Unjam(stash), 'the jam would not clear')
+    end
+
+    local lines = server.ammo.JamReport()
+    t.equals(#lines, 1, 'a cleared server still listed stashes')
+    t.contains(lines[1], 'no stash is being held back',
+        'a cleared server did not go back to saying so: ' .. tostring(lines[1]))
+end)
+
+t.test('Unjam refuses a stash it has never held back', function()
+    local server = jammedBySurplus()
+    for _, junk in ipairs({ 'nope', '', 'crimson_arena_CID999' }) do
+        t.isFalse(server.ammo.Unjam(junk),
+            'a stash that was never jammed was reported cleared: ' .. tostring(junk))
+    end
+    t.isTrue(#server.ammo.JammedStashes() > 0,
+        'refusing an unknown stash cleared the real one')
+end)
+
+t.test('and refuses junk rather than throwing', function()
+    local server = jammedBySurplus()
+    for _, junk in ipairs({ 5, true, {} }) do
+        local ok, cleared = pcall(server.ammo.Unjam, junk)
+        t.isTrue(ok, 'Unjam threw on junk: ' .. tostring(cleared))
+        t.isFalse(cleared, 'Unjam accepted junk: ' .. tostring(junk))
+    end
+    local ok = pcall(server.ammo.Unjam, nil)
+    t.isTrue(ok, 'Unjam threw on nil')
+end)
+
 os.exit(t.summary())

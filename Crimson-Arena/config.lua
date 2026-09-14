@@ -28,9 +28,9 @@
      1210   Permissions   Who may open a match, who may force-stop one
      1296   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1730   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2136   Database      Optional: leaderboard, and what players still owe the arena
-     2146   Webhook       Optional: a Discord line per finished match
-     2178   Dispatch      Optional: keeping police and EMS out of the arena
+     2178   Database      Optional: leaderboard, and what players still owe the arena
+     2188   Webhook       Optional: a Discord line per finished match
+     2220   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1836,6 +1836,48 @@ Config.Loadouts = {
         -- existed. Turn it off only if your inventory does not use containers
         -- at all, or if you would rather chase `inventory:cleartime` instead.
         emptyContainers = true,
+
+        -- BAGS THAT KEEP THEIR CONTENTS IN A STASH OF THEIR OWN.
+        --
+        -- NOT THE SAME THING AS A CONTAINER, and the difference is why the
+        -- setting above could not help them. An ox_inventory container holds
+        -- a key ox_inventory itself understands. These bags hold a plain
+        -- STRING in their metadata, and some other resource uses it to name
+        -- an ordinary stash -- `leo_bag_<bagId>`, say. Nothing in this
+        -- resource would ever name that stash, so when one came back empty
+        -- there was nothing here to blame and nothing here to fix.
+        --
+        -- WHAT ACTUALLY HAPPENS, off a live server. The arena hands the bag
+        -- back untouched -- proved, by printing its metadata in and out:
+        --
+        --   leo_bag went in  carrying { bagId=Q71NQ64O_leo_1789375300_8027 }
+        --   leo_bag came back carrying { bagId=Q71NQ64O_leo_1789375300_8027 }
+        --
+        -- but two different characters' bags carried the SAME creation
+        -- second, which means something re-mints those ids. A re-minted id
+        -- points the bag at a new and empty stash while everything that was
+        -- in it stays in the old one.
+        --
+        -- Listed here, the arena takes the contents into its own keeping for
+        -- the round exactly as it does a container's, so whatever empties
+        -- that stash empties one that is already empty -- AND puts them back
+        -- into whatever the bag names when it comes back, which is what
+        -- carries them across a re-minted id.
+        --
+        -- EVERY FIELD IS REQUIRED AND NONE OF THEM IS GUESSED. `slots` and
+        -- `weight` are copied from that bag script's own config: ox needs a
+        -- stash registered before it will resolve the name, and registering
+        -- somebody else's stash at the wrong size is a way to shrink it. An
+        -- entry missing any field is ignored.
+        --
+        -- The two below match fm-firstresponderbag. Empty the list if you do
+        -- not run bags of this kind.
+        stashBags = {
+            { item = 'leo_bag', metaKey = 'bagId', stashPrefix = 'leo_bag_',
+              slots = 25, weight = 50000, label = 'LEO Bag' },
+            { item = 'ems_bag', metaKey = 'bagId', stashPrefix = 'ems_bag_',
+              slots = 25, weight = 50000, label = 'EMS Bag' },
+        },
 
         -- HOW LONG ox_inventory SHOULD KEEP AN IDLE STASH IN MEMORY, in
         -- minutes. 0 leaves ox_inventory's own setting alone.

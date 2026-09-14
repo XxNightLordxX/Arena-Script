@@ -732,6 +732,25 @@ local function newServer(ids, mutate, extra, opts)
         table.insert(stashes[stash], index, { name = name, count = count })
     end
 
+    --- Changes one metadata key on an item sitting in a stash, the way a
+    --- third-party script re-minting a bag's id does.
+    ---
+    --- THE CASE THIS EXISTS FOR, straight off the operator's server: two
+    --- different characters' bags came back carrying the SAME creation
+    --- second in their ids, which means something on that box re-mints them.
+    --- A re-minted id points the bag at a new and empty stash while
+    --- everything that was in it stays filed under the old name.
+    function server.remint(stash, name, key, value)
+        for _, item in ipairs(stashes[stash] or {}) do
+            if item.name == name then
+                item.metadata = item.metadata or {}
+                item.metadata[key] = value
+                return true
+            end
+        end
+        error('no ' .. tostring(name) .. ' in stash ' .. tostring(stash), 2)
+    end
+
     --- Hands a server id to a different character, the way FiveM does when a
     --- player disconnects and the next one to connect inherits their slot.
     --- @param src integer
@@ -2771,10 +2790,19 @@ t.test('a stash-backed bag keeps the id its contents hang off', function()
     t.equals(bag.label, 'LEO Bag', 'the rest of its metadata was lost with it')
 end)
 
-t.test('and the arena never touches the stash that bag opens', function()
-    -- The contents live in leo_bag_<bagId>, registered by the bag resource.
-    -- The arena's own sweep works on its own prefix and must leave this
-    -- alone -- both the items in it and the stash itself.
+t.test('THE DEFECT: a stash-backed bag is EMPTY for the round, so nothing can empty it', function()
+    -- THIS TEST USED TO ASSERT THE OPPOSITE, and it was right at the time:
+    -- the arena's own sweep works on its own prefix and had no business in
+    -- somebody else's stash. What changed is that leaving it alone turned
+    -- out to be the reason police bags came back empty round after round --
+    -- something ELSE on that server empties it, and there is nothing in this
+    -- repository to fix because there is nothing in this repository that
+    -- touches it.
+    --
+    -- So the arena takes the contents for the length of the round, exactly
+    -- as it does an ox_inventory container's, and whatever empties that
+    -- stash mid-round now empties one that is already empty. See
+    -- stashBagRules in server/ammo.lua.
     local server = newServer({ 1, 2 }, nil, {
         { name = 'leo_bag', count = 1, metadata = { bagId = 'CID1-LEO-7' } },
     })
@@ -2782,16 +2810,89 @@ t.test('and the arena never touches the stash that bag opens', function()
     server.stashItem('leo_bag_CID1-LEO-7', 'radio', 1)
 
     local matchId = bagRound(server, { 1, 2 })
-    t.equals(server.contentsOf('leo_bag_CID1-LEO-7'), 'handcuffsx2,radiox1',
-        'the door reached into a stash that is not its own')
+    t.equals(server.contentsOf('leo_bag_CID1-LEO-7'), '',
+        'the bag\'s own stash still held its contents through the round, where anything '
+        .. 'on the server could empty it and the arena would never know')
 
     server.match.End(matchId, 'match.ended')
     server.step(12)
 
     t.equals(server.contentsOf('leo_bag_CID1-LEO-7'), 'handcuffsx2,radiox1',
-        'THE ARENA EMPTIED A BAG STASH IT DOES NOT OWN')
+        'THE ARENA DID NOT PUT THE BAG CONTENTS BACK')
     t.equals(server.carrying(1), 'ammo-rifle-apx40,burgerx3,leo_bagx1,phonex1',
         'and the player did not come out with exactly their own things')
+end)
+
+t.test('and something emptying that stash mid-round costs the player NOTHING', function()
+    -- The whole point, stated as the thing that was actually happening.
+    local server = newServer({ 1, 2 }, nil, {
+        { name = 'leo_bag', count = 1, metadata = { bagId = 'CID1-LEO-7' } },
+    })
+    server.stashItem('leo_bag_CID1-LEO-7', 'handcuffs', 2)
+    server.stashItem('leo_bag_CID1-LEO-7', 'radio', 1)
+
+    local matchId = bagRound(server, { 1, 2 })
+
+    -- Whatever it is. It finds an empty stash now.
+    server.emptyStash('leo_bag_CID1-LEO-7')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.contentsOf('leo_bag_CID1-LEO-7'), 'handcuffsx2,radiox1',
+        'the bag came back empty, which is the entire defect')
+end)
+
+t.test('and a bag whose id is RE-MINTED mid-round follows the bag, not the old name', function()
+    -- THE MECHANISM, off the operator's own log: two different characters'
+    -- bags carried an identical creation second, so something re-mints those
+    -- ids. A re-minted id points the bag at a new and empty stash.
+    --
+    -- The contents are put back into whatever the bag names WHEN IT COMES
+    -- BACK, never the name taken at the door -- so they follow it across the
+    -- change instead of being filed for ever under a name nothing opens.
+    local server = newServer({ 1, 2 }, nil, {
+        { name = 'leo_bag', count = 1, metadata = { bagId = 'CID1-LEO-7' } },
+    })
+    server.stashItem('leo_bag_CID1-LEO-7', 'handcuffs', 2)
+    server.stashItem('leo_bag_CID1-LEO-7', 'radio', 1)
+
+    local matchId = bagRound(server, { 1, 2 })
+
+    -- Something re-mints it while its owner is fighting.
+    server.remint('crimson_arena_CID1', 'leo_bag', 'bagId', 'CID1-LEO-9')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    local bag = server.metaOf(1, 'leo_bag')
+    t.isNotNil(bag, 'the bag itself did not come back')
+    t.equals(bag.bagId, 'CID1-LEO-9', 'premise: the bag came back carrying the new id')
+
+    t.equals(server.contentsOf('leo_bag_CID1-LEO-9'), 'handcuffsx2,radiox1',
+        'the contents were filed under the id the bag had at the DOOR, which is a name '
+        .. 'nothing will ever open again -- to its owner that reads as emptied')
+end)
+
+t.test('CONTROL: a bag the operator has NOT listed is still left entirely alone', function()
+    -- The rule this replaced is still the rule for anything not named in
+    -- Config.Loadouts.inventory.stashBags. The arena does not go looking for
+    -- stashes to take custody of; it is told which, with the numbers to open
+    -- them by, and it touches nothing else.
+    local server = newServer({ 1, 2 }, nil, {
+        { name = 'duffel_bag', count = 1, metadata = { bagId = 'CID1-DUF-1' } },
+    })
+    server.stashItem('duffel_bag_CID1-DUF-1', 'handcuffs', 2)
+
+    local matchId = bagRound(server, { 1, 2 })
+    t.equals(server.contentsOf('duffel_bag_CID1-DUF-1'), 'handcuffsx2',
+        'the arena reached into a stash nobody told it about')
+
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.equals(server.contentsOf('duffel_bag_CID1-DUF-1'), 'handcuffsx2',
+        'the arena emptied a stash nobody told it about')
 end)
 
 

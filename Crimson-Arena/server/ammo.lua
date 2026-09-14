@@ -921,6 +921,328 @@ local function addAt(ox, who, name, count, metadata, slot)
     return oxGave(function() return ox:AddItem(who, name, count, metadata) end)
 end
 
+--- The bags that keep their contents in a STASH OF THEIR OWN, rather than
+--- in an ox_inventory container.
+---
+--- THE DEFECT THIS EXISTS TO KILL, and it is the one the arena could not
+--- reach by any other means. An operator reported a police bag coming back
+--- from every round EMPTY. The door was proved innocent of it outright, on
+--- their own server, by printing the bag's metadata going in and coming
+--- back out:
+---
+---   door: 2's leo_bag went into slot 12 of the stash
+---         carrying { bagId=Q71NQ64O_leo_1789375300_8027 owner=John Allday }
+---   door: 2's leo_bag came back to slot 12
+---         carrying { bagId=Q71NQ64O_leo_1789375300_8027 owner=John Allday }
+---
+--- Identical, into the same slot. The arena hands that bag back untouched.
+---
+--- WHAT IT CANNOT DO ANYTHING ABOUT is that the bag holds no contents at
+--- all: it holds a NAME. A bag of this kind keeps what is in it in a
+--- separate ox_inventory stash called `<prefix><id>`, where the id is a
+--- string in the bag's own metadata -- fm-firstresponderbag uses
+--- `metadata.bagId` and a stash `leo_bag_<bagId>`. Nothing in this resource
+--- ever names that stash, so nothing here can empty it. Something else on
+--- that server does, and the same log says what: the two bags carried
+---
+---   Q71NQ64O_leo_1789375300_8027
+---   U9L6T7Y5_leo_1789375300_6615
+---
+--- two different characters, two different bags, and an IDENTICAL creation
+--- second. Those ids were minted together. Something re-mints them, and a
+--- re-minted id points the bag at a brand new and empty stash while
+--- everything that was in it sits in the old one under the old name.
+---
+--- SO THE ARENA TAKES THE CONTENTS INTO ITS OWN KEEPING, exactly as it
+--- already does for an ox_inventory container, and for the same reason:
+--- while they are in a stash of this resource's own they are inside the
+--- door's promise, and whatever empties the bag's stash mid-round empties
+--- one that is already empty.
+---
+--- AND THE ID IS READ AGAIN AT THE EXIT, NOT REMEMBERED. That is the half
+--- that survives the re-minting: the contents go back into whatever stash
+--- the bag names WHEN IT COMES BACK, not the one it named when it went in.
+--- If the id changed while its owner was fighting, the contents follow the
+--- bag to its new name instead of being filed under the old one for ever.
+--- DO NOT "simplify" this to reusing the name taken at the door.
+---
+--- THE NUMBERS ARE THE OPERATOR'S TO GIVE, and they are not optional: ox
+--- needs a stash registered before it will resolve the name at all, and
+--- registering somebody else's stash with the wrong size is a way to shrink
+--- it. They are copied from that bag script's own config, never guessed
+--- here. An entry missing any of them is skipped and said so once.
+--- @return table<string, table> -- item name -> rule
+local function stashBagRules()
+    local out = {}
+    local list = doorConfig().stashBags
+    if type(list) ~= 'table' then return out end
+
+    for _, rule in ipairs(list) do
+        if type(rule) == 'table'
+            and Arena.IsKey(rule.item)
+            and Arena.IsKey(rule.metaKey)
+            and Arena.IsKey(rule.stashPrefix)
+            and (Arena.ToInt(rule.slots) or 0) > 0
+            and (Arena.ToInt(rule.weight) or 0) > 0
+        then
+            out[rule.item] = {
+                item = rule.item,
+                metaKey = rule.metaKey,
+                stashPrefix = rule.stashPrefix,
+                slots = Arena.ToInt(rule.slots),
+                weight = Arena.ToInt(rule.weight),
+                label = Arena.IsKey(rule.label) and rule.label or 'Bag',
+            }
+        end
+    end
+    return out
+end
+
+--- The stash one carried bag keeps its contents in, or nil.
+--- @return string|nil name
+--- @return table|nil rule
+local function stashBagOf(rules, item)
+    local rule = rules[item.name]
+    if not rule then return nil end
+    if type(item.metadata) ~= 'table' then return nil end
+
+    local id = item.metadata[rule.metaKey]
+    if not Arena.IsKey(id) then return nil end
+
+    return rule.stashPrefix .. id, rule
+end
+
+--- Takes the contents of every stash-backed bag into the arena's keeping.
+---
+--- EVERY FAILURE LEAVES THE ITEM IN THE BAG, which is the behaviour this
+--- resource has always had and costs nothing. Proof that a thing landed in
+--- the holding stash comes before it is taken out of the bag, the same rule
+--- every other write in this file follows.
+--- @return table[] held
+local function holdStashBags(ox, src, citizenid)
+    local held = {}
+    if doorConfig().emptyContainers == false then return held end
+
+    local rules = stashBagRules()
+    if next(rules) == nil then return held end
+
+    local read, items = pcall(function() return ox:GetInventoryItems(src) end)
+    if not read or type(items) ~= 'table' then return held end
+
+    for _, bag in ipairs(itemsIn(items)) do
+        local theirs, rule = stashBagOf(rules, bag)
+
+        if theirs then
+            -- THEIR NUMBERS, NOT OURS. See stashBagRules.
+            if not oxDid('registering ' .. theirs, function()
+                return ox:RegisterStash(theirs, rule.label, rule.slots, rule.weight, false)
+            end) then
+                ArenaLog('door: %s\'s %s could not be opened, so what is in it travels as it is.',
+                    tostring(src), tostring(bag.name))
+                goto nextBag
+            end
+
+            local got, contents = pcall(function() return ox:GetInventoryItems(theirs) end)
+            if not got or type(contents) ~= 'table' then
+                ArenaLog('door: %s\'s %s (%s) could not be read, so what is in it travels as it is.',
+                    tostring(src), tostring(bag.name), theirs)
+                goto nextBag
+            end
+
+            local inside = itemsIn(contents)
+            if #inside == 0 then goto nextBag end
+
+            local holding = bagStashFor(rule.stashPrefix .. tostring(bag.metadata[rule.metaKey]))
+            if not oxDid('registering bag stash ' .. holding, function()
+                return ox:RegisterStash(holding, 'Arena Bag Contents', STASH_SLOTS, STASH_WEIGHT, citizenid)
+            end) then
+                ArenaLog('door: could not register a holding stash for %s\'s %s -- it travels as it is.',
+                    tostring(src), tostring(bag.name))
+                goto nextBag
+            end
+
+            local took = 0
+            for _, thing in ipairs(inside) do
+                local landed = oxGave(function()
+                    return ox:AddItem(holding, thing.name, thing.count, thing.metadata, thing.slot)
+                end)
+
+                if landed then
+                    local out = oxDid(('taking %s x%s out of %s'):format(
+                            tostring(thing.name), tostring(thing.count), theirs),
+                        function() return ox:RemoveItem(theirs, thing.name, thing.count, thing.metadata) end)
+
+                    if not out and Arena.ToInt(thing.slot) then
+                        out = oxDid(('taking %s x%s out of slot %d of %s'):format(
+                                tostring(thing.name), tostring(thing.count),
+                                Arena.ToInt(thing.slot), theirs),
+                            function()
+                                return ox:RemoveItem(theirs, thing.name, thing.count, nil, Arena.ToInt(thing.slot))
+                            end)
+                    end
+
+                    if out then
+                        took = took + 1
+                    else
+                        -- Undoing our OWN copy is the only move here that
+                        -- cannot cost anybody anything.
+                        oxDid(('putting %s x%s back out of %s'):format(
+                                tostring(thing.name), tostring(thing.count), holding),
+                            function() return ox:RemoveItem(holding, thing.name, thing.count, thing.metadata) end)
+                    end
+                end
+            end
+
+            if took > 0 then
+                held[#held + 1] = {
+                    item = bag.name,
+                    metaKey = rule.metaKey,
+                    prefix = rule.stashPrefix,
+                    label = rule.label,
+                    slots = rule.slots,
+                    weight = rule.weight,
+                    -- The name it had AT THE DOOR, kept only as the fallback
+                    -- for a bag that does not come back at all.
+                    was = theirs,
+                    holding = holding,
+                    took = took,
+                }
+                ArenaDebug('door: took %d item(s) out of %s\'s %s (%s) and into %s for the round.',
+                    took, tostring(src), tostring(bag.name), theirs, holding)
+            end
+        end
+
+        ::nextBag::
+    end
+
+    return held
+end
+
+--- Puts back what holdStashBags took, into whatever stash the bag names NOW.
+--- @return integer restored
+--- @return integer failures
+local function refillStashBags(ox, src, held, citizenid)
+    if type(held) ~= 'table' then return 0, 0 end
+
+    local restored, failures = 0, 0
+
+    -- READ ONCE, AND READ NOW. The bag's id at this moment is the only one
+    -- worth writing to: see stashBagRules for why it can differ from the one
+    -- taken at the door, and why following it is the whole point.
+    local rules = stashBagRules()
+    local carrying = {}
+    local read, items = pcall(function() return ox:GetInventoryItems(src) end)
+    if read and type(items) == 'table' then
+        for _, item in ipairs(itemsIn(items)) do
+            local name = stashBagOf(rules, item)
+            if name then carrying[item.name] = name end
+        end
+    end
+
+    for _, entry in ipairs(held) do
+        if not oxDid('registering bag stash ' .. entry.holding, function()
+            return ox:RegisterStash(entry.holding, 'Arena Bag Contents', STASH_SLOTS, STASH_WEIGHT, citizenid)
+        end) then
+            failures = failures + 1
+            goto nextEntry
+        end
+
+        local got, waiting = pcall(function() return ox:GetInventoryItems(entry.holding) end)
+        if not got or type(waiting) ~= 'table' then
+            ArenaLog('door: the holding stash %s could not be read. %s\'s %s contents are still in '
+                .. 'it -- it is a real ox_inventory stash and can be opened.',
+                entry.holding, tostring(src), tostring(entry.item))
+            failures = failures + 1
+            goto nextEntry
+        end
+
+        local rows = itemsIn(waiting)
+        if entry.took and #rows < entry.took then
+            ArenaLog('door: %d of the %d item(s) taken out of %s\'s %s are no longer in stash %s. '
+                .. 'Whatever is still in it is being put back now.',
+                entry.took - #rows, entry.took, tostring(src), tostring(entry.item), entry.holding)
+            failures = failures + 1
+        end
+        if #rows == 0 then goto nextEntry end
+
+        -- WHATEVER IT IS CALLED NOW, falling back to what it was called at
+        -- the door only when the bag is not in their hands to ask.
+        local target = carrying[entry.item] or entry.was
+        local followed = carrying[entry.item] ~= nil and carrying[entry.item] ~= entry.was
+
+        if followed then
+            ArenaLog('door: %s\'s %s is named %s now and was %s when the round started -- something '
+                .. 'on this server re-made its id while they were fighting. Their things are going '
+                .. 'into the one it names NOW, which is the one the bag will open.',
+                tostring(src), tostring(entry.item), target, entry.was)
+        end
+
+        local reachable = oxDid('registering ' .. target, function()
+            return ox:RegisterStash(target, entry.label, entry.slots, entry.weight, false)
+        end)
+
+        for _, thing in ipairs(rows) do
+            local landed = reachable and oxGave(function()
+                return ox:AddItem(target, thing.name, thing.count, thing.metadata, thing.slot)
+            end)
+
+            -- THEIR POCKETS RATHER THAN A STASH THEY CANNOT SEE. Loose in
+            -- their hands is a nuisance; left in a holding stash is a loss
+            -- they have to ask an admin about.
+            if not landed then
+                local before = rowsNamed(ox, src, thing.name)
+                landed = oxGave(function()
+                    return ox:AddItem(src, thing.name, thing.count, thing.metadata)
+                end)
+                if not landed then
+                    local after = rowsNamed(ox, src, thing.name)
+                    if before ~= nil and after ~= nil and after > before then landed = true end
+                end
+                if landed then
+                    ArenaLog('door: %s x%s would not go back into %s\'s %s, so it has gone into their '
+                        .. 'pockets instead. Nothing is lost.',
+                        tostring(thing.name), tostring(thing.count), tostring(src), tostring(entry.item))
+                end
+            end
+
+            if not landed then
+                failures = failures + 1
+                ArenaLog('door: %s x%s could not be given back to %s at all. It is still in stash %s.',
+                    tostring(thing.name), tostring(thing.count), tostring(src), entry.holding)
+                goto nextThing
+            end
+
+            local out = oxDid(('clearing %s x%s from %s'):format(
+                    tostring(thing.name), tostring(thing.count), entry.holding),
+                function() return ox:RemoveItem(entry.holding, thing.name, thing.count, thing.metadata) end)
+
+            if not out and Arena.ToInt(thing.slot) then
+                out = oxDid(('clearing %s x%s from slot %d of %s'):format(
+                        tostring(thing.name), tostring(thing.count),
+                        Arena.ToInt(thing.slot), entry.holding),
+                    function()
+                        return ox:RemoveItem(entry.holding, thing.name, thing.count, nil, Arena.ToInt(thing.slot))
+                    end)
+            end
+
+            if out then
+                restored = restored + 1
+            else
+                failures = failures + 1
+                ArenaLog('door: %s x%s is now in %s\'s %s AND still in stash %s. Settle it by hand.',
+                    tostring(thing.name), tostring(thing.count), tostring(src),
+                    tostring(entry.item), entry.holding)
+            end
+
+            ::nextThing::
+        end
+
+        ::nextEntry::
+    end
+
+    return restored, failures
+end
+
 --- ox_inventory's OWN metadata keys. Everything else on an item was put
 --- there by some other resource, and is the half worth watching.
 local OX_META = {
@@ -1217,6 +1539,13 @@ local function stow(src, citizenid)
     -- stop a stow that would otherwise have worked.
     local bagKeys = holdContainers(ox, src, citizenid)
 
+    -- AND THE BAGS THAT ARE NOT CONTAINERS AT ALL. See stashBagRules: a bag
+    -- of that kind holds a NAME rather than its contents, and the stash that
+    -- name points at is one this resource would otherwise never touch --
+    -- which is exactly why something else emptying it went unanswered for so
+    -- long. Held here, it is inside the door's promise like anything else.
+    local stashBags = holdStashBags(ox, src, citizenid)
+
     local ok, items = pcall(function() return ox:GetInventoryItems(src) end)
     if not ok or type(items) ~= 'table' then
         -- THE THROW IS PRINTED. `items` holds the error when `ok` is false,
@@ -1405,7 +1734,7 @@ local function stow(src, citizenid)
     -- AND WHAT WAS IN WHICH SLOT, handed on so the exit can tell the door's
     -- own rows from anything that turns up beside them. handBack says at
     -- length why that is a different question from how many.
-    return true, stowed, rows, bagKeys, settled
+    return true, stowed, rows, bagKeys, settled, stashBags
 end
 
 --- @param allowed integer|nil -- how many rows the door itself put in this
@@ -1765,6 +2094,16 @@ local function restore(src, record)
             ArenaDebug('door: put %d item(s) back into %s\'s bags.', packed, tostring(src))
         end
         if bagFailures == 0 then record.containers = nil end
+    end
+
+    -- AND THE STASH-BACKED BAGS, after handBack for the same reason: the bag
+    -- has to be in their hands before its CURRENT name can be read off it.
+    if record.stashBags ~= nil then
+        local packed, bagFailures = refillStashBags(ox, src, record.stashBags, record.citizenid)
+        if packed > 0 then
+            ArenaDebug('door: put %d item(s) back into %s\'s bags.', packed, tostring(src))
+        end
+        if bagFailures == 0 then record.stashBags = nil end
     end
 
     if failures > 0 then
@@ -4717,7 +5056,7 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                 carried = math.max(0, Arena.ToInt(held.stowedCount) or 0)
             end
 
-            local put, count, rowsInStash, bagKeys, manifest = stow(src, citizenid)
+            local put, count, rowsInStash, bagKeys, manifest, stashBags = stow(src, citizenid)
             if put then
                 stashed[src] = {
                     stash = stashFor(citizenid),
@@ -4743,6 +5082,13 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                     -- each one back into the bag it came out of. holdContainers
                     -- says why the arena holds them at all.
                     containers = bagKeys,
+
+                    -- THE STASH-BACKED BAGS THE DOOR EMPTIED. Kept apart from
+                    -- `containers` because they go back a different way: by
+                    -- the name the bag carries WHEN IT COMES BACK, not by the
+                    -- slot it is sitting in. stashBagRules says why that
+                    -- distinction is the whole fix.
+                    stashBags = stashBags,
 
                     -- SLOT -> WHAT WAS IN IT when the door shut this stash.
                     -- Advisory: it decides WHICH rows the exit refuses when

@@ -2532,12 +2532,33 @@ Config.Dispatch = {
             -- EVERY SHAPE BELOW WAS READ OUT OF THE SCRIPT THAT BUILDS IT.
             -- Do not add one you have not checked: a shape that is close but
             -- wrong clears nothing.
+            -- A SHAPE, OR A LIST OF THEM. One event can file under more
+            -- than one name, and assuming it could not is what left a live
+            -- server clearing its own calls by hand: four shapes were
+            -- listed, all four were asked for, and the call that had
+            -- actually been filed was under a fifth nobody had named.
+            --
+            -- HOW TO FIND YOURS, if a call is not being withdrawn. Turn
+            -- Config.Debug on, let an alert happen in a round, and clear it
+            -- by hand in your dispatch UI. Most scripts print the id they
+            -- just cleared -- sc-dispatch prints
+            -- "ManualClearCall by <name> (<id>) ID: <the id>". The part
+            -- before the first underscore is the shape; add it here with
+            -- %d in place of the player id and the timestamp.
             idTemplates = {
                 ['sc-dispatch:server:ShotsFired'] = 'shots_%d_%d',      -- :2544
-                ['sc-dispatch:server:PlayerDown'] = 'playerdown_%d_%d', -- :2618
                 ['sc-dispatch:server:PlayerDead'] = 'playerdead_%d_%d', -- :2645
                 ['mydispatch:requestEMS'] = 'emshelp_%d_%d',            -- :2576
 
+                -- TWO SHAPES, AND THE SECOND ONE IS THE ONE THAT BITES.
+                -- 'emsdown_' is what this server was really filing its
+                -- person-down calls under -- read straight off a live
+                -- console, from a call an operator had to clear by hand
+                -- because nothing here had ever asked for that name.
+                ['sc-dispatch:server:PlayerDown'] = {
+                    'playerdown_%d_%d',                                 -- :2618
+                    'emsdown_%d_%d',
+                },
             },
         },
     },

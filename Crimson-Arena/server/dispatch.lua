@@ -1700,13 +1700,39 @@ local function retractConfig()
     return type(block) == 'table' and block or {}
 end
 
+--- Every id shape listed for one entry, as a list.
+---
+--- ONE EVENT CAN FILE UNDER MORE THAN ONE SHAPE, and assuming otherwise is
+--- what left a live server clearing its own calls by hand. The operator had
+--- four shapes listed, the sweep dutifully asked for all four, and the call
+--- sc-dispatch had actually filed was under a FIFTH -- 'emsdown_<id>_<time>'
+--- -- which nothing here had ever been told about. Twenty-eight ids asked
+--- for, not one of them the right one, and from the outside that is
+--- indistinguishable from the withdrawal being broken.
+---
+--- So a shape may be a string or a list of them, and the list is what an
+--- operator reaches for the moment their dispatch script files the same kind
+--- of call under two names -- which this one does.
+--- @param value string|string[]|nil
+--- @return string[]
+local function shapesOf(value)
+    if Arena.IsKey(value) then return { value } end
+    if type(value) ~= 'table' then return {} end
+
+    local out = {}
+    for _, shape in ipairs(value) do
+        if Arena.IsKey(shape) then out[#out + 1] = shape end
+    end
+    return out
+end
+
 local function retractFor(entry, src)
     local config = retractConfig()
     if not Arena.IsKey(config.resource) or not Arena.IsKey(config.export) then return end
 
     local templates = config.idTemplates
-    local template = type(templates) == 'table' and templates[entry.event] or nil
-    if not Arena.IsKey(template) then
+    local shapes = shapesOf(type(templates) == 'table' and templates[entry.event] or nil)
+    if #shapes == 0 then
         -- Not a warning. An event listed for cancelling with no id shape is
         -- an ordinary, deliberate state: Form 4 covers it and Form 5 does
         -- not claim to.
@@ -1759,6 +1785,7 @@ local function retractFor(entry, src)
     local RETRY_AT = { 0, 500, 1500, 3000 }
 
     local function ask()
+        for _, template in ipairs(shapes) do
         for offset = -slack, slack do
             -- THE FORMAT IS OPERATOR TEXT AND IT WAS OUTSIDE THE pcall.
             --
@@ -1796,6 +1823,7 @@ local function retractFor(entry, src)
                 return false
             end
         end
+        end
         return true
     end
 
@@ -1803,9 +1831,9 @@ local function retractFor(entry, src)
         SetTimeout(delay + extra, ask)
     end
 
-    local shown, sample = pcall(string.format, template, src, at)
-    ArenaDebug('retract: asking %s to clear "%s" (+/-%ds) for %s, %d times out to %dms.',
-        config.resource, shown and sample or tostring(template), slack, tostring(src),
+    local shown, sample = pcall(string.format, shapes[1], src, at)
+    ArenaDebug('retract: asking %s to clear %d shape(s) like "%s" (+/-%ds) for %s, %d times out to %dms.',
+        config.resource, #shapes, shown and sample or tostring(shapes[1]), slack, tostring(src),
         #RETRY_AT, delay + RETRY_AT[#RETRY_AT])
 end
 
@@ -1912,7 +1940,8 @@ function ArenaDispatch.RetractCallsFor(src)
         repeat
             local now = os.time()
 
-            for _, template in pairs(templates) do
+            for _, listed in pairs(templates) do
+            for _, template in ipairs(shapesOf(listed)) do
                 for offset = -slack, slack do
                     local built, id = pcall(string.format, template, src, now + offset)
 
@@ -1933,6 +1962,7 @@ function ArenaDispatch.RetractCallsFor(src)
                         end
                     end
                 end
+            end
             end
 
             Wait(500)

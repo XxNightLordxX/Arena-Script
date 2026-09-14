@@ -1894,6 +1894,91 @@ end)
 -- arena has no handler for -- so the revive has to withdraw by server id,
 -- blind, over every id shape the operator listed.
 
+t.test('THE FIFTH SHAPE: an event may file under more than one id', function()
+    -- READ OFF A LIVE CONSOLE. The operator had four shapes listed, the
+    -- sweep asked for all four -- twenty-eight ids in one round -- and the
+    -- call sc-dispatch had actually filed was under a FIFTH:
+    --
+    --   [SC-Dispatch] ManualClearCall by <name> (2) ID: emsdown_3_1789388681
+    --
+    -- They were clearing their own person-down calls by hand while a layer
+    -- built to withdraw them reported success on every one. So a shape may
+    -- be a list, and every name in it is asked for.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+    f.runTimeouts()
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    local joined = table.concat(ids, ',')
+
+    t.contains(joined, ('emsdown_7_%d'):format(at),
+        'the shape this server really files person-down calls under was never asked for')
+    t.contains(joined, ('playerdown_7_%d'):format(at),
+        'adding the second shape dropped the first one')
+end)
+
+t.test('and the revive sweep asks for the extra shapes too', function()
+    -- The sweep walks every shape of every entry, not the first of each.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.D.Revive(7)
+    f.step()
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    t.contains(table.concat(ids, ','), ('emsdown_7_%d'):format(at),
+        'the revive sweep skipped a shape listed beside another one')
+end)
+
+t.test('and a shape list with rubbish in it is filtered, not raised on', function()
+    -- idTemplates is operator text. A stray number or an empty string in the
+    -- list must cost that entry, not the whole withdrawal.
+    local f = newFixture({
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = {
+            enabled = true,
+            disableExports = {},
+            cancelEvents = { { event = 'sc-dispatch:server:PlayerDown' } },
+            retract = {
+                resource = 'sc-dispatch',
+                export = 'ClearNotification',
+                clockSlack = 0,
+                idTemplates = {
+                    ['sc-dispatch:server:PlayerDown'] = { 'good_%d_%d', 42, '', false },
+                },
+            },
+        },
+        vanillaPolice = { enabled = false },
+        revive = { enabled = false, commands = {}, serverEvents = {}, clientEvents = {}, exports = {} },
+    })
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    local ok = pcall(function()
+        f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+        f.runTimeouts()
+    end)
+
+    t.isTrue(ok, 'rubbish in a shape list took the withdrawal down with it')
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    t.contains(table.concat(ids, ','), ('good_%d_%d'):format(7, at),
+        'the one usable shape in the list was not asked for')
+end)
+
 t.test('THE SLOW INSERT: the same withdrawal is asked for more than once', function()
     -- THE REPORT: "its not even recalling the alert for a person down".
     --

@@ -1894,6 +1894,60 @@ end)
 -- arena has no handler for -- so the revive has to withdraw by server id,
 -- blind, over every id shape the operator listed.
 
+t.test('THE SLOW INSERT: the same withdrawal is asked for more than once', function()
+    -- THE REPORT: "its not even recalling the alert for a person down".
+    --
+    -- The withdrawal used to be asked for exactly once, delayMs after the
+    -- event. sc-dispatch's AddNotification awaits several oxmysql statements
+    -- before it pushes the call anywhere, so under load that single ask
+    -- lands FIRST: it updates a row that does not exist yet and clears a
+    -- call no screen has been told about. The alert then goes out and stays
+    -- out, looking exactly like this layer never ran.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+
+    f.runTimeouts()
+
+    local wanted = ('playerdown_7_%d'):format(at)
+    local asked = 0
+    for _, call in ipairs(f.exportCalls) do
+        if tostring(call.args[1]) == wanted then asked = asked + 1 end
+    end
+
+    t.isTrue(asked > 1,
+        ('the person-down call was asked for %d time(s) -- one ask is a race with the other '
+            .. 'resource\'s own insert, and losing it leaves the alert standing'):format(asked))
+end)
+
+t.test('and the retries are the SAME id, not a walk down the clock', function()
+    -- The uncertainty is WHEN the call appears, not WHICH call it is: the id
+    -- is known from the event this handler is standing in. Rebuilding ids
+    -- around a moving clock would multiply them by every second it ran
+    -- through, and each one costs three awaited UPDATEs in the other
+    -- resource -- paid on every death, on every fighter.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+    f.runTimeouts()
+
+    for _, call in ipairs(f.exportCalls) do
+        local stamp = tonumber(tostring(call.args[1]):match('_(%d+)$'))
+        t.isNotNil(stamp, 'an id was withdrawn with no timestamp on the end at all')
+        t.isTrue(math.abs(stamp - at) <= 1,
+            ('an id %ds off the event was withdrawn -- the retries are walking the clock')
+                :format(stamp - at))
+    end
+end)
+
 t.test('the revive withdraws every id shape listed, for that player', function()
     local f = newFixture()
     f.setResource('sc-dispatch')

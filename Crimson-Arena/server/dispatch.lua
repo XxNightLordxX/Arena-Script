@@ -1731,7 +1731,34 @@ local function retractFor(entry, src)
 
     local at = os.time()
 
-    SetTimeout(delay, function()
+    -- HOW MANY TIMES THE SAME WITHDRAWAL IS ASKED FOR, and why more than
+    -- once.
+    --
+    -- THE REPORT: "its not even recalling the alert for a person down".
+    -- This used to ask exactly once, `delayMs` after the event, and that
+    -- number exists to land just after the other resource's handler. It does
+    -- not reliably. sc-dispatch's AddNotification writes the call through
+    -- oxmysql and AWAITS it, several statements deep, before a single EMS
+    -- screen is told anything -- routinely longer than 250ms on a loaded
+    -- server. A withdrawal that arrives first withdraws NOTHING: the UPDATE
+    -- matches no row yet, and the clear reaches clients that have not been
+    -- told about the call. Then the insert lands, the alert goes out, and it
+    -- stays out. Indistinguishable, from the outside, from this layer never
+    -- having run.
+    --
+    -- RETRIED RATHER THAN SWEPT. The uncertainty here is WHEN the call
+    -- appears, not WHICH call it is: the id is already known from the event
+    -- this handler is standing in. So the same small set of ids is asked for
+    -- again on a widening delay, instead of rebuilding ids around a moving
+    -- clock -- which would multiply the ids by every second it ran through
+    -- and put three awaited UPDATEs behind each one, for a call that was
+    -- already identified.
+    --
+    -- WIDENING, so a fast server pays almost nothing and a slow one is still
+    -- covered several seconds out.
+    local RETRY_AT = { 0, 500, 1500, 3000 }
+
+    local function ask()
         for offset = -slack, slack do
             -- THE FORMAT IS OPERATOR TEXT AND IT WAS OUTSIDE THE pcall.
             --
@@ -1766,14 +1793,20 @@ local function retractFor(entry, src)
                     ArenaLog('retract: %s:%s failed (%s). Check that export name against that resource\'s own documentation.',
                         config.resource, config.export, tostring(err))
                 end
-                break
+                return false
             end
         end
+        return true
+    end
 
-        local shown, sample = pcall(string.format, template, src, at)
-        ArenaDebug('retract: asked %s to clear "%s" (+/-%ds) for %s.',
-            config.resource, shown and sample or tostring(template), slack, tostring(src))
-    end)
+    for _, extra in ipairs(RETRY_AT) do
+        SetTimeout(delay + extra, ask)
+    end
+
+    local shown, sample = pcall(string.format, template, src, at)
+    ArenaDebug('retract: asking %s to clear "%s" (+/-%ds) for %s, %d times out to %dms.',
+        config.resource, shown and sample or tostring(template), slack, tostring(src),
+        #RETRY_AT, delay + RETRY_AT[#RETRY_AT])
 end
 
 --- Withdraw every call this server's dispatch script could have filed for

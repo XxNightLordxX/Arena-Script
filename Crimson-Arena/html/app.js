@@ -3212,69 +3212,224 @@
                 + 'Wins and kills still count towards the leaderboard.'));
         }
 
-        ['bet-summary', 'bet-form', 'bet-list'].forEach(function (id) {
+        /* EVERY TOP-LEVEL BOX ON THE TAB, and `bet-note` belongs on this list
+           because it is one of them. It used to sit inside `bet-form` and be
+           hidden by hiding its parent; it was moved out to the column beside
+           the roster, and a box that hides itself is exactly what an
+           inherited rule stops being once it stops being inherited. Switch
+           betting off and the rules of a game this server does not run were
+           still on the screen, under the notice saying so. */
+        ['bet-match', 'bet-summary', 'bet-form', 'bet-list', 'bet-note'].forEach(function (id) {
             show(byId(id), enabled);
         });
         if (!enabled) return;
 
+        /* THE ORDER THE PLAYER READS IN, which is not the order this used to
+           run in. The explanation is drawn LAST because it now sits under
+           the button rather than on top of the form. */
         var match = focusedMatch();
+        renderBetMatch(match);
         renderBetSummary(match);
-        renderBetNote();
         renderBetPick(match);
+        renderBetSplit(match);
         renderBetControls(match);
+        renderBetNote(match);
         renderBetList(match);
     }
 
-    function renderBetNote() {
+    /* WHAT IS RIDING ON EACH SIDE, as pick -> amount.
+
+       server/lobby.lua sends this beside `betPool` and builds it with the
+       same filter, so the parts add up to that total and a reader can check
+       the panel's arithmetic against its own summary.
+
+       Absent on an older server, or on a match nobody has bet on: both come
+       back as an empty object, which every reader below treats as "nothing
+       on the board" rather than as missing data. There is nothing to tell
+       apart -- no bets and no field both mean there is no money to show. */
+    function betsByPick(match) {
+        var raw = match && match.betsByPick;
+        var out = {};
+        if (!raw || typeof raw !== 'object') return out;
+        Object.keys(raw).forEach(function (pick) {
+            var amount = int(raw[pick], 0);
+            if (amount > 0) out[String(pick)] = amount;
+        });
+        return out;
+    }
+
+    function betsOnBoard(match) {
+        var total = 0;
+        var byPick = betsByPick(match);
+        Object.keys(byPick).forEach(function (pick) { total += byPick[pick]; });
+        /* THE SERVER'S OWN TOTAL WINS where the two disagree. `betPool` is
+           what settlement will actually divide; the breakdown is a courtesy
+           beside it. They are built from one filter and should never differ
+           -- but if a future bet ever carries no pick, the sum above would
+           quietly under-report the pool and the panel must not be the thing
+           that says so. */
+        return Math.max(total, int(match && match.betPool, 0));
+    }
+
+    /* Which match the whole tab is about, said out loud.
+
+       IT NEVER SAID. The Bets tab is pointed at whatever match is focused on
+       the Matches tab -- and the focus moves on its own, when you join a
+       round or start watching one -- so the screen showed a pot, a fee and a
+       list of fighters belonging to a match it never named. */
+    function renderBetMatch(match) {
+        var host = byId('bet-match');
+        if (!has(host)) return;
+        clear(host);
+
+        if (!match) {
+            host.appendChild(makeEl('span', 'bet-match-name', 'No match picked'));
+            host.appendChild(makeEl('span', 'bet-match-sub',
+                'Choose one on the Matches tab and this tab follows it.'));
+            return;
+        }
+
+        host.appendChild(makeEl('span', 'bet-match-name', match.label || 'Match'));
+
+        var bits = [];
+        if (match.arenaLabel) bits.push(String(match.arenaLabel));
+        if (match.modeLabel) bits.push(String(match.modeLabel));
+        if (betAsFighter(match)) bits.push('you are fighting in this one');
+        if (bits.length > 0) {
+            host.appendChild(makeEl('span', 'bet-match-sub', bits.join('  \u00b7  ')));
+        }
+    }
+
+    /* THE EXPLANATION, BROKEN UP AND MOVED UNDER THE BUTTON.
+
+       This was one paragraph of about a hundred words sitting at the TOP of
+       the form -- entry fees, the pot, elimination, side-bets, backing
+       yourself, proportional payouts and where the money comes from, all run
+       together in grey. It was the first thing on the tab and the first
+       thing every player skipped, which meant the rules it held were, in
+       practice, not on screen at all.
+
+       Same facts, four short lines, each with the thing it is about named in
+       front of it, and only the lines this server's settings make true. A
+       player looking for one rule can now find the line it is on. */
+    function renderBetNote(match) {
         var host = byId('bet-note');
         if (!has(host)) return;
+        clear(host);
 
         var spectator = betting().spectatorBets || {};
         var fighter = betting().fighterBets || {};
-        var text = 'Every fighter pays the entry fee into the pot, and at the end of the round '
-            + payoutPhrase() + '. Being eliminated ends your round and your fee stays in the pot.';
-        if (spectator.enabled === true && poolsAreShared()) {
-            text += ' A side-bet below goes into that same pot: back the winning side and you take '
-                + 'a share of it, and what you stake is part of what the winners are paid.';
-        } else if (spectator.enabled === true) {
-            text += ' A side-bet below is separate from the pot, and it never changes what the '
-                + 'winners take.';
+        var lines = [];
+
+        function line(term, text) {
+            var row = makeEl('div', 'bet-note-line');
+            row.appendChild(makeEl('span', 'bet-note-term', term));
+            row.appendChild(makeEl('span', 'bet-note-text', text));
+            lines.push(row);
         }
+
+        line('The pot', 'Every fighter’s entry fee goes in, and at the end '
+            + payoutPhrase() + '. Being knocked out ends your round and your fee stays in.');
+
+        if (spectator.enabled === true) {
+            line('A side-bet', poolsAreShared()
+                ? 'Money staked on who wins, by anyone watching. It goes into that same pot.'
+                : 'Money staked on who wins, by anyone watching. Separate from the pot, and it '
+                    + 'never changes what the winners take.');
+        }
+
         if (fighter.enabled === true) {
-            text += ' You can also back yourself'
-                + (fighter.ownSideOnly === false ? '' : ' — and only yourself')
-                + ' in a match you are fighting in. Winning bets share out the whole betting pool '
-                + 'in proportion to what each backer staked; the money comes from the other bets, '
-                + 'never from the server.';
+            line('Backing yourself', 'You can back yourself in a round you are fighting in'
+                + (fighter.ownSideOnly === false ? '.' : ' — on your own side only.'));
         }
-        host.textContent = text;
+
+        /* THE PAYOUT RULE THAT IS ACTUALLY RUNNING, and only that one. The
+           multiplier is quoted where the server pays one and never where it
+           does not: on a pool server there is no multiplier to name, and the
+           figure is not knowable in advance because it depends on who else
+           backs what. See betMode(). */
+        if (betMode(match) === 'odds') {
+            var odds = Number(spectator.oddsMultiplier) || 2;
+            line('If you win', 'Your stake comes back ×' + String(odds)
+                + ', paid by the server. If you lose it, it is gone.');
+        } else {
+            line('If you win', 'The winning side splits everything staked, in proportion to what '
+                + 'each backer put in. That money is the losing bets and never from the server, '
+                + 'so backing a side nobody bet against just hands your own stake back.');
+        }
+
+        host.appendChild(makeEl('div', 'bet-note-head', 'How betting works here'));
+        lines.forEach(function (row) { host.appendChild(row); });
     }
 
+    /* THE FIVE NUMBERS THE TAB IS ABOUT.
+
+       TWO OF THESE USED TO SAY THE SAME THING TWICE. "Pot goes to: Backers
+       of the winner" sat beside "Bets pay: Share of pool" -- two labels,
+       near-identical wording, describing one rule from two directions, and
+       between them they used the words "pot", "pool" and "bets" for what a
+       reader could not tell were two separate piles of money. The rule they
+       were both circling is now one line in "How betting works here", where
+       it has room to be said once and properly.
+
+       What is left is five FIGURES, each a different fact, none of them a
+       rule: what you have, what the pot holds, what a seat costs, what is
+       riding on side-bets, and what a win multiplies by. */
+    /* THE SIX FIGURES THE TAB IS ABOUT.
+
+       TWO OF THESE READ AS ONE THING SAID TWICE, and the fix is not to
+       delete either of them -- that was tried, and it threw away a rule.
+       "Pot goes to" is about the ENTRY FEES and "Bets pay" is about the
+       SIDE-BETS, and an operator sets those two independently: the pot can
+       go to the winner alone on a server whose side-bets pay a pool share,
+       and both spellings of both rules really run. Deleting one loses a fact
+       nothing else on the tab carries.
+
+       What was actually wrong was that neither line said WHICH PILE OF MONEY
+       it was about, so they read as the same sentence twice in different
+       words. Each one names its own money underneath it now, and the rules
+       behind them are set out in full under "How betting works here". */
     function renderBetSummary(match) {
         var host = byId('bet-summary');
         if (!has(host)) return;
         clear(host);
 
-        function stat(label, value) {
+        function stat(label, value, sub) {
             var box = makeEl('div', 'bet-stat');
             box.appendChild(makeEl('span', 'bet-stat-label', label));
             box.appendChild(makeEl('span', 'bet-stat-value', value));
+            if (sub) box.appendChild(makeEl('span', 'bet-stat-sub', sub));
             host.appendChild(box);
         }
 
         var from = chosenAccount();
         stat('Your ' + titleCase(from), money(balanceIn(from)));
-        stat('Pot', match ? money(match.pot) : money(0));
-        stat('Entry fee', match ? money(match.entryFee) : money(0));
+        stat('Pot', match ? money(match.pot) : money(0),
+            match ? plural(int(match.playerCount, 0), 'fighter') + ' in' : null);
+        stat('Entry fee', match ? money(match.entryFee) : money(0), 'each');
+
+        /* ON THE BOARD, which was on the wire and shown nowhere. A pool bet
+           is paid out of the other side's stakes, so "how much is bet on
+           this match" is not decoration -- it is the number that decides
+           whether a winning bet is worth anything at all. */
+        var spectator = betting().spectatorBets || {};
+        var fighterBets = betting().fighterBets || {};
+        var anyBets = spectator.enabled === true || fighterBets.enabled === true;
+
+        if (anyBets) {
+            stat('On side-bets', money(betsOnBoard(match)), match
+                ? (int(match.bets, 0) === 0 ? 'no bets yet' : plural(int(match.bets, 0), 'bet'))
+                : null);
+        }
+
         stat('Pot goes to', poolsAreShared()
             ? 'Backers of the winner'
-            : labelFor(PAYOUT_SHORT, betting().payout, 'The winner'));
+            : labelFor(PAYOUT_SHORT, betting().payout, 'The winner'), 'the entry fees');
 
-        var spectator = betting().spectatorBets || {};
-        if (spectator.enabled === true || (betting().fighterBets || {}).enabled === true) {
+        if (anyBets) {
             stat('Bets pay', betMode(match) === 'odds'
                 ? 'x' + String(Number(spectator.oddsMultiplier) || 2)
-                : 'Share of pool');
+                : 'Share of pool', 'side-bets only');
         }
 
         if (!match) {
@@ -3283,6 +3438,14 @@
         }
     }
 
+    /* STEP 1: WHO WINS. Each chip now carries the money already on that side.
+
+       THE CHIPS WERE BARE NAMES. "Rico  Marla  Teejay" told a bettor nothing
+       they could act on -- and in the pool mode this arena ships with, the
+       money on each side IS the decision: a winning bet is paid out of the
+       stakes backing the OTHER sides, so a chip with nothing against it pays
+       nothing back but the stake. The panel already said that in words at the
+       bottom of the tab. Now the chips answer it. */
     function renderBetPick(match) {
         var host = byId('bet-pick');
         if (!has(host)) return;
@@ -3308,11 +3471,25 @@
             return;
         }
 
-        host.appendChild(makeEl('span', 'field-label', 'Backing'));
+        host.appendChild(makeEl('span', 'field-label',
+            own === null ? '1 · Who wins' : '1 · Backing'));
+
+        var byPick = betsByPick(match);
 
         options.forEach(function (option) {
-            var chip = makeEl('button', 'chip', option.label);
+            var on = int(byPick[String(option.pick)], 0);
+
+            /* THE LABEL IS THE BUTTON'S OWN TEXT, and the money hangs under
+               it. Wrapping the name in a span of its own reads the same on
+               screen and makes the chip findable only by walking into it --
+               which is a chip that four existing suites, and anybody
+               debugging this later, can no longer identify by the one thing
+               it is: the side it backs. */
+            var chip = makeEl('button', 'chip bet-chip', option.label);
             chip.type = 'button';
+            chip.appendChild(makeEl('span', 'bet-chip-money',
+                on > 0 ? money(on) + ' on them' : 'no bets yet'));
+
             if (option.color) chip.style.borderLeft = '3px solid ' + option.color;
             if (option.pick === currentPick(match)) chip.classList.add('active');
             chip.addEventListener('click', function () {
@@ -3322,6 +3499,63 @@
             });
             host.appendChild(chip);
         });
+    }
+
+    /* THE BOOK AS A BAR: which way the money is leaning, at a glance.
+
+       The chips above carry the same figures, and this is here because a
+       proportion is the thing being asked about and a row of currency
+       amounts is a poor way to show one. It draws only sides that have
+       money on them, so it never fills the screen with empty slivers.
+
+       NOTHING IS PROJECTED HERE. What a winning pool bet pays depends on
+       every bet placed after yours, so the panel does not put a figure on
+       it -- see betMode(). The bar says what is true right now and stops. */
+    function renderBetSplit(match) {
+        var host = byId('bet-split');
+        if (!has(host)) return;
+        clear(host);
+
+        var usable = betRules(match).enabled === true && !!match;
+        show(host, usable);
+        if (!usable) return;
+
+        var byPick = betsByPick(match);
+        var labels = {};
+        betPickOptions(match).forEach(function (option) {
+            labels[String(option.pick)] = option.label;
+        });
+
+        var sides = Object.keys(byPick).sort(function (a, b) { return byPick[b] - byPick[a]; });
+        var total = 0;
+        sides.forEach(function (pick) { total += byPick[pick]; });
+
+        if (total <= 0) {
+            host.appendChild(makeEl('div', 'hint',
+                'No side-bets on this match yet. The first one in is betting against nobody, '
+                + 'so it only wins once somebody backs another side.'));
+            return;
+        }
+
+        var bar = makeEl('div', 'bet-bar');
+        sides.forEach(function (pick, at) {
+            var share = byPick[pick] / total;
+            var seg = makeEl('div', 'bet-bar-seg');
+            seg.style.width = String(Math.round(share * 1000) / 10) + '%';
+            if (String(pick) === String(currentPick(match))) seg.classList.add('mine');
+            seg.title = (labels[pick] || pick) + ': ' + money(byPick[pick]);
+            if (at % 2 === 1) seg.classList.add('alt');
+            bar.appendChild(seg);
+        });
+        host.appendChild(bar);
+
+        var key = makeEl('div', 'bet-bar-key');
+        sides.forEach(function (pick) {
+            var percent = Math.round((byPick[pick] / total) * 100);
+            key.appendChild(makeEl('span', 'bet-bar-key-item',
+                (labels[pick] || String(pick)) + '  ' + String(percent) + '%'));
+        });
+        host.appendChild(key);
     }
 
     function betBlockedReason(match) {
@@ -3337,8 +3571,6 @@
         }
 
         if (match.state === 'ended') return 'This match has finished.';
-
-        var fighting = betAsFighter(match);
 
         if (fighting && match.fighterBetsOpen === false) {
             return 'The book closed when this round went live.';
@@ -3383,6 +3615,20 @@
         return null;
     }
 
+    /* STEP 2 AND 3: HOW MUCH, AND OUT OF WHICH POCKET.
+
+       THE STAKE BOX WAS A BARE NUMBER FIELD. It opened on the minimum, said
+       nothing about the ceiling, and offered no way to fill it except typing
+       -- so a player wanting "everything I can" had to know their own
+       balance, know the operator's maximum, and work out which was smaller.
+       The buttons below do that sum for them, and every one of them is
+       labelled with the actual money rather than with "half" or "max",
+       because those words do not say half OF WHAT.
+
+       THE HINT ABOVE THE BUTTON NOW DESCRIBES THIS BET and nothing else:
+       what is being staked, on whom, out of which account. The rules it used
+       to restate are in "How betting works here" at the foot of the tab,
+       where they are said once. */
     function renderBetControls(match) {
         var rules = betRules(match);
         var usable = rules.enabled === true;
@@ -3392,8 +3638,13 @@
         if (has(input) && usable) {
             input.min = String(int(rules.min, 0));
             if (int(rules.max, 0) > 0) input.max = String(int(rules.max, 0));
+            /* NAMES THE FLOOR IN THE BOX ITSELF, so an empty field is still
+               an answer to "what can I put here". */
+            input.placeholder = String(int(rules.min, 0));
             if (document.activeElement !== input) input.value = String(int(state.betAmount, 0));
         }
+
+        renderBetQuick(match);
 
         renderAccountPicker('bet-account');
         show(byId('bet-account-row'), usable && accountChoiceOffered());
@@ -3405,22 +3656,42 @@
         if (has(hint) && usable) {
             if (reason !== null) {
                 hint.textContent = reason;
-            } else if (betMode(match) === 'odds') {
-                var odds = Number((betting().spectatorBets || {}).oddsMultiplier) || 2;
-                hint.textContent = 'If they win you are paid ' + money(int(state.betAmount, 0) * odds)
-                    + '. If they lose, the stake is gone.';
-            } else if (betAsFighter(match)) {
-                hint.textContent = 'Backing yourself with ' + money(int(state.betAmount, 0))
-                    + ' on top of your entry fee. If you win you take a share of the whole betting '
-                    + 'pool, in proportion to what you staked — so you only profit if somebody '
-                    + 'backed the other side. If you lose, your stake goes to whoever backed the '
-                    + 'winner. Either way, if nobody bet against you it is handed back.';
             } else {
-                hint.textContent = 'Staking ' + money(int(state.betAmount, 0))
-                    + '. If they win you take a share of the whole betting pool, in proportion to '
-                    + 'what you staked — so you only profit if somebody backed another side. If '
-                    + 'they lose, your stake goes to whoever backed the winner. Either way, if '
-                    + 'nobody backed a different side it is handed back.';
+                var backing = null;
+                betPickOptions(match).forEach(function (option) {
+                    if (String(option.pick) === String(currentPick(match))) backing = option.label;
+                });
+
+                var text = 'Place ' + money(int(state.betAmount, 0)) + ' on '
+                    + (backing || 'them')
+                    + (accountChoiceOffered() ? ', from ' + titleCase(chosenAccount()) : '') + '. ';
+
+                if (betMode(match) === 'odds') {
+                    /* AND HERE THE STAKE REALLY IS GONE. Fixed odds are
+                       funded by the operator, who is the counterparty and
+                       keeps a losing bet. Saying so is only wrong under the
+                       pool rule below. */
+                    var odds = Number((betting().spectatorBets || {}).oddsMultiplier) || 2;
+                    text += 'If they win you are paid ' + money(int(state.betAmount, 0) * odds)
+                        + '. If they lose, the stake is gone.';
+                } else if (betAsFighter(match)) {
+                    text += 'If you win you take a share of the whole betting pool, in proportion '
+                        + 'to what you staked — so you only profit if somebody backed the other '
+                        + 'side. If you lose, your stake goes to whoever backed the winner. Either '
+                        + 'way, if nobody bet against you it is handed back.';
+                } else {
+                    /* NO FIGURE, DELIBERATELY, and no "the stake is gone"
+                       either. A pool has no counterparty: a losing stake is
+                       paid to whoever backed the winner, and where nobody
+                       did there is nobody to pay it to and the server hands
+                       it back. A player told their money was gone and then
+                       given it back reads that as the arena being broken. */
+                    text += 'If they win you take a share of the whole betting pool, in proportion '
+                        + 'to what you staked — so you only profit if somebody backed another '
+                        + 'side. If they lose, your stake goes to whoever backed the winner. Either '
+                        + 'way, if nobody backed a different side it is handed back.';
+                }
+                hint.textContent = text;
             }
         }
 
@@ -3452,6 +3723,89 @@
         }
     }
 
+    /* Stakes worth one click, worked out from the two ceilings that actually
+       apply: the operator's maximum and what is in the chosen account.
+
+       THE SMALLER OF THE TWO IS THE ONE THAT BINDS, and the player could not
+       see either. A "max" button that offered the operator's ceiling on an
+       account that cannot cover it is a button that posts a bet the server
+       refuses, so the top amount here is always one the bet can actually be
+       paid with.
+
+       Re-read on every render because the account picker sits below it: a
+       player switching from Cash to Bank changes what they can afford, and
+       these numbers have to move with that choice. */
+    function renderBetQuick(match) {
+        var host = byId('bet-quick');
+        if (!has(host)) return;
+        clear(host);
+
+        var rules = betRules(match);
+        var usable = rules.enabled === true && !!match;
+        show(host, usable);
+        if (!usable) return;
+
+        var min = int(rules.min, 0);
+        var max = int(rules.max, 0);
+        var ceiling = balanceIn(chosenAccount());
+        if (max > 0) ceiling = Math.min(ceiling, max);
+
+        if (ceiling < min) {
+            host.appendChild(makeEl('span', 'hint',
+                'The smallest bet here is ' + money(min) + ', and '
+                + (accountChoiceOffered() ? titleCase(chosenAccount()) + ' holds ' : 'you have ')
+                + money(balanceIn(chosenAccount())) + '.'));
+            return;
+        }
+
+        /* Tidied, so the buttons read as amounts somebody would choose
+           rather than as arithmetic: 1,000 and 250, not 1,013 and 253. */
+        function tidy(value) {
+            var v = Math.floor(value);
+            if (v >= 1000) v = Math.floor(v / 100) * 100;
+            else if (v >= 100) v = Math.floor(v / 10) * 10;
+            return Math.max(min, Math.min(ceiling, v));
+        }
+
+        var amounts = [];
+        [min, tidy(ceiling / 4), tidy(ceiling / 2), ceiling].forEach(function (value) {
+            var v = Math.max(min, Math.min(ceiling, Math.floor(value)));
+            if (amounts.indexOf(v) === -1) amounts.push(v);
+        });
+        amounts.sort(function (a, b) { return a - b; });
+
+        amounts.forEach(function (value) {
+            var chip = makeEl('button', 'chip bet-quick-chip', money(value));
+            chip.type = 'button';
+            if (value === int(state.betAmount, 0)) chip.classList.add('active');
+            chip.title = value === ceiling
+                ? 'The most this account can cover' + (max > 0 && value === max ? ', and the most allowed' : '')
+                : '';
+            chip.addEventListener('click', function () {
+                state.betAmount = value;
+                render();
+            });
+            host.appendChild(chip);
+        });
+
+        host.appendChild(makeEl('span', 'hint bet-quick-range',
+            max > 0
+                ? money(min) + ' to ' + money(max) + ' allowed'
+                : money(min) + ' and up'));
+    }
+
+    /* WHO IS IN THE ROUND, WHAT THEY PAID, AND WHICH ONE YOU ARE ON.
+
+       DIMMING WAS THE ONLY THING SAYING A FIGHTER WAS OUT. A grey row and a
+       sentence under the list explaining what grey meant is a poor way to
+       say "this one cannot win any more" -- it is colour carrying the whole
+       message, it is one more thing to remember, and a player skim-reading
+       a list of names while a round is live will not catch it. Every row
+       says its own state in words now, and the dimming stays as well.
+
+       THE ROW YOU BACKED IS MARKED, because the chips at step 1 scroll out
+       of sight on a short screen and "which one did I put money on" should
+       not be a question the panel makes you answer from memory. */
     function renderBetList(match) {
         var host = byId('bet-list');
         if (!has(host)) return;
@@ -3463,26 +3817,72 @@
             return;
         }
 
-        var header = makeEl('div', 'bet-row');
+        var header = makeEl('div', 'bet-row bet-row-head');
         header.appendChild(makeEl('span', 'bet-stat-label', 'Paid into the pot'));
         header.appendChild(makeEl('span', 'bet-stat-label', money(match.pot)));
         host.appendChild(header);
 
         var fee = int(match.entryFee, 0);
-        var anyOut = false;
-        arrayOf(match.players).forEach(function (entry) {
+        var byPick = betsByPick(match);
+
+        /* WHOSE MONEY IT IS, and in a team match it is not the fighter's own.
+           A team is backed as a team, so every crimson row was carrying
+           crimson's whole stake with the words "bet on them" beside it -- two
+           fighters on a side with 1,800 on it read as 3,600 on the match, on
+           a tab whose own summary said 2,600. The side is named instead. */
+        var sideNames = {};
+        betPickOptions(match).forEach(function (option) {
+            sideNames[String(option.pick)] = option.label;
+        });
+
+        var mine = player().bet;
+        var minePick = (mine && mine.pick !== undefined && mine.pick !== null)
+            ? String(mine.pick)
+            : (currentPick(match) === null ? null : String(currentPick(match)));
+
+        var roster = arrayOf(match.players);
+        if (roster.length === 0) {
+            host.appendChild(makeEl('div', 'hint',
+                'Nobody has joined yet. The pot fills as fighters pay in.'));
+            return;
+        }
+
+        roster.forEach(function (entry) {
             if (!entry) return;
+
+            var out = entry.alive === false;
+            /* A team match is backed by TEAM, a free-for-all by server id, so
+               the row is matched against whichever this match uses -- the
+               same key betPickOptions builds its chips from. */
+            var key = match.teams === true
+                ? (entry.team === undefined || entry.team === null ? null : String(entry.team))
+                : String(int(entry.id, 0));
+
             var row = makeEl('div', 'bet-row');
-            if (entry.alive === false) {
-                row.classList.add('lost');
-                anyOut = true;
+            if (out) row.classList.add('lost');
+            if (minePick !== null && key === minePick) row.classList.add('backed');
+
+            var left = makeEl('span', 'bet-row-who');
+            left.appendChild(makeEl('span', 'bet-row-name', entry.name || ('#' + int(entry.id, 0))));
+            left.appendChild(makeEl('span', 'bet-row-state', out ? 'Out of the round' : 'Still in'));
+            row.appendChild(left);
+
+            var right = makeEl('span', 'bet-row-money');
+            right.appendChild(makeEl('span', 'bet-row-fee', money(fee)));
+            if (key !== null && int(byPick[key], 0) > 0) {
+                right.appendChild(makeEl('span', 'bet-row-staked',
+                    money(int(byPick[key], 0)) + (match.teams === true
+                        ? ' on ' + (sideNames[key] || key)
+                        : ' bet on them')));
             }
-            row.appendChild(makeEl('span', null, entry.name || ('#' + int(entry.id, 0))));
-            row.appendChild(makeEl('span', null, money(fee)));
+            row.appendChild(right);
+
             host.appendChild(row);
         });
 
-        if (anyOut) host.appendChild(makeEl('div', 'hint', 'Dimmed names are out of the round.'));
+        if (minePick !== null) {
+            host.appendChild(makeEl('div', 'hint', 'The highlighted row is the side you are on.'));
+        }
     }
 
     function renderBoard() {

@@ -1098,9 +1098,12 @@ option {
 
 #tab-bets {
     display: grid;
-    grid-template-columns: minmax(16rem, 22rem) 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 0.8rem 1.2rem;
+    grid-template-columns: minmax(18rem, 24rem) 1fr;
+    /* THREE ROWS NOW: the match this tab is about, the figures, then the
+       form beside the roster. The heading was added because the tab follows
+       whatever match is focused elsewhere and never said which one. */
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 0.7rem 1.2rem;
     min-height: 0;
 }
 
@@ -1128,9 +1131,36 @@ option {
     text-transform: none;
 }
 
-#bet-summary {
+#bet-match {
     grid-column: 1 / -1;
     grid-row: 1;
+    align-self: start;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.3rem 0.9rem;
+    margin: 0;
+}
+
+.bet-match-name {
+    font-family: var(--font-display);
+    font-size: 1.5rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.bet-match-sub {
+    color: var(--text-muted);
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    font-weight: normal;
+    letter-spacing: 0.04em;
+    text-transform: none;
+}
+
+#bet-summary {
+    grid-column: 1 / -1;
+    grid-row: 2;
     align-self: start;
     display: flex;
     flex-wrap: wrap;
@@ -1155,14 +1185,23 @@ option {
 
 .bet-stat-value {
     font-family: var(--font-display);
-    font-size: 1.6rem;
+    font-size: 1.5rem;
     font-variant-numeric: tabular-nums;
     color: var(--accent-bright);
 }
 
+/* The unit under a figure -- "each", "4 fighters in", "no bets yet".
+   Carries what the label would otherwise have to spell out, so the labels
+   above can stay one or two words. */
+.bet-stat-sub {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+}
+
 #bet-form {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 3 / span 2;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -1175,12 +1214,48 @@ option {
     overscroll-behavior: contain;
 }
 
+/* THE THREE STEPS STACK THEIR LABELS, and the rest of the panel does not.
+
+   Everywhere else a label sits in a fixed 8.25rem column to the left of its
+   control, which reads well across the width of the Matches form. This
+   column is 24rem at its widest, so the same treatment spent a third of it
+   on the word "Backing" and left the chips wrapping one to a line -- and the
+   chips carry two lines each now, so that wrapping was the worst of it.
+
+   Stacked, all three steps line up at the left edge of the column and the
+   controls get the full width. */
+#bet-form .field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+}
+
+#bet-form .field > .field-label {
+    width: auto;
+    flex: none;
+}
+
+/* AND THE CONTROL STOPS GROWING. `.field > input` carries `flex: 1 1 8rem`
+   so a control fills the rest of a ROW; turn the container into a column and
+   that 8rem basis becomes a HEIGHT, which grew the stake box into a box the
+   size of a paragraph. Stacked, the width is already the full column and
+   there is nothing left to flex into. */
+#bet-form .field > input,
+#bet-form .field > select {
+    flex: none;
+    width: 100%;
+}
+
 #bet-pick {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
+    align-items: stretch;
     gap: 0.5rem;
     width: 100%;
+}
+
+#bet-pick > .field-label {
+    flex: 1 0 100%;
 }
 
 #bet-amount-row {
@@ -1190,7 +1265,7 @@ option {
 
 #bet-list {
     grid-column: 2;
-    grid-row: 2;
+    grid-row: 3;
     min-height: 0;
     padding-right: 0.4rem;
     overflow-y: auto;
@@ -1210,6 +1285,180 @@ option {
 
 .bet-row.lost {
     color: var(--text-muted);
+}
+
+/* THE SIDE THIS PLAYER IS ON. The chips at step 1 scroll away on a short
+   screen; this is the answer to "which one did I back" without scrolling
+   back to find out. */
+.bet-row.backed {
+    background: rgba(220, 38, 38, 0.12);
+    border-left: 3px solid var(--accent);
+    padding-left: 0.45rem;
+}
+
+.bet-row-head {
+    border-bottom-width: 2px;
+}
+
+.bet-row-who,
+.bet-row-money {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.bet-row-money {
+    align-items: flex-end;
+    text-align: right;
+}
+
+.bet-row-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Said in words as well as in colour. A dimmed row was the only thing
+   marking a fighter who could no longer win, which is one message carried
+   entirely by a shade of grey. */
+.bet-row-state,
+.bet-row-staked {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.bet-row-staked {
+    color: var(--accent-bright);
+}
+
+/* ---- Step 1: the chips, and the bar under them ---- */
+
+.bet-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    line-height: 1.25;
+    text-align: left;
+}
+
+.bet-chip-money {
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    opacity: 0.75;
+    text-transform: uppercase;
+}
+
+#bet-split {
+    width: 100%;
+}
+
+/* WHICH WAY THE MONEY IS LEANING. A pool bet is paid out of the stakes on
+   the other sides, so the split is the whole decision -- and a row of
+   currency amounts is a poor way to show a proportion. */
+.bet-bar {
+    display: flex;
+    width: 100%;
+    height: 0.55rem;
+    overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--border);
+}
+
+.bet-bar-seg {
+    min-width: 2px;
+    background: rgba(220, 38, 38, 0.45);
+}
+
+.bet-bar-seg.alt {
+    background: rgba(220, 38, 38, 0.22);
+}
+
+.bet-bar-seg.mine {
+    background: var(--accent-bright);
+}
+
+.bet-bar-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.9rem;
+    margin-top: 0.3rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* ---- Step 2: stakes worth one click ---- */
+
+/* The stakes sit directly under the box they fill, at the same left edge as
+   everything else in this column -- see the stacking note above #bet-pick.
+   No indent: an earlier version pushed this row 8.95rem in to line up under
+   a label column that no longer exists here, and `#bet-form .hint` giving
+   the range line a full 100% width on top of that put it past the edge. */
+#bet-quick {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+}
+
+.bet-quick-chip {
+    font-variant-numeric: tabular-nums;
+}
+
+.bet-quick-range {
+    margin-left: 0;
+}
+
+/* ---- The rules, at the foot of the form ---- */
+
+#bet-note {
+    grid-column: 2;
+    grid-row: 4;
+    align-self: end;
+    width: 100%;
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--border);
+}
+
+.bet-note-head {
+    margin-bottom: 0.45rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+.bet-note-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.1rem 0.5rem;
+    margin-bottom: 0.4rem;
+    line-height: 1.5;
+}
+
+/* The thing the line is ABOUT, in front of the line. One paragraph of a
+   hundred words held all of this and nobody read it; a reader after one
+   rule can now find the row it is on. */
+.bet-note-term {
+    flex: none;
+    /* Wide enough for the longest of them, "Backing yourself": any narrower
+       and that one row's text starts further right than the other three,
+       which is exactly the ragged left edge this layout exists to fix. */
+    min-width: 10rem;
+    color: var(--text);
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.bet-note-text {
+    flex: 1 1 12rem;
 }
 
 #tab-board {
@@ -1436,7 +1685,6 @@ option {
        straight back -- two-fifths of the screen of weapons and the rest
        behind a second wheel, which is the cut-off this change is about. */
     #match-list,
-    #bet-list,
     #roster {
         max-height: 40vh;
     }
@@ -1453,6 +1701,39 @@ option {
     #loadout-lists {
         overflow: visible;
         padding-bottom: 0;
+    }
+
+    /* THE BETS FORM HAD THE SAME NESTED SCROLLER and it cost more than a
+       second wheel: capped at the height of a row that is now sized by its
+       own contents, the box collapsed to whatever the chips alone needed and
+       cut the form off below them. Steps 2 and 3 -- the stake, the account,
+       and Place Bet itself -- were simply not on the screen at this width,
+       with nothing to say they were there. */
+    #bet-form {
+        max-height: none;
+        overflow: visible;
+
+        /* AND `min-height: 0` HAS TO GO WITH THEM, which is the half that
+           actually did the damage. It is there so the form can be a scroller
+           inside a fixed row on a wide screen; at this width the tab is the
+           scroller and the rows are content-sized -- and a grid item allowed
+           to shrink below its own content is one the row will shrink, which
+           it did, to a quarter of the form. Everything from step 2 down was
+           drawn outside its row and straight over the roster beneath it. */
+        min-height: auto;
+    }
+
+    /* AND THE ROSTER BESIDE IT, for the same reason and with the same cure.
+       It was capped at 40vh and left a scroller, so once the form above it
+       was allowed its full height the grid took the space back out of the
+       one track still able to give it -- a box with `overflow: auto` can
+       shrink to nothing, and this one did, to exactly nothing. The tab is
+       the scroller at this width; nothing inside it needs to be. */
+    #bet-list {
+        max-height: none;
+        min-height: auto;
+        overflow: visible;
+        border-left: 0;
     }
 
     #loadout-slots {

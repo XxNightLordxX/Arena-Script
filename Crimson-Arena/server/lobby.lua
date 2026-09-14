@@ -588,6 +588,13 @@ local function snapshotMatches()
             entryPot = ArenaBetting.GetPot(match.id),
             betPool = ArenaBetting.GetSideBetPool(match.id),
             bets = ArenaBetting.CountSideBets(match.id),
+            -- WHICH SIDE THE BETTING MONEY IS ON, as pick -> amount. The
+            -- total above says how much is riding on the match and said
+            -- nothing about how it was split, so the Bets tab could not
+            -- answer the one thing a bettor needs to know before staking:
+            -- a pool bet is paid out of the OTHER side's money, so backing
+            -- a fighter nobody has bet against wins nothing.
+            betsByPick = ArenaBetting.SideBetTotals(match.id),
             playerCount = #roster,
             teamCounts = Arena.CountTeams(roster),
             startsAt = match.startsAt,

@@ -576,7 +576,7 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 32 functions
+#### `server/betting.lua` — 33 functions
 
 | Function | What it does |
 |---|---|
@@ -598,6 +598,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.ForfeitAll(matchId, reasonKey)` | Keeps every held stake and pays nobody. |
 | `ArenaBetting.Settle(matchId, context)` | Pays the pot out. |
 | `ArenaBetting.GetSideBetPool(matchId)` | Everything staked in side-bets that will be settled as a pool. |
+| `ArenaBetting.SideBetTotals(matchId)` | The same money broken down by the side it is on, as pick -> amount, so the Bets tab can show whether anybody is backing the other one. Built with GetSideBetPool's filter, so the parts add up to that total. |
 | `ArenaBetting.GetPrizePool(matchId)` | Everything a winner of this match stands to be paid from, as one figure. |
 | `ArenaBetting.GetSideBet(matchId, src)` | One player's own side-bet on a match, or nil. |
 | `ArenaBetting.HoldsSideBet(matchId, src)` | Whether this player is holding an UNSETTLED side-bet on this match. |

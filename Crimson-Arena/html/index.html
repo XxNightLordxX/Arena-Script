@@ -190,28 +190,55 @@
             </div>
         </section>
 
+        <!--
+            THE BETS TAB, READ TOP TO BOTTOM AND NUMBERED.
+
+            It used to open on a hundred-word paragraph explaining entry
+            fees, pots, elimination, side-bets, backing yourself and
+            proportional payouts in one grey block, with the controls
+            underneath it. Nobody reads that standing in an arena. The
+            controls come first now and the explanation has moved to the
+            foot of the column beside them, where it answers a question
+            rather than blocking one.
+
+            The three steps are numbered because they must be done in
+            order: the stake box cannot say what a win is worth until a
+            side is picked, and the pay-from choice decides which balance
+            the stake is checked against.
+        -->
         <section id="tab-bets" class="arena-panel">
             <div id="bet-disabled"></div>
+
+            <h2 id="bet-match"></h2>
 
             <div id="bet-summary"></div>
 
             <div id="bet-form">
-                <p id="bet-note" class="hint"></p>
                 <div id="bet-pick"></div>
+                <div id="bet-split"></div>
+
                 <label id="bet-amount-row" class="field">
-                    <span class="field-label">Your Stake</span>
+                    <span class="field-label">2 &middot; How much</span>
                     <input id="bet-amount" type="number" min="0" step="1">
                 </label>
+                <div id="bet-quick"></div>
 
                 <div id="bet-account-row" class="field">
-                    <span class="field-label">Pay From</span>
+                    <span class="field-label">3 &middot; Pay from</span>
                     <div id="bet-account"></div>
                 </div>
+
                 <p id="bet-hint" class="hint"></p>
                 <button id="bet-submit" class="btn btn-primary" type="button">Place Bet</button>
             </div>
 
             <div id="bet-list"></div>
+
+            <!-- Beside the roster rather than under the button: the three
+                 steps are the job and these are the rules behind them, and
+                 on a tall panel the whole left column was being scrolled
+                 past a half-empty right one to reach them. -->
+            <div id="bet-note" class="hint"></div>
         </section>
 
         <section id="tab-board" class="arena-panel">

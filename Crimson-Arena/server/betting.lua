@@ -1758,6 +1758,40 @@ function ArenaBetting.GetSideBetPool(matchId)
     return total
 end
 
+--- What is riding on each side of one match, as pick -> amount.
+---
+--- WHAT THE BETS TAB HAD TO GUESS AT. The panel was sent the pool total and
+--- the number of bets in it, and nothing about how that money was split --
+--- so the one question a bettor actually asks, "is anyone on the other
+--- side", had no answer on screen. A pool bet is paid out of the other
+--- side's stakes, so a player backing a fighter nobody is betting against
+--- wins nothing at all: the panel already says so in words, and now it can
+--- show it.
+---
+--- THE SAME FILTER AS GetSideBetPool ABOVE, deliberately: these numbers are
+--- drawn beside that total and a reader adds them up. Settled bets are gone
+--- and 'odds' bets are funded by the server rather than by the pool, so
+--- neither belongs in a figure that says what the pool holds. Matching the
+--- filter is what makes the parts sum to the whole.
+---
+--- Entry fees are not excluded here, and on a live match there are none to
+--- exclude: addEntryStakesAsBets only folds the pot into this table as the
+--- round is settled, and then only where `includeEntryPot` is on. By the
+--- time such a row exists the book is shut and nobody is reading this.
+function ArenaBetting.SideBetTotals(matchId)
+    local byPick = {}
+    for _, bet in ipairs(sideBets[matchId] or {}) do
+        if bet.settled ~= true and bet.mode ~= 'odds' then
+            local pick = bet.pick
+            if pick ~= nil then
+                pick = tostring(pick)
+                byPick[pick] = (byPick[pick] or 0) + (Arena.ToInt(bet.amount) or 0)
+            end
+        end
+    end
+    return byPick
+end
+
 function ArenaBetting.GetPrizePool(matchId)
     local pot = ArenaBetting.GetPot(matchId)
     if not entryPotJoinsPool() then return pot end

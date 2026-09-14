@@ -557,6 +557,57 @@ local function snapshotPlayer(src)
     }
 end
 
+--- How many rungs this match's ladder really has, remembered between calls.
+---
+--- IT WAS A TENTH OF A MILLISECOND AND IT BECAME ONE AND THREE QUARTERS.
+--- `Arena.LadderTiersFor` walks the weapon catalogue -- ninety-six entries --
+--- filtering it per class, and this ran once per ladder match inside
+--- snapshotMatches, which runs inside BuildState, which runs ONCE PER
+--- RECIPIENT on every broadcast. Measured on eight matches, four of them gun
+--- games: 0.13 ms per BuildState before, 1.67 ms after. A sixty-four player
+--- server pays that sixty-four times for one broadcast, which is most of a
+--- server frame spent counting rungs that had not changed.
+---
+--- KEYED ON THE PLAN'S IDENTITY, not on its contents. ArenaLobby.Create and
+--- UpdateMatch are the only writers and both assign a table Arena.
+--- ResolveTierPlan has just built, so a new plan is always a new table and a
+--- reference that has not moved is a plan that has not changed. The mode is
+--- checked with it because changing the mode changes the ladder without
+--- touching the plan.
+---
+--- The one thing that would defeat this is somebody MUTATING a match's
+--- existing tierPlan table in place rather than replacing it. Nothing does,
+--- and nothing should -- the plan is the host's decision, recorded, not a
+--- scratchpad.
+--- @param match table
+--- @return integer|nil
+local function rungsOf(match)
+    -- THE MEMO IS ASKED FIRST, BEFORE Arena.PlaysLadder.
+    --
+    -- Asking PlaysLadder first reads as the cheap guard and is not one: it is
+    -- `#Arena.LadderTiersFor(modeKey) >= 2`, so it walks the same catalogue
+    -- the memo exists to stop walking. Measured with the memo behind it, the
+    -- saving was less than half of what it should have been -- 1.67 ms down
+    -- to 0.95 against a 0.13 baseline, because the expensive call was still
+    -- happening every time and only the second one was being saved.
+    --
+    -- `false` is the stored answer for "this mode plays no ladder", so that a
+    -- non-ladder match is remembered too rather than re-deciding every
+    -- broadcast. It is turned back into nil on the way out.
+    local memo = match.rungsMemo
+    if memo ~= nil and memo.modeKey == match.modeKey and memo.plan == match.tierPlan then
+        return memo.count or nil
+    end
+
+    local count = false
+    if Arena.PlaysLadder(match.modeKey) then
+        count = #Arena.LadderTiersFor(match.modeKey, match.tierPlan)
+    end
+
+    match.rungsMemo = { modeKey = match.modeKey, plan = match.tierPlan, count = count }
+    return count or nil
+end
+
 local function snapshotMatches()
     local out = {}
 
@@ -619,10 +670,11 @@ local function snapshotMatches()
             --
             -- nil for a mode that plays no ladder, which is what the panel
             -- already tells a ladder mode apart by.
-            tiers = (function()
-                if not Arena.PlaysLadder(match.modeKey) then return nil end
-                return #Arena.LadderTiersFor(match.modeKey, match.tierPlan)
-            end)(),
+            --
+            -- AND WORKED OUT ONCE PER PLAN, NOT ONCE PER BROADCAST. See
+            -- rungsOf below -- computing it here cost ten times the whole
+            -- snapshot.
+            tiers = rungsOf(match),
             pot = ArenaBetting.GetPrizePool(match.id),
             entryPot = ArenaBetting.GetPot(match.id),
             betPool = ArenaBetting.GetSideBetPool(match.id),

@@ -1079,4 +1079,100 @@ t.test('DEFECT: a save that changes nothing still answers the player who asked',
             .. 'is left saying "Saving, waiting for the server" for ever')
 end)
 
+-- ========================================================================
+-- THE LADDER HEIGHT ON THE WIRE, AND THE MEMO BEHIND IT
+--
+-- The snapshot carries how many rungs a match is REALLY won on, resolved
+-- against the host's tier plan, because the mode's default height is not the
+-- same number and the panel was quoting the wrong one.
+--
+-- Resolving it costs a walk of the whole weapon catalogue, and
+-- snapshotMatches runs inside BuildState, which runs ONCE PER RECIPIENT on
+-- every broadcast. Measured on eight matches, four of them gun games: 0.13 ms
+-- per BuildState before it was added, 1.67 ms after -- a sixty-four player
+-- server paying that sixty-four times per broadcast. So the answer is
+-- remembered between calls, and a remembered answer that goes stale is worse
+-- than a slow one.
+-- ========================================================================
+
+--- A tier plan naming EVERY class, because one that does not leaves the
+--- unnamed ones at their config defaults -- 30 rungs' worth on the shipped
+--- gun game -- which is the right behaviour and makes for a confusing test.
+--- @param melee integer
+--- @param sidearm integer
+--- @return table
+local function planOf(melee, sidearm)
+    return { melee = melee, sidearm = sidearm, smg = 0, shotgun = 0,
+             rifle = 0, heavy = 0, precision = 0 }
+end
+
+t.test('the wire carries the rung count this match is really won on', function()
+    local s = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = s.lobby.Create(1, anArena(s), 'gungame', nil, nil, nil, nil,
+        nil, nil, planOf(1, 1), nil)
+    t.isNotNil(matchId, 'the gun game could not be created')
+
+    t.equals(s.onlyMatch(1).tiers, 2,
+        'the panel was sent the mode default instead of this match\'s two rungs')
+end)
+
+t.test('and a plan changed mid-lobby moves it, which a stale memo would not', function()
+    -- THE WHOLE RISK OF REMEMBERING IT. The count is keyed on the plan's
+    -- identity, and UpdateMatch assigns a table Arena.ResolveTierPlan has
+    -- just built -- so a new plan is a new table. A memo keyed on something
+    -- that did not move would hold the old number here for ever.
+    local s = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = s.lobby.Create(1, anArena(s), 'gungame', nil, nil, nil, nil,
+        nil, nil, planOf(1, 1), nil)
+
+    t.equals(s.onlyMatch(1).tiers, 2, 'the lobby did not open on two rungs')
+
+    local ok, why = s.lobby.UpdateMatch(1, {
+        matchId = matchId, modeKey = 'gungame', tierPlan = planOf(1, 4),
+    })
+    t.isTrue(ok, 'the plan could not be changed: ' .. tostring(why))
+
+    t.equals(s.onlyMatch(1).tiers, 5,
+        'THE RUNG COUNT DID NOT MOVE WITH THE PLAN -- the memo went stale')
+end)
+
+t.test('and changing the MODE moves it too, though the plan never changed', function()
+    -- The other half of the key. A memo watching only the plan would hold a
+    -- ladder height over a mode that has no ladder at all.
+    local s = newArena({ [1] = 5000, [2] = 5000 })
+    local matchId = s.lobby.Create(1, anArena(s), 'gungame', nil, nil, nil, nil,
+        nil, nil, planOf(1, 1), nil)
+    t.equals(s.onlyMatch(1).tiers, 2, 'the lobby did not open on two rungs')
+
+    t.isTrue(s.lobby.UpdateMatch(1, { matchId = matchId, modeKey = 'ffa' }),
+        'the mode could not be changed')
+
+    t.isNil(s.onlyMatch(1).tiers,
+        'a free-for-all was sent a ladder height left over from the gun game')
+end)
+
+t.test('a mode that plays no ladder sends nothing, every time it is asked', function()
+    -- `false` is what "no ladder" is remembered as, so the question is not
+    -- re-decided on every broadcast. It has to come back out as nil.
+    local s = newArena({ [1] = 5000, [2] = 5000 })
+    s.lobby.Create(1, anArena(s), nil, nil, nil, nil, nil)
+
+    for _ = 1, 3 do
+        t.isNil(s.onlyMatch(1).tiers, 'a non-ladder match was given a rung count')
+    end
+end)
+
+t.test('and the same answer comes back on every broadcast, not just the first', function()
+    -- A memo that answered once and then returned nil would pass every test
+    -- above, because every one of them asks once.
+    local s = newArena({ [1] = 5000, [2] = 5000 })
+    s.lobby.Create(1, anArena(s), 'gungame', nil, nil, nil, nil,
+        nil, nil, planOf(1, 2), nil)
+
+    for round = 1, 5 do
+        t.equals(s.onlyMatch(1).tiers, 3,
+            ('the rung count was wrong on broadcast %d'):format(round))
+    end
+end)
+
 os.exit(t.summary())

@@ -650,6 +650,12 @@ t.test('the snapshot names the payout mode the server really uses', function()
     -- and it can only be right if this field is.
     local s = newArena({ [1] = 5000 }, function(config)
         config.Betting.enabled = true
+        -- THE GATE THIS TEST IS ABOUT. Server-funded payouts ship REFUSED
+        -- (Config.Betting.allowServerFundedPayouts = false) because an
+        -- odds bet is the operator's money and the bettor can be the
+        -- person deciding the result. This file is testing the odds
+        -- MECHANISM, so it opens the gate on purpose.
+        config.Betting.allowServerFundedPayouts = true
         config.Betting.betPayout.spectators = 'odds'
     end)
     t.equals(s.state(1).config.betting.betPayout.spectators, 'odds',
@@ -759,6 +765,7 @@ end)
 t.test('and an ODDS bet never joins the pool, because the server funds it', function()
     -- Counting it would promise the winner money that is not in the pot.
     local s, matchId = withFee(500, function(config)
+        config.Betting.allowServerFundedPayouts = true
         config.Betting.betPayout.fighters = 'odds'
     end)
 

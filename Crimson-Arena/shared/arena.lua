@@ -2573,6 +2573,49 @@ local function resolveBetBand(rules, requested, disabledReason)
     return wanted, nil
 end
 
+--- Who funds a winning bet of this kind: 'pool' (the losers) or 'odds' (the
+--- operator).
+---
+--- ONE ANSWER, BECAUSE THERE WERE TWO. server/betting.lua stamped the mode
+--- onto every bet as it was taken and server/lobby.lua told the panel what to
+--- expect, and each read Config.Betting.betPayout for itself. Two readings of
+--- one setting is how a panel comes to promise a payout the settlement does
+--- not make.
+---
+--- AND THE SERVER FUNDS NOTHING UNLESS THE OPERATOR SAYS SO OUT LOUD.
+--- 'odds' pays the stake back multiplied, out of the operator's pocket, and
+--- the person placing the bet can be the person deciding the result: a
+--- fighter backs themselves, beats an account they also control, and the
+--- arena pays for it. Measured against the real settlement -- a 100,000
+--- stake returned 100,000 of profit across the pair, every round, for the
+--- price of an entry fee. `allowServerFundedPayouts` ships false, so this
+--- returns 'pool' whatever betPayout says, and Arena.ReportConfigProblems
+--- says why in the console rather than leaving an operator wondering.
+--- @param kind string -- 'fighter' or anything else (spectator)
+--- @return 'pool'|'odds'
+function Arena.BetPayoutMode(kind)
+    local betting = Config.Betting or {}
+    local block = betting.betPayout
+    local wanted = type(block) == 'table'
+        and block[kind == 'fighter' and 'fighters' or 'spectators']
+        or nil
+
+    if wanted ~= 'odds' then return 'pool' end
+    if betting.allowServerFundedPayouts ~= true then return 'pool' end
+    return 'odds'
+end
+
+--- Whether the operator has written 'odds' anywhere without opening the gate.
+--- Read by Arena.ReportConfigProblems; kept here beside the rule it is about.
+--- @return boolean
+function Arena.ServerFundedPayoutsRefused()
+    local betting = Config.Betting or {}
+    local block = betting.betPayout
+    if type(block) ~= 'table' then return false end
+    if betting.allowServerFundedPayouts == true then return false end
+    return block.fighters == 'odds' or block.spectators == 'odds'
+end
+
 function Arena.ResolveSpectatorBet(requested)
     return resolveBetBand(Config.Betting.spectatorBets, requested, 'error.spectator_bets_disabled')
 end
@@ -3690,10 +3733,20 @@ function Arena.ValidateConfig()
         local oddsRaw = (Config.Betting.spectatorBets or {}).oddsMultiplier
         local odds = tonumber(oddsRaw)
         local payoutBlock = type(Config.Betting.betPayout) == 'table' and Config.Betting.betPayout or {}
-        local onOdds = payoutBlock.fighters == 'odds' or payoutBlock.spectators == 'odds'
+        -- WHETHER ODDS IS ACTUALLY RUNNING, not merely written down.
+        -- `allowServerFundedPayouts` ships false and Arena.BetPayoutMode
+        -- refuses odds without it, so a config that says 'odds' is paying a
+        -- pool share in practice -- and the multiplier below costs nobody
+        -- anything until the gate is opened.
+        local onOdds = Arena.BetPayoutMode('fighter') == 'odds'
+            or Arena.BetPayoutMode('spectator') == 'odds'
         local tail = onOdds
-            and ' betPayout is set to \'odds\', so this is being paid out right now.'
-            or ' Both halves of betPayout are on \'pool\', so nothing is paid at this number today -- it starts costing people the moment either one is set to \'odds\'.'
+            and ' betPayout is set to \'odds\' and Config.Betting.allowServerFundedPayouts is on, so this is being paid out right now.'
+            or ' Nothing is paid at this number today: either betPayout is on \'pool\', or Config.Betting.allowServerFundedPayouts is off and \'odds\' is being refused.'
+
+        if Arena.ServerFundedPayoutsRefused() then
+            complain('Config.Betting.betPayout asks for \'odds\' but Config.Betting.allowServerFundedPayouts is false, so every bet is being settled as \'pool\' instead. That is deliberate: an odds payout is the operator\'s own money, and the person placing the bet can be the person deciding the result -- a fighter backing themselves to beat an account they also control was measured returning their whole stake as profit, every round. Set allowServerFundedPayouts = true only if you are ready to police who bets on what.')
+        end
 
         if oddsRaw ~= nil and odds == nil then
             complain(('Config.Betting.spectatorBets.oddsMultiplier is a %s, not a number -- it has fallen back to 2.0.%s')

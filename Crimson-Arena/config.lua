@@ -24,13 +24,13 @@
       632   Modes         Free-for-all, team deathmatch and gun game
       936   DefaultMode   Which of them a new lobby opens on
       955   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1152   UI            Panel colours, logo and title
-     1210   Permissions   Who may open a match, who may force-stop one
-     1296   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1730   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2217   Database      Optional: leaderboard, and what players still owe the arena
-     2227   Webhook       Optional: a Discord line per finished match
-     2259   Dispatch      Optional: keeping police and EMS out of the arena
+     1178   UI            Panel colours, logo and title
+     1236   Permissions   Who may open a match, who may force-stop one
+     1322   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1756   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2243   Database      Optional: leaderboard, and what players still owe the arena
+     2253   Webhook       Optional: a Discord line per finished match
+     2285   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -978,12 +978,38 @@ Config.Betting = {
     --             and paid BY THE SERVER. Predictable, and it costs the
     --             server money on every win.
     --
-    -- BOTH SHIP AS 'pool'. 'odds' on a bet placed by somebody who can decide
-    -- the result is a money printer: a fighter backs themselves to win a
-    -- round they were going to win anyway and the server pays for it.
+    -- BOTH SHIP AS 'pool', AND 'odds' IS REFUSED UNLESS YOU ALSO TURN THE
+    -- SWITCH BELOW ON. Writing 'odds' here on its own does nothing except
+    -- put a line in the server console telling you why.
     --
     -- THIS IS NOT `Config.Betting.payout`, which is further down and answers
     -- a different question: how the POT is split between the winners.
+    --
+    -- ================================================================
+    -- THE SERVER PAYING FOR BETS. OFF, AND MEASURED.
+    --
+    -- A 'pool' bet is other players' money: whatever one bettor wins,
+    -- another lost, and the arena creates nothing. An 'odds' bet is the
+    -- OPERATOR'S money -- and it is a money printer in the hands of anybody
+    -- with a second account, because the person placing the bet is also the
+    -- person deciding the result.
+    --
+    -- This was measured against the real settlement, not guessed at. One
+    -- player, one alt, one rigged round, profit across BOTH their accounts:
+    --
+    --     payout=pool  fee=0    stake=1,000     ->  +0
+    --     payout=pool  fee=500  stake=100,000   ->  +0
+    --     payout=odds  fee=0    stake=1,000     ->  +1,000
+    --     payout=odds  fee=500  stake=100,000   ->  +100,000
+    --
+    -- It scales with the stake, it costs the farmer nothing, and it repeats
+    -- every round. The entry fee does not slow it down.
+    --
+    -- So the server funds nothing unless you say this out loud, here, on
+    -- purpose. Turn it on only if you are ready to police who bets on what.
+    -- ================================================================
+    allowServerFundedPayouts = false,
+
     betPayout = {
         fighters = 'pool',
         spectators = 'pool',

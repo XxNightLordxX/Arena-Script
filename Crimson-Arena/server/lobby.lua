@@ -399,14 +399,22 @@ local function snapshotConfig()
             -- the server's, and a panel guessing 'cash'/'bank' would offer
             -- one this framework does not have.
             accounts = ArenaBetting.Accounts(),
+            -- THROUGH THE SAME RESOLVER THE BETS ARE STAMPED WITH. This read
+            -- the config itself, so the panel could promise a payout the
+            -- settlement would not make -- and, since server-funded payouts
+            -- are refused unless the operator opens that gate, it would have
+            -- gone on advertising odds on a server that pays a pool share.
             betPayout = (function()
                 local block = Config.Betting.betPayout
-                if type(block) ~= 'table' then return { fighters = 'pool', spectators = 'pool' } end
                 return {
-                    fighters = block.fighters == 'odds' and 'odds' or 'pool',
-                    spectators = block.spectators == 'odds' and 'odds' or 'pool',
-                    sharedPool = block.sharedPool ~= false,
-                    includeEntryPot = block.includeEntryPot == true,
+                    fighters = Arena.BetPayoutMode('fighter'),
+                    spectators = Arena.BetPayoutMode('spectator'),
+                    -- WRITTEN OUT, NOT CHAINED. `a and b or c` is not an
+                    -- if-then-else when b can be false: sharedPool = false
+                    -- made the whole expression fall through to `or true`
+                    -- and the panel was told the opposite of the setting.
+                    sharedPool = (type(block) ~= 'table') or (block.sharedPool ~= false),
+                    includeEntryPot = (type(block) == 'table') and (block.includeEntryPot == true),
                 }
             end)(),
             fighterBets = {

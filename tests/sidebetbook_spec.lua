@@ -314,6 +314,12 @@ t.test('an odds bet is out of both, because the server funds it', function()
     -- to win that no winning bet can ever be paid from.
     local s, matchId = withWatcher(0, function(config)
         config.Betting.betPayout = config.Betting.betPayout or {}
+        -- THE GATE THIS TEST IS ABOUT. Server-funded payouts ship REFUSED
+        -- (Config.Betting.allowServerFundedPayouts = false) because an
+        -- odds bet is the operator's money and the bettor can be the
+        -- person deciding the result. This file is testing the odds
+        -- MECHANISM, so it opens the gate on purpose.
+        config.Betting.allowServerFundedPayouts = true
         config.Betting.betPayout.spectators = 'odds'
     end)
     t.isTrue(s.betting.PlaceSpectatorBet(3, matchId, 1, 2000, 'cash'))

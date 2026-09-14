@@ -250,6 +250,11 @@ end
 --- rather than inherited.
 --- @param config table
 local function oddsPayout(config)
+    -- THE GATE THIS HELPER OPENS. Server-funded payouts ship REFUSED
+    -- (Config.Betting.allowServerFundedPayouts = false) because an odds bet
+    -- is the operator's money and the bettor can be the person deciding the
+    -- result. These tests are about the odds MECHANISM, so they say so.
+    config.Betting.allowServerFundedPayouts = true
     config.Betting.betPayout = {
         fighters = 'odds', spectators = 'odds', sharedPool = true,
         includeEntryPot = false,

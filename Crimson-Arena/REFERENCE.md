@@ -371,7 +371,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 102 functions
+#### `shared/arena.lua` — 104 functions
 
 | Function | What it does |
 |---|---|
@@ -459,6 +459,8 @@ listed; the source documents them where they are.
 | `Arena.ResolveLives(requested)` | How many lives a host may give a match, resolved from what they asked for. |
 | `Arena.ResolveRadar(requested)` | Whether a match runs a radar, resolved from what the host asked for. |
 | `Arena.ResolveEntryFee(requested)` | Clamps a requested entry fee into the configured band. |
+| `Arena.BetPayoutMode(kind)` | Who funds a winning bet of this kind: 'pool' (the losers) or 'odds' (the operator). The ONE answer -- the bet is stamped with it and the panel is told it, so the two cannot drift. Returns 'pool' whatever betPayout says unless `Config.Betting.allowServerFundedPayouts` is true, because an odds bet is the operator's money and the bettor can be the person deciding the result. |
+| `Arena.ServerFundedPayoutsRefused()` | Whether the operator has written 'odds' without opening that gate, so ReportConfigProblems can say why nothing is being paid at it. |
 | `Arena.ResolveSpectatorBet(requested)` | A spectator's side-bet, held to the spectator band. |
 | `Arena.ResolveFighterBet(requested)` | A FIGHTER'S OWN STAKE, held to the fighter band rather than the spectator one. |
 | `Arena.ApplyHouseCut(pot)` | The house cut, and what is left to pay out. |

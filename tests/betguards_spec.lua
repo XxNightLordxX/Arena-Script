@@ -927,4 +927,117 @@ t.test('POWERGAMING: walking out of a live round does not turn you into a specta
     t.equals(s.qbx.players[2].money.cash, 50000, 'money moved on a refused bet')
 end)
 
+-- ========================================================================
+-- THE SERVER DOES NOT FUND BETS, AND THAT IS NOT A DEFAULT -- IT IS A GATE
+--
+-- A 'pool' bet is other players' money: whatever one bettor wins, another
+-- lost, and the arena creates nothing. An 'odds' bet is the OPERATOR'S money,
+-- and the person placing it can be the person deciding the result.
+--
+-- MEASURED, NOT ARGUED. One player, one alt they also control, one rigged
+-- round, profit summed across BOTH accounts:
+--
+--     payout=pool  fee=0    stake=1,000     ->  +0
+--     payout=pool  fee=500  stake=100,000   ->  +0
+--     payout=odds  fee=0    stake=1,000     ->  +1,000
+--     payout=odds  fee=500  stake=100,000   ->  +100,000
+--
+-- It scales with the stake, costs the farmer nothing, and repeats every
+-- round. Config.Betting.allowServerFundedPayouts ships false and
+-- Arena.BetPayoutMode refuses 'odds' without it.
+-- ========================================================================
+
+--- One rigged round: the farmer backs themselves and beats the alt.
+--- @return integer profit across both accounts the farmer controls
+local function farmProfit(mutate)
+    local s = newArena({ [1] = 1000000, [2] = 1000000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.entryFee.enabled = true
+        config.Betting.entryFee.min = 0
+        config.Betting.entryFee.default = 500
+        config.Betting.fighterBets.enabled = true
+        config.Betting.fighterBets.min = 0
+        config.Betting.fighterBets.max = 1000000
+        config.Betting.spectatorBets.enabled = true
+        config.Betting.spectatorBets.min = 0
+        config.Betting.spectatorBets.oddsMultiplier = 2.0
+        config.Betting.houseCutPercent = 0
+        if mutate then mutate(config) end
+    end)
+
+    local before = s.qbx.players[1].money.cash + s.qbx.players[2].money.cash
+    local matchId = s.lobby.Create(1, anArena(s), nil, 500, nil, nil, 'cash')
+    t.isNotNil(matchId, 'the farm could not create a match')
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'), 'the alt could not join')
+    t.isTrue(s.betting.PlaceSpectatorBet(1, matchId, 1, 100000, 'cash'),
+        'the farmer could not back themselves')
+
+    local match = s.lobby.Get(matchId)
+    match.state = 'live'
+    for src, player in pairs(match.players) do player.alive = (src == 1) end
+    s.betting.Settle(matchId, { winners = { 1 }, players = match.players })
+    s.betting.SettleSpectatorBets(matchId, '1')
+    s.step(); s.step(); s.step()
+
+    return s.qbx.players[1].money.cash + s.qbx.players[2].money.cash - before
+end
+
+t.test('DEFECT: backing yourself to beat your own alt mints nothing', function()
+    -- The shipped config: betPayout on 'pool', gate shut.
+    t.equals(farmProfit(nil), 0, 'A RIGGED ROUND PAID THE FARMER')
+end)
+
+t.test('and writing betPayout = odds on its own still mints nothing', function()
+    -- The operator asked for odds and did NOT open the gate, so it is refused
+    -- and the bet settles as a pool bet -- which is zero-sum.
+    t.equals(farmProfit(function(config)
+        config.Betting.betPayout = { fighters = 'odds', spectators = 'odds',
+                                     sharedPool = true, includeEntryPot = true }
+    end), 0, 'ODDS RAN WITHOUT THE GATE BEING OPENED -- the printer is back')
+end)
+
+t.test('and the gate is what decides it, so the feature still exists', function()
+    -- The control. Open it deliberately and the operator really is funding
+    -- the win -- which is the whole reason it ships shut.
+    local minted = farmProfit(function(config)
+        config.Betting.allowServerFundedPayouts = true
+        config.Betting.betPayout = { fighters = 'odds', spectators = 'odds',
+                                     sharedPool = true, includeEntryPot = true }
+    end)
+    t.equals(minted, 100000,
+        'opening the gate did not restore the odds payout, so the switch is not the thing deciding')
+end)
+
+t.test('the refusal is reported rather than left silent', function()
+    local s = newArena({ [1] = 1000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.betPayout = { fighters = 'odds', spectators = 'pool' }
+    end)
+    t.isTrue(s.env.Arena.ServerFundedPayoutsRefused(),
+        'an operator asking for odds with the gate shut was not flagged at all')
+    t.equals(s.env.Arena.BetPayoutMode('fighter'), 'pool')
+    t.equals(s.env.Arena.BetPayoutMode('spectator'), 'pool')
+end)
+
+t.test('and an operator on pool is not nagged about a gate they never asked for', function()
+    local s = newArena({ [1] = 1000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.betPayout = { fighters = 'pool', spectators = 'pool' }
+    end)
+    t.isFalse(s.env.Arena.ServerFundedPayoutsRefused(),
+        'a pool server was warned about odds it never set')
+end)
+
+t.test('the panel is told the mode the settlement will really use', function()
+    -- The two used to read the config separately, so the panel could promise
+    -- a multiplier the settlement was never going to pay.
+    local s = newArena({ [1] = 1000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.betPayout = { fighters = 'odds', spectators = 'odds' }
+    end)
+    local wire = s.lobby.BuildState(1).config.betting.betPayout
+    t.equals(wire.fighters, 'pool', 'the panel was promised odds the server refuses')
+    t.equals(wire.spectators, 'pool', 'the panel was promised odds the server refuses')
+end)
+
 os.exit(t.summary())

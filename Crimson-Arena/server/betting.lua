@@ -1856,12 +1856,13 @@ function ArenaBetting.HasSpectatorBet(matchId, src)
     return false
 end
 
+-- ONE ANSWER, SHARED WITH THE PANEL. server/lobby.lua tells the player what
+-- to expect and this stamps what they get, and each used to read the config
+-- for itself. Arena.BetPayoutMode is now the only place that decides, and it
+-- is also where server-funded payouts are refused unless the operator has
+-- opened that gate on purpose -- see the note on it.
 local function payoutMode(kind)
-    local block = Config.Betting.betPayout
-    local wanted = type(block) == 'table'
-        and block[kind == 'fighter' and 'fighters' or 'spectators']
-        or nil
-    return wanted == 'odds' and 'odds' or 'pool'
+    return Arena.BetPayoutMode(kind)
 end
 
 local function fighterBetsOn()

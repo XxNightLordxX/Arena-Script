@@ -878,6 +878,76 @@ RegisterCommand('arenaisolation', function(src, _args)
     if players == 0 then
         ArenaLog('arenaisolation:   nobody is being held in an arena bucket.')
     end
+
+    -- AND EVERY CONNECTED PLAYER, WHETHER THIS RESOURCE KNOWS THEM OR NOT.
+    --
+    -- THE BLIND SPOT THIS FILLS, and it is the one an operator runs this
+    -- command to see. The loop above walks `held`, so it reports the players
+    -- the arena is deliberately keeping in an instance -- and the player who
+    -- matters is the one who is NOT in it. A fighter left in an arena bucket
+    -- with no record is invisible to every check this file makes, including
+    -- that one and including ExitBucket's own read-back, which returns early
+    -- for anybody it has no record of. `held` is memory, so a resource
+    -- restart empties it while the buckets it wrote stay exactly where they
+    -- were.
+    --
+    -- WHAT IT IS FOR, in the operator's words: "I am not invisible in my
+    -- eyes but the other person is", and a relog fixes it. Two players in
+    -- two different buckets is precisely that -- each sees themselves, both
+    -- are invisible to the other -- and a reconnect clears it because a
+    -- routing bucket does not survive one. The whole roll-call is printed
+    -- rather than only the odd ones out, because who can see whom is decided
+    -- by the WHOLE set and a line saying "player 4 is in 4210" means nothing
+    -- until you can see that player 2 is in 0.
+    local list = connectedPlayers()
+    if not list then
+        ArenaLog('arenaisolation:   this server would not say who is connected, so the roll-call below '
+            .. 'cannot be taken. That is the reading, not a failure of the arena.')
+    else
+        local occupied, stranded, counted = {}, 0, 0
+
+        for _, id in ipairs(list) do
+            local player = Arena.ToInt(id)
+            if player then
+                counted = counted + 1
+                local bucket = currentBucket(player)
+                occupied[bucket] = (occupied[bucket] or 0) + 1
+
+                local name = type(ArenaPlayerName) == 'function'
+                    and ArenaPlayerName(player) or tostring(player)
+                local note = ''
+                if bucket ~= 0 and not held[player] then
+                    stranded = stranded + 1
+                    note = '  <-- STRANDED: the arena has NO RECORD of putting them there, so nothing '
+                        .. 'here will ever take them out. They can be freed by reconnecting.'
+                end
+
+                ArenaLog('arenaisolation:   %s (%s) is in bucket %d%s', tostring(player), name, bucket, note)
+            end
+        end
+
+        local rooms = 0
+        for _ in pairs(occupied) do rooms = rooms + 1 end
+
+        if counted == 0 then
+            ArenaLog('arenaisolation:   nobody is connected.')
+        elseif rooms > 1 then
+            ArenaLog('arenaisolation: %d player(s) are spread across %d DIFFERENT routing buckets. '
+                .. 'Anybody in one cannot see anybody in another, and each of them can still see '
+                .. 'THEMSELVES -- which is what "everyone else is invisible" looks like from inside. '
+                .. 'If a match is live that is correct and expected; if no match is live, it is not.',
+                counted, rooms)
+        else
+            ArenaLog('arenaisolation: all %d connected player(s) are in the same bucket, so routing '
+                .. 'is not what is hiding anybody from anybody.', counted)
+        end
+
+        if stranded > 0 then
+            ArenaLog('arenaisolation: %d player(s) are STRANDED in an arena bucket with no record. '
+                .. 'That is a defect in this resource and worth reporting -- the usual cause is the '
+                .. 'resource being restarted while they were in a round.', stranded)
+        end
+    end
 end, false)
 
 -- THE HANDLER THAT MATTERS MOST IN THIS FILE.

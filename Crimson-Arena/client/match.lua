@@ -703,6 +703,39 @@ local WHY_TEXT = {
 --- is the only way anybody will ever know which round it was.
 local enteredVisible = nil
 
+--- HOW LONG AFTER A ROUND THE ARENA KEEPS AN EYE ON THAT PROMISE.
+---
+--- A SINGLE CHECK AT THE END OF leaveArena WAS TOO EARLY, and the
+--- operator's own console is what proved it:
+---
+---   door: 2 left (left the arena), kit returned
+---   revive: also told hospital:client:Revive for 2        <- after the check
+---   revive: also told hospital:client:Revive for 2        <- five seconds later
+---   revive: swept 2 of 2 player(s) 5000ms after the match ended.
+---
+--- The arena BROADCASTS TO THE MEDICAL SCRIPT AFTER IT HAS FINISHED WITH
+--- THE PLAYER, and then again on a sweep five seconds later. Whatever that
+--- script's revive handler does to the ped therefore lands in a window the
+--- one-shot check had already left, and the player is put back invisible
+--- with nothing left watching. Reported three times, and every earlier fix
+--- was upstream of this window.
+---
+--- THE ARENA OWNS THIS WINDOW BECAUSE THE ARENA OPENS IT. Those events are
+--- sent by this resource, on its own schedule, about a round only it knows
+--- has ended -- so the few seconds they land in are its to watch. Ten covers
+--- the five-second sweep twice over and is over long before anything a
+--- player does next could matter.
+---
+--- IT STILL CANNOT FIRE FOR SOMEBODY WHO WAS INVISIBLE ON THE WAY IN: it is
+--- the same `enteredVisible` reading, taken at the door before this resource
+--- had touched anything, and the god-mode rule is unchanged. And it says its
+--- piece ONCE and stops, rather than fighting whatever is doing it in a loop.
+local VISIBILITY_WATCH_MS = 10000
+
+--- Cancels a watch still running when a new round starts, so the one that
+--- belongs to the round just finished cannot reach into the next one.
+local visibilityToken = 0
+
 local FATAL_MEMORY_MS = 2000
 local lastFatalEntity
 local lastFatalAt = 0
@@ -2210,22 +2243,37 @@ local function leaveArena(returnCoords)
     FreezeEntityPosition(ped, false)
     ClearPedBloodDamage(ped)
 
-    -- THE LAST THING THE ROUND DOES, after every restore that was going to
-    -- run has run. See enteredVisible for why this exists and why it cannot
-    -- fire for a player who was invisible before they got here.
+    -- AND THEN WATCHED FOR A FEW SECONDS, rather than looked at once. See
+    -- VISIBILITY_WATCH_MS: this resource goes on talking to the medical
+    -- script after it has finished with the player, so the single check that
+    -- used to stand here ran BEFORE the thing that hides them.
     if enteredVisible == true and type(IsEntityVisible) == 'function' then
-        local ok, showing = pcall(IsEntityVisible, ped)
-        if ok and showing == false then
-            SetEntityVisible(ped, true, false)
-            -- NOT BEHIND Config.Debug. This line means a defect that three
-            -- separate fixes have not caught is still live, and the only
-            -- person who can report which round it happened in is the player
-            -- standing there unable to see themselves.
-            print('[crimson_arena] you left the arena invisible and this resource has just put '
-                .. 'you back. That is a bug in the arena, not in anything you did -- please tell '
-                .. 'the server owner, and say whether you had been eliminated, were watching the '
-                .. 'rest of the round, or died on the last kill.')
-        end
+        visibilityToken = visibilityToken + 1
+        local token = visibilityToken
+        local until_ = GetGameTimer() + VISIBILITY_WATCH_MS
+
+        CreateThread(function()
+            while visibilityToken == token and GetGameTimer() < until_ do
+                local here = PlayerPedId()
+                local ok, showing = pcall(IsEntityVisible, here)
+
+                if ok and showing == false then
+                    SetEntityVisible(here, true, false)
+                    -- SAID ONCE AND THEN THE WATCH STOPS. A correction here
+                    -- means something is still hiding them after the round,
+                    -- and the player standing there unable to see themselves
+                    -- is the only one who can say what they were doing when
+                    -- it happened. NOT behind Config.Debug, for that reason.
+                    print('[crimson_arena] you left the arena invisible and this resource has just '
+                        .. 'put you back. Something on this server hides a player when they die and '
+                        .. 'does not put them back -- please tell the server owner it happened, and '
+                        .. 'whether you were eliminated, watching, or died on the last kill.')
+                    return
+                end
+
+                Wait(250)
+            end
+        end)
     end
     enteredVisible = nil
 
@@ -2291,6 +2339,9 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     if type(data) ~= 'table' or type(data.spawn) ~= 'table' then return end
 
     captureOwnLoadout()
+
+    -- A WATCH FROM THE LAST ROUND HAS NO BUSINESS IN THIS ONE.
+    visibilityToken = visibilityToken + 1
 
     -- BEFORE ANYTHING IN THIS RESOURCE HAS TOUCHED THE PED. See
     -- enteredVisible: this is the only moment the answer is honestly the

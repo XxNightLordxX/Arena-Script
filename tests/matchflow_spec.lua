@@ -3074,7 +3074,7 @@ local function hiddenThenSentHome(f)
     f.visible = false
 
     f.fireThreaded('crimson_arena:client:exitArena', {})
-    for _ = 1, 4 do f.step() end
+    for _ = 1, 8 do f.step() end
 end
 
 t.test('THE PROMISE: a fighter who walked in visible is visible again at the lobby', function()
@@ -3146,6 +3146,65 @@ t.test('and a player who arrives ALREADY invisible is told why they stay that wa
     t.contains(said, 'already invisible',
         'a player walked into a round invisible and nothing anywhere said so, which is how '
         .. 'somebody stays stuck for every round they ever play')
+end)
+
+t.test('THE DEFECT: something that hides them AFTER the round is still caught', function()
+    -- THE ONE-SHOT CHECK WAS TOO EARLY, and the operator's console proved it:
+    -- this resource goes on telling the medical script to revive the player
+    -- AFTER it has finished with them -- once on the way out, and again on a
+    -- sweep five seconds later. Whatever that script's handler does to the
+    -- ped lands in a window a single check has already left.
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+    f.fireThreaded('crimson_arena:client:exitArena', {})
+    f.step()
+
+    t.isTrue(f.visible, 'premise: they are visible the moment the round lets go of them')
+
+    -- And now something else hides them, a beat later.
+    f.visible = false
+    f.clock = f.clock + 400
+    for _ = 1, 6 do f.step() end
+
+    t.isTrue(f.visible,
+        'they were hidden after the arena had finished looking, and nothing was watching')
+end)
+
+t.test('and the watch gives up rather than fighting forever', function()
+    -- It must not become a loop that argues with whatever is doing it: it
+    -- corrects once, says so, and stops. Well past the window, a player who
+    -- is hidden stays hidden -- by then it is nothing to do with the round.
+    local f = newClientFixture()
+
+    f.fire('crimson_arena:client:enterArena', {
+        matchId = 'match-1',
+        modeKey = 'ffa',
+        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 90.0 },
+        scatterRadius = 0.0,
+        freezeSeconds = 0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    f.fire('crimson_arena:client:matchLive')
+    f.fireThreaded('crimson_arena:client:exitArena', {})
+    for _ = 1, 4 do f.step() end
+
+    f.clock = f.clock + 60000
+    for _ = 1, 4 do f.step() end
+
+    f.visible = false
+    for _ = 1, 6 do f.step() end
+
+    t.isFalse(f.visible,
+        'a minute after the round it was still reaching in and overriding somebody')
 end)
 
 t.test('CONTROL: an ordinary round that hid nobody says nothing at all', function()

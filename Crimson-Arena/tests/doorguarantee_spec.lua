@@ -1905,4 +1905,59 @@ t.test('AND TWO SIMULTANEOUS MATCHES CONSERVE WHAT PLAYERS OWN', function()
     t.equals(diff, '', 'two matches at once did not conserve what players own')
 end)
 
+-- ========================================================================
+-- WHEN THE DATABASE ROUND TRIP DOES NOT COME BACK
+--
+-- ox_inventory throws an idle inventory out of memory after
+-- `inventory:cleartime` and reads it back from the database on the next
+-- touch. With a healthy database that is lossless and invisible, and every
+-- other test in this file is that case. These two are the other one.
+--
+-- Nothing in this resource can recover items ox_inventory has dropped and
+-- the database did not give back -- they do not exist anywhere any more. So
+-- the whole of the promise here is: never call it a clean exit, never make
+-- it worse, and say exactly what is missing.
+-- ========================================================================
+
+t.test('a belongings stash that comes back empty is never reported as a clean exit', function()
+    local server, matchId = liveMatch({ 1, 2 })
+
+    server.forgetStash(1)      -- written out, read back, nothing came back
+
+    server.match.End(matchId, 'match.ended')
+    server.step(10)
+
+    t.contains(server.log(), 'READ EMPTY',
+        'it handed a player empty pockets and called the exit clean')
+    t.isNotNil(server.ammo.HeldFor(1),
+        'the record was dropped, so nothing will ever go back for their belongings')
+end)
+
+t.test('and a bag holding stash that comes back short says so, by count', function()
+    -- THE SAME EXPOSURE ON THIS RESOURCE'S OWN STASH, and it was silent. The
+    -- refill returned quietly on an empty read, so a holding stash that had
+    -- been through the round trip looked exactly like a bag that went in
+    -- empty: the bag came back hollow with nothing anywhere saying why. The
+    -- count taken at the door is the only thing that can tell those apart.
+    local server = newServer({ 1, 2 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 }, { 'handcuffs', 2 } })
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    server.emptyStash('crimson_arena_bag_k1')   -- the holding stash is what was lost
+
+    server.match.End(match.id, 'match.ended')
+    server.step(10)
+
+    t.contains(server.log(), 'are NOT in stash',
+        'a player\'s bag was emptied by the arena and nothing said so')
+    -- And it still does not make anything up, or take anything else.
+    t.equals(server.carrying(1), INTACT .. ',police_bagx1')
+end)
+
 os.exit(t.summary())

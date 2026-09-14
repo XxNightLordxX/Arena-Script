@@ -53,6 +53,15 @@ local function serverNamed(name)
     local qbx = Sandbox.newQbxCore(players)
     local netEvents, captured, clock = {}, {}, 0
 
+    -- REAL, NOT NO-OPS. These answered 0 and did nothing, which is exactly
+    -- what FXServer does when routing buckets are unavailable -- so
+    -- server/dispatch.lua caught the move not landing, latched provenInert
+    -- and switched isolation off for this whole fixture. Every bucket line
+    -- in the file it loads was dead here, and anything in this spec's own
+    -- subject that touches instancing was being asked of a server that had
+    -- none.
+    local buckets = {}
+
     local env = Sandbox.newArenaEnv({
         exports = qbx.exports,
         lib = Sandbox.newOxLib(),
@@ -69,8 +78,8 @@ local function serverNamed(name)
         GetPlayers = function() return {} end,
         Player = function() return { state = { set = function() end } } end,
         IsPlayerAceAllowed = function() return false end,
-        GetPlayerRoutingBucket = function() return 0 end,
-        SetPlayerRoutingBucket = function() end,
+        GetPlayerRoutingBucket = function(src) return buckets[tonumber(src)] or 0 end,
+        SetPlayerRoutingBucket = function(src, b) buckets[tonumber(src)] = b end,
         SetRoutingBucketPopulationEnabled = function() end,
         SetRoutingBucketEntityLockdownMode = function() end,
         GetConvar = function(n, fb) if n == 'onesync' then return 'on' end return fb end,

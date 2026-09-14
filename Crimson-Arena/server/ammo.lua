@@ -683,7 +683,16 @@ local function holdContainers(ox, src, citizenid)
             end
 
             if took > 0 then
-                keys[#keys + 1] = key
+                -- HOW MANY, NOT JUST WHICH. The refill reads the holding
+                -- stash back, and "it is empty" and "it never had anything"
+                -- are the same sentence to a reader that only knows the key.
+                -- That stash is an ox_inventory stash like any other, so it
+                -- sits in the same idle purge and the same database round
+                -- trip as the belongings stash -- and a trip that does not
+                -- come back would have emptied somebody's bag in silence,
+                -- which is the exact defect this whole mechanism exists to
+                -- stop. Carrying the count is what lets the exit say so.
+                keys[#keys + 1] = { key = key, held = took, bag = bag.name }
                 ArenaDebug('door: holding %d item(s) out of %s\'s %s for the round.',
                     took, tostring(src), tostring(bag.name))
             end
@@ -716,7 +725,15 @@ local function refillContainers(ox, src, keys, citizenid)
 
     local restored, failures = 0, 0
 
-    for _, key in ipairs(keys) do
+    for _, entry in ipairs(keys) do
+        -- TWO SHAPES ON PURPOSE. holdContainers knows how many it took and
+        -- says so; ArenaAmmo.ReturnLeftovers works the keys out from the bags
+        -- a player is carrying after a restart and cannot know. A missing
+        -- count is "do not check", never "expected none".
+        local key = type(entry) == 'table' and entry.key or entry
+        local expected = type(entry) == 'table' and Arena.ToInt(entry.held) or nil
+        local bagName = type(entry) == 'table' and entry.bag or nil
+
         if Arena.IsKey(key) then
             local stash = bagStashFor(key)
 
@@ -740,9 +757,29 @@ local function refillContainers(ox, src, keys, citizenid)
             end
 
             local rows = itemsIn(waiting)
+
+            -- SHORT IS NOT EMPTY, AND EMPTY IS NOT "NOTHING WAS HELD".
+            --
+            -- This returned quietly on an empty read, so a holding stash that
+            -- had been through a database round trip and come back with
+            -- nothing looked exactly like a bag that went in empty: the bag
+            -- came back hollow and not one line anywhere said why. The count
+            -- taken at the door is the only thing that can tell those apart.
+            if expected ~= nil and #rows < expected then
+                ArenaLog('door: %d of the %d item(s) taken out of %s\'s %s are NOT in stash %s any '
+                    .. 'more. That stash is a real ox_inventory stash and sits in the same idle '
+                    .. 'purge as any other, so the usual cause is it being written out and read '
+                    .. 'back while the round was on -- raise `inventory:cleartime` if this repeats. '
+                    .. 'Whatever is still in it is being put back now.',
+                    expected - #rows, expected, tostring(src),
+                    tostring(bagName or 'bag'), stash)
+                failures = failures + 1
+            end
+
             if #rows == 0 then goto nextKey end
 
-            local slot, bagName = slotOfContainer(ox, src, key)
+            local slot, foundName = slotOfContainer(ox, src, key)
+            bagName = foundName or bagName
             if not slot then
                 ArenaLog('door: %s is not carrying the bag that %d item(s) in stash %s came out of, so '
                     .. 'they stay there. That bag may still be in their belongings stash if the exit '

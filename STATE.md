@@ -259,6 +259,56 @@ driving the realistic double path (settle the bets, then destroy the lobby) cons
 with the check and without it. It is a redundant second line of defence, not an untested
 one, and a test for it would pass either way. Recorded rather than written.
 
+### 3f. `inventory:cleartime` is NOT something you have to set
+
+The short answer: **both reported bugs are fixed in code and neither needs the convar.** It
+was belt-and-braces, and it is worth being precise about what it was and was not buying.
+
+ox_inventory throws an idle inventory out of memory after `inventory:cleartime` and reads it
+back from the database on the next touch. **With a healthy database that round trip is
+lossless and completely invisible.** It only costs anything when the write does not land --
+a database that is off, an unwritable `ox_inventory` table, a SELECT-only user. And on a
+server in that state ox_inventory is losing every stash, glovebox and container on the box,
+not just this resource's.
+
+There is no supported way to keep an inventory out of that purge, and that was checked
+rather than assumed:
+
+- `inv.time` is stamped at creation and refreshed **only** when an inventory is closed
+  (`modules/inventory/server.lua:625`, `:351`). No export touches it -- not `AddItem`, not
+  `RemoveItem`, not `GetInventoryItems`, not `RegisterStash`.
+- ox_inventory's own purpose-built mechanism for this job, `ConfiscateInventory` /
+  `ReturnInventory`, is **worse**: it writes straight to the database and reads back with a
+  direct `MySQL.scalar.await`, so it is more database-dependent rather than less -- and it
+  keys on one slot per player, which would collide with any jail script that uses it.
+- A temporary stash is worse again: `datastore` stops it being saved, so the purge simply
+  destroys it.
+
+So prevention is not available from outside ox_inventory. What is available is **never
+making it worse, and saying exactly what is missing** -- and that is now measured rather
+than claimed:
+
+- A belongings stash that comes back empty is never reported as a clean exit. It says `READ
+  EMPTY`, keeps the record so the sweep goes back for it, and hands nobody anything it
+  invented.
+- **A bag holding stash that comes back short now says so, by count, and that was a real gap
+  in the container fix.** The refill returned quietly on an empty read -- so a holding stash
+  that had been through the round trip looked exactly like a bag that went in empty, and the
+  bag came back hollow with nothing anywhere saying why. The count taken at the door is the
+  only thing that can tell those apart, so it is carried now.
+
+Setting `inventory:cleartime 60` still removes the cause rather than catching it, and costs
+nothing but a little memory. It is a recommendation, not a requirement.
+
+### 3g. Four more fixtures had dead routing-bucket lines
+
+The no-op routing natives found in the door fixture were not the only ones.
+`admingates_spec`, `crossfire_spec`, `damageproperty_spec` and `hostilename_spec` all
+answered bucket 0 and did nothing, so `provenInert` latched and isolation was off in all
+four -- anything in their own subject that touches instancing was being asked of a server
+that had none. All four now model buckets properly and all four still pass, so nothing was
+hiding behind it; they are simply faithful now instead of inert.
+
 ### 4. And no match duplicates anything, asserted rather than argued
 
 The general form of every defect above is "it is in two places now", and a test that looks

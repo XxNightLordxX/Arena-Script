@@ -1251,6 +1251,42 @@ t.test('the refusal is reported rather than left silent', function()
     t.equals(s.env.Arena.BetPayoutMode('spectator'), 'pool')
 end)
 
+t.test('and opening the gate does not drag \'pool\' along with it', function()
+    -- THE GATE IS A PERMISSION, NOT AN INSTRUCTION. An operator who opens it
+    -- for the watchers and keeps the fighters on pool must get exactly that,
+    -- and `if wanted ~= \'odds\' then return \'pool\' end` is the whole of it.
+    --
+    -- A mutation sample broke that line and every spec still passed, because
+    -- no test had the gate OPEN and a side on \'pool\' at the same time -- and
+    -- with the gate shut the line below reaches the same answer. So the only
+    -- configuration that can tell them apart is the one nobody had written.
+    local s = newArena({ [1] = 1000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.allowServerFundedPayouts = true
+        config.Betting.betPayout = { fighters = 'pool', spectators = 'odds' }
+    end)
+
+    t.equals(s.env.Arena.BetPayoutMode('fighter'), 'pool',
+        'a side left on pool was paid at odds because the gate happened to be open')
+    t.equals(s.env.Arena.BetPayoutMode('spectator'), 'odds',
+        'the side that DID ask for odds was refused with the gate open')
+end)
+
+t.test('and a betPayout naming something else entirely settles as pool', function()
+    -- A typo must not become an odds payout by accident, gate open or shut.
+    for _, gate in ipairs({ true, false }) do
+        local s = newArena({ [1] = 1000 }, function(config)
+            config.Betting.enabled = true
+            config.Betting.allowServerFundedPayouts = gate
+            config.Betting.betPayout = { fighters = 'odd', spectators = 'POOL' }
+        end)
+        t.equals(s.env.Arena.BetPayoutMode('fighter'), 'pool',
+            ('a typo settled as odds with the gate %s'):format(tostring(gate)))
+        t.equals(s.env.Arena.BetPayoutMode('spectator'), 'pool',
+            ('the wrong case settled as odds with the gate %s'):format(tostring(gate)))
+    end
+end)
+
 t.test('and the BOOT LOG says it too, not just the flag behind it', function()
     -- THE FLAG WAS TESTED AND THE SENTENCE WAS NOT. A mutation sample of this
     -- session's own changes broke the validator's `if

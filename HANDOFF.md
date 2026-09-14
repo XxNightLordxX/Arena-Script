@@ -168,38 +168,32 @@ file: a guard whose condition is guaranteed by its own call sites.
 
 ## 5. The one uncommitted file
 
-`Crimson-Arena/server/ammo.lua` carries the crash-persistence work the owner
-chose ("write at issue, weapons only"). It parses and the design is complete:
+The crash-persistence work the owner chose ("write at issue, weapons only")
+is **applied, proven and committed**. It is no longer a patch.
 
 - `markWeaponOut(record)` writes a row with `kind='out'` when a weapon is
-  handed over, from inside `giveWeapon` — the single choke point every issue
-  path goes through.
-- `strikeWeaponOff(record)` deletes it when the weapon actually comes back,
-  from inside `takeWeaponBack`'s `removeSlot`, gated on the RESULT of the
-  removal rather than the attempt.
-- `LoadOwedKit` promotes any `'out'` row that outlived the process into a real
-  debt, because the only way such a row survives is that the exit never ran.
-- Same `ledger_key` (`w:<serial>`), so a weapon is never in two states at
-  once and no schema change is needed. `kind` already exists in the table.
-- Both helpers are forward-declared locals near `giveWeapon` and assigned
-  after the SQL and key builders. Verified with disassembly that neither
-  leaks to `_ENV`.
+  handed over, from inside `giveWeapon`.
+- `strikeWeaponOff(record)` deletes it when the weapon comes back.
+- `strikeIssuedWeaponsOff(matchId, src)` does the same for a whole record
+  when the door's bulk clear settles the kit. **This was the missing
+  piece.** The door empties the inventory in one `ClearInventory` rather
+  than removing weapons one at a time, so the per-weapon strike-off never
+  ran on an ordinary exit -- every clean round left a row, and the next
+  start promoted it to a debt for a weapon the player had already returned.
+  That is the failure mode this work was parked on, and it was real.
+- `LoadOwedKit` promotes any `'out'` row that outlived the process.
 
-**It is NOT proven**, so it is NOT applied. The harness that should
-demonstrate a crash leaving a row and the next start reading it back was still
-being fixed when work stopped.
+The open question -- "on a clean round, is every `markWeaponOut` matched by
+a `strikeWeaponOff`?" -- is **answered yes, and pinned**:
+`tools/harness/ledger.lua` asserts a clean round leaves zero rows, and
+fails if the strike-off is removed.
 
-The change is preserved as a patch:
-
-    tools/pending-crash-persistence-weapons.patch
-
-Apply it with `git apply tools/pending-crash-persistence-weapons.patch`,
-finish the test, and only then commit. It was kept out of the branch so the
-pull request contains nothing untested.
-
-Open question on it: on a clean round, is every `markWeaponOut` matched by a
-`strikeWeaponOff`? If not, an idle server slowly fills the table with rows for
-weapons that were returned. That is the failure mode that matters most.
+The harness needed two repairs before it could prove anything: its fake
+database stored nothing (so the crash it demonstrates could not happen), and
+it accepted a previous process's rows and never read them (so "next start"
+began on an empty table). Both fixed; 18 checks now cover crash, restart,
+clean round, an unreturned weapon, a read-only database user, and the
+database switched off.
 
 ---
 
@@ -759,7 +753,6 @@ Crimson-Arena/REFERENCE.md
 Crimson-Arena/DEPLOYMENT.md
 HANDOFF.md                          new
 tools/harness/*                     new — 7 harnesses + README
-tools/pending-crash-persistence-weapons.patch   new
 tools/__pycache__/strip_prod.cpython-311.pyc    deleted (was tracked)
 .gitignore                          __pycache__ rule added
 ```
@@ -883,8 +876,8 @@ I put both to him as explicit either/or questions and he chose:
 - **(2f) Crash coverage: "write at issue, but only weapons."** I offered
   leave-it, full coverage, or weapons-only. He chose weapons-only, explicitly
   accepting the write cost for weapons and explicitly *not* wanting rounds and
-  supplies written at issue. That decision is what
-  `tools/pending-crash-persistence-weapons.patch` implements.
+  supplies written at issue. That decision is what `markWeaponOut` in
+  `server/ammo.lua` implements -- applied and proven; see section 5.
 
 ### What I do NOT have — do not let me invent it
 
@@ -1027,10 +1020,12 @@ made a harness pass while broken.
 
 ## 6. What was in flight when I was paused
 
-**(a) and (b)** One thing, and it is preserved:
-`tools/pending-crash-persistence-weapons.patch` (151 lines).
+**(a) and (b)** One thing, and it is now **done**: the crash-persistence
+work, applied and proven (see section 5). The patch file it was preserved as
+has been deleted, because a patch of code that is already in the tree is a
+trap for whoever finds it next.
 
-Its intended shape, so you can finish it:
+Its shape, for reference:
 
 - `markWeaponOut(record)` writes a row with `kind='out'` when a weapon is
   handed over, from inside `giveWeapon` — the single choke point every issue

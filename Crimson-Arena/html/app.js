@@ -911,6 +911,17 @@
     /* What a weapon starts with ticked: everything it can take. The server
        fits exactly this when a pick carries no list of its own, so the
        screen and the server agree before anybody clicks anything. */
+    /* DOES THIS SERVER LET THE PLAYER PICK THEIR OWN ATTACHMENTS?
+
+       Read as `=== false` rather than `!== true`, like every other flag on
+       this wire: a snapshot assembled before this setting existed has to keep
+       the picker it already had rather than silently losing it. The server is
+       what actually enforces the rule -- see Arena.AttachmentsAreChosen --
+       and this only decides whether the chips are live. */
+    function mayChooseAttachments() {
+        return (cfg().loadouts || {}).chooseAttachments !== false;
+    }
+
     function defaultAttachmentsFor(key) {
         var weapon = weaponByKey(key);
         return arrayOf(weapon && weapon.attachments).map(function (option) {
@@ -920,6 +931,12 @@
 
     /* What is ticked on a pick right now, for drawing. */
     function attachmentsOn(key) {
+        /* OPERATOR-FITTED MEANS OPERATOR-FITTED, including on a draft that was
+           saved while picking was still allowed. Without this the screen would
+           keep showing yesterday's ticks over a gun the server is now fitting
+           in full, which is the one thing this row exists to report. */
+        if (!mayChooseAttachments()) return defaultAttachmentsFor(key);
+
         var index = draftIndexOf(key);
         if (index < 0) return defaultAttachmentsFor(key);
         var pick = state.draftWeapons[index];
@@ -3067,16 +3084,18 @@
                 fitChip.id = 'attachment-' + weapon.key + '-' + kind;
                 fitChip.type = 'button';
                 if (fittedNow.indexOf(kind) >= 0) fitChip.classList.add('active');
-                fitChip.disabled = !canChooseLoadout();
+                fitChip.disabled = !canChooseLoadout() || !mayChooseAttachments();
                 /* SAYS WHAT THIS CHIP IS, not what the row is. The second
                    branch was dead -- this whole block only runs when `picked`
                    is true -- so every chip claimed to be fitted, including
                    the ones the player had just switched off. It is the one
                    control whose entire job is to say whether a component is
                    going on the gun. */
-                fitChip.title = fittedNow.indexOf(kind) >= 0
-                    ? 'Fitted for the match — click to take it off'
-                    : 'Not fitted — click to put it on';
+                fitChip.title = !mayChooseAttachments()
+                    ? 'Fitted by the server — every weapon is issued the same way here'
+                    : (fittedNow.indexOf(kind) >= 0
+                        ? 'Fitted for the match — click to take it off'
+                        : 'Not fitted — click to put it on');
                 fitChip.addEventListener('click', function (event) {
                     event.stopPropagation();
                     toggleWeaponAttachment(weapon.key, kind);
@@ -3084,6 +3103,15 @@
                 fitRow.appendChild(fitChip);
             });
             card.appendChild(fitRow);
+
+            /* AND SAY SO, because a row of buttons that will not press is the
+               kind of thing a player reports as broken. The label alone does
+               not tell them whether the arena is fitting these or their own
+               click went unheard. */
+            if (!mayChooseAttachments()) {
+                card.appendChild(makeEl('div', 'weapon-note',
+                    'These come with the gun on this server — everybody is issued the same.'));
+            }
         }
 
         if (poolFull && canChooseLoadout()) {

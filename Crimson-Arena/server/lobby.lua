@@ -344,6 +344,13 @@ local function snapshotConfig()
             -- the player believes.
             slots = Arena.SlotsPerPlayer(),
             allowFirearms = Config.Loadouts.allowFirearms ~= false,
+            -- WHETHER THE PLAYER PICKS THEIR OWN ATTACHMENTS, resolved the
+            -- way the server resolves it rather than by reading the config
+            -- block twice. With this false the server fits every kind it
+            -- allows and the panel draws the switches read-only, so a player
+            -- can see what is on the gun without being offered a control
+            -- that would do nothing.
+            chooseAttachments = Arena.AttachmentsAreChosen(),
             allowMelee = Config.Loadouts.allowMelee ~= false,
             ammoTypeSlots = math.max(0, Arena.ToInt(Config.Loadouts.ammoTypeSlots) or 0),
             categories = Config.Loadouts.categories or {},

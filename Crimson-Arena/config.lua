@@ -28,10 +28,10 @@
      1237   Permissions   Who may open a match, who may force-stop one
      1323   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1757   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2244   Database      Optional: leaderboard, and what players still owe the arena
-     2275   Leaderboard   Which matches count towards the board, and which do not
-     2341   Webhook       Optional: a Discord line per finished match
-     2373   Dispatch      Optional: keeping police and EMS out of the arena
+     2269   Database      Optional: leaderboard, and what players still owe the arena
+     2300   Leaderboard   Which matches count towards the board, and which do not
+     2366   Webhook       Optional: a Discord line per finished match
+     2398   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1810,6 +1810,31 @@ Config.Loadouts = {
     -- ==================================================================
     attachments = {
         enabled = true,
+
+        -- WHO DECIDES WHAT GOES ON THE GUN.
+        --
+        --   true   the PLAYER picks. The loadout screen draws a row of
+        --          switches on each weapon they carry -- Scope, Grip,
+        --          Suppressor and so on, whatever that weapon can take --
+        --          all of them on to begin with, and they click one to take
+        --          it off. This is what ships.
+        --
+        --   false  THE SERVER FITS THEM. Every kind in `fit` below goes onto
+        --          every weapon that can take it, the switches are still
+        --          shown but cannot be clicked, and the screen says the
+        --          attachments come with the gun. Use this for an arena
+        --          where everybody should be carrying the same thing.
+        --
+        -- NOT THE SAME AS `enabled = false`, which takes attachments away
+        -- altogether -- no scopes, no grips, bare weapons. This one is about
+        -- who chooses, not whether there are any.
+        --
+        -- IT IS THE SERVER THAT ENFORCES IT, not the greyed-out button: with
+        -- this off, an attachment choice arriving from a client is DROPPED
+        -- rather than checked, so a player who edits their game cannot fit
+        -- themselves anything by sending one anyway.
+        allowChoose = true,
+
         fit = { 'scope', 'extendedclip', 'grip', 'muzzle', 'barrel', 'flashlight' },
     },
 

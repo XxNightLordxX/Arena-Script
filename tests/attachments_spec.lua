@@ -333,4 +333,139 @@ t.test('and two weapons in one loadout are fitted separately', function()
     t.equals(#resolved.weapons[2].components, 0, 'the stripped pistol was fitted anyway')
 end)
 
+-- ======================================================================
+-- ...OR THE OPERATOR FITS THEM AND NOBODY PICKS
+--
+-- Config.Loadouts.attachments.allowChoose. It ships TRUE -- the picker above
+-- is what a player gets -- and an operator turning it off wants one arena
+-- where everybody is issued the same gun.
+--
+-- NOT THE SAME SWITCH AS `enabled`. That one takes attachments away
+-- altogether; this one is about who decides.
+--
+-- THE CHOICE IS DROPPED, NOT CHECKED. A greyed-out button stops nobody, so
+-- the gate lives inside Arena.AttachmentsFor -- the single door every
+-- attachment goes through -- rather than at the call sites, where a caller
+-- added later could forget it.
+-- ======================================================================
+
+--- Arena, with attachments fitted by the server rather than picked.
+--- @return table Arena
+local function operatorFits()
+    local env = Sandbox.newArenaEnv({})
+    env.Config.Loadouts.attachments.allowChoose = false
+    return env.Arena
+end
+
+t.test('the picker ships ON, so nothing changes for a server that never set it', function()
+    t.isTrue(Arena.AttachmentsAreChosen(),
+        'the shipped config no longer lets a player pick their own attachments')
+end)
+
+t.test('and an operator who turns it off gets the full fitted set', function()
+    local A = operatorFits()
+    t.isFalse(A.AttachmentsAreChosen())
+
+    local fitted = A.AttachmentsFor('WEAPON_CARBINERIFLE', nil)
+    t.isTrue(#fitted > 0, 'the carbine was issued bare on an auto-fitting server')
+end)
+
+t.test('THE POINT: a picked list is IGNORED, not honoured', function()
+    local A = operatorFits()
+    local full = A.AttachmentsFor('WEAPON_CARBINERIFLE', nil)
+
+    local asked = A.AttachmentsFor('WEAPON_CARBINERIFLE', { 'scope' })
+    t.equals(table.concat(asked, ','), table.concat(full, ','),
+        'a player picked one kind and got one kind on a server that fits them all')
+end)
+
+t.test('and an EMPTY list cannot strip a gun either', function()
+    -- The half that matters more. With the picker on, {} means "I took
+    -- everything off" -- so if it survived here, anybody could still issue
+    -- themselves a bare weapon on an arena meant to standardise kit.
+    local A = operatorFits()
+    local full = A.AttachmentsFor('WEAPON_CARBINERIFLE', nil)
+
+    t.equals(table.concat(A.AttachmentsFor('WEAPON_CARBINERIFLE', {}), ','),
+        table.concat(full, ','),
+        'A PLAYER UNTICKED EVERYTHING AND WAS ISSUED A BARE GUN')
+end)
+
+t.test('and neither can a hostile client naming components directly', function()
+    local A = operatorFits()
+    local full = A.AttachmentsFor('WEAPON_CARBINERIFLE', nil)
+
+    t.equals(table.concat(A.AttachmentsFor('WEAPON_CARBINERIFLE', {
+        'COMPONENT_AT_SCOPE_THERMAL', 'scope', 42, '', false,
+    }), ','), table.concat(full, ','),
+        'junk from a client changed what went on the gun')
+end)
+
+t.test('the whole loadout goes through the same gate, not just the helper', function()
+    -- ResolveWeaponEntry is what actually builds what a player carries. A
+    -- gate the helper honours and the entry path does not is no gate at all.
+    local A = operatorFits()
+
+    local carbine
+    for _, row in ipairs(A.GetWeaponCatalogue and A.GetWeaponCatalogue() or {}) do
+        if row.weapon == 'WEAPON_CARBINERIFLE' then carbine = row break end
+    end
+    if carbine == nil then
+        local env = Sandbox.newArenaEnv({})
+        for _, row in ipairs(env.Config.Loadouts.weapons or {}) do
+            if row.weapon == 'WEAPON_CARBINERIFLE' then carbine = row break end
+        end
+    end
+    t.isNotNil(carbine, 'the carbine is no longer in the catalogue')
+
+    local bare = A.ResolveWeaponEntry(carbine, nil, 0, {})
+    local full = A.ResolveWeaponEntry(carbine, nil, 0, nil)
+    t.equals(table.concat(bare.attachments or {}, ','),
+        table.concat(full.attachments or {}, ','),
+        'the entry path honoured a choice the helper drops')
+end)
+
+t.test('A CONFIG THAT NEVER HEARD OF THE SETTING KEEPS ITS PICKER', function()
+    -- READ AS `~= false`, NOT `== true`, and this is the only test that can
+    -- tell the two apart -- the shipped config now carries the key, so every
+    -- other test here passes either way.
+    --
+    -- An operator upgrading from a config written before this existed has no
+    -- `allowChoose` at all. Reading it as `== true` would silently take the
+    -- picker away from them, which is a feature vanishing on an upgrade
+    -- nobody asked for.
+    local env = Sandbox.newArenaEnv({})
+    env.Config.Loadouts.attachments.allowChoose = nil
+
+    t.isTrue(env.Arena.AttachmentsAreChosen(),
+        'a config from before this setting existed lost its attachment picker')
+    t.equals(#env.Arena.AttachmentsFor('WEAPON_CARBINERIFLE', { 'scope' }), 1,
+        'and stopped honouring a choice it used to honour')
+end)
+
+t.test('and `enabled = false` still beats it: no attachments at all', function()
+    -- The two switches are not alternatives. Off means off, whoever chooses.
+    --
+    -- allowChoose LEFT ON, deliberately. Setting both to false lets the
+    -- second one carry the test on its own, and the `enabled` guard could
+    -- then be deleted with everything still green -- measured.
+    local env = Sandbox.newArenaEnv({})
+    env.Config.Loadouts.attachments.enabled = false
+    env.Config.Loadouts.attachments.allowChoose = true
+
+    t.isFalse(env.Arena.AttachmentsAreChosen(),
+        'a server with attachments switched off still claims a player picks them')
+    t.equals(#env.Arena.AttachmentsFor('WEAPON_CARBINERIFLE', nil), 0,
+        'attachments were fitted on a server that has them switched off')
+end)
+
+t.test('the panel is told which of the two it is', function()
+    -- The chips are drawn read-only off this, so it has to be on the wire.
+    local env = Sandbox.newArenaEnv({})
+    t.isTrue(env.Arena.AttachmentsAreChosen(), 'the shipped default moved')
+
+    env.Config.Loadouts.attachments.allowChoose = false
+    t.isFalse(env.Arena.AttachmentsAreChosen())
+end)
+
 os.exit(t.summary())

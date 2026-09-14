@@ -371,7 +371,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 104 functions
+#### `shared/arena.lua` — 105 functions
 
 | Function | What it does |
 |---|---|
@@ -432,6 +432,7 @@ listed; the source documents them where they are.
 | `Arena.ResolveSupplies(requested)` | Turns whatever a client asked to carry into a list the server will hand over. |
 | `Arena.SlotsPerPlayer()` | How many weapons one player may carry, guns and blades together. 0 is no limit. |
 | `Arena.AttachmentKinds()` | Which kinds of attachment the operator wants fitted, in order. Empty when the feature is switched off. |
+| `Arena.AttachmentsAreChosen()` | Whether the PLAYER picks their own attachments, or the server fits them. False also when attachments are switched off entirely. |
 | `Arena.AttachmentOptionsFor(weaponName)` | What this weapon may be offered in the picker -- key and label per kind, resolved through the same table the server fits from, so a chip can never offer what the server would refuse. |
 | `Arena.AttachmentsFor(weaponName, chosen)` | The components one weapon is fitted with. `chosen` is a list of KIND keys and never component names, which is what stops a client fitting itself anything it likes; nil means whatever this server fits by default. |
 | `Arena.ResolveWeaponEntry(weapon, ammoType, ammo)` | One weapon of a loadout, built -- policy-free, so the gun-game ladder can use it without being judged as a player request. |

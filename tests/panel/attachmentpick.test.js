@@ -37,7 +37,7 @@ function test(name, fn) {
 }
 
 /** A snapshot shaped like server/lobby.lua's config block. */
-function snapshot(allowCustom, weaponOverride) {
+function snapshot(allowCustom, weaponOverride, configOverride) {
     const weapon = Object.assign({
         key: 'pistol',
         label: 'Pistol',
@@ -58,7 +58,7 @@ function snapshot(allowCustom, weaponOverride) {
                 entryFee: { enabled: false, min: 0, max: 0, default: 0 },
                 spectatorBets: { enabled: false, min: 0, max: 0 },
             },
-            loadouts: {
+            loadouts: Object.assign({
                 allowChoose: true,
                 chooser: 'player',
                 allowCustomAmmo: allowCustom,
@@ -68,7 +68,7 @@ function snapshot(allowCustom, weaponOverride) {
                 weapons: [weapon],
                 categories: [{ key: 'sidearm', label: 'Sidearms', order: 1 }],
                 armor: { allowChoose: false, options: [], default: 100 },
-            },
+            }, (configOverride || {}).loadouts || {}),
             teams: { list: [] },
             ui: {},
         },
@@ -349,6 +349,110 @@ test('and inside a lobby an unsaved pick is still protected from a broadcast', (
 
     assert.ok(/Pistol/.test(panel.text('loadout-slots')),
         'a broadcast wiped out a pick the player was still making');
+});
+
+/*
+    WHEN THE OPERATOR FITS THEM INSTEAD.
+
+    Config.Loadouts.attachments.allowChoose ships true -- everything above is
+    what a player gets. Turned off, the server fits every kind it allows and
+    the panel must draw the switches READ-ONLY rather than hiding them: a
+    player still wants to see what is on the gun, they just do not get to
+    change it.
+
+    The server is what enforces the rule (Arena.AttachmentsFor drops the
+    choice). These are about not offering a control that would do nothing.
+*/
+
+const FITTED = { loadouts: { chooseAttachments: false } };
+
+/** A weapon that takes a scope and a grip. */
+const ARMED = { attachments: [{ key: 'scope', label: 'Scope' },
+                              { key: 'grip', label: 'Grip' }] };
+
+test('operator-fitted: the chips are still drawn, so you can see the gun', () => {
+    const panel = opened(snapshot(false, ARMED, FITTED));
+    panel.fire('weapon-card-pistol', 'click');
+
+    assert.ok(panel.built('attachment-pistol-scope'),
+        'the attachments row vanished, so nobody can see what is on the gun');
+    assert.ok(panel.node('attachment-pistol-scope').classList.contains('active'),
+        'the scope the server fits was drawn as if it were off');
+});
+
+test('...but they cannot be pressed', () => {
+    const panel = opened(snapshot(false, ARMED, FITTED));
+    panel.fire('weapon-card-pistol', 'click');
+
+    assert.strictEqual(panel.node('attachment-pistol-scope').disabled, true,
+        'a player was offered a switch that the server would ignore');
+    assert.strictEqual(panel.node('attachment-pistol-grip').disabled, true);
+});
+
+test('and the screen says why, rather than leaving dead buttons', () => {
+    const panel = opened(snapshot(false, ARMED, FITTED));
+    panel.fire('weapon-card-pistol', 'click');
+
+    assert.ok(/come with the gun/i.test(panel.text('weapon-card-pistol')),
+        'nothing on screen explains why the switches will not move: '
+        + panel.text('weapon-card-pistol').slice(0, 200));
+});
+
+test('CONTROL: with the switch ON they are live, as before', () => {
+    const panel = opened(snapshot(false, ARMED));
+    panel.fire('weapon-card-pistol', 'click');
+
+    assert.strictEqual(panel.node('attachment-pistol-scope').disabled, false,
+        'the picker is dead even with the setting on');
+    assert.ok(!/come with the gun/i.test(panel.text('weapon-card-pistol')),
+        'a picking server was told its attachments are fitted for it');
+});
+
+test('and a saved half-fitted pick is redrawn as the FULL fitted set', () => {
+    /* THE ONE THAT ONLY BITES ON A CHANGE OF MIND. A player picks a scope and
+       nothing else while the picker is on; the operator then turns it off.
+       The server now fits the lot -- and without this the screen would keep
+       showing yesterday's single tick over a gun carrying everything, which
+       is the one thing this row exists to report.
+
+       Caught by mutation: the guard could be deleted with every other test
+       here still green, because they all start from a fresh pick. */
+    const saved = confirmed(snapshot(false, ARMED), ['scope']);
+    saved.config.loadouts.chooseAttachments = false;
+
+    const panel = opened(saved);
+    panel.fire('weapon-card-pistol', 'click');
+
+    assert.ok(panel.node('attachment-pistol-scope').classList.contains('active'),
+        'the scope the server fits was drawn as off');
+    assert.ok(panel.node('attachment-pistol-grip').classList.contains('active'),
+        'A SAVED TICK WAS SHOWN OVER A GUN THE SERVER NOW FITS IN FULL');
+});
+
+test('CONTROL: with the picker ON, a saved half-fitted pick is redrawn as saved', () => {
+    /* The other direction, and the reason the guard is conditional. A player
+       who took the grip off must find it still off when they come back. */
+    const saved = confirmed(snapshot(false, ARMED), ['scope']);
+
+    const panel = opened(saved);
+    panel.fire('weapon-card-pistol', 'click');
+
+    assert.ok(panel.node('attachment-pistol-scope').classList.contains('active'),
+        'the scope they kept came back off');
+    assert.ok(!panel.node('attachment-pistol-grip').classList.contains('active'),
+        'the grip they took off came back fitted');
+});
+
+test('and a server that sends no flag at all keeps its picker', () => {
+    /* Read as `=== false`, like every other flag on this wire: a snapshot
+       assembled before this setting existed must not lose the feature. */
+    const snap = snapshot(false, ARMED);
+    delete snap.config.loadouts.chooseAttachments;
+    const panel = opened(snap);
+    panel.fire('weapon-card-pistol', 'click');
+
+    assert.strictEqual(panel.node('attachment-pistol-scope').disabled, false,
+        'an older server lost its attachment picker');
 });
 
 console.log('');

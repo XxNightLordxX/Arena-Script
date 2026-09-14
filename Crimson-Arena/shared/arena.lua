@@ -1150,6 +1150,25 @@ function Arena.AttachmentKinds()
     return out
 end
 
+--- Does the PLAYER choose which attachments go on, or does the server fit
+--- them?
+---
+--- TRUE UNLESS AN OPERATOR SAYS OTHERWISE, so a server that never heard of
+--- this setting keeps the picker it already had. `enabled = false` is still
+--- the switch that turns attachments off altogether; this one is about who
+--- decides, not whether there are any.
+---
+--- FALSE MEANS AUTO-FITTED: every kind this server allows goes on every
+--- weapon that can take it, and the chips are read-only. That is the same
+--- answer Arena.AttachmentsFor already gives for a nil choice, which is why
+--- the gate below is one line rather than a second code path.
+--- @return boolean
+function Arena.AttachmentsAreChosen()
+    local block = (Config.Loadouts or {}).attachments
+    if type(block) ~= 'table' or block.enabled ~= true then return false end
+    return block.allowChoose ~= false
+end
+
 --- The components one weapon is fitted with, given what the operator asked
 --- for and what that weapon can actually take.
 ---
@@ -1216,8 +1235,19 @@ function Arena.AttachmentsFor(weaponName, chosen)
 
     -- WHAT WAS TICKED, or nil when nobody was asked. An EMPTY list is a real
     -- answer and not the same as nil: it is a player who took everything off.
+    --
+    -- AND NOBODY IS ASKED WHEN THE OPERATOR FITS THEM. `allowChoose = false`
+    -- means the server decides, so whatever arrived is DROPPED here rather
+    -- than being checked against something -- a client that keeps sending a
+    -- choice gets the fitted set back regardless, which is the only version
+    -- of this rule a client cannot argue with.
+    --
+    -- HERE RATHER THAN AT THE CALL SITES, and that is the whole point: this
+    -- function is the single door every attachment goes through, so a caller
+    -- added later cannot forget the gate. `ResolveWeaponEntry` and the panel
+    -- both come through it.
     local ticked = nil
-    if type(chosen) == 'table' then
+    if type(chosen) == 'table' and Arena.AttachmentsAreChosen() then
         ticked = {}
         for _, kind in ipairs(chosen) do
             if Arena.IsKey(kind) then ticked[kind] = true end

@@ -201,6 +201,64 @@ so `crimson_arena_<citizenid>` and `crimson_arena_bag_<container id>` could in p
 collide if a citizenid began with `bag_`. Framework-generated ids do not, and the guard
 would cost more noise than the risk is worth. Noted rather than fixed.
 
+### 3d. Attacking the fixes, and two matches at once
+
+**Attacked deliberately rather than waiting for a report.** Every attack below failed, and
+the ones a player could actually attempt are now tests:
+
+- **The bag as a smuggling route.** Every move in or out of a bag, the belongings stash and
+  the bag holding stash is refused mid-round -- the swapItems hook already turns away any
+  move whose other end is not the player's own inventory, and a container's id is not their
+  server id. Pocket-to-pocket still works, which is right.
+- **Jam your stash to keep the arena kit.** A jammed stash means the door cannot strip you,
+  so you fight in your own gear -- but the exit still takes the arena's kit back by serial,
+  and leaves your own ammunition alone. Nothing gained.
+- **A ghost copy of the bag itself appearing in the stash.** Refused by the ceiling; the
+  player gets exactly one bag with its contents, the ghost stays parked.
+- **Four rounds of cycling, and leave/re-enter loops.** Totals flat every time.
+
+**What the attacking found: `/arenaunjam` was a foot-gun.** Clearing a jam on a stash that
+still held the parked surplus put every one of those rows back inside the next ceiling, and
+the next exit handed them over -- the exact duplication the jam exists to prevent. An
+operator clearing a noisy console with `/arenaunjam all` would have done that to every
+parked surplus at once. It now refuses a stash that still holds something, says what
+clearing it would cost, and takes `force` for an operator who has genuinely checked. The
+listing shows the row count per stash so the decision is visible.
+
+**And two matches at once, which nothing tested.** Every door test ran a single round, and
+"keyed per player" or "keyed per match" is a claim only a second one can check. Two things
+had to be built first:
+
+- The fixture's routing natives were permanent no-ops -- `GetPlayerRoutingBucket` answered
+  0 and `SetPlayerRoutingBucket` did nothing, which is exactly what FXServer does when
+  buckets are unavailable. So `server/dispatch.lua` caught the move not landing, latched
+  `provenInert`, and switched isolation off: **every bucket line in the file was dead in
+  that fixture.** Modelled properly it is now the one fixture with the real inventory and
+  real instancing together.
+- The clock jumped a whole minute per call, so no match could stay live long enough to ask
+  anything about a second one. It is a parameter now, with the old value as the default.
+
+Five tests came out of that: two matches get separate instances and nobody is left in the
+world; one match ending leaves the other instanced, stripped and with its belongings still
+in its stash; four players with four bags across two matches each get their own contents
+back; a disconnect out of one match leaves the other's buckets alone; and two simultaneous
+matches conserve what players own. Proved by making both matches share one bucket, which
+the first of them catches by name.
+
+### 3e. The money side was checked and left alone
+
+212 tests across eight specs, including a conservation spec written for exactly the blind
+spot that matters ("two mistakes that cancel"), a self-bet spec, and -- already there -- a
+test running two matches side by side with one spectator holding a bet on each, settled to
+two different endings. The concurrency gap that existed on the inventory side does not exist
+here.
+
+One guard was probed and reported rather than tested: `returnSideBet`'s `settled` check.
+Removing it leaves all 166 betting tests green, which looked like an untested guard -- but
+driving the realistic double path (settle the bets, then destroy the lobby) conserves money
+with the check and without it. It is a redundant second line of defence, not an untested
+one, and a test for it would pass either way. Recorded rather than written.
+
 ### 4. And no match duplicates anything, asserted rather than argued
 
 The general form of every defect above is "it is in two places now", and a test that looks

@@ -4640,6 +4640,20 @@ function ArenaAmmo.JammedStashes()
     return out
 end
 
+--- How many rows are sitting in a stash right now, or nil when it cannot be
+--- read at all -- which is never the same answer as "none".
+local function rowsIn(stash)
+    local ox = inventory()
+    if not ox then return nil end
+
+    local map = slotMap(ox, stash)
+    if map == nil then return nil end
+
+    local n = 0
+    for _ in pairs(map) do n = n + 1 end
+    return n
+end
+
 --- Lets the door use a stash again, once a human has settled it.
 ---
 --- DELIBERATELY NOT AUTOMATIC, and specifically not "clear it when the stash
@@ -4684,31 +4698,77 @@ RegisterCommand('arenaunjam', function(src, args)
 
     local wanted = type(args) == 'table' and type(args[1]) == 'string' and args[1] or nil
 
+    -- CLEARING A JAM ON A STASH THAT STILL HAS THINGS IN IT IS THE FOOT-GUN,
+    -- and it was wide open. A jam means the arena found rows it could not
+    -- account for and parked them; clearing it without emptying the stash
+    -- puts every one of those rows back inside the next ceiling, and the next
+    -- exit hands them over. An operator running `/arenaunjam all` to tidy up
+    -- a noisy console would have handed every parked surplus to its owner --
+    -- which is the exact duplication the ceiling exists to stop. Found by
+    -- attacking this command rather than by a report.
+    --
+    -- So a non-empty stash needs the word said out loud. `force` is not a
+    -- convenience; it is the operator stating that what is in there is
+    -- genuinely the player's.
+    local forced = type(args) == 'table' and args[2] == 'force'
+
     if wanted == nil then
         ArenaLog('arenaunjam: %d stash(es) are being held back. Open each with /arenaadmin, compare '
-            .. 'it against what the player is carrying, and then run /arenaunjam <name> -- or '
-            .. '/arenaunjam all once every one of them has been settled.', #stashes)
+            .. 'it against what the player is carrying, take out anything that is not theirs, and '
+            .. 'then run /arenaunjam <name>.', #stashes)
         for _, stash in ipairs(stashes) do
-            ArenaLog('arenaunjam:   %s', stash)
+            local rows = rowsIn(stash)
+            ArenaLog('arenaunjam:   %s -- %s', stash,
+                rows == nil and 'cannot be read right now'
+                    or (rows == 0 and 'empty, safe to clear'
+                        or (rows .. ' item(s) STILL IN IT -- settle those first')))
         end
         return
+    end
+
+    --- Clears one, refusing a stash that still holds something unless the
+    --- operator has said `force`.
+    local function clear(stash)
+        local rows = rowsIn(stash)
+
+        if rows ~= 0 and not forced then
+            ArenaLog('arenaunjam: %s still %s. Clearing the jam now would put %s back inside the '
+                .. 'next ceiling and the next exit would hand %s to the owner -- which is the '
+                .. 'duplication the jam was protecting against. Empty it with /arenaadmin first, or '
+                .. 'say `/arenaunjam %s force` if you have checked and it really is theirs.',
+                stash,
+                rows == nil and 'cannot be read, so what is in it is unknown'
+                    or ('holds ' .. rows .. ' item(s)'),
+                rows == nil and 'whatever is in it' or 'them',
+                rows == nil and 'it' or 'them',
+                stash)
+            return false
+        end
+
+        return ArenaAmmo.Unjam(stash)
     end
 
     if wanted == 'all' then
         local cleared = 0
         for _, stash in ipairs(stashes) do
-            if ArenaAmmo.Unjam(stash) then cleared = cleared + 1 end
+            if clear(stash) then cleared = cleared + 1 end
         end
-        ArenaLog('arenaunjam: cleared %d stash(es).', cleared)
+        ArenaLog('arenaunjam: cleared %d of %d stash(es).', cleared, #stashes)
         return
     end
 
-    if ArenaAmmo.Unjam(wanted) then
-        ArenaLog('arenaunjam: cleared %s.', wanted)
-    else
+    local known = false
+    for _, stash in ipairs(stashes) do
+        if stash == wanted then known = true break end
+    end
+
+    if not known then
         ArenaLog('arenaunjam: %s is not one of the stashes being held back. Run /arenaunjam with '
             .. 'nothing after it to see the list.', tostring(wanted))
+        return
     end
+
+    if clear(wanted) then ArenaLog('arenaunjam: cleared %s.', wanted) end
 end, false)
 end
 

@@ -53,7 +53,15 @@ local OWN = {
 --- @param mutate fun(config: table)?
 --- @return table server
 --- @param extra table[]? -- items every player also starts with
-local function newServer(ids, mutate, extra)
+--- @param opts table|nil
+---   tickMs  how far GetGameTimer jumps per call. The default of a whole
+---           MINUTE is what most of this file wants -- it makes round timers
+---           expire so a match cannot outlive the test looking at it. It also
+---           makes it impossible to hold a second match live while asking
+---           anything about the first, so the multi-match section passes a
+---           small value instead. Default kept exactly as it was.
+local function newServer(ids, mutate, extra, opts)
+    opts = opts or {}
     local wallets, inv, stashes = {}, {}, {}
     for _, src in ipairs(ids) do
         wallets[src] = {
@@ -80,6 +88,9 @@ local function newServer(ids, mutate, extra)
 
     --- The console commands the resource registers.
     local commands = {}
+
+    --- Which routing bucket each player is standing in.
+    local buckets = {}
 
     --- Every id this fixture knows to be a CONTAINER rather than a stash,
     --- so the reads above can tell the two apart.
@@ -213,7 +224,11 @@ local function newServer(ids, mutate, extra)
         RegisterCommand = function(name, fn) commands[name] = fn end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         GetResourceState = function(name) return name == 'ox_inventory' and 'started' or 'missing' end,
-        GetGameTimer = (function() local c = 0 return function() c = c + 60000 return c end end)(),
+        GetGameTimer = (function()
+            local c = 0
+            local step = tonumber(opts.tickMs) or 60000
+            return function() c = c + step return c end
+        end)(),
         GetPlayerName = function(src) return 'Player' .. tostring(src) end,
         -- Everybody the door has ever seen. The return sweep walks this, and
         -- letting it run for real here is the point: these are the tests
@@ -252,10 +267,29 @@ local function newServer(ids, mutate, extra)
         Player = function()
             return { state = { set = function() end } }
         end,
-        GetPlayerRoutingBucket = function() return 0 end,
-        SetPlayerRoutingBucket = function() end,
+        -- REAL, NOT NO-OPS. These answered 0 and did nothing, which is
+        -- precisely what FXServer does when routing buckets are unavailable
+        -- -- so server/dispatch.lua caught the move not landing, latched
+        -- `provenInert`, and switched isolation off for the whole fixture.
+        -- Every bucket line in the file it loads was therefore dead here.
+        --
+        -- Modelled properly, this is the one fixture with the real inventory
+        -- AND real instancing at the same time, which is what "does a second
+        -- match cost the first one anything" needs.
+        GetPlayerRoutingBucket = function(src) return buckets[tonumber(src)] or 0 end,
+        SetPlayerRoutingBucket = function(src, bucket) buckets[tonumber(src)] = bucket end,
         SetRoutingBucketPopulationEnabled = function() end,
         SetRoutingBucketEntityLockdownMode = function() end,
+        GetConvar = function(name, fallback)
+            if name == 'onesync' then return 'on' end
+            return fallback
+        end,
+        GetAllVehicles = function() return {} end,
+        GetAllObjects = function() return {} end,
+        GetAllPeds = function() return {} end,
+        GetEntityRoutingBucket = function() return 0 end,
+        DeleteEntity = function() end,
+        DoesEntityExist = function() return false end,
         IsPlayerAceAllowed = function() return false end,
         PerformHttpRequest = function() end,
         ArenaStats = {
@@ -339,6 +373,15 @@ local function newServer(ids, mutate, extra)
     --- @param on boolean?  -- default true
     function server.forgetStash(src, on)
         forgotten['crimson_arena_CID' .. src] = (on ~= false) or nil
+    end
+
+    --- The routing bucket a player is in right now. 0 is the open world.
+    function server.bucketOf(src) return buckets[tonumber(src)] or 0 end
+
+    --- An admin emptying a stash by hand, which is what the jam message tells
+    --- them to do before clearing it.
+    function server.emptyStash(stash)
+        stashes[stash] = {}
     end
 
     --- Runs a console command, the way an operator at the server would.
@@ -1557,61 +1600,86 @@ end)
 -- stripped at the door again for the rest of the server's uptime.
 -- ========================================================================
 
-t.test('DEFECT: a jammed stash can be listed and cleared, and the door uses it again', function()
+--- Plays a round that leaves player 1's belongings stash jammed, with a
+--- surplus parked in it.
+local function jammedBySurplus()
     local server, matchId = liveMatch({ 1, 2 })
     server.stashItem('crimson_arena_CID1', 'phone', 1)
     server.match.End(matchId, 'match.ended')
     server.step(8)
+    t.contains(server.log(), 'touching that stash no further', 'the fixture did not jam anything')
+    return server
+end
 
-    -- The surplus jammed it, which is the point of that guard.
-    t.contains(server.log(), 'touching that stash no further')
-
-    -- AND IT IS VISIBLE. Without the listing an operator has to read the
-    -- console back to find out which stash is stuck.
-    server.command('arenaunjam', 0)
-    t.contains(server.log(), 'crimson_arena_CID1')
-    t.contains(server.log(), 'being held back')
-
-    server.command('arenaunjam', 0, 'crimson_arena_CID1')
-    t.contains(server.log(), 'no longer held back')
-
-    -- THE PROOF IT ACTUALLY CLEARED: the door strips them again. While the
-    -- jam stood, stow refused and they fought in their own gear.
-    local server2 = server
-    server2.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
-    local match = server2.lobby.All()[1]
-    server2.fire('joinMatch', 2, { matchId = match.id })
-    server2.fire('setReady', 1, { ready = true })
-    server2.fire('setReady', 2, { ready = true })
-    server2.step(6)
-
-    -- STRIPPED MEANS THEIR OWN THINGS ARE GONE FROM THEIR POCKETS. Comparing
-    -- against INTACT proves nothing either way: a fighter who was NOT
-    -- stripped is carrying their own kit AND the one the arena just issued,
-    -- so that is not INTACT either.
-    t.isNil(server2.carrying(1):find('burgerx3', 1, true),
-        'the door still refuses to strip them, so the jam never cleared')
-end)
-
-t.test('and a jam that has not been cleared still holds', function()
-    -- The control: listing must not clear anything by itself.
-    local server, matchId = liveMatch({ 1, 2 })
-    server.stashItem('crimson_arena_CID1', 'phone', 1)
-    server.match.End(matchId, 'match.ended')
-    server.step(8)
-
-    server.command('arenaunjam', 0)          -- listed only
-    server.command('arenaunjam', 0, 'crimson_arena_CID9')  -- a name that is not jammed
-
+--- Runs one more round and answers whether the door stripped player 1.
+--- Stripped means their own things are no longer in their pockets, which is
+--- the only observable that tells a cleared jam from a standing one.
+local function strippedNextRound(server)
     server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
     local match = server.lobby.All()[1]
     server.fire('joinMatch', 2, { matchId = match.id })
     server.fire('setReady', 1, { ready = true })
     server.fire('setReady', 2, { ready = true })
     server.step(6)
+    return server.carrying(1):find('burgerx3', 1, true) == nil
+end
 
-    t.isNotNil(server.carrying(1):find('burgerx3', 1, true),
-        'the door stripped them, so the jam cleared itself and the surplus is live again')
+t.test('a jammed stash is listed, with what is still in it', function()
+    local server = jammedBySurplus()
+
+    server.command('arenaunjam', 0)
+
+    t.contains(server.log(), 'crimson_arena_CID1')
+    t.contains(server.log(), 'STILL IN IT',
+        'the listing did not say the stash has things in it, which is the whole decision')
+end)
+
+t.test('DEFECT: clearing a jam on a stash that still holds something is REFUSED', function()
+    -- THE FOOT-GUN, found by attacking this command rather than by a report.
+    -- A jam means the arena parked rows it could not account for. Clearing it
+    -- without emptying the stash puts every one of them back inside the next
+    -- ceiling, and the next exit hands them over -- the exact duplication the
+    -- jam was protecting against. An operator running this to tidy a noisy
+    -- console would have done that to every parked surplus at once.
+    local server = jammedBySurplus()
+
+    server.command('arenaunjam', 0, 'crimson_arena_CID1')
+
+    t.isNil(server.log():find('no longer held back', 1, true), 'it cleared a stash that still had a surplus in it')
+    t.contains(server.log(), 'duplication the jam was protecting against')
+    t.isFalse(strippedNextRound(server), 'the jam cleared anyway, so the surplus is live again')
+end)
+
+t.test('and once it has been settled by hand, it clears and the door uses it again', function()
+    local server = jammedBySurplus()
+
+    server.emptyStash('crimson_arena_CID1')      -- the admin took the surplus out
+    server.command('arenaunjam', 0, 'crimson_arena_CID1')
+
+    t.contains(server.log(), 'no longer held back')
+    t.isTrue(strippedNextRound(server), 'the door still refuses to strip them, so the jam never cleared')
+end)
+
+t.test('and `force` clears one that still holds something, for an operator who has checked', function()
+    -- The escape hatch has to exist -- sometimes what is in there really is
+    -- theirs -- but it has to be said out loud rather than be the default.
+    local server = jammedBySurplus()
+
+    server.command('arenaunjam', 0, 'crimson_arena_CID1', 'force')
+
+    t.contains(server.log(), 'no longer held back')
+    t.isTrue(strippedNextRound(server), 'even force did not clear it')
+end)
+
+t.test('and a jam that has not been cleared still holds', function()
+    -- The control: listing must not clear anything by itself, and neither
+    -- must a name that is not jammed.
+    local server = jammedBySurplus()
+
+    server.command('arenaunjam', 0)
+    server.command('arenaunjam', 0, 'crimson_arena_CID9')
+
+    t.isFalse(strippedNextRound(server), 'the jam cleared itself')
 end)
 
 t.test('and a player who is not an admin cannot clear one', function()
@@ -1674,6 +1742,167 @@ t.test('and a bag survives two rounds back to back', function()
 
     t.equals(server.bagContents('bagkey123'), 'radiox1', 'the bag did not survive two rounds')
     t.equals(server.carrying(1), INTACT .. ',police_bagx1', 'something accumulated across the two rounds')
+end)
+
+-- ========================================================================
+-- TWO MATCHES AT ONCE
+--
+-- Every test above this point runs ONE round. The door, the belongings
+-- stash, the bag holding stashes and the routing buckets are all keyed
+-- per-player or per-match, and "keyed per X" is a claim that only a second
+-- X can test. This section runs two rounds at two arenas at the same time
+-- and asks whether either one can cost the other anything.
+-- ========================================================================
+
+--- Opens a match at `arenaKey` with `ids`, readies everybody and steps until
+--- the fighters are placed. Returns the match id.
+local function roundAt(server, arenaKey, ids)
+    server.fire('createMatch', ids[1], { arenaKey = arenaKey, modeKey = 'ffa', entryFee = 0 })
+
+    local match
+    for _, candidate in ipairs(server.lobby.All()) do
+        if candidate.arenaKey == arenaKey then match = candidate end
+    end
+    t.isNotNil(match, ('no lobby opened at %s'):format(arenaKey))
+
+    for n = 2, #ids do server.fire('joinMatch', ids[n], { matchId = match.id }) end
+    for _, src in ipairs(ids) do server.fire('setReady', src, { ready = true }) end
+    server.step(6)
+    return match.id
+end
+
+t.test('two matches at once get their own instances, and nobody is left in the world', function()
+    local server = newServer({ 1, 2, 3, 4 })
+
+    local a = roundAt(server, 'trailerpark', { 1, 2 })
+    local b = roundAt(server, 'skydome', { 3, 4 })
+
+    local bucketA, bucketB = server.bucketOf(1), server.bucketOf(3)
+
+    t.isTrue(bucketA > 0, 'the first match was fought in the open world')
+    t.isTrue(bucketB > 0, 'the second match was fought in the open world')
+    t.isFalse(bucketA == bucketB, 'BOTH MATCHES ARE IN THE SAME INSTANCE -- they can see and shoot each other')
+    t.equals(server.bucketOf(2), bucketA, 'a fighter was left out of their own match\'s instance')
+    t.equals(server.bucketOf(4), bucketB)
+
+    server.match.End(a, 'match.ended')
+    server.match.End(b, 'match.ended')
+    server.step(10)
+
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        t.equals(server.bucketOf(src), 0, ('%d was left behind in an arena instance'):format(src))
+    end
+end)
+
+t.test('and one match ending does not touch the other', function()
+    -- A SLOW CLOCK, because this test needs match B to still be running when
+    -- it looks. The fixture's default jumps GetGameTimer a whole minute per
+    -- call, so B's round timer expires within a couple of steps and "B lost
+    -- its instance" would really be "B finished".
+    local server = newServer({ 1, 2, 3, 4 }, nil, nil, { tickMs = 10 })
+
+    local a = roundAt(server, 'trailerpark', { 1, 2 })
+    local b = roundAt(server, 'skydome', { 3, 4 })
+    local bucketB = server.bucketOf(3)
+
+    server.match.End(a, 'match.ended')
+
+    -- TWO STEPS, NOT EIGHT, AND THE NUMBER IS THE TEST'S OWN LIMIT RATHER
+    -- THAN THE CODE'S. The round thread counts resumes, not milliseconds, so
+    -- any match left running in this fixture finishes within about three
+    -- steps whatever the clock says. That is a clean, correct end -- the
+    -- fighters get everything back, which the checks below the section prove
+    -- -- but it means "B is still live" is only askable in this window.
+    server.step(2)
+
+    t.equals(server.lobby.Get(b).state, 'live', 'the fixture ended B on its own before the test looked')
+
+    -- The finished match's fighters are home with their own things...
+    t.equals(server.carrying(1), INTACT, 'the finished match did not hand everything back')
+    t.equals(server.bucketOf(1), 0)
+
+    -- ...and the live one is untouched: still instanced, still stripped.
+    t.equals(server.bucketOf(3), bucketB, 'the live match lost its instance when the other one ended')
+    t.isNil(server.carrying(3):find('burgerx3', 1, true),
+        'the live match\'s fighter got their own kit back mid-round')
+    t.equals(server.stashed(3), 'ammo-rifle-apx40,burgerx3,phonex1',
+        'the live match\'s belongings were emptied out of their stash by the other match ending')
+end)
+
+t.test('four players with four bags, two matches, every bag comes back its own', function()
+    local server = newServer({ 1, 2, 3, 4 })
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        server.giveBag(src, 'police_bag', 'k' .. src, { { 'radio', src } })
+    end
+
+    local a = roundAt(server, 'trailerpark', { 1, 2 })
+    local b = roundAt(server, 'skydome', { 3, 4 })
+
+    -- Five minutes pass in both instances and every container is dropped.
+    for _, src in ipairs({ 1, 2, 3, 4 }) do server.purgeContainer('k' .. src) end
+
+    server.match.End(a, 'match.ended')
+    server.match.End(b, 'match.ended')
+    server.step(12)
+
+    for _, src in ipairs({ 1, 2, 3, 4 }) do
+        t.equals(server.bagContents('k' .. src), 'radiox' .. src,
+            ('%d\'s bag came back with the wrong things in it'):format(src))
+        t.equals(server.carrying(src), INTACT .. ',police_bagx1',
+            ('%d did not come out with exactly their own things'):format(src))
+    end
+end)
+
+t.test('a disconnect out of one match leaves the other match alone', function()
+    local server = newServer({ 1, 2, 3, 4 }, nil, nil, { tickMs = 10 })
+    server.giveBag(3, 'police_bag', 'k3', { { 'radio', 1 } })
+
+    roundAt(server, 'trailerpark', { 1, 2 })
+    local b = roundAt(server, 'skydome', { 3, 4 })
+    local bucketB = server.bucketOf(3)
+
+    server.drop(1)
+    server.step(2)
+
+    t.equals(server.lobby.Get(b).state, 'live', 'the fixture ended B on its own before the test looked')
+    t.equals(server.bucketOf(1), 0, 'the disconnected player was left in an arena instance')
+    t.equals(server.bucketOf(3), bucketB, 'the other match lost its instance')
+    t.equals(server.bucketOf(4), bucketB)
+
+    server.purgeContainer('k3')
+    server.match.End(b, 'match.ended')
+    server.step(10)
+
+    t.equals(server.bagContents('k3'), 'radiox1', 'the other match\'s bag was collateral')
+    t.equals(server.carrying(3), INTACT .. ',police_bagx1')
+end)
+
+t.test('AND TWO SIMULTANEOUS MATCHES CONSERVE WHAT PLAYERS OWN', function()
+    -- The same total as the single-match check, across two rounds running at
+    -- once, with bags in both and a disconnect out of one of them.
+    local server = newServer({ 1, 2, 3, 4 })
+    server.giveBag(1, 'police_bag', 'k1', { { 'radio', 1 } })
+    server.giveBag(3, 'police_bag', 'k3', { { 'handcuffs', 2 } })
+
+    local before = server.ledger()
+
+    local a = roundAt(server, 'trailerpark', { 1, 2 })
+    local b = roundAt(server, 'skydome', { 3, 4 })
+
+    local issued = {}
+    for name in pairs(server.ledger()) do
+        if before[name] == nil then issued[name] = true end
+    end
+
+    server.purgeContainer('k1')
+    server.purgeContainer('k3')
+    server.drop(4)
+    server.match.End(a, 'match.ended')
+    server.match.End(b, 'match.ended')
+    server.step(12)
+
+    local diff = ledgerDiff(ownedOnly(before, issued), ownedOnly(server.ledger(), issued))
+    t.equals(diff, '', 'two matches at once did not conserve what players own')
 end)
 
 os.exit(t.summary())

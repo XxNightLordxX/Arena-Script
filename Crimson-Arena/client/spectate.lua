@@ -346,7 +346,21 @@ function ArenaSpectate.Start(matchIdentifier)
     focusPoint = nil
     waitingSince = nil
 
-    watcherWas = readPedState(ped)
+    -- NOT OFF THE PED, WHEN SOMETHING ELSE IS ALREADY HOLDING IT.
+    --
+    -- ClearDeadState hides a casualty in the frame they die, and an
+    -- eliminated fighter arrives HERE immediately afterwards -- so reading
+    -- the ped recorded "this player was invisible" as the thing to hand
+    -- back, and the restore below then faithfully hid them again on the way
+    -- out of the round. For an eliminated fighter that is not an edge case,
+    -- it is the ordinary order: elimination follows death.
+    --
+    -- ArenaDispatch kept the real reading, taken before IT touched the ped,
+    -- and will hand over a copy. Its answer wins whenever it has one; the
+    -- ped is read only when nobody is holding it, which is the watcher who
+    -- never died and never went down.
+    local held = type(ArenaDispatch.HeldPedState) == 'function' and ArenaDispatch.HeldPedState()
+    watcherWas = held or readPedState(ped)
 
     SetEntityVisible(ped, false, false)
     SetEntityCollision(ped, false, false)
@@ -370,20 +384,56 @@ function ArenaSpectate.Start(matchIdentifier)
     announceControls()
 end
 
+--- A RESTORE THIS FILE STILL OWES IS NOT CANCELLED BY BEING CALLED EARLY.
+---
+--- THE DEFECT THIS EXISTS TO KILL, reported off a live server three times as
+--- players "coming out of the arena invisible" and finally pinned down by one
+--- answer: they could not see THEMSELVES either, which rules out routing
+--- buckets and network concealment and leaves SetEntityVisible on their own
+--- ped -- of which this whole resource has exactly two callers.
+---
+--- `crimson_arena:client:exitArena` HAS TWO HANDLERS. client/match.lua's runs
+--- leaveArena, which is carefully ordered: ArenaDispatch.Exit() FIRST, so that
+--- the Stop() it calls next sees IsInArena() answer false and does the
+--- watcher's half. This file registers a second handler for the same event,
+--- for the watcher who was never in a round at all -- leaveArena returns early
+--- for them, so nothing else would ever stop their camera.
+---
+--- Nothing decides which of the two runs first. When THIS file's ran first:
+--- IsInArena() was still true, the restore below was skipped, `active` went
+--- false and `watcherWas` was thrown away -- and leaveArena's later Stop() hit
+--- `if not active then return end` and did nothing at all. Nobody made the ped
+--- visible again, and the player stood in the lobby invisible to everyone
+--- including themselves.
+---
+--- The order is not the thing to fix. Two callers for one teardown is normal
+--- and the second one is legitimate; what was wrong is that a Stop which
+--- DECLINED to restore still destroyed the record the restore needed. So the
+--- record is now cleared only when it is actually used, and a Stop with one
+--- outstanding runs the restore even though the camera is already down.
+---
+--- DO NOT collapse this back to `if not active then return end`.
 function ArenaSpectate.Stop()
-    if not active then return end
+    -- The camera may be long gone and this still have a job to do.
+    if not active and watcherWas == nil then return end
+
+    local wasActive = active
     active = false
 
-    RenderScriptCams(false, false, 0, true, true)
-    if camera then
-        DestroyCam(camera, true)
-        camera = nil
+    if wasActive then
+        RenderScriptCams(false, false, 0, true, true)
+        if camera then
+            DestroyCam(camera, true)
+            camera = nil
+        end
+        ClearFocus()
     end
-    ClearFocus()
 
     local ped = PlayerPedId()
 
-    SetLocalPlayerVisibleLocally(true)
+    if wasActive then
+        SetLocalPlayerVisibleLocally(true)
+    end
 
     -- TWO REASONS TO LEAVE THE PED ALONE, AND BOTH ARE ASKED.
     --
@@ -419,9 +469,18 @@ function ArenaSpectate.Stop()
             FreezeEntityPosition(ped, false)
             frozeLocalPed = false
         end
+
+        -- CLEARED HERE AND NOWHERE ELSE. Outside this branch the restore did
+        -- not happen, and a record thrown away is a player left invisible
+        -- with nothing left that knows how to put them right. See the header.
+        watcherWas = nil
     end
 
-    watcherWas = nil
+    -- THE REST IS THE CAMERA'S OWN TEARDOWN, so it runs only for the call
+    -- that actually took the camera down. A second Stop finishing an
+    -- outstanding restore must not park the player again, drop the scenery
+    -- twice, or hide a HUD the round it belonged to has already forgotten.
+    if not wasActive then return end
 
     if parkedFrom then
         SetEntityCoordsNoOffset(ped, parkedFrom.x, parkedFrom.y, parkedFrom.z, false, false, false)

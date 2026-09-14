@@ -921,6 +921,61 @@ local function addAt(ox, who, name, count, metadata, slot)
     return oxGave(function() return ox:AddItem(who, name, count, metadata) end)
 end
 
+--- ox_inventory's OWN metadata keys. Everything else on an item was put
+--- there by some other resource, and is the half worth watching.
+local OX_META = {
+    durability = true, ammo = true, components = true, serial = true,
+    registered = true, container = true, size = true, type = true,
+    description = true, image = true, imageurl = true, weight = true,
+    label = true, quality = true, grade = true,
+}
+
+--- A short rendering of the metadata ANOTHER RESOURCE put on an item, or nil
+--- when there is none.
+---
+--- WHY THE DOOR REPORTS THIS AT ALL, and it is a diagnostic rather than a
+--- fix: an operator reported a police bag coming back EMPTY after a round,
+--- and four separate explanations for it have now been disproved --
+--- ox_inventory's idle purge (their server runs a ninety-minute cleartime
+--- and says so at start), the door corrupting metadata (Items.Metadata
+--- table.clones what it is given and passes unknown keys straight through),
+--- the arena touching the bag's own stash (it never names one), and slot
+--- renumbering (fixed, and it was a different symptom).
+---
+--- What is left cannot be settled by reading this repository, because the
+--- thing that empties it is not in this repository. A bag of that kind keeps
+--- its contents in a SEPARATE stash named after a key in its metadata --
+--- fm-firstresponderbag uses `metadata.bagId` and a stash `leo_bag_<bagId>`
+--- -- so if that key changes, or is lost, the bag opens a different and
+--- empty stash while the real contents sit in the old one under the old
+--- name. That is a question about one string, and one round of logs answers
+--- it outright instead of another guess.
+---
+--- ONLY FOREIGN KEYS, so this is not noise. A weapon's serial, ammo and
+--- durability are ox_inventory's own and are printed nowhere: on a round
+--- where nobody carries anything unusual this says nothing at all.
+--- @param metadata table|nil
+--- @return string|nil
+local function foreignMeta(metadata)
+    if type(metadata) ~= 'table' then return nil end
+
+    local parts = {}
+    for key, value in pairs(metadata) do
+        if type(key) == 'string' and not OX_META[key] then
+            local kind = type(value)
+            if kind == 'string' or kind == 'number' or kind == 'boolean' then
+                parts[#parts + 1] = key .. '=' .. tostring(value)
+            elseif kind == 'table' then
+                parts[#parts + 1] = key .. '=<table>'
+            end
+        end
+    end
+
+    if #parts == 0 then return nil end
+    table.sort(parts)
+    return table.concat(parts, ' ')
+end
+
 local function refillContainers(ox, src, keys, citizenid)
     if type(keys) ~= 'table' then return 0, 0 end
 
@@ -1236,6 +1291,16 @@ local function stow(src, citizenid)
                 return false, 0
             end
             stowed = stowed + 1
+
+            -- SAID ON THE WAY IN so it can be compared with the way out. See
+            -- foreignMeta: this is the only half of a third-party bag the
+            -- arena can see, and whether it comes back unchanged is the one
+            -- question nobody has been able to answer by reading code.
+            local carried = foreignMeta(item.metadata)
+            if carried then
+                ArenaDebug('door: %s\'s %s went into slot %s of the stash carrying { %s }.',
+                    tostring(src), tostring(item.name), tostring(item.slot), carried)
+            end
         end
     end
 
@@ -1538,6 +1603,14 @@ local function handBack(ox, src, stash, allowed, manifest)
         -- `itemsIn` resolves it from the table key, so it is present on every
         -- build. Quietly, because a miss here is not news -- it is what the
         -- fallback exists for. DO NOT drop either half.
+        local handedBack = foreignMeta(item.metadata)
+        if handedBack then
+            ArenaDebug('door: %s\'s %s came back to slot %s carrying { %s }. Compare this with the '
+                .. 'line printed when it went in -- if a key changed, whatever that key names is '
+                .. 'what the item can no longer find.',
+                tostring(src), tostring(item.name), tostring(item.slot), handedBack)
+        end
+
         local out = oxDid(('clearing %s x%s from %s'):format(
                 tostring(item.name), tostring(item.count), tostring(stash)),
             function() return ox:RemoveItem(stash, item.name, item.count, item.metadata) end)

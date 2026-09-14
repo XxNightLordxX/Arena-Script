@@ -662,7 +662,7 @@ listed; the source documents them where they are.
 | `ArenaUI.Countdown(seconds, label)` | The big centred number before a round goes live. |
 | `ArenaUI.Results(results)` | End-of-match scoreboard. |
 
-#### `client/dispatch.lua` — 7 functions
+#### `client/dispatch.lua` — 8 functions
 
 | Function | What it does |
 |---|---|
@@ -672,6 +672,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.Exit()` | Undoes Enter(), exactly. Safe when nothing is active. |
 | `ArenaDispatch.ClearDeadState(ped)` | Puts an arena casualty back on their feet in the same instant they went down, held frozen, invisible and untouchable until the server says what happens next. |
 | `ArenaDispatch.ReleaseDeadState(ped)` | Undoes ClearDeadState's holding pattern, putting each property back to the reading taken before the hold. Does nothing at all when no casualty is being held. |
+| `ArenaDispatch.HeldPedState()` | A copy of what the ped really was before the hold was taken — `{ visible, collision, frozen }`, or nil when nothing is held. client/spectate.lua reads it instead of the ped, because by the time an eliminated fighter reaches the camera the hold has already hidden them. |
 | `ArenaDispatch.IsHoldingDeadState()` | Whether a casualty is being held right now. client/spectate.lua asks it before it stands a watcher back up. |
 
 #### `client/main.lua` — 6 functions

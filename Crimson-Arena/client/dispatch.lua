@@ -266,6 +266,32 @@ function ArenaDispatch.ReleaseDeadState(ped)
     FreezeEntityPosition(ped, hold.frozen)
 end
 
+--- WHAT THE PLAYER REALLY WAS, before anything in this resource touched them.
+---
+--- THE ONLY HONEST ANSWER TO THAT QUESTION, and client/spectate.lua needs it
+--- because it cannot work it out for itself.
+---
+--- ClearDeadState hides a casualty in the FRAME THEY DIE. An eliminated
+--- fighter is sent to the spectator camera immediately afterwards, and
+--- ArenaSpectate.Start opened by reading the ped -- which by then is the ped
+--- this file hid. So the camera recorded "this player was invisible" as the
+--- state to hand back, and every later restore faithfully hid them again.
+--- That is not an edge case: for an eliminated fighter it is the ORDINARY
+--- order of events, because elimination follows death.
+---
+--- A COPY, NOT THE TABLE. The hold is this file's record and a caller must
+--- not be able to edit it -- ReleaseDeadState restores from it, and a caller
+--- that changed `visible` would be changing what the casualty gets back.
+--- @return table|nil -- { visible, collision, frozen }, or nil when nothing is held
+function ArenaDispatch.HeldPedState()
+    if not deadStateHold then return nil end
+    return {
+        visible = deadStateHold.visible,
+        collision = deadStateHold.collision,
+        frozen = deadStateHold.frozen,
+    }
+end
+
 --- Whether this file is currently holding a casualty in the pattern above.
 ---
 --- client/spectate.lua asks it. That file used to ask IsInArena() instead --

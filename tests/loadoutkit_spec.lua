@@ -43,7 +43,12 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 local function newKit(opts)
     opts = opts or {}
     local inv, stashes, console = {}, {}, {}
-    local fail = {}
+    --- BROKEN FROM THE START when a test asks for it. The boot report thread
+    --- runs while this fixture is being built, so a fault switched on
+    --- afterwards is switched on too late to be the first thing ox_inventory
+    --- was asked -- and the question this file cares most about is asked once
+    --- and remembered.
+    local fail = opts.fail or {}
     local calls = {}          -- every AddItem, in order, arguments kept
 
     --- The component items this server's ox_inventory has. The default is
@@ -161,6 +166,19 @@ local function newKit(opts)
         --- the server's copy of an item has its `client` table stripped.
         Items = function(_self, name)
             if fail.noRegistry then error('this build has no Items export') end
+            -- NOT A THROW, AND NOT nil. A fork or a shim that answers with
+            -- something that is not a table at all is not caught by pcall --
+            -- `ok` is true and the value is rubbish -- and indexing it throws
+            -- somewhere with no pcall around it.
+            --
+            -- A NUMBER RATHER THAN A STRING, and the difference matters. Lua
+            -- gives strings a metatable, so indexing one quietly answers nil
+            -- and a test built on a string proves nothing at all. A number
+            -- has none, and indexing it throws the way the real fault does.
+            if fail.junkRegistry then return 42 end
+            -- ox_inventory STILL BUILDING ITS LIST: the export is there and
+            -- answers, and what it has to say so far is nothing.
+            if fail.emptyRegistry and name == nil then return {} end
             if name == nil then return knownItems end
             return knownItems[name]
         end,
@@ -605,6 +623,139 @@ t.test('and does NOT report a pass when it could not check anything', function()
 
     t.contains(report, 'NONE checked', 'an unchecked config was reported as checked')
     t.notContains(report, 'every one is an item', 'an unchecked config was reported as clean')
+end)
+
+t.test('A NAME IS REFUSED ON A SERVER THAT HAS NO COMPONENT ITEMS AT ALL', function()
+    -- THE SERVER THE WHOLE CHECK EXISTS FOR, and the one it used to wave
+    -- straight through. Telling a component from an ordinary item means
+    -- knowing whether this ox_inventory tags anything, and asking that by
+    -- watching for a tagged COMPONENT to come past answers "too old to tag"
+    -- on a current ox_inventory whose operator has simply not installed the
+    -- at_* items. Then `water` goes onto the weapon and the report calls the
+    -- config clean -- measured, with that line quoted back.
+    --
+    -- This registry is what such a server looks like: weapons and ammo,
+    -- tagged the way any current build tags them, and not one component.
+    local f = newKit({
+        knownItems = {
+            water = { name = 'water' },
+            ammo_rifle = { name = 'ammo_rifle', ammo = true },
+            WEAPON_PISTOL = { name = 'WEAPON_PISTOL', weapon = true },
+        },
+        mutate = function(config)
+            config.Loadouts.weaponAttachments = { WEAPON_TEST = { grip = 'water' } }
+            config.Loadouts.weapons = {}
+        end,
+    })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'water', 'an ordinary item was accepted onto a weapon and reported clean')
+    t.notContains(report, 'every one is an item', 'a broken config was reported as clean')
+end)
+
+t.test('and the verdict on a name does not depend on what was checked before it', function()
+    -- The question "does this build tag" is asked of the whole item list, so
+    -- it cannot be answered differently on a second call -- which it was,
+    -- when the walk armed the very latch it consulted as it went.
+    local f = newKit({
+        knownItems = {
+            water = { name = 'water' },
+            at_grip = { name = 'at_grip', component = true },
+        },
+        mutate = function(config)
+            config.Loadouts.weaponAttachments = { WEAPON_TEST = { grip = 'water' } }
+            config.Loadouts.weapons = {}
+        end,
+    })
+
+    local first = table.concat(f.ammo.AttachmentReport(), '\n')
+    local second = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.equals(first, second, 'the report changed its mind between two calls on one config')
+    t.contains(first, 'water', 'the ordinary item was not caught')
+end)
+
+t.test('and a registry that comes back is checked again, not written off', function()
+    -- `ensure ox_inventory` while the arena is up gives a window where the
+    -- export throws. Writing the registry off for the life of the process
+    -- left the report saying "NONE checked" forever after one such moment,
+    -- about a registry it could read perfectly well -- and its own reason for
+    -- existing is to be readable without restarting the server.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { grip = 'COMPONENT_AT_AR_AFGRIP' } }
+        config.Loadouts.weapons = {}
+    end })
+
+    f.breakOn('noRegistry')
+    t.contains(table.concat(f.ammo.AttachmentReport(), '\n'), 'NONE checked',
+        'the broken registry was not reported as unchecked, so this proves nothing')
+
+    f.breakOn('noRegistry', false)
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.notContains(report, 'NONE checked', 'a registry that came back was still written off')
+    t.contains(report, 'COMPONENT_AT_AR_AFGRIP', 'the bad name was not checked once it could be')
+end)
+
+t.test('and a registry that answers with rubbish does not take the issue down', function()
+    -- The pcall wraps the CALL and not the field reads after it, so an answer
+    -- that is neither a table nor nil threw outside any pcall -- during a
+    -- live issue, between GiveWeaponToPed and the weapon being drawn.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { grip = 'at_grip' } }
+        config.Loadouts.weapons = {}
+    end })
+    f.breakOn('junkRegistry')
+
+    local ok = pcall(function() return f.ammo.AttachmentReport() end)
+    t.isTrue(ok, 'a registry answering with a number took the report down')
+
+    local issued = pcall(function()
+        f.ammo.Issue(1, 'match-1', oneWeapon({ components = { 'at_grip' } }))
+    end)
+    t.isTrue(issued, 'a registry answering with a number took a live weapon issue down')
+end)
+
+t.test('and the drop says a name can fail by being the wrong KIND of item', function()
+    -- An operator told their item does not exist goes and adds the item, and
+    -- the drop persists, because the name was real and simply not a
+    -- component. The message has to name both ways in.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { grip = 'water' } }
+        config.Loadouts.weapons = {}
+    end })
+
+    f.ammo.Issue(1, 'match-1', oneWeapon({ components = { 'water' } }))
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    -- MATCHED ON THE CONSOLE LINE'S OWN WORDING. The report is printed to
+    -- the same console at start-up and says something similar, so a looser
+    -- match here passes on the report's text while the drop line itself
+    -- still tells the operator their real item does not exist.
+    t.contains(f.log(), 'or has one that is not a component',
+        'the console told the operator their real item does not exist')
+    t.contains(report, 'not a component',
+        'the report told the operator their real item does not exist')
+end)
+
+t.test('and a registry that is still filling is asked again, not written off', function()
+    -- ox_inventory builds its item list at ITS start, and this resource is
+    -- deliberately asked to start early. An export that is there and has
+    -- nothing to say yet is not an ox_inventory too old to tag its items --
+    -- and remembering it as one answers every later question with it, which
+    -- is the whole check switched off for the life of the process.
+    local f = newKit({ fail = { emptyRegistry = true }, mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { grip = 'water' } }
+        config.Loadouts.weapons = {}
+    end })
+
+    t.notContains(table.concat(f.ammo.AttachmentReport(), '\n'), 'DROPPED',
+        'an empty registry answered the question anyway, so this proves nothing')
+
+    f.breakOn('emptyRegistry', false)
+    t.contains(table.concat(f.ammo.AttachmentReport(), '\n'), 'water',
+        'the registry filled up and the check was still answering from the empty one')
 end)
 
 t.test('and says so plainly when ox_inventory is not running at all', function()

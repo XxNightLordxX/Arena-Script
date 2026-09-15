@@ -2219,22 +2219,27 @@ local warnedComponents = {}
 --- too. Kept separate from the table above: one is a config mistake, the
 --- other is a build of ox_inventory this check cannot use.
 local registryUnreadable = false
---- Set the first time this ox_inventory hands back an item it has tagged as
---- a component.
+--- Whether this ox_inventory tags the items it builds from its weapon data.
+--- `nil` until it has been asked and answered.
 ---
---- WHY A LATCH AND NOT A CONSTANT. ox_inventory tags the items it builds
---- from its weapon data -- `component`, `ammo`, `tint`, `weapon` -- but only
---- from that file, and only on builds new enough to do it. So an untagged
---- item is EITHER a plain item that has no business on a gun, OR a perfectly
---- good component from an inventory too old to say so, and nothing about the
---- item itself tells the two apart.
+--- WHY THE QUESTION HAS TO BE ASKED OF THE WHOLE REGISTRY. ox_inventory tags
+--- the items it builds from its weapon data -- `component`, `ammo`, `tint`,
+--- `weapon` -- but only from that file, and only on builds new enough to do
+--- it. So an untagged item is EITHER a plain item that has no business on a
+--- gun, OR a perfectly good component from an inventory too old to say so,
+--- and nothing about the item itself tells the two apart.
 ---
---- What does tell them apart is the build. If this ox_inventory has ever
---- produced a tagged component then it tags, and an untagged name is the
---- first case and refused. If it never has, it does not tag, and refusing
---- everything would strip every attachment off every weapon to guard against
---- a typo -- far worse than the thing being guarded against.
-local taggingSeen = false
+--- What tells them apart is the BUILD, and the build is a property of the
+--- whole item list rather than of the names this config happens to mention.
+--- Asking it that way is the fix for a real defect: this was a latch, armed
+--- the first time a tagged component came back, and consulted before it could
+--- have been armed. So the verdict on a name depended on what had been
+--- checked before it -- and on a server whose ox_inventory has NONE of the
+--- configured component items (which is exactly the server the boot report
+--- exists to shout at) the latch was never armed at all, and `water` on a
+--- weapon was waved through and reported clean. Measured, with that report
+--- line quoted back.
+local buildTags = nil
 
 --- Whether ox_inventory knows an item by this name.
 ---
@@ -2263,6 +2268,50 @@ local taggingSeen = false
 --- rather than an error. Only the NAME has to be real.
 --- @param name string
 --- @return boolean
+--- Whether this ox_inventory tags at all, or nil if that cannot be told yet.
+---
+--- ANY OF THE FOUR TAGS ANSWERS IT, NOT `component` ALONE, and that is the
+--- difference between a check that works on a real server and one that does
+--- not. ox_inventory stamps `weapon`, `ammo`, `tint` and `component` from the
+--- same pass over the same file, so any one of them present proves the build
+--- tags. Looking only for `component` asks a different question -- "does this
+--- server have any component items installed" -- and answers "this build is
+--- too old to tag" on a perfectly modern server whose operator has simply not
+--- added them. That server is the one the whole check exists for, and it is
+--- the one that would have had every bad name waved through.
+---
+--- ASKED ONCE AND REMEMBERED, because it is a property of the build and the
+--- build does not change under a running server. An answer of "no tags
+--- anywhere" is only remembered when the list had something in it to tag: an
+--- empty or unreadable list is ox_inventory not being ready yet, not an old
+--- ox_inventory, and remembering that would answer every later question with
+--- it.
+--- @param ox table
+--- @return boolean|nil
+local function inventoryTags(ox)
+    if buildTags ~= nil then return buildTags end
+
+    local ok, all = pcall(function() return ox:Items() end)
+    if not ok or type(all) ~= 'table' then return nil end
+
+    local seen = 0
+    for _, item in pairs(all) do
+        if type(item) == 'table' then
+            seen = seen + 1
+            if item.component == true or item.weapon == true
+                or item.ammo == true or item.tint == true then
+                buildTags = true
+                return true
+            end
+        end
+    end
+
+    if seen == 0 then return nil end
+
+    buildTags = false
+    return false
+end
+
 local function inventoryKnowsItem(name)
     local ox = inventory()
     if ox == nil then return true end
@@ -2283,7 +2332,23 @@ local function inventoryKnowsItem(name)
         return true
     end
 
+    -- AND IT IS READABLE AGAIN, which is not the same as never having failed.
+    -- `ensure ox_inventory` while the arena is up gives a window where this
+    -- export throws, and latching the flag for the life of the process left
+    -- the report saying "NONE checked" forever after one such moment --
+    -- about a registry it had just read perfectly well. Said once per
+    -- outage, not once per process, the same way ArenaDbReady says it.
+    registryUnreadable = false
+
     if item == nil then return false end
+
+    -- ANYTHING THAT IS NOT A TABLE IS NOT SOMETHING TO INDEX. The pcall above
+    -- wraps the CALL and not the field reads below it, so a build or a shim
+    -- that answers with a string or a number would throw here, outside any
+    -- pcall, and take down whatever was being issued. nil already means "no
+    -- such item"; anything else means this registry cannot be interrogated,
+    -- which is the let-it-through case.
+    if type(item) ~= 'table' then return true end
 
     -- AND IS IT ACTUALLY A COMPONENT, not merely a real item.
     --
@@ -2308,19 +2373,14 @@ local function inventoryKnowsItem(name)
     -- attachment off every weapon to guard against a typo -- much worse than
     -- the thing being guarded against. What IS refused is an item positively
     -- identified as something else.
-    if item.component == true then
-        -- This build tags. From here on the tag is required, and an item
-        -- without one is refused rather than hoped about.
-        taggingSeen = true
-        return true
-    end
+    if item.component == true then return true end
 
-    -- NOT TAGGED. Which of the two that means is the whole question, and it
-    -- cannot be answered from this item alone -- so it is answered from
-    -- whether this ox_inventory has EVER produced a tagged item. The
-    -- start-up check walks every configured name before a single match can
-    -- run, so by the time a weapon is issued the answer is already known.
-    if taggingSeen then return false end
+    -- NOT TAGGED. Which of the two that means cannot be answered from this
+    -- item alone, so it is answered from the build -- does this ox_inventory
+    -- tag ANYTHING as a component. That question is put to the whole item
+    -- list rather than to the names checked so far, so the answer does not
+    -- depend on what was asked before it or in what order.
+    if inventoryTags(ox) == true then return false end
 
     return true
 end
@@ -2339,11 +2399,13 @@ local function usableComponents(entry)
                 parts[#parts + 1] = component
             elseif not warnedComponents[component] then
                 warnedComponents[component] = true
-                ArenaLog('weapons: DROPPED attachment "%s" on %s -- ox_inventory has no item by '
-                    .. 'that name, and fitting it would leave the weapon undrawable. Name the '
-                    .. 'ox_inventory component ITEM in Config.Loadouts.weaponAttachments '
-                    .. '(at_scope_medium, at_grip, at_suppressor_heavy ...), not GTA\'s '
-                    .. 'COMPONENT_ name.', tostring(component), tostring(entry.weapon or entry.key))
+                ArenaLog('weapons: DROPPED attachment "%s" on %s -- this ox_inventory has no '
+                    .. 'item by that name, or has one that is not a component, and fitting it '
+                    .. 'would leave the weapon undrawable either way. Name the ox_inventory '
+                    .. 'component ITEM in Config.Loadouts.weaponAttachments (at_scope_medium, '
+                    .. 'at_grip, at_suppressor_heavy ...) -- not GTA\'s COMPONENT_ name, and not '
+                    .. 'an ordinary item. Your own list is in ox_inventory/data/weapons.lua '
+                    .. 'under Components.', tostring(component), tostring(entry.weapon or entry.key))
             end
         end
     end
@@ -7279,17 +7341,24 @@ function ArenaAmmo.AttachmentReport()
         return lines
     end
 
-    say('attachments: %d of %d configured name(s) are NOT items in this ox_inventory and will be '
-        .. 'DROPPED rather than fitted:', #missing, total)
+    say('attachments: %d of %d configured name(s) are not component items in this ox_inventory '
+        .. 'and will be DROPPED rather than fitted:', #missing, total)
     for _, row in ipairs(missing) do
         say('  %-34s from %s', row.name, row.where)
     end
     say('  ox_inventory equips an attachment with Items[name].client.component and does not guard')
     say('  that lookup, so handing it one of these would leave the weapon in the fighter\'s hands')
     say('  and undrawable. They are dropped for that reason, and the weapon still goes out.')
+    -- NOT "IS NOT AN ITEM", WHICH IS ONLY HALF OF IT and points at the wrong
+    -- repair. A name can fail here by not existing OR by existing and being
+    -- something else -- `water` is a real item and just as fatal -- and an
+    -- operator told their item does not exist goes and adds the item, after
+    -- which the drop persists and the message has cost them the afternoon.
+    say('  A name fails here either because this ox_inventory has no item called that, or')
+    say('  because it has one that is not a component. Both leave the weapon undrawable.')
     say('  Fix: name the ox_inventory component ITEM -- at_scope_medium, at_grip,')
-    say('       at_suppressor_heavy -- not GTA\'s COMPONENT_ name. Your own list is in')
-    say('       ox_inventory/data/weapons.lua under Components.')
+    say('       at_suppressor_heavy -- not GTA\'s COMPONENT_ name and not an ordinary item.')
+    say('       Your own list is in ox_inventory/data/weapons.lua under Components.')
 
     return lines
 end

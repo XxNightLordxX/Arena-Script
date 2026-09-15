@@ -639,6 +639,24 @@ function Sandbox.newQbxCore(players, opts)
     -- account after every movement the arena makes.
     local rake = (type(opts) == 'table' and tonumber(opts.rake)) or 0
 
+    -- AND THE SAME THING ON THE WAY OUT, WHICH HAS TO GO THE OTHER WAY.
+    -- `payIn` is another resource putting money INTO the account during a
+    -- REMOVAL -- a paycheck or a transfer landing on the framework's
+    -- money-changed event, which RemoveMoney raises exactly as AddMoney
+    -- does. The balance afterwards is then short of the full removal, so the
+    -- caller cannot confirm its own removal from it.
+    --
+    -- NOT A CUT TAKEN ON THE WAY OUT, which is the obvious shape and the
+    -- useless one: an account that moved by MORE than was asked still
+    -- confirms, because the check is `delta >= amount`. Only a movement that
+    -- falls SHORT is unconfirmable.
+    --
+    -- Without this the fixture could only ever move exactly what was asked,
+    -- and the guard against reading that as a REFUSAL -- which used to
+    -- charge a player their entry fee twice, once from each account -- was
+    -- unreachable from any test.
+    local payIn = (type(opts) == 'table' and tonumber(opts.payIn)) or 0
+
     local function wrap(serverId, record)
         record.money = record.money or { cash = 0, bank = 0 }
         return {
@@ -656,6 +674,12 @@ function Sandbox.newQbxCore(players, opts)
                     if amount <= 0 or balance < amount then return false end
                     record.money[account] = balance - amount
                     fake.ledger[#fake.ledger + 1] = { id = serverId, account = account, delta = -amount, reason = reason }
+                    if payIn > 0 then
+                        record.money[account] = (record.money[account] or 0) + payIn
+                        fake.ledger[#fake.ledger + 1] = {
+                            id = serverId, account = account, delta = payIn, reason = 'payIn',
+                        }
+                    end
                     return yes()
                 end,
                 AddMoney = function(account, amount, reason)

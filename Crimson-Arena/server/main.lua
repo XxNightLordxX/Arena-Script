@@ -806,6 +806,15 @@ local ADMIN_TOOLS = {
             return ArenaDispatch.CompatReport()
         end,
     },
+    owed = {
+        title = 'Money owed',
+        run = function()
+            if type(ArenaBetting) ~= 'table' or type(ArenaBetting.OwedReport) ~= 'function' then
+                return { 'this build has no owed-money report.' }
+            end
+            return ArenaBetting.OwedReport()
+        end,
+    },
     attachments = {
         title = 'Attachments',
         run = function()

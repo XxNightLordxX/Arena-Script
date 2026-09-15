@@ -2880,6 +2880,63 @@ function ArenaBetting.Outstanding()
     return characters, total
 end
 
+--- Everything the arena owes players right now, as console-ready lines.
+---
+--- THE READING THE LOG LINE PROMISES. Settle prints, when a pot cannot be
+--- delivered, "It is on the unpaid ledger and will be paid when they come
+--- back; /arenaadmin can list it." It could not: `Outstanding` above had no
+--- caller anywhere in this resource, the admin snapshot's `owed` field is
+--- the ITEM stash slate from server/ammo.lua, and there was no field on the
+--- admin state carrying money at all. An operator sent to go and look found
+--- nothing and had no way to tell an empty ledger from a missing screen.
+---
+--- WHETHER IT SURVIVES A RESTART IS SAID ON THE SAME LINE, because that is
+--- the question an operator looking at a debt actually has and the answer
+--- depends on a config flag they may not have set themselves.
+--- @return string[]
+function ArenaBetting.OwedReport()
+    local lines = {}
+    local function say(fmt, ...)
+        local ok, text = pcall(string.format, fmt, ...)
+        lines[#lines + 1] = ok and text or fmt
+    end
+
+    local durable = ArenaDbReady(UNPAID_SUBJECT)
+
+    local rows = {}
+    for _, row in pairs(unpaid) do rows[#rows + 1] = row end
+    table.sort(rows, function(a, b) return (a.total or 0) > (b.total or 0) end)
+
+    if #rows == 0 then
+        say('owed: the arena owes nobody anything right now.')
+    else
+        local total = 0
+        for _, row in ipairs(rows) do total = total + (row.total or 0) end
+        say('owed: %s to %d character(s), paid the next time each of them is seen:',
+            money(total), #rows)
+
+        for _, row in ipairs(rows) do
+            say('  %-24s %10s  (%s)', tostring(row.name or row.citizenid),
+                money(row.total or 0), tostring(row.citizenid))
+            for _, part in ipairs(row.parts or {}) do
+                say('      %-20s %10s', tostring(part.reason or part.key), money(part.amount or 0))
+            end
+        end
+    end
+
+    if durable then
+        say('  This ledger is written to crimson_arena_unpaid, so a restart does not forget it.')
+    elseif Config.Database.enabled == true then
+        say('  Config.Database.enabled is on but oxmysql is NOT started, so this is held in memory '
+            .. 'for this run only and a restart forgets it.')
+    else
+        say('  Config.Database.enabled is off, so this is held in memory for this run only and a '
+            .. 'restart forgets it.')
+    end
+
+    return lines
+end
+
 --- ONE ATTEMPT AT START IS NOT ENOUGH, and this is why it is a thread of
 --- its own rather than a line in the sweep below. `ensure Crimson-Arena`
 --- above `ensure oxmysql` in a server.cfg is an ordinary mistake, at which

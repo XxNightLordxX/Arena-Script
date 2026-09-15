@@ -221,7 +221,7 @@ one deliberately does not.
 
 | Command | What it does |
 |---|---|
-| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Tools** tab shows the `/arenaisolation`, `/arenahours`, `/arenadispatch`, `/arenaattachments` and `/arenaunjam` readings on screen, built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
+| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Tools** tab shows the `/arenaisolation`, `/arenahours`, `/arenadispatch`, `/arenaattachments` and `/arenaunjam` readings on screen, plus **Money owed** — every payout and refund the arena could not deliver, and whether a restart would forget it — built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
 | `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without a restart. |
 | `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
 | `/arenaattachments` | Prints every name in `Config.Loadouts.weaponAttachments`, a weapon's own `components` list or an `ammoTypes` entry that this ox_inventory will not take — one it has no item for, or one whose item is not a component. Both leave the weapon undrawable, so both are dropped rather than fitted, and this is the reading that says which. |
@@ -584,7 +584,7 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 34 functions
+#### `server/betting.lua` — 35 functions
 
 | Function | What it does |
 |---|---|
@@ -621,6 +621,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.PayOutstanding(src)` | Pays one character everything this resource owes them from a refund that could not be delivered. |
 | `ArenaBetting.SweepUnpaid()` | Pays everybody on the server whatever they are still owed. |
 | `ArenaBetting.Outstanding()` | How much this resource still owes, across how many characters. |
+| `ArenaBetting.OwedReport()` | Every payout and refund the arena could not deliver, as lines, with what each one is for and whether a restart would forget it. On the admin tablet under **Tools → Money owed**. |
 | `ArenaBetting.Clear(matchId)` | Drops a match's money state. |
 
 #### `server/lobby.lua` — 25 functions

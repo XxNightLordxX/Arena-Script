@@ -332,4 +332,80 @@ t.test('and a restart does not read a phantom row back and pay it again', functi
     t.equals(r.wallet() - before, 0, 'the same 700 was paid again after a restart')
 end)
 
+
+-- ======================================================================
+-- THE OTHER SIDE OF THAT PHOTOGRAPH
+--
+-- The test above guards the DELETE side: a debt paid while the read was out
+-- must not be brought back by it. The ADD side had no such guard, and it
+-- fails the other way -- it loses a player money rather than paying them
+-- twice.
+--
+-- The load's SELECT is a photograph taken when it is ISSUED. A debt filed
+-- after that -- or an outage ADD replayed after it -- reaches the row the
+-- answer cannot see. `addStillPending` cannot cover it either: by the time
+-- the answer arrives that write has SUCCEEDED and left the pending queue.
+-- So the row is right, memory is right, and the merge splices them into a
+-- number lower than both, assigning it over memory.
+--
+-- Measured before the fix: a character owed 1000 -- 300 from before the
+-- restart and 700 filed while the read was out -- was paid 300. The other
+-- 700 was gone from memory and gone from the row, which the payment then
+-- deleted. Nothing anywhere said so.
+-- ======================================================================
+
+t.test('a debt filed while the read is in flight survives the read landing', function()
+    local s = newArena({ seed = SEED, holdSelect = true })
+    s.step(3)
+    t.equals(s.owed(), 0, 'the read answered anyway, so there is no window and this proves nothing')
+
+    -- Filed while the photograph is already taken. The store takes it; the
+    -- answer still in flight knows nothing about it.
+    fileDebt(s)
+    t.equals(s.owed(), 700, 'the debt was not filed, so this proves nothing')
+    t.equals(s.storedAmount(), 1000, 'the ADD did not reach the store, so this proves nothing')
+
+    t.isTrue(s.releaseRead(), 'there was no read in flight to release')
+
+    t.equals(s.owed(), 1000,
+        'the read overwrote memory with a photograph taken before the debt was filed')
+end)
+
+t.test('and the player is paid all of it', function()
+    local s = newArena({ seed = SEED, holdSelect = true })
+    s.step(3)
+    fileDebt(s)
+    s.releaseRead()
+
+    local before = s.wallet()
+    s.betting.SweepUnpaid()
+
+    t.equals(s.wallet() - before, 1000, 'the player was underpaid and nothing said so')
+end)
+
+t.test('an outage debt REPLAYED while the read is in flight survives it too', function()
+    -- The same gap reached by the other route: the debt is filed during an
+    -- outage so it queues, and the replay lands it after the SELECT went out.
+    -- By the time the answer arrives the pending queue is empty, so the line
+    -- that adds a still-waiting part back on has nothing to add.
+    local s = newArena({ seed = SEED, down = true, holdSelect = true })
+    s.step(3)
+    fileDebt(s)
+    t.equals(s.owed(), 700, 'the debt was not filed in memory, so this proves nothing')
+
+    -- The player is kept AWAY for this sweep, so it replays the queued write
+    -- without also paying and deleting the row -- the replay is the subject
+    -- here, not the payment.
+    s.control.down = false
+    s.control.offline = true
+    s.step(3)                        -- the load's SELECT goes out, and is held
+    s.betting.SweepUnpaid()          -- replayAdds() lands the 700
+    s.control.offline = false
+    t.equals(s.storedAmount(), 1000, 'the replay did not reach the store, so this proves nothing')
+
+    t.isTrue(s.releaseRead(), 'there was no read in flight to release')
+
+    t.equals(s.owed(), 1000, 'the replayed debt was lost when the read landed')
+end)
+
 os.exit(t.summary())

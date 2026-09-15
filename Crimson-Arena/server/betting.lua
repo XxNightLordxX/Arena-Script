@@ -615,6 +615,56 @@ local pendingAdds = {}
 local pendingAddCount = 0
 local PENDING_ADD_LIMIT = 500
 
+--- Whether the start-up read has been ISSUED and has not yet ANSWERED.
+---
+--- NOT `unpaidReading`, AND THE DIFFERENCE IS THE WHOLE POINT. That flag
+--- guards against starting a second read, and its timeout deliberately frees
+--- it so a query that is never answered cannot wedge the guard shut forever.
+--- Freeing it does not make the read stop being in flight -- the answer can
+--- still land afterwards, and when it does it is still a photograph of the
+--- table as it was when the SELECT went out.
+---
+--- This one tracks the photograph, so it is cleared by the answer and by
+--- nothing else.
+local readOutstanding = false
+
+--- Amounts that reached the database WHILE THAT READ WAS IN FLIGHT.
+---
+--- THE HOLE THIS FILLS, and it underpays a player rather than costing the
+--- arena tidiness. loadUnpaid's rule is that the stored total wins, because
+--- every write to memory is mirrored into the row before the read runs. The
+--- read is ASYNCHRONOUS, so that has a gap: a debt filed -- or an outage ADD
+--- replayed -- after the SELECT went out lands in the row the answer cannot
+--- see. `addStillPending` cannot cover it either, because by then the write
+--- has SUCCEEDED and left the pending queue. The row is right, memory is
+--- right, and the read splices them into a number lower than both.
+---
+--- Measured: a character owed 1000 -- 300 from before the restart, 700 filed
+--- while the start-up read was out -- was paid 300, permanently.
+local addedDuringRead = {}
+
+--- @param citizenid string
+--- @param key string
+--- @param added integer
+local function noteAddDuringRead(citizenid, key, added)
+    if not readOutstanding then return end
+    if not Arena.IsKey(citizenid) or not Arena.IsKey(key) then return end
+
+    local keys = addedDuringRead[citizenid]
+    if not keys then
+        keys = {}
+        addedDuringRead[citizenid] = keys
+    end
+    keys[key] = (keys[key] or 0) + added
+end
+
+--- What landed for this part while the read was out, or nil.
+local function addedWhileReading(citizenid, key)
+    local keys = addedDuringRead[citizenid]
+    local amount = keys and keys[key]
+    return amount and amount > 0 and amount or nil
+end
+
 --- The unmirrored amount pending for one part, or nil.
 local function addStillPending(citizenid, key)
     local keys = pendingAdds[citizenid]
@@ -645,7 +695,10 @@ local function sendAdd(citizenid, key, name, account, reason, added)
 end
 
 local function saveUnpaidPart(citizenid, name, part, added)
-    if sendAdd(citizenid, part.key, name, part.account, part.reason, added) then return end
+    if sendAdd(citizenid, part.key, name, part.account, part.reason, added) then
+        noteAddDuringRead(citizenid, part.key, added)
+        return
+    end
 
     -- NOT TAKEN. Remembered as a whole, so a replay sends one increment for
     -- everything filed on this part while the database was away. The cap
@@ -681,6 +734,7 @@ local function replayAdds()
     for _, item in ipairs(flat) do
         local citizenid, key, entry = item[1], item[2], item[3]
         if sendAdd(citizenid, key, entry.name, entry.account, entry.reason, entry.amount) then
+            noteAddDuringRead(citizenid, key, entry.amount)
             pendingAdds[citizenid][key] = nil
             pendingAddCount = pendingAddCount - 1
             if next(pendingAdds[citizenid]) == nil then pendingAdds[citizenid] = nil end
@@ -769,6 +823,20 @@ local function dropUnpaidPart(citizenid, key)
             tostring(citizenid), tostring(key))
     end
 
+    -- AND WHAT LANDED FOR IT WHILE THE READ WAS OUT, for the same reason and
+    -- with a sharper edge. That record exists so a write the start-up read
+    -- could not see is added back on when the answer arrives -- but a part
+    -- that has since been PAID must not be added back on at all, or the
+    -- payment is undone and the debt is handed over twice.
+    --
+    -- Paying a part annihilates everything outstanding for it: the queued
+    -- insert above, and this.
+    local landedAdds = addedDuringRead[citizenid]
+    if landedAdds ~= nil and landedAdds[key] ~= nil then
+        landedAdds[key] = nil
+        if next(landedAdds) == nil then addedDuringRead[citizenid] = nil end
+    end
+
     local keys = pendingDrops[citizenid]
 
     if keys == nil or keys[key] == nil then
@@ -840,8 +908,15 @@ local function loadUnpaid()
     SetTimeout(UNPAID_READ_TIMEOUT_MS, function() unpaidReading = false end)
 
     ArenaDb(UNPAID_SUBJECT, UNPAID_SCHEMA_SQL, {}, function()
+        -- FROM HERE THE PHOTOGRAPH IS TAKEN. Anything that reaches the table
+        -- after this line is invisible to the answer below, so it is recorded
+        -- and added back on when that answer arrives.
+        readOutstanding = true
+        addedDuringRead = {}
+
         ArenaDb(UNPAID_SUBJECT, UNPAID_READ_SQL, {}, function(rows)
             unpaidReading = false
+            readOutstanding = false
             if type(rows) ~= 'table' then return end
 
             -- A LATE ANSWER IS REFUSED OUTRIGHT. The timeout above can free
@@ -881,6 +956,20 @@ local function loadUnpaid()
                 local waiting = Arena.IsKey(citizenid) and Arena.IsKey(key) and addStillPending(citizenid, key)
                 if waiting and amount > 0 then amount = amount + waiting end
 
+                -- AND A PART THAT LANDED WHILE THIS VERY READ WAS IN FLIGHT.
+                -- Same shape as the line above, a different gap: that covers
+                -- a write still WAITING to be sent, this one a write already
+                -- SENT and taken, after the photograph. Neither is in the
+                -- other's table -- a successful send leaves pendingAdds at
+                -- once -- and neither is in the answer.
+                --
+                -- NOT GATED ON `amount > 0`, unlike the line above: the row
+                -- can legitimately read as absent or zero here while a write
+                -- for it is in flight, and that is the case that loses money.
+                local landed = Arena.IsKey(citizenid) and Arena.IsKey(key)
+                    and addedWhileReading(citizenid, key)
+                if landed then amount = amount + landed end
+
                 if Arena.IsKey(citizenid) and Arena.IsKey(key) and amount > 0 then
                     local held = unpaid[citizenid]
                     if not held then
@@ -911,6 +1000,7 @@ local function loadUnpaid()
             end
 
             unpaidLoaded = true
+            addedDuringRead = {}
             if people > 0 then
                 ArenaLog('betting: read back %s owed to %d character(s) from before the restart. '
                     .. 'It is paid the next time each of them is seen.', money(owedTotal), people)

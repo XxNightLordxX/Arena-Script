@@ -82,6 +82,7 @@ local function loadClient()
     local runner = Sandbox.newThreadRunner()
     local suggested = {}
     local blips = {}
+    local handlers = {}
 
     local env = Sandbox.newEnv({
         CreateThread = runner.CreateThread,
@@ -103,7 +104,7 @@ local function loadClient()
             end
         end,
         RegisterNetEvent = function() end,
-        AddEventHandler = function() end,
+        AddEventHandler = function(name, fn) handlers[name] = fn end,
         RegisterCommand = function() end,
         ArenaUI = { Open = function() end },
 
@@ -154,7 +155,19 @@ local function loadClient()
 
     runner.step()
 
-    return { suggested = suggested, env = env }
+    return {
+        suggested = suggested, env = env,
+        --- Fire one of the events the client registered for.
+        fire = function(name, ...)
+            if handlers[name] then handlers[name](...) end
+            return handlers[name] ~= nil
+        end,
+        --- Forget every suggestion raised so far, the way the chat resource
+        --- forgets its own list when it restarts.
+        forgetSuggestions = function()
+            for index = #suggested, 1, -1 do suggested[index] = nil end
+        end,
+    }
 end
 
 -- ======================================================================
@@ -179,6 +192,37 @@ t.test('/arenadispatch offers itself to autocomplete', function()
     t.isNotNil(found, 'typing /arenad still offers nothing -- the reported bug is back')
     t.isTrue(type(found.help) == 'string' and #found.help > 0,
         '/arenadispatch is suggested with no help text, which is a name and nothing else')
+end)
+
+t.test('and the suggestions come back when the chat resource restarts', function()
+    -- THE SAME BUG BY A DIFFERENT ROUTE. The suggestions live in the CHAT
+    -- resource's own per-client list, not in this one, so `restart chat` --
+    -- or chat starting after crimson_arena, which is the start order this
+    -- resource deliberately asks for -- empties it and every name goes with
+    -- it. Nothing errors and nothing logs: the commands still work, so the
+    -- only symptom is typing /arenad and being offered nothing, which is
+    -- exactly the report this file exists for.
+    local client = loadClient()
+    local before = #client.suggested
+    t.isTrue(before > 0, 'nothing was suggested at start, so this proves nothing')
+
+    client.forgetSuggestions()
+    t.equals(#client.suggested, 0, 'the list did not empty, so this proves nothing')
+
+    t.isTrue(client.fire('onClientResourceStart', 'chat'),
+        'the client does not listen for the chat resource coming back at all')
+    t.equals(#client.suggested, before, 'the suggestions were not raised again')
+end)
+
+t.test('and not for every other resource that starts', function()
+    -- onClientResourceStart fires for every resource on the server.
+    local client = loadClient()
+    client.forgetSuggestions()
+
+    client.fire('onClientResourceStart', 'some_other_resource')
+
+    t.equals(#client.suggested, 0,
+        'six suggestions were re-raised because an unrelated resource started')
 end)
 
 t.test('the in-game reply points at somewhere the report can be read', function()

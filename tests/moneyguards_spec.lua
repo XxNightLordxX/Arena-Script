@@ -196,7 +196,7 @@ t.test('and SettleSpectatorBets refuses to run twice, which is where the pot is 
     -- server id where a team name belongs is refused as an invalid pick.
     t.isTrue(s.betting.PlaceSpectatorBet(3, 'm1', 'crimson', 500),
         'the side-bet was refused, so there is nothing to settle twice')
-    record.state = 'active'
+    record.state = 'live'
 
     local before = s.cash(3)
     s.betting.Settle('m1', endedWith(1))
@@ -357,6 +357,112 @@ t.test('and says on the same line whether a restart would forget it', function()
     local on = staked({ mutate = function(config) config.Database.enabled = true end })
     t.contains(table.concat(on.betting.OwedReport(), '\n'), 'oxmysql is NOT started',
         'a database that is on with no oxmysql behind it was reported as durable')
+end)
+
+-- ======================================================================
+-- A WAGER YOU CAN CANCEL ONCE IT IS GOING BADLY IS NOT A WAGER
+--
+-- betting.lua says it twice, in as many words: "Handing the bet back is the
+-- refund the whole function exists to withhold." On a server that allows
+-- non-fighters no side-bet at all there is no smaller band to trim a
+-- departing fighter's stake to -- and the branch that answered that handed
+-- the whole thing back, whatever the state of the round. Back yourself,
+-- watch it go badly, walk out, take the stake home: a free option, paid for
+-- by whoever backed the other side.
+--
+-- It does not fire on the shipped config, where spectator bets are on and
+-- both ceilings are level. An operator running a fighters-only book is who
+-- gets hit, and they are the operator least likely to notice.
+-- ======================================================================
+
+--- A server with no spectator book at all, which is what leaves the
+--- departing fighter's stake with nothing smaller to fall back to.
+local function fightersOnly(config)
+    config.Betting.spectatorBets = config.Betting.spectatorBets or {}
+    config.Betting.spectatorBets.enabled = false
+end
+
+t.test('a fighter who backs themselves and walks out MID-ROUND keeps the bet down', function()
+    local s, record = staked({ mutate = fightersOnly })
+    t.isTrue(s.betting.PlaceSpectatorBet(1, 'm1', 'crimson', 2000),
+        'the fighter could not back their own side, so this proves nothing')
+
+    record.state = 'live'
+    local before = s.cash(1)
+
+    local _, returned = s.betting.MarkWalkedOut('m1', 1)
+
+    t.equals(returned, 0, 'THE WHOLE STAKE WAS HANDED BACK MID-ROUND -- a wager you can cancel')
+    t.equals(s.cash(1), before, 'the money went back to the player who walked out')
+end)
+
+t.test('and the same walk-out BEFORE the round starts is handed back, which is a cancellation', function()
+    -- The other side of the same branch, and it has to keep working: before
+    -- the round is fought nothing has been risked, so this is the answer a
+    -- lobby cancellation gives everybody else.
+    local s = staked({ mutate = fightersOnly })
+    t.isTrue(s.betting.PlaceSpectatorBet(1, 'm1', 'crimson', 2000),
+        'the fighter could not back their own side, so this proves nothing')
+
+    local before = s.cash(1)
+    local _, returned = s.betting.MarkWalkedOut('m1', 1)
+
+    t.equals(returned, 2000, 'a bet on a round that had not started was kept')
+    t.equals(s.cash(1), before + 2000, 'the money did not reach the player')
+end)
+
+t.test('a trim that FAILED leaves the bet in the fighters\' book, as its own log line says', function()
+    -- `bet.kind = 'spectator'` sat below the whole block and ran on both
+    -- outcomes, so the console said "the bet stands at its full %d and is
+    -- still held to the fighter band" and the next statement moved it into
+    -- the spectators' book anyway. With betPayout.sharedPool off that puts an
+    -- untrimmed fighter-band stake into the pool capped at the spectator
+    -- ceiling -- the exact mismatch the trim exists to prevent.
+    --
+    -- Reaching the failure needs the credit to fail AND the unpaid ledger to
+    -- refuse it, and the ledger only refuses a bet with no citizen id.
+    local s, record = staked({ mutate = function(config)
+        config.Betting.fighterBets = { enabled = true, min = 1, max = 50000 }
+        config.Betting.spectatorBets = { enabled = true, min = 1, max = 1000,
+            closeAfterStartSeconds = 60 }
+        -- SEPARATE POOLS, which is the arrangement the mismatch matters in
+        -- and the only one where the two books can be told apart at all.
+        config.Betting.betPayout = { fighters = 'pool', spectators = 'pool',
+            sharedPool = false, includeEntryPot = false }
+    end })
+    -- NO CITIZEN ID ON THE BET, WHICH IS THE ONLY WAY THE LEDGER REFUSES IT.
+    -- Stripped before the bet is placed, because the bet copies it then.
+    s.qbx.players[1].citizenid = nil
+    local placed, why = s.betting.PlaceSpectatorBet(1, 'm1', 'crimson', 5000)
+    t.isTrue(placed, 'the fighter stake was refused (' .. tostring(why) .. '), so this proves nothing')
+
+    -- And the player is gone, so the credit cannot land either.
+    s.qbx.players[1] = nil
+
+    record.state = 'live'
+    s.betting.MarkWalkedOut('m1', 1)
+
+    t.contains(s.log(), 'TRIM FAILED', 'the trim did not fail, so this proves nothing')
+    t.notContains(s.log(), 'stands as a spectator bet',
+        'a failed trim was reported as a successful one')
+
+    -- AND THE STATE, NOT ONLY THE LOG. The log line is on the failure path
+    -- and says the right thing either way; what used to happen next is that
+    -- the bet was moved into the spectators' book regardless, so the two
+    -- disagreed. Split the pools apart and the untrimmed stake has to still
+    -- be in the fighters' one.
+    local byPool = s.betting.SideBetTotals('m1')
+    local inFighters, inSpectators = 0, 0
+    for key, side in pairs(byPool) do
+        for _, amount in pairs(side) do
+            if tostring(key):find('fighter') then inFighters = inFighters + amount
+            else inSpectators = inSpectators + amount end
+        end
+    end
+
+    t.equals(inSpectators, 0,
+        'an untrimmed fighter-band stake was re-filed into the pool capped at the spectator ceiling')
+    t.equals(inFighters, 5000, 'the untrimmed stake left the fighters\' book')
 end)
 
 os.exit(t.summary())

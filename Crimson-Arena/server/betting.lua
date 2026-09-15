@@ -28,11 +28,29 @@
         table entry is a bug someone can find later; a swallowed pot is one
         nobody can.
 
-    TWO SEPARATE POOLS. The entry-fee pot is what the fighters are playing
-    for; `maxPot` caps it and only it. Spectator side-bets are house action
-    paid at `oddsMultiplier` and live in their own table, because a side-bet
-    that reached the pot would let a bystander change what the winner takes
-    home.
+    TWO BOOKS, AND WHETHER THEY ARE TWO POOLS IS A CONFIG DECISION. The
+    entry-fee pot is what the fighters are playing for; `maxPot` caps it and
+    only it. Side-bets live in their own table.
+
+    THIS PARAGRAPH USED TO SAY THEY WERE ALWAYS SEPARATE, AND THAT SIDE-BETS
+    WERE HOUSE ACTION PAID AT `oddsMultiplier`. Neither is true of the
+    shipped config any more, and a header that describes a build nobody runs
+    is worse than none:
+
+      - `betPayout.spectators` ships 'pool', and `oddsMultiplier` is
+        unreachable without `allowServerFundedPayouts`, which ships false. A
+        winning side-bet is a pro-rata share of the stakes, not the
+        operator's money.
+      - `betPayout.includeEntryPot` and `betPayout.sharedPool` both ship
+        true, so the entry pot IS merged into the side-bet pool. A bystander
+        backing a fighter therefore does change what that fighter takes home
+        -- they are sharing one pool with them.
+
+    That arrangement is deliberate and internally consistent: every winner
+    takes a share proportional to their own stake, and a fighter who wins
+    always gets back at least what they put in. It is not what this
+    paragraph used to promise, and the promise is what had to change.
+    Set `includeEntryPot = false` for the separate-pot arrangement.
 
     All of the maths -- what a fee may be, what the house takes, how a pot
     splits, what a winning side-bet returns -- belongs to shared/arena.lua.
@@ -2452,7 +2470,8 @@ function ArenaBetting.MarkWalkedOut(matchId, src, citizenid)
     -- take it away mid-call -- so it passes the name in. The lookup below is
     -- the fallback for a caller that has nothing to pass.
     local match = lobbyMatch(matchId)
-    if match and roundIsBeingFought(match) then
+    local liveRound = match ~= nil and roundIsBeingFought(match)
+    if liveRound then
         local who = Arena.IsKey(citizenid) and citizenid or citizenIdOf(id)
         walkedOutOf[matchId] = walkedOutOf[matchId] or {}
         walkedOutOf[matchId][id] = Arena.IsKey(who) and who or true
@@ -2467,16 +2486,42 @@ function ArenaBetting.MarkWalkedOut(matchId, src, citizenid)
             marked = marked + 1
 
             if bet.kind == 'fighter' then
-                if ceiling == nil then
+                if ceiling == nil and not liveRound then
+                    -- NOTHING TO TRIM TO. This server allows non-fighters no
+                    -- side-bet at all, so there is no smaller position for
+                    -- the stake to fall back to -- and the round has not
+                    -- started, so nothing has been risked yet. Handing it
+                    -- back is the same answer a lobby cancellation gives.
                     local whole = Arena.ToInt(bet.amount) or 0
                     if returnSideBet(bet, matchId) then
                         returned = returned + whole
-                        ArenaLog('SIDE-BET BAND LAPSED: %s left match %s and this server allows non-fighters no side-bet at all -- the whole %d went back.',
+                        ArenaLog('SIDE-BET BAND LAPSED: %s left match %s before it started and this server allows non-fighters no side-bet at all -- the whole %d went back.',
                             tostring(bet.name or id), tostring(matchId), whole)
                     end
+                elseif ceiling == nil then
+                    -- AND ON A LIVE ROUND IT STANDS, WHICH IS THE WHOLE
+                    -- REASON THIS FUNCTION EXISTS.
+                    --
+                    -- THE DEFECT: it took the branch above whatever the state
+                    -- of the round, so on a server with spectatorBets.enabled
+                    -- off a fighter could back themselves, watch it go badly,
+                    -- walk out mid-round and be handed the entire stake back.
+                    -- A free option, paid for by whoever backed the other
+                    -- side -- the money the winner should have taken went to
+                    -- the loser instead. The function's own note says it in
+                    -- as many words: "Handing the bet back is the refund the
+                    -- whole function exists to withhold", and "a wager you
+                    -- can cancel once it is going badly is not a wager".
+                    --
+                    -- There is no spectator band to trim to here, so the
+                    -- stake stays where it is and settles on the pick the
+                    -- holder chose, win or lose. DO NOT return it.
+                    ArenaLog('SIDE-BET BAND LAPSED: %s left match %s mid-round holding %d, and this server allows non-fighters no side-bet at all -- there is nothing smaller to hold it to, so it STANDS and settles on the pick they chose.',
+                        tostring(bet.name or id), tostring(matchId), Arena.ToInt(bet.amount) or 0)
                 else
                     local held = Arena.ToInt(bet.amount) or 0
                     local excess = held - ceiling
+                    local reband = true
                     if excess > 0 then
                         local paid = credit(id, excess, transaction('sidebet_trim', matchId),
                             bet.citizenid, bet.account)
@@ -2505,10 +2550,22 @@ function ArenaBetting.MarkWalkedOut(matchId, src, citizenid)
                                     { name = 'Held', value = money(held) },
                                     { name = 'Over the ceiling by', value = money(excess) },
                                 })
+                            -- AND IT IS NOT RE-FILED AS A SPECTATOR'S,
+                            -- because it was not trimmed. This sat below the
+                            -- whole block and ran on both outcomes, so the
+                            -- line above said "the bet stands at its full %d
+                            -- and is still held to the fighter band" and the
+                            -- next statement moved it into the spectators'
+                            -- book anyway -- which with betPayout.sharedPool
+                            -- off puts an untrimmed fighter-band stake into
+                            -- the pool capped at the spectator ceiling, the
+                            -- exact mismatch the trim exists to prevent. The
+                            -- log and the state said opposite things.
+                            reband = false
                         end
                     end
 
-                    bet.kind = 'spectator'
+                    if reband then bet.kind = 'spectator' end
                 end
             end
         end

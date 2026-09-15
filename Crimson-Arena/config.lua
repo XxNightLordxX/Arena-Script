@@ -24,14 +24,14 @@
       633   Modes         Free-for-all, team deathmatch and gun game
       937   DefaultMode   Which of them a new lobby opens on
       956   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1179   UI            Panel colours, logo and title
-     1237   Permissions   Who may open a match, who may force-stop one
-     1323   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1757   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2292   Database      Optional: leaderboard, and what players still owe the arena
-     2323   Leaderboard   Which matches count towards the board, and which do not
-     2389   Webhook       Optional: a Discord line per finished match
-     2421   Dispatch      Optional: keeping police and EMS out of the arena
+     1200   UI            Panel colours, logo and title
+     1258   Permissions   Who may open a match, who may force-stop one
+     1344   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1778   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2313   Database      Optional: leaderboard, and what players still owe the arena
+     2344   Leaderboard   Which matches count towards the board, and which do not
+     2410   Webhook       Optional: a Discord line per finished match
+     2442   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1027,6 +1027,27 @@ Config.Betting = {
         --
         -- Off, the entry pot is paid separately by Config.Betting.payout and
         -- the bets settle on their own -- two prizes for two different things.
+        --
+        -- AND IT DECIDES WHAT A FORFEITED STAKE IS WORTH, which is not
+        -- obvious from the name and is the one place the two arrangements
+        -- disagree about money rather than about arithmetic.
+        --
+        -- A fighter who walks out of a LIVE round forfeits their stake. If
+        -- the round then ends with NO winner -- a draw, a time-up, everyone
+        -- gone -- the two settings answer differently:
+        --
+        --   ON  (shipped): the forfeit is destroyed. It cannot be refunded,
+        --       because a forfeit you get back on a draw is a forfeit you can
+        --       arrange; it cannot go to whoever stayed, because that pays a
+        --       pair for arranging it. Burning it is the only answer nobody
+        --       can profit from, and the money leaves the economy in a case
+        --       an operator will rarely see.
+        --
+        --   OFF: the round refunds everybody, the walker included, and they
+        --       get their stake straight back.
+        --
+        -- Neither is wrong, but they are opposite, so turn this off knowing
+        -- that walking out of a round that ends in a draw costs nothing.
         includeEntryPot = true,
     },
 

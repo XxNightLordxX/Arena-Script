@@ -668,7 +668,7 @@ if IS_SERVER then
         -- report while the tablet shows another is exactly the confusion a
         -- compat report exists to end. Falls back to the bare report on a
         -- client, where ArenaDispatch does not exist.
-        local lines = lines
+        local lines
         if type(ArenaDispatch) == 'table' and type(ArenaDispatch.CompatReport) == 'function' then
             lines = ArenaDispatch.CompatReport()
         else

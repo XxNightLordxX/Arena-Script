@@ -356,8 +356,30 @@ local COMMAND_HELP = {
     },
 }
 
-CreateThread(function()
+--- Raises every suggestion once.
+---
+--- @return nil
+local function offerCommands()
     for _, command in ipairs(COMMAND_HELP) do
         TriggerEvent('chat:addSuggestion', '/' .. command.name, command.help, command.params)
     end
+end
+
+CreateThread(offerCommands)
+
+-- AND AGAIN WHENEVER `chat` COMES BACK.
+--
+-- The suggestions live in the chat resource's OWN per-client list, not in
+-- this one. `restart chat` -- or chat starting after crimson_arena, which is
+-- the start order this resource deliberately asks for -- empties that list,
+-- and every name goes with it. Nothing errors and nothing logs: the commands
+-- still work, so the only symptom is typing /arenad and being offered
+-- nothing, which is the exact report this whole block was written for.
+--
+-- Filtered to the one resource, because onClientResourceStart fires for
+-- every resource on the server and re-raising six suggestions on each of
+-- them is noise for no reason.
+AddEventHandler('onClientResourceStart', function(resource)
+    if resource ~= 'chat' then return end
+    offerCommands()
 end)

@@ -128,6 +128,16 @@ local function newArena(control)
             return deliver ~= nil
         end,
         wallet = function() return wallets[1].cash end,
+        --- A copy of the whole stored table, to seed a "restart" with.
+        snapshot = function()
+            local out = {}
+            for k, row in pairs(stored) do
+                local copy = {}
+                for f, v in pairs(row) do copy[f] = v end
+                out[k] = copy
+            end
+            return out
+        end,
     }
 end
 
@@ -227,6 +237,99 @@ t.test('DEFECT: a debt PAID while the ledger read was in flight is not brought b
     -- And the proof that it matters: the next sweep pays nothing more.
     s.betting.SweepUnpaid()
     t.equals(s.wallet(), before + 700, 'they were paid the same debt twice')
+end)
+
+
+-- ======================================================================
+-- THE DEBT THAT CAME BACK FROM THE DEAD
+--
+-- Two replay queues hold statements the database never took: the INSERT
+-- that files a debt, and the DELETE that removes it once it is paid. They
+-- were replayed independently and nothing connected them.
+--
+-- So a part FILED while oxmysql was away and then PAID while it was still
+-- away left both queued for the same key. The sweep replays drops and then
+-- adds, in that order, and the add wins: a debt the arena had already
+-- handed over is written straight back into the ledger.
+--
+-- It does not stop there. The phantom row is read back by the load thread
+-- in the SAME RUN and paid a second time, and read back and paid again on
+-- every restart after it. One 700 debt became 1400 in a single run.
+--
+-- An INSERT and a DELETE for one key annihilate, so cancelling the pair is
+-- the correct resolution rather than the cheap one: if the insert never
+-- landed there is nothing for the delete to remove, and a delete replayed
+-- against a row that does not exist costs nothing. The asymmetry runs one
+-- way only -- a lost DELETE pays a debt twice, a lost INSERT forgets one --
+-- so the delete is the one that is kept.
+-- ======================================================================
+
+t.test('CONTROL: with the database up the whole time, paying a debt leaves no row behind', function()
+    local s = newArena({})
+    s.step(3)
+    fileDebt(s)
+    t.equals(s.storedAmount(), 700, 'the debt never reached the table, so this proves nothing')
+
+    s.betting.SweepUnpaid()     -- the player is online, so it is paid
+    s.betting.SweepUnpaid()     -- and the replays run again
+
+    t.equals(s.storedAmount(), 0, 'a row survived a paid debt even with the database up')
+end)
+
+t.test('a debt filed AND paid during an outage is NOT written back by the replay', function()
+    local s = newArena({ down = true })
+    s.step(3)
+    fileDebt(s)
+    t.equals(s.owed(), 700, 'the debt was not filed in memory, so this proves nothing')
+    t.equals(s.storedAmount(), 0, 'the ADD reached a database that was down, so this proves nothing')
+
+    local before = s.wallet()
+    s.betting.SweepUnpaid()     -- PAID, and the DELETE is queued behind it
+    t.equals(s.wallet(), before + 700, 'the player was not paid, so this proves nothing')
+    t.equals(s.owed(), 0, 'memory still owes it, so this proves nothing')
+
+    s.control.down = false
+    s.betting.SweepUnpaid()     -- replayDrops() and then replayAdds()
+
+    t.equals(s.storedAmount(), 0,
+        'a debt the arena had already paid was written back into the ledger table')
+end)
+
+t.test('and so it is not paid a SECOND time in the same run', function()
+    -- `ensure Crimson-Arena` above `ensure oxmysql` is an ordinary mistake
+    -- the load path is built to survive, and it is what puts the load thread
+    -- behind the outage: it reads the ledger late, long after the sweep has
+    -- already paid and dropped the debt.
+    local s = newArena({ down = true })
+    s.step(1)
+    fileDebt(s)
+
+    local start = s.wallet()
+    s.betting.SweepUnpaid()     -- paid: +700
+    s.control.down = false
+    s.betting.SweepUnpaid()     -- the replay must not re-create the row
+    s.step(4)                   -- the load thread finally reads the ledger
+    s.betting.SweepUnpaid()     -- and pays whatever it read
+
+    t.equals(s.wallet() - start, 700, 'the same 700 was paid twice in one run')
+end)
+
+t.test('and a restart does not read a phantom row back and pay it again', function()
+    local s = newArena({ down = true })
+    s.step(3)
+    fileDebt(s)
+    s.betting.SweepUnpaid()
+    s.control.down = false
+    s.betting.SweepUnpaid()
+
+    -- Everything the database is holding when the server goes down.
+    local r = newArena({ seed = s.snapshot() })
+    r.step(3)
+
+    local before = r.wallet()
+    r.betting.SweepUnpaid()
+
+    t.equals(r.wallet() - before, 0, 'the same 700 was paid again after a restart')
 end)
 
 os.exit(t.summary())

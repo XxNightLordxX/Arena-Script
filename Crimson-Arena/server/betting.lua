@@ -737,6 +737,38 @@ local function sendDrop(citizenid, key)
 end
 
 local function dropUnpaidPart(citizenid, key)
+    -- CANCEL ANY QUEUED INSERT FOR THE SAME PART FIRST, and this is the
+    -- whole of the bug it closes.
+    --
+    -- The two queues above hold statements the database never took. They are
+    -- replayed independently, and until now nothing connected them -- so a
+    -- part that was FILED while oxmysql was away and then PAID while it was
+    -- still away left an INSERT sitting in `pendingAdds` and a DELETE sitting
+    -- in `pendingDrops` for the same key. The next sweep replays drops and
+    -- then adds, in that order, and the add wins: a debt the arena had
+    -- already paid is written straight back into the ledger.
+    --
+    -- What that costs, reproduced end to end rather than reasoned about: the
+    -- phantom row is read back by the load thread in the SAME RUN and paid a
+    -- second time, and it is read back and paid again on every restart after
+    -- that. One 700 debt became 1400 in a single run and kept growing.
+    --
+    -- Cancelling the pair here is the correct resolution and not merely the
+    -- cheap one. An INSERT and a DELETE for one key annihilate: if the insert
+    -- never landed there is nothing for the delete to remove, and replaying
+    -- the delete alone against a row that does not exist removes nothing and
+    -- costs nothing. The asymmetry runs one way only -- a lost DELETE pays a
+    -- debt twice, a lost INSERT forgets one -- so when in doubt this keeps
+    -- the delete and drops the insert.
+    local queuedAdds = pendingAdds[citizenid]
+    if queuedAdds ~= nil and queuedAdds[key] ~= nil then
+        queuedAdds[key] = nil
+        pendingAddCount = pendingAddCount - 1
+        if next(queuedAdds) == nil then pendingAdds[citizenid] = nil end
+        ArenaDebug('betting: dropped a queued unpaid INSERT for %s/%s -- it has been paid.',
+            tostring(citizenid), tostring(key))
+    end
+
     local keys = pendingDrops[citizenid]
 
     if keys == nil or keys[key] == nil then

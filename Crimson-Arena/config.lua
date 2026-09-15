@@ -2527,6 +2527,17 @@ Config.Dispatch = {
         -- but you will have been told it was fixed.
         watchStateBag = 'qbx_medical:deathState',
 
+        -- WHAT "ALIVE" IS CALLED IN THAT BAG. 1 on Qbox, whose enum reads
+        -- ALIVE / LAST_STAND / DEAD, and every other value is treated as a
+        -- knockdown worth answering.
+        --
+        -- Change it if you named a different bag above and its enum differs.
+        -- Getting it wrong fails the silent way and the wrong way round: if
+        -- this names a value that really means "down", the arena skips its
+        -- burst at exactly the moment the burst exists for, and you see no
+        -- change at all.
+        aliveValue = 1,
+
         -- Once a knockdown is heard, how long to keep clearing for and how
         -- often, in ms. The medical script asserts its state more than once
         -- on the way down -- the knockdown, the bleed-out, the death after

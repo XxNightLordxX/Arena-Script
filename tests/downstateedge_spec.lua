@@ -355,6 +355,41 @@ t.test('ALIVE is not an edge worth answering', function()
     t.equals(#f.metaWrites, 0, 'a revive started a burst of writes for a flag that is already down')
 end)
 
+t.test('what ALIVE is called is read from the config, not assumed to be 1', function()
+    -- An operator is invited to name a different bag, and a resource that
+    -- lets you do that while hard-coding one of its values is offering a
+    -- choice it does not honour. On an enum where 1 means "down", the old
+    -- code skipped its burst at exactly the moment the burst exists for.
+    local f = newFixture({ downState = { aliveValue = 7 } })
+    f.enter(7)
+
+    -- 1 is NOT alive on this server, so it must be answered.
+    f.goDown(7, LAST_STAND)
+    t.isTrue(f.spawned() > 0, 'a knockdown was ignored because 1 was assumed to mean alive')
+    f.step()
+    t.equals(f.metadata(7).inlaststand, false, 'the flag was left up')
+end)
+
+t.test('and the configured alive value is the one that is skipped', function()
+    local f = newFixture({ downState = { aliveValue = 7 } })
+    f.enter(7)
+
+    f.goDown(7, 7)
+
+    t.equals(f.spawned(), 0, 'a revive started a burst on a server whose ALIVE is 7')
+end)
+
+t.test('a bag that carries its value as a string still reads as alive', function()
+    -- State bags carry whatever wrote them. '1' and 1 have to mean the same
+    -- thing here or a revive starts a pointless burst every time.
+    local f = newFixture()
+    f.enter(7)
+
+    f.goDown(7, '1')
+
+    t.equals(f.spawned(), 0, 'a string ALIVE was treated as a knockdown')
+end)
+
 -- ======================================================================
 -- AND DECLINING CLEANLY WHERE IT CANNOT WORK
 -- ======================================================================

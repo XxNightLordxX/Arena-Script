@@ -327,12 +327,30 @@ CreateThread(function()
     local keys = downStateConfig().keys
     if type(keys) ~= 'table' or #keys == 0 then return end
 
+    -- WHAT "ALIVE" IS CALLED IN THAT BAG, read from the config rather than
+    -- assumed to be 1.
+    --
+    -- It is 1 on Qbox, whose enum is ALIVE/LAST_STAND/DEAD, and that is the
+    -- default. But an operator is invited to name a DIFFERENT bag above, and
+    -- a resource that lets you do that while hard-coding what one of its
+    -- values means is offering a choice it does not honour. The failure is
+    -- silent and it is the wrong way round: on an enum where 1 happens to
+    -- mean "down", the arena would skip its burst at exactly the moment the
+    -- burst exists for, and the operator would see no change at all.
+    local aliveValue = downStateConfig().aliveValue
+    if aliveValue == nil then aliveValue = 1 end
+
     AddStateBagChangeHandler(key, nil, function(bagName, _, value)
         -- ALIVE is the one value that needs nothing doing. The medical
         -- script mirrors it as both flags false, which is what this resource
         -- wants anyway, and reacting to it would mean a burst of writes
         -- every time a fighter is revived.
-        if value == nil or value == 1 then return end
+        --
+        -- Compared loosely on purpose: a state bag may carry the value as a
+        -- number or as a string depending on what wrote it, and `1` and `'1'`
+        -- have to mean the same thing here.
+        if value == nil then return end
+        if value == aliveValue or tostring(value) == tostring(aliveValue) then return end
 
         local ok, src = pcall(GetPlayerFromStateBagName, bagName)
         src = ok and Arena.ToInt(src) or nil

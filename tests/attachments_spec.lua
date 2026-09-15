@@ -88,6 +88,109 @@ t.test('and every name in it is an ox_inventory component item, not a GTA one', 
     t.isTrue(checked > 20, ('only %d component(s) checked'):format(checked))
 end)
 
+
+-- ======================================================================
+-- AND THAT EVERY NAME IS ONE ox_inventory REALLY SHIPS
+--
+-- THE CHECK ABOVE IS A SHAPE CHECK, and a shape check is what let the
+-- original fault ship. Every value in that table matched `^COMPONENT_%u`
+-- perfectly; all 180 of them were wrong, because ox_inventory does not take
+-- GTA's names. Swapping the pattern for `^at_%l` fixed the values but not
+-- the weakness: `at_scope_enormous` matches it too, and would reach a
+-- weapon and stop it being drawn exactly as the old names did.
+--
+-- So the names are checked against a list of what ox_inventory actually
+-- ships, read out of its own data/weapons.lua `Components` block rather
+-- than remembered. Thirty-two items, skins excluded -- those are cosmetic
+-- and the table above bans them by name anyway.
+--
+-- WHAT THIS CANNOT DO, said plainly so nobody trusts it further than it
+-- goes: it cannot know what the OPERATOR'S ox_inventory has. A server with
+-- a customised Components block, or one older than a name used here, will
+-- differ -- which is why server/ammo.lua asks the running inventory at
+-- start-up and drops what it does not have. This is the cheaper half: it
+-- catches a name that is wrong EVERYWHERE, at the moment it is typed,
+-- instead of on somebody's server.
+-- ======================================================================
+
+--- Every component item in ox_inventory's shipped data/weapons.lua, skins
+--- excluded. Present in every release checked, v2.30.0 through current.
+local OX_COMPONENTS = {
+    'at_barrel', 'at_clip_drum_rifle', 'at_clip_drum_shotgun',
+    'at_clip_drum_smg', 'at_clip_extended_mg', 'at_clip_extended_pistol',
+    'at_clip_extended_rifle', 'at_clip_extended_shotgun',
+    'at_clip_extended_smg', 'at_clip_extended_sniper', 'at_compensator',
+    'at_flashlight', 'at_grip', 'at_muzzle_bell', 'at_muzzle_fat',
+    'at_muzzle_flat', 'at_muzzle_heavy', 'at_muzzle_precision',
+    'at_muzzle_slanted', 'at_muzzle_split', 'at_muzzle_squared',
+    'at_muzzle_tactical', 'at_scope_advanced', 'at_scope_holo',
+    'at_scope_large', 'at_scope_macro', 'at_scope_medium', 'at_scope_nv',
+    'at_scope_small', 'at_scope_thermal', 'at_suppressor_heavy',
+    'at_suppressor_light',
+}
+
+t.test('every configured attachment is an item ox_inventory really ships', function()
+    local known = {}
+    for _, name in ipairs(OX_COMPONENTS) do known[name] = true end
+
+    local checked, unknown = 0, {}
+    for weapon, row in pairs(attachmentTable()) do
+        for kind, component in pairs(row) do
+            checked = checked + 1
+            if not known[component] then
+                unknown[#unknown + 1] = ('%s.%s = %s'):format(weapon, kind, tostring(component))
+            end
+        end
+    end
+    table.sort(unknown)
+
+    t.isTrue(checked > 20, ('only %d name(s) checked'):format(checked))
+    t.equals(#unknown, 0, ('these are not ox_inventory component items, so ox_inventory would '
+        .. 'throw on them and the weapon would not come out: %s'):format(table.concat(unknown, ', ')))
+end)
+
+t.test('and the ammunition components are real items too', function()
+    -- A `component` on an ammoTypes line goes into the same metadata.components
+    -- list and breaks a weapon in exactly the same way. Nothing in the shipped
+    -- catalogue carries one, which is the state this asserts -- add one and it
+    -- has to be a real item like everything else.
+    local known = {}
+    for _, name in ipairs(OX_COMPONENTS) do known[name] = true end
+
+    local bad = {}
+    for _, entry in ipairs(catalogue()) do
+        for _, ammoType in ipairs(entry.ammoTypes or {}) do
+            local name = type(ammoType) == 'table' and ammoType.component or nil
+            if name ~= nil and not known[name] then
+                bad[#bad + 1] = ('%s/%s = %s'):format(tostring(entry.weapon),
+                    tostring(ammoType.key), tostring(name))
+            end
+        end
+    end
+    table.sort(bad)
+
+    t.equals(#bad, 0, ('an ammunition type names a component ox_inventory does not ship: %s')
+        :format(table.concat(bad, ', ')))
+end)
+
+t.test('and every weapon catalogue entry\'s own components list too', function()
+    local known = {}
+    for _, name in ipairs(OX_COMPONENTS) do known[name] = true end
+
+    local bad = {}
+    for _, entry in ipairs(catalogue()) do
+        for _, name in ipairs(entry.components or {}) do
+            if not known[name] then
+                bad[#bad + 1] = ('%s = %s'):format(tostring(entry.weapon), tostring(name))
+            end
+        end
+    end
+    table.sort(bad)
+
+    t.equals(#bad, 0, ('a weapon\'s own components list names something ox_inventory does not '
+        .. 'ship: %s'):format(table.concat(bad, ', ')))
+end)
+
 t.test('and no weapon is fitted with the same component twice', function()
     for weapon, row in pairs(attachmentTable()) do
         local seen = {}

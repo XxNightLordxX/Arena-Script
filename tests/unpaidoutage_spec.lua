@@ -170,10 +170,11 @@ local SEED = { ['CID1|' .. KEY] = { citizenid = 'CID1', ledger_key = KEY, name =
     account = 'cash', reason = 'match_cancelled', amount = 300 } }
 
 --- Files a 700 debt for CID1 by refunding a stake while they are away.
-local function fileDebt(s)
-    s.betting.TakeStake(1, 'm1', 700, 'cash')
+local function fileDebt(s, amount, matchId)
+    matchId = matchId or 'm1'
+    s.betting.TakeStake(1, matchId, amount or 700, 'cash')
     s.control.offline = true
-    s.betting.RefundAll('m1', 'match_cancelled')
+    s.betting.RefundAll(matchId, 'match_cancelled')
     s.control.offline = false
 end
 
@@ -423,6 +424,30 @@ t.test('nothing is added to the ledger while the read is in flight', function()
     -- filed, because the INSERT is being held rather than raced.
     t.equals(s.storedAmount(), 300,
         'an INSERT went out while the read was in flight, which is the race itself')
+end)
+
+t.test('and TWO debts on the same key, both filed before the answer, both survive', function()
+    -- ONE DEBT IS THE EASY CASE AND EVERY OTHER TEST HERE FILES ONE. The
+    -- ledger key is account|reason, so two cancelled matches for the same
+    -- player collide on `cash|match_cancelled` -- an ordinary Tuesday on a
+    -- server that is restarting. Both are held back while the ledger is
+    -- unread, so the queue has to ACCUMULATE them; keep only the last and
+    -- the player is quietly short the first.
+    local s = newArena({ seed = SEED, holdSelect = true })
+    s.step(3)
+
+    fileDebt(s, 700, 'm1')
+    fileDebt(s, 400, 'm2')
+    t.equals(s.owed(), 1100, 'the two debts were not both filed, so this proves nothing')
+
+    t.isTrue(s.releaseRead(), 'there was no read in flight to release')
+
+    t.equals(s.owed(), 1400, 'one of the two debts filed before the answer was lost by it')
+
+    local before = s.wallet()
+    s.betting.SweepUnpaid()
+    t.equals(s.wallet() - before, 1400, 'the player was paid short of what the arena owes')
+    t.equals(s.storedAmount(), 0, 'a settled row was left in the table')
 end)
 
 t.test('a debt filed while the read is in flight survives the read landing', function()

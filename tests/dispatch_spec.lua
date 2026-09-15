@@ -2230,7 +2230,7 @@ end)
 --- @return table fixture
 local function newCompatAndServer(running)
     running = running or {}
-    local commands, console = {}, {}
+    local commands, console, toasts = {}, {}, {}
 
     local env = Sandbox.newArenaEnv({
         IsDuplicityVersion = function() return true end,
@@ -2249,7 +2249,9 @@ local function newCompatAndServer(running)
         RegisterCommand = function(name, fn) commands[name] = fn end,
         print = function(line) console[#console + 1] = tostring(line) end,
         ArenaIsAdmin = function() return true end,
-        ArenaNotify = function() end,
+        ArenaNotify = function(src, text, kind)
+            toasts[#toasts + 1] = { src = src, text = tostring(text), kind = kind }
+        end,
         ArenaNotifyKey = function() end,
         ArenaLog = function(fmt, ...)
             console[#console + 1] = (select('#', ...) > 0) and fmt:format(...) or fmt
@@ -2277,7 +2279,7 @@ local function newCompatAndServer(running)
     Sandbox.loadInto('../Crimson-Arena/shared/compat/dispatch.lua', env)
     Sandbox.loadInto('../Crimson-Arena/server/dispatch.lua', env)
 
-    return { env = env, commands = commands, console = console }
+    return { env = env, commands = commands, console = console, toasts = toasts }
 end
 
 t.test('/arenadispatch is registered on the server, which is what the operator was told did not exist', function()
@@ -2316,11 +2318,68 @@ end)
 t.test('every line reaches the panel as a string', function()
     -- The panel prints these straight out. Anything else is "table: 0x..."
     -- on the screen of an operator who already believes their server is broken.
+    --
+    -- THE COMPAT LAYER IS MADE TO HAND BACK RUBBISH, and without that this
+    -- test proves nothing about CompatReport at all: the real layer already
+    -- answers with strings, so the loop below was checking the layer rather
+    -- than the coercion that exists in case it does not. The coercion could
+    -- be deleted and this stayed green.
+    --
+    -- Not a hypothetical shape either. ArenaCompat is a shared_script from a
+    -- file an operator can edit, replace or break, and this whole function
+    -- exists because it might be missing entirely.
     local f = newCompatAndServer({ ['sc-dispatch'] = true })
-    for index, line in ipairs(f.env.ArenaDispatch.CompatReport()) do
+    f.env.ArenaCompat = { Report = function() return { 1, {}, true, 'a real line' } end }
+
+    local lines = f.env.ArenaDispatch.CompatReport()
+    t.isTrue(#lines > 0, 'the report came back empty, so the loop below proves nothing')
+    for index, line in ipairs(lines) do
         t.equals(type(line), 'string', ('compat report line %d reached the panel as a %s')
             :format(index, type(line)))
     end
+end)
+
+t.test('the in-game reply is one short line, not the report', function()
+    -- THE REPORTED BUG, AND THE ONE TEST THAT CAN SEE IT. /arenadispatch
+    -- answered an in-game admin with twenty-odd lines, a pasteable snippet
+    -- and a server.cfg instruction concatenated into a single toast that
+    -- shows for a few seconds in a corner. Nobody reads a resource name out
+    -- of that, which is the only thing the report is for, so the operator
+    -- came away thinking the command did nothing.
+    --
+    -- commands_spec guards the same thing by searching this file's source,
+    -- which cannot tell a toast from a comment: the concat can go back with
+    -- different quotes and the phrase can stay behind in a comment. This
+    -- asserts on the toast the command actually raises.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+
+    f.commands.arenadispatch(3, {})
+
+    t.equals(#f.toasts, 1, ('an in-game admin got %d toast(s)'):format(#f.toasts))
+    local toast = f.toasts[1]
+    t.equals(toast.src, 3, 'the reply went to somebody else')
+    t.isTrue(#toast.text <= 200,
+        ('the in-game reply is %d characters -- it is the report again, in a corner, for a few '
+            .. 'seconds'):format(#toast.text))
+    t.contains(toast.text, 'console', 'the reply does not say the report went to the console')
+    t.contains(toast.text, 'Tools', 'the reply does not say where the report can be read')
+
+    -- AND THE REPORT ITSELF IS UNCHANGED. Shortening the reply must not
+    -- shorten the thing it is pointing at.
+    t.contains(table.concat(f.console, '\n'), 'sc-ambulance',
+        'the console report lost its contents along with the toast')
+end)
+
+t.test('and the console, not the player, is where the report goes when run from there', function()
+    -- src 0 is the server console. It has already had the report printed to
+    -- it line by line; a toast has nowhere to go.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+
+    f.commands.arenadispatch(0, {})
+
+    t.equals(#f.toasts, 0, 'the server console was sent a notification')
+    t.contains(table.concat(f.console, '\n'), 'sc-dispatch',
+        'running it from the console printed no report')
 end)
 
 t.test('a build with no compat layer answers the panel instead of crashing it', function()

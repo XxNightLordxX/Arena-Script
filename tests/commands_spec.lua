@@ -52,17 +52,23 @@ end
 --- them is a shared_script, which is precisely how /arenadispatch came to
 --- be overlooked: a search of server/*.lua does not find it.
 --- @return table set -- { [name] = path }
+--- @return integer calls -- how many RegisterCommand calls were seen at all
 local function registeredCommands()
-    local found = {}
+    local found, names, calls = {}, 0, 0
     for path, body in pairs(everyLuaFile()) do
+        for _ in body:gmatch('RegisterCommand%s*%(') do
+            calls = calls + 1
+        end
         for name in body:gmatch("RegisterCommand%(%s*'([%w_]+)'") do
+            if found[name] == nil then names = names + 1 end
             found[name] = path
         end
         for name in body:gmatch('RegisterCommand%(%s*"([%w_]+)"') do
+            if found[name] == nil then names = names + 1 end
             found[name] = path
         end
     end
-    return found
+    return found, calls, names
 end
 
 --- One load of the REAL client/main.lua, with every chat:addSuggestion it
@@ -176,6 +182,14 @@ t.test('/arenadispatch offers itself to autocomplete', function()
 end)
 
 t.test('the in-game reply points at somewhere the report can be read', function()
+    -- READ OUT OF THE FILE'S SOURCE, WHICH IS THE WEAK HALF. A grep cannot
+    -- tell a toast from a comment: putting the whole report back through
+    -- `table.concat(lines, "\n")` -- double quotes this time -- and leaving
+    -- the phrase behind in a comment restores the exact reported bug with
+    -- both assertions below still passing. The behavioural half lives in
+    -- dispatch_spec ('the in-game reply is one short line, not the report'),
+    -- which captures the toast the command actually raises; these two stay
+    -- because they name the shape, and the pair is what closes it.
     local body = readFile('shared/compat/dispatch.lua')
     t.notContains(body, "table.concat(lines, '\\n')",
         'the in-game reply is back to one toast holding the whole report, which nobody can read')
@@ -186,6 +200,28 @@ end)
 -- ======================================================================
 -- THE DRIFT GUARD
 -- ======================================================================
+
+t.test('and the scan sees every RegisterCommand call, not only the ones it can name', function()
+    -- THE GUARD ON THE GUARD, and the hole is the same shape as the bug this
+    -- file exists for: something invisible to a search. The two patterns
+    -- above read a name only out of a quoted literal, so a command
+    -- registered under a variable, a config value, or a name with a hyphen
+    -- in it is not in `found` at all -- it ships with no autocomplete entry
+    -- and the drift test below goes quietly green over a shorter list.
+    --
+    -- Counting the calls costs nothing and says so: every RegisterCommand in
+    -- this resource has to be one this file can read the name of.
+    local found, calls, names = registeredCommands()
+    t.isTrue(calls > 0, 'no RegisterCommand call was found anywhere, so nothing below is tested')
+    t.equals(names, calls,
+        ('%d RegisterCommand call(s) in the resource and %d name(s) could be read out of them -- '
+            .. 'a command whose name is not a quoted literal is invisible to this file')
+            :format(calls, names))
+
+    local counted = 0
+    for _ in pairs(found) do counted = counted + 1 end
+    t.equals(counted, names, 'two files register the same command name')
+end)
 
 print('==> every command is discoverable')
 

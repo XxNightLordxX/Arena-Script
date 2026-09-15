@@ -645,6 +645,23 @@ t.test('and does NOT report a pass when it could not check anything', function()
     t.notContains(report, 'every one is an item', 'an unchecked config was reported as clean')
 end)
 
+t.test('THE CHECK IS ACTUALLY RUN AT START, not merely available to be run', function()
+    -- Every test around this one calls AttachmentReport() by hand, so the
+    -- whole boot thread could be emptied and all of them stay green -- and
+    -- the claim the feature is sold on is "the mistake is named at boot,
+    -- before a fighter is standing in the arena holding a weapon that will
+    -- not come out". A report nobody runs names nothing.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { grip = 'COMPONENT_AT_AR_AFGRIP' } }
+        config.Loadouts.weapons = {}
+    end })
+
+    -- NOTHING HAS BEEN ASKED FOR YET. This is the console as it stands the
+    -- moment the resource has finished loading.
+    t.contains(f.log(), 'COMPONENT_AT_AR_AFGRIP',
+        'the start-up check did not run, so a broken config reaches the first round unannounced')
+end)
+
 t.test('A NAME IS REFUSED ON A SERVER THAT HAS NO COMPONENT ITEMS AT ALL', function()
     -- THE SERVER THE WHOLE CHECK EXISTS FOR, and the one it used to wave
     -- straight through. Telling a component from an ordinary item means

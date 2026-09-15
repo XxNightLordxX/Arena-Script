@@ -14,6 +14,24 @@ local leftAt = {}
 --- next time this player is genuinely shot in the city.
 local RETRACT_GRACE_S = 60
 
+--- When a withdrawal is asked for, in milliseconds after the first attempt.
+---
+--- ONE CONSTANT FOR BOTH PATHS, and the comment inside retractFor is the
+--- reason it exists at all: sc-dispatch's AddNotification writes the call
+--- through oxmysql and AWAITS it before a single EMS screen is told, which
+--- is routinely longer than the 250ms pause either path waits. A withdrawal
+--- that arrives first withdraws NOTHING -- the UPDATE matches no row, the
+--- insert lands afterwards, and the alert stays out.
+---
+--- The filed path used to ask exactly ONCE, which is the schedule that
+--- report ("its not even recalling the alert for a person down") was about.
+--- Knowing the exact id makes it certain WHICH call to clear; it says
+--- nothing about WHEN that call exists. So both ask on the same widening
+--- schedule -- a fast server pays almost nothing, a slow one is still
+--- covered three seconds out -- and asking twice costs nothing, because a
+--- clear for a call that is already gone matches no row either.
+local RETRY_AT = { 0, 500, 1500, 3000 }
+
 local function customConfig()
     return (Config.Dispatch and Config.Dispatch.custom) or {}
 end
@@ -1975,8 +1993,8 @@ local function retractFor(entry, src)
     -- already identified.
     --
     -- WIDENING, so a fast server pays almost nothing and a slow one is still
-    -- covered several seconds out.
-    local RETRY_AT = { 0, 500, 1500, 3000 }
+    -- covered several seconds out. Shared with the filed path at the top of
+    -- this file, which had this exact fault until it was.
 
     local function ask()
         for _, template in ipairs(shapes) do
@@ -2101,10 +2119,15 @@ end
 --- into that function, including the ones this resource has never heard of,
 --- because they all go through it.
 ---
---- WHY IT STILL WAITS A MOMENT. The announcement happens BEFORE the rows
---- are written, so withdrawing on the spot would clear a call that does not
---- exist yet and the real one would survive. `delayMs` is that pause and it
---- is the same number the sweep uses.
+--- WHY IT STILL WAITS, AND WHY IT ASKS MORE THAN ONCE. The announcement
+--- happens BEFORE the rows are written, so withdrawing on the spot would
+--- clear a call that does not exist yet and the real one would survive.
+--- `delayMs` is that pause and it is the same number the sweep uses -- and
+--- like the sweep, one shot at it is not enough. The write is awaited
+--- several statements deep and routinely outruns 250ms on a loaded server;
+--- see RETRY_AT at the top of this file, which is the schedule both paths
+--- use for exactly this reason. Knowing the id makes it certain WHICH call
+--- to clear and says nothing about WHEN it exists.
 ---
 --- WHAT IT IS NOT, AGAIN. This is withdrawal, not prevention. The call is
 --- filed, so it reaches a screen; what this removes is a call that STAYS
@@ -2149,8 +2172,7 @@ function ArenaDispatch.WithdrawFiledCall(data)
 
     ArenaLog('retract: withdrawing "%s" -- filed about %s, who is in a match.', tostring(id), tostring(src))
 
-    CreateThread(function()
-        if delay > 0 then Wait(delay) end
+    local function ask()
         local ok, err = pcall(function()
             exports[config.resource][config.export](nil, id, jobs)
         end)
@@ -2159,7 +2181,16 @@ function ArenaDispatch.WithdrawFiledCall(data)
             ArenaLog('retract: %s:%s failed on a filed call (%s).',
                 config.resource, config.export, tostring(err))
         end
-    end)
+    end
+
+    -- TIMERS RATHER THAN ONE THREAD THAT SLEEPS BETWEEN ASKS, which is how
+    -- retractFor does it and the difference is not cosmetic: a thread that
+    -- waits carries `id` and `jobs` for three seconds and, more to the
+    -- point, one that throws takes the rest of the schedule with it. Each
+    -- attempt here stands on its own.
+    for _, extra in ipairs(RETRY_AT) do
+        SetTimeout(delay + extra, ask)
+    end
 
     return true
 end

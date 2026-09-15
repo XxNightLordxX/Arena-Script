@@ -1079,15 +1079,27 @@ t.test('every line is a string, whatever the report handed back', function()
     -- The panel prints these straight out. A number or a table reaching it
     -- is a screen that says "table: 0x..." to an operator looking at a
     -- server they already believe is broken.
+    --
+    -- ONE REPORT IS MADE TO HAND BACK RUBBISH, because every report this
+    -- fixture can reach already answers with strings -- so the loop was
+    -- checking the reports rather than the handler's coercion, and the
+    -- coercion could be deleted with this green. "Whatever the report handed
+    -- back" is the claim in the name; it has to be tested with something
+    -- that is not a string.
     local s = newArena({ [1] = true })
+    s.env.ArenaDispatch.CompatReport = function() return { 1, {}, true, 'a real line' } end
+
+    local checked = 0
     for _, tool in ipairs(adminToolNames()) do
         s.fire('adminTool', 1, { tool = tool })
         s.step()
         for index, line in ipairs((s.lastNamed('adminTool') or {}).payload.lines) do
+            checked = checked + 1
             t.equals(type(line), 'string',
                 ('%s line %d reached the panel as a %s'):format(tool, index, type(line)))
         end
     end
+    t.isTrue(checked > 0, 'no line was examined at all, so this test cannot fail')
 end)
 
 t.test('a tool name the server does not know is refused, not answered', function()

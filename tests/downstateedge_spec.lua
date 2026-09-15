@@ -57,9 +57,51 @@ local function newFixture(opts)
     local eventHandlers, exportCalls = {}, {}
     local clock = 0
 
+    -- FXSERVER'S OWN CreateThread, for the tests that are about WHEN the
+    -- work runs rather than what it does.
+    --
+    -- The default above is a queue: the body is put aside and runs on the
+    -- next step(), which is right for everything that only cares about the
+    -- end state and keeps a 13-pass burst inside one step. It cannot see the
+    -- ordering guarantee, though, because it defers the body whether or not
+    -- the body asked to be deferred -- so `Wait(0)`, which is the whole
+    -- mechanism, can be deleted and the fixture behaves identically.
+    --
+    -- FXServer runs a thread body IMMEDIATELY and stops it at its first
+    -- yield. That is why the burst opens with Wait(0) and it is the only
+    -- thing standing between this resource and qbx_medical re-raising the
+    -- flag after the clear on a server where the arena registered first.
+    local live = {}
+    local function tickCreate(fn)
+        local co = coroutine.create(fn)
+        local ok, err = coroutine.resume(co)
+        if not ok then error(('fixture: a thread errored: %s'):format(tostring(err))) end
+        if coroutine.status(co) ~= 'dead' then live[#live + 1] = co end
+    end
+
+    local function tickDrain()
+        -- BOUNDED. A burst that stopped ending would otherwise hang the
+        -- suite rather than fail it.
+        for _ = 1, 500 do
+            local alive = 0
+            for _, co in ipairs(live) do
+                if coroutine.status(co) ~= 'dead' then
+                    alive = alive + 1
+                    local ok, err = coroutine.resume(co)
+                    if not ok then error(('fixture: a thread errored: %s'):format(tostring(err))) end
+                end
+            end
+            if alive == 0 then return end
+        end
+        error('fixture: a thread would not finish')
+    end
+
     local env = Sandbox.newArenaEnv({
-        CreateThread = function(fn) threads[#threads + 1] = fn end,
-        Wait = function(ms) clock = clock + (tonumber(ms) or 0) end,
+        CreateThread = opts.tickThreads and tickCreate
+            or function(fn) threads[#threads + 1] = fn end,
+        Wait = opts.tickThreads
+            and function(ms) clock = clock + (tonumber(ms) or 0) coroutine.yield() end
+            or function(ms) clock = clock + (tonumber(ms) or 0) end,
         GetGameTimer = function() return clock end,
         SetTimeout = function(_ms, fn) threads[#threads + 1] = fn end,
         AddEventHandler = function(name, fn) eventHandlers[name] = fn end,
@@ -192,6 +234,17 @@ local function newFixture(opts)
         --- A player the arena has never seen, but who still has metadata.
         stranger = function(src) metadata[src] = { inlaststand = false, isdead = false } end,
         metadata = function(src) return metadata[src] end,
+        --- The medical script raises its own flag, AFTER the bag handlers
+        --- have run -- which is the ordering on a server where this resource
+        --- registered its handler first.
+        goDownArenaFirst = function(src, value)
+            metadata[src] = metadata[src] or {}
+            for _, entry in ipairs(bagHandlers) do
+                entry.fn(('player:%d'):format(src), entry.key, value)
+            end
+            metadata[src].isdead = (value == DEAD)
+            metadata[src].inlaststand = (value == LAST_STAND)
+        end,
         --- The medical script flips its state bag for `src`.
         goDown = function(src, value)
             metadata[src] = metadata[src] or {}
@@ -202,8 +255,9 @@ local function newFixture(opts)
                 entry.fn(('player:%d'):format(src), entry.key, value)
             end
         end,
-        --- One pass of every thread started since the last step.
+        --- Everything the arena has queued, run to completion.
         step = function()
+            if opts.tickThreads then tickDrain() return 0 end
             local pending = {}
             for index = ran + 1, #threads do pending[#pending + 1] = threads[index] end
             ran = #threads
@@ -271,6 +325,38 @@ t.test('the clear lands AFTER the medical script writes, whichever handler ran f
 
     t.equals(f.metadata(7).inlaststand, false,
         'the medical script had the last word, so a dispatch poll still finds the flag up')
+end)
+
+t.test('AND IT HOLDS WHEN THE ARENA RAN FIRST, which is what Wait(0) buys', function()
+    -- THE ORDERING NOTHING COULD SEE. Both handlers hang off the same bag
+    -- and nothing decides which runs first; the test above asserts the end
+    -- state with the medical write applied BEFORE the handlers, so the arena
+    -- goes second by construction and the guarantee is the fixture's rather
+    -- than the code's. Here the arena's handler runs first and the medical
+    -- script writes afterwards -- and the clear still has to land last.
+    --
+    -- `burstMs = 0` is what makes it an assertion rather than a coincidence:
+    -- with the burst reduced to a single clear there is no second pass to
+    -- paper over a first one that fired too early. Do the work inline and
+    -- that one clear happens before the flag has even been raised, does
+    -- nothing (it is conditional on the flag being up), and the flag stays
+    -- up for the dispatch script's next poll -- which is the whole reported
+    -- bug, back in full.
+    --
+    -- Run on FXServer's own thread semantics: a body that starts at once and
+    -- stops at its first yield. The default fixture queues every body, so it
+    -- cannot tell a deferred clear from an inline one.
+    local f = newFixture({ tickThreads = true, downState = { burstMs = 0 } })
+    f.enter(7)
+
+    f.goDownArenaFirst(7, LAST_STAND)
+    t.equals(f.metadata(7).inlaststand, true,
+        'the medical script did not write after the handler, so this proves nothing')
+
+    f.step()
+
+    t.equals(f.metadata(7).inlaststand, false,
+        'the clear ran inside the handler, so the medical script had the last word')
 end)
 
 t.test('one clear is enough while the flag STAYS down', function()
@@ -363,8 +449,12 @@ t.test('what ALIVE is called is read from the config, not assumed to be 1', func
     local f = newFixture({ downState = { aliveValue = 7 } })
     f.enter(7)
 
-    -- 1 is NOT alive on this server, so it must be answered.
-    f.goDown(7, LAST_STAND)
+    -- 1 IS THE VALUE SENT, and it has to be, or this test is not about its
+    -- own name. On this server 1 is an ordinary down state and 7 is alive,
+    -- so a resource that assumes 1 means alive skips the burst at exactly
+    -- the moment the burst exists for. Sending 2 here -- as this did --
+    -- passes against the hard-coded version too, because 2 is not 1 either.
+    f.goDown(7, ALIVE)
     t.isTrue(f.spawned() > 0, 'a knockdown was ignored because 1 was assumed to mean alive')
     f.step()
     t.equals(f.metadata(7).inlaststand, false, 'the flag was left up')
@@ -453,13 +543,42 @@ t.test('a call filed about a fighter is withdrawn, with the id it was handed', f
         'the arena is not listening for filed calls at all')
     f.step()
 
-    t.equals(#f.exportCalls, 1, ('%d withdrawal(s) went out'):format(#f.exportCalls))
+    t.isTrue(#f.exportCalls > 0, 'no withdrawal went out at all')
     local call = f.exportCalls[1]
     t.equals(call.resource, 'sc-dispatch')
     t.equals(call.export, 'ClearNotification')
     t.equals(call.args[1], 'playerdown_7_1700000000',
         'it withdrew some other id than the one it was given')
     t.equals(type(call.args[2]), 'table', 'the job list was not passed on, so the clear may not reach EMS')
+
+    for i, again in ipairs(f.exportCalls) do
+        t.equals(again.args[1], 'playerdown_7_1700000000',
+            ('attempt %d asked for a different id'):format(i))
+    end
+end)
+
+t.test('AND IT ASKS MORE THAN ONCE, because knowing the id says nothing about when the call exists', function()
+    -- THE REPORT THIS PATH WAS WRITTEN FOR: "its not even recalling the
+    -- alert for a person down". The announcement this handler listens to
+    -- happens BEFORE the rows are written -- sc-dispatch awaits an oxmysql
+    -- write several statements deep first, routinely longer than the 250ms
+    -- pause -- so a withdrawal that arrives ahead of the insert matches no
+    -- row, and then the call lands and stays. Indistinguishable from this
+    -- layer never having run.
+    --
+    -- retractFor already knew this and asks four times on a widening
+    -- schedule; the filed path asked once, on the one number that comment
+    -- says is not enough. Asking again costs nothing: a clear for a call
+    -- that is already gone matches no row either.
+    local f = newFixture()
+    f.enter(7)
+
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
+    f.step()
+
+    t.isTrue(#f.exportCalls >= 4,
+        ('the withdrawal was asked for %d time(s) -- one shot at a write that has not '
+            .. 'landed withdraws nothing'):format(#f.exportCalls))
 end)
 
 t.test('and a call about somebody NOT in a match is left alone', function()
@@ -498,7 +617,7 @@ t.test('a fighter who just left is still covered, because the call lands after t
     f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7))
     f.step()
 
-    t.equals(#f.exportCalls, 1, 'a call filed about a fighter as they walked out was left standing')
+    t.isTrue(#f.exportCalls > 0, 'a call filed about a fighter as they walked out was left standing')
 end)
 
 t.test('and a dispatch resource that is not running is not called into', function()

@@ -206,6 +206,145 @@ CreateThread(function()
     end
 end)
 
+--- CATCHING THE MOMENT ITSELF, instead of finding out on the next sweep.
+---
+--- THE GAP THE HOLD ABOVE CANNOT CLOSE, measured rather than guessed. The
+--- flags this arena keeps down are not written by the medical script an
+--- operator installed -- they are written by Qbox's own injury system, in
+--- one place:
+---
+---     AddStateBagChangeHandler(DEATH_STATE_STATE_BAG, nil, function(bagName, _, value)
+---         player.Functions.SetMetaData('isdead',      value == deathState.DEAD)
+---         player.Functions.SetMetaData('inlaststand', value == deathState.LAST_STAND)
+---     end)
+---
+--- -- qbx_medical/server/main.lua. The metadata is a MIRROR of a state bag,
+--- rewritten every time that bag changes.
+---
+--- And a dispatch script reads that mirror off its OWN client, on its own
+--- clock. sc-dispatch polls it every 500ms and alerts on the rising edge, so
+--- the only thing that decides whether a fighter going on their side pages a
+--- medic is whether that poll lands between the medical script writing true
+--- and this resource writing false. Against a 250ms hold that is roughly
+--- every other knockdown -- which is exactly what an operator sees: not
+--- every time, not never, about half.
+---
+--- A SHORTER INTERVAL IS NOT THE ANSWER. Halving it halves the odds and
+--- doubles the write rate for every fighter in every round, forever, to
+--- chase something that is still not zero. The interval is the wrong tool:
+--- the flag does not drift, it CHANGES, at an instant this server is told
+--- about.
+---
+--- So this listens for that instant. The same state bag, the same handler
+--- mechanism, on the server, filtered to players this arena has a claim on
+--- -- and the clear goes out on the tick after the change rather than up to
+--- a whole interval later. The window stops being "half a poll" and becomes
+--- "one tick plus the trip to the client", which is one to two percent of
+--- the same poll rather than fifty.
+---
+--- WHY THE NEXT TICK AND NOT THIS ONE. Qbox's handler and this one hang off
+--- the same bag, and nothing decides which of two handlers runs first. Doing
+--- the work inline would win only when this resource happened to be
+--- registered second. Deferring by a tick lands after every handler for that
+--- change, whichever order they ran in, and costs a frame.
+---
+--- AND THEN A SHORT BURST, because one write answers one edge and the
+--- medical script asserts its state more than once on the way down -- the
+--- knockdown, the bleed-out, the death that follows it. The burst covers the
+--- transition; the hold above covers the rest of the round.
+---
+--- WHAT THIS IS STILL NOT. It is not prevention and must never be written
+--- down as prevention. The decision is made on the victim's own client,
+--- inside a resource this one cannot reach, from a value this one does not
+--- own -- and FiveM offers nothing that lets one resource stop another's
+--- handler running (its own documentation for CancelEvent says, in as many
+--- words, that it "does not stop other event handlers from running"). What
+--- is left after this is a narrow window that the retract layer further down
+--- is there to clean up after.
+--- @param src number
+local function burstClearDownState(src)
+    local config = downStateConfig()
+
+    local span = Arena.ToInt(config.burstMs)
+    if span == nil then span = 600 end
+    if span < 0 then span = 0 end
+    if span > 5000 then span = 5000 end
+
+    local step = Arena.ToInt(config.burstIntervalMs)
+    if step == nil then step = 50 end
+    if step < 10 then step = 10 end
+
+    -- BOUNDED BY COUNT AS WELL AS BY CLOCK, and the count is the one that
+    -- is load-bearing. A clock is not something this function can assume:
+    -- GetGameTimer may be absent, and it may be a constant. Against either,
+    -- a loop that ends only when the clock passes a deadline does not end at
+    -- all -- it spins the server flat out, forever, in the middle of a
+    -- knockdown. The pass count is arithmetic and cannot be argued with.
+    local passes = math.floor(span / step) + 1
+    if passes < 1 then passes = 1 end
+    if passes > 200 then passes = 200 end
+
+    local clock = type(GetGameTimer) == 'function' and GetGameTimer or nil
+
+    CreateThread(function()
+        -- Wait(0) rather than a straight call: this is the "next tick" the
+        -- note above is about, and it is the whole reason the burst is a
+        -- thread instead of a loop.
+        Wait(0)
+
+        local deadline = clock and (clock() + span) or nil
+
+        for _ = 1, passes do
+            -- RE-CHECKED EVERY PASS, not captured once. A fighter can be
+            -- eliminated, leave, or have the whole match stopped under them
+            -- inside this window, and a burst that kept writing after that
+            -- would be holding a flag down for somebody who has gone back to
+            -- the city -- the exact failure ArenaDispatch.Clear exists to
+            -- prevent.
+            if active[src] == nil then return end
+            clearDownMetadata(src)
+
+            if deadline and clock() >= deadline then return end
+            Wait(step)
+        end
+    end)
+end
+
+--- Registered only where the runtime and the config both provide for it.
+---
+--- THREE THINGS CAN BE ABSENT and each reads as "do nothing", never as an
+--- error: the native itself (this file is loaded by specs that stub a
+--- fraction of the server API), the id lookup that turns a bag name back
+--- into a player, and the config naming the bag to watch. An operator whose
+--- medical script keeps its state somewhere else simply leaves that name
+--- empty and gets the hold above on its own, exactly as before.
+CreateThread(function()
+    local key = downStateConfig().watchStateBag
+    if not Arena.IsKey(key) then return end
+    if type(AddStateBagChangeHandler) ~= 'function' then return end
+    if type(GetPlayerFromStateBagName) ~= 'function' then return end
+
+    local keys = downStateConfig().keys
+    if type(keys) ~= 'table' or #keys == 0 then return end
+
+    AddStateBagChangeHandler(key, nil, function(bagName, _, value)
+        -- ALIVE is the one value that needs nothing doing. The medical
+        -- script mirrors it as both flags false, which is what this resource
+        -- wants anyway, and reacting to it would mean a burst of writes
+        -- every time a fighter is revived.
+        if value == nil or value == 1 then return end
+
+        local ok, src = pcall(GetPlayerFromStateBagName, bagName)
+        src = ok and Arena.ToInt(src) or nil
+        if src == nil or src <= 0 then return end
+        if active[src] == nil then return end
+
+        ArenaDebug('revive: %d went down (%s = %s) -- clearing on the edge.',
+            src, tostring(key), tostring(value))
+        burstClearDownState(src)
+    end)
+end)
+
 function ArenaDispatch.Revive(src)
     if type(src) ~= 'number' or src <= 0 then return end
 
@@ -1913,6 +2052,110 @@ end
 --- script has to poll, and on a loaded server that is a second or two. Each
 --- id is asked for ONCE -- a set, not a loop -- so a four-second window over
 --- four templates is a couple of dozen calls and never the same one twice.
+--- WITHDRAWING A CALL BY ITS REAL NAME, the moment it is filed.
+---
+--- WHAT THE SWEEP BELOW HAS TO DO WITHOUT. RetractCallsFor knows who went
+--- down and roughly when, and from that it BUILDS ids -- every shape in
+--- `idTemplates`, across a few seconds of clock, hoping one of them is the
+--- name the dispatch script actually used. It works, and it is guesswork:
+--- it cannot withdraw a call filed under a shape nobody listed, and every
+--- shape it asks for that does not exist is a call into somebody else's
+--- resource for nothing.
+---
+--- IT DOES NOT HAVE TO GUESS. sc-dispatch files every single alert through
+--- one function, and the first thing that function does -- before it writes
+--- a database row, before it sends anything to anybody -- is announce the
+--- whole call on a plain server event:
+---
+---     exports('AddNotification', function(data)
+---         ...
+---         TriggerEvent('sc-dispatch:server:witnessForward', data)
+---         local insertId = nil          -- the DB write comes AFTER this
+---
+--- -- sc-dispatch/server/main.lua. It is there so NPC witnesses can spawn
+--- for crimes without every crime script having to know about witnesses,
+--- and the payload it carries is the caller's own table: the id the call
+--- will be filed under, the jobs it is going to, and the player it is
+--- about. Any resource on the server may listen.
+---
+--- So this listens. No shapes, no clock slack, no window: the exact id, the
+--- exact job list, the instant the call exists -- and it covers every route
+--- into that function, including the ones this resource has never heard of,
+--- because they all go through it.
+---
+--- WHY IT STILL WAITS A MOMENT. The announcement happens BEFORE the rows
+--- are written, so withdrawing on the spot would clear a call that does not
+--- exist yet and the real one would survive. `delayMs` is that pause and it
+--- is the same number the sweep uses.
+---
+--- WHAT IT IS NOT, AGAIN. This is withdrawal, not prevention. The call is
+--- filed, so it reaches a screen; what this removes is a call that STAYS
+--- there until somebody clears it by hand. The edge-clear further up this
+--- file is the half that tries to stop it being filed at all, and neither
+--- is a guarantee on its own.
+--- @param data table -- the announced call
+--- @return boolean withdrawn
+function ArenaDispatch.WithdrawFiledCall(data)
+    if type(data) ~= 'table' then return false end
+
+    local config = retractConfig()
+    if not Arena.IsKey(config.resource) or not Arena.IsKey(config.export) then return false end
+
+    local id = data[config.filedIdField or 'unique_id']
+    if not Arena.IsKey(id) then return false end
+
+    -- WHO THE CALL IS ABOUT, and it has to be somebody this round has a
+    -- claim on. This runs for EVERY alert filed anywhere on the server --
+    -- a robbery downtown, a real medical call, somebody else's fight -- so
+    -- the gate is the whole safety of it: withdraw the wrong one and a
+    -- player having a genuine emergency is taken off the responders'
+    -- screens by a PvP arena they have never been near.
+    local src = Arena.ToInt(data[config.filedSubjectField or 'caller_source'])
+    if src == nil or src <= 0 then return false end
+
+    local left = leftAt[src]
+    if active[src] == nil and (left == nil or os.time() - left > RETRACT_GRACE_S) then
+        return false
+    end
+
+    local known, state = pcall(GetResourceState, config.resource)
+    if not known or state ~= 'started' then return false end
+
+    local jobs = data[config.filedJobsField or 'job_table']
+    if type(jobs) ~= 'table' then jobs = nil end
+
+    local delay = Arena.ToInt(config.delayMs)
+    if delay == nil then delay = 250 end
+    if delay < 0 then delay = 0 end
+    if delay > 5000 then delay = 5000 end
+
+    ArenaLog('retract: withdrawing "%s" -- filed about %s, who is in a match.', tostring(id), tostring(src))
+
+    CreateThread(function()
+        if delay > 0 then Wait(delay) end
+        local ok, err = pcall(function()
+            exports[config.resource][config.export](nil, id, jobs)
+        end)
+        if not ok and not sawFiring['filed:err:' .. config.resource] then
+            sawFiring['filed:err:' .. config.resource] = true
+            ArenaLog('retract: %s:%s failed on a filed call (%s).',
+                config.resource, config.export, tostring(err))
+        end
+    end)
+
+    return true
+end
+
+CreateThread(function()
+    local name = retractConfig().filedEvent
+    if not Arena.IsKey(name) then return end
+    if type(AddEventHandler) ~= 'function' then return end
+
+    AddEventHandler(name, function(data)
+        ArenaDispatch.WithdrawFiledCall(data)
+    end)
+end)
+
 --- @param src number
 function ArenaDispatch.RetractCallsFor(src)
     if type(src) ~= 'number' or src <= 0 then return end

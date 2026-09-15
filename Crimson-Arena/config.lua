@@ -2503,6 +2503,38 @@ Config.Dispatch = {
         -- flag on a respawn, on their own poll, on a restart. Keep this at
         -- about half the polling interval you are up against.
         holdIntervalMs = 250,
+
+        -- THE STATE BAG THAT MEANS "THIS PLAYER JUST WENT DOWN", and the one
+        -- setting here that actually moves the needle on EMS calls.
+        --
+        -- The two flags above are not really owned by your medical script.
+        -- On Qbox they are a MIRROR: qbx_medical keeps the truth in a state
+        -- bag and rewrites the metadata from it whenever that bag changes
+        -- (qbx_medical/server/main.lua). Named here, the arena stops waiting
+        -- out `holdIntervalMs` to notice a knockdown and instead hears about
+        -- it the instant it happens, clearing on the following tick.
+        --
+        -- WHAT IT IS WORTH, in the only terms that matter: a dispatch script
+        -- polling that mirror every 500ms alerts if its poll lands between
+        -- the medical script writing the flag and this resource clearing it.
+        -- Against the 250ms hold alone that is about one knockdown in two.
+        -- Against this it is one tick, which is a couple of percent of the
+        -- same poll.
+        --
+        -- SET IT EMPTY if your medical script is not Qbox's -- the arena
+        -- falls back to the hold above and behaves exactly as it did. Do not
+        -- guess a name: a bag nothing writes costs nothing and does nothing,
+        -- but you will have been told it was fixed.
+        watchStateBag = 'qbx_medical:deathState',
+
+        -- Once a knockdown is heard, how long to keep clearing for and how
+        -- often, in ms. The medical script asserts its state more than once
+        -- on the way down -- the knockdown, the bleed-out, the death after
+        -- it -- so one write answers one edge and not the sequence.
+        --
+        -- 0 in `burstMs` reduces this to a single clear on the next tick.
+        burstMs = 600,
+        burstIntervalMs = 50,
     },
 
     -- ==================================================================
@@ -2667,6 +2699,31 @@ Config.Dispatch = {
             -- itself. Skipped with one console line if it is not running.
             resource = 'sc-dispatch',
             export = 'ClearNotification',
+
+            -- THE EVENT A DISPATCH SCRIPT ANNOUNCES A NEW CALL ON, if it
+            -- has one. This is the difference between withdrawing a call by
+            -- its real name and guessing at names.
+            --
+            -- sc-dispatch files every alert through one function, and the
+            -- first thing that function does -- before it writes a database
+            -- row, before it tells anybody -- is announce the whole call on
+            -- a plain server event, so NPC witnesses can spawn for crimes
+            -- without every crime script knowing about witnesses. The
+            -- payload is the caller's own table: the id the call is filed
+            -- under, the jobs it is going to, and who it is about.
+            --
+            -- Named here, the arena stops building ids out of `idTemplates`
+            -- and hoping, and withdraws the exact call the instant it is
+            -- filed -- including calls raised by routes this resource has
+            -- never heard of, because they all go through that one function.
+            --
+            -- The three field names below are where that payload keeps the
+            -- id, the player and the job list. Leave the event empty if your
+            -- dispatch script announces nothing; the sweep below still runs.
+            filedEvent = 'sc-dispatch:server:witnessForward',
+            filedIdField = 'unique_id',
+            filedSubjectField = 'caller_source',
+            filedJobsField = 'job_table',
 
             -- How long to wait before withdrawing, in milliseconds.
             --

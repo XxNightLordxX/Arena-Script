@@ -8,11 +8,31 @@ local active = {}
 --- window below. Not a second flag: nothing reads it but RetractCallsFor.
 local leftAt = {}
 
---- How long after leaving a match a call may still be withdrawn, in seconds.
---- Long enough to cover server/match.lua's post-match revive sweep, which
---- runs after the flag comes down; short enough that it is nowhere near the
---- next time this player is genuinely shot in the city.
+--- How long after leaving a match the SWEEP may still withdraw a call, in
+--- seconds. Long enough to cover server/match.lua's post-match revive sweep,
+--- which runs after the flag comes down; short enough that it is nowhere
+--- near the next time this player is genuinely shot in the city.
 local RETRACT_GRACE_S = 60
+
+--- And how long the PASSIVE filed-call listener may, which is not the same
+--- window and must not be.
+---
+--- THE TWO PATHS ARE NOT EXPOSED TO THE SAME THING. The sweep is something
+--- the ARENA starts, seconds after a round it ran: it asks for ids it built
+--- itself around one player, so sixty seconds of slack costs nothing but a
+--- few pointless calls. The filed listener is passive -- it sees every alert
+--- filed anywhere on the server, by anybody, about anybody -- so the same
+--- sixty seconds means a full minute in which a genuine city call about
+--- somebody who has walked out of the arena is silently withdrawn.
+---
+--- This file's own rule decides it: "a failure to suppress costs an operator
+--- an unwanted call-out; a wrong suppression costs somebody a crime nobody
+--- was told about." The passive path takes the narrower window.
+---
+--- Ten seconds, not zero: the alert this is for is one that was already in
+--- flight when the fighter left, and sc-dispatch writes it through an awaited
+--- oxmysql insert first. Ten covers that several times over.
+local FILED_GRACE_S = 10
 
 --- When a withdrawal is asked for, in milliseconds after the first attempt.
 ---
@@ -2249,7 +2269,7 @@ function ArenaDispatch.WithdrawFiledCall(data)
     if src == nil or src <= 0 then return false end
 
     local left = leftAt[src]
-    if active[src] == nil and (left == nil or os.time() - left > RETRACT_GRACE_S) then
+    if active[src] == nil and (left == nil or os.time() - left > FILED_GRACE_S) then
         return false
     end
 

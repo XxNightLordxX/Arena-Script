@@ -714,6 +714,53 @@ t.test('a fighter who just left is still covered, because the call lands after t
     t.isTrue(#f.exportCalls > 0, 'a call filed about a fighter as they walked out was left standing')
 end)
 
+t.test('but a call filed a MINUTE after they left is left alone', function()
+    -- THE TWO PATHS ARE NOT EXPOSED TO THE SAME THING, and this is the one
+    -- that sees every alert on the server. The sweep is something the ARENA
+    -- starts, seconds after a round it ran, asking for ids it built around
+    -- one player -- a minute of slack there costs a few pointless calls.
+    -- Here a minute means a full minute in which a genuine city call about
+    -- somebody who walked out of the arena is silently withdrawn, and this
+    -- file's own rule says which way to be wrong: "a failure to suppress
+    -- costs an operator an unwanted call-out; a wrong suppression costs
+    -- somebody a crime nobody was told about."
+    local f = newFixture()
+    f.enter(7)
+    f.leave(7)
+
+    -- The clock moves on. Everything else about the payload is identical to
+    -- the test above, which IS withdrawn.
+    local real = f.env.os.time
+    f.env.os = setmetatable({ time = function() return real() + 45 end }, { __index = os })
+
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7))
+    f.step()
+
+    t.equals(#f.exportCalls, 0,
+        'a city call about somebody who left the arena three quarters of a minute ago was withdrawn')
+end)
+
+t.test('while the SWEEP still covers that same minute, because it is not passive', function()
+    -- The other half of the pair, and it has to stay wide. The sweep is
+    -- reached from Revive -- something the arena itself starts after a round
+    -- it ran -- and it asks only for ids it built around one player, so it
+    -- cannot reach anybody else's call however long its window is.
+    -- server/match.lua's post-match revive sweep is what the sixty seconds
+    -- is there to cover.
+    local f = newFixture({ retract = { idTemplates = { 'playerdown_%d_%d' }, sweepMs = 1000 } })
+    f.enter(7)
+    f.leave(7)
+
+    local real = f.env.os.time
+    f.env.os = setmetatable({ time = function() return real() + 45 end }, { __index = os })
+
+    f.env.ArenaDispatch.RetractCallsFor(7)
+    f.step()
+
+    t.isTrue(#f.exportCalls > 0,
+        'the post-match sweep stopped covering the window it exists for')
+end)
+
 t.test('and a dispatch resource that is not running is not called into', function()
     local f = newFixture()
     f.enter(7)

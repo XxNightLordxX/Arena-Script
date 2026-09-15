@@ -49,12 +49,24 @@ local function newKit(opts)
     --- The component items this server's ox_inventory has. The default is
     --- the handful the tests below fit; a test that wants an unknown name
     --- passes its own set.
+    --- ox_inventory tags every item as it builds its list -- `component`,
+    --- `weapon`, `ammo` or `tint` -- and the server keeps those tags. The
+    --- doubles carry them because a name being REAL and a name being a
+    --- COMPONENT are different questions, and only the second one is safe to
+    --- write onto a weapon.
     local knownItems = opts.knownItems or {
-        at_scope_medium = { name = 'at_scope_medium' },
-        at_suppressor_heavy = { name = 'at_suppressor_heavy' },
-        at_grip = { name = 'at_grip' },
-        at_flashlight = { name = 'at_flashlight' },
-        at_clip_extended_rifle = { name = 'at_clip_extended_rifle' },
+        at_scope_medium = { name = 'at_scope_medium', component = true },
+        at_suppressor_heavy = { name = 'at_suppressor_heavy', component = true },
+        at_grip = { name = 'at_grip', component = true },
+        at_flashlight = { name = 'at_flashlight', component = true },
+        at_clip_extended_rifle = { name = 'at_clip_extended_rifle', component = true },
+        -- Real items that are NOT components. Naming one of these on a
+        -- weapon is exactly as fatal as naming something imaginary.
+        water = { name = 'water' },
+        ammo_rifle = { name = 'ammo_rifle', ammo = true },
+        WEAPON_PISTOL = { name = 'WEAPON_PISTOL', weapon = true },
+        -- An item from an ox_inventory too old to tag anything.
+        at_untagged = { name = 'at_untagged' },
     }
 
     local function bucket(id)
@@ -375,6 +387,45 @@ t.test('a component ox_inventory does not know is DROPPED, not fitted', function
     t.equals(#parts, 1, ('%d attachment(s) were written, so a name ox_inventory throws on '
         .. 'reached the weapon'):format(#parts))
     t.equals(parts[1], 'at_scope_medium', 'the wrong one of the two was kept')
+end)
+
+t.test('a real item that is NOT a component is dropped too', function()
+    -- The gap a name-exists check leaves wide open. ox_inventory reads
+    -- Items[name].client.component and walks it; `water` is a real item with
+    -- no component list, so walking nil throws in the same place and leaves
+    -- the weapon just as undrawable as an imaginary name did.
+    local f = newKit()
+
+    f.ammo.Issue(1, 'match-1', oneWeapon({
+        components = { 'at_scope_medium', 'water', 'ammo_rifle', 'WEAPON_PISTOL' },
+    }))
+
+    local parts = f.itemNamed(1, 'WEAPON_TEST').metadata.components
+    t.isNotNil(parts, 'the good attachment went with the bad ones')
+    t.equals(#parts, 1, ('%d name(s) were written -- a real item that is not a component reached '
+        .. 'the weapon'):format(#parts))
+    t.equals(parts[1], 'at_scope_medium')
+end)
+
+t.test('but on an inventory that tags NOTHING, an untagged name is allowed through', function()
+    -- Refusing everything this cannot interrogate would strip every
+    -- attachment off every weapon on an older ox_inventory, to guard against
+    -- a typo. That is much worse than the thing being guarded against.
+    --
+    -- The registry here has no tagged item anywhere, which is what an
+    -- ox_inventory older than the tagging looks like. Handing it the default
+    -- registry would prove nothing: that one DOES tag, so the latch would
+    -- correctly refuse an untagged name, which is the opposite case.
+    local f = newKit({ knownItems = {
+        at_untagged = { name = 'at_untagged' },
+        at_also_untagged = { name = 'at_also_untagged' },
+    } })
+
+    f.ammo.Issue(1, 'match-1', oneWeapon({ components = { 'at_untagged' } }))
+
+    local parts = f.itemNamed(1, 'WEAPON_TEST').metadata.components
+    t.isNotNil(parts, 'an older ox_inventory had every attachment stripped off the weapon')
+    t.equals(parts[1], 'at_untagged')
 end)
 
 t.test('and the weapon is still issued, which is the whole point', function()

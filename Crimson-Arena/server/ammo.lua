@@ -2219,6 +2219,22 @@ local warnedComponents = {}
 --- too. Kept separate from the table above: one is a config mistake, the
 --- other is a build of ox_inventory this check cannot use.
 local registryUnreadable = false
+--- Set the first time this ox_inventory hands back an item it has tagged as
+--- a component.
+---
+--- WHY A LATCH AND NOT A CONSTANT. ox_inventory tags the items it builds
+--- from its weapon data -- `component`, `ammo`, `tint`, `weapon` -- but only
+--- from that file, and only on builds new enough to do it. So an untagged
+--- item is EITHER a plain item that has no business on a gun, OR a perfectly
+--- good component from an inventory too old to say so, and nothing about the
+--- item itself tells the two apart.
+---
+--- What does tell them apart is the build. If this ox_inventory has ever
+--- produced a tagged component then it tags, and an untagged name is the
+--- first case and refused. If it never has, it does not tag, and refusing
+--- everything would strip every attachment off every weapon to guard against
+--- a typo -- far worse than the thing being guarded against.
+local taggingSeen = false
 
 --- Whether ox_inventory knows an item by this name.
 ---
@@ -2267,7 +2283,46 @@ local function inventoryKnowsItem(name)
         return true
     end
 
-    return item ~= nil
+    if item == nil then return false end
+
+    -- AND IS IT ACTUALLY A COMPONENT, not merely a real item.
+    --
+    -- THE GAP THE NAME CHECK ALONE LEAVES. ox_inventory's equip path reads
+    -- `Items[name].client.component` and then walks it. A name it does not
+    -- know is nil and the index throws -- that is the case above. But a name
+    -- it DOES know which is not a component is just as fatal: `water` is a
+    -- real item, `Items['water'].client` has no `component`, and walking nil
+    -- throws in exactly the same place, leaving the weapon undrawable in
+    -- exactly the same way. Checking the name exists would wave it straight
+    -- through.
+    --
+    -- ox_inventory marks the difference itself. modules/items/shared.lua
+    -- tags every item as it builds the list -- `ammo`, `component`, `tint`
+    -- or `weapon` -- and the server keeps those tags (only the `client`
+    -- table is stripped server-side). So the question can be asked directly
+    -- rather than inferred.
+    --
+    -- AN ITEM WITH NO TAG AT ALL IS ALLOWED THROUGH, deliberately. That is
+    -- what an ox_inventory older than the tagging looks like, and refusing
+    -- everything on a build this cannot interrogate would strip every
+    -- attachment off every weapon to guard against a typo -- much worse than
+    -- the thing being guarded against. What IS refused is an item positively
+    -- identified as something else.
+    if item.component == true then
+        -- This build tags. From here on the tag is required, and an item
+        -- without one is refused rather than hoped about.
+        taggingSeen = true
+        return true
+    end
+
+    -- NOT TAGGED. Which of the two that means is the whole question, and it
+    -- cannot be answered from this item alone -- so it is answered from
+    -- whether this ox_inventory has EVER produced a tagged item. The
+    -- start-up check walks every configured name before a single match can
+    -- run, so by the time a weapon is issued the answer is already known.
+    if taggingSeen then return false end
+
+    return true
 end
 
 --- The configured components for one weapon, minus any name ox_inventory

@@ -615,55 +615,50 @@ local pendingAdds = {}
 local pendingAddCount = 0
 local PENDING_ADD_LIMIT = 500
 
---- Whether the start-up read has been ISSUED and has not yet ANSWERED.
----
---- NOT `unpaidReading`, AND THE DIFFERENCE IS THE WHOLE POINT. That flag
---- guards against starting a second read, and its timeout deliberately frees
---- it so a query that is never answered cannot wedge the guard shut forever.
---- Freeing it does not make the read stop being in flight -- the answer can
---- still land afterwards, and when it does it is still a photograph of the
---- table as it was when the SELECT went out.
----
---- This one tracks the photograph, so it is cleared by the answer and by
---- nothing else.
-local readOutstanding = false
-
---- Amounts that reached the database WHILE THAT READ WAS IN FLIGHT.
----
---- THE HOLE THIS FILLS, and it underpays a player rather than costing the
---- arena tidiness. loadUnpaid's rule is that the stored total wins, because
---- every write to memory is mirrored into the row before the read runs. The
---- read is ASYNCHRONOUS, so that has a gap: a debt filed -- or an outage ADD
---- replayed -- after the SELECT went out lands in the row the answer cannot
---- see. `addStillPending` cannot cover it either, because by then the write
---- has SUCCEEDED and left the pending queue. The row is right, memory is
---- right, and the read splices them into a number lower than both.
----
---- Measured: a character owed 1000 -- 300 from before the restart, 700 filed
---- while the start-up read was out -- was paid 300, permanently.
-local addedDuringRead = {}
-
---- @param citizenid string
---- @param key string
---- @param added integer
-local function noteAddDuringRead(citizenid, key, added)
-    if not readOutstanding then return end
-    if not Arena.IsKey(citizenid) or not Arena.IsKey(key) then return end
-
-    local keys = addedDuringRead[citizenid]
-    if not keys then
-        keys = {}
-        addedDuringRead[citizenid] = keys
-    end
-    keys[key] = (keys[key] or 0) + added
-end
-
---- What landed for this part while the read was out, or nil.
-local function addedWhileReading(citizenid, key)
-    local keys = addedDuringRead[citizenid]
-    local amount = keys and keys[key]
-    return amount and amount > 0 and amount or nil
-end
+-- ======================================================================
+-- THE LEDGER TAKES NO STATEMENT FROM THIS RESOURCE UNTIL IT HAS BEEN READ
+--
+-- WHICH INSTANT THE START-UP READ'S PHOTOGRAPH IS TAKEN AT IS NOT KNOWABLE
+-- FROM HERE, and everything in this block follows from that one fact.
+-- `ArenaDb` returning true means oxmysql ACCEPTED the statement, not that it
+-- ran it; oxmysql hands statements to a POOL, and a SELECT's read view is
+-- established when that SELECT begins executing on its connection. So for an
+-- INSERT sent anywhere near the read, both orderings are possible and neither
+-- is detectable afterwards:
+--
+--   * the INSERT commits after the snapshot -- the answer does not contain
+--     it, and merging the answer over memory cuts the debt;
+--   * the INSERT commits before the snapshot -- the answer already contains
+--     it, and adding a remembered copy on top pays the player twice.
+--
+-- Both were measured against this file. Reconciling after the fact has to
+-- GUESS which happened and is wrong half the time, and the halves cost
+-- different people: 300 paid on a 1000 debt with one guess, 1700 paid on the
+-- same 1000 debt with the other.
+--
+-- So the ambiguity is removed rather than guessed at, and the rule is the
+-- whole of it: while `unpaidLoaded` is false NOTHING is sent. An ADD goes
+-- into `pendingAdds` -- the same queue an outage uses, which the merge
+-- already splices onto the answer correctly -- and a DELETE is not sent at
+-- all, for the reason under dropUnpaidPart. Both go out the moment the
+-- answer lands. A statement that was never sent cannot be in the photograph
+-- and cannot be in flight across it, so there is no ordering left to get
+-- wrong and nothing to reconcile.
+--
+-- NOT "while the read is in flight", WHICH IS NOT THE SAME WINDOW and is the
+-- version of this that still loses money. A write sent just BEFORE the SELECT
+-- went out can commit after the snapshot exactly as easily, and it is not in
+-- `pendingAdds` to be spliced back on because it was taken. Reachable without
+-- contrivance: a read that answers with something that is not a list of rows
+-- leaves the load unfinished, and a debt filed before the retry goes out
+-- straight into that blind spot. DO NOT narrow this to the read's flight.
+--
+-- WHAT IT COSTS, stated plainly: a debt filed before the ledger has been read
+-- is in memory and not yet in the table, so a crash in that window forgets
+-- it. The window is one SELECT long on a healthy server, and on an unhealthy
+-- one the write could not have landed anyway -- against a permanent, silent
+-- mis-payment on every boot that races.
+-- ======================================================================
 
 --- The unmirrored amount pending for one part, or nil.
 local function addStillPending(citizenid, key)
@@ -673,6 +668,13 @@ local function addStillPending(citizenid, key)
 end
 
 local function sendAdd(citizenid, key, name, account, reason, added)
+    -- NOT UNTIL THE LEDGER HAS BEEN READ. Refusing here puts the increment in
+    -- `pendingAdds`, exactly where an outage would have put it, and the block
+    -- above says why an INSERT that races the read cannot be reconciled after
+    -- the fact. The answer replays the queue, so nothing waits for a sweep.
+    -- DO NOT turn this into a send-and-remember.
+    if not unpaidLoaded then return false end
+
     local taken = false
     local ok, err = pcall(function()
         taken = ArenaDb(UNPAID_SUBJECT, UNPAID_ADD_SQL, {
@@ -696,7 +698,6 @@ end
 
 local function saveUnpaidPart(citizenid, name, part, added)
     if sendAdd(citizenid, part.key, name, part.account, part.reason, added) then
-        noteAddDuringRead(citizenid, part.key, added)
         return
     end
 
@@ -734,7 +735,6 @@ local function replayAdds()
     for _, item in ipairs(flat) do
         local citizenid, key, entry = item[1], item[2], item[3]
         if sendAdd(citizenid, key, entry.name, entry.account, entry.reason, entry.amount) then
-            noteAddDuringRead(citizenid, key, entry.amount)
             pendingAdds[citizenid][key] = nil
             pendingAddCount = pendingAddCount - 1
             if next(pendingAdds[citizenid]) == nil then pendingAdds[citizenid] = nil end
@@ -823,19 +823,26 @@ local function dropUnpaidPart(citizenid, key)
             tostring(citizenid), tostring(key))
     end
 
-    -- AND WHAT LANDED FOR IT WHILE THE READ WAS OUT, for the same reason and
-    -- with a sharper edge. That record exists so a write the start-up read
-    -- could not see is added back on when the answer arrives -- but a part
-    -- that has since been PAID must not be added back on at all, or the
-    -- payment is undone and the debt is handed over twice.
+    -- AND A PART PAID BEFORE THE LEDGER WAS READ DELETES NOTHING AT ALL.
     --
-    -- Paying a part annihilates everything outstanding for it: the queued
-    -- insert above, and this.
-    local landedAdds = addedDuringRead[citizenid]
-    if landedAdds ~= nil and landedAdds[key] ~= nil then
-        landedAdds[key] = nil
-        if next(landedAdds) == nil then addedDuringRead[citizenid] = nil end
-    end
+    -- The DELETE is keyed on citizenid and ledger_key and takes the WHOLE
+    -- row, and until the read has landed this resource does not know what is
+    -- in that row. What it does know is that none of it is what was just
+    -- paid: no ADD of this run's has been sent yet -- that is the rule at the
+    -- top of this section -- so the only thing the row can hold is a debt
+    -- from BEFORE the restart, which nobody has been paid and which the read
+    -- is about to bring into memory to be paid properly.
+    --
+    -- Measured: a character owed 300 from before the restart and 700 filed
+    -- this run, paid while the read was still out, was paid the 700 and the
+    -- DELETE took the 300 with it. Unread, unpaid and gone, with no line
+    -- anywhere. Queuing it instead is no better -- `dropStillPending` would
+    -- then zero the very row the answer was carrying.
+    --
+    -- There is nothing to lose by skipping it, either: the row holds nothing
+    -- this payment covered, so there is no debt left behind to be read back
+    -- and paid twice, which is the only thing a missing DELETE ever costs.
+    if not unpaidLoaded then return end
 
     local keys = pendingDrops[citizenid]
 
@@ -856,12 +863,6 @@ local function dropUnpaidPart(citizenid, key)
     end
 
     sendDrop(citizenid, key)
-end
-
---- True while this part has been paid but the database has not yet agreed.
-local function dropStillPending(citizenid, key)
-    local keys = pendingDrops[citizenid]
-    return keys ~= nil and keys[key] ~= nil
 end
 
 --- Re-sends every drop the database has not taken.
@@ -908,15 +909,8 @@ local function loadUnpaid()
     SetTimeout(UNPAID_READ_TIMEOUT_MS, function() unpaidReading = false end)
 
     ArenaDb(UNPAID_SUBJECT, UNPAID_SCHEMA_SQL, {}, function()
-        -- FROM HERE THE PHOTOGRAPH IS TAKEN. Anything that reaches the table
-        -- after this line is invisible to the answer below, so it is recorded
-        -- and added back on when that answer arrives.
-        readOutstanding = true
-        addedDuringRead = {}
-
         ArenaDb(UNPAID_SUBJECT, UNPAID_READ_SQL, {}, function(rows)
             unpaidReading = false
-            readOutstanding = false
             if type(rows) ~= 'table' then return end
 
             -- A LATE ANSWER IS REFUSED OUTRIGHT. The timeout above can free
@@ -936,16 +930,25 @@ local function loadUnpaid()
                 local amount = math.max(0, Arena.ToInt(row and row.amount) or 0)
                 local key = type(row) == 'table' and row.ledger_key or nil
 
-                -- A PART THAT HAS BEEN PAID IS NOT READ BACK IN. This read
-                -- can land after PayOutstanding has already settled somebody
-                -- -- the comment above says so -- and the row it returns is a
-                -- photograph taken before that payment. Merging it would
-                -- reinstate a debt the arena has already handed over, and the
-                -- stored total wins here, so it would win over the payment
-                -- too. DO NOT drop this test.
-                if Arena.IsKey(citizenid) and Arena.IsKey(key) and dropStillPending(citizenid, key) then
-                    amount = 0
-                end
+                -- A PART PAID BEFORE THIS ANSWER LANDED IS NOT ZEROED HERE,
+                -- AND THAT IS THE POINT RATHER THAN AN OMISSION. This read
+                -- can certainly land after PayOutstanding has settled
+                -- somebody, and zeroing the row on that basis is what the
+                -- file used to do -- but the only thing such a payment can
+                -- have covered is what THIS RUN filed, and none of that is in
+                -- the table yet: nothing is sent until `unpaidLoaded`, and
+                -- dropUnpaidPart cancels the queued INSERT as it pays. So
+                -- whatever this row holds is a debt from before the restart
+                -- that nobody has been paid, and zeroing it loses exactly
+                -- that. Measured: 300 owed from before a restart and 700
+                -- filed after it paid the player 700 and took the 300 with
+                -- it, unread and unpaid.
+                --
+                -- Nor is anything waiting in `pendingDrops` to consult: a
+                -- payment made before this point queues no drop at all, for
+                -- the same reason. DO NOT reinstate a test on it -- it would
+                -- read false here always, and hide the case above if it ever
+                -- did not.
 
                 -- A PART THE DATABASE HAS NOT HEARD OF YET IS ADDED ON TOP.
                 -- The stored total wins because memory's writes were all
@@ -955,20 +958,6 @@ local function loadUnpaid()
                 -- read cut the debt to what the database remembered.
                 local waiting = Arena.IsKey(citizenid) and Arena.IsKey(key) and addStillPending(citizenid, key)
                 if waiting and amount > 0 then amount = amount + waiting end
-
-                -- AND A PART THAT LANDED WHILE THIS VERY READ WAS IN FLIGHT.
-                -- Same shape as the line above, a different gap: that covers
-                -- a write still WAITING to be sent, this one a write already
-                -- SENT and taken, after the photograph. Neither is in the
-                -- other's table -- a successful send leaves pendingAdds at
-                -- once -- and neither is in the answer.
-                --
-                -- NOT GATED ON `amount > 0`, unlike the line above: the row
-                -- can legitimately read as absent or zero here while a write
-                -- for it is in flight, and that is the case that loses money.
-                local landed = Arena.IsKey(citizenid) and Arena.IsKey(key)
-                    and addedWhileReading(citizenid, key)
-                if landed then amount = amount + landed end
 
                 if Arena.IsKey(citizenid) and Arena.IsKey(key) and amount > 0 then
                     local held = unpaid[citizenid]
@@ -1000,7 +989,20 @@ local function loadUnpaid()
             end
 
             unpaidLoaded = true
-            addedDuringRead = {}
+
+            -- AND THE HELD-BACK INSERTS GO OUT NOW, not at the next sweep.
+            -- Everything queued while the ledger was unread has just been
+            -- spliced onto the answer by `addStillPending`, so memory is
+            -- right and the table is one replay behind it; the sweep can be
+            -- switched off entirely (refundRetrySeconds = 0), and a debt left
+            -- unmirrored until a sweep that never comes is one a restart
+            -- forgets.
+            --
+            -- NO replayDrops() HERE, and not as an oversight: nothing can be
+            -- in that queue. dropUnpaidPart returns before queuing anything
+            -- while the ledger is unread, because a payment made then has
+            -- nothing in the table to delete.
+            replayAdds()
             if people > 0 then
                 ArenaLog('betting: read back %s owed to %d character(s) from before the restart. '
                     .. 'It is paid the next time each of them is seen.', money(owedTotal), people)

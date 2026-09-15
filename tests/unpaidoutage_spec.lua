@@ -42,26 +42,51 @@ local function newArena(control)
         local flat = sql:gsub('%s+', ' ')
         if flat:find('CREATE TABLE') then if cb then cb({}) end return end
         if flat:find('^SELECT') then
-            -- A PHOTOGRAPH, TAKEN NOW AND DELIVERED LATER. oxmysql is async:
-            -- the rows a read answers with are the rows that existed when it
-            -- was ISSUED, and anything that happens to the ledger while it is
-            -- in flight is not in them. Modelled synchronously, that window
-            -- does not exist and the guard against it cannot be reached.
-            local rows = {}
-            for _, row in pairs(stored) do
-                local copy = {}
-                for f, v in pairs(row) do copy[f] = v end
-                rows[#rows + 1] = copy
+            -- A PHOTOGRAPH, AND WHICH INSTANT IT IS TAKEN AT IS THE WHOLE
+            -- POINT. oxmysql is async, and it is a POOL: returning from
+            -- `query` means the statement was accepted, not that it ran, and
+            -- a SELECT's read view is established when it begins EXECUTING on
+            -- its connection. So a write sent near a read can commit on
+            -- either side of that instant, and nothing in Lua can tell which.
+            --
+            -- `lateSnapshot` is which side this test models. Default is the
+            -- early one -- the rows as they were when the read was ISSUED --
+            -- and `lateSnapshot = true` takes them when it is ANSWERED, so a
+            -- write that happened while it was held IS in the answer. Both
+            -- are legal; the arena must pay the same money either way.
+            local function photograph()
+                local rows = {}
+                for _, row in pairs(stored) do
+                    local copy = {}
+                    for f, v in pairs(row) do copy[f] = v end
+                    rows[#rows + 1] = copy
+                end
+                return rows
             end
+
             -- EVERY read is held while a test is holding one, not just the
             -- first: the load thread retries until it is answered, so
             -- delivering the second read would close the window the first one
             -- opened and the test would prove nothing.
             if control.holdSelect then
-                if held == nil then held = function() if cb then cb(rows) end end end
+                if held == nil then
+                    local early = not control.lateSnapshot and photograph() or nil
+                    held = function() if cb then cb(early or photograph()) end end
+                end
                 return
             end
-            if cb then cb(rows) end
+
+            -- ONCE, AND ONLY THE FIRST TIME. A read that answers with
+            -- something that is not a list of rows is refused by the merge
+            -- and leaves the load unfinished, which is how a real server
+            -- reaches the state where a write goes out BETWEEN two reads.
+            if control.junkRead then
+                control.junkRead = false
+                if cb then cb(false) end
+                return
+            end
+
+            if cb then cb(photograph()) end
             return
         end
         if flat:find('^DELETE') then
@@ -199,18 +224,23 @@ t.test('CONTROL: an ADD the database DID take is not replayed', function()
     t.equals(s.storedAmount(), 1000, 'a debt the store already held was added again by a replay')
 end)
 
-t.test('DEFECT: a debt PAID while the ledger read was in flight is not brought back by it', function()
-    -- THE PHOTOGRAPH THAT ARRIVES AFTER THE MONEY. The load's SELECT is
-    -- issued at start and answers whenever oxmysql gets round to it. In
-    -- between, a debt can be filed, the player can walk in, and the sweep can
-    -- pay them -- and the row that read is still carrying says they are owed
-    -- it. Merging that row reinstates a debt the arena has already handed
-    -- over, and the next sweep pays it a second time.
+t.test('a debt PAID while the ledger read was in flight is paid ONCE, and the row is not lost', function()
+    -- THE PHOTOGRAPH THAT ARRIVES AFTER THE MONEY, and there are two ways to
+    -- get this wrong in opposite directions. The load's SELECT is issued at
+    -- start and answers whenever oxmysql gets round to it. In between, a debt
+    -- can be filed, the player can walk in, and the sweep can pay them.
     --
-    -- The guard is one line in loadUnpaid: a part whose DROP has not reached
-    -- the database yet is read back as zero. Inverting it left the suite
-    -- green, because nothing here could hold a read open -- the fixture's
-    -- database answered on the spot, so the window did not exist.
+    --   * Merge the row as it stands and a debt the arena has just handed
+    --     over is reinstated, and the next sweep pays it again.
+    --   * Delete the row on that payment -- which is what settling a part
+    --     normally does -- and whatever the row held from BEFORE the restart
+    --     goes with it, unread and unpaid.
+    --
+    -- The rule that answers both is that a payment made before the ledger has
+    -- been read deletes nothing and suppresses nothing, because nothing it
+    -- paid is in the table: no ADD of this run's has been sent yet. Here the
+    -- player is owed 300 from before the restart and 700 filed this run, and
+    -- the only right answer is that they end up with exactly 1000.
     local s = newArena({ seed = SEED, holdSelect = true })
     s.step(3)
     t.equals(s.owed(), 0, 'the read answered anyway, so there is no window and this proves nothing')
@@ -219,24 +249,42 @@ t.test('DEFECT: a debt PAID while the ledger read was in flight is not brought b
     fileDebt(s)
     t.equals(s.owed(), 700, 'the debt was not filed, so this proves nothing')
 
-    -- The database goes away, so the DROP that follows the payment cannot
-    -- land and stays queued. Then the player walks in and is paid.
-    s.control.down = true
     local before = s.wallet()
     s.betting.SweepUnpaid()
     t.equals(s.owed(), 0, 'the sweep did not settle the debt, so this proves nothing')
     t.equals(s.wallet(), before + 700, 'the player was not actually paid, so this proves nothing')
 
     -- And now the read lands, carrying a row from before any of that.
-    s.control.down = false
     t.isTrue(s.releaseRead(), 'there was no read in flight to release')
 
-    t.equals(s.owed(), 0,
-        'A DEBT THE ARENA HAD ALREADY PAID WAS BROUGHT BACK by a read taken before the payment')
+    t.equals(s.owed(), 300,
+        'the debt from before the restart was taken by a payment that never covered it')
 
-    -- And the proof that it matters: the next sweep pays nothing more.
     s.betting.SweepUnpaid()
-    t.equals(s.wallet(), before + 700, 'they were paid the same debt twice')
+    t.equals(s.wallet(), before + 1000,
+        'the player was paid the same debt twice, or paid short of what they are owed')
+    t.equals(s.storedAmount(), 0, 'a settled row was left in the table for the next restart')
+end)
+
+t.test('AND THE ROW IS STILL THERE WHEN THE ANSWER IS TAKEN AFTER THE PAYMENT', function()
+    -- THE ORDERING THAT PROVES IT, because the other one cannot. With the
+    -- photograph taken when the read was ISSUED, a DELETE sent by that
+    -- payment is too late to change what the answer carries -- so the 300
+    -- arrives either way and the mistake is invisible. Taken when the read is
+    -- ANSWERED, the row is simply gone, and the money with it.
+    local s = newArena({ seed = SEED, holdSelect = true, lateSnapshot = true })
+    s.step(3)
+    fileDebt(s)
+
+    local before = s.wallet()
+    s.betting.SweepUnpaid()
+    t.equals(s.wallet(), before + 700, 'the player was not actually paid, so this proves nothing')
+
+    t.isTrue(s.releaseRead(), 'there was no read in flight to release')
+    t.equals(s.owed(), 300, 'the payment deleted a row it had not read and never paid')
+
+    s.betting.SweepUnpaid()
+    t.equals(s.wallet(), before + 1000, 'the player was paid short of what they are owed')
 end)
 
 
@@ -341,34 +389,77 @@ end)
 -- fails the other way -- it loses a player money rather than paying them
 -- twice.
 --
--- The load's SELECT is a photograph taken when it is ISSUED. A debt filed
--- after that -- or an outage ADD replayed after it -- reaches the row the
--- answer cannot see. `addStillPending` cannot cover it either: by the time
--- the answer arrives that write has SUCCEEDED and left the pending queue.
--- So the row is right, memory is right, and the merge splices them into a
--- number lower than both, assigning it over memory.
+-- The load's SELECT is a photograph, and WHICH INSTANT IT IS TAKEN AT IS NOT
+-- KNOWABLE FROM LUA. Returning from `query` means oxmysql accepted the
+-- statement; a SELECT's read view is established when it starts executing on
+-- a pooled connection. So an INSERT sent anywhere near the read can commit on
+-- either side of that instant:
 --
--- Measured before the fix: a character owed 1000 -- 300 from before the
--- restart and 700 filed while the read was out -- was paid 300. The other
--- 700 was gone from memory and gone from the row, which the payment then
--- deleted. Nothing anywhere said so.
+--   * after it  -- the answer does not have the debt, and merging the answer
+--                  over memory cuts it;
+--   * before it -- the answer already has the debt, and adding it back on
+--                  hands the player the same money twice.
+--
+-- Both were measured against this file. Reconciling after the fact has to
+-- guess which happened, and is wrong half the time; the halves cost
+-- different people. Measured: 300 paid on a 1000 debt with one guess, 1700
+-- paid on the same 1000 debt with the other.
+--
+-- So the arena sends NO INSERT while the read is out, and does not issue the
+-- read while one is unanswered. What is held back sits in `pendingAdds`,
+-- which the merge already splices on correctly, and goes out when the answer
+-- lands. Every test below is run against BOTH orderings for that reason.
 -- ======================================================================
 
-t.test('a debt filed while the read is in flight survives the read landing', function()
+t.test('nothing is added to the ledger while the read is in flight', function()
     local s = newArena({ seed = SEED, holdSelect = true })
     s.step(3)
     t.equals(s.owed(), 0, 'the read answered anyway, so there is no window and this proves nothing')
 
-    -- Filed while the photograph is already taken. The store takes it; the
-    -- answer still in flight knows nothing about it.
     fileDebt(s)
     t.equals(s.owed(), 700, 'the debt was not filed, so this proves nothing')
-    t.equals(s.storedAmount(), 1000, 'the ADD did not reach the store, so this proves nothing')
+
+    -- THE FIX ITSELF: the store still reads as it did before the debt was
+    -- filed, because the INSERT is being held rather than raced.
+    t.equals(s.storedAmount(), 300,
+        'an INSERT went out while the read was in flight, which is the race itself')
+end)
+
+t.test('a debt filed while the read is in flight survives the read landing', function()
+    local s = newArena({ seed = SEED, holdSelect = true })
+    s.step(3)
+    fileDebt(s)
 
     t.isTrue(s.releaseRead(), 'there was no read in flight to release')
 
     t.equals(s.owed(), 1000,
         'the read overwrote memory with a photograph taken before the debt was filed')
+end)
+
+t.test('AND IT IS THE SAME 1000 WHEN THE ANSWER ALREADY CONTAINS THE DEBT', function()
+    -- THE OTHER ORDERING, which is the one that pays out of the OWNER'S
+    -- pocket. Same debt, same seed; the only difference is that this read's
+    -- view is established late enough to see anything that landed while it
+    -- was held. An arena that adds a remembered write back on top of an
+    -- answer that already has it pays 1700 here.
+    local s = newArena({ seed = SEED, holdSelect = true, lateSnapshot = true })
+    s.step(3)
+    fileDebt(s)
+
+    -- The player is kept AWAY across this sweep, so it flushes whatever the
+    -- arena is willing to send without also paying and deleting the row.
+    s.control.offline = true
+    s.betting.SweepUnpaid()
+    s.control.offline = false
+
+    t.isTrue(s.releaseRead(), 'there was no read in flight to release')
+
+    t.equals(s.owed(), 1000, 'the debt was counted twice')
+
+    local before = s.wallet()
+    s.betting.SweepUnpaid()
+    t.equals(s.wallet() - before, 1000, 'the player was paid more than the arena owes')
+    t.equals(s.storedAmount(), 0, 'a row survived the payment')
 end)
 
 t.test('and the player is paid all of it', function()
@@ -384,10 +475,11 @@ t.test('and the player is paid all of it', function()
 end)
 
 t.test('an outage debt REPLAYED while the read is in flight survives it too', function()
-    -- The same gap reached by the other route: the debt is filed during an
-    -- outage so it queues, and the replay lands it after the SELECT went out.
-    -- By the time the answer arrives the pending queue is empty, so the line
-    -- that adds a still-waiting part back on has nothing to add.
+    -- The same window reached by the other route: the debt is filed during an
+    -- outage so it queues, and the sweep tries to replay it after the SELECT
+    -- has gone out. The replay is held back for exactly as long as the read
+    -- is, so the queue is still full when the answer arrives and the merge
+    -- can see it.
     local s = newArena({ seed = SEED, down = true, holdSelect = true })
     s.step(3)
     fileDebt(s)
@@ -399,13 +491,51 @@ t.test('an outage debt REPLAYED while the read is in flight survives it too', fu
     s.control.down = false
     s.control.offline = true
     s.step(3)                        -- the load's SELECT goes out, and is held
-    s.betting.SweepUnpaid()          -- replayAdds() lands the 700
+    s.betting.SweepUnpaid()          -- replayAdds() is refused while it is out
     s.control.offline = false
-    t.equals(s.storedAmount(), 1000, 'the replay did not reach the store, so this proves nothing')
+    t.equals(s.storedAmount(), 300, 'the replay raced the read, which is the bug')
 
     t.isTrue(s.releaseRead(), 'there was no read in flight to release')
 
     t.equals(s.owed(), 1000, 'the replayed debt was lost when the read landed')
+end)
+
+t.test('and the held-back replay goes out with the answer, not at the next sweep', function()
+    -- refundRetrySeconds = 0 switches the sweep off entirely, so a debt left
+    -- unmirrored until a sweep that never comes is one a restart forgets.
+    local s = newArena({ seed = SEED, down = true, holdSelect = true })
+    s.step(3)
+    fileDebt(s)
+    s.control.down = false
+    s.control.offline = true
+    s.step(3)
+    s.betting.SweepUnpaid()
+    t.isTrue(s.releaseRead(), 'there was no read in flight to release')
+
+    t.equals(s.storedAmount(), 1000,
+        'the answer landed and the held-back INSERT was not sent with it')
+end)
+
+t.test('a read that answers with junk does not open the ledger to writes either', function()
+    -- THE HALF A NARROWER RULE WOULD MISS. "Send nothing while the read is in
+    -- flight" is not the same as "send nothing until it has answered": a read
+    -- that answers with something that is not a list of rows leaves the load
+    -- unfinished and the flight over, and every debt filed before the retry
+    -- goes out into the next read's blind spot with nothing left to splice it
+    -- back on. Nothing contrived reaches this -- it is what a query error or
+    -- a half-started oxmysql answers with.
+    local s = newArena({ seed = SEED, junkRead = true })
+    s.step(1)                        -- one attempt, and it answers with junk
+    t.equals(s.owed(), 0, 'the junk read was merged, so this proves nothing')
+
+    fileDebt(s)
+    t.equals(s.owed(), 700, 'the debt was not filed, so this proves nothing')
+    t.equals(s.storedAmount(), 300,
+        'an INSERT went out between two reads, which is the race by another door')
+
+    s.step(3)                        -- the retry reads properly this time
+    t.equals(s.owed(), 1000, 'the debt filed between the two reads was lost by the second')
+    t.equals(s.storedAmount(), 1000, 'the held-back INSERT never went out after the answer')
 end)
 
 os.exit(t.summary())

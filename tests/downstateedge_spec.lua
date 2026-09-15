@@ -637,4 +637,61 @@ t.test('no announcement event configured means no listener', function()
         'it listened for an event the operator did not name')
 end)
 
+-- ======================================================================
+-- AND WHETHER AN OPERATOR CAN TELL IT IS WORKING
+--
+-- config.lua warns: "Do not guess a name: a bag nothing writes costs nothing
+-- and does nothing, but you will have been told it was fixed." That warning
+-- applies to the name it ships. A handler registered for a key nothing
+-- writes does not error, does not warn and never runs -- so the one setting
+-- the config calls "the one that actually moves the needle on EMS calls" was
+-- the one thing /arenadispatch, which exists to answer "is it working?",
+-- said nothing about at all.
+-- ======================================================================
+
+t.test('the report says which bag the arena is watching', function()
+    local f = newFixture()
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'qbx_medical:deathState',
+        'the report does not name the bag, so a wrong name is invisible')
+end)
+
+t.test('and says it has never seen that bag change, which is what a wrong name looks like', function()
+    local f = newFixture()
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'NEVER changed',
+        'a bag nothing has ever written was reported the same as a working one')
+end)
+
+t.test('and counts what it has seen once the bag really changes', function()
+    local f = newFixture()
+    f.enter(7)
+    f.goDown(7, LAST_STAND)
+    f.step()
+
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.notContains(report, 'NEVER changed', 'a bag that changed was still reported as silent')
+    t.contains(report, '1 change', 'the report does not say how many changes it has seen')
+end)
+
+t.test('and says the layer is OFF, with the reason, when it never started', function()
+    -- Three things switch it off and each is a different fix for the
+    -- operator: no bag named, an empty keys list, or a server without the
+    -- natives. "OFF" on its own sends them looking in the wrong place.
+    local named = newFixture({ downState = { watchStateBag = '' } })
+    t.contains(table.concat(named.env.ArenaDispatch.CompatReport(), '\n'), 'no bag is named',
+        'a config with no bag named did not say so')
+
+    local empty = newFixture({ downState = { keys = {} } })
+    t.contains(table.concat(empty.env.ArenaDispatch.CompatReport(), '\n'), 'keys list is empty',
+        'a config with no keys did not say so')
+
+    local bare = newFixture({ noNatives = true })
+    t.contains(table.concat(bare.env.ArenaDispatch.CompatReport(), '\n'),
+        'AddStateBagChangeHandler', 'a server without the native did not say so')
+end)
+
 os.exit(t.summary())

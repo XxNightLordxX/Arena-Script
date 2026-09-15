@@ -1186,7 +1186,8 @@ Config.Loadouts.weapons = {
 -- `data/weapons.lua` under `Components`. The shipped set is:
 --
 --   sights      at_scope_macro, at_scope_small, at_scope_medium,
---               at_scope_large, at_scope_advanced, at_scope_holo
+--               at_scope_large, at_scope_advanced, at_scope_holo,
+--               at_scope_nv, at_scope_thermal
 --   magazines   at_clip_extended_pistol / _smg / _shotgun / _rifle / _mg /
 --               _sniper, at_clip_drum_smg / _shotgun / _rifle
 --   muzzles     at_suppressor_light, at_suppressor_heavy, at_compensator,
@@ -1196,11 +1197,23 @@ Config.Loadouts.weapons = {
 --   barrel      at_barrel
 --   flashlight  at_flashlight
 --
--- A NAME THIS SERVER'S ox_inventory DOES NOT HAVE IS DROPPED, not fitted:
+-- A NAME THIS SERVER'S ox_inventory WILL NOT TAKE IS DROPPED, not fitted:
 -- server/ammo.lua checks each one against the live item list before it
--- writes any of them onto a weapon, and says in the console exactly which
--- name it threw away and for which weapon. So a typo here costs you an
--- attachment, never a weapon that will not come out.
+-- writes any of them onto a weapon -- that it exists AND that it is a
+-- component rather than an ordinary item, because an item that is not a
+-- component throws in the same place -- and says in the console exactly
+-- which name it threw away and for which weapon. `/arenaattachments` prints
+-- the same reading on demand.
+--
+-- TWO CASES IT CANNOT CHECK, and it is honest about both rather than
+-- pretending. If ox_inventory will not answer Items() at all, names are
+-- used as configured and the console says they were NOT checked. And on an
+-- ox_inventory too old to tag its items -- no item anywhere carrying
+-- `component`, `weapon`, `ammo` or `tint` -- a real item that is not a
+-- component cannot be told from a component, so it is let through rather
+-- than stripping every attachment off every weapon to guard against a typo.
+-- On any current build neither applies, and a typo here costs you an
+-- attachment rather than a weapon that will not come out.
 --
 -- WHERE A WEAPON OFFERS SEVERAL OF A KIND the plainest is taken: the first
 -- scope rather than the biggest, the first clip rather than the drum. An

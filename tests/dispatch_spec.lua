@@ -2288,17 +2288,41 @@ t.test('/arenadispatch is registered on the server, which is what the operator w
         '/arenadispatch is not registered -- the operator who reported it missing was right after all')
 end)
 
-t.test('the tablet and the console read the same report, line for line', function()
+t.test('the panel carries every compat line verbatim, and adds only its own', function()
     local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
 
     local fromCompat = f.env.ArenaCompat.Report()
     local fromPanel = f.env.ArenaDispatch.CompatReport()
 
-    t.equals(#fromPanel, #fromCompat,
-        'the tablet and the console disagree on how long the report is')
     for index, line in ipairs(fromCompat) do
         t.equals(fromPanel[index], line,
-            ('tablet line %d is not the console line %d'):format(index, index))
+            ('panel line %d is not the compat layer\'s line %d'):format(index, index))
+    end
+
+    -- ONE LINE, AND ONLY ONE. The compat layer reports on the resources
+    -- AROUND the arena; the down-state edge listener is a setting inside it,
+    -- which that layer knows nothing about and which config.lua calls the
+    -- one setting that actually moves the needle on EMS calls. Anything more
+    -- than one added line here is the panel rewriting the report.
+    t.equals(#fromPanel, #fromCompat + 1,
+        'the panel added something other than the one down-state line')
+    t.contains(fromPanel[#fromPanel], 'down-state',
+        'the panel does not say what the down-state layer is doing')
+end)
+
+t.test('and the console prints exactly what the tablet shows', function()
+    -- THE POINT OF A COMPAT REPORT IS THAT EVERYONE IS LOOKING AT THE SAME
+    -- READING. An operator at the console and an admin on the tablet
+    -- comparing notes on two different reports is the confusion this whole
+    -- feature exists to end.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+
+    local fromPanel = f.env.ArenaDispatch.CompatReport()
+    f.commands.arenadispatch(0, {})
+    local printed = table.concat(f.console, '\n')
+
+    for index, line in ipairs(fromPanel) do
+        t.contains(printed, line, ('the console did not print panel line %d'):format(index))
     end
 end)
 
@@ -2411,8 +2435,16 @@ t.test('a compat layer that hands back nothing says so rather than showing a bla
     f.env.ArenaCompat = { Report = function() return {} end }
 
     local lines = f.env.ArenaDispatch.CompatReport()
-    t.equals(#lines, 1, 'an empty report reached the panel as an empty screen')
+    t.isTrue(#lines > 0, 'an empty report reached the panel as an empty screen')
     t.equals(type(lines[1]), 'string', 'the explanation was not a string')
+    t.contains(lines[1], 'empty', 'the panel was not told the report came back empty')
+
+    -- AND THE DOWN-STATE LINE IS STILL THERE. It is about this resource
+    -- rather than the ones around it, so a compat layer that said nothing
+    -- says nothing about whether that half is running -- and an operator
+    -- reading an empty report is exactly the one who needs to know.
+    t.contains(table.concat(lines, '\n'), 'down-state',
+        'a compat layer with nothing to say took the arena\'s own line down with it')
 end)
 
 

@@ -661,7 +661,19 @@ if IS_SERVER then
             return
         end
 
-        local lines = ArenaCompat.Report()
+        -- THROUGH ArenaDispatch.CompatReport WHERE IT EXISTS, which is the
+        -- same call the admin tablet makes. This file's own Report() is
+        -- about the resources around the arena; the server adds a line about
+        -- the arena's own down-state layer, and a console that prints one
+        -- report while the tablet shows another is exactly the confusion a
+        -- compat report exists to end. Falls back to the bare report on a
+        -- client, where ArenaDispatch does not exist.
+        local lines = lines
+        if type(ArenaDispatch) == 'table' and type(ArenaDispatch.CompatReport) == 'function' then
+            lines = ArenaDispatch.CompatReport()
+        else
+            lines = ArenaCompat.Report()
+        end
         printReport(lines)
 
         -- IN-GAME, THIS USED TO ANSWER WITH THE WHOLE REPORT IN ONE TOAST.

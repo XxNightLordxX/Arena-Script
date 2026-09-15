@@ -336,14 +336,36 @@ end
 --- into a player, and the config naming the bag to watch. An operator whose
 --- medical script keeps its state somewhere else simply leaves that name
 --- empty and gets the hold above on its own, exactly as before.
+--- What the edge listener has actually seen, for the report below.
+---
+--- THE ONE SETTING HERE THAT CANNOT FAIL VISIBLY. `watchStateBag` is a
+--- string an operator is invited to change, and a state-bag handler
+--- registered for a key nothing ever writes does not error, does not warn
+--- and does not log -- it simply never runs. config.lua warns against
+--- guessing a name for exactly that reason, and then ships one. So the
+--- report says whether the name is doing anything, and an operator can tell
+--- a working bag from a plausible one without reading any source.
+local downState = { watching = nil, changes = 0, edges = 0, reason = nil }
+
 CreateThread(function()
     local key = downStateConfig().watchStateBag
-    if not Arena.IsKey(key) then return end
-    if type(AddStateBagChangeHandler) ~= 'function' then return end
-    if type(GetPlayerFromStateBagName) ~= 'function' then return end
+    if not Arena.IsKey(key) then downState.reason = 'no bag is named in the config' return end
+    if type(AddStateBagChangeHandler) ~= 'function' then
+        downState.reason = 'this server has no AddStateBagChangeHandler'
+        return
+    end
+    if type(GetPlayerFromStateBagName) ~= 'function' then
+        downState.reason = 'this server has no GetPlayerFromStateBagName'
+        return
+    end
 
     local keys = downStateConfig().keys
-    if type(keys) ~= 'table' or #keys == 0 then return end
+    if type(keys) ~= 'table' or #keys == 0 then
+        downState.reason = 'the down-state keys list is empty, which switches the layer off'
+        return
+    end
+
+    downState.watching = key
 
     -- WHAT "ALIVE" IS CALLED IN THAT BAG, read from the config rather than
     -- assumed to be 1.
@@ -368,6 +390,11 @@ CreateThread(function()
         -- number or as a string depending on what wrote it, and `1` and `'1'`
         -- have to mean the same thing here.
         if value == nil then return end
+
+        -- COUNTED BEFORE THE ALIVE TEST, so the report can tell "the bag is
+        -- wrong" from "the bag is right and nobody has gone down yet".
+        downState.changes = downState.changes + 1
+
         if value == aliveValue or tostring(value) == tostring(aliveValue) then return end
 
         local ok, src = pcall(GetPlayerFromStateBagName, bagName)
@@ -375,6 +402,7 @@ CreateThread(function()
         if src == nil or src <= 0 then return end
         if active[src] == nil then return end
 
+        downState.edges = downState.edges + 1
         ArenaDebug('revive: %d went down (%s = %s) -- clearing on the edge.',
             src, tostring(key), tostring(value))
         burstClearDownState(src)
@@ -1197,19 +1225,52 @@ end
 --- second or two before it goes. This report is the only thing that names
 --- WHICH of their scripts still needs the state-bag line pasted into it.
 --- @return string[]
+--- One line saying what the edge listener is doing, if anything.
+---
+--- APPENDED ON EVERY PATH, including the ones where the compat layer is
+--- missing or broken. It is about a setting inside THIS resource rather than
+--- about the scripts around it, so none of the compat layer's failures say
+--- anything about whether it is working -- and an operator reading a report
+--- that opens with "this build has no dispatch compat report" is exactly the
+--- one who needs to know the other half is still running.
+local function downStateLine()
+    if downState.watching == nil then
+        return ('down-state edge clearing is OFF -- %s.')
+            :format(downState.reason or 'the layer did not start')
+    end
+
+    if downState.changes == 0 then
+        return ('down-state edge clearing is watching "%s" and that bag has NEVER changed. '
+            .. 'Either nobody has gone down yet, or the name is wrong -- a bag nothing writes '
+            .. 'cannot tell you which, so check it against your medical script if alerts are '
+            .. 'still getting out.'):format(downState.watching)
+    end
+
+    return ('down-state edge clearing is watching "%s": %d change(s) seen, %d of them a fighter '
+        .. 'going down and cleared on the edge.')
+        :format(downState.watching, downState.changes, downState.edges)
+end
+
 function ArenaDispatch.CompatReport()
+    local out = {}
+
     if type(ArenaCompat) ~= 'table' or type(ArenaCompat.Report) ~= 'function' then
-        return { 'this build has no dispatch compat report.' }
+        out[1] = 'this build has no dispatch compat report.'
+        out[2] = downStateLine()
+        return out
     end
 
     local ok, lines = pcall(ArenaCompat.Report)
     if not ok or type(lines) ~= 'table' then
-        return { 'the dispatch compat report could not be taken: ' .. tostring(lines) }
+        out[1] = 'the dispatch compat report could not be taken: ' .. tostring(lines)
+        out[2] = downStateLine()
+        return out
     end
 
-    local out = {}
     for _, line in ipairs(lines) do out[#out + 1] = tostring(line) end
     if #out == 0 then out[1] = 'the dispatch compat report came back empty.' end
+
+    out[#out + 1] = downStateLine()
     return out
 end
 
@@ -2088,6 +2149,13 @@ end
 --- script has to poll, and on a loaded server that is a second or two. Each
 --- id is asked for ONCE -- a set, not a loop -- so a four-second window over
 --- four templates is a couple of dozen calls and never the same one twice.
+---
+--- THAT EXPLANATION BELONGS TO ArenaDispatch.RetractCallsFor, which is four
+--- hundred lines below and reached from Revive. It is written here because
+--- the function it describes could not be, and the note is repeated in one
+--- line at its own definition. DO NOT read the next block as a continuation
+--- of it: what follows is a different function with the opposite approach.
+
 --- WITHDRAWING A CALL BY ITS REAL NAME, the moment it is filed.
 ---
 --- WHAT THE SWEEP BELOW HAS TO DO WITHOUT. RetractCallsFor knows who went
@@ -2114,10 +2182,22 @@ end
 --- will be filed under, the jobs it is going to, and the player it is
 --- about. Any resource on the server may listen.
 ---
---- So this listens. No shapes, no clock slack, no window: the exact id, the
---- exact job list, the instant the call exists -- and it covers every route
---- into that function, including the ones this resource has never heard of,
---- because they all go through it.
+--- So this listens. No shapes, no clock slack, no window: the exact id and
+--- the exact job list, taken from the call itself rather than rebuilt.
+---
+--- WHICH ROUTES IT ACTUALLY COVERS, because "all of them" is not true and
+--- the difference matters. Every route into that function is announced, yes
+--- -- but this handler can only act on an announcement that says WHO the
+--- call is about, and in sc-dispatch only the person-down and EMS builders
+--- fill that field in. The gunfire builder and the panic relay do not, so a
+--- shots-fired call about a fighter is announced like every other and
+--- declined here in silence.
+---
+--- That is the right answer rather than a gap to close: without a subject
+--- there is nothing to check the call against, and withdrawing on the
+--- strength of an id alone would take a stranger's call off the responders'
+--- screens. Gunfire is handled a layer earlier anyway -- cancelled at the
+--- event, where an arena knows the shooter is its own.
 ---
 --- WHY IT STILL WAITS, AND WHY IT ASKS MORE THAN ONCE. The announcement
 --- happens BEFORE the rows are written, so withdrawing on the spot would
@@ -2151,6 +2231,17 @@ function ArenaDispatch.WithdrawFiledCall(data)
     -- the gate is the whole safety of it: withdraw the wrong one and a
     -- player having a genuine emergency is taken off the responders'
     -- screens by a PvP arena they have never been near.
+    --
+    -- AND IT IS A WEAKER GUARANTEE THAN THE SWEEP'S, which is worth saying
+    -- plainly because the two look alike. The sweep cannot reach anybody
+    -- else's call by construction -- the server id in the middle of every id
+    -- it builds is the arena player's own. Here the id and the subject are
+    -- two fields of the SAME payload and nothing ties them together: a
+    -- payload naming a fighter as the subject and somebody else's call as
+    -- the id would be withdrawn. What stands between that and a live server
+    -- is the dispatch script's own event surface, not this gate -- so an
+    -- operator whose dispatch script takes alert payloads straight from
+    -- clients should leave `filedEvent` empty and let the sweep do it.
     local src = Arena.ToInt(data[config.filedSubjectField or 'caller_source'])
     if src == nil or src <= 0 then return false end
 
@@ -2205,6 +2296,15 @@ CreateThread(function()
     end)
 end)
 
+--- Withdraws every call this server's dispatch script could have filed for
+--- one player, by building the ids rather than being told them.
+---
+--- THE LONG RATIONALE IS ABOVE ArenaDispatch.WithdrawFiledCall, where it was
+--- written and where it has to stay: it is the comparison between the two
+--- approaches, and it reads as one argument. In short: this knows who went
+--- down and roughly when, builds every shape in `idTemplates` across a few
+--- seconds of clock, asks for each one once, and sweeps for `sweepMs`
+--- because the alert does not exist yet when the fighter goes down.
 --- @param src number
 function ArenaDispatch.RetractCallsFor(src)
     if type(src) ~= 'number' or src <= 0 then return end

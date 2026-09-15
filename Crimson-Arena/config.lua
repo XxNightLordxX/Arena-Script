@@ -28,10 +28,10 @@
      1237   Permissions   Who may open a match, who may force-stop one
      1323   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1757   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2284   Database      Optional: leaderboard, and what players still owe the arena
-     2315   Leaderboard   Which matches count towards the board, and which do not
-     2381   Webhook       Optional: a Discord line per finished match
-     2413   Dispatch      Optional: keeping police and EMS out of the arena
+     2292   Database      Optional: leaderboard, and what players still owe the arena
+     2323   Leaderboard   Which matches count towards the board, and which do not
+     2389   Webhook       Optional: a Discord line per finished match
+     2421   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1848,10 +1848,18 @@ Config.Loadouts = {
     --
     -- The console says so at start rather than leaving you to find out
     -- mid-round: every configured name is checked against this server's own
-    -- ox_inventory item list when the resource comes up, and any that is not
-    -- there is named, with the weapon it was configured on. One that slips
-    -- through anyway is dropped at issue rather than fitted, so the cost is
-    -- an attachment and never the weapon.
+    -- ox_inventory item list when the resource comes up, and any that this
+    -- ox_inventory will not take -- no item by that name, or an item that is
+    -- not a component -- is named, with the weapon it was configured on.
+    -- `/arenaattachments`, and the admin tablet under Tools -> Attachments,
+    -- print the same reading without a restart. One that slips through
+    -- anyway is dropped at issue rather than fitted, so the cost is an
+    -- attachment and not the weapon.
+    --
+    -- THE CHECK SAYS WHEN IT COULD NOT CHECK, which is the honest half. An
+    -- ox_inventory that will not answer Items(), or one too old to tag its
+    -- items at all, leaves names unverified -- the report says so in those
+    -- words rather than reporting a pass. See config.weapons.lua.
 
     -- SWITCH A WHOLE KIND OFF. The weapons stay in config.weapons.lua ready
     -- to switch back on, and the picker drops the section rather than showing
@@ -2497,7 +2505,14 @@ Config.Dispatch = {
         keys = { 'inlaststand', 'isdead' },
 
         -- How often the flags are put back down for everyone in a match, in
-        -- ms. `0` clears once at the death and never again.
+        -- ms. `0` switches this background sweep off.
+        --
+        -- IT IS NOT THE ONLY THING THAT CLEARS THEM, and it used to be. The
+        -- state-bag listener below has its own short burst, controlled by
+        -- `burstMs` and `burstIntervalMs`, and it does not consult this
+        -- number at all -- so `0` here no longer means "one clear per
+        -- death". Empty `keys` above is the master switch; `burstMs = 0`
+        -- reduces the burst to a single clear.
         --
         -- CLEARING ONCE IS NOT KEEPING CLEAR: medical scripts re-assert the
         -- flag on a respawn, on their own poll, on a restart. Keep this at
@@ -2517,14 +2532,33 @@ Config.Dispatch = {
         -- WHAT IT IS WORTH, in the only terms that matter: a dispatch script
         -- polling that mirror every 500ms alerts if its poll lands between
         -- the medical script writing the flag and this resource clearing it.
-        -- Against the 250ms hold alone that is about one knockdown in two.
-        -- Against this it is one tick, which is a couple of percent of the
-        -- same poll.
+        --
+        -- THE ARITHMETIC, because a number that flatters the fix is worse
+        -- than no number. The hold is a free-running loop, so the gap
+        -- between the flag going up and the next hold write is anywhere in
+        -- (0, 250], averaging 125ms -- against a 500ms poll of unrelated
+        -- phase, about one rising edge in four, not one in two. A knockdown
+        -- that goes on to a death offers two independent rising edges, which
+        -- is where "about half the time" comes from in practice.
+        --
+        -- Against this listener the window is one server tick plus whatever
+        -- the difference is between the arena's metadata push and the
+        -- medical script's -- on qbx_core both take the same ordered channel
+        -- and largely cancel, on a core that batches its player-data pushes
+        -- they may not. Single-figure milliseconds against a 500ms poll,
+        -- rather than a quarter of it. Nothing in this resource measures the
+        -- client leg, so that half is reasoning, not a reading.
         --
         -- SET IT EMPTY if your medical script is not Qbox's -- the arena
         -- falls back to the hold above and behaves exactly as it did. Do not
         -- guess a name: a bag nothing writes costs nothing and does nothing,
         -- but you will have been told it was fixed.
+        --
+        -- AND THAT WARNING APPLIES TO THE DEFAULT ABOVE. It is a string, and
+        -- a state-bag handler for a key nothing writes cannot fail visibly.
+        -- `/arenadispatch` reports what this layer is configured for and
+        -- whether it has ever seen that bag change, so an operator can tell
+        -- a working name from a plausible one without reading any source.
         watchStateBag = 'qbx_medical:deathState',
 
         -- WHAT "ALIVE" IS CALLED IN THAT BAG. 1 on Qbox, whose enum reads
@@ -2723,14 +2757,37 @@ Config.Dispatch = {
             -- payload is the caller's own table: the id the call is filed
             -- under, the jobs it is going to, and who it is about.
             --
-            -- Named here, the arena stops building ids out of `idTemplates`
-            -- and hoping, and withdraws the exact call the instant it is
-            -- filed -- including calls raised by routes this resource has
-            -- never heard of, because they all go through that one function.
+            -- Named here, the arena ALSO withdraws by the call's real id
+            -- rather than only by the ids it can build out of `idTemplates`
+            -- -- so a call filed under a shape nobody listed is still
+            -- withdrawn, as long as the announcement says who it is about.
+            --
+            -- IT ADDS A ROUTE, IT DOES NOT REPLACE ONE. Naming the event
+            -- does not switch the template sweep off: `retractFor` still
+            -- runs from every cancelled event and `RetractCallsFor` still
+            -- sweeps on the revive. The two cover different gaps and both
+            -- are cheap when the other has already worked, because a clear
+            -- for a call that is gone matches no row. Leave the event empty
+            -- if your dispatch script announces nothing.
+            --
+            -- NOT EVERY ALERT, AND HERE IS THE EDGE. This layer can only act
+            -- on an announcement that names the player the call is about --
+            -- `filedSubjectField` below. In sc-dispatch the person-down and
+            -- EMS alerts carry it and the shots-fired and panic ones do not,
+            -- so gunfire is left to the event-cancel layer above, which is
+            -- where an arena knows the shooter is its own. Withdrawing on an
+            -- id with no subject to check it against would take a stranger's
+            -- call off the responders' screens.
+            --
+            -- ONE MORE THING WORTH KNOWING BEFORE YOU TURN IT ON. The id and
+            -- the subject are two fields of the same payload and nothing
+            -- ties them together, where the template sweep cannot reach
+            -- anybody else's call by construction. If your dispatch script
+            -- accepts alert payloads straight from clients, leave this empty
+            -- and let the sweep do it.
             --
             -- The three field names below are where that payload keeps the
-            -- id, the player and the job list. Leave the event empty if your
-            -- dispatch script announces nothing; the sweep below still runs.
+            -- id, the player and the job list.
             filedEvent = 'sc-dispatch:server:witnessForward',
             filedIdField = 'unique_id',
             filedSubjectField = 'caller_source',

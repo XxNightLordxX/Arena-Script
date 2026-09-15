@@ -221,9 +221,10 @@ one deliberately does not.
 
 | Command | What it does |
 |---|---|
-| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Tools** tab shows the `/arenaisolation`, `/arenahours`, `/arenadispatch` and `/arenaunjam` readings on screen, built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
+| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Tools** tab shows the `/arenaisolation`, `/arenahours`, `/arenadispatch`, `/arenaattachments` and `/arenaunjam` readings on screen, built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
 | `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without a restart. |
 | `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
+| `/arenaattachments` | Prints every name in `Config.Loadouts.weaponAttachments`, a weapon's own `components` list or an `ammoTypes` entry that this ox_inventory will not take — one it has no item for, or one whose item is not a component. Both leave the weapon undrawable, so both are dropped rather than fitted, and this is the reading that says which. |
 | `/arenaisolation` | Prints what instancing is really doing: the mode the server reports for `onesync`, whether a routing bucket has been caught not landing, the bucket each live match was allocated, and the bucket the server says each of those players is standing in right now. |
 | `/arenahours` | Prints what the server thinks the time is, the offset applied to it, the opening hours in `Config.Schedule` and whether the doors are open right now. |
 
@@ -348,7 +349,7 @@ line-number map that is regenerated whenever the file changes.
 | `shared/compat/dispatch.lua` | shared | The police/EMS catalogue, the detection walk, the mutes and the startup report. |
 | `server/util.lua` | server | Logging, notifications, permissions, rate limiting, webhooks, match ids. |
 | `server/dispatch.lua` | server | The in-arena flag, routing-bucket isolation, the revive, and `/arenarevive` and `/arenaisolation`. |
-| `server/ammo.lua` | server | The inventory door, every weapon and ammunition item issued and reclaimed, and the slate of what players still owe the arena. |
+| `server/ammo.lua` | server | The inventory door, every weapon and ammunition item issued and reclaimed, the slate of what players still owe the arena, and `/arenaunjam` and `/arenaattachments`. |
 | `server/stats.lua` | server | The leaderboard, in memory and in MySQL. |
 | `server/betting.lua` | server | Escrow, side bets, refunds and payouts. |
 | `server/lobby.lua` | server | The match registry, joining, leaving, readiness and the state snapshot. |
@@ -570,7 +571,7 @@ listed; the source documents them where they are.
 | `ArenaAmmo.OwedKit()` | Every arena weapon and item stack that left with a character and has not come back, one row per character. |
 | `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
 | `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
-| `ArenaAmmo.AttachmentReport()` | Every attachment name the config can fit, checked against this server's ox_inventory item list, as lines. Printed at start; a name ox_inventory does not have is dropped rather than fitted, because handing it one leaves the weapon undrawable. |
+| `ArenaAmmo.AttachmentReport()` | Every attachment name the config can fit, checked against this server's ox_inventory item list, as lines. Printed at start and by `/arenaattachments`, and on the admin tablet under **Tools → Attachments**. A name ox_inventory has no item for, or has an item for that is not a component, is dropped rather than fitted, because handing it one leaves the weapon undrawable. |
 
 #### `server/stats.lua` — 6 functions
 

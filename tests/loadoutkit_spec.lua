@@ -43,6 +43,7 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 local function newKit(opts)
     opts = opts or {}
     local inv, stashes, console = {}, {}, {}
+    local commands, refusals = {}, {}
     --- BROKEN FROM THE START when a test asks for it. The boot report thread
     --- runs while this fixture is being built, so a fault switched on
     --- afterwards is switched on too late to be the first thing ox_inventory
@@ -198,6 +199,7 @@ local function newKit(opts)
         TriggerClientEvent = function() end,
         GetPlayers = function() return {} end,
         print = function(line) console[#console + 1] = tostring(line) end,
+        RegisterCommand = function(name, fn) commands[name] = fn end,
         lib = Sandbox.newOxLib(),
     })
     -- The return sweep is a `while true do Wait(...) end`, and the
@@ -211,6 +213,13 @@ local function newKit(opts)
     env.ArenaGetPlayer = function(src)
         return { PlayerData = { citizenid = 'CID' .. tostring(src) } }
     end
+    -- AFTER util.lua, WHICH DEFINES THE REAL ONES. Set on the env before it,
+    -- these are simply overwritten as the file loads, and every command test
+    -- below then runs against ArenaIsAdmin's real ace lookup on a server with
+    -- no ace system -- which throws, rather than testing the gate.
+    --- Only src 4 is cleared, so a gate can be told apart from a no-op.
+    env.ArenaIsAdmin = function(src) return src == 4 end
+    env.ArenaNotifyKey = function(src, key) refusals[#refusals + 1] = { src = src, key = key } end
     Sandbox.loadInto('../Crimson-Arena/server/ammo.lua', env)
 
     return {
@@ -219,6 +228,17 @@ local function newKit(opts)
         config = env.Config,
         calls = calls,
         breakOn = function(what, value) fail[what] = value == nil and true or value end,
+        --- Whether this file registered a console command by that name.
+        registered = function(name) return commands[name] ~= nil end,
+        --- Runs one, and answers with what the console gained and who was refused.
+        runCommand = function(name, src, args)
+            assert(commands[name], 'no such command registered: ' .. name)
+            local before, refusedBefore = #console, #refusals
+            commands[name](src, args or {})
+            local out = {}
+            for i = before + 1, #console do out[#out + 1] = console[i] end
+            return table.concat(out, '\n'), #refusals > refusedBefore
+        end,
         --- A server where ox_inventory never started.
         stopInventory = function() fail.noInventory = true end,
         --- One item as it sits in a player's inventory, metadata and all.
@@ -757,6 +777,44 @@ t.test('and a registry that is still filling is asked again, not written off', f
     t.contains(table.concat(f.ammo.AttachmentReport(), '\n'), 'water',
         'the registry filled up and the check was still answering from the empty one')
 end)
+
+-- ======================================================================
+-- AND WHETHER ANYBODY CAN READ IT WITHOUT RESTARTING THE SERVER
+--
+-- The report's own doc said it was split out of the boot thread "so it can
+-- be read without restarting the server, the same way IsolationReport and
+-- CompatReport are". Those two are genuinely reachable -- a command each and
+-- a button each on the admin tablet. This one had one caller in the whole
+-- resource, the boot thread, so a restart was the only way to read it --
+-- which matters most in exactly the states where the answer CHANGED after
+-- start-up: an ox_inventory restarted underneath the arena, an item list
+-- that was still filling when the boot check ran.
+--
+-- /arenaunjam is tested here for the same reason and was not tested at all:
+-- a chat command passes through no rate limiter and no wrapper, so the line
+-- in the handler is the only protection there is.
+-- ======================================================================
+
+for _, name in ipairs({ 'arenaattachments', 'arenaunjam' }) do
+    t.test(('/%s is registered'):format(name), function()
+        t.isTrue(newKit().registered(name),
+            'the command is not registered, so nothing below tests it')
+    end)
+
+    t.test(('/%s refuses a player who is not an admin, and does nothing else'):format(name), function()
+        local f = newKit()
+        local out, refused = f.runCommand(name, 2, {})
+        t.isTrue(refused, 'a non-admin was not told they are not cleared')
+        t.equals(out, '', 'the report ran for a player who is not an admin')
+    end)
+
+    t.test(('/%s runs for an admin, which is the control'):format(name), function()
+        local f = newKit()
+        local out, refused = f.runCommand(name, 4, {})
+        t.isFalse(refused, 'an admin was refused their own command')
+        t.isTrue(#out > 0, 'the command printed nothing at all for an admin')
+    end)
+end
 
 t.test('and says so plainly when ox_inventory is not running at all', function()
     local f = newKit({ mutate = function(config)

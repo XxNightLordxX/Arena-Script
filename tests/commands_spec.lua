@@ -1,7 +1,7 @@
 --[[
     crimson_arena/tests/commands_spec.lua
 
-    THE SIX COMMANDS, AND WHETHER A PLAYER CAN FIND ANY OF THEM.
+    THE SEVEN COMMANDS, AND WHETHER A PLAYER CAN FIND ANY OF THEM.
 
     An operator reported "there is no /arenadispatch command". It was
     registered the whole time -- shared/compat/dispatch.lua, inside the

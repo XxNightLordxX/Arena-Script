@@ -7294,7 +7294,10 @@ end
 ---
 --- SPLIT OUT OF THE THREAD so it can be read without restarting the server,
 --- the same way ArenaDispatch.IsolationReport and ArenaDispatch.CompatReport
---- are. Everything the thread below prints, it prints from here.
+--- are -- and, like those two, it is behind a command and on the admin
+--- tablet. That is not decoration: the one state in which this report is
+--- most worth reading is the one where the answer changed after start-up,
+--- and a report only a restart can print cannot tell anyone about it. Everything the thread below prints, it prints from here.
 --- @return string[]
 function ArenaAmmo.AttachmentReport()
     local lines = {}
@@ -7361,6 +7364,27 @@ function ArenaAmmo.AttachmentReport()
     say('       Your own list is in ox_inventory/data/weapons.lua under Components.')
 
     return lines
+end
+
+--- Prints the attachment report on demand.
+---
+--- GUARDED the same way /arenaunjam above is, and for the same reason: this
+--- file is loaded by the harnesses under tools/harness, which build the
+--- smallest environment that can run the ledger and the door and have no
+--- command surface in it.
+if type(RegisterCommand) == 'function' then
+RegisterCommand('arenaattachments', function(src, _args)
+    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
+        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
+            ArenaNotifyKey(src, 'error.no_permission', 'error')
+        end
+        return
+    end
+
+    for _, line in ipairs(ArenaAmmo.AttachmentReport()) do
+        ArenaLog('arenaattachments: %s', line)
+    end
+end, false)
 end
 
 -- THE CHECK RUNS AT START, BEFORE ANYBODY FIGHTS.

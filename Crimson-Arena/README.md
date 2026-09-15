@@ -1048,6 +1048,7 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 | `/arenaadmin wipe` | server | admins. Aborts every match and refunds everybody. |
 | `/arenadispatch` | server | admins. Re-runs the police/EMS detection and reprints the startup report. Also on the admin tablet, under **Tools → Police & EMS**. See [Layer 3](#layer-3--the-startup-report-so-you-never-have-to-guess). |
 | `/arenahours` | server | admins. Prints what the server thinks the time is, the offset applied to it, the opening hours and whether the doors are open right now. See [Opening hours](#opening-hours). |
+| `/arenaattachments` | server | admins. Prints every configured attachment name this ox_inventory will not take, and which weapon or ammunition type names it. Also on the admin tablet, under **Tools → Attachments**. |
 | `/arenaisolation` | server | admins. Prints the routing-bucket readings for every live match — measurements, not intentions. Also on the admin tablet, under **Tools → Instancing**. |
 | `/arenarevive <id>` | server | admins. Runs the end-of-match revive against one player, so you can see what your medical script does with it without staging a death. Blank means yourself. |
 | `/arenaunjam [stash]` | server | admins. Lists the stashes the arena is holding back, and releases one — but only once it is empty. Also on the admin tablet, under **Tools → Held-back stashes**. |

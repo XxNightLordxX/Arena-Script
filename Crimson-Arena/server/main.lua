@@ -806,6 +806,15 @@ local ADMIN_TOOLS = {
             return ArenaDispatch.CompatReport()
         end,
     },
+    attachments = {
+        title = 'Attachments',
+        run = function()
+            if type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.AttachmentReport) ~= 'function' then
+                return { 'this build has no attachment report.' }
+            end
+            return ArenaAmmo.AttachmentReport()
+        end,
+    },
     jams = {
         title = 'Held-back stashes',
         run = function()

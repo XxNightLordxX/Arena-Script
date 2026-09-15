@@ -344,6 +344,10 @@ local COMMAND_HELP = {
         },
     },
     {
+        name = 'arenaattachments',
+        help = 'Report configured attachment names this ox_inventory will not take. (admin)',
+    },
+    {
         name = 'arenaunjam',
         help = 'Report stashes the arena is holding back, and release one once it is empty. (admin)',
         params = {

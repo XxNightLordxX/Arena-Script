@@ -118,6 +118,7 @@ All of these need admin permission, which the arena reads from your framework.
 | `/arenarevive <id>` | Runs the end-of-match medical handoff on any player, so you can test it without playing a round. |
 | `/arenaunjam` | Settles any player stash the arena refused to give back automatically, so their kit is not stuck in limbo. Lists them first if you run it with nothing held. |
 | `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without restarting the resource. |
+| `/arenaattachments` | Prints every attachment name in your config that this ox_inventory will not take — a name it has no item for, or an item that is not a component. Run this if a fighter is holding a weapon that will not come out. |
 | `/arenaisolation` | Prints what instancing is really doing: the OneSync mode, which routing bucket each live match got, and which bucket the server thinks each player is standing in. Run this first if players can see each other when they should not. |
 | `/arenahours` | Prints what the server thinks the time is and whether the doors are open right now. |
 

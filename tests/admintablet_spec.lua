@@ -1104,7 +1104,14 @@ end)
 
 t.test('a tool name the server does not know is refused, not answered', function()
     local s = newArena({ [1] = true })
-    for _, junk in ipairs({ 'nope', 'ISOLATION', '', 'hours ', 'jams;drop' }) do
+    -- INCLUDING THE NAMES THAT ARE NOT DATA. `ADMIN_TOOLS[name]` is a table
+    -- lookup on a string that came off the wire, so the metatable keys and
+    -- the inherited ones are part of the alphabet an attacker gets to pick
+    -- from. None of them is a tool, all of them must be refused the same way
+    -- a typo is, and none may reach `tool.run`.
+    for _, junk in ipairs({ 'nope', 'ISOLATION', '', 'hours ', 'jams;drop',
+        '__index', '__newindex', '__metatable', 'owed ', 'OWED', 'attachments\0',
+        string.rep('a', 400) }) do
         s.fire('adminTool', 1, { tool = junk })
         t.isNil(s.lastNamed('adminTool'),
             'the server answered a tool it does not have: "' .. tostring(junk) .. '"')

@@ -336,6 +336,9 @@ end
 --- into a player, and the config naming the bag to watch. An operator whose
 --- medical script keeps its state somewhere else simply leaves that name
 --- empty and gets the hold above on its own, exactly as before.
+--- Call ids with a withdrawal schedule already running against them.
+local withdrawing = {}
+
 --- What the edge listener has actually seen, for the report below.
 ---
 --- THE ONE SETTING HERE THAT CANNOT FAIL VISIBLY. `watchStateBag` is a
@@ -2261,6 +2264,24 @@ function ArenaDispatch.WithdrawFiledCall(data)
     if delay < 0 then delay = 0 end
     if delay > 5000 then delay = 5000 end
 
+    -- ONE SCHEDULE PER CALL ID, however many times it is announced.
+    --
+    -- This handler runs on somebody else's event, and nothing in this
+    -- resource decides how often that event fires. Every announcement used to
+    -- cost one export call; asking four times would have made it four, and a
+    -- resource that can be made to shout at another resource in multiples is
+    -- worth not writing however unlikely the path. It is also simply right:
+    -- the same call announced twice is one call, and the second schedule
+    -- would ask for an id the first has already cleared.
+    --
+    -- Released when the last attempt has gone out, not before, so a genuine
+    -- re-file of the same id later is still withdrawn.
+    if withdrawing[id] then
+        ArenaDebug('retract: "%s" is already being withdrawn -- not asked for again.', tostring(id))
+        return true
+    end
+    withdrawing[id] = true
+
     ArenaLog('retract: withdrawing "%s" -- filed about %s, who is in a match.', tostring(id), tostring(src))
 
     local function ask()
@@ -2279,8 +2300,12 @@ function ArenaDispatch.WithdrawFiledCall(data)
     -- waits carries `id` and `jobs` for three seconds and, more to the
     -- point, one that throws takes the rest of the schedule with it. Each
     -- attempt here stands on its own.
-    for _, extra in ipairs(RETRY_AT) do
-        SetTimeout(delay + extra, ask)
+    for index, extra in ipairs(RETRY_AT) do
+        local last = index == #RETRY_AT
+        SetTimeout(delay + extra, function()
+            ask()
+            if last then withdrawing[id] = nil end
+        end)
     end
 
     return true

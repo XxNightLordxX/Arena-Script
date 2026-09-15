@@ -581,6 +581,69 @@ t.test('AND IT ASKS MORE THAN ONCE, because knowing the id says nothing about wh
             .. 'landed withdraws nothing'):format(#f.exportCalls))
 end)
 
+t.test('and the same call announced twice is one schedule, not two', function()
+    -- THIS HANDLER RUNS ON SOMEBODY ELSE'S EVENT, and nothing in this
+    -- resource decides how often that event fires. One announcement used to
+    -- cost one export call into the dispatch script; asking four times would
+    -- have made it four, and every repeat of the announcement multiplies it
+    -- again. A resource that can be made to shout at another resource in
+    -- multiples is worth not writing.
+    --
+    -- It is also just right: the same call announced twice is one call, and
+    -- the second schedule would be asking for an id the first has cleared.
+    local f = newFixture()
+    f.enter(7)
+
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
+    f.step()
+
+    t.isTrue(#f.exportCalls > 0, 'nothing was withdrawn at all, so this proves nothing')
+    t.isTrue(#f.exportCalls <= 4,
+        ('three announcements of one call cost %d export call(s) into somebody else\'s resource')
+            :format(#f.exportCalls))
+end)
+
+t.test('and the SAME call re-filed later is withdrawn again', function()
+    -- The gate is a schedule that is already running, not a memory of every
+    -- id this resource has ever seen. Left latched, a dispatch script that
+    -- re-files under an id it has used before -- a restart, a reused clock
+    -- second -- would have that call left standing forever.
+    local f = newFixture()
+    f.enter(7)
+
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
+    f.step()
+    local afterFirst = #f.exportCalls
+    t.isTrue(afterFirst > 0, 'nothing was withdrawn at all, so this proves nothing')
+
+    -- The schedule has run out by now.
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
+    f.step()
+
+    t.isTrue(#f.exportCalls > afterFirst,
+        'a call re-filed under an id that had been withdrawn before was left standing')
+end)
+
+t.test('and a DIFFERENT call about the same fighter is still withdrawn', function()
+    -- The gate is on the call id, not on the player: a fighter can have more
+    -- than one call filed about them, and each is its own withdrawal.
+    local f = newFixture()
+    f.enter(7)
+
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'shotsfired_7_1700000001'))
+    f.step()
+
+    local asked = {}
+    for _, call in ipairs(f.exportCalls) do asked[tostring(call.args[1])] = true end
+
+    t.isTrue(asked['playerdown_7_1700000000'], 'the first call was not withdrawn')
+    t.isTrue(asked['shotsfired_7_1700000001'],
+        'a second call about the same fighter was swallowed by the first one\'s guard')
+end)
+
 t.test('and a call about somebody NOT in a match is left alone', function()
     -- This handler sees every alert filed anywhere on the server. Withdraw
     -- the wrong one and a player with a real emergency is taken off the
@@ -605,6 +668,37 @@ t.test('a call with no id, or no subject, is not acted on', function()
     f.step()
 
     t.equals(#f.exportCalls, 0, 'it tried to withdraw a call it could not name')
+end)
+
+t.test('and a payload built to break it is refused rather than acted on or thrown', function()
+    -- THE PAYLOAD IS NOT THIS RESOURCE'S. It is whatever the dispatch script
+    -- passed to its own event, and the dispatch script took it from a
+    -- client -- so every field here is attacker-shaped, and the handler runs
+    -- for every alert filed anywhere on the server. A throw out of an event
+    -- handler is a fault in somebody else's resource with this one's name on
+    -- it, and a field acted on unchecked is a stranger's medical call
+    -- withdrawn by a PvP arena.
+    local f = newFixture()
+    f.enter(7)
+
+    local crafted = {
+        {}, 'not a table', 42, true,
+        { unique_id = {}, caller_source = 7 },
+        { unique_id = 'x', caller_source = {} },
+        { unique_id = 'x', caller_source = -1 },
+        { unique_id = 'x', caller_source = 0 },
+        { unique_id = 'x', caller_source = 1 / 0 },
+        { unique_id = string.rep('x', 100000), caller_source = 7, job_table = 'not a table' },
+        -- A table whose every read raises, which is what a metatable an
+        -- attacker controls can be made to do.
+        { unique_id = 'x', caller_source = '7', job_table = setmetatable({}, { __index = error }) },
+    }
+
+    for index, payload in ipairs(crafted) do
+        local ok = pcall(function() return f.env.ArenaDispatch.WithdrawFiledCall(payload) end)
+        t.isTrue(ok, ('crafted payload %d threw out of the handler'):format(index))
+    end
+    f.step()
 end)
 
 t.test('a fighter who just left is still covered, because the call lands after they do', function()

@@ -30,6 +30,41 @@ local RATE = {
 --- megabyte of it would be a megabyte in the console log on disk.
 local MAX_DEBUG_LINE = 300
 
+--- A client-supplied string, cut to length and made safe to put in the
+--- server console.
+---
+--- ONE COPY, BECAUSE THERE WERE TWO HANDLERS AND ONLY ONE OF THEM DID IT.
+--- `clientDebug` stripped every control character and explained at length
+--- why; `outlineReason`, in the same file, cut its string to 200 characters
+--- and passed it to ArenaDebug untouched. Both take an arbitrary string from
+--- any connected client. So the rule lived in a comment next to one of its
+--- two call sites, which is how it came to be missing from the other.
+---
+--- WHAT THE MISSING HALF ALLOWED. A client-supplied '\n' lets anybody write
+--- a line into the console log that does not carry the attribution prefix --
+--- a forged '[crimson_arena] ...' line sitting among the real ones, which is
+--- an operator reading something a player wrote and believing the server
+--- said it. An ESC is worse: a console that reads ANSI takes '\27[2J' as
+--- "clear the screen" and '\27]0;' as "rename the window", so one diagnostic
+--- line could wipe the output an operator was working through. Neither
+--- belongs in a diagnostic message, so the whole 0x00-0x1F range and DEL go.
+---
+--- CUT FIRST, THEN STRIP, so the cap still bounds the work the gsub does.
+--- @param text any
+--- @param cap integer|nil -- defaults to MAX_DEBUG_LINE
+--- @return string
+local function scrubbedForLog(text, cap)
+    if type(text) ~= 'string' then return '' end
+
+    local limit = Arena.ToInt(cap) or MAX_DEBUG_LINE
+    if limit < 1 then limit = MAX_DEBUG_LINE end
+
+    local out = text
+    if #out > limit then out = out:sub(1, limit) .. ' [cut]' end
+
+    return (out:gsub('[%z\1-\31\127]', ' '))
+end
+
 local adminScan = {}
 
 local adminTicket = 0
@@ -212,7 +247,7 @@ onClient('crimson_arena:server:outlineReason', RATE.diag, function(src, data)
     local reason = type(data) == 'table' and data.reason or data
     if type(reason) ~= 'string' then return end
 
-    ArenaDebug('outline: %s reports -- %s', tostring(src), reason:sub(1, 200))
+    ArenaDebug('outline: %s reports -- %s', tostring(src), scrubbedForLog(reason, 200))
 end)
 
 onClient('crimson_arena:server:createMatch', RATE.create, function(src, data)
@@ -755,18 +790,10 @@ onClient('crimson_arena:server:clientDebug', RATE.clientDebug, function(src, dat
     local line = payload and payload.line
     if type(line) ~= 'string' or line == '' then return end
 
-    if #line > MAX_DEBUG_LINE then line = line:sub(1, MAX_DEBUG_LINE) .. ' [cut]' end
-
-    -- EVERY CONTROL CHARACTER REMOVED, not only the newlines.
-    --
-    -- A client-supplied '\n' would let anybody write a line into the console
-    -- log that does not carry the attribution prefix -- a forged
-    -- '[crimson_arena] ...' line sitting among the real ones. An ESC is
-    -- worse: a console that reads ANSI takes '\27[2J' as "clear the screen"
-    -- and '\27]0;' as "rename the window", so one debug line could wipe the
-    -- output an operator was reading. Neither belongs in a diagnostic
-    -- message, so the whole 0x00-0x1F range and DEL go.
-    line = line:gsub('[%z\1-\31\127]', ' ')
+    -- CUT AND STRIPPED IN ONE PLACE. This handler is where the rule was
+    -- written down; see scrubbedForLog for why it is no longer written down
+    -- HERE, and what its absence from the other handler allowed.
+    line = scrubbedForLog(line, MAX_DEBUG_LINE)
 
     ArenaDebug('client %s (%s): %s', tostring(src), ArenaPlayerName(src), line)
 end)

@@ -216,6 +216,38 @@ CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+
+-- ----------------------------------------------------------------------
+-- crimson_arena_jammed_stash -- STASHES THE DOOR HAS STOPPED TOUCHING
+--
+-- Handing an item back is two calls: put it in the player's hands, then take
+-- it out of the stash. Between those two the item exists in BOTH places, so
+-- a refused removal leaves the copy in the stash -- and every later pass
+-- finds it and hands it over again. One phone became two, then four, then
+-- eight, then sixteen over five rounds.
+--
+-- The first refusal therefore stops the door touching that stash at all,
+-- and this table is what makes that decision outlive the process. Without
+-- it a restart forgot the jam, the thirty-second sweep walked the stash
+-- again -- uncapped, because nothing after a restart knows what the door
+-- put there -- and handed out the very duplicate the jam was parked to
+-- stop. "Wait for the nightly restart" was a way to collect it.
+--
+-- Nothing in here is anybody's property. It is a list of stash names the
+-- door is holding off, and /arenaunjam is the only thing that clears one --
+-- after a human has opened the stash and settled it by hand.
+--
+--   stash   an ox_inventory stash name, as ammo.lua composes it. 191 is the
+--           longest VARCHAR that can carry a PRIMARY KEY under utf8mb4 on
+--           MySQL's default 767-byte index limit.
+-- ----------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS crimson_arena_jammed_stash (
+    stash VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    jammed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (stash)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ----------------------------------------------------------------------
 -- crimson_arena_unpaid -- MONEY THE ARENA STILL OWES SOMEBODY
 --

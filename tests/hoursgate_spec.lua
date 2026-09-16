@@ -426,11 +426,22 @@ t.test('and WATCHING a live round is never refused by the clock', function()
     -- server/match.lua calls AddSpectator on every elimination. A refusal
     -- here is an eliminated fighter standing back up inside a live round.
     local s = arenaWithHours(openNow())
+    -- NO LOBBY COUNTDOWN, so Begin runs straight through to ArenaMatch.Start
+    -- and the roster is actually teleported in. This test used to Begin and
+    -- step twice, which leaves the match in the LOBBY countdown with nobody
+    -- on the ground -- so it was asserting a property of "a round already
+    -- being fought" against a lobby that had not started one. It passed only
+    -- because nothing was gating spectating at all.
+    s.config.Match.lobbyCountdownSeconds = 0
     local id = s.lobby.Create(1, 'trailerpark', s.config.DefaultMode, 0, nil, nil, nil)
     t.isTrue((s.lobby.Join(2, id, nil, nil)))
     t.isTrue((s.match.Begin(id, 1)))
     s.step()
     s.step()
+
+    local match = s.lobby.Get(id)
+    t.isTrue(match.state == 'live' or (match.state == 'countdown' and match.placed == true),
+        'the round is not being fought (' .. tostring(match.state) .. '), so this proves nothing')
 
     s.config.Schedule.windows = shutNow()
     local ok = s.lobby.AddSpectator(3, id)

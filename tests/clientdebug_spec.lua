@@ -127,6 +127,14 @@ local function newServer(debugOn)
             env.source = src
             handler(payload)
         end,
+        --- The SIBLING SURFACE. Same file, same kind of client string, same
+        --- console -- and for a long time none of the hardening above.
+        outline = function(src, payload)
+            local handler = netEvents['crimson_arena:server:outlineReason']
+            if not handler then error('the outlineReason relay is not registered', 2) end
+            env.source = src
+            handler(payload)
+        end,
         --- Lets the rate limiter bite: the clock stops moving.
         freezeClock = function() tick = 0 end,
         log = function() return table.concat(console, '\n') end,
@@ -280,6 +288,77 @@ t.test('THE FLOOD: one client cannot fill the console faster than the limit', fu
     t.isTrue(#s.lines <= 2,
         ('%d lines were printed for 201 firings, so the limiter is not on this event')
             :format(#s.lines))
+end)
+
+-- ======================================================================
+-- AND THE HANDLER EIGHT LINES AWAY, WHICH HAD NONE OF IT
+-- ======================================================================
+--
+-- `outlineReason` takes an arbitrary string from any connected client, on the
+-- same rate limit and behind the same Config.Debug switch, and put it into
+-- the same console. It cut the string to 200 characters and did nothing else.
+--
+-- Every test above this block was passing while its neighbour was wide open,
+-- because the rule lived in a comment beside ONE of its two call sites. It
+-- lives in `scrubbedForLog` now and both handlers call it.
+
+t.test('THE SIBLING: a newline cannot forge a console line through outlineReason either', function()
+    local s = newServer(true)
+    s.outline(7, { reason = 'harmless\n[crimson_arena] the arena refunded everybody' })
+
+    for _, line in ipairs(s.lines) do
+        t.equals(line:find('\n', 1, true), nil,
+            'a client forged a console line through outlineReason: ' .. line)
+    end
+    t.contains(s.log(), 'refunded everybody',
+        'the text was dropped rather than flattened, so this passes on an empty log')
+end)
+
+t.test('and neither can an escape sequence, through that door either', function()
+    local s = newServer(true)
+    s.outline(7, { reason = 'before\27[2Jafter\27]0;owned\7' })
+
+    for _, line in ipairs(s.lines) do
+        t.equals(line:find('\27', 1, true), nil, 'an escape character reached the console: ' .. line)
+        t.equals(line:find('\7', 1, true), nil, 'a bell character reached the console: ' .. line)
+    end
+    t.contains(s.log(), 'after', 'the line was dropped rather than stripped')
+end)
+
+t.test('and the BARE-STRING form of the payload is the same door', function()
+    -- outlineReason accepts `data.reason` OR `data` itself as the string, so
+    -- a test that only ever sends a table would leave half the surface
+    -- untested -- which is the shape of the original bug.
+    local s = newServer(true)
+    s.outline(7, 'bare\nforged')
+
+    for _, line in ipairs(s.lines) do
+        t.equals(line:find('\n', 1, true), nil,
+            'the bare-string form let a newline through: ' .. line)
+    end
+    t.contains(s.log(), 'forged', 'the bare string never reached the log at all')
+end)
+
+t.test('and it is still cut to length', function()
+    local s = newServer(true)
+    s.outline(7, { reason = string.rep('A', 100000) })
+
+    for _, line in ipairs(s.lines) do
+        t.isTrue(#line < 1000, ('a %d-character line reached the console log'):format(#line))
+    end
+end)
+
+t.test('CONTROL: an ordinary reason still reaches the console unchanged', function()
+    local s = newServer(true)
+    s.outline(7, { reason = 'floor outline missing for trailerpark' })
+    t.contains(s.log(), 'floor outline missing for trailerpark',
+        'the sanitiser ate a perfectly ordinary diagnostic')
+end)
+
+t.test('CONTROL: with Config.Debug OFF outlineReason prints nothing', function()
+    local s = newServer(false)
+    s.outline(7, { reason = 'anything at all' })
+    t.equals(s.log(), '', 'the debug switch does not cover this handler')
 end)
 
 os.exit(t.summary())

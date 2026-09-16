@@ -177,6 +177,26 @@ local function newKit(opts)
             -- and a test built on a string proves nothing at all. A number
             -- has none, and indexing it throws the way the real fault does.
             if fail.junkRegistry then return 42 end
+            -- ox_inventory UP TO v2.11.5 answers an unknown name with FALSE,
+            -- not nil: `return ItemList[item] or false`. From v2.12.0 it
+            -- returns nil. Both mean "no such item" and the guard has to read
+            -- them the same way.
+            if fail.oldFalse and name ~= nil and knownItems[name] == nil then return false end
+            -- A BUILD THAT TAGS NOTHING YET. The list has items in it and not
+            -- one of them carries a tag.
+            if fail.untaggedList and name == nil then
+                local out = {}
+                for k, v in pairs(knownItems) do
+                    local copy = {}
+                    for f2, v2 in pairs(v) do
+                        if f2 ~= 'component' and f2 ~= 'weapon' and f2 ~= 'ammo' and f2 ~= 'tint' then
+                            copy[f2] = v2
+                        end
+                    end
+                    out[k] = copy
+                end
+                return out
+            end
             -- ox_inventory STILL BUILDING ITS LIST: the export is there and
             -- answers, and what it has to say so far is nothing.
             if fail.emptyRegistry and name == nil then return {} end
@@ -832,6 +852,150 @@ for _, name in ipairs({ 'arenaattachments', 'arenaunjam' }) do
         t.isTrue(#out > 0, 'the command printed nothing at all for an admin')
     end)
 end
+
+t.test('an unknown name is refused on an ox_inventory that answers with FALSE', function()
+    -- ox_inventory said "no such item" two different ways. Up to v2.11.5 the
+    -- export is `return ItemList[item] or false`; from v2.12.0 an unknown
+    -- name is nil. Reading only nil, `false` fell through to the
+    -- cannot-interrogate branch and was LET THROUGH -- so on those builds a
+    -- typo went onto the weapon and the weapon would not draw, which is the
+    -- one failure this whole check exists to prevent.
+    local f = newKit({ fail = { oldFalse = true }, mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { scope = 'at_scope_imaginary' } }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+    t.contains(report, 'at_scope_imaginary',
+        'a name this ox_inventory does not have was accepted because it said false, not nil')
+    t.contains(report, 'DROPPED')
+end)
+
+t.test('and a REAL name is still accepted on that same build, which is the control', function()
+    local f = newKit({ fail = { oldFalse = true }, mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { grip = 'at_grip' } }
+        config.Loadouts.weapons = {}
+    end })
+
+    t.notContains(table.concat(f.ammo.AttachmentReport(), '\n'), 'DROPPED',
+        'a real component was refused on a build that answers unknown names with false')
+end)
+
+t.test('a build that tagged nothing when asked is asked again, not written off', function()
+    -- "This list has items and none is tagged" is a statement about the list
+    -- AS IT WAS READ. Cached, one early or unlucky read switches the
+    -- component check off for the rest of the run -- and the check is the
+    -- only thing standing between a wrong name and an undrawable weapon.
+    local f = newKit({ fail = { untaggedList = true }, mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { scope = 'water' } }
+        config.Loadouts.weapons = {}
+    end })
+
+    -- Nothing tags, so `water` is let through: the old-build answer, and the
+    -- right one on the evidence available.
+    t.notContains(table.concat(f.ammo.AttachmentReport(), '\n'), 'DROPPED',
+        'a build with no tags anywhere refused a name, so this proves nothing')
+
+    -- The list is read again and this time it does tag.
+    f.breakOn('untaggedList', false)
+
+    t.contains(table.concat(f.ammo.AttachmentReport(), '\n'), 'water',
+        'the tagging question was never asked again, so the check stayed off for the run')
+end)
+
+-- ======================================================================
+-- A KIND THIS SERVER NEVER FITS
+--
+-- Arena.AttachmentsFor reads only the kinds in Config.Loadouts.attachments.fit.
+-- A kind missing from that list is dropped without a word: the component never
+-- reaches the weapon, the picker offers no switch, and every name check here
+-- passes, because the name was never wrong.
+--
+-- On the shipped config that is `suppressor` -- fitted to 39 weapons, absent
+-- from `fit`, so 39 of 180 slots are dead and the report called the config
+-- clean. It IS clean. It also did nothing.
+-- ======================================================================
+
+t.test('a kind the server never fits is named, with how many rows it kills', function()
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments = { enabled = true, allowChoose = true, fit = { 'scope', 'grip' } }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'at_suppressor_heavy' },
+            WEAPON_OTHER = { suppressor = 'at_suppressor_heavy' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'suppressor', 'the dead kind was not named')
+    t.contains(report, 'NEVER PUTS ONE ON', 'the report did not say the rows do nothing')
+    t.contains(report, '2 weapon(s)', 'the report did not count the rows it kills')
+    t.contains(report, 'attachments.fit', 'the report does not say where to switch it on')
+end)
+
+t.test('and a kind the server DOES fit is not reported, which is the control', function()
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments = { enabled = true, allowChoose = true,
+            fit = { 'scope', 'suppressor' } }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'at_suppressor_heavy' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    t.notContains(table.concat(f.ammo.AttachmentReport(), '\n'), 'NEVER PUTS ONE ON',
+        'a kind this server really fits was reported as dead')
+end)
+
+t.test('and a server with attachments switched off entirely is not shouted at', function()
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments = { enabled = false, fit = {} }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'at_suppressor_heavy' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    t.notContains(table.concat(f.ammo.AttachmentReport(), '\n'), 'NEVER PUTS ONE ON',
+        'an operator who turned attachments off was told their config is broken')
+end)
+
+t.test('and the warning survives ox_inventory being absent, because it is not about ox_inventory', function()
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments = { enabled = true, allowChoose = true, fit = { 'scope' } }
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { suppressor = 'at_suppressor_heavy' } }
+        config.Loadouts.weapons = {}
+    end })
+    f.stopInventory()
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+    t.contains(report, 'ox_inventory is not running', 'the fixture did not stop ox_inventory')
+    t.contains(report, 'NEVER PUTS ONE ON',
+        'the dead-kind warning was hidden behind an ox_inventory early return')
+end)
+
+t.test('and switching it on is not offered without saying what it collides with', function()
+    -- ox_inventory types a suppressor and a muzzle brake alike as "muzzle" and
+    -- a weapon takes ONE. An operator who acts on the advice above with both
+    -- configured loses one of the two, and should hear it here rather than
+    -- afterwards. `muzzle` is fitted, so `suppressor` is the only dead kind
+    -- and the only weapons named anywhere are the colliding ones.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments = { enabled = true, allowChoose = true,
+            fit = { 'scope', 'muzzle' } }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { muzzle = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
+            WEAPON_OTHER = { suppressor = 'at_suppressor_heavy' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+    t.contains(report, 'a weapon takes one', 'the collision was not explained')
+    t.contains(report, 'WEAPON_TEST', 'the colliding weapon was not named')
+    t.notContains(report, 'WEAPON_OTHER', 'a weapon with no muzzle row was listed as colliding')
+end)
 
 t.test('and says so plainly when ox_inventory is not running at all', function()
     local f = newKit({ mutate = function(config)

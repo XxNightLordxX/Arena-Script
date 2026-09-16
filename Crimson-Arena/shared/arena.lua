@@ -1059,14 +1059,40 @@ function Arena.ResolveSupplies(requested)
         local maximum = Arena.SupplyMax(supply)
         local fallback = Arena.ClampInt(supply.default, 0, maximum) or 0
 
+        -- A ZERO THE PLAYER ASKED FOR IS AN ANSWER, NOT A MISSING ONE.
+        --
+        -- This resolver runs TWICE over the same choice: once when the pick
+        -- is made (server/lobby.lua stores what comes back) and again when
+        -- the round starts (server/match.lua re-resolves the stored loadout).
+        -- So its output has to be a fixed point, and a dropped zero is not:
+        -- the stored list came back WITHOUT the declined supply, the second
+        -- pass saw no key for it, and re-applied the operator's default. A
+        -- plate the player deliberately took none of was handed to them at
+        -- the start of every round, and under a `totalItems` ceiling it also
+        -- displaced something they DID pick.
+        --
+        -- The panel already had this right and says so out loud -- see
+        -- html/app.js, "a supply the server did not send back is one the
+        -- player is not carrying, which is a 0 rather than a reason to
+        -- re-apply the default". The two sides simply disagreed, and the
+        -- server was the one that re-applied it.
+        --
+        -- ONLY AN EXPLICIT ZERO IS CARRIED. A supply zeroed by the `capped`
+        -- clamp below is not recorded as declined: it was not the player's
+        -- answer, and the same clamp reaches the same number next pass.
         local count = fallback
+        local declined = false
         if wanted ~= nil and asked[supply.key] ~= nil then
             count = Arena.ClampInt(asked[supply.key], 0, maximum) or 0
+            declined = count == 0
         end
 
         if capped and count > remaining then count = remaining end
 
-        if count > 0 and Arena.IsKey(supply.item) then
+        -- Both consumers of this list already skip a non-positive count --
+        -- server/ammo.lua's issue and reclaim loops each test `> 0` before
+        -- touching ox_inventory -- so a zero row costs nothing downstream.
+        if (count > 0 or declined) and Arena.IsKey(supply.item) then
             if capped then remaining = remaining - count end
             out[#out + 1] = {
                 key = supply.key,

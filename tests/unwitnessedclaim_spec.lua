@@ -21,6 +21,11 @@ local function newServer()
     local qbx = Sandbox.newQbxCore({
         [1] = { citizenid = 'AAA11111', name = 'Host',  money = { cash = 50000, bank = 0 } },
         [2] = { citizenid = 'BBB22222', name = 'Rival', money = { cash = 50000, bank = 0 } },
+        -- TWO MORE, so a TEAM-MATE exists to name. The team cases below need
+        -- a side with somebody else on it; two players can only ever be
+        -- enemies, which is the one arrangement that never reproduced.
+        [3] = { citizenid = 'CCC33333', name = 'Third', money = { cash = 50000, bank = 0 } },
+        [4] = { citizenid = 'DDD44444', name = 'Mate',  money = { cash = 50000, bank = 0 } },
     })
     local threads = Sandbox.newThreadRunner()
     local sent, netEvents, flags = {}, {}, {}
@@ -125,8 +130,9 @@ local function liveRound()
     return s, matchId, arenaKey
 end
 
-local function run(label, payloadFor, deaths)
-    local s, matchId, arenaKey = liveRound()
+local function run(label, payloadFor, deaths, opts)
+    opts = opts or {}
+    local s, matchId, arenaKey = (opts.round or liveRound)()
     local match = s.lobby.Get(matchId)
     local base = #s.logs
     local refreshBase = #s.refreshes
@@ -137,6 +143,9 @@ local function run(label, payloadFor, deaths)
         s.setNow(s.getNow() + 5500)
         local entry = match.players[2]
         assert(entry.alive, ('death %d: victim was not alive, cannot report'):format(i))
+        -- RE-APPLIED EVERY TIME, because the round is running underneath this
+        -- and a sweep may put back what the test took away.
+        if opts.prepare then opts.prepare(match, s) end
         s.fire('reportDeath', 2, payloadFor())
         assert(entry.alive == false, ('death %d: report was refused'):format(i))
         -- run the respawn thread to completion
@@ -173,6 +182,48 @@ local function run(label, payloadFor, deaths)
 end
 
 
+--- A LIVE TEAM ROUND: 1 and 3 on one side, 2 and 4 on the other.
+---
+--- Needed because the whole second half of this bug lives behind
+--- `Arena.CanDamage`, and CanDamage can only refuse when there are sides to
+--- be on. The two-player free-for-all above cannot express "a team-mate".
+local function teamRound()
+    local s = newServer()
+    s.env.Config.Teams.friendlyFire = false          -- SHIPPED value, said out loud
+    s.env.Config.Teams.autoAssignIfUnchosen = true
+    local arenas = s.env.Arena.GetEnabledArenas()
+    local arenaKey = arenas[1].key
+    s.standIn(arenaKey)
+
+    local matchId, err = s.lobby.Create(1, arenaKey, 'tdm', 0, nil, nil, nil, nil, 'score_limit', nil, 25)
+    assert(matchId, tostring(err))
+    for _, src in ipairs({ 2, 3, 4 }) do
+        assert(s.lobby.Join(src, matchId, nil, nil), 'join failed for ' .. src)
+    end
+
+    local teams = s.env.Arena.GetEnabledTeams()
+    local a = teams and teams[1] and teams[1].key
+    local b = teams and teams[2] and teams[2].key
+    assert(a and b, 'tdm has no two teams to put people on')
+    s.lobby.SetTeam(1, a); s.lobby.SetTeam(3, a)
+    s.lobby.SetTeam(2, b); s.lobby.SetTeam(4, b)
+
+    for _, src in ipairs({ 1, 2, 3, 4 }) do s.lobby.SetReady(src, true) end
+    local ok, why = s.match.Start(matchId)
+    assert(ok, tostring(why))
+    s.step()
+    local m = s.lobby.Get(matchId)
+    assert(m.state == 'live', 'not live: ' .. tostring(m.state))
+    -- THE ARRANGEMENT THIS ALL RESTS ON, asserted rather than assumed.
+    assert(m.players[2].team == m.players[4].team, 'victim and 4 are not team-mates')
+    assert(m.players[2].team ~= m.players[3].team, '3 is not an enemy')
+    assert(s.env.Arena.CanDamage(m.modeKey, m.players[4].team, m.players[2].team) == false,
+        'CanDamage lets a team-mate kill -- this fixture cannot show the bug')
+    assert(s.env.Arena.CanDamage(m.modeKey, m.players[3].team, m.players[2].team) ~= false,
+        'CanDamage refuses an enemy -- this fixture is wrong')
+    return s, matchId, arenaKey
+end
+
 local DEATHS, PRICED = 14, 8
 
 t.test('CONTROL: a report with no killer at all is priced by the rate', function()
@@ -198,6 +249,49 @@ end)
 t.test('DEFECT: a server id that is nobody in the round did the same', function()
     local r = run('stranger', function() return { killerServerId = 999 } end, DEATHS)
     t.equals(r.priced, PRICED, 'naming a stranger bought a free, silent death every time')
+end)
+
+
+-- ---------------------------------------------------------------------------
+-- THE SECOND HALF OF THE SAME BUG.
+--
+-- Everything above names somebody who is NOT on `match.players`. The price
+-- test used to be written out by hand as "nil, non-positive, self, or absent
+-- from the roster" -- which is four of resolveKiller's five refusals, and the
+-- fifth is the one a modded client can actually reach on a shipped server.
+--
+-- These three all name a player who IS on the roster and whose kill
+-- resolveKiller refuses anyway. Each was a free, silent death at whatever
+-- rate the client liked.
+
+t.test('CONTROL: naming a live ENEMY is a real kill, and is never priced', function()
+    local r = run('enemy', function() return { killerServerId = 3 } end, DEATHS, { round = teamRound })
+    t.equals(r.priced, 0, 'a kill the server accepted was priced as unwitnessed')
+end)
+
+t.test('DEFECT: naming a live TEAM-MATE was refused as a kill and excused from the price', function()
+    local r = run('mate', function() return { killerServerId = 4 } end, DEATHS, { round = teamRound })
+    t.equals(r.priced, PRICED, 'friendly fire is off, so the kill is refused -- the price must still land')
+end)
+
+t.test('DEFECT: naming a fighter who LEFT the arena did the same', function()
+    local r = run('left', function() return { killerServerId = 3 } end, DEATHS, {
+        round = teamRound,
+        prepare = function(match) match.players[3].leftArena = true end,
+    })
+    t.equals(r.priced, PRICED, 'naming somebody who walked out bought a free, silent death')
+end)
+
+t.test('DEFECT: naming an ELIMINATED fighter did the same', function()
+    local r = run('eliminated', function() return { killerServerId = 3 } end, DEATHS, {
+        round = teamRound,
+        prepare = function(match)
+            local out = match.players[3]
+            out.alive = false
+            out.lives = 0
+        end,
+    })
+    t.equals(r.priced, PRICED, 'naming somebody already out bought a free, silent death')
 end)
 
 os.exit(t.summary())

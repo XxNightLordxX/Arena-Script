@@ -545,7 +545,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 23 functions
+#### `server/ammo.lua` — 24 functions
 
 | Function | What it does |
 |---|---|
@@ -565,6 +565,7 @@ listed; the source documents them where they are.
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server: outstanding stashes handed back, and any arena kit that left with a character taken off them. |
+| `ArenaAmmo.LoadJams()` | Reads back the list of stashes the door is holding off, so a restart cannot hand out a duplicate a jam was parked to stop. Does nothing with `Config.Database.enabled` off, and retries from the sweep until it lands; the door holds every hand-back until it has. |
 | `ArenaAmmo.LoadOwedKit()` | Reads the outstanding-kit slate back off the database, merging rather than replacing — weapon rows de-duplicate on serial, and a stack keeps whichever total is higher, so a debt incurred before the database came up is not forgiven. Does nothing with `Config.Database.enabled` off, and retries from the sweep until it lands. |
 | `ArenaAmmo.Owed()` | How many characters this resource still owes belongings to — the stash debt, not the kit debt. |
 | `ArenaAmmo.OwedKitIsSaved()` | Whether the slate is being written somewhere that survives a restart — measured from a query that actually landed, not inferred from the config. |
@@ -654,10 +655,11 @@ listed; the source documents them where they are.
 | `ArenaLobby.AddSpectator(src, matchId)` | Attaches a watcher to a match and puts them in its instance. |
 | `ArenaLobby.RemoveSpectator(src)` | Detaches a watcher and sends them back out. |
 
-#### `server/match.lua` — 8 functions
+#### `server/match.lua` — 9 functions
 
 | Function | What it does |
 |---|---|
+| `ArenaMatch.UnplaceAuto(match)` | Puts back the sides `Begin` handed to players who never picked one, for an exit back to the lobby that lives outside this file -- the host's Stop The Countdown. Answers whether it moved anybody. |
 | `ArenaMatch.Begin(matchId, requestedBy)` | Validates a lobby and runs the countdown players may still back out of. |
 | `ArenaMatch.Start(matchId)` | Teleports everybody in, hands out the loadouts, and starts the frozen countdown that ends with weapons live. |
 | `ArenaMatch.OnDeath(src, killerSrc)` | One player died. |

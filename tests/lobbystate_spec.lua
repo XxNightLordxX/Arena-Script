@@ -349,8 +349,17 @@ local function lobbyWithWatcher(mutate)
     local matchId = s.lobby.Create(1, anArena(s), nil, nil, nil, nil, nil)
     t.isNotNil(matchId, 'the host could not create a match')
     t.isTrue(s.lobby.Join(2, matchId, nil, nil), 'the second player could not join')
-    t.isTrue(s.lobby.AddSpectator(3, matchId) == true,
-        'the watcher could not be admitted, so nothing below proves anything')
+    -- A NON-FIGHTER WITH THE PANEL OPEN, which is what these tests actually
+    -- need and what a real one is.
+    --
+    -- This used to call AddSpectator on a LOBBY. Nothing in betting requires
+    -- it: ArenaBetting.PlaceSpectatorBet never reads spectatorIndex, and its
+    -- "spectator" means "not a fighter" (server/betting.lua:2247-2250). The
+    -- panel has never offered Watch on anything but a live match
+    -- (html/app.js:1541), and the server now agrees with it, so admitting a
+    -- watcher to a lobby is a state no player can reach.
+    t.isTrue(s.lobby.MarkPanelOpen(3) == true,
+        'the onlooker could not open the panel, so nothing below proves anything')
     return s, matchId
 end
 
@@ -536,11 +545,25 @@ t.test('and holding a running one keeps everybody in place', function()
     local s, matchId = twoInLobby()
     s.lobby.SetReady(1, true)
     s.lobby.SetReady(2, true)
-    -- BY MATCH ID, not by source. Start is a match-layer call and takes
-    -- the lobby it is starting; handing it a server id starts nothing and
-    -- reports a match that does not exist.
-    local started, why = s.match.Start(matchId)
-    t.isTrue(started, 'the match never started counting down: ' .. tostring(why))
+    -- BEGIN, NOT START, AND THE DIFFERENCE IS THE WHOLE TEST. `countdown`
+    -- is two states wearing one name: ArenaMatch.Begin opens the LOBBY
+    -- countdown, which is what the Stop button is for; ArenaMatch.Start
+    -- teleports the roster and sets `match.placed`, and once the room is
+    -- standing in the arena the hold is refused on purpose -- holdstart_spec
+    -- asserts that as its own rule.
+    --
+    -- This test used to call Start and still expect the hold to succeed. It
+    -- only passed because this file's ArenaDispatch double answers
+    -- `IsPlayerInArena = function() return false end` -- a constant, for the
+    -- question under test. On a real server ArenaMatch.Start flags every
+    -- fighter (server/match.lua:1099), so the hold was already refused there
+    -- and the green tick was the stub's, not the server's.
+    -- Both readies already opened the lobby countdown through
+    -- autoStartWhenAllReady, so there is nothing left to call.
+    local match = s.lobby.Get(matchId)
+    t.equals(match.state, 'countdown', 'the match never started counting down')
+    t.isFalse(match.placed == true,
+        'the roster was teleported in, so this is testing the wrong countdown')
 
     local ok = s.lobby.HoldCountdown(1)
 
@@ -1239,6 +1262,49 @@ t.test('and the same answer comes back on every broadcast, not just the first', 
         t.equals(s.onlyMatch(1).tiers, 3,
             ('the rung count was wrong on broadcast %d'):format(round))
     end
+end)
+
+-- ========================================================================
+-- THE THIRD WAY TO HAVE A BET
+-- ========================================================================
+--
+-- `bet` was resolved from two things: the match you are FIGHTING in, or the
+-- match you are WATCHING. There is a third, and on a shipped server it is the
+-- commonest one there is.
+--
+-- A side-bet may be placed by anybody who is not a fighter, on any match
+-- whose book is open, and the book is open while a match is a `lobby`
+-- (server/betting.lua betsAreOpen). Nothing in that path asks whether the
+-- bettor is watching. And the panel has never offered Watch on anything but a
+-- LIVE match -- so somebody who backs a lobby is never a registered spectator
+-- of it, and `bet` came back false for them every time.
+--
+-- They had no stake and no side on screen, and the entry pot deliberately
+-- does not move for a side-bet, so nothing else redrew either. That is the
+-- same complaint snapshotPlayer's own note describes as fixed, one case over.
+
+t.test('THE DEFECT: somebody who backed a LOBBY, watching nothing, is told they have', function()
+    local s = lobbyWithWatcher()
+    local matchId = s.lobby.All()[1].id
+
+    -- 3 is not fighting and is not a spectator of anything. Asserted, because
+    -- that is the whole premise.
+    t.equals(s.state(3).player.matchId, false, 'the bettor is a fighter, so this proves nothing')
+    t.equals(s.state(3).player.spectating, false, 'the bettor is watching, so this proves nothing')
+    t.equals(s.lobby.Get(matchId).state, 'lobby', 'the match is not a lobby, so this proves nothing')
+
+    local placed, why = s.betting.PlaceSpectatorBet(3, matchId, 1, 1000, 'cash')
+    t.isTrue(placed, ('the side-bet was refused: %s'):format(tostring(why)))
+
+    local bet = s.state(3).player.bet
+    t.isTrue(bet ~= false and bet ~= nil,
+        'somebody who backed a lobby was told they had no bet on it')
+    t.equals(bet.amount, 1000, 'the stake reached the panel wrong')
+end)
+
+t.test('CONTROL: and somebody who has backed nothing is still told nothing', function()
+    local s = lobbyWithWatcher()
+    t.equals(s.state(3).player.bet, false, 'a bet was invented for somebody who placed none')
 end)
 
 os.exit(t.summary())

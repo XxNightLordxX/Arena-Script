@@ -30,7 +30,109 @@ local probedAt = {}
 --- it and an operator can open it -- and the alternative is minting copies of
 --- somebody's property until the ledger is meaningless. DO NOT hand back out
 --- of a stash whose removals are being refused.
+---
+--- AND IT HAS TO OUTLIVE THE PROCESS, for exactly the reason the outstanding-
+--- kit slate does -- see the long note over KIT_SCHEMA_SQL, which says of
+--- itself "this must not go back to being memory-only".
+---
+--- A jam is a statement about a stash that still has things in it. The
+--- process forgetting it does not empty the stash: on the next start the
+--- thirty-second sweep walks that stash again, uncapped -- `allowed` is nil
+--- after a restart, which handBack documents as "the one case that must stay
+--- uncapped" -- and hands the parked copy to the player who is already
+--- carrying the original. That is the duplication described above, on a
+--- timer, and "wait for the nightly restart" was a way to collect it.
+---
+--- OFF BY DEFAULT, LIKE EVERY OTHER DATABASE FEATURE HERE. With
+--- Config.Database.enabled false a jam still works for the length of one
+--- uptime exactly as it always did, and nothing has to be imported. Turning
+--- the database on is what makes it survive a restart. DO NOT read that
+--- default as "this is optional polish" -- it is the difference between a
+--- parked duplicate and a handed-out one.
 local jammedStash = {}
+
+--- Whether the jam list has been read back from the database yet, and whether
+--- a read is in flight. Both matter to handBack: before the read lands, this
+--- process cannot tell a clean stash from a jammed one.
+local jamsLoaded = false
+local jamsLoading = false
+
+--- How long the door will wait for the jam list before giving up on it, and
+--- whether it already has.
+---
+--- THE WAIT HAS TO BE BOUNDED, and getting this wrong would be worse than the
+--- bug it guards. handBack refuses while the list is unread -- so a database
+--- user with CREATE but no SELECT, or a table that can never be read for any
+--- other reason, would retry for ever and shut the door on every hand-back
+--- for the whole uptime. Nobody's property would be destroyed (it is a real
+--- ox_inventory stash and an operator can open it), but this file's own rule
+--- is that "the arena did not work properly" is acceptable and leaving
+--- somebody unable to get their things back is not.
+---
+--- SO IT WAITS FOR THE STARTUP WINDOW AND THEN STOPS. Past the grace the door
+--- goes back to exactly what it did before any of this existed -- memory-only
+--- jams, which is what a server with the database off has anyway -- and says
+--- so once, loudly, because a server in that state really can hand out a
+--- duplicate and the operator is the only one who can fix it.
+local JAM_READ_GRACE_SECONDS = 60
+local jamWaitFrom = nil
+local jamWaitGaveUp = false
+
+-- ----------------------------------------------------------------------
+-- THE JAM LIST ON DISK
+--
+-- ONE ROW PER JAMMED STASH and nothing else in it. A jam carries no
+-- quantities and no ownership -- it is a single fact about one stash name,
+-- and the stash itself holds everything that matters. `INSERT IGNORE` makes
+-- re-jamming a stash that is already jammed a no-op rather than an error,
+-- which is the ordinary case: every later pass over a jammed stash tries
+-- again.
+-- ----------------------------------------------------------------------
+local JAM_SCHEMA_SQL = [[
+    CREATE TABLE IF NOT EXISTS crimson_arena_jammed_stash (
+        stash VARCHAR(191) NOT NULL,
+        jammed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (stash)
+    )
+]]
+
+local JAM_WRITE_SQL = [[
+    INSERT IGNORE INTO crimson_arena_jammed_stash (stash) VALUES (?)
+]]
+
+local JAM_DELETE_SQL = [[
+    DELETE FROM crimson_arena_jammed_stash WHERE stash = ?
+]]
+
+local JAM_READ_SQL = [[
+    SELECT stash FROM crimson_arena_jammed_stash
+]]
+
+--- Stop the door touching this stash, now and after a restart.
+---
+--- EVERY SITE THAT JAMS A STASH CALLS THIS. There were four of them assigning
+--- `jammedStash[stash] = true` by hand, which is four places to forget the
+--- write from -- the same shape as every other bug of this kind in this
+--- resource. The memory flag is set FIRST and unconditionally: a database
+--- that is off, down, or read-only must never stop a jam taking effect for
+--- this run, because the jam is what is standing between a player and a
+--- duplicate right now.
+--- @param stash string
+local function rememberJam(stash)
+    if not Arena.IsKey(stash) then return end
+
+    jammedStash[stash] = true
+
+    ArenaDb('the jam list', JAM_WRITE_SQL, { stash }, function(answer)
+        if answer ~= nil then return end
+        if not ArenaDbReady('the jam list') then return end
+
+        ArenaLog('door: stash %s is held back for this run, but the jam could NOT be written to '
+            .. 'the database -- a restart will forget it and the sweep will walk that stash again. '
+            .. 'Settle it by hand before restarting, or give the database user INSERT on '
+            .. 'crimson_arena_jammed_stash. The real error is on oxmysql\'s console.', tostring(stash))
+    end)
+end
 
 --- Characters the empty-read warning has already been said for.
 ---
@@ -1458,7 +1560,7 @@ local function refillContainers(ox, src, keys, citizenid)
                         -- the item is in the bag AND in the holding stash, and
                         -- the arena cannot fix that without risking taking one
                         -- of the two off them.
-                        jammedStash[stash] = true
+                        rememberJam(stash)
                         failures = failures + 1
                         ArenaLog('door: %s x%s went back into %s\'s %s but could NOT be taken out of '
                             .. 'stash %s. There is a copy in both places and the door is touching that '
@@ -1591,7 +1693,7 @@ local function stow(src, citizenid)
         -- stash is shut rather than handed back out later, because handing it
         -- back is what turns the copy into a duplicate. DO NOT let an exit
         -- empty a stash a rollback could not clean.
-        jammedStash[stash] = true
+        rememberJam(stash)
         ArenaLog('door: some of %s\'s belongings could NOT be taken back out of stash %s after the '
             .. 'door failed. They are carrying their own kit AND a copy is stuck in that stash, so '
             .. 'the door will not hand that stash back on its own. Open it with /arenaadmin and '
@@ -1744,6 +1846,38 @@ end
 ---   door shut it, used to choose WHICH rows are refused when there are too
 ---   many. Advisory only: it never changes how many go back.
 local function handBack(ox, src, stash, allowed, manifest)
+    -- AND NOT BEFORE THIS PROCESS KNOWS WHICH STASHES ARE JAMMED.
+    --
+    -- The jam list is read back at start, and until that read lands
+    -- `jammedStash` is empty -- which reads exactly like "nothing is jammed".
+    -- The sweep runs every thirty seconds and does not wait for anybody, so
+    -- without this a restart's first sweep could hand out the very duplicate
+    -- the jam was parked to stop, a second before the list arrived to say so.
+    --
+    -- ONLY WHERE THERE IS A LIST TO WAIT FOR. With the database off,
+    -- ArenaDbReady is false, nothing was ever persisted, and refusing here
+    -- would stop the door working on every server that never turned it on.
+    if not jamsLoaded and not jamWaitGaveUp and ArenaDbReady('the jam list') then
+        jamWaitFrom = jamWaitFrom or os.time()
+
+        if (os.time() - jamWaitFrom) < JAM_READ_GRACE_SECONDS then
+            ArenaLog('door: holding stash %s until the jam list has been read back from the '
+                .. 'database. This is the first few seconds after a start; it clears itself.',
+                tostring(stash))
+            return false, 0, 0
+        end
+
+        -- AND THAT IS AS LONG AS IT WAITS. See JAM_READ_GRACE_SECONDS: past
+        -- the window the door must work again, even unsure.
+        jamWaitGaveUp = true
+        ArenaLog('door: the jam list could NOT be read from the database after %d seconds, so the '
+            .. 'door is going ahead without it. Jams made from now on still hold for this run, but '
+            .. 'any stash held back BEFORE the last restart is not known about -- and the sweep '
+            .. 'will walk it and can hand out a copy of something a player already carries. This is '
+            .. 'almost always a database user with no SELECT on crimson_arena_jammed_stash. The '
+            .. 'real error is on oxmysql\'s console.', JAM_READ_GRACE_SECONDS)
+    end
+
     if jammedStash[stash] then
         ArenaLog('door: stash %s is NOT being handed back. A removal from it was refused earlier, '
             .. 'so the door cannot tell what it has already given out and will not risk handing the '
@@ -1819,7 +1953,7 @@ local function handBack(ox, src, stash, allowed, manifest)
         -- somebody looks, which is this file's oldest and safest fallback and
         -- has never cost anybody anything. DO NOT drop this line and leave
         -- the refusal to the log.
-        jammedStash[stash] = true
+        rememberJam(stash)
 
         ArenaLog('door: stash %s is holding %d item(s) and the door only put %d in it. The extra %d '
             .. 'appeared while %s was in the round and are NOT being handed over -- handing back more '
@@ -1965,7 +2099,7 @@ local function handBack(ox, src, stash, allowed, manifest)
             -- the arena cannot fix that without risking taking one of the
             -- two off them -- so it says so, stops, and never touches this
             -- stash again on its own. DO NOT count this as a return.
-            jammedStash[stash] = true
+            rememberJam(stash)
             failures = failures + 1
             ArenaLog('door: %s was given back %s x%s but it could NOT be taken out of stash %s. '
                 .. 'There is now a copy in both places. The door is handing NOTHING further out of '
@@ -2289,7 +2423,14 @@ local buildTags = nil
 --- @param ox table
 --- @return boolean|nil
 local function inventoryTags(ox)
-    if buildTags ~= nil then return buildTags end
+    -- ONLY A `true` ANSWER IS REMEMBERED, and the asymmetry is deliberate.
+    -- "This build tags" is permanent -- a build does not stop tagging. "This
+    -- build does not tag" is a statement about the list AS IT WAS READ, and
+    -- caching it means a single early or unlucky read switches the component
+    -- check off for the rest of the run. The walk costs nothing on the builds
+    -- that matter: a modern ox_inventory answers `true` on the first one and
+    -- is never walked again.
+    if buildTags == true then return true end
 
     local ok, all = pcall(function() return ox:Items() end)
     if not ok or type(all) ~= 'table' then return nil end
@@ -2308,7 +2449,6 @@ local function inventoryTags(ox)
 
     if seen == 0 then return nil end
 
-    buildTags = false
     return false
 end
 
@@ -2340,14 +2480,29 @@ local function inventoryKnowsItem(name)
     -- outage, not once per process, the same way ArenaDbReady says it.
     registryUnreadable = false
 
-    if item == nil then return false end
+    -- `false` IS AN ANSWER, AND IT IS THE SAME ANSWER AS nil.
+    --
+    -- ox_inventory has not always said "no such item" the same way. Up to and
+    -- including v2.11.5 the export reads
+    --
+    --     return ItemList[item] or false
+    --
+    -- (modules/items/server.lua), so an unknown name comes back as FALSE.
+    -- From v2.12.0 it returns ItemList[name] and an unknown name is nil.
+    --
+    -- Reading only nil, `false` fell through to the not-a-table branch below
+    -- and was let THROUGH -- so on exactly those builds a typo was written
+    -- onto the weapon and the weapon would not draw, which is the single
+    -- failure this whole check exists to prevent. Checked against the real
+    -- ox_inventory history, not inferred: v2.0.0 and v2.11.5 both say `or
+    -- false`, v2.12.0 onwards do not.
+    if item == nil or item == false then return false end
 
-    -- ANYTHING THAT IS NOT A TABLE IS NOT SOMETHING TO INDEX. The pcall above
-    -- wraps the CALL and not the field reads below it, so a build or a shim
-    -- that answers with a string or a number would throw here, outside any
-    -- pcall, and take down whatever was being issued. nil already means "no
-    -- such item"; anything else means this registry cannot be interrogated,
-    -- which is the let-it-through case.
+    -- ANYTHING ELSE THAT IS NOT A TABLE IS NOT SOMETHING TO INDEX. A build or
+    -- a shim answering with a string or a number would throw on the field
+    -- reads below, outside any pcall, and take down whatever was being
+    -- issued. nil and false mean "no such item"; anything else means this
+    -- registry cannot be interrogated, which is the let-it-through case.
     if type(item) ~= 'table' then return true end
 
     -- AND IS IT ACTUALLY A COMPONENT, not merely a real item.
@@ -5306,6 +5461,7 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     -- upkeep to a stash setting.
     replayPending()
     ArenaAmmo.LoadOwedKit()
+    ArenaAmmo.LoadJams()
     retryPendingClears()
 
     -- THE OTHER WAY A FIGHTER WALKS IN CARRYING THEIR OWN THINGS.
@@ -5531,6 +5687,38 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     return failed
 end
 
+--- Did the clear PROVABLY reach a real inventory, or only answer like it did?
+---
+--- `record.wiped` is not proof and never was. ox_inventory answers a clear
+--- against an inventory it has not loaded with nil, and nil reads as success
+--- -- which is exactly what a player sitting at the character-select screen
+--- produces. Their kit was never destroyed; it is saved into the character
+--- they stepped out of, and treating that as "wiped" writes off a debt that
+--- is still owed.
+---
+--- THE PLAYER STANDING THERE IS THE EVIDENCE. If this server id still
+--- answers to the character the kit was issued to, the clear reached a real
+--- inventory and settled it. If nobody is there, or somebody else is, it
+--- cannot have.
+---
+--- ONE COPY, BECAUSE THERE WERE TWO BRANCHES AND ONLY ONE OF THEM ASKED.
+--- ArenaAmmo.Reclaim's hand-back has a settled path and a failed path, and
+--- both of them strike the issued ledger when `wiped` is set. The settled one
+--- carried this test and a long note saying why. The failed one -- the branch
+--- an ordinary mid-round disconnect takes -- read the flag bare, so the same
+--- false positive struck every weapon, round and supply off the ledger and
+--- the player kept arena-issued kit that nothing could reclaim.
+--- @param src number
+--- @param record table
+--- @return boolean
+local function clearReallyLanded(src, record)
+    if type(record) ~= 'table' or record.wiped ~= true then return false end
+
+    local holder = ArenaGetPlayer(src)
+    local liveId = holder and holder.PlayerData and holder.PlayerData.citizenid or nil
+    return liveId ~= nil and liveId == record.citizenid
+end
+
 function ArenaAmmo.Reclaim(src, reasonKey)
     if type(src) ~= 'number' or src <= 0 then return 0 end
 
@@ -5646,10 +5834,7 @@ function ArenaAmmo.Reclaim(src, reasonKey)
             -- clear reached a real inventory and settled it. If nobody is
             -- there, or somebody else is, it cannot have -- and that is
             -- exactly the case the ledger exists for.
-            local holder = ArenaGetPlayer(src)
-            local liveId = holder and holder.PlayerData and holder.PlayerData.citizenid or nil
-
-            if liveId ~= record.citizenid then
+            if not clearReallyLanded(src, record) then
                 queueOwedKit(record.citizenid, src)
             else
                 -- NOTHING IS OWED, SO NOTHING MAY BE LEFT SAYING OTHERWISE.
@@ -5674,12 +5859,20 @@ function ArenaAmmo.Reclaim(src, reasonKey)
         -- player's own stock back, and wrote the issued count against it as
         -- a debt -- then collected it, from their own rounds, thirty seconds
         -- later. A kit the clear wiped is owed by nobody.
-        if record.wiped then
-            -- Same reasoning as the settled branch above: a kit the clear
-            -- wiped is owed by nobody, so the rows that say it is out go
-            -- with the memory of it. Struck off BEFORE the record is
-            -- forgotten -- afterwards there is nothing left to read the
-            -- serials from.
+        -- AND THE SAME QUESTION THE SETTLED BRANCH ASKS, because it is the
+        -- same flag and the same lie. A kit the clear really wiped is owed by
+        -- nobody, so the rows that say it is out go with the memory of it --
+        -- struck off BEFORE the record is forgotten, or there is nothing left
+        -- to read the serials from.
+        --
+        -- WHAT READING `record.wiped` BARE COST. An ordinary mid-round
+        -- disconnect lands here: the hand-back could not reach an inventory
+        -- that is no longer loaded, and that same unloaded inventory answered
+        -- the clear with nil, so `wiped` is true and nothing was destroyed.
+        -- Striking on that forgot every weapon, round and supply issued, and
+        -- strikeIssuedWeaponsOff takes them off the ledger a later pass reads
+        -- -- so nothing could ever take them back. The player kept the kit.
+        if clearReallyLanded(src, record) then
             strikeIssuedWeaponsOff(record.matchId, src)
             forgetIssuedFor(record.matchId, src)
         end
@@ -5894,6 +6087,19 @@ end
 function ArenaAmmo.Unjam(stash)
     if not Arena.IsKey(stash) or not jammedStash[stash] then return false end
     jammedStash[stash] = nil
+
+    -- AND OFF THE DISK, OR THE NEXT START PUTS IT BACK. A human has looked at
+    -- this stash and settled it; a row saying otherwise would hold the door
+    -- off it for ever, and the operator would run this command again after
+    -- every restart wondering why it did not take.
+    ArenaDb('the jam list', JAM_DELETE_SQL, { stash }, function(answer)
+        if answer ~= nil then return end
+        if not ArenaDbReady('the jam list') then return end
+
+        ArenaLog('door: stash %s was cleared for this run, but the row could NOT be deleted from '
+            .. 'the database -- the next start will hold it back again. Give the database user '
+            .. 'DELETE on crimson_arena_jammed_stash and run this again.', stash)
+    end)
     ArenaLog('door: stash %s is no longer held back. The door will put belongings in it and hand '
         .. 'them out of it again.', stash)
     return true
@@ -6414,6 +6620,7 @@ function ArenaAmmo.SweepReturns()
     -- open debt in it. See replayPending. DO NOT reorder these two.
     replayPending()
     ArenaAmmo.LoadOwedKit()
+    ArenaAmmo.LoadJams()
     retryPendingClears()
 
     if not inventory() then return 0 end
@@ -6498,6 +6705,65 @@ end
 --- can land after a match has already begun on a busy server, and a debt
 --- incurred in those first seconds must not be wiped by the read that
 --- follows it.
+--- Reads the jam list back, so a restart does not hand out a parked
+--- duplicate.
+---
+--- MIRRORS LoadOwedKit, and for the same reason it exists: a jam is a fact
+--- about a stash that still has things in it, and the process forgetting it
+--- does not empty the stash. Kept deliberately simpler -- there is no cap, no
+--- age-out and no merge to get wrong, because a jam is one boolean per stash
+--- and there are only ever a handful. A jam is cleared by a human running
+--- /arenaunjam, never by time.
+---
+--- THE SCHEMA STATEMENT RUNS FIRST, exactly as the slate does, so a server
+--- that never imported the SQL still gets a working table on the first start
+--- with the database on.
+--- @return boolean started
+function ArenaAmmo.LoadJams()
+    if jamsLoaded or jamsLoading or not ArenaDbReady('the jam list') then return false end
+
+    jamsLoading = true
+
+    -- AND THE FLAG IS FREED IF NOTHING EVER ANSWERS -- the same trap
+    -- LoadOwedKit documents: a query oxmysql accepts and never answers would
+    -- otherwise end the retry for the life of the process. Here it matters
+    -- more than there, because handBack REFUSES while this flag is down: a
+    -- read that never came back would shut the door for the whole uptime.
+    SetTimeout(RETRY_TIMEOUT_MS, function() jamsLoading = false end)
+
+    ArenaDb('the jam list', JAM_SCHEMA_SQL, {}, function()
+        ArenaDb('the jam list', JAM_READ_SQL, {}, function(rows)
+            jamsLoading = false
+
+            if type(rows) ~= 'table' then return end
+            if jamsLoaded then return end
+
+            local restored = 0
+            for _, row in ipairs(rows) do
+                local stash = type(row) == 'table' and row.stash or nil
+                if Arena.IsKey(stash) and not jammedStash[stash] then
+                    jammedStash[stash] = true
+                    restored = restored + 1
+                end
+            end
+
+            -- SET LAST, AND ONLY HERE. handBack reads this to decide whether
+            -- it may hand anything back at all, so setting it before the rows
+            -- are merged would open the door on an empty list -- which is the
+            -- whole failure this function exists to close.
+            jamsLoaded = true
+
+            if restored > 0 then
+                ArenaLog('door: %d stash(es) are still held back from before the restart. They have '
+                    .. 'things in them that were never handed over -- /arenaunjam lists them, and '
+                    .. 'settling one by hand is what clears it.', restored)
+            end
+        end)
+    end)
+
+    return true
+end
+
 function ArenaAmmo.LoadOwedKit()
     if kitLoaded or kitLoading or not ArenaDbReady('the outstanding-kit slate') then return false end
 
@@ -7290,6 +7556,52 @@ local function everyConfiguredComponent()
     return named
 end
 
+--- Attachment kinds the config fits to weapons that this server will never
+--- put on one, as { kind = { weapon, ... } }.
+---
+--- A NAME CAN BE PERFECTLY REAL AND STILL DO NOTHING. Everything else in this
+--- report asks whether a NAME is an item ox_inventory will take. This asks a
+--- question nothing was asking: whether the KIND it is filed under is one
+--- this server fits at all.
+---
+--- Arena.AttachmentsFor walks Config.Loadouts.attachments.fit and reads only
+--- the kinds named there, so a kind missing from that list is dropped without
+--- a word -- the component never reaches the weapon, the loadout picker never
+--- offers a switch for it, and every check in this file passes, because the
+--- name was never the problem.
+---
+--- Measured on the shipped config: `suppressor` is fitted to 39 weapons and
+--- `fit` does not list it, so 39 of the 180 configured slots are dead. The
+--- report called that config clean, and it IS clean -- every name is a real
+--- component item. It also did nothing.
+--- @return table<string, string[]>
+local function kindsNeverFitted()
+    -- NOT WHEN THE WHOLE FEATURE IS OFF. `attachments.enabled = false` means
+    -- bare weapons on purpose and AttachmentKinds answers with an empty list
+    -- for it; reporting all seven kinds as dead there is shouting about a
+    -- switch the operator deliberately threw.
+    local block = (Config.Loadouts or {}).attachments
+    if type(block) ~= 'table' or block.enabled ~= true then return {} end
+
+    local fitted = {}
+    for _, kind in ipairs(Arena.AttachmentKinds()) do fitted[kind] = true end
+
+    local dead = {}
+    for weapon, row in pairs(Config.Loadouts.weaponAttachments or {}) do
+        if type(row) == 'table' then
+            for kind in pairs(row) do
+                if Arena.IsKey(kind) and not fitted[kind] then
+                    dead[kind] = dead[kind] or {}
+                    dead[kind][#dead[kind] + 1] = tostring(weapon)
+                end
+            end
+        end
+    end
+
+    for _, weapons in pairs(dead) do table.sort(weapons) end
+    return dead
+end
+
 --- What the start-up check found, as lines.
 ---
 --- SPLIT OUT OF THE THREAD so it can be read without restarting the server,
@@ -7304,6 +7616,46 @@ function ArenaAmmo.AttachmentReport()
     local function say(fmt, ...)
         local ok, text = pcall(string.format, fmt, ...)
         lines[#lines + 1] = ok and text or fmt
+    end
+
+    -- FIRST, AND AHEAD OF EVERY EARLY RETURN BELOW. Whether a kind is fitted
+    -- is a pure config question with no opinion about ox_inventory at all.
+    -- Behind any of the returns that follow it would be hidden on exactly the
+    -- servers where the rest of the report cannot be taken, which are not the
+    -- servers that deserve to be told less.
+    local dead = kindsNeverFitted()
+    local deadKinds = {}
+    for kind in pairs(dead) do deadKinds[#deadKinds + 1] = kind end
+    table.sort(deadKinds)
+
+    for _, kind in ipairs(deadKinds) do
+        local weapons = dead[kind]
+        say('attachments: "%s" is fitted to %d weapon(s) in Config.Loadouts.weaponAttachments and '
+            .. 'this server NEVER PUTS ONE ON. Config.Loadouts.attachments.fit does not list it, so '
+            .. 'the component is dropped before it reaches the weapon and the loadout picker offers '
+            .. 'no switch for it. Those %d row(s) do nothing.', kind, #weapons, #weapons)
+        say('  add \'%s\' to Config.Loadouts.attachments.fit to turn them on, or delete the rows.', kind)
+
+        -- WHAT TURNING IT ON WOULD COLLIDE WITH, said here rather than found
+        -- out afterwards. ox_inventory types a suppressor and a muzzle brake
+        -- alike as `muzzle` and a weapon takes ONE muzzle component, so a
+        -- weapon carrying both keeps whichever is fitted last.
+        if kind == 'muzzle' or kind == 'suppressor' then
+            local other = kind == 'muzzle' and 'suppressor' or 'muzzle'
+            local clash = {}
+            for _, weapon in ipairs(weapons) do
+                local row = (Config.Loadouts.weaponAttachments or {})[weapon]
+                if type(row) == 'table' and row[other] ~= nil then
+                    clash[#clash + 1] = weapon
+                end
+            end
+            if #clash > 0 then
+                say('  NOTE: %d of them also carry a %s, and ox_inventory calls a suppressor and a '
+                    .. 'muzzle brake the same kind of thing -- a weapon takes one. Switching "%s" '
+                    .. 'on without dropping the other row leaves one of the two wasted: %s',
+                    #clash, other, kind, table.concat(clash, ', '))
+            end
+        end
     end
 
     local named = everyConfiguredComponent()

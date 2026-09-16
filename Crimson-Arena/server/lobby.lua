@@ -168,11 +168,38 @@ local function isEliminated(match, src)
     return Arena.IsEliminated(match.players[src])
 end
 
+--- Is anybody on THIS match's roster already standing in THIS match's arena?
+---
+--- The question it must not ask is "in an arena", and for a long time that is
+--- the only question it asked. `ArenaDispatch.IsPlayerInArena` answers true
+--- for a player in ANY arena, including one they are merely WATCHING -- and
+--- the watch flag outlives the watch: ArenaLobby.RemoveSpectator calls
+--- ExitBucket and not Clear, so only the match sweep's own tick takes it
+--- down, up to a second later. ArenaLobby.Join drops a watch for you on the
+--- way in, so Watch-then-Join needs no Stop Watching to produce it.
+---
+--- WHAT IT COST. This gates HoldCountdown and Cancel. A player who stopped
+--- watching some other round a moment ago, then joined your lobby, made its
+--- HOST unable to hold their own countdown or close their own lobby --
+--- refused with 'error.match_in_progress' for a match that had not started,
+--- and once the countdown was running the flag fed itself and never came off.
+---
+--- AND THE MATCH ALREADY KNEW. `match.placed` is set by ArenaMatch.Start at
+--- the moment it teleports the roster in, and two other files already read it
+--- as THE answer to this exact question -- server/betting.lua's
+--- `match.state == 'live' or (match.state == 'countdown' and match.placed ==
+--- true)`, and ArenaLobby.MayLeave a few hundred lines below, whose own
+--- comment explains that `countdown` is two different states wearing one
+--- name and that this field is what separates them.
+---
+--- So the fix is not a better dispatch question, it is not asking dispatch.
+--- The flag is per-match by construction, cannot be set by watching somebody
+--- else's round, and cannot go stale: nothing clears it because a match that
+--- has been placed is never handed back to being a lobby.
+--- @param match table
+--- @return boolean
 local function playersArePlaced(match)
-    for src in pairs(match.players) do
-        if ArenaDispatch.IsPlayerInArena(src) then return true end
-    end
-    return false
+    return match.placed == true
 end
 
 local function entryBlocked(src, data)
@@ -506,7 +533,31 @@ local function snapshotPlayer(src)
     local match = ArenaLobby.GetByPlayer(src)
     local player = match and match.players[src] or nil
 
+    -- WHICH ROUND'S BET TO SHOW THEM, and there are THREE ways to have one,
+    -- not two.
+    --
+    -- A side-bet may be placed by anybody who is not a fighter, on any match
+    -- whose book is open -- and server/betting.lua opens it for `lobby` and
+    -- `countdown` (betsAreOpen). Nothing in that path asks whether the bettor
+    -- is WATCHING: "spectator bet" means "not a fighter". Meanwhile the panel
+    -- has never offered Watch on anything but a live match, so a player who
+    -- backs a lobby is never a registered spectator of it.
+    --
+    -- Reading only "the match I am fighting in" or "the match I am watching"
+    -- therefore missed exactly the commonest side-bet there is: one placed on
+    -- a round that has not started. That player saw no stake and no side --
+    -- which is the same complaint the note below this describes as fixed,
+    -- reappearing one case over. `backing` had them all along, so the panel
+    -- could tell they had bet SOMETHING while `bet` said false.
+    --
+    -- THE SINGLE BACKED MATCH ONLY. `bet` is one bet; with money on two
+    -- rounds there is no right answer here and `backing` is the field that
+    -- carries both, so this stays out of the way rather than guessing.
     local betOn = (match and match.id) or spectatorIndex[src] or nil
+    if not betOn then
+        local backed = ArenaBetting.MatchesBackedBy(src)
+        if #backed == 1 then betOn = backed[1] end
+    end
 
     local money = 0
     local qbx = ArenaGetPlayer(src)
@@ -831,8 +882,13 @@ local function snapshotKeepOut(src)
     -- at that arena has not been teleported anywhere and must still be kept
     -- out of a round already being fought there. The test is whether the
     -- arena has actually taken them, which is what the dispatch flag records
-    -- -- the same predicate playersArePlaced above leans on, and for the
-    -- same reason: `state` cannot answer it.
+    -- -- the same reason playersArePlaced above leans on that flag rather
+    -- than on `state`, which cannot answer it. The difference is that this
+    -- one narrows by walking `matches` for the player's own rows; that one
+    -- has a single match in hand and asks the flag for its id directly.
+    -- Neither may ask the bare "is this player in AN arena" question: the
+    -- watch flag outlives the watch, and answering it cost a host their own
+    -- lobby. See playersArePlaced.
     local mine = {}
     if ArenaDispatch.IsPlayerInArena(id) then
         for _, match in pairs(matches) do
@@ -1014,8 +1070,12 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
         -- close ABANDONED lobbies, and it was measuring from `createdAt` --
         -- so a lobby people had been drifting in and out of for a quarter of
         -- an hour was one un-ticked Ready away from being closed under them.
-        -- Refreshed by ArenaLobby.UpdateMatch; see the sweep for why that one
-        -- matters most.
+        -- Refreshed by `touchLobby`, which every door that changes a lobby
+        -- calls: Join, Leave, SetTeam, SetLoadout, SetReady and UpdateMatch.
+        -- It was refreshed by UpdateMatch alone for a long time, which left
+        -- this measuring from `createdAt` for everybody who was not the host
+        -- editing the rules -- the exact bug the field exists to fix. See
+        -- touchLobby for what that cost.
         idleSince = os.time(),
         startsAt = 0,
         endsAt = 0,
@@ -1032,6 +1092,32 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
 
     ArenaLog('%s created match %s (%s / %s, fee %d)', hostName, id, arenaKey, wantedMode, fee)
     return id, nil
+end
+
+--- Somebody did something to this lobby just now.
+---
+--- THE FIELD'S OWN COMMENT PROMISED THIS AND TWO WRITES DELIVERED IT. Create
+--- stamped `idleSince` and UpdateMatch refreshed it, and that was the whole
+--- of it -- so the sweep below was still, in every way that mattered,
+--- measuring from `createdAt`, which is exactly the bug the field was added
+--- to fix. Joining, leaving, picking a side, picking a loadout and ticking
+--- Ready all left it untouched.
+---
+--- WHAT THAT COST. The sweep closes a lobby with nobody readied that has sat
+--- for `idleLobbyTimeoutSeconds` -- 900 on the shipped config, checked every
+--- 30 seconds. Four people walking into a lobby is not a refresh, so a lobby
+--- that filled up fifteen minutes after it opened was closed under everyone
+--- standing in it the moment the last Ready came off. The likeliest way to
+--- produce that is the most ordinary one there is: a start the server
+--- refuses clears every `ready` flag, and the next sweep tick takes the
+--- lobby.
+---
+--- SO IT IS ONE FUNCTION AND EVERY DOOR CALLS IT. Adding a door and
+--- forgetting to stamp the field is how this happened once already.
+--- @param match table|nil
+local function touchLobby(match)
+    if type(match) ~= 'table' then return end
+    match.idleSince = os.time()
 end
 
 function ArenaLobby.Join(src, matchId, teamKey, account)
@@ -1107,6 +1193,7 @@ function ArenaLobby.Join(src, matchId, teamKey, account)
     match.order[#match.order + 1] = target
     playerIndex[target] = match.id
 
+    touchLobby(match)
     ArenaDebug('%s joined match %s (team %s, stake %d)', target, match.id, tostring(team), stake)
     ArenaLobby.Broadcast()
     return true, nil
@@ -1233,6 +1320,12 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
 
     local may, refusal = ArenaLobby.MayLeave(target, dropped, ejected)
     if not may then return false, refusal end
+
+    -- STAMPED ON THE WAY OUT TOO. Somebody leaving is the clearest possible
+    -- evidence that this lobby is not abandoned, and it is also the moment
+    -- the ready count most often falls to zero -- which is the sweep's other
+    -- condition. Leaving a lobby used to hand it straight to the sweep.
+    touchLobby(match)
 
     -- WHAT LEAVING COSTS. One switch per state, and the state is the only
     -- thing that picks between them: refundOnDisconnectBeforeStart while the
@@ -1696,6 +1789,17 @@ function ArenaLobby.HoldCountdown(src)
     match.state = 'lobby'
     match.startsAt = 0
 
+    -- THE FIFTH EXIT BACK TO A LOBBY, and it has to put back what the other
+    -- four put back. ArenaMatch.Begin may have dropped players who never
+    -- picked a side onto one to get the countdown going; holding it means
+    -- that never happened. Leaving the sides on wedged the NEXT start --
+    -- an auto-split roster put back under `requireBothTeamsOccupied` could
+    -- land entirely on one team, and 'error.need_two_teams' closed the lobby
+    -- to a host whose only mistake was pressing their own Stop button.
+    if type(ArenaMatch) == 'table' and type(ArenaMatch.UnplaceAuto) == 'function' then
+        ArenaMatch.UnplaceAuto(match)
+    end
+
     -- COUNTED, WITH DECAY, so Begin can tell one hold from a stall. The
     -- first hold is free -- holding a countdown so a mate can switch sides
     -- and starting straight back up is the ordinary use of this button. A
@@ -2041,6 +2145,7 @@ function ArenaLobby.SetTeam(src, teamKey)
 
     local was = player.team
     player.team = team
+    touchLobby(match)
     if was ~= team then ArenaLobby.Broadcast() end
 
     -- NAME THE SIDE BACK, EVERY TIME, AND NOT ONLY WHEN IT MOVED.
@@ -2160,6 +2265,7 @@ function ArenaLobby.SetLoadout(src, request)
     -- the server." with Save greyed out, until some unrelated lobby event
     -- happened along. One snapshot to one player is the cost of never
     -- leaving them there.
+    touchLobby(match)
     pushState(target)
     return true, nil
 end
@@ -2206,6 +2312,12 @@ function ArenaLobby.SetReady(src, ready)
     -- away -- the arena opening, most of all.
     local was = player.ready == true
     player.ready = ready == true
+    -- STAMPED ON EITHER DIRECTION, AND UN-TICKING IS THE ONE THAT MATTERS.
+    -- Taking a ready back is what drops `readyCount` to zero, which is the
+    -- sweep's other condition -- so before this, the single act most likely
+    -- to hand a busy lobby to the sweep was somebody in it changing their
+    -- mind. That is not an abandoned lobby; it is the opposite.
+    touchLobby(match)
     if player.ready ~= was then ArenaLobby.Broadcast() end
 
     if player.ready and Config.Match.autoStartWhenAllReady == true then
@@ -2241,6 +2353,45 @@ function ArenaLobby.AddSpectator(src, matchId)
     local attachedTo = playerIndex[target]
     if attachedTo and (attachedTo ~= match.id or not isEliminated(match, target)) then
         return false, 'error.already_in_match'
+    end
+
+    -- THERE HAS TO BE A FIGHT TO WATCH, AND SAYING SO HERE IS THE POINT.
+    --
+    -- html/app.js carries a long note on why Watch is offered only for a
+    -- match that is `live`: watching a LOBBY teleports the body to an arena
+    -- with nothing in it, shows twelve seconds of nothing while the camera
+    -- waits for something to stream, and BACKSPACE is unreachable for the
+    -- whole of that wait. That reasoning was written down once, on the
+    -- button -- and a button is not a gate. `crimson_arena:server:
+    -- spectateMatch` is an ordinary net event carrying a client-supplied
+    -- match id, so a hand-fired one walked straight past it and reached
+    -- ArenaDispatch.EnterBucket below for a round nobody had started.
+    --
+    -- NOT A SECURITY HOLE, and it is worth saying which it is: the event
+    -- acts only on the caller's own source, buys them nothing, denies
+    -- nobody anything, and the client's own stream grace ends the watch and
+    -- puts them back. It is a self-inflicted twelve seconds of a black
+    -- screen. It is fixed here because the rule already existed and only
+    -- half of it was enforced.
+    --
+    -- "BEING FOUGHT", NOT "live", AND THE DIFFERENCE IS A REAL ROUND.
+    -- `countdown` is two states wearing one name -- the LOBBY countdown, with
+    -- nobody on the ground, and the FREEZE after ArenaMatch.Start has
+    -- teleported the whole roster in, which is a round being fought that has
+    -- not been promoted to `live` yet. `match.placed` is what separates them,
+    -- and server/betting.lua's `roundIsBeingFought` and ArenaLobby.MayLeave
+    -- below both already ask it exactly this way. Reading the bare state
+    -- would refuse a watcher a camera on bodies that are standing right
+    -- there.
+    --
+    -- THE ELIMINATED FIGHTER IS EXEMPT, and that exemption is load-bearing:
+    -- ArenaMatch.OnDeath calls this for a player who has just been knocked
+    -- out of the round they are standing in, and they are not watching a
+    -- round that has not started -- they are already in it.
+    local beingFought = match.state == 'live'
+        or (match.state == 'countdown' and match.placed == true)
+    if not beingFought and not isEliminated(match, target) then
+        return false, 'error.nothing_to_watch'
     end
 
     if spectatorIndex[target] == match.id then return true, nil end

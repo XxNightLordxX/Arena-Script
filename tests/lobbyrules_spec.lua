@@ -1448,15 +1448,33 @@ t.test('and SWITCHING which match you watch costs one broadcast, not two', funct
     -- Four players: two fighting the first match, one to open a second, and
     -- one to do the watching. Player 2 cannot open the second -- they are
     -- already in the first, and Create refuses that.
-    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000, [4] = 5000 })
+    -- TWO ROUNDS BEING FOUGHT, on the two shipped arenas, because a round
+    -- that has not started cannot be watched at all: the panel has only ever
+    -- offered Watch for a live match and ArenaLobby.AddSpectator now agrees
+    -- with it. This used to switch between two LOBBIES, which is a state no
+    -- player can reach.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000, [4] = 5000, [5] = 5000 })
     local first = openLobby(server, 0, { 1, 2 })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    for _ = 1, 6 do server.step() end
 
-    server.fire('createMatch', 4, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    server.fire('createMatch', 4, { arenaKey = 'skydome', modeKey = 'ffa', entryFee = 0 })
     local second
     for _, match in ipairs(server.lobby.All()) do
         if match.id ~= first then second = match.id end
     end
     t.isNotNil(second, 'a second match could not be opened to switch to')
+    server.fire('joinMatch', 5, { matchId = second })
+    server.fire('setReady', 4, { ready = true })
+    server.fire('setReady', 5, { ready = true })
+    for _ = 1, 6 do server.step() end
+
+    for _, id in ipairs({ first, second }) do
+        local m = server.lobby.Get(id)
+        t.isTrue(m.state == 'live' or (m.state == 'countdown' and m.placed == true),
+            'match ' .. tostring(id) .. ' is not being fought (' .. tostring(m.state) .. ')')
+    end
 
     server.fire('spectateMatch', 3, { matchId = first })
     local before = server.snapshots()

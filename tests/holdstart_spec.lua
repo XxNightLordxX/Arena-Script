@@ -588,4 +588,134 @@ t.test('THE DOUBLE BOOKING: a held countdown cannot take an arena back', functio
     t.isFalse(server.placedAnyone(), 'somebody was teleported in anyway')
 end)
 
+-- ======================================================================
+-- AND IT PUTS BACK THE SIDES IT DID NOT ASK ANYBODY FOR
+-- ======================================================================
+--
+-- ArenaMatch.Begin drops players who never picked a side onto the smallest
+-- team so the countdown can start, and hands back the list of who it moved.
+-- That list was a LOCAL of Begin, so only the two exits inside Begin could
+-- undo it. There are five ways a countdown goes back to being a lobby, and
+-- the other three -- Begin's own countdown thread, ArenaMatch.Start refusing
+-- at the teleport, and this button -- all left a side on somebody who never
+-- chose one.
+--
+-- It is not only a lie on their screen. With `requireBothTeamsOccupied` on,
+-- a roster auto-split across two sides and then put back through one of
+-- those exits can end up entirely on ONE side, and the next start is refused
+-- with 'error.need_two_teams': the lobby is wedged shut by the button that
+-- was meant to un-wedge it.
+
+--- A TEAM lobby counting down, where nobody picked a side -- so every side on
+--- the roster is one ArenaMatch.Begin chose.
+--- @return table server, string matchId
+local function countingTeamsUnchosen(mutate)
+    local server = newServer({
+        [1] = { cash = 50000, bank = 50000 },
+        [2] = { cash = 50000, bank = 50000 },
+        [3] = { cash = 50000, bank = 50000 },
+    }, function(config)
+        slowLobby(config)
+        config.Teams.autoAssignIfUnchosen = true
+        config.Teams.requireBothTeamsOccupied = true
+        if mutate then mutate(config) end
+    end)
+
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'the host could not open a team lobby')
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('joinMatch', 3, { matchId = match.id })
+
+    -- NOBODY PICKS. Asserted, because if a join assigned a side by itself
+    -- there would be nothing for Begin to place and nothing to put back.
+    for _, src in ipairs({ 1, 2, 3 }) do
+        t.isNil(server.lobby.Get(match.id).players[src].team,
+            ('player %d already had a side before the start -- nothing to place'):format(src))
+    end
+
+    server.fire('startMatch', 1)
+    t.equals(server.lobby.Get(match.id).state, 'countdown',
+        'the team lobby is not counting down, so there is nothing to stop')
+
+    -- AND BEGIN REALLY DID PLACE THEM, which is the premise of every test
+    -- below: without this the put-back has nothing to undo.
+    local placedAny = false
+    for _, src in ipairs({ 1, 2, 3 }) do
+        if server.lobby.Get(match.id).players[src].team ~= nil then placedAny = true end
+    end
+    t.isTrue(placedAny, 'Begin started a team countdown without putting anybody on a side')
+
+    return server, match.id
+end
+
+local function sidesOf(server, matchId)
+    local out = {}
+    for src, player in pairs(server.lobby.Get(matchId).players) do out[src] = player.team end
+    return out
+end
+
+t.test('CONTROL: a side the player PICKED is never taken off them by a hold', function()
+    local server, matchId = countingTeamsUnchosen()
+    server.lobby.HoldCountdown(1)
+    local teams = server.env.Arena.GetEnabledTeams()
+    t.isTrue(server.lobby.SetTeam(1, teams[1].key), 'the host could not pick a side after the hold')
+
+    server.fire('startMatch', 1)
+    server.lobby.HoldCountdown(1)
+
+    t.equals(sidesOf(server, matchId)[1], teams[1].key,
+        'a side the player chose themselves was stripped by a hold')
+end)
+
+t.test('THE DEFECT: holding the countdown puts back the sides nobody chose', function()
+    local server, matchId = countingTeamsUnchosen()
+    t.isTrue(server.lobby.HoldCountdown(1), 'the host could not stop their own countdown')
+
+    local sides = sidesOf(server, matchId)
+    for _, src in ipairs({ 1, 2, 3 }) do
+        t.isNil(sides[src],
+            ('player %d was left on a side they never picked, on a round that never began'):format(src))
+    end
+end)
+
+t.test('GUARD: and the lobby can still be started after a hold', function()
+    -- THE COST this is guarding against: put back wrongly, a roster can sit
+    -- entirely on one side and the next start is refused with
+    -- 'error.need_two_teams' -- a lobby wedged shut by its own Stop button.
+    --
+    -- HONEST LABEL: with this three-player roster the wedge does NOT
+    -- reproduce, so this test passes with the put-back removed too. It is a
+    -- regression guard on the property, not a demonstration of the defect --
+    -- the two tests either side of it are that.
+    local server, matchId = countingTeamsUnchosen()
+    server.lobby.HoldCountdown(1)
+
+    local ok, why = server.match.Begin(matchId, 1)
+    t.isTrue(ok, 'THE LOBBY WAS WEDGED SHUT BY ITS OWN STOP BUTTON: ' .. tostring(why))
+    t.equals(server.lobby.Get(matchId).state, 'countdown', 'the second start did not take')
+end)
+
+t.test('and a start REFUSED at the teleport puts them back too', function()
+    -- ArenaMatch.Start's own refusal is the fourth exit, and the worst of
+    -- them: it also clears every Ready, so the lobby it hands back is both
+    -- mis-sided and unreadied.
+    local server, matchId = countingTeamsUnchosen()
+    local match = server.lobby.Get(matchId)
+
+    -- Refuse at the teleport by raising the floor between Begin and Start.
+    -- Arena.CanStartMatch reads Config when it is called, so this is the
+    -- same refusal a roster shrinking during the countdown produces.
+    server.env.Config.Match.minPlayers = 99
+    local ok = server.match.Start(matchId)
+    t.isFalse(ok, 'the start was not refused, so this test proves nothing')
+    t.equals(match.state, 'lobby', 'the refusal did not hand the lobby back')
+
+    local sides = sidesOf(server, matchId)
+    for _, src in ipairs({ 1, 2, 3 }) do
+        t.isNil(sides[src],
+            ('player %d kept a side nobody picked after the start was refused'):format(src))
+    end
+end)
+
 os.exit(t.summary())

@@ -186,6 +186,31 @@ local function newServer(ids, mutate, extra, opts)
     local oxmysql = {
         query = function(_self, sql, params, cb)
             queries[#queries + 1] = sql
+
+            -- THE JAM LIST AS IT STOOD BEFORE THE RESTART. `opts.jamRows` is
+            -- how a test says "this table already had rows in it when the
+            -- process started", which is the only way to drive the read-back
+            -- path -- everything else here answers an empty table.
+            -- TAKEN AND NEVER ANSWERED, which is the window the door's own
+            -- guard is about: oxmysql has the read, `jammedStash` is still
+            -- empty, and empty reads exactly like "nothing is jammed".
+            if opts.holdJamRead
+                and sql:find('crimson_arena_jammed_stash', 1, true)
+                and sql:find('SELECT', 1, true)
+            then
+                return
+            end
+
+            if opts.jamRows and not opts.dbFails
+                and sql:find('crimson_arena_jammed_stash', 1, true)
+                and sql:find('SELECT', 1, true)
+            then
+                local rows = {}
+                for _, stash in ipairs(opts.jamRows) do rows[#rows + 1] = { stash = stash } end
+                if cb then cb(rows) end
+                return rows
+            end
+
             if cb then cb(opts.dbFails and nil or {}) end
             return opts.dbFails and nil or {}
         end,
@@ -355,7 +380,16 @@ local function newServer(ids, mutate, extra, opts)
         end,
     }
 
+    -- A CLOCK A TEST CAN MOVE. Only `time` is replaced; everything else on
+    -- `os` is the real one, so nothing that merely formats a date changes
+    -- behaviour. Used by the jam-list grace, which is measured in seconds of
+    -- wall time and cannot be driven any other way.
+    local clockSkew = 0
+    local fakeOs = setmetatable({ time = function(...) return os.time(...) + clockSkew end },
+        { __index = os })
+
     local env = Sandbox.newArenaEnv({
+        os = fakeOs,
         exports = setmetatable({ ox_inventory = ox, oxmysql = oxmysql, qbx_core = qbx.exports.qbx_core },
             { __call = function() end }),
         lib = Sandbox.newOxLib(),
@@ -550,6 +584,8 @@ local function newServer(ids, mutate, extra, opts)
 
     --- Every statement sent to the database, as one string.
     function server.queries() return table.concat(queries, '\n') end
+    --- Moves the server's clock forward, in seconds.
+    function server.advanceClock(seconds) clockSkew = clockSkew + seconds end
 
     --- Every table named in a statement that is NOT this resource's own.
     function server.foreignTables()
@@ -808,8 +844,8 @@ local INTACT = 'ammo-rifle-apx40,burgerx3,phonex1'
 --- @param ids integer[]
 --- @return table server
 --- @return string matchId
-local function liveMatch(ids, extra, mutate)
-    local server = newServer(ids, mutate, extra)
+local function liveMatch(ids, extra, mutate, opts)
+    local server = newServer(ids, mutate, extra, opts)
     server.fire('createMatch', ids[1], { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
 
     local match = server.lobby.All()[1]
@@ -3326,6 +3362,149 @@ t.test('and refuses junk rather than throwing', function()
     end
     local ok = pcall(server.ammo.Unjam, nil)
     t.isTrue(ok, 'Unjam threw on nil')
+end)
+
+-- ========================================================================
+-- AND THE JAM HAS TO OUTLIVE THE PROCESS
+-- ========================================================================
+--
+-- A jam is a statement about a stash that STILL HAS THINGS IN IT. The
+-- process forgetting it does not empty the stash: on the next start the
+-- thirty-second sweep walks it again -- uncapped, because nothing after a
+-- restart knows what the door put there -- and hands the parked copy to a
+-- player who is already carrying the original. That is the duplication the
+-- jam exists to stop, on a timer, and "wait for the nightly restart" was a
+-- way to collect it.
+--
+-- Same reasoning, same machinery and the same OFF-BY-DEFAULT as the
+-- outstanding-kit slate: with Config.Database.enabled false a jam still
+-- works for one uptime and nothing is written.
+
+local function jammedWithDatabase()
+    -- BOTH HALVES, because ArenaDbReady wants the switch AND oxmysql up.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true })
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+    t.contains(server.log(), 'touching that stash no further', 'the fixture did not jam anything')
+    return server
+end
+
+t.test('THE DEFECT: a jam is written to the database, not only to memory', function()
+    local server = jammedWithDatabase()
+
+    t.contains(server.queries(), 'crimson_arena_jammed_stash',
+        'the jam never reached the database, so a restart forgets it and hands out the duplicate')
+    t.contains(server.queries(), 'INSERT IGNORE INTO crimson_arena_jammed_stash',
+        'the jam table was touched, but not written to')
+end)
+
+t.test('and clearing it by hand takes the row with it', function()
+    -- Or the next start holds the stash off again and the operator runs
+    -- /arenaunjam after every restart wondering why it never takes.
+    local server = jammedWithDatabase()
+    local before = server.queries()
+    t.isNil(before:find('DELETE FROM crimson_arena_jammed_stash', 1, true),
+        'something deleted the jam row before the operator asked')
+
+    t.isTrue(server.ammo.Unjam('crimson_arena_CID1'), 'the jam did not clear')
+
+    t.contains(server.queries(), 'DELETE FROM crimson_arena_jammed_stash',
+        'the jam cleared in memory only, so the next start puts it back')
+end)
+
+t.test('CONTROL: with the database off nothing is written, and the jam still holds', function()
+    -- The shipped default. Nothing to import, nothing required -- and the
+    -- jam must still stop the door for the length of this uptime.
+    local server = jammedBySurplus()
+
+    t.isNil(server.queries():find('crimson_arena_jammed_stash', 1, true),
+        'the database is off and the jam was written to it anyway')
+    t.equals(jamsStanding(server), 1, 'the jam did not hold with the database off')
+end)
+
+t.test('THE DEFECT: a jam from before the restart is read back, and the door stays off that stash',
+function()
+    -- THE WHOLE POINT. A fresh process, a table that already names this
+    -- stash, and the door must not touch it -- the copy parked in there is
+    -- one the player is already carrying.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+    end, nil, { database = true, jamRows = { 'crimson_arena_CID1' } })
+
+    t.equals(jamsStanding(server), 0, 'the jam was in memory before anything read it')
+
+    server.ammo.LoadJams()
+    server.step(2)
+
+    t.equals(jamsStanding(server), 1,
+        'A JAM FROM BEFORE THE RESTART WAS FORGOTTEN -- the sweep will hand out the parked copy')
+    t.contains(server.log(), 'still held back from before the restart',
+        'the operator was never told there is a stash needing settling by hand')
+end)
+
+t.test('and the door refuses to hand anything back until that list has been read', function()
+    -- THE RACE, and it is a real one: the sweep runs every thirty seconds
+    -- and does not wait for anybody. Before the read lands `jammedStash` is
+    -- empty, which reads exactly like "nothing is jammed" -- so without this
+    -- the first sweep after a start could hand out the very duplicate the
+    -- jam was parked to stop, a second before the list arrived to say so.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, holdJamRead = true })
+
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.contains(server.log(), 'until the jam list has been read back',
+        'the door handed belongings back before it knew which stashes were held')
+end)
+
+t.test('CONTROL: with the database off the door does not wait for a list that will never come',
+function()
+    -- The shipped default. Nothing was ever persisted, so there is nothing
+    -- to wait for -- and waiting would shut the door on every server that
+    -- never turned the database on.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.isNil(server.log():find('until the jam list has been read back', 1, true),
+        'the door held itself off on a server with no database at all')
+    t.isTrue(server.carrying(1):find('phone', 1, true) ~= nil,
+        'the player never got their belongings back')
+end)
+
+t.test('and the wait for that list is BOUNDED -- the door reopens rather than shutting for ever',
+function()
+    -- THE FAILURE THIS MUST NOT HAVE. The guard above refuses hand-backs
+    -- until the jam list is read. A database user with CREATE but no SELECT
+    -- never answers that read -- so an unbounded wait would shut the door on
+    -- every player for the whole uptime, and this file's own rule is that
+    -- "the arena did not work properly" is acceptable and leaving somebody
+    -- unable to get their things back is not.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, holdJamRead = true })
+
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+    t.contains(server.log(), 'until the jam list has been read back',
+        'the door did not hold at all, so there is no wait to bound')
+    t.isNil(server.carrying(1):find('phone', 1, true),
+        'the hand-back went through while the list was unread')
+
+    -- Past the grace, with the read still out there and never coming.
+    server.advanceClock(61)
+    for _ = 1, 6 do server.ammo.SweepReturns() end
+    server.step(8)
+
+    t.contains(server.log(), 'going ahead without it',
+        'the door never gave up on a list that is never coming')
+    t.isTrue(server.carrying(1):find('phone', 1, true) ~= nil,
+        'THE DOOR STAYED SHUT FOR EVER -- the player cannot get their own belongings back')
 end)
 
 os.exit(t.summary())

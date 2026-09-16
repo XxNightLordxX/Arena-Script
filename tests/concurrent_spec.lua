@@ -427,23 +427,27 @@ t.test('DEFECT: cancelling a lobby does not strand the person watching it', func
     -- session.
     --
     -- The per-tick sweep in server/match.lua rescues anyone stranded in a
-    -- COUNTDOWN or LIVE match's bucket. A spectator of a match still in its
-    -- LOBBY was never in that sweep's books, and clicking Watch on a lobby
-    -- from the Matches tab and then having the host cancel it is an entirely
-    -- ordinary thing to do.
+    -- COUNTDOWN or LIVE match's bucket, so Destroy's own cleanup is what has
+    -- to work for anybody the sweep does not reach.
+    --
+    -- THIS USED TO WATCH A LOBBY, and it cannot any more. The panel has long
+    -- offered Watch only for a live match, and ArenaLobby.AddSpectator now
+    -- agrees with it -- a round that is not being fought has nothing to show
+    -- and parked the watcher in an empty arena for the stream grace. So the
+    -- reachable version of this is a round that IS being fought and is then
+    -- destroyed under the person watching it, which is what an admin
+    -- force-stop and a resource stop both do.
     local server = fourPlayers({ 5 })
-    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local matchId = runMatch(server, 'trailerpark', { 1, 2 })
+    local match = server.lobby.Get(matchId)
+    t.isNotNil(match, 'the round never started')
 
-    local match = server.lobby.All()[1]
-    t.isNotNil(match, 'the host could not open a lobby')
-    t.equals(match.state, 'lobby', 'the match started on its own, so this is not the lobby case')
-
-    t.isTrue(server.lobby.AddSpectator(5, match.id) == true,
+    t.isTrue(server.lobby.AddSpectator(5, matchId) == true,
         'the spectator could not be admitted, so this proves nothing')
     t.isTrue(server.bucket(5) ~= 0,
         'watching did not put them in the round\'s instance, so there is nothing to be stranded in')
 
-    server.lobby.Destroy(match.id, 'notify.match_cancelled')
+    server.lobby.Destroy(matchId, 'notify.match_cancelled')
     server.step(3)
 
     t.equals(server.bucket(5), 0,

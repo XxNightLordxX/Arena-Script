@@ -1660,7 +1660,31 @@ local function scheduleRespawn(match, player, unwitnessed)
     end)
 end
 
-local function resolveKiller(match, victim, killerSrc)
+--- The killer this claim names, asking ONLY the questions the ROSTER can
+--- answer -- who they are, whether they are in this match, whether they are
+--- allowed to have shot the victim, and whether they are still in the round.
+---
+--- SPLIT OUT SO THERE IS EXACTLY ONE OF IT. resolveKiller is not the only
+--- caller that needs to know whether a claim names anybody: OnDeath's
+--- unwitnessed-death price asks the same question, and for years it asked it
+--- by hand -- `claimed == nil or claimed <= 0 or claimed == id or
+--- match.players[claimed] == nil`, four of these five refusals. The two
+--- drifted exactly the way a copied predicate drifts, and the gap was a
+--- rate-limit bypass: a modded client naming a TEAM-MATE, or a player who had
+--- left, or one already eliminated, had the kill refused here AND was excused
+--- the price for an unwitnessed death, because the hand-rolled copy read
+--- "somebody was named". Free silent deaths on demand, at whatever rate the
+--- client liked. A comment at the call site claimed "the two predicates are
+--- one expression now". They were two. Now there is one, and it is this.
+---
+--- POSITION IS DELIBERATELY NOT IN HERE. Everything below this in
+--- resolveKiller -- the fence and the kill-distance ceiling -- refuses a
+--- claim that FAILED A CHECK rather than one that named nobody, and an
+--- honest player catches those: crossfire from outside the boundary is real,
+--- and a long shot across a big arena is the good kind of kill. Those must
+--- not price a death as unwitnessed, so they stay where they are.
+--- @return table|nil killer
+local function rosterKiller(match, victim, killerSrc)
     local killerId = Arena.ToInt(killerSrc)
     if not killerId or killerId <= 0 or killerId == victim.src then return nil end
 
@@ -1688,6 +1712,20 @@ local function resolveKiller(match, victim, killerSrc)
         return nil
     end
 
+    return killer
+end
+
+--- @return table|nil killer
+--- @return boolean named -- did the claim name a fighter the ROSTER accepts
+local function resolveKiller(match, victim, killerSrc)
+    -- THE SECOND RETURN IS NOT A CONVENIENCE. OnDeath needs both answers --
+    -- "is this a kill" and "did they name anybody" -- and asking rosterKiller
+    -- a second time down there would log the refusal twice and re-read state
+    -- this function has already moved past. One call, both answers.
+    local killer = rosterKiller(match, victim, killerSrc)
+    if not killer then return nil, false end
+
+    local killerId = killer.src
     -- AND WERE THEY ANYWHERE NEAR. Everything above this line is a question
     -- about the ROSTER; none of it asks whether the kill could have happened.
     -- A dying client names its own killer, so without this one accomplice
@@ -1732,7 +1770,7 @@ local function resolveKiller(match, victim, killerSrc)
     if past ~= nil and outsideMetres > 0 and past > outsideMetres then
         ArenaDebug('kill refused on match %s: %s says %s killed them from %.0fm outside the arena.',
             tostring(match.id), tostring(victim.src), tostring(killerId), past)
-        return nil
+        return nil, true
     end
 
     local ceiling = Arena.KillCeilingFor(match.arenaKey, match.sizeFactor)
@@ -1741,11 +1779,11 @@ local function resolveKiller(match, victim, killerSrc)
         if far and far > ceiling then
             ArenaDebug('kill refused on match %s: %s says %s killed them from %.1fm, over the %.1fm ceiling.',
                 tostring(match.id), tostring(victim.src), tostring(killerId), far, ceiling)
-            return nil
+            return nil, true
         end
     end
 
-    return killer
+    return killer, true
 end
 
 --- Drops anyone who never picked a side onto the smallest team.
@@ -1804,6 +1842,57 @@ local function assignMissingTeams(match)
         tostring(match.id), table.concat(parts, ' v '), assigned, #players - assigned)
 
     return true, placed
+end
+
+--- Undo an auto-assignment made by a start that did not happen.
+---
+--- WHY THE LIST LIVES ON THE MATCH. assignMissingTeams hands back the rows it
+--- placed, and for a long time that list was a local of ArenaMatch.Begin --
+--- so only the two exits inside Begin could put anybody back. There are five
+--- ways a countdown returns to a lobby, and the other three could not:
+---
+---   * Begin's own countdown thread, when its CanStartMatch re-check fails
+---   * ArenaMatch.Start, refusing at the moment of the teleport
+---   * ArenaLobby.HoldCountdown -- the host's "Stop The Countdown" button
+---
+--- All three left a side on somebody who never picked one. The comment above
+--- the old local called that "both a lie on their screen and a constraint on
+--- the next attempt", and it is the second half that bites: with
+--- `requireBothTeamsOccupied` on, a roster that was auto-split 1-2 and then
+--- put back through any of those three exits could end up entirely on one
+--- side, and the next start was refused with 'error.need_two_teams' --
+--- a lobby wedged shut by the button that was supposed to un-wedge it.
+---
+--- SOURCE IDS, NOT ROWS. A player who left in the meantime has no row to put
+--- back, and holding their table here would resurrect a side for somebody who
+--- is not in the match any more.
+--- @param match table|nil
+--- @return boolean moved
+local function unplaceAuto(match)
+    if type(match) ~= 'table' then return false end
+
+    local placed = match.autoPlaced
+    match.autoPlaced = nil
+    if type(placed) ~= 'table' then return false end
+
+    local moved = false
+    for _, src in ipairs(placed) do
+        local player = type(match.players) == 'table' and match.players[src] or nil
+        if player and player.team ~= nil then
+            player.team = nil
+            moved = true
+        end
+    end
+    return moved
+end
+
+--- Undo an auto-assignment from outside this file -- server/lobby.lua's
+--- "Stop The Countdown" is an exit back to a lobby exactly like the two
+--- inside Begin, and must put back exactly what they put back.
+--- @param match table|nil
+--- @return boolean moved
+function ArenaMatch.UnplaceAuto(match)
+    return unplaceAuto(match)
 end
 
 local function goLive(matchId)
@@ -1983,10 +2072,17 @@ function ArenaMatch.Begin(matchId, requestedBy)
     -- assignMissingTeams: a side nobody chose, on a round that never began,
     -- is both a lie on their screen and a constraint on the next attempt.
     -- Everything above this line already leaves the roster alone on a
-    -- refusal, and says so; these two are the ones that did not.
-    local function unplace()
-        for _, player in ipairs(placed) do player.team = nil end
+    -- refusal, and says so.
+    --
+    -- RECORDED ON THE MATCH, NOT IN A LOCAL. Two of the five exits back to a
+    -- lobby are below; the other three are elsewhere and could not reach a
+    -- local. See unplaceAuto.
+    match.autoPlaced = {}
+    for _, player in ipairs(placed) do
+        match.autoPlaced[#match.autoPlaced + 1] = player.src
     end
+
+    local function unplace() unplaceAuto(match) end
 
     local ok, reason = Arena.CanStartMatch({
         arenaKey = match.arenaKey,
@@ -2046,6 +2142,9 @@ function ArenaMatch.Begin(matchId, requestedBy)
             if not stillOk then
                 current.state = 'lobby'
                 current.startsAt = nil
+                -- THE THIRD EXIT. It is lexically inside Begin and still did
+                -- not put anybody back -- see unplaceAuto.
+                unplaceAuto(current)
                 for _, player in ipairs(ArenaLobby.PlayerArray(current)) do
                     ArenaNotifyKey(player.src, why or 'notify.start_cancelled', 'warning')
                 end
@@ -2105,11 +2204,22 @@ function ArenaMatch.Start(matchId)
         match.state = 'lobby'
         match.startsAt = nil
 
+        -- THE FOURTH EXIT, and the one that hurts most: it also clears every
+        -- Ready, so the lobby it hands back is both mis-sided AND unreadied
+        -- -- which is exactly the state the idle sweep closes. See
+        -- unplaceAuto.
+        unplaceAuto(match)
+
         for _, player in pairs(match.players) do player.ready = false end
 
         ArenaLobby.Broadcast()
         return false, reason
     end
+
+    -- AND THE ROUND IS HAPPENING, so there is nothing left to put back. From
+    -- here the roster is teleported in; a later hold must not strip sides off
+    -- fighters who are standing in the arena.
+    match.autoPlaced = nil
 
     local arena = Arena.GetArenaByKey(match.arenaKey)
     local freeze = math.max(0, Arena.ToInt(Config.Match.startCountdownSeconds) or 0)
@@ -2207,7 +2317,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
 
     local playingLadder = #ladderOf(match) > 0
 
-    local killer = resolveKiller(match, player, killerSrc)
+    local killer, namedAFighter = resolveKiller(match, player, killerSrc)
     if killer then
         killer.kills = (Arena.ToInt(killer.kills) or 0) + 1
 
@@ -2237,10 +2347,13 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
     -- a client picking the one claim resolveKiller was always going to
     -- refuse. Read as the same press, or the press simply moves.
     --
-    -- AN ID THAT IS SOMEBODY ELSE IS DELIBERATELY NOT THIS. A death naming a
-    -- player who is off the roster, out of the round or too far away is a
-    -- claim that failed a check, not an absence of one -- crossfire from
-    -- outside the arena is exactly that, and it is honest.
+    -- A CLAIM THAT FAILED A POSITIONAL CHECK IS DELIBERATELY NOT THIS. A
+    -- death naming a fighter who was too far away, or who shot from outside
+    -- the boundary, is a claim that failed a check rather than an absence of
+    -- one -- crossfire from outside the arena is exactly that, and it is
+    -- honest, so it is not priced. Being off the ROSTER is the other way
+    -- about and always was: see rosterKiller, which is the one place either
+    -- question is now asked.
     --
     -- AND THE SERVER'S OWN SWEEP IS NOT A REPORT AT ALL. It books a death it
     -- watched for `deadTicks` running against a body it could see, for a
@@ -2257,19 +2370,31 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
     -- one round on the owner's own server. What separates them is the RATE and
     -- nothing else; see unwitnessedRun and scheduleRespawn's note above.
     -- "NAMED NOBODY" MEANS THE SAME THING HERE AS IT DOES TO resolveKiller,
-    -- and it did not. resolveKiller refuses a claim that is nil, non-positive,
-    -- the victim themself, or not a fighter in this match -- none of those is
-    -- a kill. This test asked only nil-or-self. So a claim of 0, of -1, or of
-    -- a server id that is nobody in the round fell between the two: refused
-    -- as a kill AND excused from the unwitnessed price, with the UNATTRIBUTED
-    -- line never printed. A free, silent death, on demand -- the honest
-    -- client never sends any of those (it sends no id at all when it has
-    -- nobody to name), so this was a modded client's rate-limit bypass and
-    -- nothing else. The two predicates are one expression now, so they cannot
-    -- drift apart again. DO NOT narrow this back to nil-or-self.
-    local claimed = Arena.ToInt(killerSrc)
-    local nobodyNamed = claimed == nil or claimed <= 0 or claimed == id
-        or match.players[claimed] == nil
+    -- AND NOW IT IS THE SAME CALL. It has been wrong twice, the same way
+    -- both times, because it was written out by hand instead:
+    --
+    -- FIRST it asked only nil-or-self, so a claim of 0, of -1, or of a server
+    -- id that is nobody in the round fell between the two -- refused as a
+    -- kill AND excused the price, with the UNATTRIBUTED line never printed.
+    --
+    -- THEN it grew `match.players[claimed] == nil` and a comment saying "the
+    -- two predicates are one expression now". They were still two, and it was
+    -- still four of rosterKiller's five refusals. A modded client naming a
+    -- live TEAM-MATE -- or a fighter who had left, or one already eliminated
+    -- -- was refused the kill by CanDamage and excused the price by this,
+    -- because a team-mate IS on `match.players`. Measured on the shipped
+    -- config (friendlyFire false, tdm on): fourteen reported deaths in one
+    -- round, every one of them keeping the short wait and a full resupply,
+    -- none of them priced, none of them logged. A free, silent death on
+    -- demand, at whatever rate the client liked.
+    --
+    -- The honest client never sends any of these: it sends no id at all when
+    -- it has nobody to name, and client/match.lua will not put the victim's
+    -- own id on the wire. So there is one expression, it lives in
+    -- rosterKiller, and this reads the answer resolveKiller already got from
+    -- it rather than asking again. DO NOT write this test out by hand again
+    -- -- that is the whole history of this bug.
+    local nobodyNamed = namedAFighter ~= true
     local unnamed = serverSaw ~= true
         and not playingLadder
         and nobodyNamed

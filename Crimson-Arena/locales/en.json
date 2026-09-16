@@ -61,6 +61,7 @@
         "not_enough_money": "You cannot cover that.",
         "not_enough_players": "Not enough fighters to start.",
         "not_host": "This match is not yours to run.",
+        "nothing_to_watch": "That round is not being fought yet.",
         "not_in_match": "You are not in a match.",
         "pick_a_team": "Pick a side first.",
         "player_not_loaded": "Your character is not loaded yet.",

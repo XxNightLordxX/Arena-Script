@@ -598,6 +598,61 @@ t.test('a plain bystander may still watch a match they are in no part of', funct
     t.equals(server.snapshot(3).spectating, matchId)
 end)
 
+-- ------------------------------------------------------------------------
+-- AND THERE HAS TO BE A FIGHT TO WATCH.
+--
+-- html/app.js offers Watch only for a match that is `live`, and says at
+-- length why: watching a LOBBY teleports the body to an arena with nothing
+-- in it, shows twelve seconds of nothing while the camera waits for
+-- something to stream, and the quit key is unreachable for the whole wait.
+--
+-- That reasoning was written on the BUTTON, and a button is not a gate.
+-- `crimson_arena:server:spectateMatch` is an ordinary net event carrying a
+-- client-supplied match id, so a hand-fired one walked past it entirely and
+-- reached ArenaDispatch.EnterBucket for a round nobody had started.
+
+t.test('THE DEFECT: a lobby nobody has started cannot be watched', function()
+    local server = newServer()
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.GetByPlayer(1)
+    server.fire('joinMatch', 2, { matchId = match.id })
+    t.equals(server.lobby.Get(match.id).state, 'lobby', 'the match is not a lobby, so this proves nothing')
+
+    local ok, reason = server.lobby.AddSpectator(3, match.id)
+
+    t.isFalse(ok, 'a player was bucketed into an arena for a round nobody had started')
+    t.equals(reason, 'error.nothing_to_watch', 'refused, but for the wrong reason')
+    t.isFalse(server.snapshot(3).spectating, 'refused, and registered as a watcher anyway')
+    t.isNil(server.flag(3), 'refused, and moved into the arena bucket anyway')
+end)
+
+t.test('and the net event a client actually fires is refused too, not just the helper', function()
+    local server = newServer()
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.GetByPlayer(1)
+
+    server.fire('spectateMatch', 3, { matchId = match.id })
+
+    t.isFalse(server.snapshot(3).spectating,
+        'the hand-fired event put a watcher on a lobby')
+end)
+
+t.test('CONTROL: the ELIMINATED fighter the round hands over is still admitted', function()
+    -- Load-bearing exemption: ArenaMatch.OnDeath calls AddSpectator for a
+    -- player knocked out of the round they are standing in. They are not
+    -- watching a round that has not started -- they are already in it. If
+    -- the gate catches them, elimination spectating dies with it.
+    local server, matchId = liveRound()
+    local match = server.lobby.Get(matchId)
+    match.state = 'lobby'                       -- the harshest case for the gate
+    match.players[2].alive = false
+    match.players[2].lives = 0
+
+    local ok, reason = server.lobby.AddSpectator(2, matchId)
+
+    t.isTrue(ok, 'an eliminated fighter was refused a watch of their own round: ' .. tostring(reason))
+end)
+
 print('lobbyexit_spec')
 -- ========================================================================
 -- THE IDLE SWEEP CLOSES ABANDONED LOBBIES, NOT BUSY ONES
@@ -638,6 +693,16 @@ local function staleLobby(mutate)
     match.idleSince = match.createdAt
 
     return server, match.id
+end
+
+--- How many players in this lobby are readied, which is the sweep's other
+--- condition -- asserted rather than assumed by the tests below.
+local function readyCount(server, matchId)
+    local n = 0
+    for _, player in pairs(server.lobby.Get(matchId).players) do
+        if player.ready == true then n = n + 1 end
+    end
+    return n
 end
 
 t.test('THE DEFECT: editing a stale lobby does not hand it to the sweep', function()
@@ -704,6 +769,169 @@ t.test('and a lobby somebody readied in is never swept, edited or not', function
 
     t.isNotNil(server.lobby.Get(matchId),
         'a lobby with somebody ready in it was swept')
+end)
+
+-- ---------------------------------------------------------------------------
+-- THE SWEEP CANNOT SEE ANYBODY ARRIVE.
+--
+-- `idleSince` was written in exactly two places -- Create and UpdateMatch --
+-- so for everybody who was not the host editing the rules, the sweep was
+-- still measuring from `createdAt`, which is the bug the field was added to
+-- fix. Its own comment said it meant "the last time anybody did ANYTHING to
+-- this lobby". Joining, leaving, picking a side and ticking Ready all left it
+-- alone.
+--
+-- The tests below each do one ordinary thing to a lobby that is already older
+-- than the timeout, then run the sweep. The lobby has to survive. The control
+-- above -- "a lobby opened seconds ago is never swept" -- and the one below,
+-- which does nothing at all and requires the lobby to DIE, are what keep
+-- these honest: without the second one, a sweep that never fired would pass
+-- every test here.
+
+t.test('CONTROL: a genuinely abandoned stale lobby is still closed', function()
+    local server, matchId = staleLobby()
+    server.step(40)
+    t.isNil(server.lobby.Get(matchId),
+        'the sweep did not fire at all, so every test below proves nothing')
+end)
+
+t.test('THE DEFECT: somebody walking in is activity, and saves the lobby', function()
+    local server, matchId = staleLobby()
+    server.fire('joinMatch', 3, { matchId = matchId })
+    t.isNotNil(server.lobby.Get(matchId).players[3], 'the join did not happen')
+
+    server.step(40)
+
+    t.isNotNil(server.lobby.Get(matchId),
+        'A THIRD PLAYER WALKED IN AND THE LOBBY WAS CLOSED UNDER ALL THREE OF THEM')
+end)
+
+t.test('and somebody walking OUT is activity too', function()
+    local server, matchId = staleLobby()
+    server.fire('leaveMatch', 2, {})
+    t.isNil(server.lobby.Get(matchId).players[2], 'the leave did not happen')
+
+    server.step(40)
+
+    t.isNotNil(server.lobby.Get(matchId),
+        'one of two players left and the host lost the lobby they were still standing in')
+end)
+
+t.test('and ticking Ready is activity', function()
+    local server, matchId = staleLobby()
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 1, { ready = false })
+    t.equals(readyCount(server, matchId), 0,
+        'somebody is still readied, so the sweep would skip this lobby regardless')
+
+    server.step(40)
+
+    t.isNotNil(server.lobby.Get(matchId),
+        'THE MOST ORDINARY ACT THERE IS -- changing your mind -- handed the lobby to the sweep')
+end)
+
+t.test('and picking a side is activity', function()
+    local server, matchId = staleLobby(function(config)
+        config.Teams.allowChoose = true
+    end)
+    t.isTrue(server.lobby.UpdateMatch(1, { matchId = matchId, modeKey = 'tdm' }),
+        'the mode could not be changed to a team one')
+    -- UpdateMatch stamps the field itself, so age it again: this test is
+    -- about SetTeam and nothing else.
+    local match = server.lobby.Get(matchId)
+    match.createdAt = os.time() - 1000
+    match.idleSince = match.createdAt
+
+    local teams = server.env.Arena.GetEnabledTeams()
+    t.isTrue(server.lobby.SetTeam(2, teams[1].key), 'the side could not be picked')
+
+    server.step(40)
+
+    t.isNotNil(server.lobby.Get(matchId),
+        'a player picked a side and the lobby was closed under them')
+end)
+
+-- ---------------------------------------------------------------------------
+-- A STALE WATCH FLAG IS NOT A PLAYER STANDING IN THIS ARENA.
+--
+-- playersArePlaced gates HoldCountdown ("Stop The Countdown") and Cancel
+-- ("Close Lobby"), and it asked ArenaDispatch.IsPlayerInArena -- "is this
+-- player in ANY arena", which is true of somebody merely WATCHING one. The
+-- watch flag outlives the watch: RemoveSpectator calls ExitBucket and not
+-- Clear, and only the match sweep takes the flag down, a tick later.
+--
+-- So a player who stopped watching some other round a second ago, and walked
+-- into your lobby, made YOU -- the host -- unable to hold your own countdown
+-- or close your own lobby. This is the file for it: its own header calls the
+-- subject "a flag that outlives the match it belonged to".
+
+--- A lobby of two, counting down, with `joiner` carrying a dispatch flag for
+--- `flagFor` -- nil for no flag at all.
+local function countingDownWithFlag(flagFor)
+    local server = newServer(function(config)
+        config.Match.lobbyCountdownSeconds = 30
+        config.Match.autoStartWhenAllReady = true
+        config.Betting.enabled = false
+        config.Betting.entryFee.enabled = false
+    end)
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.GetByPlayer(1)
+    t.isNotNil(match, 'the host could not open a lobby')
+    server.fire('joinMatch', 2, { matchId = match.id })
+
+    if flagFor ~= nil then
+        server.env.ArenaDispatch.Set(2, flagFor == 'this' and match.id or 'some-other-match')
+    end
+
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    t.equals(server.lobby.Get(match.id).state, 'countdown',
+        'the lobby is not counting down, so there is nothing to hold')
+    return server, match.id
+end
+
+t.test('CONTROL: the host of an ordinary lobby may hold their own countdown', function()
+    local server = countingDownWithFlag(nil)
+    local ok, why = server.lobby.HoldCountdown(1)
+    t.isTrue(ok, 'the host could not hold a countdown with nobody flagged at all: ' .. tostring(why))
+end)
+
+t.test('THE DEFECT: a joiner who watched ANOTHER match does not block the host', function()
+    local server = countingDownWithFlag('other')
+    local ok, why = server.lobby.HoldCountdown(1)
+    t.isTrue(ok, 'THE HOST WAS REFUSED THEIR OWN COUNTDOWN: ' .. tostring(why))
+end)
+
+t.test('and the same host may still close their own lobby', function()
+    local server, matchId = countingDownWithFlag('other')
+    local ok, why = server.lobby.Cancel(1)
+    t.isTrue(ok, 'THE HOST COULD NOT CLOSE THEIR OWN LOBBY: ' .. tostring(why))
+    t.isNil(server.lobby.Get(matchId), 'the lobby survived a cancel that reported success')
+end)
+
+t.test('CONTROL: a roster actually teleported in still blocks the hold', function()
+    -- The whole point of the gate, and it has to keep working: once the
+    -- roster is on the ground, stopping the countdown would strand them.
+    --
+    -- Driven through the real path rather than by setting a flag -- this
+    -- file's default fixture is built for exactly this window (no lobby
+    -- countdown, a 30s freeze), so one step teleports the roster and holds
+    -- the match at 'countdown' with ArenaMatch.Start's own `placed` set.
+    local server = newServer()
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.GetByPlayer(1)
+    server.fire('joinMatch', 2, { matchId = match.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(1)
+
+    local live = server.lobby.Get(match.id)
+    t.equals(live.state, 'countdown', 'the match is not in its freeze, so this proves nothing')
+    t.isTrue(live.placed == true, 'the roster was never teleported in, so there is nobody to strand')
+
+    local ok, why = server.lobby.HoldCountdown(1)
+    t.isFalse(ok, 'a roster standing in the arena no longer stops the countdown being held')
+    t.equals(why, 'error.match_in_progress', 'refused, but for the wrong reason')
 end)
 
 os.exit(t.summary())

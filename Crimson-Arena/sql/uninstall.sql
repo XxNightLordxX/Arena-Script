@@ -40,6 +40,13 @@ DROP TABLE IF EXISTS crimson_arena_stats;
 -- resource, and never what you want while it is still running.
 DROP TABLE IF EXISTS crimson_arena_owed_kit;
 
+-- The list of stashes the door was holding off. Dropping this does NOT empty
+-- those stashes -- it only forgets that they were being held back, so a
+-- resource still running would walk them again and hand out whatever is
+-- parked in them. Settle them with /arenaunjam first if this server is
+-- staying up.
+DROP TABLE IF EXISTS crimson_arena_jammed_stash;
+
 -- Money the arena still owed somebody. Dropping this FORGIVES those debts:
 -- nobody is paid what was outstanding. Settle them first if that matters.
 DROP TABLE IF EXISTS crimson_arena_unpaid;

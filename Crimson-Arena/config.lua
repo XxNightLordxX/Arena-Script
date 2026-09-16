@@ -28,10 +28,10 @@
      1258   Permissions   Who may open a match, who may force-stop one
      1344   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1778   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2313   Database      Optional: leaderboard, and what players still owe the arena
-     2344   Leaderboard   Which matches count towards the board, and which do not
-     2410   Webhook       Optional: a Discord line per finished match
-     2442   Dispatch      Optional: keeping police and EMS out of the arena
+     2340   Database      Optional: leaderboard, and what players still owe the arena
+     2371   Leaderboard   Which matches count towards the board, and which do not
+     2437   Webhook       Optional: a Discord line per finished match
+     2469   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1856,7 +1856,34 @@ Config.Loadouts = {
         -- themselves anything by sending one anyway.
         allowChoose = true,
 
+        -- WHICH KINDS THIS SERVER PUTS ON A GUN. A kind left out of this
+        -- list is dropped before it reaches the weapon, whatever
+        -- config.weapons.lua says about it, and the picker offers no switch
+        -- for it.
         fit = { 'scope', 'extendedclip', 'grip', 'muzzle', 'barrel', 'flashlight' },
+
+        -- AND THE KINDS LEFT OUT ON PURPOSE, SAID OUT LOUD.
+        --
+        -- `suppressor` is configured on 39 weapons in config.weapons.lua and
+        -- is deliberately not in `fit` above: a suppressed shot does not put
+        -- the shooter on the minimap, which changes how a round is fought.
+        -- That was a balance decision, not an oversight, and
+        -- attachments_spec guards it -- "if it ever starts arriving by
+        -- default, that is this test's business".
+        --
+        -- WHY THE LIST EXISTS AT ALL RATHER THAN JUST A COMMENT. The
+        -- start-up report walks `weaponAttachments` for kinds `fit` never
+        -- names and says those rows do nothing. It was right about the
+        -- mechanism and wrong about the meaning: 39 rows doing nothing ON
+        -- PURPOSE is a settled decision, and a console warning that repeats
+        -- a settled decision at every boot is the line an operator learns to
+        -- scroll past -- which is how the next one, about a kind they really
+        -- did forget, gets scrolled past with it.
+        --
+        -- So naming a kind here is how an operator says "I know, I meant
+        -- it", and the report goes quiet about that kind and nothing else.
+        -- Putting a kind in BOTH lists is a contradiction and is reported.
+        deliberatelyUnfitted = { 'suppressor' },
     },
 
     -- WHAT GOES ON THE GUN IS NAMED IN config.weapons.lua, under

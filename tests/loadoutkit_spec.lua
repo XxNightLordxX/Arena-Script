@@ -1534,4 +1534,91 @@ t.test('THE VITALS ARE A RULE, not a field a client can send', function()
     t.equals(fullArmour, 100)
 end)
 
+-- ========================================================================
+-- A SETTLED DECISION IS NOT A MISTAKE
+-- ========================================================================
+--
+-- The report above walks weaponAttachments for kinds `fit` never names and
+-- says those rows do nothing. On the shipped config that finds `suppressor`
+-- on 39 weapons -- and being absent from `fit` is DELIBERATE there: a
+-- suppressed shot does not put the shooter on the minimap, which changes how
+-- a round is fought, and attachments_spec guards it.
+--
+-- A warning that repeats a settled decision at every boot is the line an
+-- operator learns to scroll past, and the next one -- about a kind they
+-- really did forget -- goes with it. `deliberatelyUnfitted` is how they
+-- answer back, and it must silence exactly the kinds they named.
+
+t.test('THE DEFECT: a kind the operator declared deliberate is not reported', function()
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments.fit = { 'scope' }
+        config.Loadouts.attachments.deliberatelyUnfitted = { 'suppressor' }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'at_suppressor_heavy' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.notContains(report, 'NEVER PUTS ONE ON',
+        'a decision the operator already recorded was reported as a mistake at boot')
+end)
+
+t.test('CONTROL: and a kind they did NOT declare is still reported', function()
+    -- The whole value of the list is that it silences one thing. If it
+    -- silenced the check, the next genuinely forgotten kind goes unnoticed.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments.fit = { 'scope' }
+        config.Loadouts.attachments.deliberatelyUnfitted = { 'suppressor' }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'at_suppressor_heavy',
+                            flashlight = 'at_flashlight' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'NEVER PUTS ONE ON', 'a forgotten kind was silenced along with the declared one')
+    t.contains(report, 'flashlight', 'the report did not name the kind that really was forgotten')
+    t.notContains(report, '"suppressor" is fitted', 'the declared kind was reported anyway')
+end)
+
+t.test('CONTROL: an empty declaration changes nothing', function()
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments.fit = { 'scope' }
+        config.Loadouts.attachments.deliberatelyUnfitted = {}
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'at_suppressor_heavy' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'NEVER PUTS ONE ON',
+        'declaring nothing silenced the check, so the list is a switch rather than a list')
+end)
+
+t.test('and naming a kind in BOTH lists is reported as the contradiction it is', function()
+    -- The one thing the new list could newly hide. `fit` is what the code
+    -- reads, so a kind in both IS fitted while the config claims it never is
+    -- -- and staying quiet would leave the operator reading their own config
+    -- backwards.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments.fit = { 'scope', 'suppressor' }
+        config.Loadouts.attachments.deliberatelyUnfitted = { 'suppressor' }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'at_suppressor_heavy' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'BOTH', 'a config that contradicts itself was reported as fine')
+    t.contains(report, 'suppressor', 'the contradiction did not name the kind')
+end)
+
 os.exit(t.summary())

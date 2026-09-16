@@ -1378,6 +1378,49 @@ local OX_META = {
 --- ONLY FOREIGN KEYS, so this is not noise. A weapon's serial, ammo and
 --- durability are ox_inventory's own and are printed nowhere: on a round
 --- where nobody carries anything unusual this says nothing at all.
+--- The longest a single value is printed at before it is summarised.
+---
+--- A VALUE CAN BE FOREIGN AND STILL BE ENORMOUS, which this line did not
+--- allow for. `id_card` carries a `mugShot` holding a base64 PNG data URI --
+--- about four kilobytes of it -- and this printed the lot, twice per item
+--- (once in, once out), for every player, every round. One 1v1 put roughly
+--- sixteen kilobytes of base64 through the console and made the rest of the
+--- round's log unreadable, which is the opposite of what a diagnostic is for.
+local META_VALUE_MAX = 48
+
+--- One metadata value, short enough to read and still safe to compare.
+---
+--- TRUNCATION ALONE WOULD HAVE BROKEN THE ONE THING THIS LINE IS FOR. The
+--- whole point is the operator comparing the way in against the way out and
+--- seeing whether a key CHANGED; two different four-kilobyte mugshots both
+--- cut to their first 48 characters are identical on the page, so a cut on
+--- its own would have turned a working diagnostic into a silent one.
+---
+--- So a long value keeps its head -- which is the identifying part of a
+--- `data:` URI or a path -- and carries its length and a hash of the whole
+--- string. Different content, different hash, visible at a glance. The short
+--- values this was written for, `bagId` above all, are untouched and still
+--- print verbatim.
+--- @param value any
+--- @return string
+local function metaValue(value)
+    local text = tostring(value)
+    if #text <= META_VALUE_MAX then return text end
+
+    -- FNV-1a, folded to 32 bits. Not a cryptographic hash and does not need
+    -- to be: it answers "is this the same string as last time", on a console
+    -- line a human reads.
+    local hash = 2166136261
+    for i = 1, #text do
+        hash = ((hash ~ text:byte(i)) * 16777619) & 0xFFFFFFFF
+    end
+
+    -- NO SPACE ANYWHERE IN THE RESULT. The caller joins these into
+    -- `{ key=value key=value }`, so a value carrying a space splits into two
+    -- tokens and the line stops being parseable -- by a script or by the eye.
+    return ('%s...<%dc:%08x>'):format(text:sub(1, META_VALUE_MAX), #text, hash)
+end
+
 --- @param metadata table|nil
 --- @return string|nil
 local function foreignMeta(metadata)
@@ -1388,7 +1431,7 @@ local function foreignMeta(metadata)
         if type(key) == 'string' and not OX_META[key] then
             local kind = type(value)
             if kind == 'string' or kind == 'number' or kind == 'boolean' then
-                parts[#parts + 1] = key .. '=' .. tostring(value)
+                parts[#parts + 1] = key .. '=' .. metaValue(value)
             elseif kind == 'table' then
                 parts[#parts + 1] = key .. '=<table>'
             end
@@ -7580,17 +7623,42 @@ local function kindsNeverFitted()
     -- bare weapons on purpose and AttachmentKinds answers with an empty list
     -- for it; reporting all seven kinds as dead there is shouting about a
     -- switch the operator deliberately threw.
+    -- BOTH RETURNS ON EVERY PATH. The caller walks the second one with
+    -- ipairs, and handing it nil here took the whole start-up report down on
+    -- exactly the servers that had switched attachments off.
     local block = (Config.Loadouts or {}).attachments
-    if type(block) ~= 'table' or block.enabled ~= true then return {} end
+    if type(block) ~= 'table' or block.enabled ~= true then return {}, {} end
 
     local fitted = {}
     for _, kind in ipairs(Arena.AttachmentKinds()) do fitted[kind] = true end
 
-    local dead = {}
+    -- AND NOT WHEN THE OPERATOR HAS ALREADY SAID THEY MEANT IT.
+    --
+    -- THIS REPORT WAS RIGHT ABOUT THE MECHANISM AND WRONG ABOUT THE MEANING.
+    -- It found `suppressor` configured on 39 weapons and never fitted, and
+    -- called those rows dead -- which they were, and on purpose: a suppressed
+    -- shot does not put the shooter on the minimap, so leaving the kind out
+    -- of `fit` is a balance decision this repository has a test for.
+    --
+    -- Shouting a settled decision at every boot is how a console line stops
+    -- being read, and the next warning -- about a kind somebody really did
+    -- forget -- gets scrolled past with it. That failure mode is the whole
+    -- reason this file says things once.
+    --
+    -- So `deliberatelyUnfitted` is the operator answering back, and the only
+    -- kinds it silences are the ones they named.
+    local onPurpose = {}
+    for _, kind in ipairs(type(block.deliberatelyUnfitted) == 'table'
+        and block.deliberatelyUnfitted or {})
+    do
+        if Arena.IsKey(kind) then onPurpose[kind] = true end
+    end
+
+    local dead, contradicted = {}, {}
     for weapon, row in pairs(Config.Loadouts.weaponAttachments or {}) do
         if type(row) == 'table' then
             for kind in pairs(row) do
-                if Arena.IsKey(kind) and not fitted[kind] then
+                if Arena.IsKey(kind) and not fitted[kind] and not onPurpose[kind] then
                     dead[kind] = dead[kind] or {}
                     dead[kind][#dead[kind] + 1] = tostring(weapon)
                 end
@@ -7598,8 +7666,17 @@ local function kindsNeverFitted()
         end
     end
 
+    -- BOTH LISTS AT ONCE IS NOT A PREFERENCE, IT IS A CONTRADICTION, and it
+    -- is the one thing `deliberatelyUnfitted` could newly hide: a kind named
+    -- there AND in `fit` is being fitted while the config says it never is.
+    -- Silence would leave the operator reading their own config backwards.
+    for kind in pairs(onPurpose) do
+        if fitted[kind] then contradicted[#contradicted + 1] = kind end
+    end
+    table.sort(contradicted)
+
     for _, weapons in pairs(dead) do table.sort(weapons) end
-    return dead
+    return dead, contradicted
 end
 
 --- What the start-up check found, as lines.
@@ -7623,7 +7700,17 @@ function ArenaAmmo.AttachmentReport()
     -- Behind any of the returns that follow it would be hidden on exactly the
     -- servers where the rest of the report cannot be taken, which are not the
     -- servers that deserve to be told less.
-    local dead = kindsNeverFitted()
+    local dead, contradicted = kindsNeverFitted()
+
+    -- SAID FIRST, because a config that contradicts itself is worth more of
+    -- the operator's attention than a config that is merely incomplete.
+    for _, kind in ipairs(contradicted) do
+        say('attachments: "%s" is named in BOTH Config.Loadouts.attachments.fit AND '
+            .. '.deliberatelyUnfitted. It IS being fitted -- `fit` is what the code reads -- so '
+            .. 'the second list is saying something untrue about this server. Take "%s" out of '
+            .. 'whichever of the two you did not mean.', kind, kind)
+    end
+
     local deadKinds = {}
     for kind in pairs(dead) do deadKinds[#deadKinds + 1] = kind end
     table.sort(deadKinds)

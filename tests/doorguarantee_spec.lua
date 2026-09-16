@@ -574,6 +574,8 @@ local function newServer(ids, mutate, extra, opts)
     end
 
     function server.log() return table.concat(console, '\n') end
+    --- The console as separate lines, for assertions about ONE line's length.
+    server.lines = console
 
     --- Makes one player's arena stash read EMPTY without emptying it.
     --- @param src integer
@@ -3505,6 +3507,99 @@ function()
         'the door never gave up on a list that is never coming')
     t.isTrue(server.carrying(1):find('phone', 1, true) ~= nil,
         'THE DOOR STAYED SHUT FOR EVER -- the player cannot get their own belongings back')
+end)
+
+-- ========================================================================
+-- AND THE DIAGNOSTIC MUST NOT BURY THE LOG IT IS PRINTED IN
+-- ========================================================================
+--
+-- The line above is a diagnostic: it prints the foreign metadata an item
+-- carried on the way in, so an operator can compare it with the way out and
+-- see whether a key CHANGED. `bagId` is what it was written for.
+--
+-- But a foreign key can be enormous. `id_card` carries `mugShot`, a base64
+-- PNG data URI of about four kilobytes, and this printed all of it -- twice
+-- per item, for every player, every round. Seen on the owner's own server:
+-- one 1v1 put roughly sixteen kilobytes of base64 through the console and
+-- made the rest of the round unreadable.
+--
+-- Cutting it is not enough on its own, and that is the trap: two DIFFERENT
+-- four-kilobyte mugshots share their first 48 characters, so a bare
+-- truncation would have left the line looking identical whether the value
+-- changed or not -- a diagnostic that always says "unchanged" is worse than
+-- none. So a long value keeps its head, its length and a hash of the whole
+-- string.
+
+--- A long value whose first 48 characters are IDENTICAL whatever `tail` is.
+---
+--- The difference has to sit past the cut or the test is not testing the cut:
+--- two mugshots that differ in their first few bytes survive a bare
+--- truncation and the assertion below passes without the hash doing anything.
+--- Real base64 PNGs of the same size share a long header exactly like this.
+local function longMeta(tail)
+    return 'data:image/png;base64,' .. string.rep('iVBORw0KGgoA', 400) .. (tail or '')
+end
+
+t.test('THE DEFECT: a four-kilobyte mugshot does not go through the console whole', function()
+    local server = newServer({ 1, 2 }, nil, {
+        { name = 'id_card', count = 1, metadata = { citizenid = 'CID1', mugShot = longMeta('AAAA') } },
+    })
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    for _, line in ipairs(server.lines) do
+        t.isTrue(#line < 800,
+            ('a %d-character line reached the console log -- the metadata dump is unbounded'):format(#line))
+    end
+end)
+
+t.test('and the short keys it was written for are still printed whole', function()
+    -- `bagId` is the entire reason this line exists. Summarising THAT would
+    -- answer the question it was added to answer with a hash nobody can act on.
+    local server = newServer({ 1, 2 }, nil, {
+        { name = 'leo_bag', count = 1, metadata = { bagId = 'CID1-LEO-7' } },
+    })
+
+    local matchId = bagRound(server, { 1, 2 })
+    server.match.End(matchId, 'match.ended')
+    server.step(12)
+
+    t.contains(server.log(), 'bagId=CID1-LEO-7',
+        'the id the whole diagnostic exists to show was cut or summarised')
+end)
+
+t.test('and two DIFFERENT long values still read differently', function()
+    -- The property a bare truncation would have destroyed. Same length, same
+    -- first 48 characters, different content -- the line has to tell them
+    -- apart or it cannot answer "did this key change".
+    local a = newServer({ 1, 2 }, nil, {
+        { name = 'id_card', count = 1, metadata = { mugShot = longMeta('AAAA') } },
+    })
+    local b = newServer({ 1, 2 }, nil, {
+        { name = 'id_card', count = 1, metadata = { mugShot = longMeta('BBBB') } },
+    })
+
+    for _, server in ipairs({ a, b }) do
+        local matchId = bagRound(server, { 1, 2 })
+        server.match.End(matchId, 'match.ended')
+        server.step(12)
+    end
+
+    local function shotLine(server)
+        for _, line in ipairs(server.lines) do
+            local found = line:match('mugShot=(%S+)')
+            if found then return found end
+        end
+        return nil
+    end
+
+    local first, second = shotLine(a), shotLine(b)
+    t.isNotNil(first, 'no mugShot line was printed at all, so this proves nothing')
+    t.isNotNil(second, 'no mugShot line was printed for the second value')
+    t.isTrue(first ~= second,
+        'TWO DIFFERENT MUGSHOTS PRINTED IDENTICALLY -- the line can no longer show that a key changed')
 end)
 
 os.exit(t.summary())

@@ -757,6 +757,10 @@ local function pushAdmin(src, matchId)
             -- see it cannot tell a quiet server from one being farmed.
             owedKit = withHolders(ArenaAmmo.OwedKit()),
             owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
+            -- THE MONEY SLATE'S OWN ANSWER, beside the kit slate's. The
+            -- kit one has been on this screen for a long time; the one
+            -- holding actual cash was never asked.
+            owedMoneySaved = ArenaBetting.UnpaidIsSaved(),
             databaseOn = Config.Database.enabled == true,
             stashesFound = total,
             stashesRead = read,
@@ -1143,6 +1147,10 @@ RegisterCommand('arenaadmin', function(src, args)
             owed = {},
             owedKit = withHolders(ArenaAmmo.OwedKit()),
             owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
+            -- THE MONEY SLATE'S OWN ANSWER, beside the kit slate's. The
+            -- kit one has been on this screen for a long time; the one
+            -- holding actual cash was never asked.
+            owedMoneySaved = ArenaBetting.UnpaidIsSaved(),
             databaseOn = Config.Database.enabled == true,
             stashesFound = 0,
             stashesRead = 0,

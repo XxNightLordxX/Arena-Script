@@ -555,6 +555,13 @@ local unpaidLoaded = false
 local unpaidReading = false
 local unpaidWriteRefused = false
 
+--- Whether the money slate has been proved to exist in the database.
+---
+--- SET BY A SUCCESSFUL READ, not by sending the CREATE. The same distinction
+--- server/ammo.lua draws for the kit slate, for the same reason: a statement
+--- this resource sent is not evidence the table is there and readable.
+local unpaidSchemaConfirmed = false
+
 --- Watches whether a write actually landed, and says so ONCE.
 ---
 --- A READ IS NOT EVIDENCE OF A WRITE. The commonest careful production setup
@@ -1007,6 +1014,7 @@ local function loadUnpaid()
             end
 
             unpaidLoaded = true
+            unpaidSchemaConfirmed = true
 
             -- AND THE HELD-BACK INSERTS GO OUT NOW, not at the next sweep.
             -- Everything queued while the ledger was unread has just been
@@ -1048,6 +1056,33 @@ end
 --- @param account string|nil -- the account it was taken FROM
 --- @param reason string|nil
 --- @return boolean recorded -- false when there is no citizen id to file under
+--- Whether the money slate is being written somewhere that survives a
+--- restart.
+---
+--- THE DEFERRED-REFUND LINE PROMISED SOMETHING NOBODY COULD CHECK. When a
+--- refund cannot be delivered the console says it "will be paid when they are
+--- next seen", and that is true for the length of one uptime whatever the
+--- database is doing -- `owe` records the debt in memory first and cannot be
+--- stopped by a database that is off, down or read-only, which is the right
+--- order and is not changing.
+---
+--- But on the SHIPPED config `Config.Database.enabled` is false, so the
+--- mirror writes nowhere and a restart forgets the debt -- and the sentence
+--- read exactly the same either way. The kit slate solved this a long time
+--- ago with ArenaAmmo.OwedKitIsSaved, which the admin tablet reports; the
+--- money slate, which is the one holding actual cash, had no equivalent at
+--- all.
+---
+--- ASK THE SAME GATE THE WRITES GO THROUGH rather than restating it, so the
+--- screen an operator reads cannot disagree with the code that decides
+--- whether to send the write.
+--- @return boolean
+function ArenaBetting.UnpaidIsSaved()
+    return unpaidSchemaConfirmed
+        and not unpaidWriteRefused
+        and ArenaDbReady(UNPAID_SUBJECT)
+end
+
 local function owe(citizenid, name, amount, account, reason)
     local id = Arena.IsKey(citizenid) and citizenid or nil
     local value = math.max(0, Arena.ToInt(amount) or 0)
@@ -1566,9 +1601,14 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
         if owe(stake.citizenid, stake.name or id, stake.amount, stake.account, reasonKey) then
             stake.settled = true
             stake.settledAs = 'owed'
+            -- AND WHETHER THAT PROMISE OUTLIVES A RESTART, because it does
+            -- not always and the sentence used to read the same either way.
             ArenaLog('REFUND DEFERRED: %d owed to %s (citizenid %s) could not be delivered on match %s -- ' ..
-                'they are not on the server. It is recorded against their character and will be paid when they are next seen.',
-                stake.amount, tostring(stake.name or id), tostring(stake.citizenid), tostring(matchId))
+                'they are not on the server. It is recorded against their character and will be paid when they are next seen.%s',
+                stake.amount, tostring(stake.name or id), tostring(stake.citizenid), tostring(matchId),
+                ArenaBetting.UnpaidIsSaved() and ''
+                    or ' THIS DEBT IS HELD IN MEMORY ONLY -- the database is off or cannot be written to,'
+                        .. ' so a restart forgets it and nobody is paid. /arenaadmin lists what is owed.')
         else
             ArenaLog('REFUND FAILED: %d owed to %s (citizenid %s) on match %s -- the stake stays held, ' ..
                 'and there is no citizen id to file it against.',

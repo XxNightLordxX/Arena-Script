@@ -32,6 +32,7 @@ print('unpaidreplay_spec')
 ---                         the money becomes a debt
 local function newArena(control)
     control = control or {}
+    local waits = 0
 
     local stored = {}
     local wallets = { [1] = { cash = 500, bank = 0 } }
@@ -101,7 +102,24 @@ local function newArena(control)
             return name == 'oxmysql' and 'started' or 'missing'
         end,
         GetPlayers = function() return { '1' } end,
-        Wait = function() end,
+        -- A BOUNDED Wait, BECAUSE THE ALTERNATIVE IS A HANG.
+        --
+        -- CreateThread here runs the body to completion and Wait does
+        -- nothing, so any `while true do ... Wait(n) end` in the resource
+        -- spins forever instead of yielding. betting.lua has exactly that:
+        -- the loop that retries reading the money slate until it lands. With
+        -- the database reachable it lands on the first pass and returns; with
+        -- the database OFF it never does, and loading the file never
+        -- returns. That cost a debugging session, and a hang is the worst
+        -- failure a suite can give you -- no output, no name, no line.
+        Wait = function()
+            waits = waits + 1
+            if waits > 10000 then
+                error('Wait called 10000 times -- a `while true` loop in the resource is spinning '
+                    .. 'because this fixture never yields. Load with the database reachable, or '
+                    .. 'drive that loop by hand.', 2)
+            end
+        end,
         CreateThread = function(fn) fn() end,
         SetTimeout = function() end,
         AddEventHandler = function() end,
@@ -119,14 +137,22 @@ local function newArena(control)
         ArenaPlayerName = function(src) return 'P' .. tostring(src) end,
     })
 
-    env.Config.Database = { enabled = true }
+    -- `not control.databaseOff`, NOT `control.databaseOff and false or true`.
+    -- That idiom is a trap in Lua and it bit here: `true and false` is
+    -- false, and `false or true` is true, so the switch was stuck ON and the
+    -- database-off test silently ran with the database on.
+    env.Config.Database = { enabled = not control.databaseOff }
     -- The sweep is a `while true` and CreateThread runs a body to completion,
     -- so it is switched off and driven by hand.
     env.Config.Betting.refundRetrySeconds = 0
 
     Sandbox.loadInto('../Crimson-Arena/server/util.lua', env)
     env.ArenaGetPlayer = playerFor
-    env.ArenaLog = function() end
+    local console = {}
+    env.ArenaLog = function(fmt, ...)
+        local ok, text = pcall(string.format, fmt, ...)
+        console[#console + 1] = ok and text or tostring(fmt)
+    end
     env.ArenaDebug = function() end
     Sandbox.loadInto('../Crimson-Arena/server/betting.lua', env)
 
@@ -141,6 +167,7 @@ local function newArena(control)
             return n
         end,
         cash = function(src) return wallets[src].cash end,
+        log = function() return table.concat(console, '\n') end,
     }
 end
 
@@ -213,6 +240,62 @@ t.test('a late read does not reinstate a debt whose drop is still in flight', fu
     -- is a photograph taken before the payment.
     t.equals(s.betting.Outstanding(), 0,
         'the payment did not settle in memory, so the merge is not being tested')
+end)
+
+-- ========================================================================
+-- AND THE PROMISE HAS TO SAY WHETHER IT OUTLIVES A RESTART
+-- ========================================================================
+--
+-- When a refund cannot be delivered the console says the money "will be paid
+-- when they are next seen". That is true for the length of one uptime
+-- whatever the database is doing, because `owe` records the debt in memory
+-- FIRST and cannot be stopped by a database that is off -- which is the
+-- right order and is not what these tests are about.
+--
+-- What they are about is that on the SHIPPED config Config.Database.enabled
+-- is FALSE, so nothing is mirrored and a restart forgets the debt entirely
+-- -- and the sentence read exactly the same either way. The kit slate has
+-- had ArenaAmmo.OwedKitIsSaved on the admin screen for a long time; the
+-- slate holding actual cash had no equivalent at all.
+
+t.test('CONTROL: with the database on and read back, the slate reports itself saved', function()
+    local s = newArena()
+    s.betting.SweepUnpaid()
+    t.isTrue(s.betting.UnpaidIsSaved(),
+        'a working database reports the money slate as unsaved, so the warning would never stop')
+end)
+
+t.test('and the deferred-refund line carries no warning in that case', function()
+    local s = newArena()
+    s.betting.SweepUnpaid()
+    debtOf(s)
+
+    t.contains(s.log(), 'REFUND DEFERRED', 'no refund was deferred, so this proves nothing')
+    t.notContains(s.log(), 'MEMORY ONLY',
+        'a server whose slate IS saved was warned that it is not')
+end)
+
+t.test('THE DEFECT: with the database off, the same line says the debt dies at the restart', function()
+    -- SWITCHED OFF AFTER THE LOAD, not before it. betting.lua retries
+    -- reading the slate in a `while true` loop until it lands, and this
+    -- fixture's CreateThread runs a body to completion without yielding --
+    -- so loading the file with the database already off never returns. What
+    -- is being tested is the same either way: whether the console tells an
+    -- operator that this debt does not survive a restart.
+    local s = newArena()
+    s.env.Config.Database.enabled = false
+    debtOf(s)
+
+    t.contains(s.log(), 'REFUND DEFERRED', 'no refund was deferred, so this proves nothing')
+    t.contains(s.log(), 'MEMORY ONLY',
+        'the console promised the money would be paid and said nothing about the restart that forgets it')
+end)
+
+t.test('and the slate says so when asked directly', function()
+    local s = newArena()
+    s.env.Config.Database.enabled = false
+    t.isFalse(s.betting.UnpaidIsSaved(),
+        'the money slate claims to be saved on a server with no database at all')
 end)
 
 os.exit(t.summary())

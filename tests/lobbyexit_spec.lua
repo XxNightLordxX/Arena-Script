@@ -134,6 +134,13 @@ local function newServer(mutate)
             Revive = function(src)
                 dispatch.revived = dispatch.revived or {}
                 dispatch.revived[#dispatch.revived + 1] = src
+                -- WAS THE FLAG ALREADY UP WHEN THE REVIVE RAN. The real
+                -- ArenaDispatch.Revive ends by calling RetractCallsFor,
+                -- which refuses to withdraw anything for a player it cannot
+                -- see a claim on -- so this is the whole difference between
+                -- entry-time retraction working and silently doing nothing.
+                dispatch.flaggedAtRevive = dispatch.flaggedAtRevive or {}
+                dispatch.flaggedAtRevive[src] = flags[src] ~= nil
             end,
             IsPlayerInArena = function(src) return flags[src] ~= nil end,
             GetPlayerMatchId = function(src) return flags[src] end,
@@ -932,6 +939,41 @@ t.test('CONTROL: a roster actually teleported in still blocks the hold', functio
     local ok, why = server.lobby.HoldCountdown(1)
     t.isFalse(ok, 'a roster standing in the arena no longer stops the countdown being held')
     t.equals(why, 'error.match_in_progress', 'refused, but for the wrong reason')
+end)
+
+-- ------------------------------------------------------------------------
+-- THE FLAG HAS TO BE UP BEFORE THE REVIVE, NOT AFTER IT.
+--
+-- ArenaDispatch.Revive ends by calling RetractCallsFor, which withdraws any
+-- police or medical call the server's dispatch script already filed about
+-- this player. That function deliberately refuses to act for somebody it
+-- cannot see a claim on -- asking for call ids blind would otherwise clear a
+-- REAL ambulance off the responders' screen.
+--
+-- ArenaMatch.Start called Revive BEFORE Set, so at entry there was no claim
+-- yet and the retraction did nothing, saying so in the debug log:
+--
+--   retract: 1 is not in a match and did not just leave one -- withdrew nothing.
+--
+-- Intermittent rather than simply broken: a fighter who had been in a round
+-- within the last minute still carried the `leftAt` grace, so it worked for
+-- them and not for the player walking in fresh.
+
+t.test('THE DEFECT: a fighter is flagged before the arena tries to revive them', function()
+    local server, matchId = liveRound()
+    local match = server.lobby.Get(matchId)
+    t.isNotNil(match, 'the round never started')
+
+    local seen = server.dispatch.flaggedAtRevive or {}
+    local checked = 0
+    for src in pairs(match.players) do
+        t.isNotNil(seen[src], ('player %d was never revived at entry at all'):format(src))
+        t.isTrue(seen[src],
+            ('player %d was revived BEFORE being flagged, so entry-time call retraction did nothing')
+                :format(src))
+        checked = checked + 1
+    end
+    t.isTrue(checked > 0, 'no fighters were examined, so this proves nothing')
 end)
 
 os.exit(t.summary())

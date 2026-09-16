@@ -585,12 +585,13 @@ listed; the source documents them where they are.
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |
 
-#### `server/betting.lua` — 35 functions
+#### `server/betting.lua` — 36 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaBetting.Accounts()` | The accounts a player may be asked to choose between, in the operator's own order. |
 | `ArenaBetting.Wallet(src)` | What one player holds in each of them, for the panel's own display. |
+| `ArenaBetting.UnpaidIsSaved()` | Whether the money the arena still owes players is being written somewhere that survives a restart. False with `Config.Database.enabled` off, which is the shipped default -- the debt still holds for this run, but a restart forgets it, and the deferred-refund line says so. |
 | `ArenaBetting.BetsAreOpen(match)` | Whether the book is still taking side-bets on this match, for a WATCHER. |
 | `ArenaBetting.FighterBetsAreOpen(match)` | The same question for somebody fighting in it, which shuts the moment the round goes live. |
 | `ArenaBetting.SecondsUntilBetsClose(match)` | Seconds until the book shuts on a live round, or nil when there is no window to wait on. |

@@ -1094,9 +1094,32 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
     -- Harmless for the overwhelming majority who walk in alive: reviving
     -- somebody who is already up is what the medical script is asked to
     -- ignore, and it does.
-    ArenaDispatch.Revive(player.src)
-
+    -- THE FLAG GOES UP FIRST, AND THE ORDER IS THE WHOLE POINT.
+    --
+    -- ArenaDispatch.Revive ends by calling RetractCallsFor, which withdraws
+    -- any police or medical call this server's dispatch script has already
+    -- filed about this player. That function refuses to act for somebody it
+    -- cannot see a claim on -- `active[src] == nil` and not recently left --
+    -- because asking for call ids blind would otherwise clear a REAL
+    -- ambulance off the responders' screen.
+    --
+    -- Run the other way round, as this was, the flag did not exist yet, so
+    -- entry-time retraction did nothing at all and said so:
+    --
+    --   retract: 1 is not in a match and did not just leave one -- withdrew
+    --   nothing.
+    --
+    -- WORSE THAN SIMPLY BROKEN, it was intermittent: a fighter who had been
+    -- in a round within the last minute still carried `leftAt`, so the same
+    -- code path worked for them and not for the player walking in fresh.
+    -- That is the shape of a safety net nobody notices is gone.
+    --
+    -- It matters most on exactly the servers this layer is for -- one whose
+    -- dispatch resource starts BEFORE this one and answers a death first, so
+    -- the call filed as the round begins is the one that needs withdrawing.
     ArenaDispatch.Set(player.src, match.id)
+
+    ArenaDispatch.Revive(player.src)
 
     local missingAmmo = ArenaAmmo.Issue(player.src, match.id, player.loadout)
     if #missingAmmo > 0 then

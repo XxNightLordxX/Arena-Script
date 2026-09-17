@@ -24,9 +24,25 @@
 
     Any one of those is enough. None of them is dead code.
 
-    luacheck already catches an unused `local function`; this is about the
-    public ones -- `function Arena.Thing()` -- which are globals on a shared
-    table and which no linter can see the far end of.
+    THIS IS ABOUT THE PUBLIC ONES -- `function Arena.Thing()` -- which are
+    globals on a shared table and which no linter can see the far end of.
+    That is still the right scope. What has changed is the reason.
+
+    This used to read "luacheck already catches an unused `local function`",
+    and when it was written that was true: there was a .luacheckrc and a
+    luacheck gate in CI. Both are gone -- .github/workflows/checks.yml says
+    so in its own header -- so NOTHING now catches a dead file-local.
+
+    That is not hypothetical. `mirror` in server/betting.lua sat dead for a
+    week: its last caller was deleted on 2026-09-10 when the wrap was inlined
+    into sendAdd, a comment above it went on describing it as live, and this
+    spec could not see it because it is a local. A four-way audit found it by
+    reading, not by testing.
+
+    So a dead file-local is found by review here, and by nothing else. If
+    that becomes a habit rather than an incident, widen this spec -- but
+    mind the forward declarations (markWeaponOut, strikeWeaponOff), which
+    look unused at their `local` line and are assigned further down.
 ]]
 
 local t = dofile('testkit.lua')

@@ -594,28 +594,30 @@ local function partKey(account, reason)
         Arena.IsKey(reason) and reason or '')
 end
 
---- WRAPPED, AND THE WRAP IS NOT BELT AND BRACES. Both of these run on the
---- money path -- `owe` is the line inside each payout loop that catches what
---- a winner could not be handed -- and losing the durable copy must NEVER
---- take the payout down with it. ArenaDb already swallows what oxmysql
---- throws; this covers everything above oxmysql, an operator's Config among
---- it. What is in memory is the live answer and the table is the backup of
---- it, so a backup that fails is a line in the log and nothing more. DO NOT
---- unwrap these.
+--- WHETHER A MIRROR WRITE HAS ALREADY THROWN AND BEEN REPORTED.
+---
+--- THE WRAPS ARE NOT BELT AND BRACES, and this flag is what keeps them
+--- quiet. Both sendAdd and sendDrop run on the money path -- `owe` is the
+--- line inside each payout loop that catches what a winner could not be
+--- handed -- and losing the durable copy must NEVER take the payout down
+--- with it. ArenaDb already swallows what oxmysql throws; the pcalls around
+--- those two cover everything ABOVE oxmysql, an operator's Config among it.
+--- What is in memory is the live answer and the table is the backup of it,
+--- so a backup that fails is a line in the log and nothing more. DO NOT
+--- unwrap them.
+---
+--- SAID ONCE, which is this flag's whole job. Those calls fire per debt and
+--- per collection; an operator whose Config or database wrapper is broken
+--- needs telling, not spamming. DO NOT make it a counter that resets.
+---
+--- THERE USED TO BE A `mirror` FUNCTION HERE holding both the pcall and the
+--- warning, and this comment described it. Its last caller went on
+--- 2026-09-10 when the wrap was inlined into sendAdd, and sendDrop grew its
+--- own copy after that -- so the function sat here for a week being defended
+--- by a comment while nothing called it. tests/deadcode_spec.lua could not
+--- see it: that spec only polices PUBLIC functions, having delegated file
+--- locals to a luacheck gate this repository no longer runs.
 local mirrorThrew = false
-
-local function mirror(sql, params)
-    local ok, err = pcall(function() ArenaDb(UNPAID_SUBJECT, sql, params, unpaidWrote) end)
-    if ok or mirrorThrew then return end
-
-    -- SAID ONCE. These fire per debt and per collection; an operator whose
-    -- Config or database wrapper is broken needs telling, not spamming. DO
-    -- NOT make this a counter that resets.
-    mirrorThrew = true
-    ArenaLog('betting: money the arena owes players could not be written down (%s), so a restart '
-        .. 'will forget it. It is still kept in memory for this run and paid to anyone who comes '
-        .. 'back before then.', tostring(err))
-end
 
 -- ======================================================================
 -- AN ADD THAT NEVER REACHED THE DATABASE CUT THE DEBT ON THE NEXT START

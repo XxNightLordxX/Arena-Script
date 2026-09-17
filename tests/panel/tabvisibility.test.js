@@ -15,6 +15,7 @@
 */
 
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 const { loadPanel } = require('./harness');
 
@@ -107,9 +108,56 @@ function tabOnBar(panel, name) {
     assert.ok(panel.inMarkup('tab-btn-' + name),
         'there is no ' + name + ' tab button in html/index.html at all');
 
+    /* AND THE PANEL THE BUTTON OPENS. The line right after the button lookup
+       is `show(byId('tab-' + name), ...)`, built the same way and just as
+       invisible -- so guarding only the button left half the control
+       unguarded, and a tab whose CONTENT had gone would still read as
+       present. */
+    assert.ok(panel.inMarkup('tab-' + name),
+        'there is no ' + name + ' tab PANEL in html/index.html at all');
+
     const button = panel.node('tab-btn-' + name);
     return !button.classList.contains('hidden');
 }
+
+/**
+ * The tab names the panel really iterates, read out of app.js rather than
+ * typed here -- so a tab added to TABS and forgotten in the markup fails this
+ * file instead of shipping a button that opens nothing.
+ */
+function tabNames() {
+    const source = fs.readFileSync(path.join(ROOT, 'html', 'app.js'), 'utf8');
+    const line = source.match(/var TABS = \[([^\]]+)\]/);
+    assert.ok(line, 'app.js no longer declares TABS the way this test reads it');
+
+    const names = line[1].split(',')
+        .map(function (part) { return part.trim().replace(/^['"]|['"]$/g, ''); })
+        .filter(function (part) { return part.length > 0; });
+
+    assert.ok(names.length > 0, 'no tab names were read out of app.js at all');
+    return names;
+}
+
+test('EVERY tab the panel iterates ships BOTH a button and a panel', () => {
+    /* NEITHER IS CHECKED ANYWHERE ELSE. verify_contracts only validates ids
+       app.js looks up by LITERAL name, and both of these are reached as
+       `byId('tab-btn-' + name)` and `byId('tab-' + name)` -- built at run
+       time. The harness invents a node for any id asked of it, so every
+       assertion through node() was true whatever the markup said.
+
+       READ FROM app.js, not typed here, so adding a tab and forgetting the
+       markup fails this rather than shipping a dead button. */
+    const panel = loadPanel(ROOT);
+
+    tabNames().forEach(function (name) {
+        assert.ok(panel.inMarkup('tab-btn-' + name),
+            'app.js iterates the "' + name + '" tab but html/index.html has no '
+            + 'tab-btn-' + name + ' button');
+        assert.ok(panel.inMarkup('tab-' + name),
+            'app.js iterates the "' + name + '" tab but html/index.html has no '
+            + 'tab-' + name + ' panel for it to open');
+    });
+});
 
 test('Bets is gone when the server has betting switched off', () => {
     const snap = snapshot(false);

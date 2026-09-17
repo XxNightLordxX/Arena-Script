@@ -846,15 +846,16 @@ t.test('the attachment reading can be taken without a restart', function()
 end)
 
 t.test('and so can the hold list, which had no caller at all before', function()
-    -- ArenaAmmo.UnjamCommand is what `/arenaadmin unjam` calls. It takes no
-    -- src and checks no permission ON PURPOSE -- /arenaadmin refuses a
-    -- non-admin before it reads a word of what was typed -- so what is
-    -- checked here is that it answers rather than throws.
+    -- ArenaAmmo.JamReport is what the tablet's Tools -> Held-back stashes
+    -- draws. It takes no src and checks no permission ON PURPOSE: the event
+    -- that presses it refuses a non-admin first. What is checked here is that
+    -- it answers rather than throws.
     local f = newKit()
-    t.isTrue(type(f.ammo.UnjamCommand) == 'function',
+    t.isTrue(type(f.ammo.JamReport) == 'function',
         'nothing can list the held-back stashes at all')
-    local ok = pcall(f.ammo.UnjamCommand, {})
+    local ok, lines = pcall(f.ammo.JamReport)
     t.isTrue(ok, 'listing the held-back stashes threw')
+    t.isTrue(type(lines) == 'table' and #lines > 0, 'the listing came back with nothing to show')
 end)
 
 t.test('an unknown name is refused on an ox_inventory that answers with FALSE', function()

@@ -547,7 +547,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 27 functions
+#### `server/ammo.lua` — 26 functions
 
 | Function | What it does |
 |---|---|
@@ -566,7 +566,6 @@ listed; the source documents them where they are.
 | `ArenaAmmo.JamReport()` | The same reading /arenaunjam prints when asked for nothing in particular, as lines. Read-only: it names what is held back and points at the Stashes tab, and clears nothing itself. |
 | `ArenaAmmo.Unjam(stash)` | Lets the door use one of those stashes again, once a human has settled it. The mechanism, not the judgement — go through `ClearHold`. Never automatic: an empty read is what ox_inventory says about an inventory it has not loaded, so only a person can say a jam is over. |
 | `ArenaAmmo.ClearHold(stash, forced)` | The one gate both ways of clearing a hold go through — `/arenaunjam` and the tablet's **Clear the hold**. Refuses a stash that still holds rows, or one that cannot be read, unless the operator has said they have looked at it. |
-| `ArenaAmmo.UnjamCommand(args)` | What `/arenaadmin unjam` runs: with nothing after it, lists every held-back stash and what is still in each; with a name, or `all`, clears through `ClearHold`. Assumes its caller has already checked the permission — `/arenaadmin` refuses a non-admin before reading what was typed. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server: outstanding stashes handed back, and any arena kit that left with a character taken off them. |

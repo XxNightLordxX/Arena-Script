@@ -1987,13 +1987,34 @@ local function strippedNextRound(server)
     return server.carrying(1):find('burgerx3', 1, true) == nil
 end
 
+--- Presses Clear the hold on the tablet, as an admin standing in the game.
+---
+--- NOT FROM THE CONSOLE, and the reason is worth keeping: ArenaRateLimit
+--- refuses src 0 outright, because a net event comes from a client and the
+--- server console is not one. Firing these as src 0 looked like it worked --
+--- no error, nothing in the log -- and asserted nothing at all.
+---
+--- The admin check is stubbed rather than ace-granted because this fixture's
+--- IsPlayerAceAllowed answers false for everybody; who may press the button is
+--- tests/admintablet_spec.lua's subject, not this file's.
+local function unjam(server, stash, forced)
+    local was = server.env.ArenaIsAdmin
+    server.env.ArenaIsAdmin = function() return true end
+    server.fire('adminUnjam', 1, { stash = stash, force = forced == true })
+    server.env.ArenaIsAdmin = was
+end
+
 t.test('a jammed stash is listed, with what is still in it', function()
+    -- THE LISTING IS A TABLET REPORT NOW -- Tools -> Held-back stashes --
+    -- rather than a console command, so this asserts the lines that report
+    -- hands back rather than what a command printed. Same function, same
+    -- words, and it is the one an operator actually reads.
     local server = jammedBySurplus()
 
-    server.command('arenaadmin', 0, 'unjam')
+    local report = table.concat(server.ammo.JamReport(), '\n')
 
-    t.contains(server.log(), 'crimson_arena_CID1')
-    t.contains(server.log(), 'STILL IN IT',
+    t.contains(report, 'crimson_arena_CID1')
+    t.contains(report, 'STILL IN IT',
         'the listing did not say the stash has things in it, which is the whole decision')
 end)
 
@@ -2006,10 +2027,10 @@ t.test('DEFECT: clearing a jam on a stash that still holds something is REFUSED'
     -- console would have done that to every parked surplus at once.
     local server = jammedBySurplus()
 
-    server.command('arenaadmin', 0, 'unjam', 'crimson_arena_CID1')
+    unjam(server, 'crimson_arena_CID1')
 
     t.isNil(server.log():find('no longer held back', 1, true), 'it cleared a stash that still had a surplus in it')
-    t.contains(server.log(), 'duplication the jam was protecting against')
+    t.contains(server.log(), 'would put those back inside the next ceiling')
     t.equals(jamsStanding(server), 1, 'the jam cleared anyway, so the surplus is live again')
 end)
 
@@ -2017,7 +2038,7 @@ t.test('and once it has been settled by hand, it clears and the door uses it aga
     local server = jammedBySurplus()
 
     server.emptyStash('crimson_arena_CID1')      -- the admin took the surplus out
-    server.command('arenaadmin', 0, 'unjam', 'crimson_arena_CID1')
+    unjam(server, 'crimson_arena_CID1')
 
     t.contains(server.log(), 'no longer held back')
     t.equals(jamsStanding(server), 0, 'the jam never cleared')
@@ -2028,7 +2049,7 @@ t.test('and `force` clears one that still holds something, for an operator who h
     -- theirs -- but it has to be said out loud rather than be the default.
     local server = jammedBySurplus()
 
-    server.command('arenaadmin', 0, 'unjam', 'crimson_arena_CID1', 'force')
+    unjam(server, 'crimson_arena_CID1', true)
 
     t.contains(server.log(), 'no longer held back')
     t.equals(jamsStanding(server), 0, 'even force did not clear it')
@@ -2039,8 +2060,8 @@ t.test('and a jam that has not been cleared still holds', function()
     -- must a name that is not jammed.
     local server = jammedBySurplus()
 
-    server.command('arenaadmin', 0, 'unjam')
-    server.command('arenaadmin', 0, 'unjam', 'crimson_arena_CID9')
+    server.ammo.JamReport()
+    unjam(server, 'crimson_arena_CID9')
 
     t.equals(jamsStanding(server), 1, 'the jam cleared itself')
 end)
@@ -2051,11 +2072,23 @@ t.test('and a player who is not an admin cannot clear one', function()
     server.match.End(matchId, 'match.ended')
     server.step(8)
 
-    -- 1 is a player, not the console, and holds no admin group here.
-    server.command('arenaadmin', 1, 'unjam', 'crimson_arena_CID1')
+    -- SRC 3, WHO HAS FIRED NOTHING YET, and that is the whole of what makes
+    -- this test able to fail.
+    --
+    -- It used to fire as src 1 -- a fighter who had just been through a whole
+    -- round. This fixture's clock does not move, so ArenaRateLimit had
+    -- already seen src 1 on this bucket and dropped the event before the
+    -- admin check was ever reached: the test passed with the permission gate
+    -- deleted. Measured, not suspected. A src the limiter has never seen
+    -- reaches the gate, and the gate is what refuses them.
+    -- WITH `force`, so the only thing left that can refuse them is the
+    -- permission gate. Without it the stash's own contents refuse the clear
+    -- first -- it still holds the phone -- and the test passed with the gate
+    -- deleted, which is a test of the wrong line.
+    server.fire('adminUnjam', 3, { stash = 'crimson_arena_CID1', force = true })
 
     t.isNil(server.log():find('no longer held back', 1, true),
-        'a player cleared a jam on their own stash')
+        'a player cleared a jam on somebody else\'s stash')
 end)
 
 t.test('two players with their own bags never get each other\'s contents', function()

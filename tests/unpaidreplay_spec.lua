@@ -60,6 +60,14 @@ local function newArena(control)
         end
 
         if flat:find('^DELETE') then
+            -- A USER WITH INSERT AND NO DELETE. Not the same outage as
+            -- `failWrites`, which refuses everything: here the INSERTs keep
+            -- working while the drops pile up, which is the state that lets a
+            -- stale drop outlive the debt it was filed about.
+            if control.failDeletes then
+                if cb then cb(nil) end
+                return
+            end
             stored[params[1] .. '|' .. params[2]] = nil
             if cb then cb({ affectedRows = 1 }) end
             return
@@ -167,6 +175,14 @@ local function newArena(control)
             return n
         end,
         cash = function(src) return wallets[src].cash end,
+        --- What the TABLE says is owed to one character, across every part.
+        owedInTable = function(citizenid)
+            local total = 0
+            for _, row in pairs(stored) do
+                if row.citizenid == citizenid then total = total + (row.amount or 0) end
+            end
+            return total
+        end,
         log = function() return table.concat(console, '\n') end,
     }
 end
@@ -350,6 +366,89 @@ t.test('CONTROL: with the database off it still says so in those words', functio
     t.contains(report, 'Config.Database.enabled is off',
         'a server with no database got the wrong explanation')
     t.notContains(report, 'a restart does not forget it', 'and it must not claim durability')
+end)
+
+-- ======================================================================
+-- A DELETE THAT CANNOT LAND MUST NOT ERASE A DEBT FILED AFTER IT
+--
+-- Needs a database that takes SOME statements and refuses others, which in
+-- practice is a user with INSERT and no DELETE -- a common way to set one up
+-- by accident. The DELETE sits in the queue, retried by every sweep, while
+-- INSERTs keep working; when the operator finally grants DELETE, the stale
+-- one lands and takes the WHOLE ROW, new debt and all.
+--
+-- EVERY TEST HERE KEEPS THE OWNER OFFLINE ACROSS THE SWEEP, and that is not
+-- decoration. SweepUnpaid replays the queues and THEN pays everybody who is
+-- on the server, so with the player present the sweep settles the second debt
+-- and drops its row legitimately -- a zero that looks exactly like the bug and
+-- is not it. Measured the hard way: the first version of these tests asserted
+-- on that zero and blamed the code.
+-- ======================================================================
+
+--- Refuses DELETEs alone, taking everything else. The shape of a database
+--- user granted SELECT and INSERT but not DELETE.
+local function refuseDeletes(s, refusing)
+    s.control.failDeletes = refusing
+end
+
+--- The whole setup: a debt paid while DELETE is refused, leaving a stale drop
+--- queued, and then the SAME key owed again.
+local function staleDropThenNewDebt(s)
+    debtOf(s)
+    refuseDeletes(s, true)
+    s.betting.PayOutstanding(1)
+    refuseDeletes(s, false)
+    debtOf(s)
+end
+
+t.test('THE BUG: a stale drop erased a debt incurred after it', function()
+    local s = newArena()
+    staleDropThenNewDebt(s)
+
+    -- The operator grants DELETE and the sweep replays it, with the owner
+    -- away so nothing can be paid out from under the assertion.
+    s.control.offline = true
+    s.betting.SweepUnpaid()
+    s.control.offline = false
+
+    t.equals(s.rows(), 1,
+        'the stale drop took the row with the SECOND debt in it, so a restart '
+        .. 'forgets money the arena really owes')
+end)
+
+t.test('and the amount in that row is the new debt, not the old one', function()
+    -- A row that survived holding the WRONG number would be worse than none:
+    -- the read-back believes what is in the table.
+    local s = newArena()
+    staleDropThenNewDebt(s)
+
+    s.control.offline = true
+    s.betting.SweepUnpaid()
+    s.control.offline = false
+
+    t.equals(s.owedInTable('CID1'), 100,
+        'the row holds a total that is not what memory says is owed')
+end)
+
+t.test('and an ordinary debt is still written, which is the control', function()
+    -- A guard that holds every INSERT back is not a fix.
+    local s = newArena()
+    debtOf(s)
+
+    t.equals(s.rows(), 1, 'an ordinary debt stopped being written to the database')
+end)
+
+t.test('and a debt owed while NO drop is queued goes straight down', function()
+    -- The other half of the control: the hold is specific to a key with an
+    -- outstanding delete, not a blanket pause on writing.
+    local s = newArena()
+    debtOf(s)
+    s.betting.PayOutstanding(1)
+    t.equals(s.rows(), 0, 'the clean payout left its row, so this proves nothing')
+
+    debtOf(s)
+
+    t.equals(s.rows(), 1, 'a debt with nothing queued against it was held back anyway')
 end)
 
 os.exit(t.summary())

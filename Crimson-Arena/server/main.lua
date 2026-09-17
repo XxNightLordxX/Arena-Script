@@ -1366,71 +1366,33 @@ onClient('crimson_arena:server:adminRevive', RATE.admin, function(src, data)
     pushAdmin(src, match.id)
 end)
 
-RegisterCommand('arenaadmin', function(src, args)
+RegisterCommand('arenaadmin', function(src)
     if not ArenaIsAdmin(src) then
         return refuse(src, 'error.no_permission')
     end
 
-    local action = keyArg(args[1]) or (src == 0 and 'list' or 'tablet')
-
-    -- A PLAYER GETS THE TABLET AND NOTHING ELSE TYPED.
+    -- IT TAKES NO ARGUMENTS AT ALL, AND THAT IS THE WHOLE DESIGN.
     --
-    -- Every subcommand below is on that screen -- the reports under Tools,
-    -- stop and wipe on Matches, the hold list on Stashes -- so this takes no
-    -- capability away from anybody holding a controller. What it takes away
-    -- is the SECOND route: one door instead of two is one set of argument
-    -- handling, and the route that survives is the one that shows an operator
-    -- what they are about to act on before they act. A chat line cannot.
+    -- This is the only command this resource registers, and the only thing it
+    -- does is put the screen up. Everything an admin can do is a button on
+    -- that screen: the reports under Tools, stop and Stop every match on
+    -- Matches, hand-backs and Clear the hold on Stashes, the doors, the
+    -- revive, the medical test. Nothing is typed, because typing was the part
+    -- the owner did not want.
     --
-    -- THE CONSOLE KEEPS ALL OF IT, and that is what makes this safe rather
-    -- than a lockout. Source 0 has no client and so can never have a tablet;
-    -- an operator whose adminGroups is empty or misspelt has the console and
-    -- nothing else. Anybody who can type there already owns the machine.
-    if src ~= 0 and action ~= 'tablet' then
-        return refuse(src, 'error.use_the_tablet')
-    end
-
-    if action == 'tablet' then
-        if src == 0 then return tell(src, locale('cmd.usage')) end
-        -- EVERY FIELD THE SCREEN READS, not the eight this used to send.
-        -- The panel's two reducers are the same reducer: `adminOpen` reads
-        -- twelve keys and this sent eight, so the three the stash tab needs
-        -- -- databaseOn, owedKit, owedKitSaved -- arrived absent and were
-        -- read as "no database, nothing out". An absent field is not an
-        -- empty one, and the first draw is the one an operator opened the
-        -- tablet to look at. DO NOT let the two lists drift apart again.
-        TriggerClientEvent('crimson_arena:client:openAdmin', src, {
-            matches = adminMatches(),
-            owed = {},
-            owedKit = withHolders(ArenaAmmo.OwedKit()),
-            owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
-            -- THE MONEY SLATE'S ANSWER IS NOT SENT HERE, AND THAT IS
-            -- DELIBERATE. It was, and nothing on the panel ever read it: the
-            -- durability of the unpaid slate is already spelled out, in
-            -- OwedReport's own words, on the Money owed report this same
-            -- tablet opens. A second copy on another screen would be a second
-            -- place for that answer to be worded -- and to go stale -- for no
-            -- reading an operator cannot already get. ArenaBetting.UnpaidIsSaved
-            -- is the gate; the report asks it. DO NOT add it back here without
-            -- a screen that actually draws it.
-            databaseOn = Config.Database.enabled == true,
-            stashesFound = 0,
-            stashesRead = 0,
-            stashesReadable = stashesReadable(),
-            jamsKnown = jamsKnown(),
-            hoursOpen = ArenaHoursOpen(),
-            hoursForced = ArenaHoursOverride(),
-            hoursLine = Arena.ScheduleLine(),
-            hoursOpensAt = ArenaHoursSnapshot().opensAt,
-        })
-
-        pushAdmin(src, nil)
-
-        ArenaLog('%s opened the admin tablet', ArenaPlayerName(src))
-        return
-    end
-
-    if action == 'list' then
+    -- SO THERE ARE NO SUBCOMMANDS, and this is not a list that has been
+    -- trimmed and might grow back. A word after the command is IGNORED rather
+    -- than refused: there is nothing it could name, so telling somebody their
+    -- word was wrong would imply a right one exists. DO NOT add an action
+    -- argument here -- the button on the screen is the interface, and a
+    -- second way in is a second set of argument handling to keep in step with
+    -- it.
+    --
+    -- THE CONSOLE CANNOT BE SHOWN A TABLET, so it gets the one reading that
+    -- needs no client -- what is running right now. Source 0 has no NUI and
+    -- never will; this is deliberately the whole of what a console can do,
+    -- and an operator who needs more opens the screen in the game.
+    if src == 0 then
         local all = ArenaLobby.All()
         if #all == 0 then
             return tell(src, locale('cmd.no_matches'))
@@ -1445,60 +1407,39 @@ RegisterCommand('arenaadmin', function(src, args)
         return
     end
 
-    if action == 'stop' then
-        local matchId = keyArg(args[2])
-        if not matchId or not ArenaLobby.Get(matchId) then
-            return tell(src, locale('cmd.match_not_found'))
-        end
+    -- EVERY FIELD THE SCREEN READS, not the eight this used to send.
+    -- The panel's two reducers are the same reducer: `adminOpen` reads
+    -- twelve keys and this sent eight, so the three the stash tab needs
+    -- -- databaseOn, owedKit, owedKitSaved -- arrived absent and were
+    -- read as "no database, nothing out". An absent field is not an
+    -- empty one, and the first draw is the one an operator opened the
+    -- tablet to look at. DO NOT let the two lists drift apart again.
+    TriggerClientEvent('crimson_arena:client:openAdmin', src, {
+        matches = adminMatches(),
+        owed = {},
+        owedKit = withHolders(ArenaAmmo.OwedKit()),
+        owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
+        -- THE MONEY SLATE'S ANSWER IS NOT SENT HERE, AND THAT IS
+        -- DELIBERATE. It was, and nothing on the panel ever read it: the
+        -- durability of the unpaid slate is already spelled out, in
+        -- OwedReport's own words, on the Money owed report this same
+        -- tablet opens. A second copy on another screen would be a second
+        -- place for that answer to be worded -- and to go stale -- for no
+        -- reading an operator cannot already get. ArenaBetting.UnpaidIsSaved
+        -- is the gate; the report asks it. DO NOT add it back here without
+        -- a screen that actually draws it.
+        databaseOn = Config.Database.enabled == true,
+        stashesFound = 0,
+        stashesRead = 0,
+        stashesReadable = stashesReadable(),
+        jamsKnown = jamsKnown(),
+        hoursOpen = ArenaHoursOpen(),
+        hoursForced = ArenaHoursOverride(),
+        hoursLine = Arena.ScheduleLine(),
+        hoursOpensAt = ArenaHoursSnapshot().opensAt,
+    })
 
-        ArenaMatch.Abort(matchId, 'notify.match_stopped_by_admin')
-        return tell(src, locale('cmd.match_stopped', matchId))
-    end
+    pushAdmin(src, nil)
 
-    if action == 'wipe' then
-        local wiped = wipeEveryMatch()
-        ArenaLog('%s wiped %d match(es)', ArenaPlayerName(src), wiped)
-        return tell(src, locale('cmd.wiped', wiped))
-    end
-
-    -- EVERY REPORT THE TABLET DRAWS, BY ITS OWN NAME.
-    --
-    -- This resource registers ONE command. The five readings that used to
-    -- have commands of their own -- /arenahours, /arenadispatch,
-    -- /arenaisolation, /arenaattachments and /arenaunjam's listing -- are
-    -- built by the functions in ADMIN_TOOLS, which is also what the tablet
-    -- presses. Naming that table here rather than re-listing them means a
-    -- tool added to the tablet is a console reading on the same commit, and
-    -- one renamed cannot leave a console subcommand pointing at nothing.
-    --
-    -- A TARGET IS TAKEN FROM THE NEXT WORD for the one tool that wants one,
-    -- so `/arenaadmin medical 3` is what `/arenarevive 3` was.
-    local tool = ADMIN_TOOLS[action]
-    if tool then
-        local ok, lines = pcall(tool.run,
-            tool.wants == 'target' and (Arena.ToInt(args[2]) or src) or nil)
-        if not ok or type(lines) ~= 'table' then
-            return tell(src, ('that report could not be taken: %s'):format(tostring(lines)))
-        end
-        for _, line in ipairs(lines) do tell(src, ('%s: %s'):format(action, tostring(line))) end
-        return
-    end
-
-    -- AND THE ONE THING ON THIS SCREEN THAT IS NOT A READING.
-    --
-    -- Clearing a hold is an ACTION with a foot-gun on it, so it keeps its own
-    -- words and its own `force`: `/arenaadmin unjam` lists, `unjam <name>`
-    -- clears an empty one, `unjam <name> force` clears one an operator has
-    -- checked. All three go through ArenaAmmo.ClearHold, the same gate the
-    -- tablet's Clear the hold button asks.
-    if action == 'unjam' then
-        if type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.UnjamCommand) ~= 'function' then
-            return tell(src, 'this build has no hold list.')
-        end
-        -- The words AFTER `unjam`, so the function sees what /arenaunjam used
-        -- to: { stash, 'force' }.
-        return ArenaAmmo.UnjamCommand({ args[2], args[3] })
-    end
-
-    tell(src, locale('cmd.usage'))
+    ArenaLog('%s opened the admin tablet', ArenaPlayerName(src))
 end, false)

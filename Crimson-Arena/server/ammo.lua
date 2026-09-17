@@ -6253,112 +6253,21 @@ function ArenaAmmo.ClearHold(stash, forced)
     return ArenaAmmo.Unjam(stash), nil, rows
 end
 
---- Shows the jams and clears them. `/arenaadmin unjam` on its own lists;
---- with a stash name, or `all`, it clears.
----
---- NOT A COMMAND OF ITS OWN ANY MORE. It was `/arenaunjam`, and the resource
---- now registers exactly one command: everything an operator can do is either
---- on the admin tablet or behind `/arenaadmin <thing>` at a console. Two
---- doors to one action is two sets of argument handling to keep in step, and
---- the one that went was the one nobody could discover.
----
---- THE PERMISSION CHECK WENT WITH IT, on purpose and not by omission:
---- `/arenaadmin` refuses a non-admin before it looks at what was typed, so a
---- second check here would be a line no behaviour could tell apart from its
---- absence. Called from anywhere else, this function assumes its caller has
---- already asked. DO NOT call it without doing so.
---- @param args string[]?
-function ArenaAmmo.UnjamCommand(args)
-    local stashes, known = ArenaAmmo.JammedStashes()
-
-    if #stashes == 0 then
-        -- Same distinction as JamReport above: "none" and "not read yet" are
-        -- different answers and only one of them is safe to act on.
-        if not known then
-            ArenaLog('arenaunjam: the jam list has NOT been read back from the database yet, so '
-                .. 'there is nothing to clear and nothing to report. The door is holding '
-                .. 'hand-backs until it lands; if that does not clear, the database user needs '
-                .. 'SELECT on crimson_arena_jammed_stash.')
-            return
-        end
-        ArenaLog('arenaunjam: no stash is being held back.')
-        return
-    end
-
-    local wanted = type(args) == 'table' and type(args[1]) == 'string' and args[1] or nil
-
-    -- CLEARING A JAM ON A STASH THAT STILL HAS THINGS IN IT IS THE FOOT-GUN,
-    -- and it was wide open. A jam means the arena found rows it could not
-    -- account for and parked them; clearing it without emptying the stash
-    -- puts every one of those rows back inside the next ceiling, and the next
-    -- exit hands them over. An operator running `/arenaunjam all` to tidy up
-    -- a noisy console would have handed every parked surplus to its owner --
-    -- which is the exact duplication the ceiling exists to stop. Found by
-    -- attacking this command rather than by a report.
-    --
-    -- So a non-empty stash needs the word said out loud. `force` is not a
-    -- convenience; it is the operator stating that what is in there is
-    -- genuinely the player's.
-    local forced = type(args) == 'table' and args[2] == 'force'
-
-    if wanted == nil then
-        ArenaLog('arenaunjam: %d stash(es) are being held back. Open each with /arenaadmin, compare '
-            .. 'it against what the player is carrying, take out anything that is not theirs, and '
-            .. 'then run /arenaunjam <name>.', #stashes)
-        for _, stash in ipairs(stashes) do
-            local rows = rowsIn(stash)
-            ArenaLog('arenaunjam:   %s -- %s', stash,
-                rows == nil and 'cannot be read right now'
-                    or (rows == 0 and 'empty, safe to clear'
-                        or (rows .. ' item(s) STILL IN IT -- settle those first')))
-        end
-        return
-    end
-
-    --- Clears one, refusing a stash that still holds something unless the
-    --- operator has said `force`.
-    local function clear(stash)
-        local cleared, reason, rows = ArenaAmmo.ClearHold(stash, forced)
-        if cleared then return true end
-
-        if reason == 'not_empty' then
-            ArenaLog('arenaunjam: %s still %s. Clearing the jam now would put %s back inside the '
-                .. 'next ceiling and the next exit would hand %s to the owner -- which is the '
-                .. 'duplication the jam was protecting against. Empty it with /arenaadmin first, or '
-                .. 'say `/arenaunjam %s force` if you have checked and it really is theirs.',
-                stash,
-                rows == nil and 'cannot be read, so what is in it is unknown'
-                    or ('holds ' .. rows .. ' item(s)'),
-                rows == nil and 'whatever is in it' or 'them',
-                rows == nil and 'it' or 'them',
-                stash)
-        end
-
-        return false
-    end
-
-    if wanted == 'all' then
-        local cleared = 0
-        for _, stash in ipairs(stashes) do
-            if clear(stash) then cleared = cleared + 1 end
-        end
-        ArenaLog('arenaunjam: cleared %d of %d stash(es).', cleared, #stashes)
-        return
-    end
-
-    local known = false
-    for _, stash in ipairs(stashes) do
-        if stash == wanted then known = true break end
-    end
-
-    if not known then
-        ArenaLog('arenaunjam: %s is not one of the stashes being held back. Run /arenaunjam with '
-            .. 'nothing after it to see the list.', tostring(wanted))
-        return
-    end
-
-    if clear(wanted) then ArenaLog('arenaunjam: cleared %s.', wanted) end
-end
+-- THE CONSOLE'S JAM COMMAND USED TO LIVE HERE and does not any more.
+--
+-- It listed every held-back stash with what was still in each, and cleared
+-- one with `force` for a stash that was not empty. Both are on the admin
+-- tablet: Tools -> Held-back stashes is the listing, built by
+-- ArenaAmmo.JamReport above, and Clear the hold on the stash detail is the
+-- clearing, through ArenaAmmo.ClearHold -- which is where the `force`
+-- judgement lives, so neither door can be the lenient one.
+--
+-- WHY IT WENT rather than being kept as a second route: the owner's words --
+-- open the tablet and click, without typing. This resource registers one
+-- command and it takes no arguments; see server/main.lua. The tablet is also
+-- the better place for this particular decision, because clearing a hold is
+-- supposed to be done by somebody who has READ what is in the stash, and the
+-- stash detail is the one screen that lists it item by item.
 
 function ArenaAmmo.HeldFor(src)
     local record = ownRecord(src)

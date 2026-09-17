@@ -318,13 +318,12 @@ end)
 -- ======================================================================
 local COMMAND_HELP = {
     {
+        -- NO `params` ENTRY, BECAUSE THE COMMAND TAKES NONE. Everything an
+        -- admin can do is a button on the screen this opens; a suggestion
+        -- offering an argument would be offering something that does not
+        -- exist. See server/main.lua for why there are no subcommands.
         name = 'arenaadmin',
-        help = 'Open the arena admin tablet. (admin)',
-        params = {
-            { name = 'action', help = 'Blank opens the tablet. At the SERVER CONSOLE only: '
-                .. 'list | stop <matchId> | wipe | hours | dispatch | isolation | attachments | '
-                .. 'owed | jams | medical [id] | unjam [stash] [force].' },
-        },
+        help = 'Open the arena admin tablet. Everything is a button on it. (admin)',
     },
 }
 

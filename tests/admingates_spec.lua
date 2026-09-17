@@ -107,48 +107,84 @@ local function anyLine(lines, needle)
     return false
 end
 
--- THESE WERE THREE COMMANDS OF THEIR OWN -- /arenahours, /arenaisolation
--- and /arenadispatch -- and they are three subcommands of the one command
--- this resource still registers. The readings did not change and neither did
--- the gate on them; what changed is that there is one door instead of four.
+-- THESE WERE THREE COMMANDS OF THEIR OWN -- /arenahours, /arenaisolation and
+-- /arenadispatch -- and then, briefly, three subcommands of /arenaadmin.
+-- They are neither now. This resource registers ONE command, it takes NO
+-- arguments, and every reading they printed is a button on the tablet under
+-- Tools. The owner's words: open the tablet and click, without typing.
 --
--- ASKED AT THE CONSOLE, because that is the only place a subcommand can be
--- typed now: a player gets the tablet and is refused anything else they type.
--- Both halves are covered below.
-for _, cmd in ipairs({
-    { name = 'hours',     admin = 'hours' },
-    { name = 'isolation', admin = 'isolation' },
-    { name = 'dispatch',  admin = 'dispatch' },
-}) do
-    t.test('/arenaadmin is the one command, and it is registered', function()
-        t.isTrue(newServer().registered('arenaadmin'),
-            'the command is not registered, so nothing below tests it')
-    end)
+-- SO WHAT IS LEFT TO GUARD HERE is the command itself: who may run it, what a
+-- player gets, and what a console gets instead of a screen it cannot be
+-- shown. Who may press each BUTTON is the adminTool event's gate, in
+-- tests/admintablet_spec.lua.
 
-    t.test(('/arenaadmin %s refuses a player who is not an admin, and does nothing else'):format(cmd.name), function()
-        local s = newServer({ adminSrc = 4 })
-        local sentTo, lines = s.run('arenaadmin', 2, { cmd.name })
-        t.isTrue(refused(sentTo, 2), 'a non-admin was not told they are not cleared')
-        t.isFalse(anyLine(lines, cmd.admin), ('the %s report ran for a non-admin'):format(cmd.admin))
-    end)
+t.test('/arenaadmin is the one command, and it is registered', function()
+    t.isTrue(newServer().registered('arenaadmin'),
+        'the command is not registered, so nothing below tests it')
+end)
 
-    t.test(('and an ADMIN who is a player is sent to the tablet rather than answered in chat'):format(), function()
-        -- The route, not the permission. This player may do all of it -- on
-        -- the screen built to show them what they are acting on. A typed
-        -- subcommand is the second door, and the second door is gone.
-        local s = newServer({ adminSrc = 4 })
-        local _, lines = s.run('arenaadmin', 4, { cmd.name })
-        t.isFalse(anyLine(lines, cmd.admin),
-            ('the %s report was printed for a player who should have been sent to the tablet'):format(cmd.admin))
-    end)
+t.test('a player who is not an admin is refused, and no screen is sent', function()
+    local s = newServer({ adminSrc = 4 })
+    local sentTo = s.run('arenaadmin', 2, {})
 
-    t.test(('/arenaadmin %s runs at the CONSOLE, which is the control'):format(cmd.name), function()
-        local s = newServer({ adminSrc = 4 })
-        local sentTo, lines = s.run('arenaadmin', 0, { cmd.name })
-        t.isFalse(refused(sentTo, 0), 'the console was refused its own command')
-        t.isTrue(anyLine(lines, cmd.admin) or #sentTo > 0,
-            ('the %s subcommand did nothing at a console'):format(cmd.admin))
-    end)
-end
+    t.isTrue(refused(sentTo, 2), 'a non-admin was not told they are not cleared')
+    for _, m in ipairs(sentTo) do
+        t.isTrue(m.event ~= 'crimson_arena:client:openAdmin',
+            'a non-admin was sent the admin tablet')
+    end
+end)
+
+-- THE ADMIN CONTROL FOR THIS COMMAND IS NOT IN THIS FILE, and saying so is
+-- better than the test that used to sit here.
+--
+-- This fixture's ArenaAmmo is a stub answering nil for everything, so
+-- building the tablet payload throws inside it whatever the permission code
+-- does -- there is no observable difference between an admin getting the
+-- screen and an admin hitting that throw. The version of this test that was
+-- here swallowed the throw and then looped over an empty list, so it passed
+-- unconditionally: a control that cannot fail is worse than no control,
+-- because it reads as cover.
+--
+-- tests/admintablet_spec.lua builds a real fixture and asserts the screen
+-- actually goes out to an admin, in "/arenaadmin with no arguments opens the
+-- tablet for a player". That is the control.
+
+t.test('and a word typed after it is not treated as an action', function()
+    -- There are no subcommands to name, so there is no wrong word either. DO
+    -- NOT make this a refusal: refusing implies a right word exists.
+    --
+    -- What is checked at a CONSOLE, where the payload above cannot throw: the
+    -- answer is the same whatever word follows.
+    local s = newServer({ adminSrc = 4 })
+    local _, plain = s.run('arenaadmin', 0, {})
+
+    for _, word in ipairs({ 'wipe', 'stop', 'hours', 'nonsense' }) do
+        local _, withWord = s.run('arenaadmin', 0, { word })
+        t.equals(#withWord, #plain,
+            ('typing "%s" after it changed what the command did'):format(word))
+    end
+end)
+
+t.test('and the CONSOLE gets the match list, because it cannot be shown a screen', function()
+    -- Source 0 has no NUI and never will. This is deliberately the whole of
+    -- what a console can do: see what is running. Anything else is on the
+    -- tablet, in the game.
+    local s = newServer({ adminSrc = 4 })
+    local sentTo, lines = s.run('arenaadmin', 0, {})
+
+    t.equals(#sentTo, 0, 'the server console was sent a client event')
+    t.isTrue(#lines > 0, 'the console was told nothing at all')
+end)
+
+t.test('and the console is NOT given the reports it used to have', function()
+    -- The readings are on the tablet now. A console that printed them would
+    -- be the second route this change exists to remove.
+    local s = newServer({ adminSrc = 4 })
+    local _, lines = s.run('arenaadmin', 0, {})
+    local text = table.concat(lines, '\n'):lower()
+
+    t.isFalse(text:find('isolation', 1, true) ~= nil, 'the console printed the instancing report')
+    t.isFalse(text:find('dispatch', 1, true) ~= nil, 'the console printed the police report')
+end)
 
 os.exit(t.summary())

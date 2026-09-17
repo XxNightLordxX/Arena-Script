@@ -695,6 +695,12 @@ local function addStillPending(citizenid, key)
     return entry and entry.amount or nil
 end
 
+--- Whether a DELETE for this part is still waiting to be taken.
+---
+--- Assigned further down, where `pendingDrops` exists. Forward-declared here
+--- because sendAdd is written above that queue and must consult it.
+local dropStillQueued
+
 local function sendAdd(citizenid, key, name, account, reason, added)
     -- NOT UNTIL THE LEDGER HAS BEEN READ. Refusing here puts the increment in
     -- `pendingAdds`, exactly where an outage would have put it, and the block
@@ -702,6 +708,39 @@ local function sendAdd(citizenid, key, name, account, reason, added)
     -- the fact. The answer replays the queue, so nothing waits for a sweep.
     -- DO NOT turn this into a send-and-remember.
     if not unpaidLoaded then return false end
+
+    -- AND NOT WHILE A DELETE FOR THIS SAME PART IS STILL OUTSTANDING.
+    --
+    -- THE BUG THIS CLOSES, which only exists with the database ON and needs a
+    -- database that takes some statements and refuses others -- in practice a
+    -- user with INSERT and no DELETE, which is a common way to set one up by
+    -- accident.
+    --
+    --   1. A debt on key K is filed, and paid. The DELETE is refused, so it
+    --      sits in `pendingDrops` and is retried by every sweep.
+    --   2. The same character is owed on the SAME key again -- same account,
+    --      same reason, which is all a key is -- and that INSERT is taken.
+    --      The row now holds the new debt.
+    --   3. The operator notices the warning and grants DELETE. The next sweep
+    --      replays the old drop, and it takes the WHOLE ROW: the new debt is
+    --      erased, and a restart forgets a debt the arena really owes.
+    --
+    -- Holding the INSERT until its DELETE has landed makes the order certain.
+    -- The sweep replays drops and then adds -- see the call pair at the
+    -- bottom of this file -- so the row is removed first and re-made second,
+    -- which is exactly what memory says happened.
+    --
+    -- THE DIRECTION IT FAILS IN IS THE RIGHT ONE, and is this file's own
+    -- stated rule: a lost DELETE pays a debt twice, a lost INSERT forgets
+    -- one. If the DELETE can never land, the debt stays in memory for the
+    -- run, the operator already has `unpaidWriteRefused` shouting at them,
+    -- and nobody is paid anything twice.
+    --
+    -- DO NOT "fix" this by cancelling the pending DROP instead. The row it
+    -- would leave behind holds the OLD paid debt as well as the new one, and
+    -- the next restart reads back both and pays the old one again -- which is
+    -- the duplication the drop queue exists to prevent.
+    if dropStillQueued(citizenid, key) then return false end
 
     local taken = false
     local ok, err = pcall(function()
@@ -801,6 +840,18 @@ local pendingDropCount = 0
 local PENDING_DROP_LIMIT = 500
 
 --- Sends one drop, and forgets it only when the database has answered.
+--- Fills the forward declaration made above sendAdd.
+---
+--- WRITTEN AS AN ASSIGNMENT, not as `function dropStillQueued(...)`. The two
+--- are the same to Lua, but the second reads as a definition to anything
+--- scanning this file for its public surface -- tests/checklist_spec.lua
+--- counts exactly that shape -- and this is a local filling a slot declared
+--- forty lines up, not a function this file offers anybody.
+dropStillQueued = function(citizenid, key)
+    local keys = pendingDrops[citizenid]
+    return keys ~= nil and keys[key] ~= nil
+end
+
 local function sendDrop(citizenid, key)
     local ok = pcall(function()
         ArenaDb(UNPAID_SUBJECT, UNPAID_DROP_SQL, { citizenid, key }, function(answer)

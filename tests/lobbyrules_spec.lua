@@ -220,8 +220,35 @@ local function newArena(wallets, mutate, jobs)
 
     --- /arenaadmin from the server console, which always qualifies.
     --- @param ... string
-    function server.adminCommand(...)
-        commands['arenaadmin'](0, { ... })
+    --- Presses Stop on the admin tablet, as an admin standing in the game.
+    ---
+    --- IT WAS `/arenaadmin stop <id>` AND THERE ARE NO SUBCOMMANDS ANY MORE:
+    --- the command opens the screen and every action is a button on it. Fired
+    --- as a PLAYER rather than as src 0, because ArenaRateLimit refuses the
+    --- console outright -- a net event comes from a client and a console is
+    --- not one, so firing this as 0 would assert nothing at all.
+    function server.adminStop(matchId)
+        local was = server.env.ArenaIsAdmin
+        server.env.ArenaIsAdmin = function() return true end
+        -- AND A STASH SCAN THAT ANSWERS, because the handler redraws the
+        -- tablet afterwards and this fixture's ArenaAmmo has no door in it.
+        -- That redraw is not what this test is about; it just must not throw.
+        local ammo = server.env.ArenaAmmo
+        local hadScan = ammo.AllStashes
+        ammo.AllStashes = function(cb, scanned)
+            if scanned then scanned(0, 0) end
+            cb({})
+        end
+        ammo.OwedKit = ammo.OwedKit or function() return {} end
+        ammo.OwedKitIsSaved = ammo.OwedKitIsSaved or function() return false end
+        server.env.GetPlayers = server.env.GetPlayers or function() return {} end
+
+        local handler = netEvents['crimson_arena:server:adminStop']
+        server.env.source = 9
+        handler({ matchId = matchId })
+
+        ammo.AllStashes = hadScan
+        server.env.ArenaIsAdmin = was
     end
 
     --- Resumes every captured thread once. The sweeps call Wait first, so a
@@ -471,7 +498,7 @@ t.test('an admin force-stop refunds even with refundOnCancel off', function()
     end)
     local matchId = openLobby(server, 1000, { 1, 2 })
 
-    server.adminCommand('stop', matchId)
+    server.adminStop(matchId)
 
     t.isNil(server.lobby.Get(matchId))
     t.equals(server.cash(1), 5000, 'an admin stop is not a host cancel')

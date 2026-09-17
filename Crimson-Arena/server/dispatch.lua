@@ -26,6 +26,19 @@ local leftAt = {}
 --- CLEARED BY Set, not by a timer and not by a join handler. An id is only
 --- interesting again once somebody on it enters a match, and that is the one
 --- moment this resource is certain a new player owns it.
+---
+--- WHAT IT ACTUALLY ADDS TODAY, said accurately rather than generously: the
+--- drop handler ALSO nils `fighter[src]` on the line above it, and Clear needs
+--- BOTH `fighter[src]` and `not dropped[src]` to stamp a window.
+--- So either line alone already closes the drop-while-flagged case, and
+--- removing this table changes no answer the suite can produce -- measured.
+--- The two are defence in depth on a path whose failure is somebody's real
+--- ambulance being silently swallowed, and they fail independently: `fighter`
+--- is about WHO, this is about WHETHER THEY ARE STILL HERE. Keep both, and do
+--- not read either as the only thing holding it.
+---
+--- BOUNDED, NOT A LEAK. Keyed by FiveM server id, which is bounded by the
+--- server's slot count and recycled, so this table cannot grow past it.
 local dropped = {}
 
 --- Which flagged players are FIGHTERS rather than spectators. Read only when
@@ -175,10 +188,13 @@ AddEventHandler('playerDropped', function()
     if not src then return end
 
     leftAt[src] = nil
+    -- THESE TWO ARE EACH SUFFICIENT AND BOTH ARE KEPT. Clearing leftAt alone
+    -- is undone moments later by the detach still unwinding inside
+    -- server/main.lua's own handler, which reaches Clear with the player
+    -- still flagged -- see `dropped` above. Either nilling `fighter` or
+    -- latching `dropped` stops that re-stamp on its own; neither is "the one
+    -- that works".
     fighter[src] = nil
-    -- AND THE LATCH, which is the half that actually holds. Clearing leftAt
-    -- alone is undone moments later by the detach still unwinding in
-    -- server/main.lua's own handler -- see `dropped` above for why.
     dropped[src] = true
 end)
 

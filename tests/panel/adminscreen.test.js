@@ -58,6 +58,74 @@ function postsNamed(panel, name) {
     return panel.posted.filter(function (row) { return row.name === name; });
 }
 
+test('THE TABLET HONOURS THE SERVER\'S CURRENCY SYMBOL, not a hard-coded $', () => {
+    /* money() reads the symbol from `state.config`, and `state.config` is only
+       ever filled by the PLAYER panel's snapshot. An admin who ran /arenaadmin
+       without opening the player panel this session therefore saw every pot,
+       stake and sum owed printed with a hard-coded `$`, whatever the server
+       had set Config.Betting.currencySymbol to. The admin payloads carry the
+       symbol now. */
+    const panel = loadPanel(ROOT);
+    panel.send('adminOpen', {
+        currencySymbol: '€',
+        matches: [{
+            id: 'm1', label: 'Trailer Park', arenaKey: 'a', modeKey: 'ffa',
+            state: 'live', hostName: 'John Allday', players: 2, pot: 1500,
+        }],
+        owed: [], stashesFound: 0, stashesRead: 0,
+    });
+
+    const card = panel.node('admin-matches').children[0];
+    const text = card.children.map(function (c) { return c.textContent || ''; }).join(' ');
+
+    assert.ok(text.indexOf('€1,500') !== -1,
+        'the tablet printed the pot without the server\'s currency symbol: ' + text);
+    assert.ok(text.indexOf('$') === -1,
+        'the tablet still printed a hard-coded $: ' + text);
+});
+
+test('and an EMPTY symbol means no symbol, the way the other two readers take it', () => {
+    /* Setting Config.Betting.currencySymbol = '' is how an operator asks for
+       bare numbers. The player panel honours it (typeof '' === 'string', so
+       state.config wins) and so does the server's own formatting. The tablet
+       used to be the odd one out: its guard rejected the empty string, so
+       adminCurrency stayed null and money() fell through to a hard-coded $ --
+       on the one screen that shows money to an admin. */
+    const panel = loadPanel(ROOT);
+    panel.send('adminOpen', {
+        currencySymbol: '',
+        matches: [{
+            id: 'm1', label: 'Trailer Park', arenaKey: 'a', modeKey: 'ffa',
+            state: 'live', hostName: 'John Allday', players: 2, pot: 1500,
+        }],
+        owed: [], stashesFound: 0, stashesRead: 0,
+    });
+
+    const card = panel.node('admin-matches').children[0];
+    const text = card.children.map(function (c) { return c.textContent || ''; }).join(' ');
+
+    assert.ok(text.indexOf('1,500') !== -1, 'the pot went missing entirely: ' + text);
+    assert.ok(text.indexOf('$') === -1,
+        'a server asking for bare numbers still got a hard-coded $: ' + text);
+});
+
+test('and a payload with no symbol still prints something sensible', () => {
+    /* The fallback has to survive an older server, or a build that sends no
+       symbol prints "1,500" with nothing in front of it. */
+    const panel = opened();
+    panel.send('adminState', {
+        matches: [{
+            id: 'm1', label: 'Trailer Park', arenaKey: 'a', modeKey: 'ffa',
+            state: 'live', hostName: 'John Allday', players: 2, pot: 20,
+        }],
+        owed: [], stashesFound: 0, stashesRead: 0,
+    });
+
+    const card = panel.node('admin-matches').children[0];
+    const text = card.children.map(function (c) { return c.textContent || ''; }).join(' ');
+    assert.ok(text.indexOf('$20') !== -1, 'the default symbol was lost: ' + text);
+});
+
 console.log('==> the tablet draws, and can be got out of');
 
 test('an adminOpen message puts the screen on the page', () => {

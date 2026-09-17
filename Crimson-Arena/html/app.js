@@ -270,10 +270,36 @@
         return ' · ' + int(fighter.lives, 0) + ' lives';
     }
 
+    /* THE SYMBOL THE ADMIN TABLET WAS PRINTING WITHOUT.
+       `state.config` is only ever filled by the PLAYER panel's snapshot, and
+       the admin payloads carried no config -- so a tablet opened by an admin
+       who had not opened the player panel this session printed every pot,
+       stake and sum owed with a hard-coded `$`, whatever the server had set
+       Config.Betting.currencySymbol to. The admin payloads carry the symbol
+       now and it is remembered here.
+
+       DECLARED BESIDE money() ON PURPOSE, rather than read off the admin
+       state object, which is declared thousands of lines below this and in a
+       scope this function should not have to reason about. */
+    var adminCurrency = null;
+
+    function rememberCurrency(value) {
+        /* AN EMPTY STRING IS AN ANSWER, not a missing one. Setting
+           Config.Betting.currencySymbol = '' is how an operator asks for bare
+           numbers, and both the other readers of that setting honour it -- the
+           player panel through state.config, and the server's own formatting.
+           Rejecting it here made the tablet the odd one out, printing a
+           hard-coded $ on the one screen that shows money to an admin.
+           Only a non-string (an older server sending nothing) is ignored. */
+        if (typeof value === 'string') adminCurrency = value;
+    }
+
     function money(amount) {
         var symbol = '$';
         if (state.config && state.config.betting && typeof state.config.betting.currencySymbol === 'string') {
             symbol = state.config.betting.currencySymbol;
+        } else if (typeof adminCurrency === 'string') {
+            symbol = adminCurrency;
         }
         var n = int(amount, 0);
         var sign = n < 0 ? '-' : '';
@@ -5251,6 +5277,7 @@
 
                 case 'adminOpen':
                     admin.open = true;
+                    rememberCurrency(data.currencySymbol);
                     admin.matches = arrayOf(data.matches);
                     admin.owed = arrayOf(data.owed);
                     admin.owedKit = arrayOf(data.owedKit);
@@ -5312,6 +5339,7 @@
 
                 case 'adminState':
                     if (!admin.open) break;
+                    rememberCurrency(data.currencySymbol);
                     admin.matches = arrayOf(data.matches);
                     admin.owed = arrayOf(data.owed);
                     admin.owedKit = arrayOf(data.owedKit);

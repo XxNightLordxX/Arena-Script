@@ -785,6 +785,11 @@ local function pushAdmin(src, matchId)
         TriggerClientEvent('crimson_arena:client:adminState', src, {
             matches = matches,
             focused = focused,
+            -- THE SYMBOL, because the tablet has no other source for it.
+            -- `state.config` on the panel is filled by the PLAYER snapshot,
+            -- which an admin who went straight to the tablet never asked for
+            -- -- so every pot and sum owed printed with a hard-coded `$`.
+            currencySymbol = Config.Betting and Config.Betting.currencySymbol or nil,
             hoursOpen = ArenaHoursOpen(),
             hoursForced = ArenaHoursOverride(),
             hoursLine = Arena.ScheduleLine(),
@@ -1498,6 +1503,8 @@ RegisterCommand('arenaadmin', function(src)
     -- tablet to look at. DO NOT let the two lists drift apart again.
     TriggerClientEvent('crimson_arena:client:openAdmin', src, {
         matches = adminMatches(),
+        -- See adminState above: the tablet has no other source for this.
+        currencySymbol = Config.Betting and Config.Betting.currencySymbol or nil,
         owed = {},
         owedKit = withHolders(ArenaAmmo.OwedKit()),
         owedKitSaved = ArenaAmmo.OwedKitIsSaved(),

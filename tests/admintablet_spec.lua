@@ -1021,6 +1021,50 @@ t.test('and the screen it puts up does not claim nobody is short', function()
     t.equals(payload.stashesRead, 0, 'and how many it had opened')
 end)
 
+t.test('BOTH admin payloads carry the currency symbol, or the tablet prints a hard-coded $',
+function()
+    -- THE SERVER HALF, which nothing held. The panel's own test hand-feeds a
+    -- symbol into the message, so it proves app.js reads one and says nothing
+    -- at all about whether the server sends one -- deleting both lines from
+    -- server/main.lua left the panel suite, this suite and verify_contracts
+    -- green. That is the exact shape of hole the harness change in this same
+    -- commit was written to close, reintroduced one file away.
+    --
+    -- WHY IT MATTERS: money() on the panel reads `state.config`, and
+    -- `state.config` is only ever filled by the PLAYER panel's snapshot. An
+    -- admin who runs /arenaadmin without opening the player panel has no
+    -- other source for the symbol, so a missing key here means every pot,
+    -- stake and sum owed on that screen prints with a `$` whatever the server
+    -- is configured to use.
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.command('arenaadmin', 1, {})
+    local opened = s.lastNamed('openAdmin')
+    t.isNotNil(opened, 'premise: the tablet never opened')
+    t.equals(opened.payload.currencySymbol, s.env.Config.Betting.currencySymbol,
+        'openAdmin does not carry the currency symbol, so the tablet falls back to $')
+
+    s.fire('adminState', 1, {})
+    local pushed = s.lastNamed('adminState')
+    t.isNotNil(pushed, 'premise: no refresh was pushed')
+    t.equals(pushed.payload.currencySymbol, s.env.Config.Betting.currencySymbol,
+        'adminState does not carry it either, so a refresh drops it again')
+end)
+
+t.test('and a server that configures a different symbol sends THAT one', function()
+    -- The control. Asserting against Config on both sides would pass with the
+    -- payload hard-coded to '$', so one of them has to be a value nothing
+    -- else in the file uses.
+    local s = newArena({ [1] = true })
+    s.env.Config.Betting.currencySymbol = '\u{20AC}'
+    s.open(2)
+
+    s.command('arenaadmin', 1, {})
+    t.equals(s.lastNamed('openAdmin').payload.currencySymbol, '\u{20AC}',
+        'the payload is not reading the symbol out of Config at all')
+end)
+
 t.test('and the stash list follows on its own once the sweep DOES answer', function()
     -- The command opens the screen and then asks for exactly the refresh the
     -- screen's own button asks for, so an admin never has to press anything

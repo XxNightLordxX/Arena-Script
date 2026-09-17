@@ -97,8 +97,17 @@ console.log('==> typing a custom ammo amount');
 
 /** Whether the tab BUTTON is on the bar -- which is what was changed. */
 function tabOnBar(panel, name) {
+    /* inMarkup, NOT node(). node() conjures a handle for ANY id -- it has to,
+       because the panel builds most of what it shows -- so `assert.ok(button)`
+       was true whatever index.html said, and deleting this button from the
+       markup left the whole suite and verify_contracts green. Nothing else
+       reads these buttons out of the markup: verify_contracts only checks ids
+       app.js looks up by LITERAL name, and these are reached as
+       `byId('tab-btn-' + name)`, built at run time. */
+    assert.ok(panel.inMarkup('tab-btn-' + name),
+        'there is no ' + name + ' tab button in html/index.html at all');
+
     const button = panel.node('tab-btn-' + name);
-    assert.ok(button, 'there is no ' + name + ' tab button in the markup at all');
     return !button.classList.contains('hidden');
 }
 

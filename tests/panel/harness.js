@@ -167,6 +167,41 @@ function contains(node, wanted) {
 function loadPanel(root) {
     const source = fs.readFileSync(path.join(root, 'html', 'app.js'), 'utf8');
 
+    /*
+     * THE MARKUP, READ FOR ONE PURPOSE: answering whether an element really
+     * exists in index.html.
+     *
+     * WHY THE SHIM CANNOT ANSWER THAT. `getElementById` below invents a node
+     * for any id asked for, and it has to: the panel BUILDS most of what it
+     * shows, and a test has to be able to reach a card or an input the panel
+     * created. The cost is that `panel.node('anything-at-all')` is truthy, so
+     * an assertion like `assert.ok(panel.node('tab-btn-bets'))` is true
+     * whatever the markup says -- and deleting that button from index.html
+     * left the whole suite green.
+     *
+     * So the two questions are kept apart. node() means "give me a handle",
+     * and stays exactly as it was. inMarkup() means "is this element really
+     * shipped", and is the only one that can answer it.
+     */
+    const rawMarkup = fs.readFileSync(path.join(root, 'html', 'index.html'), 'utf8');
+
+    /* COMMENTS ARE NOT SHIPPED MARKUP. Without this, commenting a control OUT
+       -- which is how a control usually disappears, rather than being deleted
+       outright -- still answered true here, and the assertion went on passing
+       over a panel that no longer had the element. That is the same shape of
+       hole this whole method was added to close. */
+    const markup = rawMarkup.replace(/<!--[\s\S]*?-->/g, '');
+
+    const shipped = new Set();
+    /* Both quote styles, because either is valid HTML and a mixed file would
+       otherwise report half its elements as missing. */
+    const idPattern = /\bid\s*=\s*["']([a-zA-Z0-9_-]+)["']/g;
+    let match = idPattern.exec(markup);
+    while (match !== null) {
+        shipped.add(match[1]);
+        match = idPattern.exec(markup);
+    }
+
     const nodes = {};
     const posted = [];
     const listeners = {};
@@ -272,6 +307,22 @@ function loadPanel(root) {
     return {
         nodes,
         posted,
+        /**
+         * Whether `id` is really an element in html/index.html.
+         *
+         * NOT THE SAME QUESTION AS node(id), which conjures a handle for any
+         * id at all. Use this for "the markup ships this control"; use node()
+         * for "give me the thing so I can press it or read it".
+         * @param {string} id
+         * @returns {boolean}
+         */
+        inMarkup(id) {
+            return shipped.has(id);
+        },
+        /** Every element id html/index.html ships, for a completeness check. */
+        shippedIds() {
+            return Array.from(shipped);
+        },
         /** Delivers a NUI message in the shape FiveM sends it. */
         send(action, data) {
             (listeners.message || []).forEach((fn) => fn({ data: { action, data } }));

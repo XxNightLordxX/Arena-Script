@@ -241,10 +241,28 @@ end)
 
 t.test('and it takes no arguments, so a word after it changes nothing', function()
     local s = newServer({ adminSrc = 4 })
+
+    -- WARMED UP FIRST, AND THIS LINE IS PART OF THE TEST RATHER THAN SETUP.
+    --
+    -- Some of what this dump reaches says a thing ONCE per process and then
+    -- latches. ArenaDbReady's "Config.Database.enabled is true but oxmysql is
+    -- not started" warning is one of them, and it is deliberately said once
+    -- per subject rather than once per write. So the FIRST call prints a line
+    -- no later call will, and comparing call one against call two measures
+    -- that latch rather than the argument.
+    --
+    -- FOUND WITH THE DATABASE SWITCHED ON, where those warnings fire: without
+    -- this line the test reported 40 lines against 39 and blamed the word. It
+    -- passed on the shipped default and failed on the other one, which is the
+    -- worst shape a test can have -- it would have gone green here and red on
+    -- an operator's server.
+    s.run('arenaconsole', 0, {})
+
     local _, plain = s.run('arenaconsole', 0, {})
     local _, withWord = s.run('arenaconsole', 0, { 'dispatch' })
 
     t.equals(#withWord, #plain, 'naming a report after it changed what was printed')
+    t.isTrue(#plain > 0, 'the dump printed nothing at all, so this proves nothing')
 end)
 
 os.exit(t.summary())

@@ -158,6 +158,25 @@ local function newArena(control)
         end
 
         if flat:find('^DELETE') then
+            -- THE STATEMENT IS HONOURED, NOT THE INTENTION BEHIND IT.
+            --
+            -- This used to delete `stored[params[1] .. '|' .. params[2]]` and
+            -- nothing else, whatever the SQL said -- so the double was
+            -- re-implementing what the DELETE was MEANT to do. Measured: the
+            -- WHERE clause was cut off the real statement, leaving
+            -- `DELETE FROM crimson_arena_owed_kit`, which on a real server
+            -- wipes every player's debt on the first settlement -- and all 127
+            -- spec files passed.
+            --
+            -- A double that ignores the words is a double that cannot fail on
+            -- them. This one reads the statement: no WHERE means every row
+            -- goes, which is what MySQL would do.
+            if not flat:find('WHERE') then
+                for key in pairs(stored) do stored[key] = nil end
+                if cb then cb({ affectedRows = 1 }) end
+                return
+            end
+
             -- The age-out carries no parameters; the settlement carries two.
             if params and params[2] then stored[params[1] .. '|' .. params[2]] = nil end
             if cb then cb({ affectedRows = 1 }) end
@@ -341,6 +360,126 @@ end)
 -- ======================================================================
 -- THE HALF THAT WAS ALREADY PUT BACK, GUARDED
 -- ======================================================================
+
+-- ======================================================================
+-- THE STRIKE-OFF IS IN THE REPLAY SET TOO
+--
+-- `strikeWeaponOff` deletes the 'out' row that says a fighter is holding an
+-- arena weapon, when that weapon legitimately comes back. It used to hand its
+-- statement straight to ArenaDb -- fifty lines below the comment on
+-- sendLedger saying in capitals not to -- so it was the one write on this
+-- slate outside the replay set.
+--
+-- IT IS THE WRONG DIRECTION TO LOSE A STATEMENT IN. Every other lost write
+-- here forgets a debt; this one INVENTS one. The row survives, the next start
+-- reads it back as open, and the arena takes a weapon off a player who
+-- already handed it over.
+-- ======================================================================
+
+t.test('THE DEFECT: a strike-off lost to an outage is re-sent, so a returned weapon is not re-billed', function()
+    local s = newArena({ down = false })
+    s.sweep()
+
+    -- Issued and then handed back cleanly, with the database away for the
+    -- moment the row would have been deleted.
+    s.control.refuse = false
+    s.ammo.Issue(1, 'm1', {
+        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = 0, components = {} } },
+        supplies = {}, armor = 0, health = 200,
+    })
+    t.isTrue(s.table() ~= '(none)', 'the issue wrote no row at all, so this proves nothing')
+
+    s.control.down = true
+    s.ammo.Reclaim(1, 'match ended')
+    s.control.down = false
+
+    -- The row the outage left behind is the one that says a fighter is
+    -- holding this weapon. Nothing in memory owes it -- it came back.
+    t.equals(s.memory(), '(none)', 'the weapon came back but memory still owes it')
+
+    s.sweep(3)
+
+    t.equals(s.table(), '(none)',
+        'the strike-off was never re-sent, so the next start reads that row back as an open '
+        .. 'debt and takes a weapon off a player who already returned it')
+end)
+
+t.test('and a strike-off that lands cleanly still takes exactly its own row', function()
+    -- The control, and it guards the reroute rather than the retry: going
+    -- through dropLedgerRow must still delete one row and not the slate.
+    local s = newArena({ down = false, connected = { 1, 2 } })
+    s.sweep()
+
+    s.leaveOwing(2)                     -- CID2 owes a rifle and bandages
+    local owed = s.table()
+    t.isTrue(owed:find('CID2|', 1, true) ~= nil, 'CID2 never owed anything: ' .. owed)
+
+    s.control.refuse = false
+    s.ammo.Issue(1, 'm1', {
+        weapons = { { key = 'w1', weapon = 'WEAPON_TEST', ammo = 0, components = {} } },
+        supplies = {}, armor = 0, health = 200,
+    })
+    s.ammo.Reclaim(1, 'match ended')
+
+    local after = s.table()
+    t.isNil(after:find('CID1|', 1, true), 'CID1\'s own row outlived a clean hand-back: ' .. after)
+    t.isTrue(after:find('CID2|', 1, true) ~= nil,
+        'striking CID1\'s weapon off took CID2\'s debt with it: ' .. after)
+end)
+
+t.test('THE BLIND SPOT: settling ONE character leaves every other debt alone', function()
+    -- THE MUTATION THIS EXISTS FOR, measured rather than imagined: the WHERE
+    -- clause was cut off the settlement, leaving
+    -- `DELETE FROM crimson_arena_owed_kit`, which on a real server wipes every
+    -- player's outstanding kit the first time anybody settles anything. All
+    -- 127 spec files passed. Nothing in the suite had two debtors at once, so
+    -- nothing could tell a targeted delete from a total one.
+    local s = newArena({ down = false, connected = { 1, 2 } })
+    s.sweep()
+
+    s.leaveOwing(1)
+    s.leaveOwing(2)
+
+    local both = s.table()
+    t.isTrue(both:find('CID1|', 1, true) ~= nil, 'CID1 never owed anything: ' .. both)
+    t.isTrue(both:find('CID2|', 1, true) ~= nil, 'CID2 never owed anything: ' .. both)
+
+    -- Only CID1 is on the server now, so only their debt can be collected.
+    s.control.connected = { 1 }
+    s.sweep(2)
+
+    local after = s.table()
+    t.isNil(after:find('CID1|', 1, true),
+        'the settled debt is still in the table: ' .. after)
+    t.isTrue(after:find('CID2|', 1, true) ~= nil,
+        'settling CID1 took CID2\'s debt with it -- the delete is not keyed to one row: ' .. after)
+end)
+
+t.test('and the settlement names BOTH key columns, not just the character', function()
+    -- The behavioural test above is the one that matters, but it cannot see a
+    -- delete keyed on citizenid ALONE: that wipes a character's whole slate
+    -- rather than the one row being settled, and a character who owes exactly
+    -- one thing looks identical either way. This reads the statement.
+    local s = newArena({ down = false })
+    s.sweep()
+    s.leaveOwing(1)
+    s.sweep(2)
+
+    local settlement
+    for _, sent in ipairs(s.queries) do
+        local flat = sent.sql:gsub('%s+', ' ')
+        if flat:find('^DELETE') and sent.params and sent.params[2] then settlement = flat end
+    end
+
+    t.isNotNil(settlement, 'no settlement was ever sent, so this proves nothing')
+    t.isTrue(settlement:find('WHERE') ~= nil,
+        'the settlement has no WHERE clause -- it empties the table: ' .. settlement)
+    t.isTrue(settlement:find('citizenid') ~= nil,
+        'the settlement does not name the character: ' .. settlement)
+    t.isTrue(settlement:find('ledger_key') ~= nil,
+        'the settlement does not name the row, so it takes the character\'s whole slate: '
+            .. settlement)
+end)
 
 t.test('a settlement the database never took is still re-sent, and the row goes', function()
     local s = newArena({ down = false })

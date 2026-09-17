@@ -44,6 +44,8 @@ print('leaderboard_spec')
 ---   control.oxmysql -- what GetResourceState answers ('started' by default)
 ---   control.throw   -- the export raises, the way an unreachable server does
 ---   control.fail    -- the query goes out and comes back nil
+---   control.rows    -- what a SELECT comes back with, so the database read
+---                      path can be run with real rows in it
 ---   control.defer   -- the callback is HELD rather than called, so a test can
 ---                      run code in the window a real oxmysql leaves open
 ---                      between dispatch and answer, then settle it by hand
@@ -80,7 +82,21 @@ local function newStats(mutate, control)
                             -- Spelled out rather than `control.fail and nil or {}`,
                             -- which is `{}` in both directions: nil cannot be
                             -- carried through and/or.
-                            if control.fail then cb(nil) else cb({}) end
+                            if control.fail then cb(nil) return end
+
+                            -- ROWS FOR A SELECT, WHEN A TEST ASKS FOR THEM.
+                            -- Everything here used to answer `{}` whatever was
+                            -- asked, so the branch of GetLeaderboard that maps
+                            -- a DATABASE row into a board row -- name, wins,
+                            -- kills, deaths, earnings -- was never run with
+                            -- anything in it. Measured: setting wins and kills
+                            -- to a hard 0 in stats.lua left this whole file
+                            -- green.
+                            if control.rows and type(sql) == 'string' and sql:find('SELECT') then
+                                cb(control.rows)
+                                return
+                            end
+                            cb({})
                         end
                     end,
                 })
@@ -396,6 +412,76 @@ end)
 -- ======================================================================
 -- IT ALWAYS ANSWERS, EXACTLY ONCE
 -- ======================================================================
+
+-- ======================================================================
+-- THE DATABASE READ PATH, WITH ROWS IN IT
+--
+-- GetLeaderboard has two halves. The in-memory one is covered above, line by
+-- line. The other maps what the DATABASE answers into what the panel draws,
+-- and until this block it ran only against an empty result: every test fed it
+-- `{}`, so the mapping loop never executed once.
+--
+-- MEASURED, NOT SUSPECTED. Setting `wins` and `kills` to a hard 0 in
+-- server/stats.lua left this file at 19 passed, 0 failed. On a server with
+-- the database on, every player's wins and kills would have read zero and
+-- nothing anywhere would have said so.
+-- ======================================================================
+
+t.test('THE BLIND SPOT: a board read from the database carries its numbers', function()
+    local s = newStats(function(config) config.Database.enabled = true end, {
+        rows = {
+            { name = 'Winner', wins = 7, kills = 40, deaths = 3, earnings = 9000 },
+            { name = 'Runner', wins = 2, kills = 11, deaths = 9, earnings = 1500 },
+        },
+    })
+
+    local board
+    s.S.GetLeaderboard(function(rows) board = rows end)
+
+    t.isNotNil(board, 'the board never called back')
+    t.equals(#board, 2, 'the database rows did not reach the board')
+    t.equals(board[1].name, 'Winner')
+    t.equals(board[1].wins, 7, 'wins did not survive the mapping')
+    t.equals(board[1].kills, 40, 'kills did not survive the mapping')
+    t.equals(board[1].deaths, 3, 'deaths did not survive the mapping')
+    t.equals(board[1].earnings, 9000, 'earnings did not survive the mapping')
+    t.equals(board[2].name, 'Runner', 'only the first row was mapped')
+    t.equals(board[2].wins, 2)
+end)
+
+t.test('and a row with nothing in it is filled in rather than passed through', function()
+    -- oxmysql answers what the column holds, and a column can be NULL. The
+    -- panel draws these straight, so a nil reaching it is "nil" on somebody's
+    -- screen or an arithmetic error on the sort.
+    local s = newStats(function(config) config.Database.enabled = true end, {
+        rows = { { name = nil, wins = nil, kills = nil, deaths = nil, earnings = nil } },
+    })
+
+    local board
+    s.S.GetLeaderboard(function(rows) board = rows end)
+
+    t.equals(#board, 1, 'the empty row was dropped rather than filled in')
+    t.equals(board[1].name, '', 'a nil name reached the panel')
+    t.equals(board[1].wins, 0, 'a nil win count reached the panel')
+    t.equals(board[1].kills, 0)
+    t.equals(board[1].deaths, 0)
+    t.equals(board[1].earnings, 0)
+end)
+
+t.test('and a number arriving as a STRING is made a number', function()
+    -- Some drivers answer numeric columns as strings. The board sorts and
+    -- compares these, and '10' < '9' is true for strings.
+    local s = newStats(function(config) config.Database.enabled = true end, {
+        rows = { { name = 'Stringy', wins = '7', kills = '40', deaths = '3', earnings = '9000' } },
+    })
+
+    local board
+    s.S.GetLeaderboard(function(rows) board = rows end)
+
+    t.equals(board[1].wins, 7, 'a string win count was passed through as a string')
+    t.equals(board[1].kills, 40)
+    t.equals(board[1].earnings, 9000)
+end)
 
 t.test('GetLeaderboard calls back exactly once, in both modes', function()
     for _, on in ipairs({ false, true }) do

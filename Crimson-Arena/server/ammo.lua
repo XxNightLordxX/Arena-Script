@@ -4057,6 +4057,33 @@ local function setOwedItem(citizenid, name, amount)
         { citizenid, itemKey(name), name, amount })
 end
 
+--- NOT THROUGH sendLedger, AND THAT IS A DECISION RATHER THAN THE OVERSIGHT
+--- IT LOOKS LIKE. Read this before "fixing" it to match strikeWeaponOff
+--- below, which was exactly that oversight and was routed.
+---
+--- replayPending repairs a lost write by resolving its key against MEMORY:
+--- for `w:<serial>` it looks the serial up in `owedKit` and sends the
+--- absolute statement for what it finds -- the debt if it is on the slate, a
+--- DELETE if it is not.
+---
+--- AN 'out' WEAPON IS DELIBERATELY NOT ON THAT SLATE. It is the third state:
+--- not in the arena's hands, not owed, but in a fighter's hands right now.
+--- So a replay of this key would find nothing in `owedKit` and send a DELETE
+--- -- removing the very row this function exists to write.
+---
+--- THAT ROW IS THE CRASH RECORD. The read-back merges 'out' rows into the
+--- slate as open debts on purpose: the only way one survives to be read is
+--- that the exit which would have cleared it never ran -- a crash, a kill -9,
+--- the host dying mid-round -- and the fighter is still holding the weapon
+--- with nothing else remembering. Deleting it on a replay would throw away
+--- the one record of that.
+---
+--- So a dropped write here leaves no row, which is what the state was before
+--- it, and the retry that would "repair" it would make things worse.
+--- Repairing it properly means teaching replayPending the issued-but-not-
+--- returned set as a third source of truth, which is a real change to that
+--- function and not a one-line reroute. DO NOT route this through sendLedger
+--- without doing that first.
 function markWeaponOut(record)
     if type(record) ~= 'table' then return end
     if not (Arena.IsKey(record.citizenid) and Arena.IsKey(record.serial)) then return end
@@ -4069,8 +4096,31 @@ function strikeWeaponOff(record)
     if type(record) ~= 'table' then return end
     if not (Arena.IsKey(record.citizenid) and Arena.IsKey(record.serial)) then return end
 
-    ArenaDb('the outstanding-kit slate', KIT_DROP_SQL,
-        { record.citizenid, weaponKey(record.serial) }, wrote)
+    -- THROUGH dropLedgerRow, AND SO THROUGH sendLedger, LIKE EVERY OTHER
+    -- WRITE ON THIS SLATE.
+    --
+    -- It used to hand the statement straight to ArenaDb, fifty lines below
+    -- the comment on sendLedger that says in capitals not to. That put this
+    -- one DELETE outside the replay set: every other write on the slate is
+    -- remembered until the database answers and re-sent if it never did, and
+    -- this one evaporated.
+    --
+    -- WHAT THAT COST, and it is the wrong direction to lose a statement in. A
+    -- weapon comes back, this deletes the row that says a fighter is holding
+    -- it, and if that delete is dropped the row survives -- so the next start
+    -- reads it back as an open debt and the arena takes a weapon off a player
+    -- who already returned it. Every other lost write on this slate merely
+    -- forgets a debt; this one invents one.
+    --
+    -- THE REPLAY RESOLVES THIS KEY CORRECTLY, which is what makes the change
+    -- safe rather than merely tidy. replayPending looks `w:<serial>` up in
+    -- `owedKit` and sends the absolute statement for whatever it finds: at the
+    -- moment a weapon is legitimately reclaimed memory does not owe it, so the
+    -- replay sends exactly the DELETE that went missing. If the same serial is
+    -- owed again later, the replay finds it on the slate and writes the debt
+    -- instead -- which is also right, because the replay asks what is true NOW
+    -- rather than what was sent.
+    dropLedgerRow(record.citizenid, weaponKey(record.serial))
 end
 
 local function dropOwedWeapon(citizenid, serial)

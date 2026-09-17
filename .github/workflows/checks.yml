@@ -9,7 +9,9 @@
 # both, because a spec that does not parse is a spec that is not running.
 #
 # tests/ and .luacheckrc are deliberately not shipped -- so it was deleted with
-# them and nothing has checked a push since.
+# them and nothing checked a push for a long time afterwards. THE SUITE GATE IS
+# BACK, below, pointed at tests/ where it now lives; the luacheck one is not,
+# and .luacheckrc is still unshipped.
 #
 # tests/ IS NOW TRACKED, and that is not a change of mind about shipping it.
 # The suite is what every claim in this repository's commit messages rests on;
@@ -36,8 +38,9 @@
 # None of this boots FiveM. It cannot: the natives do not exist outside a
 # server. What it proves is that nothing fails to load, that no file reached
 # for a global it never declared, that the two non-Lua files are well formed,
-# that stripping the resource for production changes no instruction, and that
-# the work is credited to its author and nobody else.
+# that stripping the resource for production changes no instruction, that
+# every spec in tests/ passes, and that the work is credited to its author and
+# nobody else.
 #
 # To run the same gates locally, including the spec suite if you have restored
 # it: ./tools/verify_release.sh
@@ -172,6 +175,31 @@ jobs:
               fi
           done
           exit "$status"
+
+      # THE SPEC SUITE. Every *_spec.lua under tests/, plus the panel suites
+      # under tests/panel/, each in its own process.
+      #
+      # THIS GATE WAS MISSING, AND ITS ABSENCE WAS THE LARGEST HOLE IN THIS
+      # WORKFLOW. The original ran the suite; tests/ moved out of the shipped
+      # resource folder and the gate was deleted along with the paths it
+      # pointed at rather than repointed at them. Everything after that was
+      # verified by somebody running `bash tests/run.sh` by hand and reporting
+      # the result honestly -- a hundred and twenty-odd spec files whose
+      # failure nothing could see. A regression could land on a branch with a
+      # green tick beside it.
+      #
+      # Measured while it was missing: the WHERE clause was cut off the
+      # owed-kit DELETE, leaving a statement that empties the table on the
+      # first settlement, and every spec file still passed. That is a suite
+      # problem rather than a CI problem and is fixed in tests/ -- but nothing
+      # would have run either check on a push.
+      #
+      # NO EXTRA SETUP. lua5.4 is installed above, node is on the runner
+      # already, and the suite needs nothing else: no database, no FiveM, no
+      # network. run.sh cds to its own directory, aggregates every spec's exit
+      # code AND its printed tally, and fails on either.
+      - name: The spec suite passes
+        run: bash tests/run.sh
 
       # Every name that crosses a boundary: locale keys and their placeholder
       # counts, Config keys, NUI actions and callbacks, element ids, CSS classes,

@@ -55,16 +55,29 @@ runs on every client, where none of this belongs.
 `AddNotification` is the single funnel every dispatch-panel alert on this
 server goes through. That includes alerts **sc-dispatch does not raise itself**:
 
-| Raised by | Path | Covered |
-|---|---|---|
-| sc-dispatch | `sc-dispatch:server:ShotsFired` → `AddNotification` | yes |
-| sc-dispatch | `sc-dispatch:server:PlayerDown` → `AddNotification` | yes |
-| sc-dispatch | `sc-dispatch:server:PlayerDead` → `AddNotification` | yes |
-| sc-dispatch | `sc-dispatch:server:PanicButton` → `AddNotification` | yes |
-| sc-dispatch | `sc-dispatch:server:AddNotification` (net event) | yes |
-| **sc-ambulance** | `hospital:server:EMSDownAlert` → `exports['sc-dispatch']:AddNotification` | **yes** |
-| **sc-ambulance** | doctor alert → `exports['sc-dispatch']:AddNotification` | **yes** |
-| any other resource | `exports['sc-dispatch']:AddNotification(...)` | yes |
+Every call site in both scripts, and what the guard can do with each. It
+identifies the player from `caller_source`, or from the `<kind>_<id>_<time>`
+shape of `unique_id`. **An alert that names no player is never suppressed** —
+that is deliberate, not a gap.
+
+| Raised by | Path | Subject | Suppressed for a fighter |
+|---|---|---|---|
+| sc-dispatch | `sc-dispatch:server:ShotsFired` | `shots_<id>_<t>` | yes |
+| sc-dispatch | `sc-dispatch:server:PlayerDown` | `playerdown_<id>_<t>` + `caller_source` | yes |
+| sc-dispatch | `sc-dispatch:server:PlayerDead` | `playerdead_<id>_<t>` + `caller_source` | yes |
+| sc-dispatch | `sc-dispatch:server:PanicButton` | `panic_<id>_<t>` | yes |
+| sc-dispatch | `mydispatch:requestEMS` | `emshelp_<id>_<t>` + `caller_source` | yes |
+| **sc-ambulance** | `hospital:server:EMSDownAlert` | `emsdown_<id>_<t>` + `caller_source` | **yes** |
+| **sc-ambulance** | doctor alert | `doctoralert_<id>_<t>` | **yes** |
+| sc-dispatch | `sc-dispatch:server:AddNotification` (net event) | whatever the payload carries | **only if it names a player** |
+| sc-dispatch | `sc-dispatch:AddNotification` (net event) | whatever the payload carries | **only if it names a player** |
+| sc-dispatch | the dispatcher console creating a call | none | **no — and correctly so** |
+| sc-dispatch | `/testpolicedispatch`, `/testemsdispatch` | a bare random number | **no — and correctly so** |
+| any other resource | `exports['sc-dispatch']:AddNotification(...)` | whatever the payload carries | only if it names a player |
+
+The last three are not oversights. A dispatcher creating a call by hand is
+reporting a *place*, and an admin running a test command wants to see the test
+land. Neither names a player, so neither is touched.
 
 One paste, both scripts. You do not need to touch `sc-ambulance` for any of
 the above.
@@ -90,8 +103,20 @@ casualty back on their feet in the *same instant* they go down. The branch is
 never entered, so the event is never sent. What that depends on is start order:
 if `ensure Crimson-Arena` sits below `ensure sc-ambulance` in `server.cfg`,
 sc-ambulance's death handler runs first and can get the event out before the
-arena resurrects. The arena prints the order it actually saw at the first death
-of a round — read that line once and you will know which side of it you are on.
+arena resurrects.
+
+**Check which side of that you are on before relying on it**, and check it in
+the compat report — admin tablet → **Tools** → **Police & EMS**, or
+`/arenaconsole`. That report names the start order either way:
+
+```
+start order: this resource started first, so it answers a death before any emergency script does.
+```
+
+The arena *also* shouts about it in the console at the first death of a round,
+but only when the order is wrong — so silence there is not confirmation, and
+the report is. If the report names resources that started first, move
+`ensure Crimson-Arena` above them and restart the server.
 
 If you would rather close it by hand, it is one line at the top of that handler
 in `sc-ambulance/server/main.lua`:
@@ -132,6 +157,12 @@ do
     -- The arena's folder name. Change this ONLY if you renamed the resource.
     local ARENA = 'Crimson-Arena'
 
+    -- The state-bag key the arena writes. Change this ONLY if you changed
+    -- Config.Dispatch.custom.stateBagKey in the arena's own config.lua -- it
+    -- defaults to 'crimsonArena' there and the two have to agree. It is used
+    -- ONLY by the fallback for arena builds too old to carry the export.
+    local ARENA_STATE_KEY = 'crimsonArena'
+
     local SELF = GetCurrentResourceName()
     local GUARDED_EXPORT = 'AddNotification'
 
@@ -158,7 +189,18 @@ do
     if type(original) ~= 'function' then
         print('[crimson-arena-guard] could not find this resource\'s ' .. GUARDED_EXPORT
             .. ' export, so NOTHING was changed. Move this block to the very bottom of the file.')
-        return
+        -- `goto`, NOT `return`, AND THAT IS NOT A STYLE CHOICE. This `do`
+        -- block sits at the TOP LEVEL of somebody else's file, so a `return`
+        -- here returns from THAT FILE'S CHUNK -- it is the `do return end`
+        -- idiom for "stop loading the rest of this script". Pasted above the
+        -- AddNotification registration it would abort the load of every line
+        -- below the paste point: the export itself, ClearNotification, the
+        -- alert net events, the MDT callbacks. The bail-out that exists to
+        -- change NOTHING would have deleted most of the resource, while
+        -- printing a line saying it had not. A goto out of the block leaves
+        -- the host file loading normally, which is what the line above
+        -- promises.
+        goto crimson_arena_guard_done
     end
 
     -- ------------------------------------------------------------------
@@ -219,7 +261,7 @@ do
         if asked and type(answer) == 'boolean' then return answer end
 
         local read, bag = pcall(function()
-            return Player(src).state.crimsonArena
+            return Player(src).state[ARENA_STATE_KEY]
         end)
         return read and bag ~= nil
     end
@@ -241,26 +283,36 @@ do
     -- sc-dispatch's own callers already read that return as "the call could
     -- not be filed" and handle it.
     -- ------------------------------------------------------------------
-    local inside = false
-
+    -- THERE IS NO RE-ENTRANCY FLAG, AND THERE MUST NOT BE ONE. An earlier
+    -- version of this block kept `local inside` and short-circuited straight
+    -- to the original while it was set. That is a correctness bug rather than
+    -- a safety net, and a bad one: AddNotification calls MySQL.insert.await,
+    -- which YIELDS, and FiveM runs each event handler in its own coroutine --
+    -- so a flag set around that call stayed set for the whole database
+    -- round-trip, and EVERY alert raised during that window took the
+    -- short-circuit and skipped the suppression check altogether. On a busy
+    -- server that is most of them, and nothing anywhere says why.
+    --
+    -- NOTHING IS LOST BY DROPPING IT. `original` is captured in step 1, before
+    -- this function exists, so it can never BE this function and there is no
+    -- recursion to guard against. Paste the block twice and you get two
+    -- wrappers in a chain, each asking the arena the same question.
     local function guarded(data)
-        -- RE-ENTRANCY BELT AND BRACES. If anything ever made `original`
-        -- resolve back to this function, passing through is survivable and
-        -- recursing is not.
-        if inside then return original(data) end
-
         local src = subjectOf(data)
         if src then
             local ok, suppress = pcall(inArena, src)
             if ok and suppress then return nil end
         end
 
-        inside = true
-        local ok, result = pcall(original, data)
-        inside = false
-
-        if not ok then error(result, 0) end
-        return result
+        -- table.pack/table.unpack, NOT `local ok, result = pcall(...)`, which
+        -- keeps only the FIRST return value. AddNotification returns one value
+        -- today, so that form costs nothing today -- and would silently
+        -- truncate the day it returned two, which is not a thing a wrapper in
+        -- somebody else's file may do. `n` is carried so a trailing nil
+        -- survives as well.
+        local returned = table.pack(pcall(original, data))
+        if not returned[1] then error(returned[2], 0) end
+        return table.unpack(returned, 2, returned.n)
     end
 
     exports(GUARDED_EXPORT, guarded)
@@ -300,6 +352,11 @@ do
             .. 'this block is answering ' .. GUARDED_EXPORT .. '. Alerts are unchanged. Move this '
             .. 'block lower, or find what else is wrapping that export.')
     end
+
+    -- Where the bail-out in step 1 lands. A label at the end of the block is
+    -- the only way out of it that does not also end the file it was pasted
+    -- into.
+    ::crimson_arena_guard_done::
 end
 -- ============================================================================
 -- END CRIMSON ARENA ALERT GUARD

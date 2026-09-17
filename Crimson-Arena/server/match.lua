@@ -1117,7 +1117,11 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
     -- It matters most on exactly the servers this layer is for -- one whose
     -- dispatch resource starts BEFORE this one and answers a death first, so
     -- the call filed as the round begins is the one that needs withdrawing.
-    ArenaDispatch.Set(player.src, match.id)
+    -- `true` = A FIGHTER, which is the half that decides whether leaving
+    -- earns a grace window. ArenaDispatch.Set says why. The other call site
+    -- in this file -- the sweep, further down -- is the spectator one and
+    -- deliberately does not pass it.
+    ArenaDispatch.Set(player.src, match.id, true)
 
     ArenaDispatch.Revive(player.src)
 

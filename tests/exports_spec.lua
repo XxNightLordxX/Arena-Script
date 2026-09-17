@@ -233,7 +233,25 @@ t.test('and all three answer quietly on a build with no dispatch module', functi
 
     t.isFalse(f.call('IsPlayerInArena', 7), 'a build that cannot tell said somebody IS in a match')
     t.isNil(f.call('GetPlayerMatchId', 7))
-    t.equals(#f.call('GetArenaPlayers'), 0)
+
+    -- COUNTED WITH pairs, NOT `#`. GetArenaPlayers answers a map keyed by
+    -- SERVER ID -- { [7] = 'm1' } -- and `#` on that is 0 whatever is in it,
+    -- so the assertion this replaces could not fail for any roster at all.
+    local roster, n = f.call('GetArenaPlayers'), 0
+    for _ in pairs(roster) do n = n + 1 end
+    t.equals(n, 0, 'a build with no dispatch module handed out a roster')
+end)
+
+t.test('and THAT count really can fail, which `#` on a map never could', function()
+    -- The control for the line above. With the module present the same count
+    -- has to come back non-zero, or the fix is just a different way of
+    -- asserting nothing.
+    local f = newExports()
+    local roster, n = f.call('GetArenaPlayers'), 0
+    for _ in pairs(roster) do n = n + 1 end
+
+    t.equals(n, 1, 'the roster count sees nothing even when somebody is fighting')
+    t.equals(#roster, 0, 'the fixture no longer shows why `#` was the wrong tool here')
 end)
 
 t.test('IsArenaOpen answers the schedule', function()

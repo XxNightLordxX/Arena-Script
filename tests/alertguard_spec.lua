@@ -113,6 +113,19 @@ local function newDispatch(opts)
     end
 
     -- exports(name, fn), exactly as the runtime defines it.
+    -- A STOPPED RESOURCE ANSWERS NOTHING, which the first version of this
+    -- fixture got wrong and which made one of the file's headline claims
+    -- untestable. `arenaState` only changed GetResourceState; the export
+    -- proxy answered normally regardless, so "with no arena on the box" was
+    -- measured against a box where the arena was present and merely said no.
+    -- Deleting the block's `GetResourceState` line left every test green.
+    --
+    -- FiveM raises `No such export` for an export nobody has registered, and
+    -- a stopped resource has registered none -- so that is what this does.
+    local function arenaRunning()
+        return (opts.arenaState or 'started') == 'started'
+    end
+
     env.exports = setmetatable({}, {
         __call = function(_self, name, fn)
             env.AddEventHandler(('__cfx_export_%s_%s'):format('sc-dispatch', name), function(setCB)
@@ -124,7 +137,7 @@ local function newDispatch(opts)
             return setmetatable({}, {
                 __index = function(_t2, name)
                     return function(_self, ...)
-                        if resource ~= 'Crimson-Arena' then
+                        if resource ~= 'Crimson-Arena' or not arenaRunning() then
                             error(('No such export %s in resource %s'):format(name, resource), 0)
                         end
                         if name == 'ShouldSuppressAlert' then
@@ -140,6 +153,11 @@ local function newDispatch(opts)
         end,
     })
 
+    -- THE BAG OUTLIVES THE RESOURCE. A FiveM state bag is written onto the
+    -- player and stays there until something overwrites it, so an arena that
+    -- stopped mid-round leaves a stale `crimsonArena` on every fighter. That
+    -- is exactly the state the block's GetResourceState line has to survive,
+    -- so the fixture keeps answering the bag whatever arenaState says.
     env.Player = function(src)
         return { state = { crimsonArena = (opts.bag or {})[src] } }
     end
@@ -150,6 +168,12 @@ local function newDispatch(opts)
         env.exports('AddNotification', function(data)
             if raiseFromOriginal then error(raiseFromOriginal, 0) end
             filed[#filed + 1] = data
+            -- REGISTERED BEFORE THE BLOCK LOADS, which is the whole point: a
+            -- stub registered afterwards wins the export resolution, so the
+            -- test would never go through the wrapper at all. `opts.returns`
+            -- is how a spec changes what the REAL handler answers without
+            -- moving it after the guard.
+            if opts.returns then return opts.returns() end
             return 'call-' .. #filed
         end)
     end
@@ -218,6 +242,28 @@ t.test('THE PROMISE: with no arena on the box, every alert goes through untouche
     t.equals(#d.filed, 1, 'an alert was dropped on a server that does not run the arena')
     t.equals(d.filed[1], payload, 'the payload reaching the real handler is not the one sent')
     t.equals(id, 'call-1', 'the real handler\'s return value did not reach the caller')
+end)
+
+t.test('THE LINE THAT MAKES IT SAFE: a STOPPED arena with a stale bag still raises the alert',
+function()
+    -- The nastiest shape of "no arena on the box", and the one the block's
+    -- `if GetResourceState(ARENA) ~= 'started' then return false end` exists
+    -- for. The arena crashes or is stopped mid-round. Its export is gone, but
+    -- the replicated state bag it wrote is still sitting on the player,
+    -- because a bag lives on the player and not in the resource.
+    --
+    -- MEASURED: without that line the block falls through to the bag, reads
+    -- the stale value, and swallows every alert naming that player for the
+    -- rest of their session -- including a real city person-down.
+    local d = newDispatch({
+        arenaState = 'missing',
+        bag = { [FIGHTER] = { active = true, matchId = 'm1' } },
+    })
+
+    d.addNotification({ caller_source = FIGHTER, unique_id = 'playerdown_7_1699' })
+
+    t.equals(#d.filed, 1,
+        'a stopped arena\'s leftover state bag silenced a real city alert')
 end)
 
 t.test('and the arena being STARTED but answering no changes nothing either', function()
@@ -448,7 +494,7 @@ t.test('every alert shape the two scripts really build is covered', function()
           payload = { unique_id = 'playerdown_7_1699', caller_source = 7 } },
         { what = 'PlayerDead',
           payload = { unique_id = 'playerdead_7_1699', caller_source = 7 } },
-        { what = 'requestEMS', payload = { unique_id = 'ems_7_1699', caller_source = 7 } },
+        { what = 'requestEMS', payload = { unique_id = 'emshelp_7_1699', caller_source = 7 } },
         -- sc-ambulance/server/main.lua
         { what = 'EMSDownAlert',
           payload = { unique_id = 'emsdown_7_1699', caller_source = 7 } },
@@ -653,7 +699,7 @@ t.test('END TO END: a real match silences the real alert, and only for its fight
     local arena = newArena()
     local d = newWiredDispatch(arena)
 
-    arena.D.Set(FIGHTER, 'match-1')
+    arena.D.Set(FIGHTER, 'match-1', true)
 
     d.addNotification({ caller_source = FIGHTER, unique_id = 'playerdown_7_1699' })
     t.equals(#d.filed, 0, 'a live fighter was paged to EMS through the real arena')
@@ -671,7 +717,7 @@ function()
     local arena = newArena()
     local d = newWiredDispatch(arena)
 
-    arena.D.Set(FIGHTER, 'match-1')
+    arena.D.Set(FIGHTER, 'match-1', true)
     arena.D.Clear(FIGHTER)
 
     t.isFalse(arena.D.IsPlayerInArena(FIGHTER),
@@ -684,12 +730,16 @@ end)
 
 t.test('END TO END: and the silence ENDS -- it is not a flag for the rest of a session',
 function()
+    -- TEN SECONDS, not sixty. The window only has to outlast the gap between
+    -- a round resolving and the other script filing its call, and the arena's
+    -- own file argues at length that a PASSIVE listener seeing every alert on
+    -- the server may not have the wide one.
     local arena = newArena()
     local d = newWiredDispatch(arena)
 
-    arena.D.Set(FIGHTER, 'match-1')
+    arena.D.Set(FIGHTER, 'match-1', true)
     arena.D.Clear(FIGHTER)
-    arena.advance(61)
+    arena.advance(11)
 
     d.addNotification({ caller_source = FIGHTER, unique_id = 'playerdown_7_1699' })
     t.equals(#d.filed, 1, 'a player was still having alerts swallowed a minute after the round')
@@ -703,12 +753,244 @@ function()
     local arena = newArena()
     local d = newWiredDispatch(arena)
 
-    arena.D.Set(FIGHTER, 'match-1')
+    arena.D.Set(FIGHTER, 'match-1', true)
     arena.D.Clear(FIGHTER)
     arena.drop(FIGHTER)
 
     d.addNotification({ caller_source = FIGHTER, unique_id = 'playerdown_7_1699' })
     t.equals(#d.filed, 1, 'somebody inherited a fighter\'s silence with their server id')
+end)
+
+-- ========================================================================
+-- THE BLOCK IS PASTED INTO SOMEBODY ELSE'S FILE, SO THE FILE ITSELF MATTERS
+--
+-- Every test above load()s the block as its own chunk, which is exactly how
+-- it CANNOT be run in production: it is pasted into the middle of a 7,000
+-- line script and shares that script's chunk. A whole class of defect is
+-- invisible to a standalone load, and one of them was real.
+-- ========================================================================
+
+t.test('THE WORST DEFECT THIS FILE HAS HELD: the block must not truncate its host file',
+function()
+    -- IT DID. The bail-out for "nothing to wrap" was a `return`, and a
+    -- `return` at the top level of a chunk is the `do return end` idiom for
+    -- "stop loading the rest of this script". Pasted above the
+    -- AddNotification registration -- the exact mistake the document warns
+    -- about twice and calls harmless -- it aborted the load of every line
+    -- below the paste point: the export itself, ClearNotification, the alert
+    -- net events, the MDT callbacks. The bail-out that exists to change
+    -- NOTHING deleted most of the resource, and printed a line saying it had
+    -- not.
+    --
+    -- NO STANDALONE LOAD CAN SEE THIS. The block has to be concatenated into
+    -- a host chunk, with things after it, exactly as the paste really is.
+    local registered = {}
+    local env = {}
+    env._G = env
+    for _, name in ipairs({ 'type', 'tonumber', 'tostring', 'pcall', 'error', 'ipairs', 'pairs',
+                            'select', 'string', 'table', 'math', 'os', 'setmetatable',
+                            'getmetatable', 'rawget', 'rawset', 'next', 'assert' }) do
+        env[name] = _G[name]
+    end
+    local handlers = {}
+    env.print = function() end
+    env.GetCurrentResourceName = function() return 'sc-dispatch' end
+    env.GetResourceState = function() return 'missing' end
+    env.AddEventHandler = function(n, f) handlers[n] = handlers[n] or {}; table.insert(handlers[n], f) end
+    env.TriggerEvent = function(n, ...) for _, f in ipairs(handlers[n] or {}) do f(...) end end
+    env.RegisterNetEvent = function(n) registered[#registered + 1] = 'net:' .. n end
+    env.Player = function() return { state = {} } end
+    env.exports = setmetatable({}, {
+        __call = function(_s, name, fn)
+            registered[#registered + 1] = 'export:' .. name
+            env.AddEventHandler('__cfx_export_sc-dispatch_' .. name, function(cb) cb(fn) end)
+        end,
+        __index = function()
+            return setmetatable({}, { __index = function() return function() error('x', 0) end end })
+        end,
+    })
+
+    -- The block FIRST -- i.e. pasted too high, with nothing registered yet --
+    -- and the rest of the host file after it, in ONE chunk.
+    local hostFile = BLOCK .. [==[
+
+exports('AddNotification', function(data) return 'id' end)
+exports('ClearNotification', function() return true end)
+RegisterNetEvent('sc-dispatch:server:PlayerDown')
+RegisterNetEvent('sc-dispatch:server:PlayerDead')
+]==]
+
+    local chunk = assert(load(hostFile, '=main.lua', 't', env))
+    chunk()
+
+    t.equals(#registered, 4,
+        'the block stopped its host file loading: only ' .. #registered .. ' of 4 things below '
+        .. 'the paste point registered. A too-high paste must change NOTHING, which is what the '
+        .. 'block prints and what ALERT-GUARD.md promises.')
+end)
+
+t.test('and a mis-pasted block leaves the real export reachable and unwrapped', function()
+    -- The other half: not merely that the lines ran, but that the resource
+    -- still WORKS. An operator who mis-pastes should have a server that
+    -- behaves exactly as it did before they touched it.
+    local handlers, filed = {}, {}
+    local env = {}
+    env._G = env
+    for _, name in ipairs({ 'type', 'tonumber', 'tostring', 'pcall', 'error', 'ipairs', 'pairs',
+                            'select', 'string', 'table', 'math', 'os', 'setmetatable',
+                            'getmetatable', 'rawget', 'rawset', 'next', 'assert' }) do
+        env[name] = _G[name]
+    end
+    env.print = function() end
+    env.GetCurrentResourceName = function() return 'sc-dispatch' end
+    env.GetResourceState = function() return 'started' end
+    env.AddEventHandler = function(n, f) handlers[n] = handlers[n] or {}; table.insert(handlers[n], f) end
+    env.TriggerEvent = function(n, ...) for _, f in ipairs(handlers[n] or {}) do f(...) end end
+    env.Player = function() return { state = {} } end
+    env.exports = setmetatable({}, {
+        __call = function(_s, name, fn)
+            env.AddEventHandler('__cfx_export_sc-dispatch_' .. name, function(cb) cb(fn) end)
+        end,
+        __index = function()
+            return setmetatable({}, { __index = function() return function() error('x', 0) end end })
+        end,
+    })
+
+    assert(load(BLOCK .. [==[
+
+exports('AddNotification', function(data) FILED[#FILED + 1] = data return 'id' end)
+]==], '=main.lua', 't', env))()
+
+    env.FILED = filed
+    -- re-register now that FILED exists (the stub above closes over the global)
+    env.exports('AddNotification', function(data) filed[#filed + 1] = data return 'id' end)
+
+    local resolved
+    env.TriggerEvent('__cfx_export_sc-dispatch_AddNotification', function(cb) resolved = cb end)
+    t.isNotNil(resolved, 'the host file\'s own export did not survive a mis-paste')
+
+    t.equals(resolved({ caller_source = 7 }), 'id', 'the unwrapped export stopped working')
+    t.equals(#filed, 1, 'a mis-pasted guard swallowed an alert it was never meant to touch')
+end)
+
+t.test('THE CONCURRENCY DEFECT: an alert raised during another alert\'s DB write is still checked',
+function()
+    -- AddNotification calls MySQL.insert.await, which YIELDS, and FiveM runs
+    -- each event handler in its own coroutine. An earlier version of this
+    -- block kept a `local inside` flag set around the call to the original
+    -- and short-circuited straight through whenever it was set -- so for the
+    -- whole duration of every database round-trip, EVERY other alert skipped
+    -- the suppression check. On a busy server that is most of them, and
+    -- nothing anywhere says why a fighter was paged.
+    --
+    -- MEASURED BY YIELDING, which is the only way to see it: a fixture whose
+    -- original returns immediately can never reproduce this.
+    local handlers, filed = {}, {}
+    local env = {}
+    env._G = env
+    for _, name in ipairs({ 'type', 'tonumber', 'tostring', 'pcall', 'error', 'ipairs', 'pairs',
+                            'select', 'string', 'table', 'math', 'os', 'setmetatable',
+                            'getmetatable', 'rawget', 'rawset', 'next', 'assert', 'coroutine' }) do
+        env[name] = _G[name]
+    end
+    env.print = function() end
+    env.GetCurrentResourceName = function() return 'sc-dispatch' end
+    env.GetResourceState = function(n) return n == 'Crimson-Arena' and 'started' or 'missing' end
+    env.AddEventHandler = function(n, f) handlers[n] = handlers[n] or {}; table.insert(handlers[n], f) end
+    env.TriggerEvent = function(n, ...) for _, f in ipairs(handlers[n] or {}) do f(...) end end
+    env.Player = function() return { state = {} } end
+    env.exports = setmetatable({}, {
+        __call = function(_s, name, fn)
+            env.AddEventHandler('__cfx_export_sc-dispatch_' .. name, function(cb) cb(fn) end)
+        end,
+        __index = function(_t, resource)
+            return setmetatable({}, { __index = function(_t2, nm)
+                return function(_self, ...)
+                    if resource == 'Crimson-Arena' and nm == 'ShouldSuppressAlert' then
+                        local who = ...
+                        return who == FIGHTER
+                    end
+                    error('No such export ' .. nm .. ' in resource ' .. resource, 0)
+                end
+            end })
+        end,
+    })
+
+    -- THE REAL HANDLER YIELDS, exactly as MySQL.insert.await does.
+    env.exports('AddNotification', function(data)
+        coroutine.yield()
+        filed[#filed + 1] = data
+        return 'call-' .. #filed
+    end)
+
+    assert(load(BLOCK, '=alert-guard', 't', env))()
+
+    local resolved
+    env.TriggerEvent('__cfx_export_sc-dispatch_AddNotification', function(cb) resolved = cb end)
+
+    local civilian = coroutine.create(function()
+        return resolved({ caller_source = CIVILIAN, unique_id = 'playerdown_3_1699' })
+    end)
+    local fighter = coroutine.create(function()
+        return resolved({ caller_source = FIGHTER, unique_id = 'playerdown_7_1699' })
+    end)
+
+    coroutine.resume(civilian)   -- parks inside the database write
+    coroutine.resume(fighter)    -- arrives while it is parked
+    coroutine.resume(civilian)   -- both round-trips come back
+    coroutine.resume(fighter)
+
+    t.equals(#filed, 1, 'more alerts were filed than the one that should have been')
+    t.equals(filed[1].caller_source, CIVILIAN,
+        'a fighter was paged because their alert arrived while another was mid-database-write')
+end)
+
+t.test('and every return value of the real handler survives the wrapper', function()
+    -- `local ok, result = pcall(original, data)` keeps only the FIRST return
+    -- value. AddNotification returns one today, so that form costs nothing
+    -- today -- and silently truncates the day it returns two, inside somebody
+    -- else's resource, where nobody would think to look.
+    -- THE RETURNS ARE SET ON THE FIXTURE'S OWN HANDLER, not registered after
+    -- it. A stub registered after the block wins the export resolution, so it
+    -- would measure the stub instead of the wrapper -- which is exactly what
+    -- the first version of this test did, and why reverting the fix left it
+    -- green. Measured: with the truncating form restored, this now fails.
+    local d = newDispatch({
+        arenaState = 'missing',
+        returns = function() return 'id', 42, nil, 'tail' end,
+    })
+
+    local packed = table.pack(d.addNotification({ title = 'x' }))
+
+    t.equals(packed.n, 4, 'the wrapper truncated the real handler\'s return values')
+    t.equals(packed[2], 42)
+    t.isNil(packed[3], 'a nil in the middle was dropped')
+    t.equals(packed[4], 'tail', 'a value after a nil was lost')
+end)
+
+t.test('END TO END: a SPECTATOR who stops watching gets no window at all', function()
+    -- Spectators carry the arena flag WHILE watching, deliberately: their
+    -- client is inside the instance and sees every shot, so their own
+    -- machine's dispatch script is what would raise the alert. That part is
+    -- right and is not in question.
+    --
+    -- THE TAIL IS THE PROBLEM. A grace window exists because a ROUND
+    -- RESOLVES and takes the flag down before the call is filed. Pressing
+    -- stop resolves nothing -- the watcher is put back where they were
+    -- standing -- so a window there is plain immunity in the city, renewable
+    -- for as long as somebody keeps pressing Watch.
+    local arena = newArena()
+    local d = newWiredDispatch(arena)
+
+    arena.D.Set(9, 'match-1')          -- no fighter flag: this is the sweep's call
+    t.isTrue(arena.D.ShouldSuppressAlert(9), 'a watcher was not covered WHILE watching')
+
+    arena.D.Clear(9)
+
+    d.addNotification({ caller_source = 9, unique_id = 'playerdown_9_1699' })
+    t.equals(#d.filed, 1,
+        'a spectator kept a suppression window after they stopped watching, which is '
+        .. 'renewable immunity for anybody who can press Watch')
 end)
 
 os.exit(t.summary())

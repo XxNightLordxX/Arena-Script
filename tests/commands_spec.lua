@@ -391,33 +391,64 @@ end)
 --- LINE COUNT PRESERVED, because a failure here has to be able to name the
 --- line an operator would have to open.
 ---
---- THE LIMIT, stated rather than hidden: the line-comment strip skips a `--`
---- that has an odd number of quotes before it on the line, which is the
---- cheap way of not mistaking a `--` INSIDE a string for the start of a
---- comment. A pathological line could still fool it. It has no false
---- NEGATIVES that matter -- a real message is a string and survives the
---- strip -- and a false positive is a comment reported as a message, which
---- is a five-second read, not a wrong build.
+--- ESCAPES ARE HONOURED, and that was a real hole rather than a nicety. The
+--- first version counted raw `'` and `\"` characters to decide whether a `--`
+--- was inside a string. An escaped apostrophe -- `\\'` -- counted as a quote,
+--- flipped the parity back to even, and the rest of the line was blanked as a
+--- comment. This resource writes `%s\\'s` in log lines constantly: 26 live
+--- message strings were being truncated that way, so a retired command
+--- re-added after one of them would have sailed through the very check
+--- written to stop it. Measured: adding /arenaunjam after the `--` in
+--- server/ammo.lua's `could not read %s\\'s inventory` line passed 13/13;
+--- removing only the `\\'s` from the same line made it fail.
+---
+--- LINE COUNT IS PRESERVED, including through block comments, because a
+--- failure here has to name the line an operator would open. Blanking a
+--- `--[[ ]]` span to nothing shifted every line number after it.
+---
+--- THE LIMIT, stated rather than hidden: this is a scanner, not a Lua parser.
+--- It does not know long-bracket strings (`[[ ... ]]`), so a `--` inside one
+--- can still fool it. It has no false NEGATIVES that matter -- an ordinary
+--- quoted message survives the strip -- and a false positive is a comment
+--- reported as a message, which is a five-second read, not a wrong build.
 --- @param body string
 --- @return string
 local function withoutComments(body)
-    -- Block comments first: --[[ ... ]] and the --[==[ ... ]==] forms.
-    local stripped = body:gsub('%-%-%[(=*)%[.-%]%1%]', function(eq)
-        return ''
+    -- Block comments first: --[[ ... ]] and the --[==[ ... ]==] forms. The
+    -- span is replaced by its OWN newlines so nothing below it moves.
+    --
+    -- THE WHOLE SPAN IS CAPTURED (the outer parentheses) because gsub hands a
+    -- function its CAPTURES, not the match -- so capturing only the `=` run
+    -- gave the replacement nothing to count newlines in, and the span
+    -- collapsed to one line. `%2` back-references the `=` run so the closing
+    -- bracket has to match the opening one.
+    local stripped = body:gsub('(%-%-%[(=*)%[.-%]%2%])', function(span)
+        return (span:gsub('[^\n]', ''))
     end)
 
     local out = {}
     for line in (stripped .. '\n'):gmatch('([^\n]*)\n') do
-        local at = line:find('%-%-')
-        if at then
-            local before = line:sub(1, at - 1)
-            local _, singles = before:gsub("'", '')
-            local _, doubles = before:gsub('"', '')
-            if singles % 2 == 0 and doubles % 2 == 0 then
-                line = before
+        -- Walk the line once, tracking which quote (if any) we are inside and
+        -- skipping the character after a backslash. The first `--` reached
+        -- outside a string starts a comment; everything from there goes.
+        local quote, i, cut = nil, 1, nil
+        while i <= #line do
+            local ch = line:sub(i, i)
+            if quote then
+                if ch == '\\' then
+                    i = i + 1                     -- the escaped character, whatever it is
+                elseif ch == quote then
+                    quote = nil
+                end
+            elseif ch == "'" or ch == '"' then
+                quote = ch
+            elseif ch == '-' and line:sub(i + 1, i + 1) == '-' then
+                cut = i
+                break
             end
+            i = i + 1
         end
-        out[#out + 1] = line
+        out[#out + 1] = cut and line:sub(1, cut - 1) or line
     end
     return table.concat(out, '\n')
 end
@@ -445,6 +476,22 @@ function()
     t.equals(#offences, 0, table.concat(offences, '\n'))
 end)
 
+--- The JavaScript half of withoutComments: /* ... */ spans and whole // lines,
+--- with line count preserved for the same reason.
+--- @param body string
+--- @return string
+local function withoutJsComments(body)
+    local stripped = body:gsub('/%*.-%*/', function(span)
+        return (span:gsub('[^\n]', ''))
+    end)
+
+    local out = {}
+    for line in (stripped .. '\n'):gmatch('([^\n]*)\n') do
+        out[#out + 1] = line:match('^%s*//') and '' or line
+    end
+    return table.concat(out, '\n')
+end
+
 t.test('and the panel does not either, which is the screen an admin is looking at', function()
     -- app.js is not Lua and is not in the walk above, and it is the one
     -- surface an operator reads WHILE deciding what to do. A dead command
@@ -453,19 +500,53 @@ t.test('and the panel does not either, which is the screen an admin is looking a
     local body = handle:read('a')
     handle:close()
 
-    -- JavaScript comments, not Lua ones: /* ... */ and whole // lines.
-    local code = body:gsub('/%*.-%*/', '')
-    local kept = {}
-    for line in (code .. '\n'):gmatch('([^\n]*)\n') do
-        kept[#kept + 1] = line:match('^%s*//') and '' or line
-    end
-    code = table.concat(kept, '\n')
-
     local registered = registeredCommands()
-    for name in code:gmatch('/(arena%w+)') do
-        t.isTrue(registered[name] == true or registered[name] ~= nil,
-            ('the panel names /%s, which is not a registered command'):format(name))
+    local offences, lineNo = {}, 0
+    for line in (withoutJsComments(body) .. '\n'):gmatch('([^\n]*)\n') do
+        lineNo = lineNo + 1
+        for name in line:gmatch('/(arena%w+)') do
+            if not registered[name] then
+                offences[#offences + 1] =
+                    ('html/app.js:%d names /%s, which is not a registered command')
+                        :format(lineNo, name)
+            end
+        end
     end
+
+    t.equals(#offences, 0, table.concat(offences, '\n'))
+end)
+
+t.test('and the panel scan has a CONTROL, because today it matches nothing at all', function()
+    -- EVERY /arena name in app.js is currently inside a /* */ comment, so the
+    -- loop above walks zero candidates and would pass with its matching
+    -- broken, its stripper inverted, or its pattern misspelt. This drives the
+    -- same two functions over text that does contain both cases.
+    local registered = registeredCommands()
+
+    local live = 'var msg = "run /arenaunjam <name> to clear it";'
+    local found = 0
+    for name in withoutJsComments(live):gmatch('/(arena%w+)') do
+        if not registered[name] then found = found + 1 end
+    end
+    t.equals(found, 1, 'the panel scan does not notice a dead command in live JavaScript')
+
+    for _, note in ipairs({
+        '/* `/arenaunjam <name> force` USED TO BE the way in. */',
+        '    // /arenaunjam was retired into a button.',
+    }) do
+        local left = 0
+        for _ in withoutJsComments(note):gmatch('/(arena%w+)') do left = left + 1 end
+        t.equals(left, 0, 'a JavaScript comment was read as a live instruction: ' .. note)
+    end
+
+    -- AND A LIVE COMMAND IS NOT AN OFFENCE, or the scan would fail the day
+    -- the panel legitimately names /arenaadmin.
+    local ok = 'var hint = "open /arenaadmin";'
+    local bad = 0
+    for name in withoutJsComments(ok):gmatch('/(arena%w+)') do
+        if not registered[name] then bad = bad + 1 end
+    end
+    t.equals(bad, 0, 'a registered command was reported as dead')
 end)
 
 t.test('and the CONTROL: the rule really does fire on a command that is not registered',
@@ -488,6 +569,34 @@ function()
     local left = 0
     for _ in withoutComments(note):gmatch('/(arena%w+)') do left = left + 1 end
     t.equals(left, 0, 'a historical note was read as a live instruction')
+
+    -- AND THE LINE NUMBER IS THE REAL ONE. Blanking a --[[ ]] span to nothing
+    -- shifted every line after it, so the failure named a line an operator
+    -- would open to find something else entirely. The span keeps its newlines.
+    local withBlock = table.concat({
+        'local a = 1',
+        '--[[',
+        'a block comment',
+        'spanning lines',
+        ']]',
+        "ArenaLog('run /arenaunjam')",
+    }, '\n')
+
+    local at = 0
+    local n = 0
+    for line in (withoutComments(withBlock) .. '\n'):gmatch('([^\n]*)\n') do
+        n = n + 1
+        if line:find('/arenaunjam', 1, true) then at = n end
+    end
+    t.equals(at, 6, 'the reported line number moved, so a failure names the wrong line')
+
+    -- AND AN ESCAPED QUOTE DOES NOT HIDE THE REST OF THE LINE. `%s\\'s` in a
+    -- single-quoted string used to flip the quote parity and blank everything
+    -- after the next `--`, which is where this resource puts half its prose.
+    local escaped = "ArenaLog('could not read %s\\'s inventory -- run /arenaunjam to fix it.')"
+    local seen = 0
+    for _ in withoutComments(escaped):gmatch('/(arena%w+)') do seen = seen + 1 end
+    t.equals(seen, 1, 'an escaped quote hid a dead command from the scan')
 end)
 
 os.exit(t.summary())

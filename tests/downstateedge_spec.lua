@@ -226,7 +226,18 @@ local function newFixture(opts)
         spawned = function() return #threads - ran end,
         handlerKey = function() return bagHandlers[1] and bagHandlers[1].key end,
         --- Puts `src` in a match, the way ArenaDispatch.Set does.
+        --- A FIGHTER placed in the round, which is what every test in this
+        --- file means by entering. `true` is the fighter flag -- see
+        --- ArenaDispatch.Set -- and it is what decides whether leaving earns
+        --- a withdrawal window. server/match.lua passes it at the one place
+        --- it places somebody; the sweep that flags WATCHERS does not.
         enter = function(src)
+            metadata[src] = { inlaststand = false, isdead = false }
+            env.ArenaDispatch.Set(src, 'm1', true)
+        end,
+        --- A SPECTATOR, flagged by the sweep rather than placed. Covered
+        --- while watching and entitled to nothing afterwards.
+        watch = function(src)
             metadata[src] = { inlaststand = false, isdead = false }
             env.ArenaDispatch.Set(src, 'm1')
         end,
@@ -712,6 +723,22 @@ t.test('a fighter who just left is still covered, because the call lands after t
     f.step()
 
     t.isTrue(#f.exportCalls > 0, 'a call filed about a fighter as they walked out was left standing')
+end)
+
+t.test('and a WATCHER who stops watching is covered by neither window', function()
+    -- Spectators carry the flag while they watch, deliberately: their client
+    -- is inside the instance. Pressing stop resolves no round, so there is
+    -- nothing in flight to withdraw -- and a window there would be renewable
+    -- immunity for anybody who can press Watch.
+    local f = newFixture()
+    f.watch(7)
+    f.leave(7)
+
+    f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7))
+    f.step()
+
+    t.equals(#f.exportCalls, 0,
+        'a watcher who stopped watching still had a city call withdrawn for them')
 end)
 
 t.test('but a call filed a MINUTE after they left is left alone', function()

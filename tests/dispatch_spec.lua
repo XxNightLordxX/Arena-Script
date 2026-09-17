@@ -318,7 +318,7 @@ end)
 
 t.test('ShouldSuppressAlert says yes for a fighter, and no for anybody else', function()
     local f = newFixture()
-    f.D.Set(7, 'match-1')
+    f.D.Set(7, 'match-1', true)
 
     t.isTrue(f.D.ShouldSuppressAlert(7), 'a fighter\'s alert would be raised')
     t.isFalse(f.D.ShouldSuppressAlert(3),
@@ -333,7 +333,7 @@ function()
     -- difference between the two answers and the entire reason for the
     -- second one.
     local f = newFixture()
-    f.D.Set(7, 'match-1')
+    f.D.Set(7, 'match-1', true)
     f.D.Clear(7)
 
     t.isFalse(f.D.IsPlayerInArena(7), 'the fixture no longer shows the gap')
@@ -346,14 +346,90 @@ t.test('and the window CLOSES -- it is not a flag for the rest of a session', fu
     -- hazard: server ids are recycled, and the next person to hold this one
     -- gets shot in the city with nobody paged.
     local f = newFixture()
-    f.D.Set(7, 'match-1')
+    f.D.Set(7, 'match-1', true)
     f.D.Clear(7)
 
     local realTime = os.time
-    f.env.os = setmetatable({ time = function() return realTime() + 61 end }, { __index = os })
+    f.env.os = setmetatable({ time = function() return realTime() + 11 end }, { __index = os })
 
     t.isFalse(f.D.ShouldSuppressAlert(7),
-        'a minute after the round, this player is still having alerts swallowed')
+        'the window outlived the ten seconds it is allowed')
+end)
+
+t.test('and the window is the NARROW one, because this is a passive server-wide listener',
+function()
+    -- The file argues the two windows apart at length: the sweep may use
+    -- sixty seconds because it asks about ids it built itself around one
+    -- player; a passive listener that sees every alert filed anywhere, about
+    -- anybody, may not. ShouldSuppressAlert is that passive listener and
+    -- worse -- it suppresses BEFORE the call is filed, so a mistake leaves no
+    -- trace at all. Its first version used the wide window.
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+    f.D.Clear(7)
+
+    local realTime = os.time
+
+    f.env.os = setmetatable({ time = function() return realTime() + 9 end }, { __index = os })
+    t.isTrue(f.D.ShouldSuppressAlert(7), 'the window closed before the gap it exists to cover')
+
+    -- The retract sweep's OWN window is untouched and still wide, which is
+    -- the control: these two must not drift back into being one number.
+    f.env.os = setmetatable({ time = function() return realTime() + 30 end }, { __index = os })
+    t.isFalse(f.D.ShouldSuppressAlert(7),
+        'thirty seconds on is the retract window, not this one')
+end)
+
+t.test('and a SPECTATOR earns no window at all when they stop watching', function()
+    -- Watchers are flagged while they watch, deliberately -- their client is
+    -- in the instance. But pressing stop resolves no round, so a window there
+    -- is renewable immunity in the city for anybody who can press Watch.
+    local f = newFixture()
+
+    f.D.Set(9, 'match-1')                       -- the sweep's call: no fighter flag
+    t.isTrue(f.D.ShouldSuppressAlert(9), 'a watcher was not covered WHILE watching')
+
+    f.D.Clear(9)
+    t.isFalse(f.D.ShouldSuppressAlert(9),
+        'a watcher kept a suppression window after stopping, which is renewable immunity')
+end)
+
+t.test('THE RECYCLED ID: a drop WHILE FLAGGED leaves no window behind', function()
+    -- The forget handler used to just nil leftAt, and that never worked for
+    -- the one case it was written for. This resource loads server/dispatch.lua
+    -- BEFORE server/main.lua and FiveM runs handlers in registration order, so
+    -- the forget ran FIRST and main.lua's detach then reached Clear with the
+    -- player still flagged -- stamping the window straight back onto an id
+    -- that was already going back in the pool.
+    --
+    -- MODELLED IN THE REAL ORDER, which the older test had backwards: it
+    -- cleared and THEN dropped. Here the drop comes first and the detach
+    -- follows it, exactly as the two handlers really run.
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+
+    f.env.source = 7
+    f.fire('playerDropped', nil)
+    f.D.Clear(7)                                -- main.lua's detach, still unwinding
+
+    t.isFalse(f.D.ShouldSuppressAlert(7),
+        'the next player handed this server id inherited a fighter\'s silence')
+end)
+
+t.test('and the id becomes ordinary again once somebody new fights on it', function()
+    -- The latch must not be permanent, or a real fighter on a recycled id
+    -- never gets the window the feature exists for.
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+    f.env.source = 7
+    f.fire('playerDropped', nil)
+    f.D.Clear(7)
+
+    f.D.Set(7, 'match-2', true)                 -- a NEW player, same id
+    f.D.Clear(7)
+
+    t.isTrue(f.D.ShouldSuppressAlert(7),
+        'a genuine fighter on a recycled id was denied the window')
 end)
 
 t.test('and a player who LEFT THE SERVER is not covered by it at all', function()
@@ -2212,9 +2288,14 @@ t.test('and the post-match sweep still withdraws, after the flag has come down',
     -- the whole roster seconds AFTER the match ends, by which time Clear has
     -- run -- and that sweep is the safety net this entire layer exists to
     -- be. A gate on the live flag alone would switch it off.
+    --
+    -- FLAGGED AS A FIGHTER, which is what server/match.lua does when it places
+    -- somebody. The withdrawal window is a fighter's -- a spectator who stops
+    -- watching resolves no round and earns none -- so a fixture that skipped
+    -- the flag here would be modelling a watcher and testing nothing.
     local f = newFixture()
     f.setResource('sc-dispatch')
-    f.D.Set(7, 'match-1')
+    f.D.Set(7, 'match-1', true)
     f.D.Clear(7)
 
     f.D.Revive(7)
@@ -2404,8 +2485,41 @@ t.test('and it says the alert guard is MISSING when nothing answers for it', fun
     local f = newCompatAndServer({ ['sc-dispatch'] = true })
     local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
 
-    t.contains(report, 'alert guard is in NONE of: sc-dispatch',
+    t.contains(report, 'alert guard is NOT in: sc-dispatch',
         'a script with no guard pasted into it was not named')
+end)
+
+t.test('THE FALSE ALARM: a correct paste is not reported as half-done', function()
+    -- The first version asked EVERY detected resource for the guard and
+    -- reported any that could not answer as missing a paste. There is one
+    -- block, it wraps sc-dispatch's own AddNotification, and ALERT-GUARD.md
+    -- says outright that one paste covers sc-ambulance too. So on exactly the
+    -- setup the document is written for, the one tool whose job is to confirm
+    -- the paste told the operator it was missing from sc-ambulance and sent
+    -- them hunting for a second block that does not exist.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+    f.env.exportAnswers['sc-dispatch'] = { CrimsonArenaAlertGuard = function() return true end }
+
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'alert guard is live in: sc-dispatch', 'a correct paste was not confirmed')
+    t.isTrue(report:find('NOT in', 1, true) == nil,
+        'a correctly guarded server was told a paste was missing: ' .. report)
+end)
+
+t.test('and a box with no sc-dispatch is told there is nothing to paste, not that it failed',
+function()
+    -- A stock Qbox server runs qbx_policejob and qbx_ambulancejob and no sc-*
+    -- script at all. It used to be told every one of them was unguarded, on
+    -- every report, forever -- for a block none of them can take.
+    local f = newCompatAndServer({ ['qbx_policejob'] = true, ['qbx_ambulancejob'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'nothing to be in on this box',
+        'a server with no sc-dispatch was not told the guard simply does not apply')
+    t.isTrue(report:find('qbx_policejob', 1, true) == nil
+        or report:find('alert guard is NOT in: qbx', 1, true) == nil,
+        'a resource with no guard block was named as missing one: ' .. report)
 end)
 
 t.test('and it says the guard is LIVE once that resource answers for it', function()

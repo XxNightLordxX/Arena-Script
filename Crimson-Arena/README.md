@@ -1083,12 +1083,12 @@ An **empty `adminGroups` list means nobody**, unlike the job lists elsewhere in 
 
 ## Exports
 
-The arena owns its own state, so it exposes only the one fact another resource has a legitimate reason to ask about: whether a given player is currently in a match. That exists so your dispatch and medical scripts can decline to send an alert about a fight nobody needs telling about — see [Keeping police and EMS out of the arena](#keeping-police-and-ems-out-of-the-arena).
+The arena owns its own state, and the exports below are all READINGS of it — nothing another resource calls can stop a match, pay anybody, issue kit or clear a hold. The ones that matter most to a dispatch or medical script answer a single question: whether an alert about a given player should go out at all. That exists so your dispatch and medical scripts can decline to send an alert about a fight nobody needs telling about — see [Keeping police and EMS out of the arena](#keeping-police-and-ems-out-of-the-arena).
 
 | Export | Realm | Returns |
 |---|---|---|
 | `exports['Crimson-Arena']:IsPlayerInArena(src)` | server | `true` while that player is in a live match |
-| `exports['Crimson-Arena']:ShouldSuppressAlert(src)` | server | `true` while an alert for them should be dropped — in a match, **or out of one for less than a minute**. The one a dispatch script should call. |
+| `exports['Crimson-Arena']:ShouldSuppressAlert(src)` | server | `true` while an alert for them should be dropped — in a match, **or a few seconds out of one after fighting in it**. The one a dispatch script should call. |
 | `exports['Crimson-Arena']:GetPlayerMatchId(src)` | server | the match id, or `nil` |
 | `exports['Crimson-Arena']:GetArenaPlayers()` | server | `{ [serverId] = matchId }` for everyone currently fighting |
 | `exports['Crimson-Arena']:IsInArena()` | client | `true` while *you* are in a live match |
@@ -1110,7 +1110,7 @@ Nothing internal is handed out either — `GetMatches()` and `GetOwedKit()` buil
 
 These report; they do not enforce. Calling them changes nothing.
 
-`ShouldSuppressAlert` is the one to reach for from a dispatch or medical script, and the difference from `IsPlayerInArena` is not cosmetic: an alert is raised from a death, and the arena's flag comes down the moment the round resolves — usually before the other script files the call for the body that just fell. `IsPlayerInArena` truthfully says "not in a match" by then and the page goes out. `ShouldSuppressAlert` covers the minute afterwards. It is also the only export here that fails *loud*: when the arena cannot answer, it returns `false` and your alert is raised, because a swallowed call for a real player bleeding out in the city is worse than a spurious one during a round.
+`ShouldSuppressAlert` is the one to reach for from a dispatch or medical script, and the difference from `IsPlayerInArena` is not cosmetic: an alert is raised from a death, and the arena's flag comes down the moment the round resolves — usually before the other script files the call for the body that just fell. `IsPlayerInArena` truthfully says "not in a match" by then and the page goes out. `ShouldSuppressAlert` covers the few seconds afterwards — long enough to close that gap, short enough that it is nowhere near the next time that player is genuinely shot in the city, and only ever for somebody who actually fought. It is also the only export here that fails *loud*: when the arena cannot answer, it returns `false` and your alert is raised, because a swallowed call for a real player bleeding out in the city is worse than a spurious one during a round.
 
 If you run `sc-dispatch`, the block in `ALERT-GUARD.md` wires all of this up for you — paste it at the bottom of `sc-dispatch/server/main.lua` and every alert that script files, including the ones `sc-ambulance` routes through it, is checked. It is a pass-through when the arena is not running.
 

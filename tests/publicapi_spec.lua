@@ -144,6 +144,61 @@ t.test('and the registered functions are the ones that answer', function()
     t.isNil(matchId(), 'the export still hands out a match id after leaving')
 end)
 
+t.test('THE THREE REASONS client/exports.lua EXISTS, held one at a time', function()
+    -- Restoring the exact pre-change one-liners --
+    --   exports('IsInArena', ArenaDispatch.IsInArena)
+    --   exports('GetArenaMatchId', ArenaDispatch.MatchId)
+    -- -- left every spec in this suite green, so nothing held any of the
+    -- three properties the rewrite was made for. These do.
+    local c = newClient()
+
+    -- 1. LOOKED UP PER CALL, NOT BOUND AT LOAD. Passing the function by
+    -- reference captures whatever the field held when the file loaded, so a
+    -- later reassignment leaves the export calling the old one with nobody
+    -- able to tell. This is the whole reason the one-liners were wrong.
+    c.env.ArenaDispatch.IsInArena = function() return true end
+    t.isTrue(c.exported['IsInArena'](),
+        'the export is bound to the function that existed at load time, not the current one')
+
+    -- 2. IT ANSWERS A REAL BOOLEAN, whatever the module hands back, and it
+    -- fails CLOSED: an answer nobody can read is safer treated as not-in-a-
+    -- match. The by-reference form passed the module's value straight out.
+    for _, shape in ipairs({ { 'truthy table' }, 0, 'yes' }) do
+        c.env.ArenaDispatch.IsInArena = function() return shape end
+        local got = c.exported['IsInArena']()
+        t.equals(type(got), 'boolean',
+            ('a %s reached the caller instead of a boolean'):format(type(shape)))
+        t.isFalse(got, 'an unreadable answer should read as not-in-a-match')
+    end
+
+    -- 3. NOTHING THROWS INTO THE CALLER. A resource asking the arena a
+    -- question must not die because the arena is mid-restart. By reference,
+    -- a throwing module went straight out to whoever called the export.
+    c.env.ArenaDispatch.IsInArena = function() error('mid-restart') end
+    c.env.ArenaDispatch.MatchId = function() error('mid-restart') end
+
+    local okA, inArena = pcall(c.exported['IsInArena'])
+    t.isTrue(okA, 'a throwing module took the calling resource down with it')
+    t.isFalse(inArena, 'and the quiet answer was not the one given')
+
+    local okB, id = pcall(c.exported['GetArenaMatchId'])
+    t.isTrue(okB, 'a throwing module took the calling resource down with it')
+    t.isNil(id)
+end)
+
+t.test('and a build with no dispatch module at all still answers both', function()
+    local c = newClient()
+    c.env.ArenaDispatch = nil
+
+    local okA, inArena = pcall(c.exported['IsInArena'])
+    t.isTrue(okA, 'IsInArena threw on a build with no dispatch module')
+    t.isFalse(inArena)
+
+    local okB, id = pcall(c.exported['GetArenaMatchId'])
+    t.isTrue(okB, 'GetArenaMatchId threw on a build with no dispatch module')
+    t.isNil(id)
+end)
+
 t.test('and they survive a second match, which is the ordinary case', function()
     local c = newClient()
     c.D.Enter('first')

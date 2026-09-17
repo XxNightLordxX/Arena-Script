@@ -234,7 +234,7 @@ sitting. Call them as `exports['Crimson-Arena']:Name(...)` on the server.
 | Export | Answers | Quiet answer if the arena cannot tell |
 |---|---|---|
 | `IsPlayerInArena(src)` | whether that player is in a match right now | `false` |
-| `ShouldSuppressAlert(src)` | whether a police or EMS alert for that player should be dropped — **true for a minute after they leave a match as well as while they are in one** | `false` |
+| `ShouldSuppressAlert(src)` | whether a police or EMS alert for that player should be dropped — **true for a few seconds after a fighter leaves a match as well as while they are in one** | `false` |
 | `GetPlayerMatchId(src)` | the match id, or nil | `nil` |
 | `GetArenaPlayers()` | every player in a match, as `{ [src] = matchId }` | `{}` |
 | `IsArenaOpen()` | whether the doors are open, schedule and admin override both | `false` |
@@ -252,9 +252,10 @@ realms — not because it is split.
 An alert is raised from a death, and the arena's flag comes down the instant the round
 resolves — routinely *before* the other script gets round to filing the call for the body
 that just fell. `IsPlayerInArena` answers that honestly with `false` and the page goes out
-anyway. `ShouldSuppressAlert` stays `true` for a minute afterwards, the same window the
-arena's own retract sweep works to, and it is the only export here whose fallback is the
-*loud* answer: if the arena cannot tell, the alert is raised. A spurious alert during a
+anyway. `ShouldSuppressAlert` stays `true` for a few seconds afterwards — the narrow window,
+not the retract sweep's wide one, because this answer suppresses an alert *before* it is ever
+filed and a mistake leaves no trace to notice. It is also the only export here whose fallback
+is the *loud* answer: if the arena cannot tell, the alert is raised. A spurious alert during a
 round is an annoyance; a swallowed one for a city death is not. `ALERT-GUARD.md` is the
 block of code that calls it.
 
@@ -305,7 +306,7 @@ setting that adds a second way in.
 | Export | Returns |
 |---|---|
 | `exports['Crimson-Arena']:IsPlayerInArena(src)` | Whether that player is in a match right now. |
-| `exports['Crimson-Arena']:ShouldSuppressAlert(src)` | Whether a dispatch or medical alert for them should be dropped. Covers the minute after they leave a match, which `IsPlayerInArena` does not. |
+| `exports['Crimson-Arena']:ShouldSuppressAlert(src)` | Whether a dispatch or medical alert for them should be dropped. Covers the few seconds after a fighter leaves a match, which `IsPlayerInArena` does not. |
 | `exports['Crimson-Arena']:GetPlayerMatchId(src)` | The match id they are in, or nil. |
 | `exports['Crimson-Arena']:GetArenaPlayers()` | Every player in a match, as a `src -> matchId` map. A copy. |
 
@@ -419,7 +420,7 @@ line-number map that is regenerated whenever the file changes.
 | `html/` | — | The panel. |
 | `locales/` | — | Every player-visible string. |
 | `sql/install.sql` | — | All four tables — the leaderboard, the outstanding-kit slate, the unpaid-winnings ledger and the jammed-stash record — for operators who import by hand. Needs `DELETE` granted as well as `SELECT`/`INSERT`/`UPDATE`. |
-| `sql/uninstall.sql` | — | Drops both. Dropping the slate forgives every debt it holds. |
+| `sql/uninstall.sql` | — | Drops all four. Dropping the slate forgives every debt it holds, and dropping the unpaid ledger forgives every winning still owed. |
 
 ---
 
@@ -583,16 +584,16 @@ listed; the source documents them where they are.
 
 | Function | What it does |
 |---|---|
-| `ArenaDispatch.Set(src, matchId)` | Marks a player as being in `matchId`. |
+| `ArenaDispatch.Set(src, matchId, isFighter)` | Marks a player as being in `matchId`. `isFighter` is true only for somebody PLACED in the round, and decides whether leaving earns a suppression window. |
 | `ArenaDispatch.Clear(src)` | Clears the flag. |
 | `ArenaDispatch.ClearDownState(src)` | Puts the medical script's down flags back down, at the death rather than at the revive. |
 | `ArenaDispatch.HoldDownState()` | One pass: the flags put back down for everybody currently in a match. |
 | `ArenaDispatch.Revive(src)` | Tells whatever handles death on this server that a player is alive again. |
-| `ArenaDispatch.ReviveReport(target)` | Runs the end-of-match revive against one player and says what happened, as lines. The one admin action that deliberately reaches somebody who is NOT in a match: it exists so an operator can watch their medical script answer the arena's revive without first putting a player through a round. Drawn by the admin tablet under **Tools → Medical test**, and and it is deliberately NOT in `/arenaconsole`: that command takes no arguments and cannot ask which player, and reviving whoever typed it -- or nobody, at a console -- is not a diagnostic. |
+| `ArenaDispatch.ReviveReport(target)` | Runs the end-of-match revive against one player and says what happened, as lines. The one admin action that deliberately reaches somebody who is NOT in a match: it exists so an operator can watch their medical script answer the arena's revive without first putting a player through a round. Drawn by the admin tablet under **Tools → Medical test**, and deliberately NOT in `/arenaconsole`: that command takes no arguments and cannot ask which player, and reviving whoever typed it -- or nobody, at a console -- is not a diagnostic. |
 | `ArenaDispatch.IsPlayerInArena(src)` | Whether the server has this player flagged as being in a match. |
 | `ArenaDispatch.GetPlayerMatchId(src)` | The match a flagged player is in, or nil. |
 | `ArenaDispatch.GetArenaPlayers()` | Every player currently in a match, as a server-id -> match-id map. |
-| `ArenaDispatch.ShouldSuppressAlert(src)` | Whether an alert for this player should be dropped: flagged, or flagged within the last minute. |
+| `ArenaDispatch.ShouldSuppressAlert(src)` | Whether an alert for this player should be dropped: flagged, or a fighter who was flagged within the last few seconds. |
 | `ArenaDispatch.ClearBucket(bucket, matchId)` | Deletes what a finished round left standing in its own instance -- scoped by routing bucket, never by coordinates, and refused outright for a bucket anybody is still in. |
 | `ArenaDispatch.GetBucket(matchId)` | The instance a match is fought in, allocating and configuring one the first time it is asked for. |
 | `ArenaDispatch.EnterBucket(src, matchId)` | Moves a player into their match's instance, remembering what they were in beforehand. |
@@ -600,7 +601,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for **Tools → Instancing**. |
 | `ArenaDispatch.IsolationReport()` | The routing-bucket isolation of every live match, as lines. Drawn by the admin tablet under **Tools → Instancing**, and printed by `/arenaconsole` at a console. |
-| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, plus the arena's own down-state line. Drawn by the admin tablet under **Tools → Police & EMS**, and printed by `/arenaconsole` at a console. |
+| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, plus two lines of its own: what the down-state edge listener is doing, and whether the paste-in alert guard is live in sc-dispatch. Drawn by the admin tablet under **Tools → Police & EMS**, and printed by `/arenaconsole` at a console. |
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 

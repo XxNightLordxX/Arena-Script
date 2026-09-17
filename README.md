@@ -158,8 +158,10 @@ if exports['Crimson-Arena']:ShouldSuppressAlert(source) then return end
 arena's flag comes down the instant the round resolves — which is routinely *before* your
 dispatch script gets round to filing the call for the body that just fell.
 `IsPlayerInArena` answers that honestly with `false`, and the page goes out anyway.
-`ShouldSuppressAlert` stays `true` for a minute after they leave, so the alert for a death
-that happened in the arena is dropped even when the round ended first. If the arena cannot
+`ShouldSuppressAlert` stays `true` for a few seconds after a **fighter** leaves, so the alert
+for a death that happened in the arena is dropped even when the round ended first. Only a
+fighter, and only briefly: a spectator who stops watching gets no window at all, or toggling
+Watch would be renewable immunity in the city. If the arena cannot
 answer — mid-restart, stopped, not installed — it returns `false` and your alert is raised,
 which is the safe direction for a script that pages ambulances.
 

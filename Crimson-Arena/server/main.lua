@@ -1173,8 +1173,10 @@ end)
 --- The contents are on the screen this button sits on. An operator opening a
 --- stash on the tablet has just read every row in it, item by item -- which
 --- is more than `/arenaunjam <name>` in a console ever made anybody do. So
---- the rule is kept and the typing is not; `/arenaunjam` still works and is
---- still the only way in when the tablet cannot be opened.
+--- the rule is kept and the typing is not. `/arenaunjam` is gone: clearing a
+--- hold is this button and only this button, because the rule it enforces --
+--- that somebody has LOOKED at the contents first -- is a property of the
+--- screen rather than of the command.
 ---
 --- IT IS ITS OWN BUTTON, NOT A HAND-BACK THAT CLEARS THE HOLD ON THE WAY
 --- PAST. Two different decisions -- "this stash is settled" and "give these

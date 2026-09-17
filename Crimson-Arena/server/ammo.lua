@@ -6825,8 +6825,8 @@ end
 --- about a stash that still has things in it, and the process forgetting it
 --- does not empty the stash. Kept deliberately simpler -- there is no cap, no
 --- age-out and no merge to get wrong, because a jam is one boolean per stash
---- and there are only ever a handful. A jam is cleared by a human running
---- /arenaunjam, never by time.
+--- and there are only ever a handful. A jam is cleared by a human pressing
+--- Clear the hold on the tablet's Stashes tab, never by time.
 ---
 --- THE SCHEMA STATEMENT RUNS FIRST, exactly as the slate does, so a server
 --- that never imported the SQL still gets a working table on the first start

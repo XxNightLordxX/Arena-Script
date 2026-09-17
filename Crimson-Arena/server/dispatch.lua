@@ -5,8 +5,32 @@ ArenaDispatch = {}
 local active = {}
 
 --- When each player last LEFT a match, as os.time(), for the withdrawal
---- window below. Not a second flag: nothing reads it but RetractCallsFor.
+--- window below, and for ShouldSuppressAlert.
 local leftAt = {}
+
+--- Server ids whose holder has DISCONNECTED and whose grace window must not
+--- be re-opened by the exit paths still unwinding behind them.
+---
+--- WHY A SECOND TABLE RATHER THAN JUST CLEARING leftAt. The playerDropped
+--- handler below used to do exactly that, and it did not work, because it is
+--- not the last thing to run for a dropping player. This resource loads
+--- server/dispatch.lua BEFORE server/main.lua, FiveM runs handlers in
+--- registration order, and main.lua's own playerDropped handler detaches the
+--- player -- which reaches ArenaDispatch.Clear with active[src] STILL SET,
+--- and Clear stamped leftAt right back. So the one case the forget existed
+--- for, dropping while flagged, was the one case it never covered: the id
+--- went back in the pool carrying a live grace window, and the next person
+--- handed it had a real city alert suppressed on the strength of somebody
+--- else's round.
+---
+--- CLEARED BY Set, not by a timer and not by a join handler. An id is only
+--- interesting again once somebody on it enters a match, and that is the one
+--- moment this resource is certain a new player owns it.
+local dropped = {}
+
+--- Which flagged players are FIGHTERS rather than spectators. Read only when
+--- deciding whether leaving earns a grace window; see ArenaDispatch.Set.
+local fighter = {}
 
 --- How long after leaving a match the SWEEP may still withdraw a call, in
 --- seconds. Long enough to cover server/match.lua's post-match revive sweep,
@@ -14,8 +38,10 @@ local leftAt = {}
 --- near the next time this player is genuinely shot in the city.
 local RETRACT_GRACE_S = 60
 
---- And how long the PASSIVE filed-call listener may, which is not the same
---- window and must not be.
+--- And how long the PASSIVE listeners may, which is not the same window and
+--- must not be. Two things read this: the filed-call listener below, and
+--- ArenaDispatch.ShouldSuppressAlert, which a dispatch script asks BEFORE
+--- raising an alert at all.
 ---
 --- THE TWO PATHS ARE NOT EXPOSED TO THE SAME THING. The sweep is something
 --- the ARENA starts, seconds after a round it ran: it asks for ids it built
@@ -73,9 +99,27 @@ local function announce(eventName, src, matchId)
     end
 end
 
-function ArenaDispatch.Set(src, matchId)
+--- @param src number
+--- @param matchId string
+--- @param isFighter boolean? -- true only for somebody PLACED in the round
+function ArenaDispatch.Set(src, matchId, isFighter)
     if type(src) ~= 'number' or src <= 0 then return end
     if not Arena.IsKey(matchId) then return end
+
+    -- WHOEVER HOLDS THIS ID NOW OWNS IT. See `dropped` above.
+    dropped[src] = nil
+
+    -- WHETHER THIS ONE GETS A GRACE WINDOW WHEN THEY LEAVE, decided here
+    -- because here is the only place that knows which of the two they are.
+    -- A FIGHTER gets one: the window exists because a round RESOLVES and
+    -- takes the flag down before the other script has filed the call for the
+    -- body that just fell. A SPECTATOR resolves nothing -- they press stop
+    -- and are put back where they were standing -- so a window for them is
+    -- pure immunity in the city, renewable for as long as they keep pressing
+    -- Watch. Spectators are still flagged WHILE watching, which is what
+    -- server/match.lua's sweep is for and is not in question here: their
+    -- client is inside the fight and sees every shot of it.
+    fighter[src] = isFighter == true
 
     active[src] = matchId
     Player(src).state:set(stateKey(), { active = true, matchId = matchId }, true)
@@ -93,8 +137,16 @@ function ArenaDispatch.Clear(src)
     if type(src) ~= 'number' or src <= 0 then return end
 
     local matchId = active[src]
-    if matchId ~= nil then leftAt[src] = os.time() end
+
+    -- A GRACE WINDOW IS FOR A FIGHTER WHOSE ROUND RESOLVED, and for nobody
+    -- else. Not for a spectator who stopped watching, and never for an id
+    -- whose holder has left the server -- see `dropped` and `fighter` above.
+    if matchId ~= nil and fighter[src] and not dropped[src] then
+        leftAt[src] = os.time()
+    end
+
     active[src] = nil
+    fighter[src] = nil
 
     local ok = pcall(function()
         Player(src).state:set(stateKey(), nil, true)
@@ -120,7 +172,14 @@ end
 --- have to know the table exists.
 AddEventHandler('playerDropped', function()
     local src = tonumber(source)
-    if src then leftAt[src] = nil end
+    if not src then return end
+
+    leftAt[src] = nil
+    fighter[src] = nil
+    -- AND THE LATCH, which is the half that actually holds. Clearing leftAt
+    -- alone is undone moments later by the detach still unwinding in
+    -- server/main.lua's own handler -- see `dropped` above for why.
+    dropped[src] = true
 end)
 
 -- ======================================================================
@@ -556,18 +615,31 @@ end
 --- ends, the flag comes down, and MILLISECONDS LATER somebody else's handler
 --- files a person-down call for a body that was in the arena when it fell.
 --- IsPlayerInArena is honest and says no -- they are not in a match, that is
---- true -- and the alert goes out. This says yes for RETRACT_GRACE_S after
---- they leave, which is the same window the retract sweep already trusts for
---- exactly the same reason.
+--- true -- and the alert goes out. This says yes for a short window after
+--- they leave, which closes that gap.
 ---
 --- WHY A SEPARATE ANSWER RATHER THAN WIDENING IsPlayerInArena. That one is
 --- read by scoreboards, phone apps and anything asking "is this person
---- fighting right now", and a minute of yes after they stopped would be a
---- lie to every one of those callers. Two questions, two answers.
+--- fighting right now", and yes-after-they-stopped would be a lie to every
+--- one of those callers. Two questions, two answers.
 ---
---- ONE MINUTE AND NOT LONGER, and never for the rest of a session: a flag
---- that outlives its round suppresses a REAL ambulance for somebody who
---- happens to hold a recycled server id.
+--- FILED_GRACE_S AND NOT RETRACT_GRACE_S, and getting this wrong was a real
+--- defect in this function's first version. The argument is already made in
+--- full at the top of this file and it applies here word for word: the sweep
+--- may use the wide window because it asks about ids it built itself around
+--- one player; a PASSIVE listener that sees every alert filed anywhere on the
+--- server, about anybody, may not. This is that passive listener and then
+--- some -- the block in ALERT-GUARD.md wraps the single funnel every
+--- dispatch-panel alert on the box goes through -- and it is strictly worse
+--- placed than the filed listener, because suppression here is TOTAL. The
+--- retract layer files the call and then withdraws it, so a mistake leaves a
+--- trace and a medic who saw something flash. A mistake here is a person-down
+--- call in the city that never existed. Sixty seconds of that is not a grace
+--- window, it is a minute of immunity for anybody who has been near a match.
+---
+--- AND THE WINDOW IS ONLY EVER OPENED FOR A FIGHTER whose round resolved.
+--- ArenaDispatch.Set decides that and says why; a spectator stopping a watch
+--- earns nothing here, or the toggle is renewable immunity.
 ---
 --- THE `id <= 0` GUARD IS DEFENSIVE AND NOT TEST-HELD, said plainly rather
 --- than left to look load-bearing. Set() already refuses an id of zero or
@@ -584,7 +656,7 @@ function ArenaDispatch.ShouldSuppressAlert(src)
 
     local left = leftAt[id]
     if left == nil then return false end
-    return os.time() - left <= RETRACT_GRACE_S
+    return os.time() - left <= FILED_GRACE_S
 end
 
 -- THE THREE EXPORTS THAT USED TO BE REGISTERED HERE are in
@@ -1355,46 +1427,64 @@ end
 --- than answering nil, and a missing guard is the ordinary case rather than
 --- an error.
 ---
---- ONLY DETECTED RESOURCES ARE ASKED. A name from the catalogue this box does
---- not run is not a paste anybody was supposed to make.
+--- ONLY RESOURCES A BLOCK EXISTS FOR ARE JUDGED, and that is the whole
+--- correctness of this line rather than a detail of it.
+---
+--- THE FIRST VERSION ASKED EVERY DETECTED RESOURCE and reported any that did
+--- not answer as missing a paste. There is exactly one block, it wraps
+--- sc-dispatch's own AddNotification export, and ALERT-GUARD.md says in so
+--- many words that one paste covers sc-ambulance too and that you do not need
+--- to touch it. So on the very setup the document is written for -- a correct
+--- paste, sc-dispatch and sc-ambulance both running -- the one tool whose job
+--- is to confirm the paste answered "live in sc-dispatch and NOT in
+--- sc-ambulance", and sent the operator hunting for a second block that does
+--- not exist. On a stock Qbox box with no sc-* scripts at all it named three
+--- qbx resources as unguarded forever.
+---
+--- ASKED THROUGH pcall, because an export that does not exist RAISES rather
+--- than answering nil, and a missing guard is the ordinary case rather than
+--- an error.
 --- @return string
 local function alertGuardLine()
-    if type(ArenaCompat) ~= 'table' or type(ArenaCompat.Detect) ~= 'function' then
-        return 'the paste-in alert guard could not be checked -- this build has no compat layer.'
+    -- THE ONE RESOURCE THE BLOCK IS WRITTEN FOR. If a second block is ever
+    -- published for another dispatch script, add its name here and nowhere
+    -- else -- and do not go back to asking everything that happens to be
+    -- running.
+    local HOSTS = { 'sc-dispatch' }
+
+    local present = {}
+    for _, name in ipairs(HOSTS) do
+        local known, state = pcall(GetResourceState, name)
+        if known and state == 'started' then present[#present + 1] = name end
     end
 
-    local ok, running = pcall(ArenaCompat.Detect)
-    if not ok or type(running) ~= 'table' or #running == 0 then
-        return 'no dispatch or medical script was detected, so there is nothing to paste the '
-            .. 'alert guard into.'
+    if #present == 0 then
+        return 'the paste-in alert guard has nothing to be in on this box: it is a block for '
+            .. 'sc-dispatch, and sc-dispatch is not running. Every other layer is unaffected.'
     end
 
     local guarded, bare = {}, {}
-    for _, adapter in ipairs(running) do
+    for _, name in ipairs(present) do
         local asked, answer = pcall(function()
-            return exports[adapter.resource]:CrimsonArenaAlertGuard()
+            return exports[name]:CrimsonArenaAlertGuard()
         end)
         if asked and answer then
-            guarded[#guarded + 1] = adapter.resource
+            guarded[#guarded + 1] = name
         else
-            bare[#bare + 1] = adapter.resource
+            bare[#bare + 1] = name
         end
     end
 
     if #bare == 0 then
-        return ('the paste-in alert guard is live in: %s. Alerts for fighters are never raised.')
+        return ('the paste-in alert guard is live in: %s. Alerts for fighters are never raised -- '
+            .. 'including the ones sc-ambulance files through it.')
             :format(table.concat(guarded, ', '))
     end
 
-    if #guarded == 0 then
-        return ('the paste-in alert guard is in NONE of: %s. Those scripts still raise arena '
-            .. 'alerts, and the retract layer clears them a second or two later. See the '
-            .. 'ALERT-GUARD document for the block to paste.'):format(table.concat(bare, ', '))
-    end
-
-    return ('the paste-in alert guard is live in: %s -- and is NOT in: %s. See the ALERT-GUARD '
-        .. 'document for the block to paste.')
-        :format(table.concat(guarded, ', '), table.concat(bare, ', '))
+    return ('the paste-in alert guard is NOT in: %s. That script still raises arena alerts, and '
+        .. 'the retract layer clears them a second or two later. See the ALERT-GUARD document '
+        .. 'for the block to paste at the bottom of its server/main.lua.')
+        :format(table.concat(bare, ', '))
 end
 
 function ArenaDispatch.CompatReport()

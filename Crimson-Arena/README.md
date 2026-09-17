@@ -1088,12 +1088,31 @@ The arena owns its own state, so it exposes only the one fact another resource h
 | Export | Realm | Returns |
 |---|---|---|
 | `exports['Crimson-Arena']:IsPlayerInArena(src)` | server | `true` while that player is in a live match |
+| `exports['Crimson-Arena']:ShouldSuppressAlert(src)` | server | `true` while an alert for them should be dropped — in a match, **or out of one for less than a minute**. The one a dispatch script should call. |
 | `exports['Crimson-Arena']:GetPlayerMatchId(src)` | server | the match id, or `nil` |
 | `exports['Crimson-Arena']:GetArenaPlayers()` | server | `{ [serverId] = matchId }` for everyone currently fighting |
 | `exports['Crimson-Arena']:IsInArena()` | client | `true` while *you* are in a live match |
 | `exports['Crimson-Arena']:GetArenaMatchId()` | client | your match id, or `nil` |
 
+And the rest of the surface, for anything that wants to *show* the arena rather than avoid it — a phone app, a scoreboard, a status board in a Discord bot:
+
+| Export | Realm | Returns | Answer when the arena cannot tell |
+|---|---|---|---|
+| `exports['Crimson-Arena']:IsArenaOpen()` | server | whether the doors are open right now, schedule and admin override both | `false` |
+| `exports['Crimson-Arena']:GetMatches()` | server | one flat row per match: `id`, `label`, `arenaKey`, `modeKey`, `state`, `players`, `pot` | `{}` |
+| `exports['Crimson-Arena']:GetPot(matchId)` | server | what is staked on that match, entry fees and side bets together | `0` |
+| `exports['Crimson-Arena']:GetOwedKit([citizenid])` | server | the whole owed-kit slate, or one character's row — `nil` for a character nobody is owed anything for | `{}`, or `nil` when asked about one |
+| `exports['Crimson-Arena']:GetOwedMoney()` | server | what the arena still owes players, as one total | `0` |
+
+Every one of them is a **reading**. Nothing in the public surface stops a match, pays anybody, issues kit or clears a hold, and that is a deliberate line rather than a gap to fill in later: an export is callable by any resource on the box with no ACE check in front of it, so an action export would be an unauthenticated way into the arena's money and its rounds. The admin tablet is where actions live.
+
+Nothing internal is handed out either — `GetMatches()` and `GetOwedKit()` build their tables from scalars on every call, so writing to what you got back changes nothing here. And nothing throws into you: each body runs inside `pcall` and answers with the quiet value in the last column if the arena is mid-restart or a module has not loaded.
+
 These report; they do not enforce. Calling them changes nothing.
+
+`ShouldSuppressAlert` is the one to reach for from a dispatch or medical script, and the difference from `IsPlayerInArena` is not cosmetic: an alert is raised from a death, and the arena's flag comes down the moment the round resolves — usually before the other script files the call for the body that just fell. `IsPlayerInArena` truthfully says "not in a match" by then and the page goes out. `ShouldSuppressAlert` covers the minute afterwards. It is also the only export here that fails *loud*: when the arena cannot answer, it returns `false` and your alert is raised, because a swallowed call for a real player bleeding out in the city is worse than a spurious one during a round.
+
+If you run `sc-dispatch`, the block in `ALERT-GUARD.md` wires all of this up for you — paste it at the bottom of `sc-dispatch/server/main.lua` and every alert that script files, including the ones `sc-ambulance` routes through it, is checked. It is a pass-through when the arena is not running.
 
 The same fact is also a replicated state bag — `Player(src).state.crimsonArena` on the server, `LocalPlayer.state.crimsonArena` on the client — for scripts that would rather read than call.
 

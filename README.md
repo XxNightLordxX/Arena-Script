@@ -145,13 +145,29 @@ These are for **other scripts** on your server — a dispatch script, a job scri
 | Export | Gives you |
 |---|---|
 | `exports['Crimson-Arena']:IsPlayerInArena(src)` | `true` if that player is in a match right now, otherwise `false`. |
+| `exports['Crimson-Arena']:ShouldSuppressAlert(src)` | `true` if a police or EMS alert for them should be dropped. **This is the one a dispatch script wants.** |
 | `exports['Crimson-Arena']:GetPlayerMatchId(src)` | The id of the match they are in, or `nil` if they are not in one. |
 | `exports['Crimson-Arena']:GetArenaPlayers()` | Everybody currently in a match, as a `[serverId] = matchId` table. It is a copy, so editing it changes nothing. |
 
 ```lua
 -- Don't send police to a shooting that happened inside the arena.
-if exports['Crimson-Arena']:IsPlayerInArena(source) then return end
+if exports['Crimson-Arena']:ShouldSuppressAlert(source) then return end
 ```
+
+**Why that one and not `IsPlayerInArena`.** An alert is raised from a death, and the
+arena's flag comes down the instant the round resolves — which is routinely *before* your
+dispatch script gets round to filing the call for the body that just fell.
+`IsPlayerInArena` answers that honestly with `false`, and the page goes out anyway.
+`ShouldSuppressAlert` stays `true` for a minute after they leave, so the alert for a death
+that happened in the arena is dropped even when the round ended first. If the arena cannot
+answer — mid-restart, stopped, not installed — it returns `false` and your alert is raised,
+which is the safe direction for a script that pages ambulances.
+
+**If you run `sc-dispatch`, you do not have to write any of this yourself.**
+[`ALERT-GUARD.md`](ALERT-GUARD.md) is a block you paste at the bottom of
+`sc-dispatch/server/main.lua` that does it for every alert that script files — including
+the ones `sc-ambulance` sends through it. It is safe to paste whether or not you run the
+arena.
 
 ### Client side
 

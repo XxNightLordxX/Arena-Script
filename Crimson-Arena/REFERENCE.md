@@ -234,6 +234,7 @@ sitting. Call them as `exports['Crimson-Arena']:Name(...)` on the server.
 | Export | Answers | Quiet answer if the arena cannot tell |
 |---|---|---|
 | `IsPlayerInArena(src)` | whether that player is in a match right now | `false` |
+| `ShouldSuppressAlert(src)` | whether a police or EMS alert for that player should be dropped — **true for a minute after they leave a match as well as while they are in one** | `false` |
 | `GetPlayerMatchId(src)` | the match id, or nil | `nil` |
 | `GetArenaPlayers()` | every player in a match, as `{ [src] = matchId }` | `{}` |
 | `IsArenaOpen()` | whether the doors are open, schedule and admin override both | `false` |
@@ -242,7 +243,20 @@ sitting. Call them as `exports['Crimson-Arena']:Name(...)` on the server.
 | `GetOwedKit([citizenid])` | the whole owed-kit slate, or one character's row — `nil` for a character nobody is owed anything for | `{}`, or `nil` when asked about one |
 | `GetOwedMoney()` | what the arena still owes players, as one total | `0` |
 
-Two client exports exist as well: `IsInArena()` and `GetArenaMatchId()`.
+`client/exports.lua` is the same file for the other realm: `IsInArena()` and
+`GetArenaMatchId()`, under the same rules. An export registered in a server script is
+callable only from a server script, so the surface is two files because there are two
+realms — not because it is split.
+
+**`ShouldSuppressAlert` is the one a dispatch script should call, not `IsPlayerInArena`.**
+An alert is raised from a death, and the arena's flag comes down the instant the round
+resolves — routinely *before* the other script gets round to filing the call for the body
+that just fell. `IsPlayerInArena` answers that honestly with `false` and the page goes out
+anyway. `ShouldSuppressAlert` stays `true` for a minute afterwards, the same window the
+arena's own retract sweep works to, and it is the only export here whose fallback is the
+*loud* answer: if the arena cannot tell, the alert is raised. A spurious alert during a
+round is an annoyance; a swallowed one for a city death is not. `ALERT-GUARD.md` is the
+block of code that calls it.
 
 **Every one of these is a reading.** Nothing stops a match, pays anybody, issues kit or
 clears a hold, and that is a line rather than a gap. An export is callable by any resource
@@ -291,6 +305,7 @@ setting that adds a second way in.
 | Export | Returns |
 |---|---|
 | `exports['Crimson-Arena']:IsPlayerInArena(src)` | Whether that player is in a match right now. |
+| `exports['Crimson-Arena']:ShouldSuppressAlert(src)` | Whether a dispatch or medical alert for them should be dropped. Covers the minute after they leave a match, which `IsPlayerInArena` does not. |
 | `exports['Crimson-Arena']:GetPlayerMatchId(src)` | The match id they are in, or nil. |
 | `exports['Crimson-Arena']:GetArenaPlayers()` | Every player in a match, as a `src -> matchId` map. A copy. |
 
@@ -400,9 +415,10 @@ line-number map that is regenerated whenever the file changes.
 | `client/main.lua` | client | The lobby ped, the marker, the blip and the cached state. |
 | `client/match.lua` | client | Being in a round: the loadout, the boundary, the props, the blips and outlines, the HUD. |
 | `client/spectate.lua` | client | The spectate camera and its target list. |
+| `client/exports.lua` | client | The public surface on the client: `IsInArena()` and `GetArenaMatchId()`. Loaded LAST for the same reason `server/exports.lua` is. |
 | `html/` | — | The panel. |
 | `locales/` | — | Every player-visible string. |
-| `sql/install.sql` | — | Both tables — the leaderboard and the outstanding-kit slate — for operators who import by hand. Needs `DELETE` granted as well as `SELECT`/`INSERT`/`UPDATE`. |
+| `sql/install.sql` | — | All four tables — the leaderboard, the outstanding-kit slate, the unpaid-winnings ledger and the jammed-stash record — for operators who import by hand. Needs `DELETE` granted as well as `SELECT`/`INSERT`/`UPDATE`. |
 | `sql/uninstall.sql` | — | Drops both. Dropping the slate forgives every debt it holds. |
 
 ---
@@ -563,7 +579,7 @@ listed; the source documents them where they are.
 | `ArenaDbReady(subject)` | Whether a query can be sent right now: `Config.Database.enabled` on and oxmysql started. Says so once per outage, per subject, and re-arms when the database comes back. |
 | `ArenaDb(subject, sql, params, cb)` | Sends one query. Never lets a database failure take the round down, and always calls `cb` — with nil on every path that did not reach oxmysql. |
 
-#### `server/dispatch.lua` — 19 functions
+#### `server/dispatch.lua` — 20 functions
 
 | Function | What it does |
 |---|---|
@@ -576,6 +592,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.IsPlayerInArena(src)` | Whether the server has this player flagged as being in a match. |
 | `ArenaDispatch.GetPlayerMatchId(src)` | The match a flagged player is in, or nil. |
 | `ArenaDispatch.GetArenaPlayers()` | Every player currently in a match, as a server-id -> match-id map. |
+| `ArenaDispatch.ShouldSuppressAlert(src)` | Whether an alert for this player should be dropped: flagged, or flagged within the last minute. |
 | `ArenaDispatch.ClearBucket(bucket, matchId)` | Deletes what a finished round left standing in its own instance -- scoped by routing bucket, never by coordinates, and refused outright for a bucket anybody is still in. |
 | `ArenaDispatch.GetBucket(matchId)` | The instance a match is fought in, allocating and configuring one the first time it is asked for. |
 | `ArenaDispatch.EnterBucket(src, matchId)` | Moves a player into their match's instance, remembering what they were in beforehand. |

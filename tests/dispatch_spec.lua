@@ -316,6 +316,72 @@ t.test('Clear unflags, nils the bag, and announces the exit', function()
     t.equals(f.eventNames(), 'crimson_arena:dispatch:enter,crimson_arena:dispatch:exit')
 end)
 
+t.test('ShouldSuppressAlert says yes for a fighter, and no for anybody else', function()
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+
+    t.isTrue(f.D.ShouldSuppressAlert(7), 'a fighter\'s alert would be raised')
+    t.isFalse(f.D.ShouldSuppressAlert(3),
+        'an ordinary city death was silenced -- that is a real player bleeding out')
+end)
+
+t.test('THE GAP IT EXISTS FOR: it still says yes the instant the round lets them go',
+function()
+    -- The flag comes down when the round resolves. The other script files its
+    -- person-down call for the body that just fell MILLISECONDS later, and
+    -- IsPlayerInArena is honestly answering "no" by then. This is the one
+    -- difference between the two answers and the entire reason for the
+    -- second one.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+    f.D.Clear(7)
+
+    t.isFalse(f.D.IsPlayerInArena(7), 'the fixture no longer shows the gap')
+    t.isTrue(f.D.ShouldSuppressAlert(7),
+        'the alert for a body that fell in the arena would go out after the round ended')
+end)
+
+t.test('and the window CLOSES -- it is not a flag for the rest of a session', function()
+    -- A suppression that outlives its round is the retract layer's own
+    -- hazard: server ids are recycled, and the next person to hold this one
+    -- gets shot in the city with nobody paged.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+    f.D.Clear(7)
+
+    local realTime = os.time
+    f.env.os = setmetatable({ time = function() return realTime() + 61 end }, { __index = os })
+
+    t.isFalse(f.D.ShouldSuppressAlert(7),
+        'a minute after the round, this player is still having alerts swallowed')
+end)
+
+t.test('and a player who LEFT THE SERVER is not covered by it at all', function()
+    -- playerDropped forgets the window, because the id is about to belong to
+    -- somebody else. Without that, the next connection to be handed id 7
+    -- inherits a fighter\'s silence.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+    f.D.Clear(7)
+
+    f.env.source = 7
+    f.fire('playerDropped', nil)
+
+    t.isFalse(f.D.ShouldSuppressAlert(7),
+        'a recycled server id inherited the last holder\'s arena silence')
+end)
+
+t.test('and it reads junk the same way the rest of this file does', function()
+    local f = newFixture()
+    for _, junk in ipairs({ 0, -1, 'abc', {}, true }) do
+        local ok = pcall(function()
+            t.isFalse(f.D.ShouldSuppressAlert(junk), 'junk was read as somebody to stay quiet for')
+        end)
+        t.isTrue(ok, ('%s raised'):format(type(junk)))
+    end
+    t.isFalse(f.D.ShouldSuppressAlert(nil), 'a nil id was read as somebody to stay quiet for')
+end)
+
 t.test('Clear announces even for somebody who was never flagged', function()
     -- A dispatch script that missed the entry -- it restarted, or was not
     -- running yet -- would otherwise keep that player ignored forever. A
@@ -2246,13 +2312,36 @@ local function newCompatAndServer(running)
         end,
         ArenaDebug = function() end,
         ArenaLobby = { Get = function() return nil end, All = function() return {} end },
+        -- A spec fills exportAnswers[resource][name] to make somebody else's
+        -- resource answer -- or throw. Anything not filled in answers nil,
+        -- which is what a resource with no such export amounts to here.
+        --
+        -- THE LIVE GAME IS HARSHER THAN THIS STUB: reaching for an export a
+        -- resource never registered RAISES. The code under test pcalls for
+        -- that reason, and the throwing case below is what pins it.
+        exportAnswers = {},
         exports = setmetatable({}, {
             __call = function() end,
-            __index = function()
-                return setmetatable({}, { __index = function() return function() end end })
+            __index = function(t, resource)
+                return setmetatable({}, {
+                    __index = function(_t2, name)
+                        local answers = rawget(t, 'answers')
+                        local fn = answers and answers[resource] and answers[resource][name]
+                        return function(_self, ...)
+                            if fn then return fn(...) end
+                            return nil
+                        end
+                    end,
+                })
             end,
         }),
     })
+
+    -- AFTER the env exists. The metatable above reaches `answers` off the
+    -- exports table itself with rawget, rather than closing over `env` --
+    -- a closure written inside the constructor would capture a GLOBAL `env`,
+    -- which is nil, instead of the local being declared by that statement.
+    rawset(env.exports, 'answers', env.exportAnswers)
 
     Sandbox.loadInto('../Crimson-Arena/config.lua', env)
     Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
@@ -2293,15 +2382,56 @@ t.test('the panel carries every compat line verbatim, and adds only its own', fu
             ('panel line %d is not the compat layer\'s line %d'):format(index, index))
     end
 
-    -- ONE LINE, AND ONLY ONE. The compat layer reports on the resources
-    -- AROUND the arena; the down-state edge listener is a setting inside it,
-    -- which that layer knows nothing about and which config.lua calls the
-    -- one setting that actually moves the needle on EMS calls. Anything more
-    -- than one added line here is the panel rewriting the report.
-    t.equals(#fromPanel, #fromCompat + 1,
-        'the panel added something other than the one down-state line')
-    t.contains(fromPanel[#fromPanel], 'down-state',
+    -- TWO LINES, AND ONLY TWO. The compat layer reports on the resources
+    -- AROUND the arena. The other two are things it knows nothing about: the
+    -- down-state edge listener is a setting INSIDE this resource, and the
+    -- alert guard is a block of code pasted into somebody else's file. Both
+    -- are invisible to the layer that reports on everything else, and
+    -- anything beyond these two is the panel rewriting the report.
+    t.equals(#fromPanel, #fromCompat + 2,
+        'the panel added something other than the down-state and alert-guard lines')
+    t.contains(fromPanel[#fromPanel - 1], 'down-state',
         'the panel does not say what the down-state layer is doing')
+    t.contains(fromPanel[#fromPanel], 'alert guard',
+        'the panel does not say whether the paste-in alert guard is installed')
+end)
+
+t.test('and it says the alert guard is MISSING when nothing answers for it', function()
+    -- The ordinary case, and the one an operator needs named: sc-dispatch is
+    -- running and the block has not been pasted into it. Nothing about a
+    -- suppressed alert is visible from outside the other resource, so without
+    -- this line the only way to find out is to go and die in the arena.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'alert guard is in NONE of: sc-dispatch',
+        'a script with no guard pasted into it was not named')
+end)
+
+t.test('and it says the guard is LIVE once that resource answers for it', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.exportAnswers['sc-dispatch'] = { CrimsonArenaAlertGuard = function() return true end }
+
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+    t.contains(report, 'alert guard is live in: sc-dispatch',
+        'a pasted guard that answered for itself was reported missing')
+    t.isFalse(report:find('alert guard is in NONE') ~= nil,
+        'the same report said the guard was both live and missing')
+end)
+
+t.test('and an export that RAISES does not take the report down', function()
+    -- THE HAZARD. Reaching for an export a resource never registered raises
+    -- in the live game, and a missing guard is the ordinary case -- so an
+    -- unguarded script must not be able to kill the whole reading an admin
+    -- opened the tablet for.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+    f.env.exportAnswers['sc-dispatch'] = { CrimsonArenaAlertGuard = function() error('boom') end }
+
+    local ok, report = pcall(f.env.ArenaDispatch.CompatReport)
+    t.isTrue(ok, 'a throwing export took the compat report down with it')
+    t.isTrue(#report > 0, 'the report came back empty')
+    t.contains(table.concat(report, '\n'), 'alert guard',
+        'the guard line went missing rather than reporting the failure')
 end)
 
 t.test('and the console prints exactly what the tablet shows', function()

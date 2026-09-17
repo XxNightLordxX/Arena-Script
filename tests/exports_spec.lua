@@ -75,6 +75,17 @@ local function newExports(strip)
         ArenaAmmo = {
             OwedKit = function() return slate end,
         },
+        ArenaDispatch = {
+            IsPlayerInArena = function(src) return src == 7 end,
+            GetPlayerMatchId = function(src) return src == 7 and 'm1' or nil end,
+            -- A FRESH TABLE PER CALL, as the real one builds. The export does
+            -- not copy it again, so a double handing back one shared table
+            -- would make a no-leak claim pass for the wrong reason.
+            GetArenaPlayers = function() return { [7] = 'm1' } end,
+            -- 7 is fighting; 8 is the one who just left, which is the case
+            -- ShouldSuppressAlert exists for and IsPlayerInArena answers no to.
+            ShouldSuppressAlert = function(src) return src == 7 or src == 8 end,
+        },
     })
 
     for _, name in ipairs(strip or {}) do env[name] = nil end
@@ -111,7 +122,8 @@ t.test('every export this resource promises is registered, and nothing else', fu
     local f = newExports()
 
     t.equals(table.concat(f.names(), ' '),
-        'GetMatches GetOwedKit GetOwedMoney GetPot IsArenaOpen',
+        'GetArenaPlayers GetMatches GetOwedKit GetOwedMoney GetPlayerMatchId '
+        .. 'GetPot IsArenaOpen IsPlayerInArena ShouldSuppressAlert',
         'the public surface changed -- every caller of a removed or renamed '
         .. 'export breaks at run time, on their server, and this is the only '
         .. 'place that says so')
@@ -120,6 +132,109 @@ end)
 -- ======================================================================
 -- WHAT THEY ANSWER
 -- ======================================================================
+
+-- ======================================================================
+-- THE THREE THAT MOVED IN FROM server/dispatch.lua
+--
+-- Same names, same answers, same shapes -- a resource already calling them
+-- must not be able to tell they moved, which is the only acceptable way to
+-- move an export. These pin that.
+-- ======================================================================
+
+t.test('IsPlayerInArena answers for one player', function()
+    local f = newExports()
+    t.isTrue(f.call('IsPlayerInArena', 7))
+    t.isFalse(f.call('IsPlayerInArena', 3), 'somebody outside a match answered as in one')
+end)
+
+t.test('and answers a real BOOLEAN, whatever the module hands back', function()
+    -- MEASURED: dropping the `== true` from this export left every other test
+    -- green, because the fixture's stub answers a real boolean and so does
+    -- the live one today. The export's promise is a boolean -- a caller may
+    -- compare it, or send it over a wire -- so the shape has to hold even
+    -- when what it asked answered something else.
+    --
+    -- AND IT FAILS CLOSED, which is the half worth stating: `== true` is an
+    -- identity test rather than a truthiness one, so a truthy table answers
+    -- FALSE. For "is this player in a match", an answer nobody can read is
+    -- safer treated as no. This asserts the type first, because that is what
+    -- tells the coercion from its absence, and the direction second.
+    local f = newExports()
+
+    for _, shape in ipairs({ { 'truthy table' }, 0, 'yes' }) do
+        f.env.ArenaDispatch.IsPlayerInArena = function() return shape end
+
+        local got = f.call('IsPlayerInArena', 7)
+        t.equals(type(got), 'boolean',
+            ('a %s was passed through to the caller instead of a boolean'):format(type(shape)))
+        t.isFalse(got, 'an answer that is not literally true should read as not-in-a-match')
+    end
+
+    -- THE CONTROL. A real `true` must still come back as true, or the
+    -- coercion above is just breaking the export.
+    f.env.ArenaDispatch.IsPlayerInArena = function() return true end
+    t.isTrue(f.call('IsPlayerInArena', 7), 'a player who IS in a match answered false')
+end)
+
+t.test('GetPlayerMatchId answers the id, or nil for somebody not in a match', function()
+    local f = newExports()
+    t.equals(f.call('GetPlayerMatchId', 7), 'm1')
+    t.isNil(f.call('GetPlayerMatchId', 3), 'a player in no match was given a match id')
+end)
+
+t.test('GetArenaPlayers answers everybody in a match, keyed by server id', function()
+    local f = newExports()
+    t.equals(f.call('GetArenaPlayers')[7], 'm1', 'the player in a match is not in the answer')
+end)
+
+t.test('ShouldSuppressAlert covers the player who JUST left, where IsPlayerInArena does not',
+function()
+    -- The whole reason the export exists. An alert is raised from a death,
+    -- and the arena's flag comes down when the round resolves -- often before
+    -- the other script gets round to filing the call.
+    local f = newExports()
+
+    t.isTrue(f.call('ShouldSuppressAlert', 7), 'a fighter\'s alert was not suppressed')
+    t.isTrue(f.call('ShouldSuppressAlert', 8),
+        'somebody who left the round a moment ago would still be paged')
+    t.isFalse(f.call('IsPlayerInArena', 8),
+        'the fixture no longer shows the gap the two answers differ over')
+    t.isFalse(f.call('ShouldSuppressAlert', 3),
+        'an ordinary city death was silenced -- that is a real player bleeding out')
+end)
+
+t.test('and it FAILS LOUD, unlike every other export here', function()
+    -- Every other fallback in exports.lua is the quiet answer. This one is
+    -- the loud one on purpose: a spurious alert during an arena round is an
+    -- annoyance, a swallowed one for a city death is not. MEASURED -- flip
+    -- the fallback to `true` and this is the only test that notices.
+    for _, f in ipairs({ newExports({ 'ArenaDispatch' }), newExports() }) do
+        if f.env.ArenaDispatch then
+            f.env.ArenaDispatch.ShouldSuppressAlert = function() error('boom') end
+        end
+        t.isFalse(f.call('ShouldSuppressAlert', 7),
+            'an arena that could not answer told a medical script to stay silent')
+    end
+end)
+
+t.test('and it answers a real BOOLEAN too', function()
+    local f = newExports()
+    for _, shape in ipairs({ { 'truthy table' }, 0, 'yes' }) do
+        f.env.ArenaDispatch.ShouldSuppressAlert = function() return shape end
+        local got = f.call('ShouldSuppressAlert', 7)
+        t.equals(type(got), 'boolean',
+            ('a %s was passed through to the caller instead of a boolean'):format(type(shape)))
+        t.isFalse(got, 'an unreadable answer should raise the alert, not swallow it')
+    end
+end)
+
+t.test('and all three answer quietly on a build with no dispatch module', function()
+    local f = newExports({ 'ArenaDispatch' })
+
+    t.isFalse(f.call('IsPlayerInArena', 7), 'a build that cannot tell said somebody IS in a match')
+    t.isNil(f.call('GetPlayerMatchId', 7))
+    t.equals(#f.call('GetArenaPlayers'), 0)
+end)
 
 t.test('IsArenaOpen answers the schedule', function()
     local f = newExports()
@@ -225,9 +340,12 @@ end)
 t.test('THE GUARANTEE: every export answers on a build with no arena modules at all', function()
     -- Mid-restart, a module that failed to load, a stripped environment. A
     -- resource asking the arena a question must not die because of any of it.
-    local f = newExports({ 'ArenaLobby', 'ArenaBetting', 'ArenaAmmo', 'ArenaHoursOpen' })
+    local f = newExports({ 'ArenaLobby', 'ArenaBetting', 'ArenaAmmo', 'ArenaHoursOpen',
+                           'ArenaDispatch' })
 
-    for _, name in ipairs({ 'IsArenaOpen', 'GetMatches', 'GetPot', 'GetOwedKit', 'GetOwedMoney' }) do
+    for _, name in ipairs({ 'IsArenaOpen', 'GetMatches', 'GetPot', 'GetOwedKit', 'GetOwedMoney',
+                            'IsPlayerInArena', 'GetPlayerMatchId', 'GetArenaPlayers',
+                            'ShouldSuppressAlert' }) do
         local ok = pcall(f.call, name)
         t.isTrue(ok, name .. ' threw into its caller when the arena was not there')
     end
@@ -237,7 +355,8 @@ t.test('and the answers it gives then are the quiet ones', function()
     -- A caller that never checks should behave as though the arena has
     -- nothing going on, rather than as though it has something it cannot
     -- describe.
-    local f = newExports({ 'ArenaLobby', 'ArenaBetting', 'ArenaAmmo', 'ArenaHoursOpen' })
+    local f = newExports({ 'ArenaLobby', 'ArenaBetting', 'ArenaAmmo', 'ArenaHoursOpen',
+                           'ArenaDispatch' })
 
     t.isFalse(f.call('IsArenaOpen'), 'an arena that cannot answer reported itself OPEN')
     t.equals(#f.call('GetMatches'), 0)

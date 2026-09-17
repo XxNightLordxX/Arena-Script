@@ -46,6 +46,9 @@ client_scripts {
     'client/main.lua',
     'client/match.lua',
     'client/spectate.lua',
+    -- LAST, for the reason server/exports.lua is last: every export in it
+    -- asks another module by name and must run after all of them exist.
+    'client/exports.lua',
 }
 
 -- Same rule: each file uses what the ones above it define, and main.lua is

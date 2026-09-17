@@ -1,20 +1,28 @@
 --[[
     crimson_arena/tests/publicapi_spec.lua
 
-    THE FIVE EXPORTS OTHER RESOURCES CALL.
+    THE EXPORTS OTHER RESOURCES CALL.
 
     Everything else in this suite tests what the arena does to itself. This
     file tests the one surface it offers OUTWARDS: `exports['Crimson-Arena']`,
     which a server's dispatch, ambulance or anti-cheat script calls to ask
-    whether a player is in a match. README.md names all five, so an operator
-    reading it writes them into their own script and expects them to be there.
+    whether a player is in a match. README.md names every one of them, so an
+    operator reading it writes them into their own script and expects them to
+    be there.
+
+    WHERE THEY ARE REGISTERED MOVED, AND THAT IS THE POINT OF LOADING TWO
+    FILES BELOW. These used to be announced by client/dispatch.lua and
+    server/dispatch.lua themselves; they are announced from client/exports.lua
+    and server/exports.lua now, beside the rest of the public surface. The
+    names and the answers did not change -- a resource already calling them
+    cannot tell -- and this file is what says so.
 
     NOT ONE OF THEM WAS EXERCISED. `deadcode_spec` counts a function as used
     when `exports()` registers it, which is true and is not the same as
     working -- and the two client-side ones, IsInArena and MatchId, had no
-    test of any kind. The fixture that loads client/dispatch.lua stubs
-    `exports` as a function that swallows its arguments, so even the
-    registration went unobserved.
+    test of any kind. The fixture that loads the client files stubs `exports`
+    as a function that swallows its arguments, so even the registration went
+    unobserved.
 
     Three things this holds, and the first is the one that breaks integrations
     silently:
@@ -41,8 +49,13 @@ print('publicapi_spec')
 -- THE CLIENT SIDE
 -- ======================================================================
 
---- Loads the real client/dispatch.lua and RECORDS what it exports, rather
---- than swallowing the registration the way every other fixture does.
+--- Loads the real client/dispatch.lua AND client/exports.lua, and RECORDS
+--- what is exported rather than swallowing the registration the way every
+--- other fixture does.
+---
+--- BOTH FILES, BECAUSE THE GAME LOADS BOTH. The functions live in
+--- dispatch.lua and the export names are announced from exports.lua, so a
+--- fixture loading only one of them would test a build that does not exist.
 local function newClient()
     local registered = {}
     local env = Sandbox.newEnv({
@@ -93,6 +106,13 @@ local function newClient()
     Sandbox.loadInto('../Crimson-Arena/config.lua', env)
     Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
     Sandbox.loadInto('../Crimson-Arena/client/dispatch.lua', env)
+    -- AND THE FILE THAT ANNOUNCES THEM, which is where these two now live.
+    -- They used to be registered by client/dispatch.lua itself; they are in
+    -- client/exports.lua with the rest of the client surface, because a
+    -- public surface somebody has to grep two files for is the surface that
+    -- gets re-implemented badly somewhere else. MANIFEST ORDER: exports.lua
+    -- is last in client_scripts, after every module it asks.
+    Sandbox.loadInto('../Crimson-Arena/client/exports.lua', env)
 
     return { env = env, D = env.ArenaDispatch, exported = registered }
 end
@@ -157,7 +177,8 @@ end)
 -- THE SERVER SIDE
 -- ======================================================================
 
---- The real server/dispatch.lua, again recording its registrations.
+--- The real server/dispatch.lua and server/exports.lua, again recording the
+--- registrations rather than swallowing them.
 local function newServer(players)
     local registered = {}
 
@@ -194,6 +215,9 @@ local function newServer(players)
         return first and { id = matchId, arenaKey = first.key } or nil
     end }
     Sandbox.loadInto('../Crimson-Arena/server/dispatch.lua', env)
+    -- Same move on the server side, same reason. server/exports.lua is last
+    -- in server_scripts and holds the whole server surface.
+    Sandbox.loadInto('../Crimson-Arena/server/exports.lua', env)
 
     return { env = env, D = env.ArenaDispatch, exported = registered, players = players }
 end
@@ -321,7 +345,27 @@ t.test('every export README names is really registered, and vice versa', functio
 
     count("exports%['[Cc]rimson[%-_][Aa]rena'%]:(%w+)")
     count('exports%.[Cc]rimson[%-_][Aa]rena:(%w+)')
-    t.equals(named, 5, 'README stopped listing the five exports, so this checked nothing')
+
+    -- COUNTED AGAINST THE REGISTERED SET, not against a number typed here.
+    --
+    -- The guard started as `named == 5`, whose only job was to catch the loop
+    -- above finding nothing and passing for that reason -- and a hard-coded
+    -- number goes stale the first time an export is added, which is the one
+    -- moment somebody needs this file to speak up.
+    --
+    -- Counting against `registered` is stronger as well as self-maintaining:
+    -- the first loop accepts a name mentioned anywhere in README, including
+    -- in passing prose, while this one only counts a name written in the form
+    -- an operator can actually CALL. So every export has to appear as
+    -- `exports['Crimson-Arena']:Name(...)` somewhere, not merely be referred
+    -- to.
+    local total = 0
+    for _ in pairs(registered) do total = total + 1 end
+
+    t.equals(named, total,
+        'README does not show every export in a form an operator can copy -- either one was '
+        .. 'added without being documented, or the patterns above stopped matching and this '
+        .. 'checked nothing')
 end)
 
 os.exit(t.summary())

@@ -96,8 +96,14 @@ function ArenaDispatch.MatchId()
     return restore and restore.matchId or nil
 end
 
-exports('IsInArena', ArenaDispatch.IsInArena)
-exports('GetArenaMatchId', ArenaDispatch.MatchId)
+-- THE TWO EXPORTS THAT USED TO BE REGISTERED HERE are in
+-- client/exports.lua, beside nothing else, for the reason the server's three
+-- moved into server/exports.lua: a public surface somebody has to grep two
+-- files for is the surface that gets re-implemented badly somewhere else.
+--
+-- They were `exports('IsInArena', ArenaDispatch.IsInArena)` -- the function
+-- passed BY REFERENCE, so the export bound whatever the field held at load
+-- time. They are closures now and look the field up per call.
 
 --- Calls each Config.Dispatch.custom.disableExports entry with `enabled`.
 ---

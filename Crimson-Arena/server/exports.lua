@@ -61,6 +61,81 @@ local function answer(fallback, fn)
     return value
 end
 
+--- WHETHER ONE PLAYER IS IN A MATCH RIGHT NOW.
+---
+--- THE THREE BELOW WERE REGISTERED IN server/dispatch.lua for a long time and
+--- moved here unchanged -- same names, same answers, same shapes. A resource
+--- already calling them cannot tell the difference, which is the only
+--- acceptable way to move an export. They are announced from here because a
+--- surface split across two files is the thing this one exists to stop being
+--- true.
+exports('IsPlayerInArena', function(src)
+    return answer(false, function()
+        if type(ArenaDispatch) ~= 'table'
+            or type(ArenaDispatch.IsPlayerInArena) ~= 'function'
+        then
+            return false
+        end
+        return ArenaDispatch.IsPlayerInArena(src) == true
+    end)
+end)
+
+--- The id of the match that player is in, or nil.
+exports('GetPlayerMatchId', function(src)
+    return answer(nil, function()
+        if type(ArenaDispatch) ~= 'table'
+            or type(ArenaDispatch.GetPlayerMatchId) ~= 'function'
+        then
+            return nil
+        end
+        return ArenaDispatch.GetPlayerMatchId(src)
+    end)
+end)
+
+--- Every player in a match, as { [src] = matchId }.
+---
+--- ArenaDispatch.GetArenaPlayers already builds a fresh table per call, so
+--- this is not copied again -- the rule is that nothing INTERNAL is handed
+--- out, and what comes back is already a copy.
+exports('GetArenaPlayers', function()
+    return answer({}, function()
+        if type(ArenaDispatch) ~= 'table'
+            or type(ArenaDispatch.GetArenaPlayers) ~= 'function'
+        then
+            return {}
+        end
+        return ArenaDispatch.GetArenaPlayers()
+    end)
+end)
+
+--- WHETHER A DISPATCH OR MEDICAL ALERT FOR THIS PLAYER SHOULD BE DROPPED.
+---
+--- THE EXPORT TO CALL FROM A DISPATCH SCRIPT, in preference to
+--- IsPlayerInArena, and the difference matters on a live server: an alert is
+--- raised from a death, and the arena's flag comes down the instant the round
+--- resolves -- which is routinely BEFORE the other script gets round to
+--- filing the call for the body that just fell. IsPlayerInArena answers that
+--- honestly with `false` and the page goes out anyway. This one stays `true`
+--- for a minute after they leave, which is the same window the arena's own
+--- retract sweep already works to.
+---
+--- FAIL-CLOSED MEANS "RAISE THE ALERT" HERE, not "suppress it". Every other
+--- fallback in this file is the quiet answer; this one is the loud one, on
+--- purpose. If the arena is mid-restart or this module has not loaded, the
+--- wrong answer to give a medical script is "stay silent" -- that is a real
+--- player bleeding out with nobody paged. A spurious alert during an arena
+--- round is an annoyance; a swallowed one for a city death is not.
+exports('ShouldSuppressAlert', function(src)
+    return answer(false, function()
+        if type(ArenaDispatch) ~= 'table'
+            or type(ArenaDispatch.ShouldSuppressAlert) ~= 'function'
+        then
+            return false
+        end
+        return ArenaDispatch.ShouldSuppressAlert(src) == true
+    end)
+end)
+
 --- Whether the doors are open right now, schedule and admin override both.
 exports('IsArenaOpen', function()
     return answer(false, function()

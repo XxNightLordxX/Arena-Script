@@ -547,9 +547,57 @@ function ArenaDispatch.GetArenaPlayers()
     return out
 end
 
-exports('IsPlayerInArena', function(src) return ArenaDispatch.IsPlayerInArena(src) end)
-exports('GetPlayerMatchId', function(src) return ArenaDispatch.GetPlayerMatchId(src) end)
-exports('GetArenaPlayers', function() return ArenaDispatch.GetArenaPlayers() end)
+--- THE ONE QUESTION A DISPATCH SCRIPT ACTUALLY WANTS ANSWERED: should this
+--- player's alert be raised at all?
+---
+--- NOT THE SAME QUESTION AS IsPlayerInArena, and the difference is the whole
+--- reason this exists. A dispatch script raises its alert from a death, and
+--- a death is resolved on a schedule the arena does not control: the round
+--- ends, the flag comes down, and MILLISECONDS LATER somebody else's handler
+--- files a person-down call for a body that was in the arena when it fell.
+--- IsPlayerInArena is honest and says no -- they are not in a match, that is
+--- true -- and the alert goes out. This says yes for RETRACT_GRACE_S after
+--- they leave, which is the same window the retract sweep already trusts for
+--- exactly the same reason.
+---
+--- WHY A SEPARATE ANSWER RATHER THAN WIDENING IsPlayerInArena. That one is
+--- read by scoreboards, phone apps and anything asking "is this person
+--- fighting right now", and a minute of yes after they stopped would be a
+--- lie to every one of those callers. Two questions, two answers.
+---
+--- ONE MINUTE AND NOT LONGER, and never for the rest of a session: a flag
+--- that outlives its round suppresses a REAL ambulance for somebody who
+--- happens to hold a recycled server id.
+---
+--- THE `id <= 0` GUARD IS DEFENSIVE AND NOT TEST-HELD, said plainly rather
+--- than left to look load-bearing. Set() already refuses an id of zero or
+--- less, so neither table can hold one and both lookups miss anyway.
+--- Removing the guard changes no answer this suite can produce. It stays
+--- because it costs nothing and because "the console is not a player" is
+--- worth saying in the one place somebody reads this function.
+--- @param src number
+--- @return boolean
+function ArenaDispatch.ShouldSuppressAlert(src)
+    local id = tonumber(src)
+    if not id or id <= 0 then return false end
+    if active[id] ~= nil then return true end
+
+    local left = leftAt[id]
+    if left == nil then return false end
+    return os.time() - left <= RETRACT_GRACE_S
+end
+
+-- THE THREE EXPORTS THAT USED TO BE REGISTERED HERE are in
+-- server/exports.lua, with the rest of the public surface. The functions
+-- above are unchanged and are what those exports call; only the place they
+-- are announced from moved.
+--
+-- WHY THEY MOVED. exports.lua opens by saying it holds the whole public
+-- surface in one file so it can be read in one sitting, and while these three
+-- sat here that was not true -- it held the surface minus three, which is the
+-- discoverability failure that file exists to prevent. A server owner greps
+-- one file, finds some of the answers, and writes their own version of the
+-- rest.
 
 -- ======================================================================
 -- ROUTING BUCKET ISOLATION
@@ -1292,12 +1340,70 @@ local function downStateLine()
         :format(downState.watching, downState.changes, downState.edges)
 end
 
+--- One line per dispatch script this box runs, saying whether the paste-in
+--- alert guard is in it.
+---
+--- WHY THIS IS IN THE REPORT AT ALL. The guard is a block of code an operator
+--- pastes into SOMEBODY ELSE'S resource. Nothing in this repository can make
+--- them do it, and nothing here can tell from the outside whether an alert
+--- was suppressed or simply never raised -- so without this line the only way
+--- to find out whether the paste took is to go and die in the arena and watch
+--- a medic's screen. The guard announces itself with one export whose whole
+--- job is to be asked this question.
+---
+--- ASKED THROUGH pcall, because an export that does not exist RAISES rather
+--- than answering nil, and a missing guard is the ordinary case rather than
+--- an error.
+---
+--- ONLY DETECTED RESOURCES ARE ASKED. A name from the catalogue this box does
+--- not run is not a paste anybody was supposed to make.
+--- @return string
+local function alertGuardLine()
+    if type(ArenaCompat) ~= 'table' or type(ArenaCompat.Detect) ~= 'function' then
+        return 'the paste-in alert guard could not be checked -- this build has no compat layer.'
+    end
+
+    local ok, running = pcall(ArenaCompat.Detect)
+    if not ok or type(running) ~= 'table' or #running == 0 then
+        return 'no dispatch or medical script was detected, so there is nothing to paste the '
+            .. 'alert guard into.'
+    end
+
+    local guarded, bare = {}, {}
+    for _, adapter in ipairs(running) do
+        local asked, answer = pcall(function()
+            return exports[adapter.resource]:CrimsonArenaAlertGuard()
+        end)
+        if asked and answer then
+            guarded[#guarded + 1] = adapter.resource
+        else
+            bare[#bare + 1] = adapter.resource
+        end
+    end
+
+    if #bare == 0 then
+        return ('the paste-in alert guard is live in: %s. Alerts for fighters are never raised.')
+            :format(table.concat(guarded, ', '))
+    end
+
+    if #guarded == 0 then
+        return ('the paste-in alert guard is in NONE of: %s. Those scripts still raise arena '
+            .. 'alerts, and the retract layer clears them a second or two later. See the '
+            .. 'ALERT-GUARD document for the block to paste.'):format(table.concat(bare, ', '))
+    end
+
+    return ('the paste-in alert guard is live in: %s -- and is NOT in: %s. See the ALERT-GUARD '
+        .. 'document for the block to paste.')
+        :format(table.concat(guarded, ', '), table.concat(bare, ', '))
+end
+
 function ArenaDispatch.CompatReport()
     local out = {}
 
     if type(ArenaCompat) ~= 'table' or type(ArenaCompat.Report) ~= 'function' then
         out[1] = 'this build has no dispatch compat report.'
         out[2] = downStateLine()
+        out[3] = alertGuardLine()
         return out
     end
 
@@ -1305,6 +1411,7 @@ function ArenaDispatch.CompatReport()
     if not ok or type(lines) ~= 'table' then
         out[1] = 'the dispatch compat report could not be taken: ' .. tostring(lines)
         out[2] = downStateLine()
+        out[3] = alertGuardLine()
         return out
     end
 
@@ -1312,6 +1419,10 @@ function ArenaDispatch.CompatReport()
     if #out == 0 then out[1] = 'the dispatch compat report came back empty.' end
 
     out[#out + 1] = downStateLine()
+    -- APPENDED ON EVERY PATH ABOVE TOO, for downStateLine's reason: it is
+    -- about a paste into somebody else's file rather than about this build,
+    -- so a compat layer that failed says nothing about whether it happened.
+    out[#out + 1] = alertGuardLine()
     return out
 end
 

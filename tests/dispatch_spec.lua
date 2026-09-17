@@ -1146,6 +1146,10 @@ t.test('the Medical test runs the same path a finished match runs', function()
     -- The permission gate moved with it -- see admintablet_spec, where a
     -- non-admin pressing the tool is refused.
     local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    -- SOMEBODY HAS TO BE HOLDING THE ID. The report refuses an id nobody is
+    -- on, because a diagnosis that cannot tell "it worked" from "there was
+    -- nobody there" sends the operator hunting somewhere else.
+    f.givePlayer(7, { inlaststand = true, isdead = false })
 
     local lines = f.D.ReviveReport(7)
 
@@ -1160,11 +1164,47 @@ t.test('and it says which medical script it asked, which is the whole reading', 
     -- to know whether anything was asked at all, and what to do when the
     -- player is up but something still treats them as dead.
     local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = true, isdead = false })
 
     local text = table.concat(f.D.ReviveReport(7), '\n')
 
     t.contains(text, '7', 'the reading does not say who it ran against')
     t.contains(text, 'done', 'the reading never says it finished')
+end)
+
+t.test('THE DIAGNOSIS THAT LIED: an id nobody is holding is told so, not told "done"',
+function()
+    -- Nothing on this path used to check that the typed id belonged to a
+    -- connected player. Revive answers for any positive number,
+    -- clearDownMetadata returns 0 the moment ArenaGetPlayer is nil and that
+    -- count is thrown away, and a client event to an id nobody holds reaches
+    -- nobody quietly. So a stale or mistyped id printed the SAME "done. 12's
+    -- down metadata was cleared and 1 medical script(s) were asked to revive
+    -- them" as a real one -- while the operator's test player lay on the floor
+    -- untouched and they went looking for a catalogue bug that was not there.
+    --
+    -- This is the one tool whose entire output is a diagnosis. A diagnosis
+    -- that cannot tell "it worked" from "nobody was there" is worse than no
+    -- tool at all.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    -- Deliberately NOT giving 7 a player: this is the stale-id case.
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'NOTHING WAS DONE', 'a revive against nobody reported itself as done')
+    t.equals(#firedFor(f, 'mymedical:revive'), 0,
+        'a medical script was asked to revive an id nobody is holding')
+    t.isTrue(text:find('done. 7', 1, true) == nil,
+        'the report still claims the metadata was cleared: ' .. text)
+end)
+
+t.test('and the CONTROL: a real player still gets the full reading', function()
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = true, isdead = false })
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+    t.contains(text, 'done', 'the guard now refuses a player who really is there')
+    t.equals(#firedFor(f, 'mymedical:revive'), 1, 'the real handoff stopped running')
 end)
 
 t.test('and a target that is not a server id is refused rather than revived', function()

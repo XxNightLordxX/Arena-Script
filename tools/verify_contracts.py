@@ -24,6 +24,12 @@ import sys
 ROOT = sys.argv[1] if len(sys.argv) > 1 else 'Crimson-Arena'
 fail, note = [], []
 
+# LINES THAT DESCRIBE A PROBLEM BUT DO NOT FAIL THE BUILD. They used to go in
+# `note`, which is printed with an `ok` prefix -- so a check announced its own
+# negative result as a passing line. Anything that reads as "something is
+# wrong here" belongs in `warn` or in `fail`, and never in `note`.
+warn = []
+
 
 def read(rel):
     with open(os.path.join(ROOT, rel), encoding='utf-8') as handle:
@@ -170,7 +176,7 @@ handled |= set(re.findall(r'^\s*([a-zA-Z0-9_]+)\s*:\s*function', app, re.M))
 if sent:
     orphan = sorted(s for s in sent if s not in handled)
     if orphan:
-        note.append('NUI actions with no literal handler (may be dispatched by table): '
+        warn.append('NUI actions with no literal handler (may be dispatched by table): '
                     + ', '.join(orphan))
     else:
         note.append('%d NUI actions sent, every one handled' % len(sent))
@@ -191,7 +197,7 @@ else:
                 % (len(posted), len(registered)))
 dead_cb = sorted(r for r in registered if r not in posted)
 if dead_cb:
-    note.append('registered NUI callbacks the panel never posts to: ' + ', '.join(dead_cb))
+    warn.append('registered NUI callbacks the panel never posts to: ' + ', '.join(dead_cb))
 
 # --------------------------------------------------------------------- HTML ids
 ids = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', index))
@@ -213,7 +219,18 @@ for chunk in re.findall(r'class="([^"]+)"', index):
 used_cls |= set(re.findall(r'classList\.(?:add|remove|toggle)\s*\(\s*[\'"]([a-zA-Z0-9_-]+)[\'"]', app))
 unstyled = sorted(c for c in used_cls if c and c not in classes)
 if unstyled:
-    note.append('classes used with no rule in style.css: ' + ', '.join(unstyled[:12]))
+    # A FAILURE, NOT A NOTE. This branch used to append to `note`, which is
+    # printed with an `ok` prefix and does not touch the exit code -- so the
+    # check advertised as "every class used in markup has a rule" announced
+    # its own breach as a passing line and the script exited 0. Measured: a
+    # class added to index.html with no rule in style.css printed
+    # `ok   classes used with no rule in style.css: ...` under `ALL CONTRACTS
+    # HOLD`.
+    #
+    # AND THE WHOLE LIST, not the first twelve. A silent truncation is how a
+    # thirteenth orphan goes unmentioned in the one place that would name it.
+    fail.append('%d class(es) used in markup with no rule in style.css: %s'
+                % (len(unstyled), ', '.join(unstyled)))
 else:
     note.append('%d CSS classes defined; every class used in markup has a rule' % len(classes))
 
@@ -410,6 +427,8 @@ else:
 
 for line in note:
     print('  ok   ' + line)
+for line in warn:
+    print('  warn ' + line)
 for line in fail:
     print('  FAIL ' + line)
 print()

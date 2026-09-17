@@ -356,6 +356,15 @@ do
     -- Where the bail-out in step 1 lands. A label at the end of the block is
     -- the only way out of it that does not also end the file it was pasted
     -- into.
+    -- IT MUST STAY THE LAST STATEMENT IN THIS BLOCK. Lua 5.4 forbids a goto
+    -- that jumps into the scope of a local, and exempts a label at the END of
+    -- a block -- which is the only reason the bail-out above compiles at all,
+    -- since `subjectOf`, `inArena`, `guarded` and `serving` are all declared
+    -- between the goto and here. Put ANY statement after this label and the
+    -- whole file stops compiling, inside somebody else's resource. Measured:
+    -- adding one `print()` below gives
+    --   <goto crimson_arena_guard_done> jumps into the scope of local 'subjectOf'
+    -- Add new code ABOVE the label, never below it.
     ::crimson_arena_guard_done::
 end
 -- ============================================================================
@@ -385,16 +394,21 @@ Three ways, in the order they cost you least:
    does nothing.
 
 2. **The arena's own report.** Open the admin tablet → **Tools** → the dispatch
-   compat reading, or run `/arenaconsole` at the server console. The
-   last line names every dispatch script it detected and says which of them the
-   guard is live in:
+   compat reading, or run `/arenaconsole` at the server console. Its last line
+   is about this block and nothing else — it reports on `sc-dispatch`, because
+   that is the one resource this block is written for:
 
    ```
-   the paste-in alert guard is live in: sc-dispatch. Alerts for fighters are never raised.
+   the paste-in alert guard is live in: sc-dispatch. Alerts for fighters are never raised -- including the ones sc-ambulance files through it.
    ```
 
    Before the paste, the same line reads
-   `the paste-in alert guard is in NONE of: sc-dispatch`.
+   `the paste-in alert guard is NOT in: sc-dispatch. That script still raises arena alerts...`
+
+   On a server that does not run `sc-dispatch` at all it says so plainly —
+   `the paste-in alert guard has nothing to be in on this box` — rather than
+   naming your other dispatch scripts as missing a block that does not exist
+   for them.
 
 3. **A round.** Have somebody on EMS duty watch their panel while a match runs.
    Nothing should appear — not appear-and-clear.

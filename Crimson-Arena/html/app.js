@@ -4672,11 +4672,34 @@
         show(byId('admin-shut'), shut);
 
         if (shut) {
+            /* EVERY SIBLING SECTION, and the Tools one was missing.
+               This branch hid five of the six and returned -- and the only
+               line that ever hides Tools, `show(byId('admin-tools'), onTools)`
+               further down, sits after that return. So an operator who had
+               visited Tools, closed the tablet and reopened it while the arena
+               was shut got the whole Tools panel drawn on top of the closed
+               screen: the previous session's report still in it, the previous
+               report's button still lit, and the target box still typeable.
+
+               THE WORSE HALF WAS THAT IT STAYED LIVE. Those buttons still
+               posted adminTool to the server and the server still answered,
+               but every redraw hit this early return -- so no spinner, no new
+               title, no new lines, and the old report sat there under a
+               heading naming a report the operator had not asked for. Nothing
+               they pressed could ever change it. */
             show(byId('admin-list'), false);
             show(byId('admin-detail'), false);
             show(byId('admin-player'), false);
             show(byId('admin-stashes'), false);
             show(byId('admin-stash-detail'), false);
+            show(byId('admin-tools'), false);
+
+            /* AND THE TAB HIGHLIGHT WITH IT. A tab still marked active above a
+               screen that is not it is the same lie in miniature. */
+            arrayOf(['matches', 'stashes', 'tools']).forEach(function (name) {
+                var button = byId('admin-tab-' + name);
+                if (has(button)) button.classList.remove('active');
+            });
 
             byId('admin-shut-who').textContent = admin.hoursForced === 'shut'
                 ? 'An admin closed it. It stays closed until somebody opens it '
@@ -4800,6 +4823,15 @@
         var running = arrayOf(admin.matches).length;
         var wipe = byId('admin-wipe');
         var wipeHint = byId('admin-wipe-hint');
+        /* AN ARMING DOES NOT OUTLIVE WHAT IT WAS ARMED AGAINST. The handler
+           disarms when the list is empty at press time, but that branch is
+           unreachable: the button is hidden the moment `running` hits zero, so
+           the confirmation simply sat there. Every match ending and a new one
+           starting would then leave a brand-new round one press from being
+           wiped, by an operator whose "are you sure" was about a different
+           set of matches entirely. */
+        if (running === 0) admin.wipeConfirm = false;
+
         var wipeShown = onMatches && !onPlayer && !onMatch && running > 0;
         show(wipe, wipeShown);
         show(wipeHint, wipeShown && admin.wipeConfirm);
@@ -4946,7 +4978,7 @@
                     + 'the door has not been able to read that list back from the database.');
 
             stashLine.textContent = owed.length === 0 ? ''
-                : plural(owed.length, 'stash') + ' holding somebody\'s belongings'
+                : plural(owed.length, 'stash', 'stashes') + ' holding somebody\'s belongings'
                   + (away > 0
                       ? ', ' + away + ' of them for somebody who is not on the server.'
                       : '. Everyone they belong to is here.')
@@ -5258,7 +5290,20 @@
                        who pressed Instancing, changed their mind and
                        pressed Opening hours must not have the slower of the
                        two land on top of the one they are reading. */
-                    if (data.tool !== admin.tool) break;
+                    if (data.tool !== admin.tool) {
+                        /* NOT OURS TO DRAW, BUT STILL AN ANSWER. This used to
+                           `break` outright, which left `toolWaiting` true --
+                           and the press that replaced this one can be dropped
+                           in silence by the server's 500ms admin rate limit,
+                           so no second reply ever arrives to clear it. The
+                           screen then reads "Taking that reading…" for as long
+                           as the tablet stays open, over a report nobody is
+                           bringing. Stop waiting; just do not overwrite what
+                           the operator is reading. */
+                        admin.toolWaiting = false;
+                        render();
+                        break;
+                    }
                     admin.toolTitle = typeof data.title === 'string' ? data.title : null;
                     admin.toolLines = arrayOf(data.lines);
                     admin.toolWaiting = false;

@@ -28,9 +28,15 @@ const path = require('path');
  */
 let focusOwner = null;
 
-function makeNode(id) {
+function makeNode(id, tag) {
     return {
         id,
+        /* WHAT ELEMENT THIS IS, so querySelectorAll can match on it. Nodes
+           made by getElementById have no tag -- the harness never reads the
+           markup -- and that is fine: what the XSS assertion walks is the
+           subtree the PANEL built, and every node in it comes through
+           createElement. */
+        tag: tag || '',
         value: '',
         textContent: '',
         min: '',
@@ -107,7 +113,41 @@ function makeNode(id) {
         appendChild(child) { this.children.push(child); return child; },
         setAttribute(name, value) { this[name] = value; },
         getAttribute(name) { return this[name] === undefined ? null : this[name]; },
-        querySelectorAll() { return []; },
+        /*
+         * A REAL WALK OF THIS NODE'S SUBTREE, not a constant empty list.
+         *
+         * IT USED TO RETURN [] FOR EVERY NODE, which quietly disarmed the one
+         * assertion the panel's XSS rule rests on:
+         *
+         *     assert.strictEqual(node.querySelectorAll('img').length, 0,
+         *         'a player name was rendered as markup inside the tablet');
+         *
+         * That expression was the constant 0 for any node this harness can
+         * build, so it could not fail for ANY implementation of app.js -- a
+         * panel that pasted a player name straight into markup would have
+         * passed it.
+         *
+         * Only tag selectors are supported, because that is all the suite
+         * asks for. An unsupported selector THROWS rather than answering [],
+         * so the next assertion written against this does not quietly go the
+         * same way as the last one.
+         */
+        querySelectorAll(selector) {
+            if (typeof selector !== 'string' || !/^[a-zA-Z][a-zA-Z0-9]*$/.test(selector)) {
+                throw new Error('harness querySelectorAll supports a bare tag name only, got: '
+                    + selector);
+            }
+            const wanted = selector.toLowerCase();
+            const found = [];
+            const walk = (node) => {
+                (node.children || []).forEach((child) => {
+                    if (String(child.tag || '').toLowerCase() === wanted) found.push(child);
+                    walk(child);
+                });
+            };
+            walk(this);
+            return found;
+        },
         focus() { if (focusOwner) focusOwner.activeElement = this; },
         blur() { if (focusOwner && focusOwner.activeElement === this) focusOwner.activeElement = null; },
     };
@@ -148,7 +188,7 @@ function loadPanel(root) {
              * passed for the wrong reason.
              */
             createElement: (tag) => {
-                const node = makeNode('el:' + tag);
+                const node = makeNode('el:' + tag, tag);
                 let assigned = '';
                 Object.defineProperty(node, 'id', {
                     get() { return assigned; },

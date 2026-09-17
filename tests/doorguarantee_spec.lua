@@ -2004,6 +2004,64 @@ local function unjam(server, stash, forced)
     server.env.ArenaIsAdmin = was
 end
 
+t.test('THE PROPERTY-LOSS DEFECT: the sweep empties the stash that HOLDS their things',
+function()
+    -- ReturnLeftovers used to re-derive the stash with stashFor(citizenid),
+    -- and stashFor answers the BASE name whenever the base is not jammed.
+    -- That is right for deciding where to PUT things and wrong for deciding
+    -- where to GET them, and the two come apart on exactly the path the
+    -- tablet tells an operator to walk:
+    --
+    --   the base jams, so the round's belongings go to the NEXT stash along
+    --     and the arena records that as what it owes them;
+    --   the exit cannot hand them over -- a full inventory here, which is the
+    --     ordinary reason a debt is left standing at all;
+    --   the operator opens the base, reads it, presses Clear the hold;
+    --   the base is unjammed now, so stashFor goes back to answering the
+    --     BASE -- and the sweep empties the BASE, calls it settled, and drops
+    --     the debt.
+    --
+    -- The player is handed whatever was in the base and their real belongings
+    -- are stranded with nothing recording that they are owed anything.
+    local server = jammedBySurplus()
+
+    -- A SECOND ROUND, DRIVEN BY THE ARENA ITSELF. That is what makes the alt
+    -- stash real: the base is jammed, so the door stows this round's
+    -- belongings into the next stash along and records THAT as the debt.
+    -- Planting items by hand would test a state the arena never produces.
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local second = server.lobby.All()[1]
+    server.fire('joinMatch', 2, { matchId = second.id })
+    server.fire('setReady', 1, { ready = true })
+    server.fire('setReady', 2, { ready = true })
+    server.step(6)
+
+    t.isTrue(server.contentsOf('crimson_arena_CID1_2') ~= '',
+        'premise: the jam did not move this round into the next stash along')
+
+    -- The exit cannot hand them back, so the debt stands.
+    server.refuseAdds(1, true)
+    server.match.End(second.id, 'match.ended')
+    server.step(8)
+    server.refuseAdds(1, false)
+
+    t.isTrue(server.contentsOf('crimson_arena_CID1_2') ~= '',
+        'premise: the refused exit did not leave the belongings outstanding')
+
+    -- Something else is in the base, and the operator settles it and clears
+    -- the hold exactly as the tablet tells them to.
+    server.stashItem('crimson_arena_CID1', 'lockpick', 2)
+    unjam(server, 'crimson_arena_CID1', true)
+
+    server.env.ArenaAmmo.ReturnLeftovers(1)
+
+    t.equals(server.contentsOf('crimson_arena_CID1_2'), '',
+        'the stash that actually held their belongings was never emptied -- their things are '
+        .. 'stranded and the debt has been dropped')
+    t.isTrue(server.carrying(1):find('lockpick', 1, true) == nil,
+        'the sweep emptied the BASE stash instead of the one holding their things')
+end)
+
 t.test('a jammed stash is listed, with what is still in it', function()
     -- THE LISTING IS A TABLET REPORT NOW -- Tools -> Held-back stashes --
     -- rather than a console command, so this asserts the lines that report

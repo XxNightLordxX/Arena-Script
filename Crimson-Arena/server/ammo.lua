@@ -946,13 +946,27 @@ end
 --- A SMALL LOCAL RATHER THAN copiesOf, which answers the same question but is
 --- defined further down this file than this is. Moving it would reorder a
 --- file whose load order is already load-bearing; eight lines here does not.
-local function rowsNamed(ox, who, name)
+--- COPIES, NOT ROWS, and the difference is a duplicated item.
+---
+--- THIS COUNTED ROWS. addAt's whole job is to tell "ox_inventory refused" from
+--- "ox_inventory landed it and answered nil anyway", and it does that by
+--- looking at the inventory before and after. A STACKABLE item that lands by
+--- merging into a row of the same name the player already has adds NO row --
+--- so `after > before` was false, the add was believed to have been refused,
+--- and the fallback add ran a second time. The player left with two.
+---
+--- It is exactly the blind spot the guard exists to cover, and it opened on
+--- the commonest case there is: ammunition, food, medical items, anything
+--- that stacks and that a fighter is likely to already be carrying one of.
+local function countsNamed(ox, who, name)
     local ok, items = pcall(function() return ox:GetInventoryItems(who) end)
     if not ok or type(items) ~= 'table' then return nil end
 
     local seen = 0
     for _, item in ipairs(itemsIn(items)) do
-        if item.name == name then seen = seen + 1 end
+        if item.name == name then
+            seen = seen + (Arena.ToInt(item.count) or Arena.ToInt(item.amount) or 1)
+        end
     end
     return seen
 end
@@ -1011,14 +1025,14 @@ local function addAt(ox, who, name, count, metadata, slot)
         return oxGave(function() return ox:AddItem(who, name, count, metadata) end)
     end
 
-    local before = rowsNamed(ox, who, name)
+    local before = countsNamed(ox, who, name)
 
     local landed, why, answer = oxGave(function()
         return ox:AddItem(who, name, count, metadata, wanted)
     end)
     if landed then return true, nil, answer end
 
-    local after = rowsNamed(ox, who, name)
+    local after = countsNamed(ox, who, name)
     if before ~= nil and after ~= nil and after > before then return true, nil, answer end
 
     return oxGave(function() return ox:AddItem(who, name, count, metadata) end)
@@ -1293,12 +1307,12 @@ local function refillStashBags(ox, src, held, citizenid)
             -- their hands is a nuisance; left in a holding stash is a loss
             -- they have to ask an admin about.
             if not landed then
-                local before = rowsNamed(ox, src, thing.name)
+                local before = countsNamed(ox, src, thing.name)
                 landed = oxGave(function()
                     return ox:AddItem(src, thing.name, thing.count, thing.metadata)
                 end)
                 if not landed then
-                    local after = rowsNamed(ox, src, thing.name)
+                    local after = countsNamed(ox, src, thing.name)
                     if before ~= nil and after ~= nil and after > before then landed = true end
                 end
                 if landed then
@@ -1543,9 +1557,9 @@ local function refillContainers(ox, src, keys, citizenid)
                 -- chasing, reintroduced by a convenience.
                 --
                 -- So a refusal is verified before it is believed: if the bag
-                -- is holding one more of that item than it was a moment ago,
+                -- is holding more of that item than it was a moment ago,
                 -- it landed, whatever it said.
-                local before = rowsNamed(ox, target, held.name)
+                local before = countsNamed(ox, target, held.name)
 
                 local landed, why, answer = oxGave(function()
                     return ox:AddItem(target, held.name, held.count, held.metadata)
@@ -1557,7 +1571,7 @@ local function refillContainers(ox, src, keys, citizenid)
                 -- can be too full for what came out of it. Their pockets are
                 -- tried before it is left behind.
                 if not landed and target ~= src then
-                    local after = rowsNamed(ox, target, held.name)
+                    local after = countsNamed(ox, target, held.name)
 
                     if before ~= nil and after ~= nil and after > before then
                         -- It went in. The answer was just one this file does
@@ -6200,8 +6214,10 @@ end
 --- carries a Clear the hold button on the stash detail -- the one screen that
 --- lists the stash item by item, so the rule above is kept by the shape of
 --- the screen rather than by making somebody type. This report points at it,
---- and `/arenaunjam` is still there for a console with no tablet in front of
---- it.
+--- There is no command any more: clearing a hold is that button and only that
+--- button, because the rule it keeps -- that somebody has LOOKED first -- is a
+--- property of the screen. `/arenaconsole` prints this same report for a
+--- console with no tablet in front of it, but it cannot clear anything.
 --- @return string[]
 function ArenaAmmo.JamReport()
     local lines = {}
@@ -6474,7 +6490,32 @@ function ArenaAmmo.ReturnLeftovers(src)
     local ox = inventory()
     if not ox then return false, 0, false, 'ox_inventory is not running' end
 
-    local stash = stashFor(citizenid)
+    -- THE STASH THE ARENA RECORDED, NOT ONE RE-DERIVED FROM SCRATCH.
+    --
+    -- THIS WAS A REAL WAY TO LOSE SOMEBODY'S PROPERTY. It used to be plain
+    -- `stashFor(citizenid)`, and stashFor answers the BASE name whenever the
+    -- base is not jammed. That is right when choosing where to PUT things and
+    -- wrong when deciding where to GET them from, and the two come apart on
+    -- exactly the path the tablet tells an operator to walk:
+    --
+    --   the base jams mid-round, so the round's belongings go to `..._2`
+    --     and `owed[citizenid]` records `..._2`;
+    --   the operator opens the base, reads it, presses Clear the hold;
+    --   the base is no longer jammed, so stashFor goes back to answering the
+    --     BASE -- and the next hand-back, whether pressed on the tablet or
+    --     run by the sweep, empties the BASE, reports "complete", and clears
+    --     the debt.
+    --
+    -- The player is handed whatever happened to be in the base and their real
+    -- belongings sit in `..._2` with nothing left recording that they are
+    -- owed anything at all.
+    --
+    -- `owed` IS THE RECORD OF WHICH STASH STILL HOLDS THEIR THINGS -- it is
+    -- written beside every stow and every failed return, and cleared only
+    -- when a return actually completes -- so it is the one answer to this
+    -- question that cannot drift. stashFor stays as the fallback for a
+    -- character with no record, which is the ordinary case.
+    local stash = owed[citizenid] or stashFor(citizenid)
 
     if not oxDid('registering stash ' .. stash, function()
         return ox:RegisterStash(stash, 'Arena Belongings', STASH_SLOTS, STASH_WEIGHT, citizenid)

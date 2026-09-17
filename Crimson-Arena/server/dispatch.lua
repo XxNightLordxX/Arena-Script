@@ -565,6 +565,32 @@ function ArenaDispatch.ReviveReport(target)
         return { 'give a server id -- this runs the end-of-match revive against one player.' }
     end
 
+    -- IS ANYBODY ACTUALLY HOLDING THAT ID? Asked FIRST, and the whole point
+    -- of this tool turns on it.
+    --
+    -- THE DIAGNOSTIC USED TO LIE. Nothing on this path checked that the typed
+    -- id belonged to a connected player: Revive answers for any positive
+    -- number, clearDownMetadata returns 0 the moment ArenaGetPlayer is nil and
+    -- that count is discarded, and TriggerClientEvent to an id nobody holds
+    -- reaches nobody and says so to no one. So a mistyped or stale id printed
+    -- the identical "done. 12's down metadata was cleared and 1 medical
+    -- script(s) were asked to revive them." as a real one -- while the
+    -- operator's test player lay on the floor untouched and they went looking
+    -- for a catalogue bug that was not there.
+    --
+    -- This is the ONE tool whose entire output is a diagnosis. A diagnosis
+    -- that cannot tell "it worked" from "there was nobody there" is worse than
+    -- no tool, because it sends the operator somewhere else.
+    local holder = ArenaGetPlayer and ArenaGetPlayer(target) or nil
+    if holder == nil then
+        return {
+            ('nobody on this server is holding server id %d right now, so there was nothing to '
+                .. 'revive and NOTHING WAS DONE.'):format(target),
+            'check the id on your player list and try again -- a player who reconnects gets a new '
+                .. 'one, so an id noted down a few minutes ago is often already stale.',
+        }
+    end
+
     local lines = {
         ('running the end-of-match revive against %d. Everything below is what a real match would do.')
             :format(target),

@@ -621,6 +621,52 @@ test('THE REQUEST: a closed arena draws the closed screen and NOTHING else', () 
     assert.ok(hidden(panel, 'admin-stashes'), 'so is the stash list');
     assert.ok(hidden(panel, 'admin-detail'), 'so is the match detail');
     assert.ok(hidden(panel, 'admin-player'), 'so is the fighter card');
+
+    /* SIX SECTIONS, NOT FOUR. This test said NOTHING ELSE and checked four of
+       the six, and the two it left out were the two the shut branch forgot to
+       hide -- so it passed for years over a screen that drew the whole Tools
+       panel on top of the closed one. Anything added beside these belongs in
+       this list on the same commit. */
+    assert.ok(hidden(panel, 'admin-tools'), 'the Tools panel is still on screen');
+    assert.ok(hidden(panel, 'admin-stash-detail'), 'so is the stash detail');
+});
+
+test('and no tab is left highlighted above a screen that is not it', () => {
+    const panel = closedTablet('shut', '05:00-07:00', null);
+
+    ['admin-tab-matches', 'admin-tab-stashes', 'admin-tab-tools'].forEach(function (id) {
+        const node = panel.node(id);
+        assert.ok(!node.classList.contains('active'),
+            id + ' is still marked active over the closed screen');
+    });
+});
+
+test('THE FROZEN SCREEN: a report run before closing is not left sitting there, live', () => {
+    /* The worse half of the same defect. The shut branch returned before the
+       line that hides Tools, so an operator who had visited Tools, closed the
+       tablet and reopened it while shut saw the previous session's report --
+       and the buttons still worked. They posted to the server and the server
+       answered, but every redraw hit that early return, so no spinner, no new
+       title, no new lines. The old report sat under a heading naming a report
+       they had not asked for, and nothing they pressed could ever change it. */
+    const panel = opened();
+    panel.fire('admin-tab-tools', 'click');
+    panel.fire('admin-tool-isolation', 'click');
+    panel.send('adminTool', { tool: 'isolation', title: 'Instancing', lines: ['bucket 4210'] });
+
+    assert.ok(!hidden(panel, 'admin-tools'), 'premise: the Tools panel was never shown');
+
+    /* The arena closes and the tablet is reopened. */
+    panel.send('adminOpen', {
+        matches: [], focused: null, owed: [],
+        owedKit: [], owedKitSaved: false, databaseOn: false,
+        stashesFound: 0, stashesRead: 0, stashesReadable: true, jamsKnown: 0,
+        hoursOpen: false, hoursForced: 'shut',
+        hoursLine: '05:00-07:00', hoursOpensAt: null,
+    });
+
+    assert.ok(hidden(panel, 'admin-tools'),
+        'the previous session\'s report is still on screen under the closed-arena panel');
 });
 
 test('but the TABS stay, because a live round still needs stopping', () => {

@@ -116,8 +116,9 @@ end)
 --- resolves -- which is routinely BEFORE the other script gets round to
 --- filing the call for the body that just fell. IsPlayerInArena answers that
 --- honestly with `false` and the page goes out anyway. This one stays `true`
---- for a minute after they leave, which is the same window the arena's own
---- retract sweep already works to.
+--- for a few seconds after a FIGHTER leaves -- the narrow window, not the
+--- retract sweep's wide one, because suppression here is total and a mistake
+--- leaves no trace at all. A spectator who stops watching earns nothing.
 ---
 --- FAIL-CLOSED MEANS "RAISE THE ALERT" HERE, not "suppress it". Every other
 --- fallback in this file is the quiet answer; this one is the loud one, on

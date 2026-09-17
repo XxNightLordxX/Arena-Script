@@ -980,7 +980,19 @@ onClient('crimson_arena:server:adminTool', RATE.admin, function(src, data)
         lines = out,
     })
 
-    ArenaLog('%s ran the %s report from the admin tablet', ArenaPlayerName(src), name)
+    -- THE TARGET, FOR THE ONE TOOL THAT IS NOT A READING. Six of the seven
+    -- only look at the server, so who they were pointed at is meaningless.
+    -- `medical` REVIVES somebody, and deliberately reaches players who are in
+    -- no match at all -- so an audit line naming the admin and the word
+    -- "medical" and nothing else records that an admin did something to
+    -- somebody, without saying to whom. Every other admin action in this file
+    -- records what it touched.
+    if name == 'medical' then
+        ArenaLog('%s ran the medical test against server id %s from the admin tablet',
+            ArenaPlayerName(src), tostring(intArg(payload.target) or '(none given)'))
+    else
+        ArenaLog('%s ran the %s report from the admin tablet', ArenaPlayerName(src), name)
+    end
 end)
 
 onClient('crimson_arena:server:adminState', RATE.admin, function(src, data)

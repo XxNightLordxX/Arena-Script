@@ -1,6 +1,14 @@
 # Where this stands
 
 **For:** John Allday. **Updated:** during the review session that followed the handover.
+
+> **The command surface changed after most of this was written.** This resource now
+> registers exactly two commands: `/arenaadmin`, which takes no arguments and opens the
+> admin tablet where every action is a button, and `/arenaconsole`, which prints every
+> reading to the server console in one pass. `/arenadispatch`, `/arenarevive`,
+> `/arenaattachments`, `/arenaisolation`, `/arenahours` and `/arenaunjam` no longer exist;
+> where the text below names one, the work it describes is unchanged and only the way in
+> is different.
 Everything below was measured or reproduced, not reasoned about. Where something is
 unproven it says so.
 
@@ -152,8 +160,8 @@ aiming the refill at the player's pockets instead of the bag (the contents come 
 touching a stash, and all three print "settle it by hand" -- but nothing cleared the flag,
 which lived and died with the resource. An operator could follow those instructions exactly
 and the stash stayed dead, which also meant that player was never stripped at the door
-again for the rest of the server's uptime. `/arenaunjam` now lists what is held back and
-clears it, by name or `all`. Admin-gated, and deliberately **not** automatic: "clear it when
+again for the rest of the server's uptime. The admin tablet now lists what is held back (**Tools → Held-back stashes**) and clears
+one (**Clear the hold**, on the stash detail under its item list). Admin-gated, and deliberately **not** automatic: "clear it when
 the stash reads empty" would key the recovery to the one answer this whole file refuses to
 trust, since that is exactly what ox_inventory says about an inventory it has not loaded.
 
@@ -217,11 +225,11 @@ the ones a player could actually attempt are now tests:
   player gets exactly one bag with its contents, the ghost stays parked.
 - **Four rounds of cycling, and leave/re-enter loops.** Totals flat every time.
 
-**What the attacking found: `/arenaunjam` was a foot-gun.** Clearing a jam on a stash that
+**What the attacking found: clearing a jam was a foot-gun.** Clearing a jam on a stash that
 still held the parked surplus put every one of those rows back inside the next ceiling, and
 the next exit handed them over -- the exact duplication the jam exists to prevent. An
-operator clearing a noisy console with `/arenaunjam all` would have done that to every
-parked surplus at once. It now refuses a stash that still holds something, says what
+operator clearing a noisy console in one go would have done that to every parked surplus
+at once. It now refuses a stash that still holds something, says what
 clearing it would cost, and takes `force` for an operator who has genuinely checked. The
 listing shows the row count per stash so the decision is visible.
 
@@ -467,7 +475,8 @@ server where the thing that causes a jam happens routinely, that is every player
 round each.
 
 The jam is right; tying it to the only name the door could use was not. A jammed stash is
-left for `/arenaunjam` and the next round goes into the next name along, bounded at fifty.
+left for a human to settle on the tablet and the next round goes into the next name along,
+bounded at fifty.
 
 **And the one silent failure is loud now.** The single reason the container mechanism can do
 nothing -- an ox_inventory without `GetContainerFromSlot` -- was an `ArenaDebug`, which only

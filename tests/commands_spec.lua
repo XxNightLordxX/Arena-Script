@@ -176,37 +176,42 @@ end
 
 print('==> the command an operator could not find')
 
-t.test('THE FIX THAT OUTLIVED THE BUG: there is exactly ONE command now', function()
+t.test('THE FIX THAT OUTLIVED THE BUG: there are exactly TWO commands now', function()
     -- /arenadispatch was the command nobody could discover, and this file was
-    -- written because of it. It is not registered any more, and neither are
-    -- the five others that sat beside it: every reading they printed is on
-    -- the admin tablet, and at a console each is `/arenaadmin <name>`.
+    -- written because of it. Six commands became one -- /arenaadmin, which
+    -- takes no arguments and opens a screen where everything is a button --
+    -- and then a second was added back deliberately: /arenaconsole, which
+    -- prints every report in one pass for the one place a screen cannot go.
     --
-    -- So the discoverability rule this file enforces got easier rather than
-    -- weaker. There is one name to find, it is suggested, and the guard below
-    -- still fails the moment a second command is registered without being
-    -- made discoverable too.
+    -- Two names, both discoverable, neither taking an argument. The guard
+    -- still fails the moment a THIRD is registered without being made
+    -- discoverable too, which is the whole job of this file.
     local commands = registeredCommands()
 
     local names = {}
     for name in pairs(commands) do names[#names + 1] = name end
     table.sort(names)
 
-    t.equals(#names, 1, 'this resource registers ' .. table.concat(names, ', '))
-    t.equals(names[1], 'arenaadmin', 'the one command is not the one that opens the tablet')
-    t.equals(commands.arenaadmin, 'server/main.lua',
-        '/arenaadmin moved; the file that dispatches its subcommands moved with it')
+    t.equals(#names, 2, 'this resource registers ' .. table.concat(names, ', '))
+    t.equals(names[1], 'arenaadmin', 'the tablet command is not registered')
+    t.equals(names[2], 'arenaconsole', 'the console command is not registered')
+    t.equals(commands.arenaadmin, 'server/main.lua')
+    t.equals(commands.arenaconsole, 'server/main.lua',
+        'the two commands have drifted into different files')
 end)
 
-t.test('and it offers itself to autocomplete', function()
+t.test('and BOTH offer themselves to autocomplete', function()
     local client = loadClient()
-    local found
-    for _, entry in ipairs(client.suggested) do
-        if entry.command == '/arenaadmin' then found = entry end
+
+    for _, wanted in ipairs({ '/arenaadmin', '/arenaconsole' }) do
+        local found
+        for _, entry in ipairs(client.suggested) do
+            if entry.command == wanted then found = entry end
+        end
+        t.isNotNil(found, 'typing /arena does not offer ' .. wanted .. ' -- the reported bug is back')
+        t.isTrue(type(found.help) == 'string' and #found.help > 0,
+            wanted .. ' is suggested with no help text, which is a name and nothing else')
     end
-    t.isNotNil(found, 'typing /arena still offers nothing -- the reported bug is back')
-    t.isTrue(type(found.help) == 'string' and #found.help > 0,
-        '/arenaadmin is suggested with no help text, which is a name and nothing else')
 end)
 
 t.test('and the suggestions come back when the chat resource restarts', function()

@@ -106,7 +106,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 **Operations**
 
-- `/arenaadmin` to list, force-stop or wipe matches, gated on ACE groups.
+- `/arenaadmin` opens the admin tablet, where force-stopping and wiping matches are buttons; `/arenaconsole` prints every arena reading to the server console. Both gated on ACE groups.
 - A Discord webhook for match results and payouts. **Ships disabled** (`Config.Webhook.enabled = false`).
 - Server-authoritative throughout: nothing a client sends about a weapon, ammo count, team, match id, bet or kill is trusted. Every one is re-checked against config before it is acted on.
 - `Config.Permissions.joinJobs` gates who may join, the same way `createJobs` gates who may create. Both ship empty, and an empty list means everyone.
@@ -128,7 +128,7 @@ Those two are the whole `dependencies` block in `fxmanifest.lua`, and that list 
 |---|---|---|
 | [ox_target](https://github.com/overextended/ox_target) | the option on the lobby NPC | no NPC is spawned and the console says so. Set `Config.Lobby.interaction` to `'marker'` or `'both'` if you want the ground marker instead |
 | [ox_inventory](https://github.com/overextended/ox_inventory) | **the arena weapons themselves**, [their ammo items](#ammo-types--handing-out-your-own-ammo-items), and the stash that holds a player's own kit during a match | nothing is issued at all — weapons are items, so fighters would stand in the round with only what they walked in carrying, and nobody's own kit is stashed |
-| [oxmysql](https://github.com/overextended/oxmysql) | the all-time leaderboard **and the record of what players still owe the arena**, both behind `Config.Database.enabled` — it ships **off** | the leaderboard covers the current server run, **and the arena forgets outstanding kit on every restart** |
+| [oxmysql](https://github.com/overextended/oxmysql) | the all-time leaderboard, **the kit players still owe the arena**, **the money the arena still owes players**, and **which stashes the door is holding back** — all four behind `Config.Database.enabled`, which ships **off** | the leaderboard covers the current server run, and a restart forgets every outstanding weapon, every unpaid refund and every held-back stash |
 
 None of those three is named in the manifest and none is imported by it, so with the shipped settings this resource starts on a server that has no database resource, no target script and no inventory script at all. Turn a feature on and the resource asks for what it needs at that moment; if the answer is no, it says so in the console once and carries on.
 
@@ -152,7 +152,7 @@ Drag, drop, one line in `server.cfg`, start.
 
    Use whatever the folder is actually called. Nothing else needs adding, and there is no order to get right beyond being after qbx_core.
 
-3. **You do not have to import any SQL.** `Config.Database.enabled` ships `false`, and nothing is created or queried while it is. Turn it on and both tables — `crimson_arena_stats` and `crimson_arena_owed_kit` — are created on first start; `sql/install.sql` holds the identical statements for the case where your database user cannot `CREATE TABLE` at runtime, which is a reasonable way to run a production server. If you import by hand, grant `DELETE` too. **Ensure `crimson_arena` after oxmysql** if you can — the owed-kit slate is read back at start — but getting it wrong is no longer fatal: the sweep retries the read until it lands.
+3. **You do not have to import any SQL.** `Config.Database.enabled` ships `false`, and while it is off the arena creates none of its own tables and writes to none of them. Turn it on and all **four** — `crimson_arena_stats`, `crimson_arena_owed_kit`, `crimson_arena_unpaid` and `crimson_arena_jammed_stash` — are created on first start; `sql/install.sql` holds the identical statements for the case where your database user cannot `CREATE TABLE` at runtime, which is a reasonable way to run a production server. If you import by hand, grant `DELETE` on all four too — the arena deletes a row every time it settles a debt, and a slate it cannot clear is one it re-pays after every restart. **One query is not behind that switch, and it is worth knowing about:** opening the tablet's Stashes tab reads `ox_inventory`'s OWN table to find belongings left behind by an earlier run (`SELECT name, owner FROM ox_inventory WHERE name LIKE 'crimson_arena_%'`). It is a read, it touches nothing the arena owns, it only happens when an admin opens that screen, and it is skipped entirely when oxmysql is not started — but it is the one thing you will see in an oxmysql log on a server with the database switched off. **Ensure `crimson_arena` after oxmysql** if you can — the owed-kit slate is read back at start — but getting it wrong is no longer fatal: the sweep retries the read until it lands.
 4. **Optional, and the arena works before you do any of it.** Edit `config.lua`: move `Config.Lobby.ped.coords` and `Config.Lobby.returnCoords` somewhere that suits your map, and check the two shipped arenas suit you.
 
    They are deliberately different animals. **Trailer Park** (`trailerpark`) is a real place on the map — it has its own trailers and fences to fight around, so it spawns nothing of its own. **The Skydome** (`skydome`) is built rather than found: a floor of props tiled into a disc at 1201 m over open water, walled in by a double-stacked ring of shipping containers so nobody walks off the edge, with cover inside it, spawned per match and deleted when it ends, and it grows with the roster. Nothing is built over the top — it is a wall, not a box. Coordinates are a starting point rather than a finished map.
@@ -336,7 +336,7 @@ An arena that gives out two hundred armour-piercing rounds and does not take the
 - the round ending normally, for fighters and for eliminated players watching from the spectator camera
 - the player walking out mid-round
 - the player **disconnecting** — including a drop between being handed the ammunition and the match recording them
-- an admin `/arenaadmin stop` or `wipe`
+- an admin pressing **Stop** or **Stop every match** on the tablet
 - the round being abandoned because everybody left
 - **the resource stopping or the server restarting**, which is handled first in the shutdown, before anything else tears down
 
@@ -420,7 +420,7 @@ Outside them nobody can open a match and nobody can join one. Set `enabled = fal
 
 Which real clock: **the server's**, through `os.date`. Not the player's — two players in different countries would otherwise be told different opening times for the same arena. If your host runs its box on UTC and your players are five hours behind it, put `-5` in `offsetHours` and the windows mean what they say to them. It is a plain offset and claims nothing about daylight saving; when the clocks change, so does that number.
 
-**Type `/arenahours` to check it.** It prints what the machine says, the offset, the time the arena is actually going by, the windows, and whether the doors are open — kept as separate lines, because an operator told "shut" cannot act on it without knowing which of those is wrong.
+**Open the tablet and press Tools → Opening hours, or type `/arenaconsole`.** It prints what the machine says, the offset, the time the arena is actually going by, the windows, and whether the doors are open — kept as separate lines, because an operator told "shut" cannot act on it without knowing which of those is wrong.
 
 A few rules worth knowing:
 
@@ -589,7 +589,7 @@ An arena is a place where people shoot each other on purpose. Left alone, every 
 
 **What do you have to do?** One thing, and only for one case: a dispatch script that watches the *arena player's own client* for gunfire. That is the one thing no resource can reach, and it takes one line in that script. It is spelled out under [the one limit](#the-one-limit-nothing-here-gets-past) below.
 
-**How do you tell whether it is working?** Read the console at start, type `/arenadispatch`, or open `/arenaadmin` → **Tools** → **Police & EMS**. Layer 3 exists for exactly that question and answers it by name.
+**How do you tell whether it is working?** Read the console at start, type `/arenaconsole`, or open `/arenaadmin` → **Tools** → **Police & EMS**. Layer 3 exists for exactly that question and answers it by name.
 
 #### Layer 1 — the match is fought in its own network instance
 
@@ -657,7 +657,7 @@ Nothing wired up yet, with this server's dispatch and the Qbox ambulance job run
 [crimson_arena]   Paste at the top of whatever sends the alert, in that script:
 [crimson_arena]       if Player(src).state.crimsonArena then return end        -- server realm
 [crimson_arena]       if LocalPlayer.state.crimsonArena then return end        -- client realm
-[crimson_arena] Hooks configured: entry/exit events. /arenadispatch re-runs this report.
+[crimson_arena] Hooks configured: entry/exit events. /arenaconsole re-runs this report.
 ```
 
 The same server once the dispatch board is handled through its own ignore export:
@@ -670,7 +670,7 @@ The same server once the dispatch board is handled through its own ignore export
 [crimson_arena]   Paste at the top of whatever sends the alert, in that script:
 [crimson_arena]       if Player(src).state.crimsonArena then return end        -- server realm
 [crimson_arena]       if LocalPlayer.state.crimsonArena then return end        -- client realm
-[crimson_arena] Hooks configured: 1 disableExport(s). /arenadispatch re-runs this report.
+[crimson_arena] Hooks configured: 1 disableExport(s). /arenaconsole re-runs this report.
 ```
 
 One row is handled and one is not, so the report keeps the caveat and keeps
@@ -684,11 +684,11 @@ Reading it:
 | `muted automatically` | The arena really calls something on that resource on entry and exit. Nothing more to do. |
 | `NOT muted -- needs the line below` | Nothing in the arena reaches it. Paste the line it prints. |
 | `Isolation is off` | Layer 1 is switched off, so every client on the server can see arena gunfire and arena bodies. |
-| `Isolation is CONFIGURED ON BUT NOT IN FORCE` | You asked for it and the server is not doing it. The report says which of the two it is: OneSync off, or a routing bucket the server accepted and then ignored. Run `/arenaisolation` for the readings. |
+| `Isolation is CONFIGURED ON BUT NOT IN FORCE` | You asked for it and the server is not doing it. The report says which of the two it is: OneSync off, or a routing bucket the server accepted and then ignored. Press **Tools → Instancing** on the tablet, or run `/arenaconsole`, for the readings. |
 
-`/arenadispatch` runs the whole detection again, live, and prints the same block — after installing a dispatch script, or after pasting the line it asked for, without a restart. It is gated on `Config.Permissions.adminGroups`, and the server console always qualifies.
+`/arenaconsole` runs the whole detection again, live, and prints the same block — after installing a dispatch script, or after pasting the line it asked for, without a restart. It is gated on `Config.Permissions.adminGroups`, and the server console always qualifies.
 
-**An admin who is in the game rather than at a console reads it on the tablet instead.** Open `/arenaadmin`, go to **Tools**, and press **Police & EMS**: the same lines, from the same function, scrollable. The report's whole job is to name the resource that still needs the line pasted into it, and a resource name is not something anyone can read out of a notification that clears itself after a few seconds — so in-game `/arenadispatch` prints the report to the console and answers you with where to read it.
+**An admin who is in the game rather than at a console reads it on the tablet instead.** Open `/arenaadmin`, go to **Tools**, and press **Police & EMS**: the same lines, from the same function, scrollable. The report's whole job is to name the resource that still needs the line pasted into it, and a resource name is not something anyone can read out of a notification that clears itself after a few seconds — so in-game `/arenaconsole` prints the report to the console and answers you with one line saying where to read it.
 
 **Nothing in the catalogue ships with a mute call, deliberately.** A third-party script's export names cannot be verified from inside this resource, and a guessed export name is the worst outcome available: it detects as present, reports itself as handled, and silently does nothing — strictly worse than admitting the resource is unhandled. Detection is what drives the report, and the report is the point.
 
@@ -993,7 +993,7 @@ That distinction has three cases, not two, and collapsing the last two was a rea
 | Everybody disconnects mid-round | The round is aborted, not settled. Every stake and every side-bet goes back — there is nobody to declare a winner over. |
 | The round ends in a draw | Refunded. Paying one of two equal scores out of the other's stake is a coin toss with somebody else's money. |
 | The round was **fought** by fewer than `minPlayersToPayOut` | Refunded. This is what stops two friends farming each other. It counts who the round started with, not who is left at the end: otherwise the losing half of a 1v1 could turn a decided match into a refund by walking out of it, and collect the stake that leaving is supposed to forfeit. |
-| An admin runs `/arenaadmin stop` or `wipe` | Aborted and refunded, whatever state the match was in — **except a stake somebody had already forfeited by quitting the live round.** That one stays kept: the player was told at the time that it was gone, and an unrelated admin action is not meant to hand it back. The console says `REFUND REFUSED: ... was FORFEITED when they left and stays in the pot`, and the summary line counts them (`kept N forfeited stake(s) rather than refunding them`). Side-bets are a separate pool and *are* all returned unjudged, because a stopped round produced no result to judge them against. |
+| An admin presses **Stop** or **Stop every match** on the tablet | Aborted and refunded, whatever state the match was in — **except a stake somebody had already forfeited by quitting the live round.** That one stays kept: the player was told at the time that it was gone, and an unrelated admin action is not meant to hand it back. The console says `REFUND REFUSED: ... was FORFEITED when they left and stays in the pot`, and the summary line counts them (`kept N forfeited stake(s) rather than refunding them`). Side-bets are a separate pool and *are* all returned unjudged, because a stopped round produced no result to judge them against. |
 | **The resource stops or the server restarts CLEANLY** | Every live match is aborted on the way down, which refunds every stake in full, and only then are queued stat rows flushed. The handler is deliberately synchronous — a stop handler that yields may never be resumed, and a refund that never resumes is the exact bug it exists to prevent. |
 | **The server CRASHES** | **Every stake in escrow is lost.** This row used to be folded into the one above it, which was only true of a clean stop. A crash, a `kill -9`, a host failure or a power cut never runs the stop handler at all — and escrow lives only in memory while a round is being fought, so there is no row anywhere to recover it from and nobody is recorded as owed anything. The `/arenaadmin` money-owed screen will say the arena owes nobody, and it is telling the truth about the ledger it can see. Entry fees are debited when a player joins, so the exposure is the pot of every live match at the moment of the crash. |
 
@@ -1073,12 +1073,7 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 | `/arenaadmin list` | server | admins. Lists every match with its state, head count and pot. |
 | `/arenaadmin stop <id>` | server | admins. Aborts one match and refunds everybody. |
 | `/arenaadmin wipe` | server | admins. Aborts every match and refunds everybody. |
-| `/arenadispatch` | server | admins. Re-runs the police/EMS detection and reprints the startup report. Also on the admin tablet, under **Tools → Police & EMS**. See [Layer 3](#layer-3--the-startup-report-so-you-never-have-to-guess). |
-| `/arenahours` | server | admins. Prints what the server thinks the time is, the offset applied to it, the opening hours and whether the doors are open right now. See [Opening hours](#opening-hours). |
-| `/arenaattachments` | server | admins. Prints every configured attachment name this ox_inventory will not take, and which weapon or ammunition type names it. Also on the admin tablet, under **Tools → Attachments**. |
-| `/arenaisolation` | server | admins. Prints the routing-bucket readings for every live match — measurements, not intentions. Also on the admin tablet, under **Tools → Instancing**. |
-| `/arenarevive <id>` | server | admins. Runs the end-of-match revive against one player, so you can see what your medical script does with it without staging a death. Blank means yourself. |
-| `/arenaunjam [stash] [force]` | server | admins. Lists the stashes the arena is holding back, and releases one — but only once it is empty, or with `force` once you have checked what is in it really is the owner's. The same reading is on the admin tablet under **Tools → Held-back stashes**, and the same release is a **Clear the hold** button on the Stashes tab, under the stash's item list. |
+| `/arenaconsole` | server | admins. Prints every arena reading in one pass to the server console: opening hours, police &amp; EMS, instancing, attachments, money owed and held-back stashes. Takes no arguments. The same readings are buttons on the tablet under **Tools**, and the **Medical test** is a button only — it revives a named player rather than reading the server, so it needs a server id typed into a box. |
 
 **Every one of these offers itself to chat autocomplete.** Type `/arena` and the list appears with what each one does and what it takes. That is the only thing the client half registers: suggestions, not commands. It went in because an operator reported "there is no `/arenadispatch` command" — it had been registered since the file was written, and nothing in this resource had ever told the chat box any of its names existed.
 
@@ -1250,7 +1245,7 @@ are client-side because only a client can ask the game what models it has.
 ### A player is still dead
 
 - **`revive: NOTHING IS TELLING YOUR MEDICAL SCRIPT` in the console is not this.** Players are stood back up by the arena whatever that line says — see [getting back up after a death](#getting-back-up-after-a-death). That line is about telling a separate medical script, and on many servers there is nothing to tell.
-- **Type `/arenarevive <id>`.** It runs exactly the same path a finished match runs, on demand, so you can test it without playing a round. If that puts them up, the revive works and the problem is upstream of it.
+- **Open the tablet, go to Tools, put the server id in the box and press Medical test.** It runs exactly the same path a finished match runs, on demand, so you can test it without playing a round. If that puts them up, the revive works and the problem is upstream of it.
 - **A player who looks alive but is treated as dead** — cuffed, bleeding out, refused a weapon, dragged by EMS — is the handoff, not the revive. Their ped is up; your medical script's own list has not been told. Add that script to the catalogue in `shared/compat/dispatch.lua`, with the revive event it listens for.
 - **Still down right after a respawn?** Raise `Config.Dispatch.revive.afterRespawnDelayMs` (2000 by default). The revive has to land *after* the client has stood the ped up and finished the teleport; told sooner, whatever it does is undone by the teardown behind it.
 - **Still down after the match ends?** `Config.Dispatch.revive.sweepAfterMatchMs` (5000 by default) is a second blanket pass over everyone who played, run once everybody is home. `0` turns it off; raise it if your teleport home is slow.
@@ -1267,7 +1262,7 @@ are client-side because only a client can ask the game what models it has.
 
 ### Police or EMS are still being called
 
-- **Type `/arenadispatch` first** (or open `/arenaadmin` → **Tools** → **Police & EMS**, which shows the same report on screen). It names every police and EMS resource running on your server and says, per resource, whether the arena reaches it. A row reading `NOT muted -- needs the line below` is the answer, and the line it prints is the fix.
+- **Open `/arenaadmin` → **Tools** → **Police & EMS** first** (or type `/arenaconsole`, which prints the same report to the console). It names every police and EMS resource running on your server and says, per resource, whether the arena reaches it. A row reading `NOT muted -- needs the line below` is the answer, and the line it prints is the fix.
 - A resource the report does not list is one the catalogue does not know by name. Add the name in `shared/compat/dispatch.lua` and it appears from the next restart.
 - `Isolation is off` in the report means `Config.Dispatch.isolation.enabled` is `false`, so every client on the server can see arena gunfire and arena bodies. That is the layer that works without anybody's cooperation — turn it back on.
 - **With isolation on, an alert that still arrives almost certainly came from the fighter's own client.** No other machine on the server was sent the fight, so there is nothing else it could have been watching. That narrows it to one file, and the state bag line goes in it.
@@ -1278,15 +1273,15 @@ are client-side because only a client can ask the game what models it has.
 
 That is isolation not happening, and the resource can now tell you which of three things it is rather than leaving you to guess.
 
-**Type `/arenaisolation`.** It prints measurements, not intentions: the mode your server reports for `onesync`, whether a routing bucket has ever been set and then found not to have taken, the bucket each live match was allocated, and — the line that settles it — the bucket the server says each of those players is standing in right now.
+**Press Tools → Instancing on the tablet, or type `/arenaconsole`.** It prints measurements, not intentions: the mode your server reports for `onesync`, whether a routing bucket has ever been set and then found not to have taken, the bucket each live match was allocated, and — the line that settles it — the bucket the server says each of those players is standing in right now.
 
 ```
-[crimson_arena] arenaisolation: config says ON, server reports onesync "on", a move has NOT been caught not landing.
-[crimson_arena] arenaisolation: isolation is IN FORCE right now, one bucket per match.
-[crimson_arena] arenaisolation:   match m1f3a2 was allocated bucket 4210.
-[crimson_arena] arenaisolation:   match m1f3a3 was allocated bucket 4211.
-[crimson_arena] arenaisolation:   3 (match m1f3a2) should be in 4210 and the server says 4210.
-[crimson_arena] arenaisolation:   7 (match m1f3a3) should be in 4211 and the server says 4211.
+[crimson_arena] arenaconsole:   config says ON, server reports onesync "on", a move has NOT been caught not landing.
+[crimson_arena] arenaconsole:   isolation is IN FORCE right now, one bucket per match.
+[crimson_arena] arenaconsole:     match m1f3a2 was allocated bucket 4210.
+[crimson_arena] arenaconsole:     match m1f3a3 was allocated bucket 4211.
+[crimson_arena] arenaconsole:     3 (match m1f3a2) should be in 4210 and the server says 4210.
+[crimson_arena] arenaconsole:     7 (match m1f3a3) should be in 4211 and the server says 4211.
 ```
 
 Two players with the same number and two different match ids is the whole diagnosis. So is a row ending `<-- NOT INSTANCED`.
@@ -1295,7 +1290,7 @@ Two players with the same number and two different match ids is the whole diagno
 - **`a move has been caught not landing`** — the server accepted a routing bucket and then reported the player somewhere else. The natives are inert here whatever the convars say. Until it is fixed the arena refuses to start a second match at an arena somebody is already fighting in, rather than dropping two armed groups on one platform.
 - **`config says OFF`** — `Config.Dispatch.isolation.enabled` is `false`. Turn it back on.
 
-Like `/arenadispatch` and `/arenarevive`, it is gated on `Config.Permissions.adminGroups`, and the server console always qualifies.
+Like everything else an admin can reach, it is gated on `Config.Permissions.adminGroups`, and the server console always qualifies.
 
 ### Nothing else fits
 

@@ -114,13 +114,8 @@ All of these need admin permission, which the arena reads from your framework.
 
 | Command | What it does |
 |---|---|
-| `/arenaadmin` | **Start here.** Opens the admin tablet: see live matches, force-stop one (everybody is refunded), revive a fighter, see who still owes the arena money, open a player's stash by hand, and hold the doors open past the schedule. Its **Tools** tab also shows the three reports below on screen, so you do not have to type them at a console. |
-| `/arenarevive <id>` | Runs the end-of-match medical handoff on any player, so you can test it without playing a round. |
-| `/arenaunjam` | Settles any player stash the arena refused to give back automatically, so their kit is not stuck in limbo. Lists them first if you run it with nothing held. |
-| `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without restarting the resource. |
-| `/arenaattachments` | Prints every attachment name in your config that this ox_inventory will not take — a name it has no item for, or an item that is not a component. Run this if a fighter is holding a weapon that will not come out. |
-| `/arenaisolation` | Prints what instancing is really doing: the OneSync mode, which routing bucket each live match got, and which bucket the server thinks each player is standing in. Run this first if players can see each other when they should not. |
-| `/arenahours` | Prints what the server thinks the time is and whether the doors are open right now. |
+| `/arenaadmin` | **Start here.** Opens the admin tablet, and takes no arguments — everything is a button on the screen. **Matches:** force-stop one round or every round at once (everybody is refunded either way), and revive a fighter. **Stashes:** see whose belongings the arena is still holding, hand them back or queue them for when they return, and clear a hold on a stash the door has refused to empty. **Tools:** the police/EMS, instancing, attachment, opening-hours and held-back-stash readings, what the arena owes players, and a **Medical test** that runs the end-of-match revive against any server id so you can test your medical script without playing a round. |
+| `/arenaconsole` | Prints all of those readings to the **server console** in one pass, for a box you cannot open a tablet on. Takes no arguments. The Medical test is not in it — that one revives a named player rather than reading the server, so it stays a button with a box to type the id into. |
 
 ## Documentation
 

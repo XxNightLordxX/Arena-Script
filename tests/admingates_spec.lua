@@ -187,4 +187,64 @@ t.test('and the console is NOT given the reports it used to have', function()
     t.isFalse(text:find('dispatch', 1, true) ~= nil, 'the console printed the police report')
 end)
 
+-- ======================================================================
+-- /arenaconsole -- EVERY READING, IN ONE PASS, TO THE SERVER CONSOLE
+--
+-- The counterpart to the tablet rather than a way back to typing: it exists
+-- for the place a screen cannot go. No arguments, so there is nothing to
+-- remember and nothing to spell.
+-- ======================================================================
+
+t.test('it prints every report, not one of them', function()
+    local s = newServer({ adminSrc = 4 })
+    local _, lines = s.run('arenaconsole', 0, {})
+    local text = table.concat(lines, '\n'):lower()
+
+    -- THE THREE THIS FILE CAN SEE on its stubs. Each used to be a command of
+    -- its own, and each has to be in the dump.
+    t.isTrue(anyLine(lines, 'hours'), 'the opening-hours reading is missing: ' .. text)
+    t.isTrue(anyLine(lines, 'dispatch'), 'the police/EMS reading is missing')
+    t.isTrue(anyLine(lines, 'isolation'), 'the instancing reading is missing')
+end)
+
+t.test('and it does NOT run the medical test, which revives a real player', function()
+    -- Every other entry reads the server; that one reaches into somebody and
+    -- needs to be told who. A dump cannot ask, and reviving whoever typed it
+    -- is not a diagnostic. It stays a button.
+    local s = newServer({ adminSrc = 4 })
+    local _, lines = s.run('arenaconsole', 0, {})
+
+    t.isFalse(anyLine(lines, 'medical test'),
+        'the dump ran the medical test, which revives a player nobody named')
+end)
+
+t.test('and a player who is not an admin gets nothing', function()
+    local s = newServer({ adminSrc = 4 })
+    local sentTo, lines = s.run('arenaconsole', 2, {})
+
+    t.isTrue(refused(sentTo, 2), 'a non-admin was not told they are not cleared')
+    t.equals(#lines, 0, 'a non-admin got the whole diagnostic dump')
+end)
+
+t.test('and a report that throws does not take the other five with it', function()
+    -- The operator running this is very often looking at a server where one
+    -- of these is broken. That is the case it exists for.
+    local s = newServer({ adminSrc = 4 })
+    s.env.ArenaDispatch.IsolationReport = function() error('boom') end
+
+    local _, lines = s.run('arenaconsole', 0, {})
+
+    t.isTrue(anyLine(lines, 'could not be taken'), 'the throw was swallowed silently')
+    t.isTrue(anyLine(lines, 'hours'),
+        'one report throwing took the rest of the dump down with it')
+end)
+
+t.test('and it takes no arguments, so a word after it changes nothing', function()
+    local s = newServer({ adminSrc = 4 })
+    local _, plain = s.run('arenaconsole', 0, {})
+    local _, withWord = s.run('arenaconsole', 0, { 'dispatch' })
+
+    t.equals(#withWord, #plain, 'naming a report after it changed what was printed')
+end)
+
 os.exit(t.summary())

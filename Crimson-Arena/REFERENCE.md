@@ -158,7 +158,7 @@ instancing really happened rather than assuming it did.
   script running on their client has anything to report.
 - **It is measured, not assumed.** A bucket is set and read back; if the server
   says the player is somewhere else, the resource says so once, loudly, and stops
-  claiming isolation for the rest of the run. `/arenaisolation` prints the
+  claiming isolation for the rest of the run. **Tools → Instancing** prints the
   readings.
 - **A dispatch integration in six layers**, from the one that needs nobody's
   cooperation down to the one that withdraws a call after it has been filed
@@ -221,12 +221,10 @@ one deliberately does not.
 
 | Command | What it does |
 |---|---|
-| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Stashes** tab marks the stashes the door is holding back and carries **Clear the hold** on the stash detail, under the item list, so a hold is settled by somebody who has read the contents rather than by somebody typing at a console. Its **Tools** tab shows the `/arenaisolation`, `/arenahours`, `/arenadispatch`, `/arenaattachments` and `/arenaunjam` readings on screen, plus **Money owed** — every payout and refund the arena could not deliver, and whether a restart would forget it — built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
-| `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without a restart. |
-| `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
-| `/arenaattachments` | Prints every name in `Config.Loadouts.weaponAttachments`, a weapon's own `components` list or an `ammoTypes` entry that this ox_inventory will not take — one it has no item for, or one whose item is not a component. Both leave the weapon undrawable, so both are dropped rather than fitted, and this is the reading that says which. |
-| `/arenaisolation` | Prints what instancing is really doing: the mode the server reports for `onesync`, whether a routing bucket has been caught not landing, the bucket each live match was allocated, and the bucket the server says each of those players is standing in right now. |
-| `/arenahours` | Prints what the server thinks the time is, the offset applied to it, the opening hours in `Config.Schedule` and whether the doors are open right now. |
+| `/arenaadmin` | Opens the admin tablet, and takes no arguments — everything is a button on the screen: force-stop and **Stop every match** on **Matches**; hand-backs and **Clear the hold** on **Stashes**, under the item list, so a hold is settled by somebody who has READ the contents; the doors, the revive, and under **Tools** the instancing, opening-hours, police/EMS, attachment and held-back-stash readings, **Money owed**, and the **Medical test**. At a server console — which cannot be shown a screen — it lists what is running and nothing else. |
+| `/arenaconsole` | Prints every one of those readings to the server console in one pass, for the place a screen cannot go. No arguments. The **Medical test** is deliberately not in it: that one revives a named player rather than reading the server, so it stays a button with a box to put the server id in. An in-game admin who runs it gets one line saying where it went. |
+
+**Those are the only two.** `/arenadispatch`, `/arenarevive`, `/arenaattachments`, `/arenaisolation` and `/arenaunjam` were commands of their own and are not any more: every reading they printed is a button on the tablet under **Tools**, and `/arenaconsole` prints all of them at a console. The revive became the **Medical test** button, which takes a server id; clearing a jam became **Clear the hold**, on the stash whose contents it is about. `tests/commands_spec.lua` fails if a third command is ever registered without being made discoverable.
 
 **No player-facing slash command exists.** The panel opens from the lobby ped or
 the ground marker, whichever `Config.Lobby.interaction` names, and there is no
@@ -348,8 +346,8 @@ line-number map that is regenerated whenever the file changes.
 | `shared/arena.lua` | shared | The rules: the catalogue readers, the validators, the spawn and payout maths. No side effects. |
 | `shared/compat/dispatch.lua` | shared | The police/EMS catalogue, the detection walk, the mutes and the startup report. |
 | `server/util.lua` | server | Logging, notifications, permissions, rate limiting, webhooks, match ids. |
-| `server/dispatch.lua` | server | The in-arena flag, routing-bucket isolation, the revive, and `/arenarevive` and `/arenaisolation`. |
-| `server/ammo.lua` | server | The inventory door, every weapon and ammunition item issued and reclaimed, the slate of what players still owe the arena, and `/arenaunjam` and `/arenaattachments`. |
+| `server/dispatch.lua` | server | The in-arena flag, routing-bucket isolation, the revive, and the instancing and medical-test readings the tablet draws. |
+| `server/ammo.lua` | server | The inventory door, every weapon and ammunition item issued and reclaimed, the slate of what players still owe the arena, and the held-back-stash and attachment readings the tablet draws. |
 | `server/stats.lua` | server | The leaderboard, in memory and in MySQL. |
 | `server/betting.lua` | server | Escrow, side bets, refunds and payouts. |
 | `server/lobby.lua` | server | The match registry, joining, leaving, readiness and the state snapshot. |
@@ -519,7 +517,7 @@ listed; the source documents them where they are.
 | `ArenaHoursOverride()` | That decision, or nil where there is none. |
 | `ArenaHoursOpen()` | Whether the doors are open right now. Fails OPEN on every path that cannot produce a schedule. |
 | `ArenaHoursSnapshot()` | The opening-hours block the panel, the NPC and the marker are all drawn from. |
-| `ArenaHoursState()` | The same facts kept apart, for `/arenahours`. |
+| `ArenaHoursState()` | The same facts kept apart, for the opening-hours reading. |
 | `ArenaDbReady(subject)` | Whether a query can be sent right now: `Config.Database.enabled` on and oxmysql started. Says so once per outage, per subject, and re-arms when the database comes back. |
 | `ArenaDb(subject, sql, params, cb)` | Sends one query. Never lets a database failure take the round down, and always calls `cb` — with nil on every path that did not reach oxmysql. |
 
@@ -541,7 +539,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.EnterBucket(src, matchId)` | Moves a player into their match's instance, remembering what they were in beforehand. |
 | `ArenaDispatch.ExitBucket(src)` | Puts a player back in exactly the bucket EnterBucket found them in, and hands the match's number back once the last person has left it. |
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
-| `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
+| `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for **Tools → Instancing**. |
 | `ArenaDispatch.IsolationReport()` | The routing-bucket isolation of every live match, as lines. Drawn by the admin tablet under **Tools → Instancing**, and printed by `/arenaadmin isolation` at a console. |
 | `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, plus the arena's own down-state line. Drawn by the admin tablet under **Tools → Police & EMS**, and printed by `/arenaadmin dispatch` at a console. |
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
@@ -563,9 +561,9 @@ listed; the source documents them where they are.
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |
 | `ArenaAmmo.JammedStashes()` | Every stash the door has stopped touching, because something is in it the arena cannot account for. |
 | `ArenaAmmo.IsJammed(stash)` | Whether one stash is held back, and whether that answer has been read back from the database yet. The second return is what stops the admin tablet drawing an unread list as fact and offering a hand-back the door is certain to refuse. |
-| `ArenaAmmo.JamReport()` | The same reading /arenaunjam prints when asked for nothing in particular, as lines. Read-only: it names what is held back and points at the Stashes tab, and clears nothing itself. |
+| `ArenaAmmo.JamReport()` | What the tablet draws under **Tools → Held-back stashes**, as lines. Read-only: it names what is held back and points at the Stashes tab, and clears nothing itself. |
 | `ArenaAmmo.Unjam(stash)` | Lets the door use one of those stashes again, once a human has settled it. The mechanism, not the judgement — go through `ClearHold`. Never automatic: an empty read is what ox_inventory says about an inventory it has not loaded, so only a person can say a jam is over. |
-| `ArenaAmmo.ClearHold(stash, forced)` | The one gate both ways of clearing a hold go through — `/arenaunjam` and the tablet's **Clear the hold**. Refuses a stash that still holds rows, or one that cannot be read, unless the operator has said they have looked at it. |
+| `ArenaAmmo.ClearHold(stash, forced)` | The one gate every way of clearing a hold goes through — today that is the tablet's **Clear the hold** button, and anything added later asks it too. Refuses a stash that still holds rows, or one that cannot be read, unless the operator has said they have looked at it. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server: outstanding stashes handed back, and any arena kit that left with a character taken off them. |
@@ -576,7 +574,7 @@ listed; the source documents them where they are.
 | `ArenaAmmo.OwedKit()` | Every arena weapon and item stack that left with a character and has not come back, one row per character. |
 | `ArenaAmmo.AllStashes(cb, scanned)` | Every arena stash this server has ever made, whether or not this run remembers it. |
 | `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
-| `ArenaAmmo.AttachmentReport()` | Every attachment name the config can fit, checked against this server's ox_inventory item list, as lines. Printed at start and by `/arenaattachments`, and on the admin tablet under **Tools → Attachments**. A name ox_inventory has no item for, or has an item for that is not a component, is dropped rather than fitted, because handing it one leaves the weapon undrawable. |
+| `ArenaAmmo.AttachmentReport()` | Every attachment name the config can fit, checked against this server's ox_inventory item list, as lines. Printed at start, by `/arenaconsole`, and on the admin tablet under **Tools → Attachments**. A name ox_inventory has no item for, or has an item for that is not a component, is dropped rather than fitted, because handing it one leaves the weapon undrawable. |
 
 #### `server/stats.lua` — 6 functions
 

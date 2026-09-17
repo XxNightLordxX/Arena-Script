@@ -34,12 +34,13 @@
 --                                    PAID AGAIN -- out of the owner's
 --                                    pocket, once per restart, for ever.
 --                                    This is the one that costs real money.
---        crimson_arena_jammed_stash  deletes a row when an operator runs
---                                    /arenaunjam after settling a stash by
---                                    hand. Without DELETE the command
---                                    reports success, the next restart holds
---                                    the same stash back again, and the
---                                    operator repeats the work every boot.
+--        crimson_arena_jammed_stash  deletes a row when an admin presses
+--                                    Clear the hold on the tablet, after
+--                                    settling that stash by hand. Without
+--                                    DELETE the button reports success, the
+--                                    next restart holds the same stash back
+--                                    again, and the operator repeats the
+--                                    work every boot.
 --
 --      crimson_arena_stats is the only one that never deletes: it upserts
 --      and nothing else, which is why SELECT/INSERT/UPDATE was enough back
@@ -313,8 +314,9 @@ CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
 -- stop. "Wait for the nightly restart" was a way to collect it.
 --
 -- Nothing in here is anybody's property. It is a list of stash names the
--- door is holding off, and /arenaunjam is the only thing that clears one --
--- after a human has opened the stash and settled it by hand.
+-- door is holding off, and the tablet's Clear the hold button is the only
+-- thing that clears one -- after a human has opened that stash on the
+-- Stashes tab, read what is in it, and settled it by hand.
 --
 --   stash   an ox_inventory stash name, as ammo.lua composes it. 191 is the
 --           longest VARCHAR that can carry a PRIMARY KEY under utf8mb4 on

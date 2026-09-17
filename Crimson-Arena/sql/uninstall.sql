@@ -73,8 +73,9 @@ DROP TABLE IF EXISTS crimson_arena_owed_kit;
 -- The list of stashes the door was holding off. Dropping this does NOT empty
 -- those stashes -- it only forgets that they were being held back, so a
 -- resource still running would walk them again and hand out whatever is
--- parked in them. Settle them with /arenaunjam first if this server is
--- staying up.
+-- parked in them. Settle them on the admin tablet's Stashes tab first --
+-- open each, take out anything that is not the owner's, then Clear the
+-- hold -- if this server is staying up.
 DROP TABLE IF EXISTS crimson_arena_jammed_stash;
 
 -- Money the arena still owed somebody. Dropping this FORGIVES those debts:

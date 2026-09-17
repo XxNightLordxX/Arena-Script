@@ -28,10 +28,10 @@
      1258   Permissions   Who may open a match, who may force-stop one
      1344   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1778   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2340   Database      Optional: leaderboard, and what players still owe the arena
-     2371   Leaderboard   Which matches count towards the board, and which do not
-     2437   Webhook       Optional: a Discord line per finished match
-     2469   Dispatch      Optional: keeping police and EMS out of the arena
+     2353   Database      Optional: four tables the arena owns. Ships OFF
+     2384   Leaderboard   Which matches count towards the board, and which do not
+     2450   Webhook       Optional: a Discord line per finished match
+     2482   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -2336,6 +2336,19 @@ Config.Loadouts = {
 -- resource starts on a server with no database at all. Everything still
 -- works; it works for the length of one uptime. Switch this on without
 -- oxmysql running and the console says so once and falls back to memory.
+--
+-- ONE QUERY IS NOT BEHIND THIS SWITCH, said here rather than left to be
+-- discovered in an oxmysql log. Opening the admin tablet's Stashes tab reads
+-- ox_inventory's OWN table by name prefix, to find belongings a player never
+-- got back from a run that has since ended -- the only way to name those
+-- after a restart, and the whole point of that screen.
+--
+-- It is a SELECT, it touches nothing this resource owns, it runs only when an
+-- admin opens that tab, and it is skipped when oxmysql is not started. This
+-- setting governs the FOUR TABLES THE ARENA OWNS -- crimson_arena_stats,
+-- crimson_arena_owed_kit, crimson_arena_unpaid and
+-- crimson_arena_jammed_stash -- and with it off, none of them is created,
+-- read or written.
 -- ======================================================================
 Config.Database = {
     enabled = false,

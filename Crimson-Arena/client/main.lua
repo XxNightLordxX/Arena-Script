@@ -325,6 +325,12 @@ local COMMAND_HELP = {
         name = 'arenaadmin',
         help = 'Open the arena admin tablet. Everything is a button on it. (admin)',
     },
+    {
+        -- ALSO NO `params`. It prints every report in one pass, so there is
+        -- nothing to name after it.
+        name = 'arenaconsole',
+        help = 'Print every arena report to the server console. (admin)',
+    },
 }
 
 --- Raises every suggestion once.

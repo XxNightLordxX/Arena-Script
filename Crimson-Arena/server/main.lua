@@ -1366,6 +1366,74 @@ onClient('crimson_arena:server:adminRevive', RATE.admin, function(src, data)
     pushAdmin(src, match.id)
 end)
 
+--- Every debug reading the arena can take, printed to the SERVER CONSOLE.
+---
+--- THE SECOND AND LAST COMMAND THIS RESOURCE REGISTERS, and the counterpart
+--- to /arenaadmin rather than a way back to typing. /arenaadmin puts the
+--- screen up and everything on it is a button; this one exists for the place
+--- a screen cannot go -- a server console, a log an operator pastes into a
+--- support thread, a box nobody can spawn into.
+---
+--- IT TAKES NO ARGUMENTS EITHER. It prints ALL of them, in one pass, so
+--- there is nothing to remember and nothing to spell. The same readings are
+--- on the tablet under Tools, one button each, and they are built by the same
+--- ADMIN_TOOLS entries -- so a tool added to that screen appears here on the
+--- same commit, and one renamed cannot leave this printing a heading with
+--- nothing under it.
+---
+--- THE MEDICAL TEST IS NOT IN IT, and that is deliberate rather than an
+--- oversight. Every other entry READS the server; that one REVIVES A PLAYER,
+--- and it needs to be told which. A command that dumps everything cannot ask,
+--- and quietly reviving whoever typed it -- or nobody, at a console, where
+--- there is no such player -- is not a diagnostic. It stays a button, where
+--- there is a box to put the server id in.
+---
+--- ALWAYS TO THE CONSOLE, even when a player runs it. An in-game admin gets
+--- one short line saying where it went and that the same readings are on
+--- their tablet. The whole report in a corner notification is what this
+--- resource already tried once: twenty-odd lines and a pasteable snippet, for
+--- a few seconds, which nobody has ever read a resource name out of.
+RegisterCommand('arenaconsole', function(src)
+    if not ArenaIsAdmin(src) then
+        return refuse(src, 'error.no_permission')
+    end
+
+    -- IN A FIXED ORDER, not pairs(). ADMIN_TOOLS is a hash, so walking it
+    -- directly prints these in a different order every run and makes two logs
+    -- from the same server impossible to diff.
+    local order = { 'hours', 'dispatch', 'isolation', 'attachments', 'owed', 'jams' }
+
+    local printed = 0
+    for _, name in ipairs(order) do
+        local tool = ADMIN_TOOLS[name]
+        if tool then
+            ArenaLog('arenaconsole: ---- %s ----', tool.title or name)
+
+            -- THROUGH pcall, one report at a time. These read live server
+            -- state -- routing buckets, the clock, ox_inventory, the database
+            -- -- and the operator running this is very often looking at a
+            -- server where one of them is broken. One throwing must not take
+            -- the other five with it.
+            local ok, lines = pcall(tool.run)
+            if not ok or type(lines) ~= 'table' then
+                ArenaLog('arenaconsole:   that report could not be taken: %s', tostring(lines))
+            else
+                for _, line in ipairs(lines) do
+                    ArenaLog('arenaconsole:   %s', tostring(line))
+                end
+            end
+            printed = printed + 1
+        end
+    end
+
+    ArenaLog('arenaconsole: %d report(s) above, taken by %s.', printed, ArenaPlayerName(src))
+
+    if src ~= 0 then
+        ArenaNotify(src, ('%d report(s) printed to the server console. The same readings are on '
+            .. 'your tablet under Tools, where you can scroll them.'):format(printed), 'info')
+    end
+end, false)
+
 RegisterCommand('arenaadmin', function(src)
     if not ArenaIsAdmin(src) then
         return refuse(src, 'error.no_permission')

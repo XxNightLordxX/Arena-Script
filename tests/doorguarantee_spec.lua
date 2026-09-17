@@ -211,8 +211,25 @@ local function newServer(ids, mutate, extra, opts)
                 return rows
             end
 
-            if cb then cb(opts.dbFails and nil or {}) end
-            return opts.dbFails and nil or {}
+            -- `opts.dbFails and nil or {}` COULD NEVER BE nil, which made
+            -- this knob inert for as long as it existed: `true and nil` is
+            -- nil, and `nil or {}` is {}. So every test that asked for a
+            -- failing database got a HEALTHY one answering an empty table,
+            -- and passed for the wrong reason. It is the same Lua trap that
+            -- bit unpaidreplay_spec's database switch; `x and nil or y` is
+            -- never safe when x is meant to select nil.
+            -- AND THE CASE BETWEEN THE TWO, which is the one operators
+            -- actually hit: a user with SELECT and no INSERT. Reads land,
+            -- writes come back empty. `dbFails` models the whole database
+            -- being unreachable; this models it being half granted.
+            local answer = nil
+            if not opts.dbFails then
+                local writing = not sql:find('SELECT', 1, true)
+                    and not sql:find('CREATE TABLE', 1, true)
+                if not (opts.failWrites and writing) then answer = {} end
+            end
+            if cb then cb(answer) end
+            return answer
         end,
     }
     oxmysql.execute = oxmysql.query
@@ -3664,6 +3681,65 @@ t.test('CONTROL: with no database at all the report still says none, not unknown
     local report = table.concat(server.ammo.JamReport(), '\n')
     t.contains(report, 'no stash is being held back',
         'a server with no database was told its jam list is unknown')
+end)
+
+t.test('THE INERT KNOB: a database that refuses every statement is a real case now', function()
+    -- `opts.dbFails` has been in this fixture, documented, since before the
+    -- jam list existed -- and nothing ever set it, because it could not
+    -- work: `opts.dbFails and nil or {}` always answered {}. So the option
+    -- that models "the database is connected and every statement is refused"
+    -- has never once been exercised. This is the test that turns it.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+    end, nil, { database = true, dbFails = true })
+
+    server.startResource()
+    server.step(2)
+
+    -- The read is refused, so the list is unread -- and the report must say
+    -- that rather than claiming there is nothing to settle.
+    local report = table.concat(server.ammo.JamReport(), '\n')
+    t.contains(report, 'NOT been read back',
+        'a database refusing every statement was reported as an empty jam list')
+end)
+
+t.test('and a jam made on a SELECT-only user warns that a restart forgets it', function()
+    -- READS LAND, WRITES DO NOT, which is the setup an operator really has
+    -- when they grant SELECT and forget the rest. `dbFails` cannot show this:
+    -- with the read refused too, the door holds every hand-back waiting for
+    -- the jam list and no jam is ever reached -- correct behaviour, and the
+    -- reason this needed its own knob.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, jamRows = {}, failWrites = true })
+
+    server.startResource()
+    server.step(2)
+
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.contains(server.log(), 'touching that stash no further', 'the fixture did not jam anything')
+    t.contains(server.log(), 'could NOT be written to the database',
+        'the jam held for this run but the operator was never told a restart forgets it')
+end)
+
+t.test('CONTROL: and with the database healthy neither line appears', function()
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, jamRows = {} })
+
+    server.startResource()
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.isNil(server.log():find('could NOT be written to the database', 1, true),
+        'a healthy database was reported as unwritable')
+    local report = table.concat(server.ammo.JamReport(), '\n')
+    t.isNil(report:find('NOT been read back', 1, true),
+        'a list that was read back was reported as unread')
 end)
 
 os.exit(t.summary())

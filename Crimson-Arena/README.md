@@ -994,7 +994,34 @@ That distinction has three cases, not two, and collapsing the last two was a rea
 | The round ends in a draw | Refunded. Paying one of two equal scores out of the other's stake is a coin toss with somebody else's money. |
 | The round was **fought** by fewer than `minPlayersToPayOut` | Refunded. This is what stops two friends farming each other. It counts who the round started with, not who is left at the end: otherwise the losing half of a 1v1 could turn a decided match into a refund by walking out of it, and collect the stake that leaving is supposed to forfeit. |
 | An admin runs `/arenaadmin stop` or `wipe` | Aborted and refunded, whatever state the match was in — **except a stake somebody had already forfeited by quitting the live round.** That one stays kept: the player was told at the time that it was gone, and an unrelated admin action is not meant to hand it back. The console says `REFUND REFUSED: ... was FORFEITED when they left and stays in the pot`, and the summary line counts them (`kept N forfeited stake(s) rather than refunding them`). Side-bets are a separate pool and *are* all returned unjudged, because a stopped round produced no result to judge them against. |
-| **The resource stops or the server restarts** | Every live match is aborted on the way down, which refunds every stake in full, and only then are queued stat rows flushed. The handler is deliberately synchronous — a stop handler that yields may never be resumed, and a refund that never resumes is the exact bug it exists to prevent. |
+| **The resource stops or the server restarts CLEANLY** | Every live match is aborted on the way down, which refunds every stake in full, and only then are queued stat rows flushed. The handler is deliberately synchronous — a stop handler that yields may never be resumed, and a refund that never resumes is the exact bug it exists to prevent. |
+| **The server CRASHES** | **Every stake in escrow is lost.** This row used to be folded into the one above it, which was only true of a clean stop. A crash, a `kill -9`, a host failure or a power cut never runs the stop handler at all — and escrow lives only in memory while a round is being fought, so there is no row anywhere to recover it from and nobody is recorded as owed anything. The `/arenaadmin` money-owed screen will say the arena owes nobody, and it is telling the truth about the ledger it can see. Entry fees are debited when a player joins, so the exposure is the pot of every live match at the moment of the crash. |
+
+### Why a crash loses the pot, and why turning the database on does not fix it
+
+Escrow is deliberately memory-only. `server/betting.lua` states the rule in
+its own header — the money exists in exactly one place — and that is what
+makes it impossible for a stake to be counted twice while a round is running.
+
+The cost is the row above: if the process dies without running its stop
+handler, the money in escrow was never written anywhere and cannot be
+reconstructed. This is not a database failure, and it is worth being clear
+that **`Config.Database.enabled = true` does not change it.** The three
+ledgers that survive a restart record money the arena has finished deciding
+about — a payout that could not be delivered, kit that walked, the
+leaderboard. A stake in escrow is money the arena has not decided about yet,
+and it is not mirrored anywhere.
+
+**What bounds it.** Only live matches are exposed, only for as long as they
+run, and only for the entry fees they hold. A lobby that has not started, a
+match that has settled, and a debt already recorded as owed are all
+unaffected. On a server with no entry fee it is nothing at all.
+
+**If that exposure matters to you**, the fix is not a setting — it is
+mirroring escrow to a ledger the way payouts already are, which is a change
+to the money path and wants deciding rather than defaulting. It is written
+down here rather than quietly fixed because a promise in a README that a
+crash silently breaks is worse than the gap it hides.
 
 ### Where a forfeited pot goes
 

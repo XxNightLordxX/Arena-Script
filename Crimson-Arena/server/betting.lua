@@ -704,7 +704,14 @@ local function sendAdd(citizenid, key, name, account, reason, added)
     local taken = false
     local ok, err = pcall(function()
         taken = ArenaDb(UNPAID_SUBJECT, UNPAID_ADD_SQL, {
-            citizenid, key, tostring(name or citizenid),
+            -- CUT HERE, WHERE EVERY WRITE PASSES, replay included. This
+            -- column is VARCHAR(128) and the name arrived UNCUT: 129 plain
+            -- ASCII characters were enough for MySQL to refuse the row, and
+            -- the row records MONEY THE ARENA OWES A PLAYER. sendAdd reports
+            -- only whether oxmysql TOOK the statement, so a refusal is read
+            -- as success, nothing is queued for replay, and the debt lives in
+            -- memory until the next restart forgets it. See ArenaCutText.
+            citizenid, key, ArenaCutText(name or citizenid, 128),
             Arena.IsKey(account) and account or '',
             Arena.IsKey(reason) and reason or '',
             added,

@@ -97,6 +97,53 @@ function ArenaGetPlayer(src)
     return ok and player or nil
 end
 
+--- A player-supplied string, cut to fit a database column without splitting a
+--- character in half.
+---
+--- `string.sub` COUNTS BYTES AND THE COLUMNS COUNT CHARACTERS, and the gap
+--- between those two facts loses rows. A cut that lands in the middle of a
+--- multi-byte character hands MySQL a byte sequence that is not valid UTF-8,
+--- and MySQL refuses the WHOLE ROW for that exactly as it refuses an emoji
+--- into latin1 -- so the write fails, the row is never stored, and nothing
+--- in the game can see it happen: the error goes to oxmysql's console.
+---
+--- MEASURED, NOT IMAGINED. `'Big Mike ' .. thirty emoji` cut at 128 bytes
+--- ends `80 F0 9F 98` -- a four-byte character missing its last byte, and
+--- `utf8.len` answers nil for it. The smallest name that does this is 39
+--- characters long, and a FiveM client can set a name of 200; this
+--- repository's own tests/hostilename_spec.lua already lists a 500-character
+--- name among "Names a player can really set". Pure-emoji and pure-ASCII
+--- names happen to land on the boundary and survive, which is what let this
+--- sit unnoticed: it takes a MIXTURE.
+---
+--- CUTTING BYTES IS STILL THE RIGHT UNIT. A VARCHAR(128) under utf8mb4 holds
+--- 128 characters, and a string of 128 BYTES is never more than 128
+--- characters, so a byte cut always fits the column. It just has to land on
+--- a character boundary, which is the whole of what this adds.
+--- @param value any
+--- @param limit integer -- the column width in bytes
+--- @return string
+function ArenaCutText(value, limit)
+    local text = tostring(value or '')
+    local cap = Arena.ToInt(limit) or 128
+    if cap < 1 then return '' end
+    if #text <= cap then return text end
+
+    local cut = text:sub(1, cap)
+    if utf8.len(cut) then return cut end
+
+    -- AT MOST THREE BYTES BACK. UTF-8 characters are one to four bytes, so a
+    -- cut can be at most three bytes into one; walking further than that
+    -- would mean the string was already invalid before this touched it, and
+    -- shortening an already-broken string does not make it writable.
+    for back = 1, 3 do
+        local shorter = text:sub(1, cap - back)
+        if utf8.len(shorter) then return shorter end
+    end
+
+    return cut
+end
+
 function ArenaPlayerName(src)
     local target = tonumber(src)
     local player = ArenaGetPlayer(target)

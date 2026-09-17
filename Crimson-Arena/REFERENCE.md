@@ -494,7 +494,7 @@ listed; the source documents them where they are.
 | `ArenaCompat.Mute(src, active)` | Calls every detected adapter's mute, if it has one. |
 | `ArenaCompat.Report()` | The startup block, as lines. |
 
-#### `server/util.lua` — 23 functions
+#### `server/util.lua` — 24 functions
 
 | Function | What it does |
 |---|---|
@@ -505,6 +505,7 @@ listed; the source documents them where they are.
 | `ArenaToastKey(src, localeKey, notifyType, ...)` | The same, from a locale key. |
 | `ArenaNotifyKey(src, localeKey, notifyType, ...)` | The form almost every caller wants: Arena.* hands back locale KEYS, not sentences, and they go straight through here. |
 | `ArenaGetPlayer(src)` | The qbx_core player object for a server id, or nil. |
+| `ArenaCutText(value, limit)` | A player-supplied string cut to fit a database column without splitting a multi-byte character in half. `string.sub` counts bytes and the columns count characters, and a cut landing mid-character hands MySQL invalid UTF-8, which it refuses the whole row for. |
 | `ArenaPlayerName(src)` | Never nil. |
 | `ArenaIsAdmin(src)` | ACE check against Config.Permissions.adminGroups. |
 | `ArenaCanCreate(src)` | Whether this player may open a lobby, per Config.Permissions.createJobs. |

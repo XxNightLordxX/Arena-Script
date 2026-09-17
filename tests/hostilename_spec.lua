@@ -41,6 +41,12 @@ local NAMES = {
     ['500 characters']         = string.rep('A', 500),
     ['control characters']     = '\0\1\2',
     ['multi-byte UTF-8']       = 'Omega \226\137\136 sigma',
+    -- THE ONE THAT CUT IN HALF. Nine ASCII characters then thirty emoji: at
+    -- 128 BYTES the cut lands three bytes into a four-byte character, and
+    -- MySQL refuses a row carrying invalid UTF-8 exactly as it refuses an
+    -- emoji into latin1. 39 characters is the smallest name that does it.
+    ['a name that cuts mid-character'] = 'Big Mike ' .. string.rep('\240\159\152\128', 30),
+    ['129 plain characters']   = string.rep('A', 129),
 }
 
 --- A whole server whose only player is called `name`.
@@ -171,6 +177,70 @@ t.test('and the panel is given no way to execute it', function()
     for _, sink in ipairs({ 'eval%(', 'new Function%(' }) do
         t.isTrue(code:find(sink) == nil,
             ('html/app.js uses %s'):format((sink:gsub('%%', ''))))
+    end
+end)
+
+-- ========================================================================
+-- A NAME THAT CUTS IN HALF IS A ROW MYSQL WILL NOT TAKE
+-- ========================================================================
+--
+-- string.sub counts BYTES; the columns count CHARACTERS. A cut landing in
+-- the middle of a multi-byte character produces a byte sequence that is not
+-- valid UTF-8, and MySQL refuses the WHOLE ROW for it.
+--
+-- sql/install.sql has described this for a long time and called it unfixable
+-- from SQL -- "The column cannot fix that; the cut has to be done in
+-- characters. Nothing in this file can do it." It was right, and the cut was
+-- being done in bytes at two sinks: the leaderboard name, and the name on a
+-- row recording money the arena owes somebody.
+--
+-- IT TAKES A MIXTURE, which is what let it sit unnoticed. A pure-ASCII name
+-- and a pure-emoji name both happen to land on the boundary and survive.
+
+local env = Sandbox.newArenaEnv()
+Sandbox.loadInto('../Crimson-Arena/server/util.lua', env)
+local cut = env.ArenaCutText
+
+t.test('CONTROL: a name that fits is returned untouched', function()
+    t.equals(cut('John Allday', 128), 'John Allday', 'an ordinary name was altered')
+    t.equals(cut('Omega \226\137\136 sigma', 128), 'Omega \226\137\136 sigma',
+        'a short multi-byte name was altered')
+end)
+
+t.test('CONTROL: a long ASCII name is cut to the column width', function()
+    local long = string.rep('A', 129)
+    t.equals(#cut(long, 128), 128, 'a 129-character name was not brought within the column')
+end)
+
+t.test('THE DEFECT: a name that cuts mid-character comes back as valid UTF-8', function()
+    local name = 'Big Mike ' .. string.rep('\240\159\152\128', 30)
+
+    -- The premise: the OLD cut really does produce invalid UTF-8.
+    t.isNil(utf8.len(name:sub(1, 128)),
+        'a byte cut of this name is valid UTF-8, so this name cannot show the defect')
+
+    local safe = cut(name, 128)
+    t.isNotNil(utf8.len(safe),
+        'THE CUT STILL SPLITS A CHARACTER -- MySQL refuses the whole row and the write is lost')
+    t.isTrue(#safe <= 128, 'the cut no longer fits the column')
+end)
+
+t.test('and it gives back as much of the name as will fit', function()
+    -- A fix that returned the empty string would pass the test above and be
+    -- useless, so this is the other half.
+    local name = 'Big Mike ' .. string.rep('\240\159\152\128', 30)
+    local safe = cut(name, 128)
+    t.isTrue(#safe > 120, ('only %d bytes survived, so the cut is throwing the name away'):format(#safe))
+    t.equals(safe:sub(1, 9), 'Big Mike ', 'the readable part of the name was lost')
+end)
+
+t.test('and every hostile name in this file survives it as valid UTF-8', function()
+    -- The whole corpus at the top, through the cut, because a name is a name.
+    for label, name in pairs(NAMES) do
+        local safe = cut(name, 128)
+        t.isNotNil(utf8.len(safe) or (utf8.len(name) == nil and 0),
+            ('%s came back as invalid UTF-8'):format(label))
+        t.isTrue(#safe <= 128, ('%s came back too long for the column'):format(label))
     end
 end)
 

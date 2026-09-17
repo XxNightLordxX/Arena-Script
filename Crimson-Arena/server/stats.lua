@@ -81,7 +81,12 @@ function ArenaStats.Record(entry)
     if type(entry) ~= 'table' or not Arena.IsKey(entry.citizenid) then return false end
 
     local delta = {
-        name = (Arena.IsKey(entry.name) and entry.name or entry.citizenid):sub(1, 128),
+        -- CUT ON A CHARACTER BOUNDARY, NOT A BYTE ONE. This was `:sub(1, 128)`,
+        -- and a name mixing ASCII with multi-byte characters cut mid-character
+        -- -- which MySQL refuses the whole row for. See ArenaCutText: the row
+        -- then requeues on every flush for the rest of the run, in silence,
+        -- so that player's statistics are never written and nothing says so.
+        name = ArenaCutText(Arena.IsKey(entry.name) and entry.name or entry.citizenid, 128),
         wins = entry.won == true and 1 or 0,
         losses = entry.won == true and 0 or 1,
         kills = math.max(0, Arena.ToInt(entry.kills) or 0),

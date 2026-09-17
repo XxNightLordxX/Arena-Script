@@ -63,6 +63,12 @@ server_scripts {
     'server/lobby.lua',
     'server/match.lua',
     'server/main.lua',
+    -- LAST, AND THAT IS LOAD-BEARING. Every export in it asks another module
+    -- by name, so it must run after all of them exist. Moving it up the list
+    -- does not error at load -- the bodies are closures and are not run until
+    -- somebody calls them -- so nothing would notice until another resource
+    -- asked a question and got the fallback.
+    'server/exports.lua',
 }
 
 -- The arena panel.

@@ -226,6 +226,47 @@ one deliberately does not.
 
 **Those are the only two.** `/arenadispatch`, `/arenarevive`, `/arenaattachments`, `/arenaisolation` and `/arenaunjam` were commands of their own and are not any more: every reading they printed is a button on the tablet under **Tools**, and `/arenaconsole` prints all of them at a console. The revive became the **Medical test** button, which takes a server id; clearing a jam became **Clear the hold**, on the stash whose contents it is about. `tests/commands_spec.lua` fails if a third command is ever registered without being made discoverable.
 
+### Exports — what other resources may ask
+
+`server/exports.lua` holds the whole public surface, in one file, so it can be read in one
+sitting. Call them as `exports['Crimson-Arena']:Name(...)` on the server.
+
+| Export | Answers | Quiet answer if the arena cannot tell |
+|---|---|---|
+| `IsPlayerInArena(src)` | whether that player is in a match right now | `false` |
+| `GetPlayerMatchId(src)` | the match id, or nil | `nil` |
+| `GetArenaPlayers()` | every player in a match, as `{ [src] = matchId }` | `{}` |
+| `IsArenaOpen()` | whether the doors are open, schedule and admin override both | `false` |
+| `GetMatches()` | one flat row per match: `id`, `label`, `arenaKey`, `modeKey`, `state`, `players`, `pot` | `{}` |
+| `GetPot(matchId)` | what is staked on one match, entry fees and side bets together | `0` |
+| `GetOwedKit([citizenid])` | the whole owed-kit slate, or one character's row — `nil` for a character nobody is owed anything for | `{}`, or `nil` when asked about one |
+| `GetOwedMoney()` | what the arena still owes players, as one total | `0` |
+
+Two client exports exist as well: `IsInArena()` and `GetArenaMatchId()`.
+
+**Every one of these is a reading.** Nothing stops a match, pays anybody, issues kit or
+clears a hold, and that is a line rather than a gap. An export is callable by any resource
+on the box with no ACE check in front of it — the tablet's gates do not apply and cannot be
+made to — so an action export would be an unauthenticated way into the arena's money and its
+rounds.
+
+**Nothing internal is handed out.** `ArenaLobby.All()` returns the *live* match tables, so
+every table these exports answer with is built per call from scalars. `tests/exports_spec.lua`
+writes to what came back and checks the arena's own copy is untouched, including nested
+lists.
+
+**Nothing throws into a caller.** Each body runs inside `pcall` and answers with the quiet
+value above if the arena is mid-restart or a module has not loaded. A resource asking the
+arena a question cannot die because the arena is having a bad minute.
+
+**The shape is a promise.** Once another resource reads a field, renaming it breaks their
+server silently. Add a field freely; do not rename or repurpose one. The spec pins the list
+of names and fails if one is added, removed or renamed without saying so here.
+
+There are two other ways in, both documented in `config.lua` under `Config.Dispatch.custom`:
+the `crimson_arena:dispatch:enter` / `:exit` server events, and the replicated
+`crimsonArena` state bag.
+
 **No player-facing slash command exists.** The panel opens from the lobby ped or
 the ground marker, whichever `Config.Lobby.interaction` names, and there is no
 setting that adds a second way in.
@@ -353,6 +394,7 @@ line-number map that is regenerated whenever the file changes.
 | `server/lobby.lua` | server | The match registry, joining, leaving, readiness and the state snapshot. |
 | `server/match.lua` | server | The round itself: start, deaths, respawns, the end, and the instancing sweep. |
 | `server/main.lua` | server | Every client entry point, its validation and its rate limit. |
+| `server/exports.lua` | server | The public surface: everything another resource on this server may ask the arena. Loaded LAST, so every module it names exists. Readings only — see below. |
 | `client/ui.lua` | client | The NUI bridge. |
 | `client/dispatch.lua` | client | Client-side suppression, and holding an arena casualty out of every death poll. |
 | `client/main.lua` | client | The lobby ped, the marker, the blip and the cached state. |

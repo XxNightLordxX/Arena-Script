@@ -720,6 +720,37 @@ end
 --- operator's screen, and a warning raised because a lookup was unavailable
 --- is a warning they learn to scroll past. Only a definite "ox_inventory is
 --- not running" is worth putting in front of them.
+--- Whether the jam list has been read back, so the marks on the stash rows
+--- can be believed.
+---
+--- GUARDED, because ArenaAmmo is a table other things mock. The harnesses and
+--- the spec fixtures build the smallest ammo surface their test needs, and a
+--- bare call here took the WHOLE admin screen down on any of them -- the
+--- payload is built in one expression, so one missing function is a blank
+--- tablet rather than a missing line. Absent reads as "not read yet", which
+--- is the cautious end: the screen then declines to promise a hand-back
+--- rather than promising one it cannot keep.
+local function jamsKnown()
+    if type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.JammedStashes) ~= 'function' then
+        return false
+    end
+    local asked, _, known = pcall(ArenaAmmo.JammedStashes)
+    return asked and known == true
+end
+
+--- Whether ONE stash is being held back. Guarded for the same reason
+--- jamsKnown is, and falls the same way: a surface that cannot answer is
+--- treated as "not held back", so an older harness keeps the behaviour it
+--- had rather than losing the hand-back button altogether.
+local function stashHeldBack(stash)
+    if not stash then return false end
+    if type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.IsJammed) ~= 'function' then
+        return false
+    end
+    local asked, jammed = pcall(ArenaAmmo.IsJammed, stash)
+    return asked and jammed == true
+end
+
 local function stashesReadable()
     local asked, state = pcall(GetResourceState, 'ox_inventory')
     return not asked or state == 'started'
@@ -768,14 +799,28 @@ local function pushAdmin(src, matchId)
             -- see it cannot tell a quiet server from one being farmed.
             owedKit = withHolders(ArenaAmmo.OwedKit()),
             owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
-            -- THE MONEY SLATE'S OWN ANSWER, beside the kit slate's. The
-            -- kit one has been on this screen for a long time; the one
-            -- holding actual cash was never asked.
-            owedMoneySaved = ArenaBetting.UnpaidIsSaved(),
+            -- THE MONEY SLATE'S ANSWER IS NOT SENT HERE, AND THAT IS
+            -- DELIBERATE. It was, and nothing on the panel ever read it: the
+            -- durability of the unpaid slate is already spelled out, in
+            -- OwedReport's own words, on the Money owed report this same
+            -- tablet opens. A second copy on another screen would be a second
+            -- place for that answer to be worded -- and to go stale -- for no
+            -- reading an operator cannot already get. ArenaBetting.UnpaidIsSaved
+            -- is the gate; the report asks it. DO NOT add it back here without
+            -- a screen that actually draws it.
             databaseOn = Config.Database.enabled == true,
             stashesFound = total,
             stashesRead = read,
             stashesReadable = stashesReadable(),
+            -- WHETHER THE HELD-BACK MARKS ON THOSE ROWS MEAN ANYTHING YET.
+            --
+            -- Until the jam list is read back from the database every stash
+            -- answers "not held back", so an unqualified screen would draw a
+            -- hand-back button on the one stash the door is certain to
+            -- refuse. Sent as the state of the READ, never inferred from an
+            -- empty list -- the same rule the stash counts and the owed-kit
+            -- line already follow.
+            jamsKnown = jamsKnown(),
         })
     end, function(found, opened) total, read = found, opened end)
 end
@@ -949,6 +994,30 @@ onClient('crimson_arena:server:adminReturn', RATE.admin, function(src, data)
     local citizenid = keyArg(payload.citizenid)
     local stash = keyArg(payload.stash)
 
+    -- A STASH THE DOOR IS HOLDING BACK IS NOT HANDED BACK BY THIS BUTTON,
+    -- AND THE ADMIN IS TOLD WHY RATHER THAN TOLD NOTHING.
+    --
+    -- Both ways out of this handler were wrong on a jammed stash. Offline,
+    -- QueueReturn took it happily and the screen said the belongings were
+    -- queued and would go back the next time that character was seen -- a
+    -- promise the exit refuses every single time, for as long as the jam
+    -- stands, which is for ever without a human. Online was worse and
+    -- quieter: ReturnLeftovers works the stash name out for ITSELF, and
+    -- stashFor skips a jammed name, so the hand-back emptied the NEXT stash
+    -- along and reported "complete" while the row the operator actually
+    -- pressed sat untouched.
+    --
+    -- The hold is cleared on the stash screen, by somebody who has read the
+    -- contents -- see adminUnjam below. This refusal is what sends them
+    -- there.
+    if stashHeldBack(stash) then
+        ArenaLog('%s pressed hand-back on %s, which is HELD BACK. Nothing was moved. The hold '
+            .. 'has to be cleared on the stash screen first, by somebody who has compared what '
+            .. 'is in it against what that character is carrying.',
+            ArenaPlayerName(src), stash)
+        return refuse(src, 'error.stash_held_back')
+    end
+
     -- ONLINE: HAND IT OVER NOW.
     --
     -- The same call the sweep makes, and deliberately not a shortcut around
@@ -1007,6 +1076,85 @@ onClient('crimson_arena:server:adminReturn', RATE.admin, function(src, data)
     ArenaLog('%s queued %s\'s stash (%s) from the admin tablet -- it goes back the next time they are seen.',
         ArenaPlayerName(src), citizenid, stash)
     ArenaNotifyKey(src, 'notify.return_queued', 'success', citizenid)
+
+    pushAdmin(src, keyArg(payload.matchId))
+end)
+
+--- Clears the door's hold on one stash, from the tablet.
+---
+--- WHY THIS IS A BUTTON NOW AND WAS A CONSOLE COMMAND BEFORE. Clearing a
+--- hold is not automatic and must never become automatic: whatever is left
+--- in a held-back stash goes back inside the next ceiling and the next exit
+--- hands it to the owner, so a hold cleared over a stash still holding
+--- somebody else's rows is the exact duplication the hold exists to stop.
+--- The rule was, and stays, THAT A HUMAN LOOKED AT THE CONTENTS.
+---
+--- The contents are on the screen this button sits on. An operator opening a
+--- stash on the tablet has just read every row in it, item by item -- which
+--- is more than `/arenaunjam <name>` in a console ever made anybody do. So
+--- the rule is kept and the typing is not; `/arenaunjam` still works and is
+--- still the only way in when the tablet cannot be opened.
+---
+--- IT IS ITS OWN BUTTON, NOT A HAND-BACK THAT CLEARS THE HOLD ON THE WAY
+--- PAST. Two different decisions -- "this stash is settled" and "give these
+--- things to this character" -- and rolling them into one press would make
+--- the dangerous one a side effect of the ordinary one.
+onClient('crimson_arena:server:adminUnjam', RATE.admin, function(src, data)
+    if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
+
+    local payload = tableArg(data)
+    if not payload then return refuse(src, 'error.invalid_request') end
+
+    local stash = keyArg(payload.stash)
+    if not stash then return refuse(src, 'error.invalid_request') end
+
+    -- THROUGH ArenaAmmo.ClearHold, WHICH IS THE SAME GATE /arenaunjam ASKS,
+    -- and deliberately not through Unjam.
+    --
+    -- Unjam is the mechanism: it clears and asks nothing. Every word of the
+    -- judgement -- a stash that still holds rows must not be cleared by
+    -- somebody who has not said they looked -- lived inside the console
+    -- command, so a button wired to Unjam reached straight past it. One press
+    -- on a stash holding forty rows, and the next exit hands the owner a
+    -- second copy of everything they are already carrying: the exact
+    -- duplication the hold exists to prevent, done by the screen built to
+    -- settle it.
+    --
+    -- NAMED BY THE CLIENT, SO CHECKED HERE. ClearHold answers 'not_held' for
+    -- anything that is not on the list, so a stash this arena never held back
+    -- cannot be cleared by this button whatever name is sent.
+    if type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.ClearHold) ~= 'function' then
+        return refuse(src, 'error.invalid_request')
+    end
+
+    -- THE SECOND PRESS, AND ONLY A SECOND PRESS. `force` is the operator
+    -- saying they have read the item list on that screen and the contents are
+    -- the owner's -- the tablet's equivalent of typing `force` at a console.
+    -- The panel sends it on a deliberate second press and never on the first.
+    local cleared, reason, rows = ArenaAmmo.ClearHold(stash, payload.force == true)
+
+    if not cleared then
+        -- A REFUSAL, NOT A QUIET SUCCESS, and the push redraws the screen so
+        -- the operator sees which of the two it was rather than pressing
+        -- again. The commonest by far is the harmless one: somebody else
+        -- cleared it a moment ago.
+        ArenaLog('%s could not clear the hold on %s -- %s', ArenaPlayerName(src), stash,
+            reason == 'not_empty'
+                and ('it still ' .. (rows == nil
+                    and 'cannot be read, so what is in it is unknown'
+                    or ('holds ' .. rows .. ' item(s)'))
+                    .. '. Clearing it now would put those back inside the next ceiling and '
+                    .. 'the next exit would hand them to the owner.')
+                or 'it is not being held back.')
+
+        pushAdmin(src, keyArg(payload.matchId))
+        return refuse(src, reason == 'not_empty'
+            and 'error.stash_not_empty' or 'error.stash_not_held_back')
+    end
+
+    ArenaLog('%s cleared the hold on stash %s from the admin tablet. The door will put '
+        .. 'belongings in it and hand them out of it again.', ArenaPlayerName(src), stash)
+    ArenaNotifyKey(src, 'notify.stash_unjammed', 'success', stash)
 
     pushAdmin(src, keyArg(payload.matchId))
 end)
@@ -1158,14 +1306,20 @@ RegisterCommand('arenaadmin', function(src, args)
             owed = {},
             owedKit = withHolders(ArenaAmmo.OwedKit()),
             owedKitSaved = ArenaAmmo.OwedKitIsSaved(),
-            -- THE MONEY SLATE'S OWN ANSWER, beside the kit slate's. The
-            -- kit one has been on this screen for a long time; the one
-            -- holding actual cash was never asked.
-            owedMoneySaved = ArenaBetting.UnpaidIsSaved(),
+            -- THE MONEY SLATE'S ANSWER IS NOT SENT HERE, AND THAT IS
+            -- DELIBERATE. It was, and nothing on the panel ever read it: the
+            -- durability of the unpaid slate is already spelled out, in
+            -- OwedReport's own words, on the Money owed report this same
+            -- tablet opens. A second copy on another screen would be a second
+            -- place for that answer to be worded -- and to go stale -- for no
+            -- reading an operator cannot already get. ArenaBetting.UnpaidIsSaved
+            -- is the gate; the report asks it. DO NOT add it back here without
+            -- a screen that actually draws it.
             databaseOn = Config.Database.enabled == true,
             stashesFound = 0,
             stashesRead = 0,
             stashesReadable = stashesReadable(),
+            jamsKnown = jamsKnown(),
             hoursOpen = ArenaHoursOpen(),
             hoursForced = ArenaHoursOverride(),
             hoursLine = Arena.ScheduleLine(),

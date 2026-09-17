@@ -307,6 +307,17 @@ register('adminHours', function(data)
     })
 end)
 
+register('adminUnjam', function(data)
+    TriggerServerEvent('crimson_arena:server:adminUnjam', {
+        stash = data.stash,
+        -- COERCED HERE, as setReady's is. The page sends this only on a
+        -- deliberate second press, and a `nil` arriving as anything but false
+        -- would be an operator's confirmation nobody gave.
+        force = data.force == true,
+        matchId = data.matchId,
+    })
+end)
+
 register('adminReturn', function(data)
     TriggerServerEvent('crimson_arena:server:adminReturn', {
         target = data.target,

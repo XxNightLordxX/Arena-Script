@@ -221,7 +221,7 @@ one deliberately does not.
 
 | Command | What it does |
 |---|---|
-| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Tools** tab shows the `/arenaisolation`, `/arenahours`, `/arenadispatch`, `/arenaattachments` and `/arenaunjam` readings on screen, plus **Money owed** — every payout and refund the arena could not deliver, and whether a restart would forget it — built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
+| `/arenaadmin` | Lists live matches and force-stops one, refunding everybody. Opens the admin tablet for a player: force-stop, wipe, the unpaid ledger, opening a player's stash by hand, and holding the doors open past `Config.Schedule`. Its **Stashes** tab marks the stashes the door is holding back and carries **Clear the hold** on the stash detail, under the item list, so a hold is settled by somebody who has read the contents rather than by somebody typing at a console. Its **Tools** tab shows the `/arenaisolation`, `/arenahours`, `/arenadispatch`, `/arenaattachments` and `/arenaunjam` readings on screen, plus **Money owed** — every payout and refund the arena could not deliver, and whether a restart would forget it — built by the same functions those commands print, so an operator who is in the game rather than at a console does not have to type any of them. |
 | `/arenadispatch` | Re-runs the police/EMS detection and prints the whole startup report, live, without a restart. |
 | `/arenarevive <id>` | Runs the end-of-match medical handoff against any player on demand, so it can be tested without playing a round. |
 | `/arenaattachments` | Prints every name in `Config.Loadouts.weaponAttachments`, a weapon's own `components` list or an `ammoTypes` entry that this ox_inventory will not take — one it has no item for, or one whose item is not a component. Both leave the weapon undrawable, so both are dropped rather than fitted, and this is the reading that says which. |
@@ -293,11 +293,11 @@ from scalars on arrival:
 `updateMatch`, `reportDeath`, `spectateMatch`, `stopSpectating`,
 `placeSpectatorBet`, `outlineReason` — all prefixed `crimson_arena:server:`.
 
-And five more the admin tablet sends, same prefix:
+And six more the admin tablet sends, same prefix:
 
-`adminState`, `adminStop`, `adminReturn`, `adminHours`, `adminRevive`.
+`adminState`, `adminStop`, `adminReturn`, `adminUnjam`, `adminHours`, `adminRevive`.
 
-Every one of those five opens with
+Every one of those six opens with
 `if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end`,
 which is where the gate has to be: **a `RegisterNetEvent` listener exists for
 every connected client whatever the panel draws for them**, so hiding the
@@ -546,7 +546,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 24 functions
+#### `server/ammo.lua` — 26 functions
 
 | Function | What it does |
 |---|---|
@@ -561,8 +561,10 @@ listed; the source documents them where they are.
 | `ArenaAmmo.Reclaim(src, reasonKey)` | Destroys the arena kit and hands the player's own inventory back. |
 | `ArenaAmmo.Clear(matchId)` | Drops a match's record. |
 | `ArenaAmmo.JammedStashes()` | Every stash the door has stopped touching, because something is in it the arena cannot account for. |
-| `ArenaAmmo.JamReport()` | The same reading /arenaunjam prints when asked for nothing in particular, as lines. Read-only: clearing a jam still needs a human at the console. |
-| `ArenaAmmo.Unjam(stash)` | Lets the door use one of those stashes again, once a human has settled it. Never automatic: an empty read is what ox_inventory says about an inventory it has not loaded, so only a person can say a jam is over. |
+| `ArenaAmmo.IsJammed(stash)` | Whether one stash is held back, and whether that answer has been read back from the database yet. The second return is what stops the admin tablet drawing an unread list as fact and offering a hand-back the door is certain to refuse. |
+| `ArenaAmmo.JamReport()` | The same reading /arenaunjam prints when asked for nothing in particular, as lines. Read-only: it names what is held back and points at the Stashes tab, and clears nothing itself. |
+| `ArenaAmmo.Unjam(stash)` | Lets the door use one of those stashes again, once a human has settled it. The mechanism, not the judgement — go through `ClearHold`. Never automatic: an empty read is what ox_inventory says about an inventory it has not loaded, so only a person can say a jam is over. |
+| `ArenaAmmo.ClearHold(stash, forced)` | The one gate both ways of clearing a hold go through — `/arenaunjam` and the tablet's **Clear the hold**. Refuses a stash that still holds rows, or one that cannot be read, unless the operator has said they have looked at it. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server: outstanding stashes handed back, and any arena kit that left with a character taken off them. |

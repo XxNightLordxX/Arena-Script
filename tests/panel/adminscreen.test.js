@@ -909,5 +909,194 @@ test('a report with nothing to say is an answer, not a hang', () => {
         'an empty report left the screen saying it was still being taken');
 });
 
+console.log('');
+console.log('==> and a stash the door is HOLDING BACK is not offered as an ordinary one');
+
+/* The same two stashes, with the offline one on the door's hold list. */
+function withHeldBack(jamsKnown) {
+    const panel = opened();
+    panel.send('adminState', {
+        matches: [],
+        focused: null,
+        owed: [
+            {
+                citizenid: 'CID001', stash: 'crimson_arena_CID001', src: 2,
+                remembered: true, jammed: false,
+                items: [{ name: 'phone', count: 1 }],
+            },
+            {
+                citizenid: 'CID777', stash: 'crimson_arena_CID777',
+                remembered: false, jammed: true,
+                items: [{ name: 'phone', count: 1 }, { name: 'burger', count: 3 }],
+            },
+        ],
+        stashesFound: 2,
+        stashesRead: 2,
+        jamsKnown: jamsKnown !== false,
+    });
+    panel.fire('admin-tab-stashes', 'click');
+    return panel;
+}
+
+test('THE BUG: a held-back stash carried a Return button that could never work', () => {
+    /* The exit refuses to empty a held-back stash on purpose, so the server
+       refuses this press -- the button only ever bought a red toast. Worse,
+       before the server refused it at all, the press was answered with "their
+       belongings are queued and go back the next time they are seen", which
+       the door refuses every time for as long as the hold stands. */
+    const panel = withHeldBack();
+    const rows = stashRows(panel);
+
+    assert.ok(rows[1].give.disabled, 'the held-back stash still offers a hand-back');
+    assert.ok(!rows[0].give.disabled,
+        'and an ordinary stash lost its button too, which is not the fix');
+});
+
+test('and the row says so, rather than leaving it to be pressed to find out', () => {
+    const panel = withHeldBack();
+
+    const text = panel.text('admin-stash-list');
+    assert.ok(/held back/i.test(text),
+        'nothing on the row says the door is holding it back: ' + text);
+
+    const line = panel.text('admin-stash-line');
+    assert.ok(/held back/i.test(line),
+        'the line above the list does not name it either: ' + line);
+});
+
+test('and an UNREAD hold list marks nothing, and says that instead', () => {
+    /* An unread list answers "not held back" for every stash on earth.
+       Drawing that as fact is how the screen would put a hand-back button on
+       the one stash the door is certain to refuse. */
+    const panel = withHeldBack(false);
+
+    const rows = stashRows(panel);
+    assert.ok(!rows[1].give.disabled,
+        'a hold list nobody has read yet was drawn as if it had been');
+
+    const line = panel.text('admin-stash-line');
+    assert.ok(/not known yet/i.test(line),
+        'the screen claimed to know, while the list was unread: ' + line);
+});
+
+test('THE REQUEST: the opened stash carries Clear the hold, under its contents', () => {
+    /* Clearing a hold needs a human who has read what is in the stash. That
+       used to mean a console command; this is the one screen that lists the
+       stash item by item, so the rule is kept by where the button sits. */
+    const panel = withHeldBack();
+    press(stashRows(panel)[1].open);
+
+    assert.ok(!hidden(panel, 'admin-stash-unjam'), 'there is no way to clear the hold');
+    assert.ok(!hidden(panel, 'admin-stash-held'),
+        'and nothing on the screen says why the hand-back is dead');
+    assert.ok(panel.node('admin-stash-return').disabled,
+        'the hand-back is still live on a held-back stash');
+
+    /* Twice, because this stash still holds things: the first press is the
+       warning. The two tests below are about that. */
+    panel.fire('admin-stash-unjam', 'click');
+    panel.fire('admin-stash-unjam', 'click');
+    const posts = postsNamed(panel, 'adminUnjam');
+    assert.strictEqual(posts.length, 1, 'pressing it asked the server for nothing');
+    assert.strictEqual(posts[0].body.stash, 'crimson_arena_CID777',
+        'it asked about the wrong stash');
+});
+
+test('and an ordinary stash is NOT offered it', () => {
+    /* Clearing a hold over contents nobody has settled hands somebody a
+       second copy of what they already carry. It must not become a habit. */
+    const panel = withHeldBack();
+    press(stashRows(panel)[0].open);
+
+    assert.ok(hidden(panel, 'admin-stash-unjam'),
+        'a stash that is not held back offers to clear a hold it does not have');
+    assert.ok(hidden(panel, 'admin-stash-held'), 'and warns about one');
+    assert.ok(!panel.node('admin-stash-return').disabled,
+        'and its hand-back was taken away');
+});
+
+test('THE BUG: two stashes for ONE character opened the same one', () => {
+    /* A hold does not stop the door working: the next round goes into the
+       next name along, so one character can have a held-back stash AND a live
+       one at the same time. The detail view picked its stash by CITIZEN ID,
+       so both rows opened the first match -- and the held-back one, the only
+       one that needs a person to read it, was the one that could not be
+       opened. */
+    const panel = opened();
+    panel.send('adminState', {
+        matches: [],
+        focused: null,
+        owed: [
+            {
+                citizenid: 'CID777', stash: 'crimson_arena_CID777',
+                jammed: true, items: [{ name: 'phone', count: 1 }],
+            },
+            {
+                citizenid: 'CID777', stash: 'crimson_arena_CID777_2',
+                jammed: false, items: [{ name: 'burger', count: 3 }],
+            },
+        ],
+        stashesFound: 2, stashesRead: 2, jamsKnown: true,
+    });
+    panel.fire('admin-tab-stashes', 'click');
+
+    press(stashRows(panel)[1].open);
+
+    const line = panel.text('admin-stash-detail-line');
+    assert.ok(/crimson_arena_CID777_2/.test(line),
+        'the second stash opened the first one instead: ' + line);
+    assert.ok(/burger/.test(panel.text('admin-stash-items')),
+        'and it is showing the first stash\'s contents');
+    assert.ok(hidden(panel, 'admin-stash-unjam'),
+        'and it inherited the held-back one\'s clear button');
+});
+
+test('THE BUG: one press cleared a hold over a stash still full of things', () => {
+    /* The console has refused exactly this since the command existed. What is
+       left in a held-back stash goes back inside the next ceiling and the next
+       exit hands it to the owner -- a second copy of everything they already
+       carry. The first press warns and asks the server for nothing at all. */
+    const panel = withHeldBack();
+    press(stashRows(panel)[1].open);
+
+    panel.fire('admin-stash-unjam', 'click');
+
+    assert.strictEqual(postsNamed(panel, 'adminUnjam').length, 0,
+        'the first press cleared a hold over a stash with things still in it');
+    assert.ok(/anyway/i.test(panel.text('admin-stash-unjam')),
+        'and it did not say what a second press would do: '
+        + panel.text('admin-stash-unjam'));
+});
+
+test('and the SECOND press says the operator has read it, and clears it', () => {
+    const panel = withHeldBack();
+    press(stashRows(panel)[1].open);
+
+    panel.fire('admin-stash-unjam', 'click');
+    panel.fire('admin-stash-unjam', 'click');
+
+    const posts = postsNamed(panel, 'adminUnjam');
+    assert.strictEqual(posts.length, 1, 'the second press asked for nothing either');
+    assert.strictEqual(posts[0].body.stash, 'crimson_arena_CID777');
+    assert.strictEqual(posts[0].body.force, true,
+        'it did not carry the confirmation, so the server refuses it for ever');
+});
+
+test('and walking out of the stash takes the confirmation with it', () => {
+    /* A warning somebody walked away from is not an answer they can come back
+       to, and an armed button waiting on another screen is a press nobody
+       meant to make. */
+    const panel = withHeldBack();
+    press(stashRows(panel)[1].open);
+    panel.fire('admin-stash-unjam', 'click');
+
+    panel.fire('admin-stash-back', 'click');
+    press(stashRows(panel)[1].open);
+    panel.fire('admin-stash-unjam', 'click');
+
+    assert.strictEqual(postsNamed(panel, 'adminUnjam').length, 0,
+        'a confirmation survived leaving the stash');
+});
+
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length > 0 ? 1 : 0);

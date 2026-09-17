@@ -6106,6 +6106,24 @@ function ArenaAmmo.JammedStashes()
     return out, known
 end
 
+--- Whether ONE named stash is being held back, and whether that answer is
+--- worth anything yet.
+---
+--- THE SECOND RETURN IS THE POINT, exactly as in JammedStashes above: before
+--- the list has been read back from the database every stash answers "not
+--- jammed", and a screen that drew that as fact would offer a hand-back
+--- button on the one stash the door is certain to refuse. `known` is false
+--- while the read is outstanding, and the tablet says so rather than
+--- guessing.
+--- @param stash string
+--- @return boolean jammed
+--- @return boolean known -- false while the list has not been read back yet
+function ArenaAmmo.IsJammed(stash)
+    local known = jamsLoaded or not ArenaDbReady('the jam list')
+    if not Arena.IsKey(stash) then return false, known end
+    return jammedStash[stash] == true, known
+end
+
 --- How many rows are sitting in a stash right now, or nil when it cannot be
 --- read at all -- which is never the same answer as "none".
 local function rowsIn(stash)
@@ -6122,12 +6140,18 @@ end
 
 ---- What /arenaunjam reports when asked for nothing in particular, as lines.
 ---
---- READ-ONLY ON PURPOSE, and it is the reason the admin tablet gets this
---- and not a button. Clearing a jam on a stash that still holds rows puts
---- every one of them back inside the next ceiling and the next exit hands
---- them to the owner -- the exact duplication the jam exists to stop. That
---- decision needs a human looking at the contents, so the tablet shows the
---- reading and names the command; it does not offer to do it.
+--- READ-ONLY ON PURPOSE. Clearing a jam on a stash that still holds rows
+--- puts every one of them back inside the next ceiling and the next exit
+--- hands them to the owner -- the exact duplication the jam exists to stop.
+--- That decision needs a human looking at the contents, so this report says
+--- what is held back and never clears anything itself.
+---
+--- THE CLEARING LIVES WHERE THE CONTENTS ARE. The tablet's Stashes tab now
+--- carries a Clear the hold button on the stash detail -- the one screen that
+--- lists the stash item by item, so the rule above is kept by the shape of
+--- the screen rather than by making somebody type. This report points at it,
+--- and `/arenaunjam` is still there for a console with no tablet in front of
+--- it.
 --- @return string[]
 function ArenaAmmo.JamReport()
     local lines = {}
@@ -6150,7 +6174,8 @@ function ArenaAmmo.JamReport()
 
     lines[#lines + 1] = ('%d stash(es) are being held back. Open each on the Stashes tab, '):format(#stashes)
         .. 'compare it against what the player is carrying, take out anything that is not theirs, '
-        .. 'and then run /arenaunjam <name> in the server console.'
+        .. 'and then press Clear the hold on that stash -- or run /arenaunjam <name> in the '
+        .. 'server console, which does the same thing.'
 
     for _, stash in ipairs(stashes) do
         local rows = rowsIn(stash)
@@ -6191,6 +6216,41 @@ function ArenaAmmo.Unjam(stash)
     ArenaLog('door: stash %s is no longer held back. The door will put belongings in it and hand '
         .. 'them out of it again.', stash)
     return true
+end
+
+--- THE ONE GATE BOTH WAYS OF CLEARING A HOLD GO THROUGH.
+---
+--- Unjam above is the mechanism -- it clears, and asks no questions. This is
+--- the JUDGEMENT, and it was written out by hand inside the `/arenaunjam`
+--- command and nowhere else. So when the admin tablet grew a Clear the hold
+--- button, that button reached past every word of it: one press cleared a
+--- hold on a stash still holding forty rows, the next ceiling put them back
+--- inside, and the next exit handed the owner a second copy of everything
+--- they already carried. The console had refused exactly that for as long as
+--- the command has existed.
+---
+--- A rule enforced at one of two call sites is not a rule. It lives here now
+--- and both callers ask it, so neither can be the lenient one.
+---
+--- `forced` IS THE OPERATOR SAYING THEY HAVE LOOKED -- `/arenaunjam <name>
+--- force` at a console, a second deliberate press on the tablet, under the
+--- item list. It is not a retry and must never be sent on somebody's behalf.
+---
+--- AN UNREADABLE STASH IS NOT AN EMPTY ONE and is refused with the rest: nil
+--- rows mean ox_inventory could not say what is in it, which is the state a
+--- jam is most likely to coincide with, and `rows ~= 0` catches it.
+--- @param stash string
+--- @param forced boolean? -- the operator has read the contents and says clear it
+--- @return boolean cleared
+--- @return string|nil reason -- 'not_held' or 'not_empty' when it did not
+--- @return integer|nil rows -- what is still in it, nil when it cannot be read
+function ArenaAmmo.ClearHold(stash, forced)
+    if not Arena.IsKey(stash) or not jammedStash[stash] then return false, 'not_held' end
+
+    local rows = rowsIn(stash)
+    if rows ~= 0 and forced ~= true then return false, 'not_empty', rows end
+
+    return ArenaAmmo.Unjam(stash), nil, rows
 end
 
 --- Shows the jams and clears them. `/arenaunjam` on its own lists; with a
@@ -6260,9 +6320,10 @@ RegisterCommand('arenaunjam', function(src, args)
     --- Clears one, refusing a stash that still holds something unless the
     --- operator has said `force`.
     local function clear(stash)
-        local rows = rowsIn(stash)
+        local cleared, reason, rows = ArenaAmmo.ClearHold(stash, forced)
+        if cleared then return true end
 
-        if rows ~= 0 and not forced then
+        if reason == 'not_empty' then
             ArenaLog('arenaunjam: %s still %s. Clearing the jam now would put %s back inside the '
                 .. 'next ceiling and the next exit would hand %s to the owner -- which is the '
                 .. 'duplication the jam was protecting against. Empty it with /arenaadmin first, or '
@@ -6273,10 +6334,9 @@ RegisterCommand('arenaunjam', function(src, args)
                 rows == nil and 'whatever is in it' or 'them',
                 rows == nil and 'it' or 'them',
                 stash)
-            return false
         end
 
-        return ArenaAmmo.Unjam(stash)
+        return false
     end
 
     if wanted == 'all' then
@@ -7222,6 +7282,17 @@ function ArenaAmmo.AllStashes(cb, scanned)
                     stash = row.stash,
                     items = items,
                     remembered = row.remembered == true,
+                    -- AND WHETHER THE DOOR WILL ACTUALLY GIVE THIS ONE BACK.
+                    --
+                    -- Without this the admin screen listed a held-back stash
+                    -- exactly like any other -- same contents, same hand-back
+                    -- button -- and the button could never work: the exit
+                    -- refuses to empty a jammed stash on purpose. The
+                    -- operator pressed it, was told the belongings were
+                    -- queued, and they never moved. The one row that needs a
+                    -- person looking at it was the one row that looked
+                    -- ordinary.
+                    jammed = jammedStash[row.stash] == true,
                 }
             end
         end

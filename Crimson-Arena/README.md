@@ -1078,7 +1078,7 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 | `/arenaattachments` | server | admins. Prints every configured attachment name this ox_inventory will not take, and which weapon or ammunition type names it. Also on the admin tablet, under **Tools → Attachments**. |
 | `/arenaisolation` | server | admins. Prints the routing-bucket readings for every live match — measurements, not intentions. Also on the admin tablet, under **Tools → Instancing**. |
 | `/arenarevive <id>` | server | admins. Runs the end-of-match revive against one player, so you can see what your medical script does with it without staging a death. Blank means yourself. |
-| `/arenaunjam [stash]` | server | admins. Lists the stashes the arena is holding back, and releases one — but only once it is empty. Also on the admin tablet, under **Tools → Held-back stashes**. |
+| `/arenaunjam [stash] [force]` | server | admins. Lists the stashes the arena is holding back, and releases one — but only once it is empty, or with `force` once you have checked what is in it really is the owner's. The same reading is on the admin tablet under **Tools → Held-back stashes**, and the same release is a **Clear the hold** button on the Stashes tab, under the stash's item list. |
 
 **Every one of these offers itself to chat autocomplete.** Type `/arena` and the list appears with what each one does and what it takes. That is the only thing the client half registers: suggestions, not commands. It went in because an operator reported "there is no `/arenadispatch` command" — it had been registered since the file was written, and nothing in this resource had ever told the chat box any of its names existed.
 

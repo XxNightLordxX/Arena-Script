@@ -57,6 +57,7 @@ local function newArena(admins, mutate)
     --- the list. Assigning a field on the returned table looks like it works
     --- and changes nothing: the double closes over the local, not the field.
     local owedBox, returned, queued = { rows = {}, pending = {} }, {}, {}
+    local unjammed, forcedClears = {}, {}
 
     local env = Sandbox.newArenaEnv({
         exports = qbx.exports,
@@ -151,6 +152,38 @@ local function newArena(admins, mutate)
                 queued[#queued + 1] = { citizenid = citizenid, stash = stash }
                 return true
             end,
+
+            -- THE DOOR'S HOLD LIST, in the two parts the real one answers in:
+            -- WHICH stashes are held, and WHETHER that answer has been read
+            -- back from the database yet. Both matter to this screen and they
+            -- fail differently -- an unread list answers "none held" for
+            -- every stash, so a screen that believes it draws a hand-back
+            -- button on the one stash the door is certain to refuse.
+            JammedStashes = function()
+                local out = {}
+                for stash in pairs(owedBox.jammed or {}) do out[#out + 1] = stash end
+                table.sort(out)
+                return out, owedBox.jamsKnown ~= false
+            end,
+            IsJammed = function(stash)
+                return (owedBox.jammed or {})[stash] == true,
+                    owedBox.jamsKnown ~= false
+            end,
+            -- THE GATE, NOT THE MECHANISM. The tablet must go through
+            -- ClearHold, which is where the judgement lives -- a stash that
+            -- still holds rows is not cleared by somebody who has not said
+            -- they looked. Wired to Unjam instead, the button cleared a hold
+            -- over forty rows on one press. Mocking Unjam here would let that
+            -- come back with the suite green, so this mock does not offer it.
+            ClearHold = function(stash, forced)
+                if not (owedBox.jammed or {})[stash] then return false, 'not_held' end
+                local rows = (owedBox.jamContents or {})[stash] or 0
+                if rows ~= 0 and forced ~= true then return false, 'not_empty', rows end
+                owedBox.jammed[stash] = nil
+                unjammed[#unjammed + 1] = stash
+                forcedClears[#forcedClears + 1] = forced == true
+                return true, nil, rows
+            end,
         },
         ArenaDispatch = {
             Set = function() end, Clear = function() end,
@@ -239,6 +272,27 @@ local function newArena(admins, mutate)
     end
 
     function server.pendingStashes() return #owedBox.pending end
+
+    --- Puts one stash on the door's hold list.
+    --- @param rows integer? -- how many item kinds are still in it, default none
+    function server.jam(stash, rows)
+        owedBox.jammed = owedBox.jammed or {}
+        owedBox.jammed[stash] = true
+        owedBox.jamContents = owedBox.jamContents or {}
+        owedBox.jamContents[stash] = rows or 0
+    end
+
+    --- Makes the hold list answer "not read back yet", which is the state a
+    --- database with no SELECT on the jam table leaves it in for ever.
+    function server.jamsUnread()
+        owedBox.jamsKnown = false
+    end
+
+    --- Every stash the tablet has actually cleared the hold on.
+    function server.unjammed() return unjammed end
+
+    --- Whether each of those clears carried the operator's confirmation.
+    function server.forcedClears() return forcedClears end
     function server.log() return table.concat(console, '\n') end
 
     --- Every client event of one name, newest last.
@@ -668,6 +722,199 @@ t.test('and a player who is not an admin cannot queue one either', function()
         target = 0, citizenid = 'CID777', stash = 'crimson_arena_CID777',
     })
     t.equals(#s.queued(), 0, 'a non-admin queued a return')
+end)
+
+-- ======================================================================
+-- A STASH THE DOOR IS HOLDING BACK
+--
+-- A jam is the door refusing to empty one stash, on purpose: something came
+-- out of it that the arena could not account for, so it can no longer tell
+-- what it has already given out and will not risk handing the same things
+-- over twice. It is settled by a person reading the contents.
+--
+-- The tablet listed one of these exactly like any other stash -- same rows,
+-- same button -- and BOTH ways the button could go were wrong.
+-- ======================================================================
+
+t.test('THE BUG: hand-back on a held-back stash promised a return that never comes', function()
+    -- Offline, the press fell through to QueueReturn, which took it happily,
+    -- and the screen said the belongings were queued and would go back the
+    -- next time that character was seen. The exit refuses a held-back stash
+    -- every single time the jam stands -- which is for ever, without a human
+    -- -- so the promise could not be kept and nothing said so. The operator
+    -- pressed it, believed it, and moved on.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminReturn', 1, {
+        target = 0,
+        citizenid = 'CID777',
+        stash = 'crimson_arena_CID777',
+    })
+
+    t.equals(#s.queued(), 0, 'a held-back stash was queued for a return the door will refuse')
+    t.equals(#s.returned(), 0, 'and something was handed over as well')
+end)
+
+t.test('and an ONLINE owner is not quietly handed the NEXT stash along instead', function()
+    -- The worse half, because it reported success. ReturnLeftovers works the
+    -- stash name out for itself and stashFor SKIPS a jammed name -- so the
+    -- press emptied the next stash along, logged "complete", and left the row
+    -- the operator actually pressed untouched.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID002')
+
+    s.fire('adminReturn', 1, {
+        target = 2,
+        citizenid = 'CID002',
+        stash = 'crimson_arena_CID002',
+    })
+
+    t.equals(#s.returned(), 0, 'a hand-back ran for a stash the door is holding back')
+    t.equals(#s.queued(), 0, 'and it was queued too')
+end)
+
+t.test('and the SAME press on a stash that is NOT held still goes through', function()
+    -- The control. A refusal that fires on everything is not a fix.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID999')
+
+    s.fire('adminReturn', 1, {
+        target = 0,
+        citizenid = 'CID777',
+        stash = 'crimson_arena_CID777',
+    })
+
+    t.equals(#s.queued(), 1, 'an ordinary outstanding stash stopped being queued')
+end)
+
+t.test('THE HOLD IS CLEARED FROM THE TABLET, by somebody who has read the contents', function()
+    -- It was a console command and nothing else, so the one screen that lists
+    -- the stash item by item could not act on what it showed. The rule that
+    -- made it a command -- a human must look first -- is kept by the shape of
+    -- the screen: the button lives on the detail view, under the contents.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.equals(#s.unjammed(), 1, 'the hold was not cleared')
+    t.equals(s.unjammed()[1], 'crimson_arena_CID777', 'a different stash was cleared')
+end)
+
+t.test('and the hand-back that was refused a moment ago now works', function()
+    -- The whole point of the button: the operator settles the stash and gets
+    -- their belongings moving, without leaving the tablet.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminReturn', 1, {
+        target = 0, citizenid = 'CID777', stash = 'crimson_arena_CID777',
+    })
+    t.equals(#s.queued(), 0, 'the refusal under test did not happen')
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+    s.fire('adminReturn', 1, {
+        target = 0, citizenid = 'CID777', stash = 'crimson_arena_CID777',
+    })
+
+    t.equals(#s.queued(), 1, 'clearing the hold did not let the belongings move')
+end)
+
+t.test('and the screen is redrawn, so the mark and the button go with it', function()
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+    local before = #s.sentNamed('adminState')
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.isTrue(#s.sentNamed('adminState') > before,
+        'the hold was cleared and the screen still showed it as held')
+end)
+
+t.test('and clearing a hold that is not there is refused rather than reported as done', function()
+    -- The commonest reason by far is the harmless one -- somebody else
+    -- cleared it a moment ago -- and the operator has to be able to tell that
+    -- from a button that did nothing.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.equals(#s.unjammed(), 0, 'a stash nobody was holding back was cleared')
+end)
+
+t.test('and a player who is not an admin cannot clear one', function()
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminUnjam', 3, { stash = 'crimson_arena_CID777' })
+
+    t.equals(#s.unjammed(), 0, 'a non-admin cleared the door\'s hold on a stash')
+end)
+
+t.test('THE BUG: the tablet cleared a hold over a FULL stash on one press', function()
+    -- The console has refused exactly this for as long as /arenaunjam has
+    -- existed: what is left in a held-back stash goes back inside the next
+    -- ceiling and the next exit hands it to the owner -- a second copy of
+    -- everything they already carry. The button was wired to Unjam, which is
+    -- the mechanism and asks nothing, so it reached past every word of that.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777', 3)
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.equals(#s.unjammed(), 0,
+        'a hold over a stash still holding three kinds of thing was cleared on one press')
+end)
+
+t.test('and it DOES clear once the operator says they have read it', function()
+    -- The refusal is a question, not a wall.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777', 3)
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777', force = true })
+
+    t.equals(#s.unjammed(), 1, 'an operator who had read the contents still could not clear it')
+    t.isTrue(s.forcedClears()[1], 'and the confirmation was not passed on')
+end)
+
+t.test('and the screen is redrawn on the REFUSAL too, not only on the clear', function()
+    -- The refusal is the one moment this screen knows something about that
+    -- stash the operator does not.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777', 3)
+    local before = #s.sentNamed('adminState')
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.isTrue(#s.sentNamed('adminState') > before,
+        'a refused clear left the screen with nothing to say')
+end)
+
+t.test('and a clear with no stash named is refused', function()
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminUnjam', 1, {})
+
+    t.equals(#s.unjammed(), 0, 'a nameless clear cleared something')
+end)
+
+t.test('WHETHER THE HOLD LIST HAS BEEN READ rides out with the screen', function()
+    -- An unread list answers "not held back" for every stash on earth. The
+    -- screen has to be able to tell that from a list that has been read and
+    -- holds nothing, because only one of them means there is nothing to do --
+    -- the same distinction the stash counts and the owed-kit line draw.
+    local s = newArena({ [1] = true })
+    s.fire('adminState', 1, {})
+    t.equals(s.lastNamed('adminState').payload.jamsKnown, true,
+        'a hold list that HAS been read was sent as unread')
+
+    local blind = newArena({ [1] = true })
+    blind.jamsUnread()
+    blind.fire('adminState', 1, {})
+    t.equals(blind.lastNamed('adminState').payload.jamsKnown, false,
+        'a hold list that has NOT been read was sent as fact')
 end)
 
 -- ======================================================================

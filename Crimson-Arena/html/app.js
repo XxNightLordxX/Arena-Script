@@ -4576,6 +4576,10 @@
         owed: [],
         owedKit: [],
         owedKitSaved: false,
+        jamsKnown: false,
+        /* The stash a second press would clear the hold on ANYWAY. Null
+           unless the operator has just been warned about that exact stash. */
+        holdConfirm: null,
         databaseOn: false,
         stashesFound: 0,
         stashesRead: 0,
@@ -4693,8 +4697,14 @@
 
         var stash = null;
         if (onStashes && admin.stash !== null) {
+            /* KEYED ON THE STASH NAME, NOT THE CHARACTER. One character can
+               have two stashes at once -- a held-back one and the next name
+               along the door moved to -- and keyed on the citizen id both
+               rows opened the SAME detail. The held-back one, which is the
+               only one that needs a person to read it, was the one that could
+               not be opened. */
             arrayOf(admin.owed).forEach(function (entry) {
-                if (String(entry.citizenid) === String(admin.stash)) stash = entry;
+                if (String(entry.stash) === String(admin.stash)) stash = entry;
             });
         }
 
@@ -4777,13 +4787,28 @@
            consolation prize: the retry only ever tries the people it has on
            its list, and a stash found by name after a restart is on nobody's
            list at all. Queuing is what puts it back on one. */
+        function heldBack(entry) {
+            /* ONLY ONCE THE LIST HAS BEEN READ. An unread jam list answers
+               "not held back" for every stash, so believing it here would put
+               a hand-back button on the one stash the door is certain to
+               refuse. Unread means the mark is not drawn either way -- the
+               line above the list is what says the screen cannot tell yet. */
+            return entry.jammed === true && admin.jamsKnown === true;
+        }
+
         function returnButton(entry, className) {
             var online = int(entry.src, 0);
             var items = arrayOf(entry.items);
+            var held = heldBack(entry);
             var give = makeEl('button', className,
-                online > 0 ? 'Hand it back' : 'Queue for when they return');
+                held ? 'Held back'
+                    : (online > 0 ? 'Hand it back' : 'Queue for when they return'));
             give.type = 'button';
-            give.disabled = items.length === 0;
+            /* NOT A BUTTON THAT LOOKS LIKE IT WOULD WORK. The server refuses
+               a hand-back on a held-back stash, so an enabled button here
+               only ever buys a red toast. Open it instead: the contents are
+               on that screen and so is the clearing. */
+            give.disabled = items.length === 0 || held;
             give.addEventListener('click', function (event) {
                 if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
                 post('adminReturn', {
@@ -4860,6 +4885,25 @@
                 if (int(entry.src, 0) <= 0) away += 1;
             });
 
+            var heldCount = 0;
+            owed.forEach(function (entry) {
+                if (heldBack(entry)) heldCount += 1;
+            });
+
+            /* NAMED ON THE LINE, not left to be spotted among the rows. A
+               held-back stash is the only kind that needs a person, and an
+               operator scanning a long list for a word at the end of a row
+               will not find it. */
+            var heldFact = heldCount > 0
+                ? ' ' + heldCount + ' of them ' + (heldCount === 1 ? 'is' : 'are')
+                  + ' HELD BACK and will not be handed over until somebody opens '
+                  + (heldCount === 1 ? 'it' : 'them') + ' and clears the hold.'
+                /* AND THE THIRD ANSWER AGAIN: "none are held back" and "we
+                   have not been able to ask" are different, and only one of
+                   them means there is nothing to do. */
+                : (admin.jamsKnown ? '' : ' Whether any are held back is not known yet — '
+                    + 'the door has not been able to read that list back from the database.');
+
             stashLine.textContent = owed.length === 0 ? ''
                 : plural(owed.length, 'stash') + ' holding somebody\'s belongings'
                   + (away > 0
@@ -4868,7 +4912,8 @@
                   + (unread > 0
                       ? ' ' + plural(unread, 'older stash', 'older stashes')
                         + ' were not opened this time — the newest ' + read + ' were.'
-                      : '');
+                      : '')
+                  + heldFact;
         }
 
         var stashBox = byId('admin-stash-list');
@@ -4881,10 +4926,14 @@
                 var open = makeEl('button', 'admin-stash-open');
                 open.type = 'button';
                 open.appendChild(makeEl('span', 'admin-stash-who',
-                    String(entry.citizenid) + (online > 0 ? '' : ' · offline')));
+                    String(entry.citizenid) + (online > 0 ? '' : ' · offline')
+                        + (heldBack(entry) ? ' · HELD BACK' : '')));
                 open.appendChild(makeEl('span', 'admin-stash-facts', stashSummary(entry)));
                 open.addEventListener('click', function () {
-                    admin.stash = entry.citizenid;
+                    admin.stash = entry.stash;
+                    /* DISARMED ON THE WAY IN. A warning the operator walked
+                       away from is not a confirmation they can come back to. */
+                    admin.holdConfirm = null;
                     renderAdmin();
                 });
 
@@ -4982,11 +5031,47 @@
                     ? ' · found in the database, not from this run'
                     : '');
 
+            var held = heldBack(stash);
+
+            var heldLine = byId('admin-stash-held');
+            show(heldLine, held);
+            if (has(heldLine) && held) {
+                heldLine.textContent = 'THE DOOR IS HOLDING THIS STASH BACK. Something was taken '
+                    + 'out of it that the arena could not account for, so it will not empty it — '
+                    + 'it cannot tell what it has already given out and will not risk handing the '
+                    + 'same things over twice. Read the list below against what this character is '
+                    + 'carrying, take out anything that is not theirs, then clear the hold. Only '
+                    + 'after that will hand-back work.';
+            }
+
             var doReturn = byId('admin-stash-return');
             if (has(doReturn)) {
                 doReturn.textContent = whose > 0
                     ? 'Hand it back' : 'Queue for when they return';
-                doReturn.disabled = arrayOf(stash.items).length === 0;
+                doReturn.disabled = arrayOf(stash.items).length === 0 || held;
+            }
+
+            /* SHOWN ONLY ON A STASH THAT IS ACTUALLY HELD, so it cannot be
+               pressed as a habit. Clearing a hold over contents that are not
+               settled hands somebody a second copy of what they already
+               carry, which is the whole thing the hold prevents. */
+            var doUnjam = byId('admin-stash-unjam');
+            show(doUnjam, held);
+            if (has(doUnjam) && held) {
+                /* TWO PRESSES WHILE ANYTHING IS STILL IN IT, which is this
+                   screen's `/arenaunjam <name> force`. The server refuses the
+                   first one and would refuse a hundred more: what is left in
+                   a held-back stash goes back inside the next ceiling and the
+                   next exit hands it to the owner, so a hold cleared over
+                   contents nobody has settled is a second copy of everything
+                   they already carry. The words change on the second press so
+                   it cannot be pressed twice by a habit. */
+                var left = arrayOf(stash.items).length;
+                var warned = String(admin.holdConfirm) === String(stash.stash);
+                doUnjam.textContent = (left > 0 && warned)
+                    ? 'Clear it anyway — ' + plural(left, 'kind') + ' still in it'
+                    : 'Clear the hold';
+                doUnjam.classList.toggle('btn-danger', left > 0 && warned);
             }
 
             var itemBox = byId('admin-stash-items');
@@ -5097,6 +5182,12 @@
                     admin.owed = arrayOf(data.owed);
                     admin.owedKit = arrayOf(data.owedKit);
                     admin.owedKitSaved = data.owedKitSaved === true;
+                    /* AND WHETHER THE HELD-BACK MARKS BELOW MEAN ANYTHING
+                       YET. Until the jam list has been read back every stash
+                       looks unheld, and an unqualified screen would offer a
+                       hand-back on the one stash the door is certain to
+                       refuse. */
+                    admin.jamsKnown = data.jamsKnown === true;
                     admin.databaseOn = data.databaseOn === true;
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
@@ -5139,6 +5230,12 @@
                     admin.owed = arrayOf(data.owed);
                     admin.owedKit = arrayOf(data.owedKit);
                     admin.owedKitSaved = data.owedKitSaved === true;
+                    /* AND WHETHER THE HELD-BACK MARKS BELOW MEAN ANYTHING
+                       YET. Until the jam list has been read back every stash
+                       looks unheld, and an unqualified screen would offer a
+                       hand-back on the one stash the door is certain to
+                       refuse. */
+                    admin.jamsKnown = data.jamsKnown === true;
                     admin.databaseOn = data.databaseOn === true;
                     admin.stashesFound = int(data.stashesFound, 0);
                     admin.stashesRead = int(data.stashesRead, 0);
@@ -5520,13 +5617,46 @@
         renderAdmin();
     });
 
+    bind('admin-stash-unjam', 'click', function () {
+        /* Out of the CURRENT snapshot, exactly as the hand-back is: a hold
+           cleared by another admin a moment ago is one this button must not
+           ask about again, and the row it was drawn from may be gone. */
+        var open = null;
+        arrayOf(admin.owed).forEach(function (entry) {
+            if (String(entry.stash) === String(admin.stash)) open = entry;
+        });
+        if (!open || open.jammed !== true) return;
+
+        /* THE FIRST PRESS ON A STASH THAT STILL HOLDS SOMETHING ASKS NOTHING
+           OF THE SERVER. It puts the warning up and arms exactly this stash.
+           The server refuses an unforced clear anyway -- this is what makes
+           the refusal legible instead of a red toast the operator learns to
+           press through. */
+        var left = arrayOf(open.items).length;
+        if (left > 0 && String(admin.holdConfirm) !== String(open.stash)) {
+            admin.holdConfirm = open.stash;
+            renderAdmin();
+            return;
+        }
+
+        admin.holdConfirm = null;
+        post('adminUnjam', {
+            stash: open.stash,
+            /* NEVER TRUE ON A FIRST PRESS. This is the operator saying they
+               have read the list above it, so it is sent only on the press
+               that follows the warning. */
+            force: left > 0,
+            matchId: admin.focused ? admin.focused.id : null,
+        });
+    });
+
     bind('admin-stash-return', 'click', function () {
         /* Read out of the CURRENT snapshot rather than captured when the
            screen was drawn: a stash handed back by somebody else in the
            meantime is one this button must not ask about again. */
         var open = null;
         arrayOf(admin.owed).forEach(function (entry) {
-            if (String(entry.citizenid) === String(admin.stash)) open = entry;
+            if (String(entry.stash) === String(admin.stash)) open = entry;
         });
         if (!open) return;
 

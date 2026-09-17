@@ -14,6 +14,9 @@
         "already_in_match": "You are already in a match.",
         "arena_in_use": "That arena is being fought in. Wait for it, or pick another.",
         "arena_shut": "The arena is shut at this hour. The panel has the times.",
+        "stash_held_back": "That stash is being held back -- the door will not empty it. Read what is in it, take out anything that is not theirs, then clear the hold and hand it back.",
+        "stash_not_held_back": "That stash is not being held back, so there was no hold to clear.",
+        "stash_not_empty": "That stash still has things in it. Clearing the hold now could hand the owner a second copy of what they already carry. Take out anything that is not theirs, then press it again to clear it anyway.",
         "arena_unavailable": "That ground is closed.",
         "bet_already_placed": "One side-bet per match. Yours is down.",
         "bet_already_staked": "Your stake is already in.",
@@ -99,6 +102,7 @@
     },
     "notify": {
         "return_queued": "%s's belongings are queued -- they go back the next time they are seen.",
+        "stash_unjammed": "The hold on %s is cleared. The door will use it again.",
         "revived_but_out": "%s is back on their feet, but they are out of the round and stay out.",
         "revived_respawning": "%s is waiting to respawn and will be back in the fight on their own -- they were not stood up early.",
         "bet_trimmed": "Out of the fight, so your bet is cut to what a watcher may hold. %s back.",

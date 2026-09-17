@@ -82,6 +82,11 @@ local function newAmmo(control, mutate)
             return true
         end,
         GetInventoryItems = function(_self, id)
+            -- A READ THAT FAILS, WHICH IS NOT A READ THAT SAYS "NOTHING".
+            -- ox_inventory gives nil for an inventory it has not loaded, and
+            -- every place this resource treats those two as the same answer
+            -- has cost somebody their belongings.
+            if control.unreadable then return nil end
             return control.contents[id] or {}
         end,
         AddItem = function() return true end,
@@ -102,6 +107,21 @@ local function newAmmo(control, mutate)
         GetPlayers = function() return {} end,
         ArenaLog = function() end,
         ArenaDebug = function() end,
+
+        -- THE DOOR'S HOLD LIST, WHICH IS A DATABASE TABLE OF ITS OWN and not
+        -- the ox_inventory one this file otherwise models. Inert unless a
+        -- test asks for it: ArenaDbReady answering false is exactly the
+        -- shipped default -- Config.Database.enabled is off -- so every test
+        -- above runs the way it always has.
+        ArenaDbReady = function() return control.dbReady == true end,
+        ArenaDb = function(_subject, sql, _params, cb)
+            if type(cb) ~= 'function' then return end
+            if not control.dbReady then return cb(nil) end
+            if type(sql) == 'string' and sql:find('SELECT stash') then
+                return cb(control.jamRows or {})
+            end
+            cb({})
+        end,
         ArenaNotifyKey = function() end,
         ArenaGetPlayer = function() return nil end,
         exports = setmetatable({
@@ -148,6 +168,9 @@ local function newAmmo(control, mutate)
             function(total, opened) found, read = total, opened end)
         return answer, found, read
     end
+
+    --- Reads the hold list back, the way startup does.
+    function fixture.loadJams() return fixture.ammo.LoadJams() end
 
     --- Every stash name the scan answered with.
     function fixture.namesFrom(rows)
@@ -335,6 +358,149 @@ t.test('and a database that answers TWICE is only listened to once', function()
     f.ammo.AllStashes(function() answered = answered + 1 end)
 
     t.equals(answered, 1, ('the caller was answered %d times'):format(answered))
+end)
+
+
+-- ========================================================================
+-- THE SCAN SAYS WHICH ROWS THE DOOR IS HOLDING BACK
+--
+-- A held-back stash is a real stash with real contents, so it lists like any
+-- other -- and it is the ONLY kind the hand-back button cannot move. Without
+-- this flag the admin screen had no way to tell them apart, drew the same
+-- button on both, and the operator was told belongings were queued that the
+-- exit refuses every time.
+-- ========================================================================
+
+t.test('a held-back stash is listed, and listed AS held back', function()
+    local f = newAmmo({
+        dbReady = true,
+        jamRows = { { stash = 'crimson_arena_CID777' } },
+        rows = {
+            row('crimson_arena_CID777', 'CID777'),
+            row('crimson_arena_CID888', 'CID888'),
+        },
+        contents = {
+            crimson_arena_CID777 = { { name = 'phone', count = 1 } },
+            crimson_arena_CID888 = { { name = 'water', count = 2 } },
+        },
+    })
+
+    t.isTrue(f.loadJams(), 'the hold list was not read back at all')
+
+    local rows = f.scan()
+    t.equals(#rows, 2, 'a held-back stash was dropped from the list -- its contents are real')
+
+    local marks = {}
+    for _, entry in ipairs(rows) do marks[entry.stash] = entry.jammed end
+
+    t.isTrue(marks.crimson_arena_CID777, 'the held-back stash was not marked')
+    -- THE CONTROL. A flag that is true for everything says nothing.
+    t.isFalse(marks.crimson_arena_CID888, 'an ordinary stash was marked as held back')
+end)
+
+t.test('and IsJammed answers for one stash, saying whether it has been asked yet', function()
+    local f = newAmmo({
+        dbReady = true,
+        jamRows = { { stash = 'crimson_arena_CID777' } },
+    })
+
+    -- BEFORE THE READ LANDS: not held back, and NOT KNOWN. Those two returns
+    -- are the whole of this -- an unread list answers "not held" for every
+    -- stash on earth, and a screen that took that as fact would offer a
+    -- hand-back on the one stash the door is certain to refuse.
+    local jammed, known = f.ammo.IsJammed('crimson_arena_CID777')
+    t.isFalse(jammed, 'a hold list nobody has read yet named a held stash')
+    t.isFalse(known, 'an unread hold list was reported as read')
+
+    f.loadJams()
+
+    jammed, known = f.ammo.IsJammed('crimson_arena_CID777')
+    t.isTrue(jammed, 'the stash on the hold list did not answer as held')
+    t.isTrue(known, 'a hold list that HAS been read was reported as unread')
+
+    t.isFalse((f.ammo.IsJammed('crimson_arena_CID888')),
+        'a stash that was never held back answered as held')
+end)
+
+-- ========================================================================
+-- CLEARING A HOLD IS ONE GATE, AND BOTH WAYS IN ASK IT
+--
+-- The judgement -- a stash that still holds rows is not cleared by somebody
+-- who has not said they looked -- was written out inside the /arenaunjam
+-- command and nowhere else, so the tablet's button reached past every word of
+-- it. What is left in a held-back stash goes back inside the next ceiling and
+-- the next exit hands it to the owner: a second copy of everything they are
+-- already carrying, from the screen built to settle it.
+-- ========================================================================
+
+t.test('THE BUG: a hold over a stash that still holds things clears on one word', function()
+    local f = newAmmo({
+        dbReady = true,
+        jamRows = { { stash = 'crimson_arena_CID777' } },
+        contents = { crimson_arena_CID777 = { { name = 'phone', count = 1 } } },
+    })
+    f.loadJams()
+
+    local cleared, reason, rows = f.ammo.ClearHold('crimson_arena_CID777')
+
+    t.isFalse(cleared, 'a hold over a stash with things in it was cleared unasked')
+    t.equals(reason, 'not_empty', 'and no reason came back to put on a screen')
+    t.equals(rows, 1, 'nor how much is still in it')
+    t.isTrue((f.ammo.IsJammed('crimson_arena_CID777')), 'and the hold is gone anyway')
+end)
+
+t.test('and it DOES clear once the operator says they have looked', function()
+    -- The refusal is a question, not a wall. `force` is the only answer to it
+    -- and has to work, or an operator with a genuinely settled stash is stuck.
+    local f = newAmmo({
+        dbReady = true,
+        jamRows = { { stash = 'crimson_arena_CID777' } },
+        contents = { crimson_arena_CID777 = { { name = 'phone', count = 1 } } },
+    })
+    f.loadJams()
+
+    t.isTrue((f.ammo.ClearHold('crimson_arena_CID777', true)),
+        'an operator who has read the contents still could not clear it')
+    t.isFalse((f.ammo.IsJammed('crimson_arena_CID777')), 'and the hold stayed on')
+end)
+
+t.test('and an EMPTY held-back stash needs no such word', function()
+    -- Nothing in it is nothing to hand over twice, which is the whole of what
+    -- the question is about.
+    local f = newAmmo({
+        dbReady = true,
+        jamRows = { { stash = 'crimson_arena_CID777' } },
+    })
+    f.loadJams()
+
+    t.isTrue((f.ammo.ClearHold('crimson_arena_CID777')),
+        'an empty held-back stash was made to ask for a confirmation')
+end)
+
+t.test('and a stash that was never held back is refused, forced or not', function()
+    local f = newAmmo({ dbReady = true })
+    f.loadJams()
+
+    local cleared, reason = f.ammo.ClearHold('crimson_arena_CID888', true)
+    t.isFalse(cleared, 'a stash nobody was holding back was cleared')
+    t.equals(reason, 'not_held')
+end)
+
+t.test('and a stash that CANNOT be read is refused with the rest', function()
+    -- An unreadable stash is not an empty one -- an empty read is exactly
+    -- what ox_inventory gives for an inventory it has not loaded, which is
+    -- the state a hold is most likely to coincide with.
+    local f = newAmmo({
+        dbReady = true,
+        jamRows = { { stash = 'crimson_arena_CID777' } },
+        unreadable = true,
+    })
+    f.loadJams()
+
+    local cleared, reason, rows = f.ammo.ClearHold('crimson_arena_CID777')
+    t.isFalse(cleared, 'a stash nobody could read was treated as an empty one')
+    t.equals(reason, 'not_empty')
+    t.isNil(rows, 'it invented a count for a stash it could not read')
 end)
 
 os.exit(t.summary())

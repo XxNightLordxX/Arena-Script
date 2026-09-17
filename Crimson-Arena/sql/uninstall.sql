@@ -4,11 +4,25 @@
 -- EVERY DEBT THE ARENA IS STILL OWED. There is no undo and the resource keeps
 -- no second copy.
 --
--- The two tables are different in kind. crimson_arena_stats is history: wins,
--- losses, kills, deaths and lifetime earnings. crimson_arena_owed_kit is a
--- claim on the present -- every arena weapon and every round currently out
--- with a player who has not handed it back. Dropping the first loses a
--- record; dropping the second gives things away.
+-- THE FOUR TABLES ARE DIFFERENT IN KIND, and the difference decides how much
+-- you care about the backup below.
+--
+--   crimson_arena_stats         HISTORY. Wins, losses, kills, deaths and
+--                               lifetime earnings. Dropping it loses a
+--                               record and costs nobody anything.
+--   crimson_arena_owed_kit      A CLAIM ON THE PRESENT. Every arena weapon
+--                               and every round currently out with a player
+--                               who has not handed it back. Dropping it
+--                               gives those things away.
+--   crimson_arena_unpaid        MONEY THE ARENA OWES PLAYERS. Winnings and
+--                               refunds that could not be delivered because
+--                               the player had gone. Dropping it means
+--                               nobody is ever paid what they were owed.
+--   crimson_arena_jammed_stash  Stashes the door has stopped touching
+--                               because it can no longer tell what it has
+--                               already handed over. Dropping it under a
+--                               live server lets the door walk those
+--                               stashes again and hand out duplicates.
 --
 -- STOP THE RESOURCE FIRST. The slate also lives in memory while the arena is
 -- running, so dropping the table under a live server does not clear the
@@ -16,20 +30,36 @@
 --
 -- Take a backup first. Genuinely:
 --
---     mysqldump -u USER -p DATABASE crimson_arena_stats crimson_arena_owed_kit > crimson_arena.sql
+--     mysqldump -u USER -p DATABASE \
+--         crimson_arena_stats \
+--         crimson_arena_owed_kit \
+--         crimson_arena_jammed_stash \
+--         crimson_arena_unpaid \
+--         > crimson_arena.sql
+--
+-- ALL FOUR ARE NAMED THERE, AND THAT IS THE WHOLE POINT OF THIS PARAGRAPH.
+-- This command listed the first two for a long time while the file grew to
+-- four, so an operator who did exactly as they were told backed up the
+-- history and the kit slate, ran the drops below, and lost the money ledger
+-- and the jam list with no warning of any kind. mysqldump named on two real
+-- tables succeeds and exits 0: there is a dump file, there is no error, and
+-- the omission is invisible until somebody asks where their debts went.
+-- Line 4 above is true -- there is no undo and no second copy -- so this
+-- command IS the second copy. If you add a table to install.sql, add it
+-- here in the same commit.
 --
 -- Removing the resource does NOT require running this. An unused table costs
 -- you nothing, and leaving it means reinstalling later keeps every record.
 -- Run this only when you have decided the history itself is unwanted.
 --
--- IF YOU CAME HERE TO FIX THE CHARSET, YOU ARE IN THE WRONG FILE. Both tables
--- name utf8mb4 in install.sql, but CREATE TABLE IF NOT EXISTS cannot change a
+-- IF YOU CAME HERE TO FIX THE CHARSET, YOU ARE IN THE WRONG FILE. All four
+-- tables name utf8mb4 in install.sql, but CREATE TABLE IF NOT EXISTS cannot change a
 -- table that already exists, so the obvious repair -- drop them and let the
 -- resource make them again -- is this file, and it takes the history and the
 -- debts with it. sql/install.sql carries the ALTER TABLE statements that
 -- convert a live table in place instead. Use those.
 --
--- These two statements do not care what charset, collation or row format the
+-- These statements do not care what charset, collation or row format the
 -- tables were created with; DROP removes the table whatever shape it is in.
 
 DROP TABLE IF EXISTS crimson_arena_stats;

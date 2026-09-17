@@ -505,6 +505,17 @@ AddEventHandler('onResourceStart', function(resourceName)
     -- this call.
     ArenaAmmo.LoadOwedKit()
 
+    -- AND THE JAM LIST, AT THE SAME MOMENT AND FOR THE SAME REASON.
+    --
+    -- It was reachable only from ArenaAmmo.SweepReturns, which is the thirty-
+    -- second retry and not a start-up call at all -- so the read began up to
+    -- thirty seconds late, and on a server with returnRetrySeconds = 0 the
+    -- sweep never runs, so nothing ever dispatched it. The door holds every
+    -- hand-back until this lands and then gives up after a minute blaming a
+    -- missing SELECT grant, which on those servers was a lie: nobody had
+    -- asked the database anything.
+    ArenaAmmo.LoadJams()
+
     local hours = ArenaHoursState()
     if hours.line then
         ArenaLog('hours: %s (server clock %s, offset %+dh -> %s) -- %s',

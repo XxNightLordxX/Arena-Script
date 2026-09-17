@@ -326,10 +326,43 @@ else:
                     + ('those tables' if len(missing_convert) > 1 else 'that table')
                     + ' on the old collation')
 
-    if not (missing_install or missing_drop or extra_install or missing_convert):
+    # AND THE BACKUP COMMAND NAMES EVERYTHING IT IS ABOUT TO DESTROY.
+    #
+    # uninstall.sql says "Take a backup first. Genuinely:" and hands the
+    # operator a mysqldump. That command listed two tables while the file grew
+    # to four -- so somebody who did exactly as they were told backed up the
+    # history and the kit slate, ran the drops, and lost the money ledger with
+    # no warning at all. mysqldump named on two real tables succeeds and exits
+    # 0: a dump file exists, nothing errors, and the omission is invisible
+    # until a player asks where their winnings went.
+    #
+    # The file's own first paragraph says there is no undo and no second copy,
+    # which makes that one command the second copy. It gets a gate.
+    dump_line = ''
+    for line in uninstall_sql.split('\n'):
+        if 'mysqldump' in line:
+            dump_line = uninstall_sql.split('mysqldump', 1)[1].split('crimson_arena.sql')[0]
+            break
+
+    if not dump_line:
+        fail.append('sql/uninstall.sql has no mysqldump backup command -- it told operators to take '
+                    'a backup before dropping tables and that instruction has gone')
+        missing_backup = []
+    else:
+        dumped = set(re.findall(r'crimson_arena_\w+', dump_line))
+        missing_backup = sorted(drops - dumped)
+        if missing_backup:
+            fail.append('sql/uninstall.sql drops ' + ', '.join(missing_backup)
+                        + ' but its own mysqldump backup command does not name '
+                        + ('them' if len(missing_backup) > 1 else 'it')
+                        + ' -- an operator who takes the backup it tells them to take still loses '
+                        + ('those tables' if len(missing_backup) > 1 else 'that table'))
+
+    if not (missing_install or missing_drop or extra_install or missing_convert or missing_backup):
         note.append('%d database table(s) created at runtime, every one in install.sql and uninstall.sql'
                     % len(runtime_tables))
         note.append('and every one of them named in the charset conversion guide')
+        note.append('and every dropped table named in uninstall.sql\'s own backup command')
 
 for line in note:
     print('  ok   ' + line)

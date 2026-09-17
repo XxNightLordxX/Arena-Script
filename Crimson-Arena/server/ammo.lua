@@ -6064,11 +6064,28 @@ keepStashesAlive()
 --- also meant that player was never stripped at the door again -- they
 --- fought every later round in their own gear.
 --- @return string[]
+--- @return string[] stashes
+--- @return boolean known -- false while the list has not been read back yet
 function ArenaAmmo.JammedStashes()
     local out = {}
     for stash in pairs(jammedStash) do out[#out + 1] = stash end
     table.sort(out)
-    return out
+
+    -- AND WHETHER THAT EMPTY LIST MEANS ANYTHING, which is the second return
+    -- and the whole of this fix.
+    --
+    -- An empty `jammedStash` has two completely different causes: nothing is
+    -- jammed, or the read that would have told us has not landed. Before
+    -- this, both printed "no stash is being held back." -- so on a database
+    -- whose SELECT is refused, /arenaunjam and the admin tablet told the
+    -- operator there was nothing to settle for the entire uptime, while the
+    -- door quietly refused every hand-back waiting for the same read. The
+    -- one person who could fix it was the one person being told it was fine.
+    --
+    -- THE SAME DISTINCTION THIS FILE DRAWS EVERYWHERE ELSE: an empty read is
+    -- never "none". See handBack's grace and stashRows' nil.
+    local known = jamsLoaded or not ArenaDbReady('the jam list')
+    return out, known
 end
 
 --- How many rows are sitting in a stash right now, or nil when it cannot be
@@ -6096,9 +6113,19 @@ end
 --- @return string[]
 function ArenaAmmo.JamReport()
     local lines = {}
-    local stashes = ArenaAmmo.JammedStashes()
+    local stashes, known = ArenaAmmo.JammedStashes()
 
     if #stashes == 0 then
+        -- AN EMPTY LIST NOBODY HAS READ YET IS NOT AN EMPTY LIST. Saying
+        -- "none" here told the operator there was nothing to settle while
+        -- the door was refusing every hand-back waiting for the same read.
+        if not known then
+            lines[1] = 'the jam list has NOT been read back from the database yet, so this cannot '
+                .. 'say whether any stash is held back. The door is holding hand-backs until it '
+                .. 'lands. If this persists, the database user needs SELECT on '
+                .. 'crimson_arena_jammed_stash -- the real error is on oxmysql\'s console.'
+            return lines
+        end
         lines[1] = 'no stash is being held back.'
         return lines
     end
@@ -6166,9 +6193,18 @@ RegisterCommand('arenaunjam', function(src, args)
         return
     end
 
-    local stashes = ArenaAmmo.JammedStashes()
+    local stashes, known = ArenaAmmo.JammedStashes()
 
     if #stashes == 0 then
+        -- Same distinction as JamReport above: "none" and "not read yet" are
+        -- different answers and only one of them is safe to act on.
+        if not known then
+            ArenaLog('arenaunjam: the jam list has NOT been read back from the database yet, so '
+                .. 'there is nothing to clear and nothing to report. The door is holding '
+                .. 'hand-backs until it lands; if that does not clear, the database user needs '
+                .. 'SELECT on crimson_arena_jammed_stash.')
+            return
+        end
         ArenaLog('arenaunjam: no stash is being held back.')
         return
     end

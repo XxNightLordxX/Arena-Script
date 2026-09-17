@@ -533,6 +533,8 @@ local function newServer(ids, mutate, extra, opts)
     end
 
     function server.stopResource() handlers['onResourceStop']('crimson_arena') end
+    --- The resource STARTING, which is where the ledgers are read back.
+    function server.startResource() handlers['onResourceStart']('crimson_arena') end
     function server.step(n) for _ = 1, (n or 4) do threads.step() end end
 
     --- Everything a player is carrying, as a sorted comparable string.
@@ -3600,6 +3602,68 @@ t.test('and two DIFFERENT long values still read differently', function()
     t.isNotNil(second, 'no mugShot line was printed for the second value')
     t.isTrue(first ~= second,
         'TWO DIFFERENT MUGSHOTS PRINTED IDENTICALLY -- the line can no longer show that a key changed')
+end)
+
+t.test('THE DEFECT: the jam list is read back at START-UP, not only from the sweep', function()
+    -- It was reachable only from ArenaAmmo.SweepReturns -- the thirty-second
+    -- retry. So the read began up to thirty seconds late, and on a server
+    -- with returnRetrySeconds = 0 the sweep never runs at all and nothing
+    -- ever dispatched it. Meanwhile the door holds every hand-back waiting
+    -- for that read and then gives up after a minute blaming a missing
+    -- SELECT grant -- which on those servers was a lie: nobody had asked the
+    -- database anything.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+        config.Loadouts.inventory.returnRetrySeconds = 0
+    end, nil, { database = true, jamRows = { 'crimson_arena_CID1' } })
+
+    t.equals(jamsStanding(server), 0, 'the jam was already in memory before anything read it')
+
+    server.startResource()
+    server.step(2)
+
+    t.equals(jamsStanding(server), 1,
+        'START-UP DID NOT READ THE JAM LIST -- with the sweep off, nothing ever does')
+end)
+
+t.test('and an empty jam list nobody has read is not reported as "none"', function()
+    -- Two completely different causes print the same sentence otherwise:
+    -- nothing is jammed, or the read that would say so never landed. On a
+    -- database whose SELECT is refused, the operator was told there was
+    -- nothing to settle for the whole uptime, while the door refused every
+    -- hand-back waiting for the same read.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+    end, nil, { database = true, holdJamRead = true })
+
+    local report = table.concat(server.ammo.JamReport(), '\n')
+
+    t.notContains(report, 'no stash is being held back',
+        'an unread list was reported as an empty one')
+    t.contains(report, 'NOT been read back',
+        'the report did not say that it cannot answer yet')
+end)
+
+t.test('CONTROL: and once it HAS been read, an empty list is reported as none', function()
+    local server = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+    end, nil, { database = true, jamRows = {} })
+
+    server.startResource()
+    server.step(2)
+
+    local report = table.concat(server.ammo.JamReport(), '\n')
+    t.contains(report, 'no stash is being held back',
+        'a list that was read and really is empty was reported as unknown')
+end)
+
+t.test('CONTROL: with no database at all the report still says none, not unknown', function()
+    -- The shipped default. Nothing was ever persisted, so an empty list is a
+    -- real answer and must not be hedged.
+    local server = newServer({ 1, 2 })
+    local report = table.concat(server.ammo.JamReport(), '\n')
+    t.contains(report, 'no stash is being held back',
+        'a server with no database was told its jam list is unknown')
 end)
 
 os.exit(t.summary())

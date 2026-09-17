@@ -261,7 +261,7 @@ else:
 # ----------------------------------------------------------------------
 # 12. THE SCHEMA FILES KNOW ABOUT EVERY TABLE THE CODE CREATES
 #
-# All three tables are created at runtime with CREATE TABLE IF NOT EXISTS,
+# Every table is created at runtime with CREATE TABLE IF NOT EXISTS,
 # so a database user that MAY create tables never notices a gap here. The
 # whole reason sql/install.sql exists is the user that MAY NOT -- and that
 # operator gets exactly the tables this file lists. crimson_arena_unpaid was
@@ -298,9 +298,38 @@ else:
                     + ' -- it would be left behind')
     if extra_install:
         fail.append('sql/install.sql creates tables the code never uses: ' + ', '.join(extra_install))
-    if not (missing_install or missing_drop or extra_install):
+    # AND THE CHARSET CONVERSION GUIDE KNOWS ABOUT THEM TOO.
+    #
+    # CREATE TABLE IF NOT EXISTS changes NOTHING about a table that already
+    # exists -- including its charset -- so install.sql carries a block of
+    # commented ALTER TABLE statements for converting a database that predates
+    # the utf8mb4 columns. That block is prose, and prose drifts: it named the
+    # first two tables while the file grew to four, so an operator who
+    # followed it converted half their database and was told nothing about
+    # the rest.
+    #
+    # The two it missed were the two it could least afford. A key column left
+    # on a _ci collation makes `char:abc` and `char:ABC` the SAME ROW, which
+    # in crimson_arena_unpaid is two debts merged into one and in
+    # crimson_arena_jammed_stash is the wrong stash unblocked.
+    #
+    # Checked by NAME ONLY, deliberately. Whether the statements are right is
+    # a judgement no regex can make; whether a table was forgotten entirely is
+    # exactly the kind of drift a regex is good at.
+    converted = set(re.findall(r'ALTER TABLE\s+(\w+)', install_sql))
+    missing_convert = sorted(installs - converted)
+    if missing_convert:
+        fail.append('sql/install.sql creates ' + ', '.join(missing_convert)
+                    + ' but its ALTER TABLE conversion guide never mentions '
+                    + ('them' if len(missing_convert) > 1 else 'it')
+                    + ' -- an operator converting a legacy database would leave '
+                    + ('those tables' if len(missing_convert) > 1 else 'that table')
+                    + ' on the old collation')
+
+    if not (missing_install or missing_drop or extra_install or missing_convert):
         note.append('%d database table(s) created at runtime, every one in install.sql and uninstall.sql'
                     % len(runtime_tables))
+        note.append('and every one of them named in the charset conversion guide')
 
 for line in note:
     print('  ok   ' + line)

@@ -79,14 +79,32 @@
 -- refuse the CREATE outright; DYNAMIC allows 3072. It is the default on MySQL
 -- 5.7+ and MariaDB 10.2+ and is named here so that it does not depend on the
 -- default. If a server old enough to refuse it ever turns up, drop the clause
--- and shorten ledger_key to 100 -- not the charset. Only the second table
--- needs it: the stats table's key is one 64-character column, 256 bytes, and
--- fits COMPACT's 767 with room to spare.
+-- and shorten ledger_key to 100 -- not the charset.
 --
--- THIS FILE ONLY AFFECTS A TABLE THAT DOES NOT EXIST YET. Both statements are
--- CREATE TABLE IF NOT EXISTS, so importing this over an install that already
--- has the tables changes NOTHING -- including the charset. To convert one that
--- already exists, stop the resource, back it up, and run these two by hand:
+-- WHICH TABLES ACTUALLY NEED IT, counted rather than assumed:
+--   crimson_arena_owed_kit      64*4 + 191*4 = 1020 bytes -- NEEDS DYNAMIC
+--   crimson_arena_unpaid        64*4 + 191*4 = 1020 bytes -- NEEDS DYNAMIC
+--   crimson_arena_jammed_stash  191*4        =  764 bytes -- fits COMPACT,
+--                               and by three bytes, so do not widen that
+--                               column without revisiting this line
+--   crimson_arena_stats         64*4         =  256 bytes -- fits COMPACT
+--
+-- THIS FILE ONLY AFFECTS A TABLE THAT DOES NOT EXIST YET. Every statement
+-- here is CREATE TABLE IF NOT EXISTS, so importing this over an install that
+-- already has the tables changes NOTHING -- including the charset. To convert
+-- tables that already exist, stop the resource, back them up, and run these
+-- by hand.
+--
+-- ALL FOUR ARE LISTED, and that is not padding. This block named only the
+-- first two for a long time, while the file grew to four -- so an operator
+-- following it converted half their database and left the other half on the
+-- old collation, with nothing to tell them. The two that were missing are
+-- the two it could least afford: crimson_arena_unpaid is keyed on money
+-- owed to a named character, and crimson_arena_jammed_stash is keyed on a
+-- stash the door is refusing to touch. Read the note above on what a _ci
+-- collation does to a key column -- `char:abc` and `char:ABC` becoming one
+-- row is a merged debt in the first table and the wrong stash unblocked in
+-- the second.
 --
 --     ALTER TABLE crimson_arena_stats
 --         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -103,9 +121,24 @@
 --         MODIFY ledger_key VARCHAR(191) CHARACTER SET utf8mb4
 --                COLLATE utf8mb4_bin NOT NULL;
 --
+--     ALTER TABLE crimson_arena_unpaid ROW_FORMAT=DYNAMIC;
+--     ALTER TABLE crimson_arena_unpaid
+--         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--     ALTER TABLE crimson_arena_unpaid
+--         MODIFY citizenid VARCHAR(64) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL,
+--         MODIFY ledger_key VARCHAR(191) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL;
+--
+--     ALTER TABLE crimson_arena_jammed_stash
+--         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--     ALTER TABLE crimson_arena_jammed_stash
+--         MODIFY stash VARCHAR(191) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL;
+--
 -- They are not run for you because an ALTER on a table that is not there
--- aborts the import, and because the second pair rebuilds the primary key on
--- a table the arena may be actively collecting from.
+-- aborts the import, and because the MODIFY statements rebuild a primary key
+-- on tables the arena may be actively collecting from.
 -- ----------------------------------------------------------------------
 
 -- EVERY WIDTH BELOW WAS CHECKED AGAINST WHAT THE LUA ACTUALLY WRITES.

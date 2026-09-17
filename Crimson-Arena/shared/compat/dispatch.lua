@@ -489,7 +489,7 @@ local function isolationLine(wired)
         local state = ArenaDispatch.IsolationState()
         if state and state.inForce == false then
             if state.provenInert then
-                return 'Isolation is CONFIGURED ON BUT NOT IN FORCE: a player was put into a routing bucket and the server reported them somewhere else, so the routing natives are doing nothing here. Every client can see arena gunfire and arena bodies. Run /arenaisolation for the readings.'
+                return 'Isolation is CONFIGURED ON BUT NOT IN FORCE: a player was put into a routing bucket and the server reported them somewhere else, so the routing natives are doing nothing here. Every client can see arena gunfire and arena bodies. Run /arenaconsole for the readings.'
             end
             return 'Isolation is CONFIGURED ON BUT NOT IN FORCE: this server has OneSync off (`set onesync on` in server.cfg), and routing buckets need it -- the natives do nothing without it. Every client can see arena gunfire and arena bodies, and two matches cannot share one arena.'
         end
@@ -557,9 +557,9 @@ local function hookLine(running)
     end
 
     if #parts == 0 then
-        return ('Hooks configured: none -- the state bag is written either way.%s /arenadispatch re-runs this report.'):format(tail)
+        return ('Hooks configured: none -- the state bag is written either way.%s /arenaconsole re-runs this report.'):format(tail)
     end
-    return ('Hooks configured: %s.%s /arenadispatch re-runs this report.'):format(table.concat(parts, ', '), tail)
+    return ('Hooks configured: %s.%s /arenaconsole re-runs this report.'):format(table.concat(parts, ', '), tail)
 end
 
 --- The startup block, as lines. Kept to a handful on purpose: an operator
@@ -656,7 +656,7 @@ if IS_SERVER then
     -- `/arenadispatch` USED TO BE REGISTERED HERE and is not a command any
     -- more. This resource registers exactly one command now: the reading is
     -- on the admin tablet under Tools -> Police & EMS, and at a console it is
-    -- `/arenaadmin dispatch`, which prints the same lines from the same
+    -- `/arenaconsole`, which prints the same lines from the same
     -- ArenaDispatch.CompatReport call this used to make.
     --
     -- NOTHING WAS LOST WITH IT, and that is worth saying because this is the

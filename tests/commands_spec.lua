@@ -348,4 +348,146 @@ t.test('the admin-only commands say so, so a player is not told to run one', fun
     end
 end)
 
+-- ======================================================================
+-- NOTHING THIS RESOURCE SAYS OUT LOUD NAMES A COMMAND THAT IS NOT THERE
+--
+-- THE DEFECT THIS EXISTS TO STOP COMING BACK, and it was real and it was
+-- everywhere. Six commands were retired into tablet buttons -- /arenahours,
+-- /arenadispatch, /arenaisolation, /arenarevive, /arenaattachments and
+-- /arenaunjam -- and the messages that told operators to run them were not
+-- retired with them. A jam report ended "or run /arenaunjam <name> in the
+-- server console, which does the same thing"; a compat report ended
+-- "/arenadispatch re-runs this report"; an isolation warning said "Run
+-- /arenaisolation for the readings". README listed `/arenaadmin stop <id>`
+-- and `/arenaadmin wipe` in its command table, and REFERENCE.md sent people
+-- to `/arenaadmin dispatch` -- and /arenaadmin has never taken an argument
+-- in its life; a word after it is IGNORED, so those do not error, they open
+-- the tablet and look like the operator did something wrong.
+--
+-- WHY NO OTHER SPEC CATCHES IT. Every one of these is a string. It formats,
+-- it prints, it reaches the screen, and the only thing wrong with it is that
+-- the instruction inside it is false -- which no assertion about lines,
+-- shapes or gates can see. What it costs is the one thing this resource
+-- cannot afford to spend twice: an operator reading a report, doing what it
+-- says, watching nothing happen, and from then on disbelieving the report as
+-- well. That is the exact complaint -- "there is no /arenadispatch command"
+-- -- that this whole file was written for.
+--
+-- SO THE RULE IS MECHANICAL. Any `/arenaword` this resource SAYS must be a
+-- command it REGISTERS. The registered set is read from the sources above,
+-- not typed here, so retiring a command fails this until every message that
+-- named it has been rewritten.
+--
+-- COMMENTS ARE EXEMPT, and deliberately: "`/arenadispatch` USED TO BE
+-- REGISTERED HERE and is not a command any more" is exactly the note a
+-- future reader needs, and a rule that forbade it would delete the history
+-- of why these buttons exist. Only what the resource says OUT LOUD is held
+-- to this.
+-- ======================================================================
+
+--- `body` with its comments blanked out, so what is left is what the file
+--- can actually say to somebody.
+---
+--- LINE COUNT PRESERVED, because a failure here has to be able to name the
+--- line an operator would have to open.
+---
+--- THE LIMIT, stated rather than hidden: the line-comment strip skips a `--`
+--- that has an odd number of quotes before it on the line, which is the
+--- cheap way of not mistaking a `--` INSIDE a string for the start of a
+--- comment. A pathological line could still fool it. It has no false
+--- NEGATIVES that matter -- a real message is a string and survives the
+--- strip -- and a false positive is a comment reported as a message, which
+--- is a five-second read, not a wrong build.
+--- @param body string
+--- @return string
+local function withoutComments(body)
+    -- Block comments first: --[[ ... ]] and the --[==[ ... ]==] forms.
+    local stripped = body:gsub('%-%-%[(=*)%[.-%]%1%]', function(eq)
+        return ''
+    end)
+
+    local out = {}
+    for line in (stripped .. '\n'):gmatch('([^\n]*)\n') do
+        local at = line:find('%-%-')
+        if at then
+            local before = line:sub(1, at - 1)
+            local _, singles = before:gsub("'", '')
+            local _, doubles = before:gsub('"', '')
+            if singles % 2 == 0 and doubles % 2 == 0 then
+                line = before
+            end
+        end
+        out[#out + 1] = line
+    end
+    return table.concat(out, '\n')
+end
+
+t.test('THE DEFECT CLASS: nothing the resource SAYS names a command it does not register',
+function()
+    local registered = registeredCommands()
+
+    local offences, checked = {}, 0
+    for path, body in pairs(everyLuaFile()) do
+        checked = checked + 1
+        local lineNo = 0
+        for line in (withoutComments(body) .. '\n'):gmatch('([^\n]*)\n') do
+            lineNo = lineNo + 1
+            for name in line:gmatch('/(arena%w+)') do
+                if not registered[name] then
+                    offences[#offences + 1] = ('%s:%d names /%s, which is not a registered command')
+                        :format(path, lineNo, name)
+                end
+            end
+        end
+    end
+
+    t.isTrue(checked > 0, 'no Lua file was read at all, so this checked nothing')
+    t.equals(#offences, 0, table.concat(offences, '\n'))
+end)
+
+t.test('and the panel does not either, which is the screen an admin is looking at', function()
+    -- app.js is not Lua and is not in the walk above, and it is the one
+    -- surface an operator reads WHILE deciding what to do. A dead command
+    -- named there is read in the worst possible moment.
+    local handle = assert(io.open('../Crimson-Arena/html/app.js', 'r'), 'app.js is missing')
+    local body = handle:read('a')
+    handle:close()
+
+    -- JavaScript comments, not Lua ones: /* ... */ and whole // lines.
+    local code = body:gsub('/%*.-%*/', '')
+    local kept = {}
+    for line in (code .. '\n'):gmatch('([^\n]*)\n') do
+        kept[#kept + 1] = line:match('^%s*//') and '' or line
+    end
+    code = table.concat(kept, '\n')
+
+    local registered = registeredCommands()
+    for name in code:gmatch('/(arena%w+)') do
+        t.isTrue(registered[name] == true or registered[name] ~= nil,
+            ('the panel names /%s, which is not a registered command'):format(name))
+    end
+end)
+
+t.test('and the CONTROL: the rule really does fire on a command that is not registered',
+function()
+    -- Without this, the two tests above pass on a build where the patterns
+    -- match nothing at all -- which is how the first version of the
+    -- README cross-check in publicapi_spec managed to check zero things
+    -- while reporting success.
+    local registered = registeredCommands()
+
+    local sample = "ArenaLog('run /arenaunjam to clear it')"
+    local found = 0
+    for name in withoutComments(sample):gmatch('/(arena%w+)') do
+        if not registered[name] then found = found + 1 end
+    end
+    t.equals(found, 1, 'the scan does not notice a dead command in a live string')
+
+    -- And a comment saying the same thing is NOT an offence.
+    local note = '-- `/arenaunjam` USED TO BE REGISTERED HERE and is not a command any more.'
+    local left = 0
+    for _ in withoutComments(note):gmatch('/(arena%w+)') do left = left + 1 end
+    t.equals(left, 0, 'a historical note was read as a live instruction')
+end)
+
 os.exit(t.summary())

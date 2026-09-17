@@ -328,7 +328,7 @@ Three ways, in the order they cost you least:
    does nothing.
 
 2. **The arena's own report.** Open the admin tablet → **Tools** → the dispatch
-   compat reading, or run `/arenaadmin dispatch` at the server console. The
+   compat reading, or run `/arenaconsole` at the server console. The
    last line names every dispatch script it detected and says which of them the
    guard is live in:
 

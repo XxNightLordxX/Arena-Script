@@ -1070,12 +1070,12 @@ Every movement carries a transaction reason of the form `crimson_arena:<kind>:<m
 | Command | Where | Who |
 |---|---|---|
 | *(none)* | client | The client registers no command at all. The lobby ped, or the marker, is the way in. |
-| `/arenaadmin list` | server | admins. Lists every match with its state, head count and pot. |
-| `/arenaadmin stop <id>` | server | admins. Aborts one match and refunds everybody. |
-| `/arenaadmin wipe` | server | admins. Aborts every match and refunds everybody. |
+| `/arenaadmin` | server | admins. Opens the admin tablet, where force-stopping one match, wiping every match, the hand-backs, the doors and every report are buttons. **It takes no arguments** — a word after it is ignored, because there is nothing it could name. At the server console, which cannot be shown a tablet, it prints the live match list instead: each match with its state, head count and pot. |
 | `/arenaconsole` | server | admins. Prints every arena reading in one pass to the server console: opening hours, police &amp; EMS, instancing, attachments, money owed and held-back stashes. Takes no arguments. The same readings are buttons on the tablet under **Tools**, and the **Medical test** is a button only — it revives a named player rather than reading the server, so it needs a server id typed into a box. |
 
-**Every one of these offers itself to chat autocomplete.** Type `/arena` and the list appears with what each one does and what it takes. That is the only thing the client half registers: suggestions, not commands. It went in because an operator reported "there is no `/arenadispatch` command" — it had been registered since the file was written, and nothing in this resource had ever told the chat box any of its names existed.
+**Those two are the whole surface.** `/arenadispatch`, `/arenarevive`, `/arenaattachments`, `/arenaisolation`, `/arenahours` and `/arenaunjam` were commands of their own and are not any more, and neither `/arenaadmin` nor `/arenaconsole` took over their names as subcommands: every reading they printed is a button on the tablet under **Tools**, and `/arenaconsole` prints all of them at once. Clearing a jam became **Clear the hold**, on the stash whose contents it is about; the revive became **Medical test**, which takes a server id. `tests/commands_spec.lua` fails if a third command is ever registered without being made discoverable.
+
+**Both offer themselves to chat autocomplete.** Type `/arena` and the list appears with what each one does. That is the only thing the client half registers: suggestions, not commands. It went in because an operator reported "there is no `/arenadispatch` command" — it had been registered since the file was written, and nothing in this resource had ever told the chat box any of its names existed.
 
 "Admins" means the ACE groups in `Config.Permissions.adminGroups`, checked as both `group.<name>` and a bare `<name>` because servers hand admin out both ways. The server console (source 0) always qualifies.
 

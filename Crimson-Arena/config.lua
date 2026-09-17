@@ -48,8 +48,8 @@
          CAN LOCK YOU OUT. An empty JOB list in Config.Permissions
          (`createJobs`, `joinJobs`) means EVERYONE. An empty
          `Config.Permissions.adminGroups` means NOBODY -- not everyone --
-         so emptying it takes /arenaadmin, /arenadispatch, /arenarevive,
-         /arenaisolation and /arenahours away from every player on the
+         so emptying it takes /arenaadmin and /arenaconsole -- the arena's
+         whole admin surface -- away from every player on the
          server, including you. The server console (source 0) still
          qualifies, and is the only way back in. An empty list in
          Config.Dispatch means NOTHING IS CALLED. Each one says which.
@@ -185,7 +185,7 @@ Config.Schedule = {
     --
     -- 0 means the server's clock is already right. It knows nothing about
     -- daylight saving -- when the clocks change, change this too.
-    -- `/arenahours` prints what the server currently thinks the time is.
+    -- `/arenaconsole` prints what the server currently thinks the time is.
     offsetHours = 0,
 }
 
@@ -1261,8 +1261,8 @@ Config.Permissions = {
     -- ACE/ox_lib admin groups. This is the whole admin surface, not just the
     -- stop button: /arenaadmin (the tablet -- force-stop, wipe, the unpaid
     -- ledger, opening a player's stash by hand, and holding the arena's doors
-    -- open past Config.Schedule), /arenahours, /arenadispatch, /arenarevive
-    -- and /arenaisolation are all gated on it.
+    -- open past Config.Schedule) and /arenaconsole (every arena reading at
+    -- the server console) are both gated on it.
     --
     -- EMPTY MEANS NOBODY HERE, unlike the two job lists either side of it.
     -- Each name is tried both as `group.<name>` and as a bare `<name>`,
@@ -1899,7 +1899,7 @@ Config.Loadouts = {
     -- ox_inventory item list when the resource comes up, and any that this
     -- ox_inventory will not take -- no item by that name, or an item that is
     -- not a component -- is named, with the weapon it was configured on.
-    -- `/arenaattachments`, and the admin tablet under Tools -> Attachments,
+    -- `/arenaconsole`, and the admin tablet under Tools -> Attachments,
     -- print the same reading without a restart. One that slips through
     -- anyway is dropped at issue rather than fitted, so the cost is an
     -- attachment and not the weapon.
@@ -2617,7 +2617,7 @@ Config.Dispatch = {
         --
         -- AND THAT WARNING APPLIES TO THE DEFAULT ABOVE. It is a string, and
         -- a state-bag handler for a key nothing writes cannot fail visibly.
-        -- `/arenadispatch` reports what this layer is configured for and
+        -- `/arenaconsole` reports what this layer is configured for and
         -- whether it has ever seen that bag change, so an operator can tell
         -- a working name from a plausible one without reading any source.
         watchStateBag = 'qbx_medical:deathState',

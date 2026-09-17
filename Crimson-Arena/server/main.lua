@@ -609,7 +609,7 @@ end
 
 -- `/arenahours` USED TO BE REGISTERED HERE and is not a command any more.
 -- The reading is hoursReport above, which the admin tablet draws under Tools
--- and `/arenaadmin hours` prints at a console -- the same lines from the same
+-- and `/arenaconsole` prints at a console -- the same lines from the same
 -- function, through the one command this resource still registers.
 
 local function adminMatches()
@@ -991,7 +991,7 @@ end)
 
 --- Stops every match there is, and says how many that was.
 ---
---- ONE BODY FOR BOTH DOORS. `/arenaadmin wipe` at a console and the tablet's
+--- ONE BODY FOR BOTH DOORS. The tablet's Stop every match button and its
 --- own button are the same action, and written twice they would be two
 --- places to keep a refund rule in step. See the tablet handler below for why
 --- the CONFIRMATION is not in here: this function does the thing, and asking

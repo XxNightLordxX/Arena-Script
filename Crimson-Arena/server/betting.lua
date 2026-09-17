@@ -1550,7 +1550,7 @@ end
 --- The reason keys that mean AN OPERATOR STOPPED THIS ROUND.
 ---
 --- WHY A LIST OF KEYS AND NOT A FLAG. ArenaMatch.Abort is the admin stop --
---- the tablet's Stop button, /arenaadmin stop, /arenaadmin wipe and the
+--- the tablet's Stop button, its Stop every match button and the
 --- onResourceStop sweep every one of them reach the books through it -- and
 --- the only thing Abort hands this file is the reason it was given. Nothing
 --- else here can tell an operator pulling a round down from a lobby that

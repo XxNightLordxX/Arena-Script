@@ -474,7 +474,7 @@ local STASH_WEIGHT = 10000000
 --- an admin noticed.
 ---
 --- The jam is right; tying it to the only name the door could use was not.
---- A jammed stash is left exactly as it is for `/arenaunjam` to settle, and
+--- A jammed stash is left exactly as it is for an admin to settle by hand, and
 --- the next round goes into the next name along. Both are found by the sweep
 --- and by the admin screen, which scan on the prefix rather than on the exact
 --- name, so nothing is lost by the rename.
@@ -494,7 +494,7 @@ local function stashFor(citizenid)
         local alt = base .. '_' .. attempt
         if not jammedStash[alt] then
             ArenaDebug('door: %s is jammed, so this round uses %s instead. The jammed one is '
-                .. 'untouched and waiting for /arenaunjam.', base, alt)
+                .. 'untouched and waiting to be settled by hand.', base, alt)
             return alt
         end
     end
@@ -1660,8 +1660,8 @@ local function stow(src, citizenid)
         -- keepStashesAliveMinutes matters most for exactly these players.
         ArenaLog('door: stash %s has a removal outstanding and is NOT being added to -- %s keeps '
             .. 'their own kit rather than have it locked in there too. Anything in a bag they are '
-            .. 'carrying is NOT being held for them this round either. Clear it with /arenaunjam '
-            .. 'once you have settled that stash.', stash, tostring(src))
+            .. 'carrying is NOT being held for them this round either. Clear the hold from the '
+            .. 'tablet\'s Stashes tab once you have settled that stash.', stash, tostring(src))
         return false, 0
     end
 
@@ -6188,7 +6188,7 @@ local function rowsIn(stash)
     return n
 end
 
----- What /arenaunjam reports when asked for nothing in particular, as lines.
+---- What the jam report says when asked for nothing in particular, as lines.
 ---
 --- READ-ONLY ON PURPOSE. Clearing a jam on a stash that still holds rows
 --- puts every one of them back inside the next ceiling and the next exit
@@ -6224,8 +6224,8 @@ function ArenaAmmo.JamReport()
 
     lines[#lines + 1] = ('%d stash(es) are being held back. Open each on the Stashes tab, '):format(#stashes)
         .. 'compare it against what the player is carrying, take out anything that is not theirs, '
-        .. 'and then press Clear the hold on that stash -- or run /arenaunjam <name> in the '
-        .. 'server console, which does the same thing.'
+        .. 'and then press Clear the hold on that stash. /arenaconsole prints this same list '
+        .. 'at a server console, but clearing a hold is a button and only a button.'
 
     for _, stash in ipairs(stashes) do
         local rows = rowsIn(stash)
@@ -6868,8 +6868,9 @@ function ArenaAmmo.LoadJams()
 
             if restored > 0 then
                 ArenaLog('door: %d stash(es) are still held back from before the restart. They have '
-                    .. 'things in them that were never handed over -- /arenaunjam lists them, and '
-                    .. 'settling one by hand is what clears it.', restored)
+                    .. 'things in them that were never handed over -- the tablet\'s Stashes tab '
+                    .. 'and /arenaconsole both list them, and settling one by hand is what clears '
+                    .. 'it.', restored)
             end
         end)
     end)
@@ -7894,7 +7895,7 @@ end
 --- command surface in it.
 -- `/arenaattachments` USED TO BE REGISTERED HERE and is not a command any
 -- more. The reading it printed is ArenaAmmo.AttachmentReport, which the admin
--- tablet draws under Tools and `/arenaadmin attachments` prints at a console
+-- tablet draws under Tools and `/arenaconsole` prints at a console
 -- -- the same lines from the same function, through the one command this
 -- resource still registers.
 

@@ -1124,7 +1124,7 @@ function ArenaDispatch.ExitBucket(src)
                 .. 'THEY ARE INVISIBLE TO EVERYBODY ON THIS SERVER AND EVERYBODY ON IT IS INVISIBLE TO '
                 .. 'THEM -- that is what a routing bucket does, and they are still in one. Nothing else '
                 .. 'about their exit failed: they have their own kit and they are stood where they '
-                .. 'should be. Run /arenaisolation for what the routing natives are actually doing on '
+                .. 'should be. Run /arenaconsole for what the routing natives are actually doing on '
                 .. 'this box; the usual cause is OneSync, and the server currently reports it as "%s". '
                 .. 'The player can be freed by reconnecting.',
                 tostring(src), currentBucket(src), record.previous, tostring(oneSyncMode()))
@@ -1162,7 +1162,7 @@ function ArenaDispatch.ReleaseBucket(matchId)
 end
 
 --- What isolation is ACTUALLY doing right now, for the startup report and
---- for /arenaisolation.
+--- for the instancing report.
 ---
 --- Three separate facts, kept separate on purpose, because an operator
 --- reading "isolation: off" cannot act on it without knowing which of the
@@ -1178,7 +1178,7 @@ function ArenaDispatch.IsolationState()
     }
 end
 
---- Everything /arenaisolation reports, as a list of console-ready lines.
+--- Everything the instancing report says, as a list of console-ready lines.
 ---
 --- SPLIT OUT OF THE COMMAND so the admin tablet can show the same reading
 --- without an operator having to be at a console to get it. The command
@@ -1428,7 +1428,7 @@ end
 
 -- `/arenaisolation` USED TO BE REGISTERED HERE and is not a command any
 -- more. The reading it printed is ArenaDispatch.IsolationReport above, which
--- the admin tablet draws under Tools and `/arenaadmin isolation` prints at a
+-- the admin tablet draws under Tools and `/arenaconsole` prints at a
 -- console -- the same lines from the same function, through the one command
 -- this resource still registers.
 

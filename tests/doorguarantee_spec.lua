@@ -3367,11 +3367,23 @@ t.test('and it says which are safe to clear and which are not', function()
         'a stash with rows in it was called safe to clear: ' .. text)
 end)
 
-t.test('and it names the command, because the tablet has no button', function()
+t.test('and it names the button, because a reading nobody can act on is half a report',
+function()
+    -- IT USED TO NAME `/arenaunjam`, and that command does not exist any
+    -- more: clearing a hold is Clear the hold on the Stashes tab, and only
+    -- that. A report still telling an operator to type a dead command is
+    -- worse than one that says nothing -- they type it, nothing happens, and
+    -- now they doubt the reading as well.
+    --
+    -- AND IT MUST NOT NAME THE DEAD ONE AGAIN, which is the half a
+    -- `contains` cannot hold on its own.
     local server = jammedBySurplus()
     local text = table.concat(server.ammo.JamReport(), '\n')
-    t.contains(text, '/arenaunjam',
+
+    t.contains(text, 'Clear the hold',
         'the report did not say how to act on it: ' .. text)
+    t.isTrue(text:find('/arenaunjam', 1, true) == nil,
+        'the report sends an operator to a command that no longer exists: ' .. text)
 end)
 
 t.test('every line reaches the tablet as a string', function()

@@ -588,7 +588,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ClearDownState(src)` | Puts the medical script's down flags back down, at the death rather than at the revive. |
 | `ArenaDispatch.HoldDownState()` | One pass: the flags put back down for everybody currently in a match. |
 | `ArenaDispatch.Revive(src)` | Tells whatever handles death on this server that a player is alive again. |
-| `ArenaDispatch.ReviveReport(target)` | Runs the end-of-match revive against one player and says what happened, as lines. The one admin action that deliberately reaches somebody who is NOT in a match: it exists so an operator can watch their medical script answer the arena's revive without first putting a player through a round. Drawn by the admin tablet under **Tools → Medical test**, and printed by `/arenaadmin medical <id>` at a console. |
+| `ArenaDispatch.ReviveReport(target)` | Runs the end-of-match revive against one player and says what happened, as lines. The one admin action that deliberately reaches somebody who is NOT in a match: it exists so an operator can watch their medical script answer the arena's revive without first putting a player through a round. Drawn by the admin tablet under **Tools → Medical test**, and and it is deliberately NOT in `/arenaconsole`: that command takes no arguments and cannot ask which player, and reviving whoever typed it -- or nobody, at a console -- is not a diagnostic. |
 | `ArenaDispatch.IsPlayerInArena(src)` | Whether the server has this player flagged as being in a match. |
 | `ArenaDispatch.GetPlayerMatchId(src)` | The match a flagged player is in, or nil. |
 | `ArenaDispatch.GetArenaPlayers()` | Every player currently in a match, as a server-id -> match-id map. |
@@ -599,8 +599,8 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ExitBucket(src)` | Puts a player back in exactly the bucket EnterBucket found them in, and hands the match's number back once the last person has left it. |
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for **Tools → Instancing**. |
-| `ArenaDispatch.IsolationReport()` | The routing-bucket isolation of every live match, as lines. Drawn by the admin tablet under **Tools → Instancing**, and printed by `/arenaadmin isolation` at a console. |
-| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, plus the arena's own down-state line. Drawn by the admin tablet under **Tools → Police & EMS**, and printed by `/arenaadmin dispatch` at a console. |
+| `ArenaDispatch.IsolationReport()` | The routing-bucket isolation of every live match, as lines. Drawn by the admin tablet under **Tools → Instancing**, and printed by `/arenaconsole` at a console. |
+| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, plus the arena's own down-state line. Drawn by the admin tablet under **Tools → Police & EMS**, and printed by `/arenaconsole` at a console. |
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 

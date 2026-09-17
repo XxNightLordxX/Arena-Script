@@ -518,15 +518,16 @@ local UNPAID_SUBJECT = 'the money the arena still owes players'
 
 local UNPAID_SCHEMA_SQL = [[
     CREATE TABLE IF NOT EXISTS crimson_arena_unpaid (
-        citizenid VARCHAR(64) NOT NULL,
-        ledger_key VARCHAR(191) NOT NULL,
+
+        citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+        ledger_key VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
         name VARCHAR(128) NOT NULL DEFAULT '',
         account VARCHAR(32) NOT NULL DEFAULT '',
         reason VARCHAR(64) NOT NULL DEFAULT '',
         amount BIGINT NOT NULL DEFAULT 0,
         written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (citizenid, ledger_key)
-    )
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ]]
 
 local UNPAID_ADD_SQL = [[
@@ -2998,7 +2999,19 @@ function ArenaBetting.OwedReport()
         lines[#lines + 1] = ok and text or fmt
     end
 
-    local durable = ArenaDbReady(UNPAID_SUBJECT)
+    -- WHETHER THE LEDGER IS ACTUALLY SAVED, NOT WHETHER THE DATABASE IS UP.
+    --
+    -- This asked ArenaDbReady, which answers "the switch is on and oxmysql is
+    -- started" and nothing more. It does not know whether the table exists,
+    -- whether this user may write to it, or whether a single row has ever
+    -- landed -- so on a database where the CREATE was refused, or the user
+    -- has SELECT and nothing else, the screen an operator reads to decide
+    -- whether a real cash debt is safe said "a restart does not forget it".
+    -- It does forget it.
+    --
+    -- ArenaBetting.UnpaidIsSaved asks the same gate the writes go through,
+    -- which is the whole reason it exists.
+    local durable = ArenaBetting.UnpaidIsSaved()
 
     local rows = {}
     for _, row in pairs(unpaid) do rows[#rows + 1] = row end
@@ -3023,12 +3036,23 @@ function ArenaBetting.OwedReport()
 
     if durable then
         say('  This ledger is written to crimson_arena_unpaid, so a restart does not forget it.')
-    elseif Config.Database.enabled == true then
+    elseif Config.Database.enabled ~= true then
+        say('  Config.Database.enabled is off, so this is held in memory for this run only and a '
+            .. 'restart forgets it.')
+    elseif not ArenaDbReady(UNPAID_SUBJECT) then
         say('  Config.Database.enabled is on but oxmysql is NOT started, so this is held in memory '
             .. 'for this run only and a restart forgets it.')
     else
-        say('  Config.Database.enabled is off, so this is held in memory for this run only and a '
-            .. 'restart forgets it.')
+        -- THE FOURTH CASE, WHICH HAD NO LINE AND IS THE ONE THAT BITES. The
+        -- switch is on, oxmysql is up, and the ledger STILL is not saved:
+        -- the table was never created, or this user may read it and not
+        -- write it. Nothing about that is visible from the outside, which is
+        -- exactly why it needs saying.
+        say('  Config.Database.enabled is on and oxmysql is up, but NOTHING HAS BEEN SAVED to '
+            .. 'crimson_arena_unpaid -- either the table was never created or this database user '
+            .. 'cannot write to it. This debt is held in memory for this run only and a restart '
+            .. 'forgets it. Import sql/install.sql, or grant INSERT, UPDATE and DELETE on that '
+            .. 'table. The real error is on oxmysql\'s console.')
     end
 
     return lines

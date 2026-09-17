@@ -90,10 +90,11 @@ local jamWaitGaveUp = false
 -- ----------------------------------------------------------------------
 local JAM_SCHEMA_SQL = [[
     CREATE TABLE IF NOT EXISTS crimson_arena_jammed_stash (
-        stash VARCHAR(191) NOT NULL,
+
+        stash VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
         jammed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (stash)
-    )
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ]]
 
 local JAM_WRITE_SQL = [[
@@ -3680,15 +3681,16 @@ local OWED_KIT_CHARACTERS = 200
 -- ----------------------------------------------------------------------
 local KIT_SCHEMA_SQL = [[
     CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
-        citizenid VARCHAR(64) NOT NULL,
-        ledger_key VARCHAR(191) NOT NULL,
+
+        citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+        ledger_key VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
         kind VARCHAR(16) NOT NULL,
         name VARCHAR(128) NOT NULL,
         serial VARCHAR(128) NULL,
         amount INT NOT NULL DEFAULT 1,
         written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (citizenid, ledger_key)
-    )
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ]]
 
 -- NO PARAMETER IS EVER NIL, and the two statements are split for that one

@@ -298,4 +298,58 @@ t.test('and the slate says so when asked directly', function()
         'the money slate claims to be saved on a server with no database at all')
 end)
 
+-- ========================================================================
+-- AND THE SCREEN AN OPERATOR READS HAS TO ASK THE RIGHT QUESTION
+-- ========================================================================
+--
+-- ArenaBetting.OwedReport ends with a line telling the operator whether the
+-- debt above it survives a restart. It decided that with ArenaDbReady, which
+-- answers "the switch is on and oxmysql is started" and NOTHING MORE -- not
+-- whether the table exists, not whether this user may write to it, not
+-- whether one row has ever landed.
+--
+-- So on the setup that actually goes wrong -- a database user with SELECT and
+-- no INSERT, or a CREATE that was refused -- the screen said "a restart does
+-- not forget it" about real cash. It does forget it.
+
+t.test('CONTROL: a working database reports the debt as durable', function()
+    local s = newArena()
+    s.betting.SweepUnpaid()
+    debtOf(s)
+
+    local report = table.concat(s.betting.OwedReport(), '\n')
+    t.contains(report, 'a restart does not forget it',
+        'a working database was reported as unsafe, so the warning would never stop')
+end)
+
+t.test('THE DEFECT: a database that is up but cannot be written is NOT reported as durable', function()
+    local s = newArena()
+    s.betting.SweepUnpaid()
+
+    -- REFUSED BEFORE THE DEBT IS TAKEN ON, not after: the latch trips when a
+    -- write actually comes back empty, so the debt has to be recorded while
+    -- the database is refusing. That is the SELECT-only user, which is a
+    -- completely ordinary production setup.
+    s.control.failWrites = true
+    debtOf(s)
+
+    local report = table.concat(s.betting.OwedReport(), '\n')
+
+    t.notContains(report, 'a restart does not forget it',
+        'the operator was promised a restart keeps a cash debt that is held in memory only')
+    t.contains(report, 'NOTHING HAS BEEN SAVED',
+        'the report did not say what is actually wrong or what to do about it')
+end)
+
+t.test('CONTROL: with the database off it still says so in those words', function()
+    local s = newArena()
+    s.env.Config.Database.enabled = false
+    debtOf(s)
+
+    local report = table.concat(s.betting.OwedReport(), '\n')
+    t.contains(report, 'Config.Database.enabled is off',
+        'a server with no database got the wrong explanation')
+    t.notContains(report, 'a restart does not forget it', 'and it must not claim durability')
+end)
+
 os.exit(t.summary())

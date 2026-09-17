@@ -22,7 +22,8 @@ local UPSERT_SQL = [[
 
 local SCHEMA_SQL = [[
     CREATE TABLE IF NOT EXISTS crimson_arena_stats (
-        citizenid VARCHAR(64) NOT NULL,
+
+        citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
         name VARCHAR(128) NOT NULL DEFAULT '',
         wins INT NOT NULL DEFAULT 0,
         losses INT NOT NULL DEFAULT 0,
@@ -31,7 +32,7 @@ local SCHEMA_SQL = [[
         earnings BIGINT NOT NULL DEFAULT 0,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (citizenid)
-    )
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ]]
 
 local MAX_RETAINED = 5000

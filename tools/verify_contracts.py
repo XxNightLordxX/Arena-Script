@@ -358,11 +358,55 @@ else:
                         + ' -- an operator who takes the backup it tells them to take still loses '
                         + ('those tables' if len(missing_backup) > 1 else 'that table'))
 
-    if not (missing_install or missing_drop or extra_install or missing_convert or missing_backup):
+    # AND THE TWO COPIES OF EACH STATEMENT ARE THE SAME STATEMENT.
+    #
+    # install.sql says so in its own header -- one copy here, one in the Lua,
+    # edit one and you must edit the other. It said that while the four Lua
+    # copies were all MISSING THE ENVELOPE: the CHARACTER SET and COLLATE on
+    # the key columns and the ENGINE, ROW_FORMAT and DEFAULT CHARSET on the
+    # table. The columns agreed; the charset did not.
+    #
+    # THAT IS NOT COSMETIC. A table created without a charset takes the
+    # DATABASE default, so the two install paths produced two different
+    # tables. On a database defaulting to a _ci collation the runtime path
+    # gives keys where `char:abc` and `char:ABC` are ONE ROW -- two debts
+    # merged -- which is exactly what install.sql spends a paragraph
+    # forbidding. On a latin1 default, a player name with an accent in it is
+    # refused outright.
+    #
+    # Compared on whitespace-normalised text, so reindenting a column is
+    # allowed and changing a word is not.
+    def normalise_ddl(text):
+        return re.sub(r'\s+', ' ', text).strip().rstrip(';').lower()
+
+    install_ddl = {}
+    for m in re.finditer(r'CREATE TABLE IF NOT EXISTS (\w+) \((.*?\n)\)([^;]*);', install_sql, re.S):
+        install_ddl[m.group(1)] = normalise_ddl('(' + m.group(2) + ')' + m.group(3))
+
+    mismatched = []
+    for rel in ('server/ammo.lua', 'server/betting.lua', 'server/stats.lua'):
+        body = read(rel)
+        for m in re.finditer(r'CREATE TABLE IF NOT EXISTS (\w+) \((.*?\n)\s*\)([^\]]*?)\]\]', body, re.S):
+            name = m.group(1)
+            runtime = normalise_ddl('(' + m.group(2) + ')' + m.group(3))
+            wanted = install_ddl.get(name)
+            if wanted is None:
+                continue
+            if runtime != wanted:
+                mismatched.append(name)
+
+    if mismatched:
+        fail.append('the runtime CREATE TABLE statement(s) for ' + ', '.join(sorted(set(mismatched)))
+                    + ' differ from sql/install.sql -- the two install paths would build different '
+                    + 'tables, and the charset half of that decides primary-key identity')
+
+    if not (missing_install or missing_drop or extra_install or missing_convert
+            or missing_backup or mismatched):
         note.append('%d database table(s) created at runtime, every one in install.sql and uninstall.sql'
                     % len(runtime_tables))
         note.append('and every one of them named in the charset conversion guide')
         note.append('and every dropped table named in uninstall.sql\'s own backup command')
+        note.append('and each runtime CREATE TABLE matches its install.sql twin exactly')
 
 for line in note:
     print('  ok   ' + line)

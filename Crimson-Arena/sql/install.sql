@@ -2,47 +2,93 @@
 --
 -- YOU DO NOT NORMALLY NEED TO RUN THIS.
 --
--- The resource creates both of its tables itself on first start, from the
--- matching CREATE TABLE statements in server/stats.lua (ArenaStats.EnsureSchema)
--- and server/ammo.lua (ArenaAmmo.LoadOwedKit). This file exists for the two
--- cases where that is not good enough:
+-- The resource creates all four of its tables itself on first start, from the
+-- matching CREATE TABLE statements in server/stats.lua (ArenaStats.EnsureSchema),
+-- server/ammo.lua (ArenaAmmo.LoadOwedKit and ArenaAmmo.LoadJams) and
+-- server/betting.lua. This file exists for the two cases where that is not
+-- good enough:
 --
 --   1. Your database user cannot CREATE TABLE at runtime, which is a sensible
 --      way to run a production server. Import this once as an admin, then let
 --      the resource run with a user that has SELECT, INSERT, UPDATE and
---      DELETE on both tables.
+--      DELETE on EVERY TABLE IN THIS FILE.
 --
---      DELETE IS NOT OPTIONAL, AND IT IS NEW. crimson_arena_stats only ever
---      upserts and never deletes anything, so SELECT/INSERT/UPDATE was enough
---      when it was the only table. crimson_arena_owed_kit deletes a row the
---      moment the debt it records is settled -- that is how a weapon handed
---      back stops being chased. Without the grant the row survives the
---      collection, the next restart reads the settled debt back in, and the
---      player is chased for ever for something they already returned. The
---      resource cannot see that failure: the error is reported on oxmysql's
---      console, not this one.
+--      DELETE IS NOT OPTIONAL, AND IT IS NOT ONLY THE KIT SLATE. This said
+--      "both tables" while the file grew to four, and three of the four
+--      issue DELETE. Each one costs something different when the grant is
+--      missing, and none of the failures is visible from inside the game --
+--      the error goes to oxmysql's console, not this one:
+--
+--        crimson_arena_owed_kit      deletes a row the moment the debt it
+--                                    records is settled; that is how a
+--                                    weapon handed back stops being chased.
+--                                    Without DELETE the row survives the
+--                                    collection, the next restart reads the
+--                                    settled debt back, and the player is
+--                                    chased for ever for something they
+--                                    already returned.
+--        crimson_arena_unpaid        deletes a row the moment the money is
+--                                    paid. Without DELETE the row survives
+--                                    the payment, the next restart reads it
+--                                    back as still owed, AND THE PLAYER IS
+--                                    PAID AGAIN -- out of the owner's
+--                                    pocket, once per restart, for ever.
+--                                    This is the one that costs real money.
+--        crimson_arena_jammed_stash  deletes a row when an operator runs
+--                                    /arenaunjam after settling a stash by
+--                                    hand. Without DELETE the command
+--                                    reports success, the next restart holds
+--                                    the same stash back again, and the
+--                                    operator repeats the work every boot.
+--
+--      crimson_arena_stats is the only one that never deletes: it upserts
+--      and nothing else, which is why SELECT/INSERT/UPDATE was enough back
+--      when it was the only table here.
 --   2. You want the table to exist before the first match, so an operator
 --      looking at the schema does not see it appear out of nowhere.
 --
--- EACH STATEMENT BELOW AND ITS COPY IN THE LUA MUST BE THE SAME STATEMENT,
--- character for character. There are exactly two copies and they are at
--- server/stats.lua (SCHEMA_SQL) and server/ammo.lua (KIT_SCHEMA_SQL). Edit one
--- and you must edit the other, or first start after an import will quietly do
--- nothing (IF NOT EXISTS) and leave you on whichever shape got there first.
+-- EACH STATEMENT BELOW HAS A COPY IN THE LUA, and there are FOUR of them:
 --
--- THE CHARSET CLAUSE IS PART OF THAT and is the half most likely to be
--- forgotten: a table created without one takes the DATABASE's default, so the
--- same resource on two servers ends up with two different tables, and only one
--- of them can store a player whose name has an accent in it.
+--   crimson_arena_stats         server/stats.lua    SCHEMA_SQL
+--   crimson_arena_owed_kit      server/ammo.lua     KIT_SCHEMA_SQL
+--   crimson_arena_jammed_stash  server/ammo.lua     JAM_SCHEMA_SQL
+--   crimson_arena_unpaid        server/betting.lua  UNPAID_SCHEMA_SQL
+--
+-- Edit one and you must edit the other, or first start after an import will
+-- quietly do nothing (IF NOT EXISTS) and leave you on whichever shape got
+-- there first.
+--
+-- THEY ARE NOT CURRENTLY IDENTICAL, AND THIS FILE USED TO CLAIM THEY WERE.
+-- It said "character for character" and "exactly two copies"; both were
+-- false. The columns, types, widths, defaults and primary keys DO agree
+-- exactly -- that part was checked column by column. What the Lua copies
+-- leave out is the envelope: the CHARACTER SET and COLLATE on the key
+-- columns, and the ENGINE, ROW_FORMAT and DEFAULT CHARSET on the table.
+--
+-- WHICH MATTERS, AND IS THE HALF MOST LIKELY TO BE FORGOTTEN. A table
+-- created without a charset takes the DATABASE's default, so the same
+-- resource on two servers ends up with two different tables. Read the note
+-- below on what a _ci collation does to a key column: on a database whose
+-- default collation is case-insensitive, the runtime path gives you keys
+-- where `char:abc` and `char:ABC` are ONE ROW, which is two debts merged.
+-- On a database defaulting to latin1, a player name with an accent is
+-- refused outright.
+--
+-- SO IMPORTING THIS FILE IS NOT MERELY CONVENIENT: on those servers it is
+-- the difference between a correct table and a broken one. If your database
+-- default is already utf8mb4 with a binary-safe collation, the two paths
+-- agree and it does not matter.
 --
 -- WHAT HAPPENS IF YOU NEVER IMPORT IT AND NEVER GRANT CREATE: nothing breaks.
 -- Config.Database.enabled = false, or a failed create, leaves the resource in
 -- memory-only mode: matches, betting, payouts and the panel all work exactly
 -- the same.
 --
--- WHAT YOU LOSE IS TWO THINGS. The all-time leaderboard stops surviving a
--- restart. And the arena stops remembering what players still owe it -- see
--- the second table below, which matters more.
+-- WHAT YOU LOSE IS FOUR THINGS, in rising order of how much they matter:
+-- the all-time leaderboard stops surviving a restart; the arena stops
+-- remembering which stashes it had held back; it stops remembering what
+-- players still owe IT; and it stops remembering what it owes THEM. The last
+-- one is money and is the reason this file is worth reading.
 
 -- ----------------------------------------------------------------------
 -- WHY EVERY TABLE HERE NAMES ITS OWN CHARSET.

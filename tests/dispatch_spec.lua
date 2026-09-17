@@ -997,26 +997,41 @@ local function firedFor(f, eventName)
     return out
 end
 
-t.test('/arenarevive runs the same path a finished match runs', function()
+t.test('the Medical test runs the same path a finished match runs', function()
+    -- IT WAS /arenarevive AND IS NOW A BUTTON. The tablet's Tools tab presses
+    -- it, and `/arenaadmin medical <id>` prints the same lines at a console;
+    -- both land on ArenaDispatch.ReviveReport, which is what this asserts.
+    -- The permission gate moved with it -- see admintablet_spec, where a
+    -- non-admin pressing the tool is refused.
     local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
-    f.env.ArenaIsAdmin = function() return true end
 
-    f.runCommand('arenarevive', 1, { '7' })
+    local lines = f.D.ReviveReport(7)
 
     local fired = firedFor(f, 'mymedical:revive')
     t.equals(#fired, 1, 'the handoff did not run, or ran more than once')
     t.equals(fired[1].target, 7, 'the handoff ran against the wrong player')
+    t.isTrue(#lines > 0, 'it revived somebody and said nothing about it')
 end)
 
-t.test('and defaults to whoever ran it, since that is the common case', function()
-    -- An admin lying on the floor testing this on themselves should not have
-    -- to look up their own server id first.
+t.test('and it says which medical script it asked, which is the whole reading', function()
+    -- The lines ARE the feature: an operator wiring a medical script up needs
+    -- to know whether anything was asked at all, and what to do when the
+    -- player is up but something still treats them as dead.
     local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
-    f.env.ArenaIsAdmin = function() return true end
 
-    f.runCommand('arenarevive', 4, {})
+    local text = table.concat(f.D.ReviveReport(7), '\n')
 
-    t.equals(firedFor(f, 'mymedical:revive')[1].target, 4)
+    t.contains(text, '7', 'the reading does not say who it ran against')
+    t.contains(text, 'done', 'the reading never says it finished')
+end)
+
+t.test('and a target that is not a server id is refused rather than revived', function()
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+
+    local lines = f.D.ReviveReport(0)
+
+    t.equals(#firedFor(f, 'mymedical:revive'), 0, 'it revived somebody on a nonsense id')
+    t.isTrue(#lines > 0, 'and said nothing about why')
 end)
 
 t.test('the client is told to hold the arena\'s vitals over the handoff', function()
@@ -1063,42 +1078,15 @@ t.test('AND IT NO LONGER STANDS THE PLAYER UP ITSELF', function()
     end
 end)
 
-t.test('a non-admin gets nothing, not even a revive of themselves', function()
-    -- THIS TEST COULD NOT FAIL. It asserted that no ExecuteCommand line was
-    -- recorded -- and nothing in the resource calls ExecuteCommand any more;
-    -- the test a page above is the one that removed the last caller. The
-    -- recorder it read was dead by construction, so the suite stayed green
-    -- with the gate replaced by `if false then`. /arenarevive is a chat
-    -- command, so nothing upstream rate-limits or gates it: the line in the
-    -- handler is the only protection there is, and this is its only test.
-    -- What a revive actually DOES is send holdVitals to the target; that is
-    -- the observable, and it is what a disabled gate would produce.
-    local f = newFixture(reviveConfig())
-    f.env.ArenaIsAdmin = function() return false end
-    local before = #f.toClients
-
-    f.runCommand('arenarevive', 9, { '9' })
-
-    for i = before + 1, #f.toClients do
-        local message = f.toClients[i]
-        t.isTrue(message.name ~= 'crimson_arena:client:holdVitals',
-            'anybody could revive anybody by typing a command')
-    end
-end)
-
-t.test('and an admin typing the same thing does revive them, which is the control', function()
-    local f = newFixture(reviveConfig())
-    f.env.ArenaIsAdmin = function() return true end
-    local before = #f.toClients
-
-    f.runCommand('arenarevive', 4, { '9' })
-
-    local held = false
-    for i = before + 1, #f.toClients do
-        if f.toClients[i].name == 'crimson_arena:client:holdVitals' and f.toClients[i].target == 9 then held = true end
-    end
-    t.isTrue(held, 'an admin\'s /arenarevive did nothing, so the test above proves nothing')
-end)
+-- THE PERMISSION TESTS FOR THIS MOVED, rather than being dropped.
+--
+-- It was /arenarevive, a chat command that nothing upstream rate-limited or
+-- gated, so the line in its handler was the only protection there was and
+-- these were its only tests. It is a tablet button now: the gate is on
+-- `crimson_arena:server:adminTool`, behind ArenaIsAdmin and the admin rate
+-- limiter, and tests/admintablet_spec.lua checks that a non-admin pressing
+-- Medical test revives nobody. ReviveReport itself is deliberately ungated --
+-- it assumes its caller has already asked, and both callers do.
 
 -- ========================================================================
 -- THE REPORT SAYS WHETHER A DEAD PLAYER WILL COME BACK
@@ -2282,10 +2270,16 @@ local function newCompatAndServer(running)
     return { env = env, commands = commands, console = console, toasts = toasts }
 end
 
-t.test('/arenadispatch is registered on the server, which is what the operator was told did not exist', function()
+t.test('the reading an operator could not find is reachable without any command at all', function()
+    -- /arenadispatch WAS the command nobody could discover, and it is not a
+    -- command any more: it is a button on the tablet under Tools, and
+    -- `/arenaadmin dispatch` at a console. Both call the function below, so
+    -- what has to hold is that the function answers -- the routes to it are
+    -- covered by commands_spec, admingates_spec and admintablet_spec.
     local f = newCompatAndServer({ ['sc-dispatch'] = true })
-    t.equals(type(f.commands.arenadispatch), 'function',
-        '/arenadispatch is not registered -- the operator who reported it missing was right after all')
+    t.equals(type(f.env.ArenaDispatch.CompatReport), 'function',
+        'nothing can take the dispatch compat reading at all')
+    t.isTrue(#f.env.ArenaDispatch.CompatReport() > 0, 'the reading came back empty')
 end)
 
 t.test('the panel carries every compat line verbatim, and adds only its own', function()
@@ -2317,12 +2311,17 @@ t.test('and the console prints exactly what the tablet shows', function()
     -- feature exists to end.
     local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
 
+    -- ONE FUNCTION, SO THEY CANNOT DISAGREE. This used to compare the
+    -- console command's output against the panel's; the command is gone and
+    -- `/arenaadmin dispatch` prints exactly what this returns, line for line,
+    -- which admingates_spec asserts at the console end. What is left to hold
+    -- here is that the panel's reading IS the compat layer's, unedited.
     local fromPanel = f.env.ArenaDispatch.CompatReport()
-    f.commands.arenadispatch(0, {})
-    local printed = table.concat(f.console, '\n')
+    local fromCompat = f.env.ArenaCompat.Report()
 
-    for index, line in ipairs(fromPanel) do
-        t.contains(printed, line, ('the console did not print panel line %d'):format(index))
+    for index, line in ipairs(fromCompat) do
+        t.equals(fromPanel[index], line,
+            ('panel line %d is not the compat layer\'s line %d'):format(index, index))
     end
 end)
 
@@ -2363,48 +2362,15 @@ t.test('every line reaches the panel as a string', function()
     end
 end)
 
-t.test('the in-game reply is one short line, not the report', function()
-    -- THE REPORTED BUG, AND THE ONE TEST THAT CAN SEE IT. /arenadispatch
-    -- answered an in-game admin with twenty-odd lines, a pasteable snippet
-    -- and a server.cfg instruction concatenated into a single toast that
-    -- shows for a few seconds in a corner. Nobody reads a resource name out
-    -- of that, which is the only thing the report is for, so the operator
-    -- came away thinking the command did nothing.
-    --
-    -- commands_spec guards the same thing by searching this file's source,
-    -- which cannot tell a toast from a comment: the concat can go back with
-    -- different quotes and the phrase can stay behind in a comment. This
-    -- asserts on the toast the command actually raises.
-    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
-
-    f.commands.arenadispatch(3, {})
-
-    t.equals(#f.toasts, 1, ('an in-game admin got %d toast(s)'):format(#f.toasts))
-    local toast = f.toasts[1]
-    t.equals(toast.src, 3, 'the reply went to somebody else')
-    t.isTrue(#toast.text <= 200,
-        ('the in-game reply is %d characters -- it is the report again, in a corner, for a few '
-            .. 'seconds'):format(#toast.text))
-    t.contains(toast.text, 'console', 'the reply does not say the report went to the console')
-    t.contains(toast.text, 'Tools', 'the reply does not say where the report can be read')
-
-    -- AND THE REPORT ITSELF IS UNCHANGED. Shortening the reply must not
-    -- shorten the thing it is pointing at.
-    t.contains(table.concat(f.console, '\n'), 'sc-ambulance',
-        'the console report lost its contents along with the toast')
-end)
-
-t.test('and the console, not the player, is where the report goes when run from there', function()
-    -- src 0 is the server console. It has already had the report printed to
-    -- it line by line; a toast has nowhere to go.
-    local f = newCompatAndServer({ ['sc-dispatch'] = true })
-
-    f.commands.arenadispatch(0, {})
-
-    t.equals(#f.toasts, 0, 'the server console was sent a notification')
-    t.contains(table.concat(f.console, '\n'), 'sc-dispatch',
-        'running it from the console printed no report')
-end)
+-- THE IN-GAME TOAST TESTS WENT WITH THE COMMAND THEY TESTED.
+--
+-- /arenadispatch answered an in-game admin with the whole report concatenated
+-- into one corner notification, and those tests pinned the short reply that
+-- replaced it -- a line saying "it went to the console, read it on the tablet
+-- under Tools". There is no in-game command left to reply to: an admin in the
+-- game opens the tablet and reads the report on the screen the toast used to
+-- point at. The reading itself is asserted above, and the tablet's route to
+-- it in tests/admintablet_spec.lua.
 
 t.test('a build with no compat layer answers the panel instead of crashing it', function()
     -- shared/compat/dispatch.lua is a shared_script. Drop it from the

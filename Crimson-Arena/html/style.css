@@ -2224,6 +2224,13 @@ option {
     color: var(--accent);
 }
 
+/* The Medical test's target box. Sized like the other number inputs on the
+   panel rather than left at the browser default, which is wide enough to
+   look like it wants something longer than a server id. */
+#admin-tool-target {
+    width: 8ch;
+}
+
 #admin-tool-out {
     display: flex;
     flex-direction: column;

@@ -4577,6 +4577,9 @@
         owedKit: [],
         owedKitSaved: false,
         jamsKnown: false,
+        /* Armed only by a first press on Stop every match, and cleared by
+           anything that moves the operator off that list. */
+        wipeConfirm: false,
         /* The stash a second press would clear the hold on ANYWAY. Null
            unless the operator has just been warned about that exact stash. */
         holdConfirm: null,
@@ -4728,7 +4731,7 @@
         if (has(toolsTab)) toolsTab.classList.toggle('active', onTools);
 
         if (onTools) {
-            arrayOf(['isolation', 'hours', 'dispatch', 'owed', 'attachments', 'jams']).forEach(function (name) {
+            arrayOf(['isolation', 'hours', 'dispatch', 'owed', 'attachments', 'jams', 'medical']).forEach(function (name) {
                 var button = byId('admin-tool-' + name);
                 if (has(button)) button.classList.toggle('active', admin.tool === name);
             });
@@ -4739,6 +4742,13 @@
                 show(heading, admin.toolTitle !== null);
             }
 
+            /* ALWAYS ON THIS TAB, not revealed by pressing the tool it
+               belongs to. Revealed on press, the FIRST press would always run
+               against whoever is holding the tablet -- an operator wanting to
+               test on somebody else would have revived themselves to find the
+               box. It is inside the Tools section, so it is never on screen
+               anywhere else. */
+            show(byId('admin-tool-target-row'), true);
             show(byId('admin-tool-waiting'), admin.toolWaiting);
             show(byId('admin-tool-hint'), admin.tool === null);
 
@@ -4771,12 +4781,43 @@
                 card.addEventListener('click', function () {
                     admin.player = null;
                     admin.tab = 'matches';
+                    /* DISARMED ON THE WAY INTO A MATCH. A warning the
+                       operator walked away from is not an answer they can
+                       come back to. */
+                    admin.wipeConfirm = false;
                     post('adminState', { matchId: match.id });
                 });
                 list.appendChild(card);
             });
         }
         show(byId('admin-empty'), arrayOf(admin.matches).length === 0);
+
+        /* STOP EVERY MATCH, and only where there is something to stop.
+           The most destructive thing on this screen and the only one that
+           acts on rounds the operator is not looking at -- so it is drawn on
+           the LIST, where every match it would take is visible above it,
+           rather than on a detail page showing one. */
+        var running = arrayOf(admin.matches).length;
+        var wipe = byId('admin-wipe');
+        var wipeHint = byId('admin-wipe-hint');
+        var wipeShown = onMatches && !onPlayer && !onMatch && running > 0;
+        show(wipe, wipeShown);
+        show(wipeHint, wipeShown && admin.wipeConfirm);
+        if (has(wipe) && wipeShown) {
+            wipe.textContent = admin.wipeConfirm
+                ? 'Stop all ' + running + ' anyway'
+                : 'Stop every match';
+            wipe.classList.toggle('btn-danger', admin.wipeConfirm);
+        }
+        if (has(wipeHint) && wipeShown && admin.wipeConfirm) {
+            /* SAYS WHAT IS AND IS NOT LOST. Nobody is out of pocket -- every
+               stake and entry fee is refunded -- and an operator who does not
+               know that hesitates over the one button that fixes a wedged
+               server. What they DO lose is the round, and there is no undo. */
+            wipeHint.textContent = plural(running, 'round') + ' will be stopped and everyone '
+                + 'fighting thrown out. Every stake and entry fee is refunded, so nobody is out '
+                + 'of pocket \u2014 but the rounds are gone and there is no undo.';
+        }
 
         var owed = arrayOf(admin.owed);
 
@@ -5577,6 +5618,7 @@
 
     bind('admin-tab-tools', 'click', function () {
         admin.tab = 'tools';
+        admin.wipeConfirm = false;
         admin.stash = null;
         renderAdmin();
     });
@@ -5584,19 +5626,27 @@
     /* One binding per report rather than a loop over the five, because the
        ids are in the markup and a loop would let a renamed button fail
        silently instead of at the first press. */
-    arrayOf(['isolation', 'hours', 'dispatch', 'owed', 'attachments', 'jams']).forEach(function (name) {
+    arrayOf(['isolation', 'hours', 'dispatch', 'owed', 'attachments', 'jams', 'medical']).forEach(function (name) {
         bind('admin-tool-' + name, 'click', function () {
             admin.tool = name;
             admin.toolTitle = null;
             admin.toolLines = [];
             admin.toolWaiting = true;
             renderAdmin();
-            post('adminTool', { tool: name });
+            /* THE BOX IS READ ONLY FOR THE TOOL THAT HAS ONE. Sending it on
+               every report would put a stale id on the wire behind readings
+               that have nothing to do with a player, and the server hands it
+               to nothing anyway -- but the wire is the wrong place to leave
+               something that looks like it matters and does not. */
+            var box = byId('admin-tool-target');
+            var wanted = name === 'medical' && has(box) ? box.value : null;
+            post('adminTool', { tool: name, target: wanted ? Number(wanted) : null });
         });
     });
 
     bind('admin-tab-stashes', 'click', function () {
         admin.tab = 'stashes';
+        admin.wipeConfirm = false;
         admin.stash = null;
         renderAdmin();
 
@@ -5615,6 +5665,27 @@
     bind('admin-stash-back', 'click', function () {
         admin.stash = null;
         renderAdmin();
+    });
+
+    bind('admin-wipe', 'click', function () {
+        /* The first press arms and warns; only the second asks the server,
+           and the server refuses an unconfirmed one anyway. Read out of the
+           CURRENT snapshot: if the last round ended while this was armed
+           there is nothing left to wipe and nothing to send. */
+        if (arrayOf(admin.matches).length === 0) {
+            admin.wipeConfirm = false;
+            renderAdmin();
+            return;
+        }
+
+        if (!admin.wipeConfirm) {
+            admin.wipeConfirm = true;
+            renderAdmin();
+            return;
+        }
+
+        admin.wipeConfirm = false;
+        post('adminWipe', { confirm: true });
     });
 
     bind('admin-stash-unjam', 'click', function () {

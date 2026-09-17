@@ -523,7 +523,7 @@ listed; the source documents them where they are.
 | `ArenaDbReady(subject)` | Whether a query can be sent right now: `Config.Database.enabled` on and oxmysql started. Says so once per outage, per subject, and re-arms when the database comes back. |
 | `ArenaDb(subject, sql, params, cb)` | Sends one query. Never lets a database failure take the round down, and always calls `cb` — with nil on every path that did not reach oxmysql. |
 
-#### `server/dispatch.lua` — 18 functions
+#### `server/dispatch.lua` — 19 functions
 
 | Function | What it does |
 |---|---|
@@ -532,6 +532,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ClearDownState(src)` | Puts the medical script's down flags back down, at the death rather than at the revive. |
 | `ArenaDispatch.HoldDownState()` | One pass: the flags put back down for everybody currently in a match. |
 | `ArenaDispatch.Revive(src)` | Tells whatever handles death on this server that a player is alive again. |
+| `ArenaDispatch.ReviveReport(target)` | Runs the end-of-match revive against one player and says what happened, as lines. The one admin action that deliberately reaches somebody who is NOT in a match: it exists so an operator can watch their medical script answer the arena's revive without first putting a player through a round. Drawn by the admin tablet under **Tools → Medical test**, and printed by `/arenaadmin medical <id>` at a console. |
 | `ArenaDispatch.IsPlayerInArena(src)` | Whether the server has this player flagged as being in a match. |
 | `ArenaDispatch.GetPlayerMatchId(src)` | The match a flagged player is in, or nil. |
 | `ArenaDispatch.GetArenaPlayers()` | Every player currently in a match, as a server-id -> match-id map. |
@@ -541,12 +542,12 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ExitBucket(src)` | Puts a player back in exactly the bucket EnterBucket found them in, and hands the match's number back once the last person has left it. |
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for /arenaisolation. |
-| `ArenaDispatch.IsolationReport()` | Everything /arenaisolation reports, as lines, so the admin tablet can show the same reading without a console. |
-| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, so the admin tablet's Police & EMS tool shows exactly what /arenadispatch prints to the console. |
+| `ArenaDispatch.IsolationReport()` | The routing-bucket isolation of every live match, as lines. Drawn by the admin tablet under **Tools → Instancing**, and printed by `/arenaadmin isolation` at a console. |
+| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, plus the arena's own down-state line. Drawn by the admin tablet under **Tools → Police & EMS**, and printed by `/arenaadmin dispatch` at a console. |
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 26 functions
+#### `server/ammo.lua` — 27 functions
 
 | Function | What it does |
 |---|---|
@@ -565,6 +566,7 @@ listed; the source documents them where they are.
 | `ArenaAmmo.JamReport()` | The same reading /arenaunjam prints when asked for nothing in particular, as lines. Read-only: it names what is held back and points at the Stashes tab, and clears nothing itself. |
 | `ArenaAmmo.Unjam(stash)` | Lets the door use one of those stashes again, once a human has settled it. The mechanism, not the judgement — go through `ClearHold`. Never automatic: an empty read is what ox_inventory says about an inventory it has not loaded, so only a person can say a jam is over. |
 | `ArenaAmmo.ClearHold(stash, forced)` | The one gate both ways of clearing a hold go through — `/arenaunjam` and the tablet's **Clear the hold**. Refuses a stash that still holds rows, or one that cannot be read, unless the operator has said they have looked at it. |
+| `ArenaAmmo.UnjamCommand(args)` | What `/arenaadmin unjam` runs: with nothing after it, lists every held-back stash and what is still in each; with a name, or `all`, clears through `ClearHold`. Assumes its caller has already checked the permission — `/arenaadmin` refuses a non-admin before reading what was typed. |
 | `ArenaAmmo.HeldFor(src)` | Everything the arena is holding for one player, read out of their stash. |
 | `ArenaAmmo.ReturnLeftovers(src)` | Hands back anything of this player's still sitting in their arena stash. |
 | `ArenaAmmo.SweepReturns()` | One pass over everybody on the server: outstanding stashes handed back, and any arena kit that left with a character taken off them. |

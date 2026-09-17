@@ -607,13 +607,10 @@ local function hoursReport()
     return lines
 end
 
-RegisterCommand('arenahours', function(src)
-    if not ArenaIsAdmin(src) then
-        return refuse(src, 'error.no_permission')
-    end
-
-    for _, line in ipairs(hoursReport()) do tell(src, line) end
-end, false)
+-- `/arenahours` USED TO BE REGISTERED HERE and is not a command any more.
+-- The reading is hoursReport above, which the admin tablet draws under Tools
+-- and `/arenaadmin hours` prints at a console -- the same lines from the same
+-- function, through the one command this resource still registers.
 
 local function adminMatches()
     local rows = {}
@@ -920,6 +917,27 @@ local ADMIN_TOOLS = {
             return ArenaAmmo.JamReport()
         end,
     },
+    -- THE ONE TOOL THAT ACTS RATHER THAN READS, and the one that needs to be
+    -- told WHO. Every report above is a look at the server; this runs the
+    -- end-of-match revive against a named player so an operator can watch
+    -- their medical script answer it, which is the whole reason it exists and
+    -- cannot be done by describing it.
+    --
+    -- DELIBERATELY REACHES SOMEBODY WHO IS NOT IN A MATCH. The tablet's own
+    -- revive button refuses anyone outside the round being looked at, and
+    -- that refusal is right for what THAT button is for. This is the other
+    -- job -- wiring up a medical script without first putting somebody
+    -- through a round -- and the two do not stand in for each other.
+    medical = {
+        title = 'Medical test',
+        wants = 'target',
+        run = function(target)
+            if type(ArenaDispatch) ~= 'table' or type(ArenaDispatch.ReviveReport) ~= 'function' then
+                return { 'this build has no medical test.' }
+            end
+            return ArenaDispatch.ReviveReport(target)
+        end,
+    },
 }
 
 onClient('crimson_arena:server:adminTool', RATE.admin, function(src, data)
@@ -930,11 +948,25 @@ onClient('crimson_arena:server:adminTool', RATE.admin, function(src, data)
     local tool = name and ADMIN_TOOLS[name]
     if not tool then return refuse(src, 'error.invalid_request') end
 
+    -- THE TARGET IS READ ONLY WHERE THE TOOL ASKS FOR ONE, and defaults to
+    -- the person pressing.
+    --
+    -- DEFENSIVE, NOT LOAD-BEARING, and worth saying so rather than letting a
+    -- future reader assume a test holds it. Every other report takes no
+    -- argument and would ignore one, so deleting this check changes nothing
+    -- observable today -- it is here for the next tool that takes a target,
+    -- which must not be handed a stale id left in the box by this one.
+    local target = nil
+    if tool.wants == 'target' then
+        target = intArg(payload.target)
+        if not target or target <= 0 then target = src end
+    end
+
     -- THROUGH pcall. These reports read live server state -- routing
     -- buckets, the clock, ox_inventory -- and one of them throwing must not
     -- take the tablet down with it. An operator looking at a broken server
     -- is exactly who is pressing this.
-    local ok, lines = pcall(tool.run)
+    local ok, lines = pcall(tool.run, target)
     if not ok or type(lines) ~= 'table' then
         lines = { 'that report could not be taken: ' .. tostring(lines) }
     end
@@ -955,6 +987,55 @@ onClient('crimson_arena:server:adminState', RATE.admin, function(src, data)
     if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
     local payload = tableArg(data) or {}
     pushAdmin(src, keyArg(payload.matchId))
+end)
+
+--- Stops every match there is, and says how many that was.
+---
+--- ONE BODY FOR BOTH DOORS. `/arenaadmin wipe` at a console and the tablet's
+--- own button are the same action, and written twice they would be two
+--- places to keep a refund rule in step. See the tablet handler below for why
+--- the CONFIRMATION is not in here: this function does the thing, and asking
+--- belongs to whichever door is being knocked on.
+--- @return integer wiped
+local function wipeEveryMatch()
+    local wiped = 0
+    for _, match in ipairs(ArenaLobby.All()) do
+        ArenaMatch.Abort(match.id, 'notify.match_stopped_by_admin')
+        wiped = wiped + 1
+    end
+    return wiped
+end
+
+--- Wipes every match from the tablet.
+---
+--- THE MOST DESTRUCTIVE THING ON THIS SCREEN, and the only one that acts on
+--- rounds the operator is not looking at. Stop takes the match they opened;
+--- this takes every match on the server, including ones that started thirty
+--- seconds ago with a full pot, and everybody in them is thrown out. Nobody
+--- loses money -- Abort refunds every stake and entry fee, which is the whole
+--- reason this is safe to offer at all -- but they lose the round they were
+--- fighting, and there is no undo.
+---
+--- SO IT ASKS TWICE, AND THE SERVER IS WHERE THE SECOND ONE IS ENFORCED. The
+--- panel arms the button and sends `confirm` only on the press that follows
+--- the warning, exactly as Clear the hold does; refusing an unconfirmed one
+--- HERE rather than trusting the page means a mis-click cannot be turned into
+--- a wipe by a crafted request either. That is the whole of the difference
+--- between this and a button that fires on one press.
+onClient('crimson_arena:server:adminWipe', RATE.admin, function(src, data)
+    if not ArenaIsAdmin(src) then return refuse(src, 'error.no_permission') end
+
+    local payload = tableArg(data) or {}
+    if payload.confirm ~= true then return refuse(src, 'error.confirm_wipe') end
+
+    local wiped = wipeEveryMatch()
+    ArenaLog('%s wiped %d match(es) from the admin tablet', ArenaPlayerName(src), wiped)
+
+    -- AND THE SCREEN IS REDRAWN ON AN EMPTY WIPE TOO. Zero matches is a real
+    -- answer -- the last one can have ended while the tablet was open -- and
+    -- an operator who pressed a destructive button and saw nothing change
+    -- presses it again.
+    pushAdmin(src, nil)
 end)
 
 onClient('crimson_arena:server:adminStop', RATE.admin, function(src, data)
@@ -1292,6 +1373,23 @@ RegisterCommand('arenaadmin', function(src, args)
 
     local action = keyArg(args[1]) or (src == 0 and 'list' or 'tablet')
 
+    -- A PLAYER GETS THE TABLET AND NOTHING ELSE TYPED.
+    --
+    -- Every subcommand below is on that screen -- the reports under Tools,
+    -- stop and wipe on Matches, the hold list on Stashes -- so this takes no
+    -- capability away from anybody holding a controller. What it takes away
+    -- is the SECOND route: one door instead of two is one set of argument
+    -- handling, and the route that survives is the one that shows an operator
+    -- what they are about to act on before they act. A chat line cannot.
+    --
+    -- THE CONSOLE KEEPS ALL OF IT, and that is what makes this safe rather
+    -- than a lockout. Source 0 has no client and so can never have a tablet;
+    -- an operator whose adminGroups is empty or misspelt has the console and
+    -- nothing else. Anybody who can type there already owns the machine.
+    if src ~= 0 and action ~= 'tablet' then
+        return refuse(src, 'error.use_the_tablet')
+    end
+
     if action == 'tablet' then
         if src == 0 then return tell(src, locale('cmd.usage')) end
         -- EVERY FIELD THE SCREEN READS, not the eight this used to send.
@@ -1358,13 +1456,48 @@ RegisterCommand('arenaadmin', function(src, args)
     end
 
     if action == 'wipe' then
-        local wiped = 0
-        for _, match in ipairs(ArenaLobby.All()) do
-            ArenaMatch.Abort(match.id, 'notify.match_stopped_by_admin')
-            wiped = wiped + 1
-        end
+        local wiped = wipeEveryMatch()
         ArenaLog('%s wiped %d match(es)', ArenaPlayerName(src), wiped)
         return tell(src, locale('cmd.wiped', wiped))
+    end
+
+    -- EVERY REPORT THE TABLET DRAWS, BY ITS OWN NAME.
+    --
+    -- This resource registers ONE command. The five readings that used to
+    -- have commands of their own -- /arenahours, /arenadispatch,
+    -- /arenaisolation, /arenaattachments and /arenaunjam's listing -- are
+    -- built by the functions in ADMIN_TOOLS, which is also what the tablet
+    -- presses. Naming that table here rather than re-listing them means a
+    -- tool added to the tablet is a console reading on the same commit, and
+    -- one renamed cannot leave a console subcommand pointing at nothing.
+    --
+    -- A TARGET IS TAKEN FROM THE NEXT WORD for the one tool that wants one,
+    -- so `/arenaadmin medical 3` is what `/arenarevive 3` was.
+    local tool = ADMIN_TOOLS[action]
+    if tool then
+        local ok, lines = pcall(tool.run,
+            tool.wants == 'target' and (Arena.ToInt(args[2]) or src) or nil)
+        if not ok or type(lines) ~= 'table' then
+            return tell(src, ('that report could not be taken: %s'):format(tostring(lines)))
+        end
+        for _, line in ipairs(lines) do tell(src, ('%s: %s'):format(action, tostring(line))) end
+        return
+    end
+
+    -- AND THE ONE THING ON THIS SCREEN THAT IS NOT A READING.
+    --
+    -- Clearing a hold is an ACTION with a foot-gun on it, so it keeps its own
+    -- words and its own `force`: `/arenaadmin unjam` lists, `unjam <name>`
+    -- clears an empty one, `unjam <name> force` clears one an operator has
+    -- checked. All three go through ArenaAmmo.ClearHold, the same gate the
+    -- tablet's Clear the hold button asks.
+    if action == 'unjam' then
+        if type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.UnjamCommand) ~= 'function' then
+            return tell(src, 'this build has no hold list.')
+        end
+        -- The words AFTER `unjam`, so the function sees what /arenaunjam used
+        -- to: { stash, 'force' }.
+        return ArenaAmmo.UnjamCommand({ args[2], args[3] })
     end
 
     tell(src, locale('cmd.usage'))

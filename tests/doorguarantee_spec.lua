@@ -427,7 +427,7 @@ local function newServer(ids, mutate, extra, opts)
         AddEventHandler = function(name, fn) handlers[name] = fn end,
         -- CAPTURED, because one of them is now part of the door's promise:
         -- a jammed stash is a dead end until an admin can see it and clear
-        -- it, and /arenaunjam is the only thing that can.
+        -- it, and /arenaadmin unjam is the only thing that can.
         RegisterCommand = function(name, fn) commands[name] = fn end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         -- WHETHER ox_inventory IS ALREADY UP, which decides whether a convar
@@ -1990,7 +1990,7 @@ end
 t.test('a jammed stash is listed, with what is still in it', function()
     local server = jammedBySurplus()
 
-    server.command('arenaunjam', 0)
+    server.command('arenaadmin', 0, 'unjam')
 
     t.contains(server.log(), 'crimson_arena_CID1')
     t.contains(server.log(), 'STILL IN IT',
@@ -2006,7 +2006,7 @@ t.test('DEFECT: clearing a jam on a stash that still holds something is REFUSED'
     -- console would have done that to every parked surplus at once.
     local server = jammedBySurplus()
 
-    server.command('arenaunjam', 0, 'crimson_arena_CID1')
+    server.command('arenaadmin', 0, 'unjam', 'crimson_arena_CID1')
 
     t.isNil(server.log():find('no longer held back', 1, true), 'it cleared a stash that still had a surplus in it')
     t.contains(server.log(), 'duplication the jam was protecting against')
@@ -2017,7 +2017,7 @@ t.test('and once it has been settled by hand, it clears and the door uses it aga
     local server = jammedBySurplus()
 
     server.emptyStash('crimson_arena_CID1')      -- the admin took the surplus out
-    server.command('arenaunjam', 0, 'crimson_arena_CID1')
+    server.command('arenaadmin', 0, 'unjam', 'crimson_arena_CID1')
 
     t.contains(server.log(), 'no longer held back')
     t.equals(jamsStanding(server), 0, 'the jam never cleared')
@@ -2028,7 +2028,7 @@ t.test('and `force` clears one that still holds something, for an operator who h
     -- theirs -- but it has to be said out loud rather than be the default.
     local server = jammedBySurplus()
 
-    server.command('arenaunjam', 0, 'crimson_arena_CID1', 'force')
+    server.command('arenaadmin', 0, 'unjam', 'crimson_arena_CID1', 'force')
 
     t.contains(server.log(), 'no longer held back')
     t.equals(jamsStanding(server), 0, 'even force did not clear it')
@@ -2039,8 +2039,8 @@ t.test('and a jam that has not been cleared still holds', function()
     -- must a name that is not jammed.
     local server = jammedBySurplus()
 
-    server.command('arenaunjam', 0)
-    server.command('arenaunjam', 0, 'crimson_arena_CID9')
+    server.command('arenaadmin', 0, 'unjam')
+    server.command('arenaadmin', 0, 'unjam', 'crimson_arena_CID9')
 
     t.equals(jamsStanding(server), 1, 'the jam cleared itself')
 end)
@@ -2052,7 +2052,7 @@ t.test('and a player who is not an admin cannot clear one', function()
     server.step(8)
 
     -- 1 is a player, not the console, and holds no admin group here.
-    server.command('arenaunjam', 1, 'crimson_arena_CID1')
+    server.command('arenaadmin', 1, 'unjam', 'crimson_arena_CID1')
 
     t.isNil(server.log():find('no longer held back', 1, true),
         'a player cleared a jam on their own stash')

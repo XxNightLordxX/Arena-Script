@@ -479,22 +479,38 @@ function ArenaDispatch.Revive(src)
     end
 end
 
-RegisterCommand('arenarevive', function(src, args)
-    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
-        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
-            ArenaNotifyKey(src, 'error.no_permission', 'error')
-        end
-        return
+--- Runs the end-of-match revive against one player and says what happened,
+--- as lines.
+---
+--- A DIAGNOSTIC, AND THE ONLY ADMIN ACTION HERE THAT DELIBERATELY REACHES
+--- SOMEBODY WHO IS NOT IN A MATCH. That is its entire purpose: an operator
+--- wiring up a medical script needs to see the arena's revive land on a
+--- player they can watch, without first putting them through a round. The
+--- tablet's own revive button is the opposite -- it refuses anyone not in the
+--- match being looked at -- so the two do not overlap and neither can stand
+--- in for the other.
+---
+--- LINES RATHER THAN PRINTS, so the tablet can draw exactly what the console
+--- used to. The reading IS the feature: which medical scripts were asked, and
+--- what to do when the player is up but something still treats them as dead.
+---
+--- IT REVIVES. A report that only described what would happen would be worth
+--- nothing to the person wiring up a medical script, and the action is the
+--- same one every match end performs on every fighter. Admin-gated by its
+--- callers, which is where the permission check belongs.
+--- @param target integer -- server id
+--- @return string[]
+function ArenaDispatch.ReviveReport(target)
+    target = Arena.ToInt(target) or 0
+    if target <= 0 then
+        return { 'give a server id -- this runs the end-of-match revive against one player.' }
     end
 
-    local target = Arena.ToInt(args and args[1]) or (src > 0 and src or nil)
-    if not target or target <= 0 then
-        ArenaLog('arenarevive: give a server id -- /arenarevive 3.')
-        return
-    end
+    local lines = {
+        ('running the end-of-match revive against %d. Everything below is what a real match would do.')
+            :format(target),
+    }
 
-    ArenaLog('arenarevive: running the end-of-match revive against %d. Everything below is what a real match would do.',
-        target)
     ArenaDispatch.Revive(target)
 
     local told = 0
@@ -503,15 +519,17 @@ RegisterCommand('arenarevive', function(src, args)
     end
 
     if told > 0 then
-        ArenaLog('arenarevive: done. %d\'s down metadata was cleared and %d medical script(s) were asked to revive them.',
-            target, told)
-        ArenaLog('arenarevive: if %d is up but something still treats them as dead, that script is not in the catalogue in shared/compat/dispatch.lua -- add it there with the revive event it listens for.',
-            target)
+        lines[#lines + 1] = ('done. %d\'s down metadata was cleared and %d medical script(s) were asked to revive them.')
+            :format(target, told)
+        lines[#lines + 1] = ('if %d is up but something still treats them as dead, that script is not in the catalogue in shared/compat/dispatch.lua -- add it there with the revive event it listens for.')
+            :format(target)
     else
-        ArenaLog('arenarevive: done. %d\'s down metadata was cleared. No medical script was detected on this box, so none was asked to revive them.',
-            target)
+        lines[#lines + 1] = ('done. %d\'s down metadata was cleared. No medical script was detected on this box, so none was asked to revive them.')
+            :format(target)
     end
-end, false)
+
+    return lines
+end
 
 function ArenaDispatch.IsPlayerInArena(src)
     return ArenaDispatch.GetPlayerMatchId(src) ~= nil
@@ -1297,18 +1315,11 @@ function ArenaDispatch.CompatReport()
     return out
 end
 
-RegisterCommand('arenaisolation', function(src, _args)
-    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
-        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
-            ArenaNotifyKey(src, 'error.no_permission', 'error')
-        end
-        return
-    end
-
-    for _, line in ipairs(ArenaDispatch.IsolationReport()) do
-        ArenaLog('arenaisolation: %s', line)
-    end
-end, false)
+-- `/arenaisolation` USED TO BE REGISTERED HERE and is not a command any
+-- more. The reading it printed is ArenaDispatch.IsolationReport above, which
+-- the admin tablet draws under Tools and `/arenaadmin isolation` prints at a
+-- console -- the same lines from the same function, through the one command
+-- this resource still registers.
 
 -- THE HANDLER THAT MATTERS MOST IN THIS FILE.
 --

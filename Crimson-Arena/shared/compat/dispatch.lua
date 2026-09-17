@@ -653,44 +653,15 @@ if IS_SERVER then
         end)
     end)
 
-    RegisterCommand('arenadispatch', function(src)
-        if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
-            if src ~= 0 and type(ArenaNotifyKey) == 'function' then
-                ArenaNotifyKey(src, 'error.no_permission', 'error')
-            end
-            return
-        end
-
-        -- THROUGH ArenaDispatch.CompatReport WHERE IT EXISTS, which is the
-        -- same call the admin tablet makes. This file's own Report() is
-        -- about the resources around the arena; the server adds a line about
-        -- the arena's own down-state layer, and a console that prints one
-        -- report while the tablet shows another is exactly the confusion a
-        -- compat report exists to end. Falls back to the bare report on a
-        -- client, where ArenaDispatch does not exist.
-        local lines
-        if type(ArenaDispatch) == 'table' and type(ArenaDispatch.CompatReport) == 'function' then
-            lines = ArenaDispatch.CompatReport()
-        else
-            lines = ArenaCompat.Report()
-        end
-        printReport(lines)
-
-        -- IN-GAME, THIS USED TO ANSWER WITH THE WHOLE REPORT IN ONE TOAST.
-        -- Twenty-odd lines, a pasteable code snippet and a server.cfg
-        -- instruction, concatenated into a single notification that shows
-        -- for a few seconds in a corner. Nobody has ever read a resource
-        -- name out of that, which is the only thing the report is FOR -- so
-        -- the operator who ran it in-game came away thinking the command had
-        -- done nothing, or did not exist.
-        --
-        -- The report itself has not changed and still goes to the console in
-        -- full. What an in-game admin gets now is where to read it: the
-        -- tablet's Tools tab carries the same lines, scrollable, from the
-        -- same ArenaCompat.Report() call.
-        if src ~= 0 and type(ArenaNotify) == 'function' then
-            ArenaNotify(src, ('dispatch compat: %d line(s) printed to the server console. The same report is in the arena tablet under Tools -> Police & EMS, where you can scroll it.')
-                :format(#lines), 'info')
-        end
-    end, false)
+    -- `/arenadispatch` USED TO BE REGISTERED HERE and is not a command any
+    -- more. This resource registers exactly one command now: the reading is
+    -- on the admin tablet under Tools -> Police & EMS, and at a console it is
+    -- `/arenaadmin dispatch`, which prints the same lines from the same
+    -- ArenaDispatch.CompatReport call this used to make.
+    --
+    -- NOTHING WAS LOST WITH IT, and that is worth saying because this is the
+    -- report an operator reported missing in the first place. It printed to
+    -- the console and answered an in-game admin with a toast telling them to
+    -- go and read the console -- so the tablet was already the only usable
+    -- route for the person who was in the game. Now it is the route.
 end

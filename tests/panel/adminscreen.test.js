@@ -1098,5 +1098,60 @@ test('and walking out of the stash takes the confirmation with it', () => {
         'a confirmation survived leaving the stash');
 });
 
+console.log('');
+console.log('==> and Stop every match asks before it takes the server out');
+
+test('THE REQUEST: the matches list carries a wipe, and one press only warns', () => {
+    const panel = opened();
+
+    assert.ok(!hidden(panel, 'admin-wipe'), 'there is no way to stop every match');
+    panel.fire('admin-wipe', 'click');
+
+    assert.strictEqual(postsNamed(panel, 'adminWipe').length, 0,
+        'one press stopped every round on the server');
+    assert.ok(/anyway/i.test(panel.text('admin-wipe')),
+        'and it did not say what a second press would do: ' + panel.text('admin-wipe'));
+    assert.ok(/refunded/i.test(panel.text('admin-wipe-hint')),
+        'the warning does not say the money comes back, which is the fact that '
+        + 'decides it: ' + panel.text('admin-wipe-hint'));
+});
+
+test('and the second press sends the confirmation', () => {
+    const panel = opened();
+
+    panel.fire('admin-wipe', 'click');
+    panel.fire('admin-wipe', 'click');
+
+    const posts = postsNamed(panel, 'adminWipe');
+    assert.strictEqual(posts.length, 1, 'the second press asked for nothing');
+    assert.strictEqual(posts[0].body.confirm, true,
+        'it did not carry the confirmation, so the server refuses it');
+});
+
+test('and it is not offered at all when there is nothing running', () => {
+    const panel = opened();
+    panel.send('adminState', {
+        matches: [], focused: null, owed: [], stashesFound: 0, stashesRead: 0,
+    });
+
+    assert.ok(hidden(panel, 'admin-wipe'),
+        'an empty server offers a button that would stop nothing');
+});
+
+test('and walking into a match disarms it', () => {
+    /* A warning the operator walked away from is not an answer they can come
+       back to, and an armed destructive button waiting on another screen is a
+       press nobody meant to make. */
+    const panel = opened();
+    panel.fire('admin-wipe', 'click');
+
+    panel.node('admin-matches').children[0].listeners.click.forEach(function (fn) { fn({}); });
+    panel.fire('admin-tab-matches', 'click');
+    panel.fire('admin-wipe', 'click');
+
+    assert.strictEqual(postsNamed(panel, 'adminWipe').length, 0,
+        'a confirmation survived leaving the list');
+});
+
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length > 0 ? 1 : 0);

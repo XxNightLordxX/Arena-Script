@@ -827,31 +827,35 @@ end)
 -- start-up: an ox_inventory restarted underneath the arena, an item list
 -- that was still filling when the boot check ran.
 --
--- /arenaunjam is tested here for the same reason and was not tested at all:
--- a chat command passes through no rate limiter and no wrapper, so the line
--- in the handler is the only protection there is.
+-- BOTH USED TO BE COMMANDS OF THEIR OWN -- /arenaattachments and
+-- /arenaunjam -- and neither is any more. This resource registers exactly one
+-- command, and both readings are on the admin tablet: Attachments and
+-- Held-back stashes under Tools, with the clearing on the Stashes tab.
+--
+-- SO THE PERMISSION TESTS MOVED WITH THEM, rather than being dropped. The
+-- gate is now on `/arenaadmin` and on the tablet's own events, which is where
+-- tests/admingates_spec.lua and tests/admintablet_spec.lua check it. What is
+-- left to prove HERE is what this file was always for: that the readings can
+-- be taken at all without restarting the server, which is exactly the state
+-- where the answer has changed since boot.
 -- ======================================================================
 
-for _, name in ipairs({ 'arenaattachments', 'arenaunjam' }) do
-    t.test(('/%s is registered'):format(name), function()
-        t.isTrue(newKit().registered(name),
-            'the command is not registered, so nothing below tests it')
-    end)
+t.test('the attachment reading can be taken without a restart', function()
+    local f = newKit()
+    t.isTrue(#f.ammo.AttachmentReport() > 0, 'the report came back with nothing to show')
+end)
 
-    t.test(('/%s refuses a player who is not an admin, and does nothing else'):format(name), function()
-        local f = newKit()
-        local out, refused = f.runCommand(name, 2, {})
-        t.isTrue(refused, 'a non-admin was not told they are not cleared')
-        t.equals(out, '', 'the report ran for a player who is not an admin')
-    end)
-
-    t.test(('/%s runs for an admin, which is the control'):format(name), function()
-        local f = newKit()
-        local out, refused = f.runCommand(name, 4, {})
-        t.isFalse(refused, 'an admin was refused their own command')
-        t.isTrue(#out > 0, 'the command printed nothing at all for an admin')
-    end)
-end
+t.test('and so can the hold list, which had no caller at all before', function()
+    -- ArenaAmmo.UnjamCommand is what `/arenaadmin unjam` calls. It takes no
+    -- src and checks no permission ON PURPOSE -- /arenaadmin refuses a
+    -- non-admin before it reads a word of what was typed -- so what is
+    -- checked here is that it answers rather than throws.
+    local f = newKit()
+    t.isTrue(type(f.ammo.UnjamCommand) == 'function',
+        'nothing can list the held-back stashes at all')
+    local ok = pcall(f.ammo.UnjamCommand, {})
+    t.isTrue(ok, 'listing the held-back stashes threw')
+end)
 
 t.test('an unknown name is refused on an ox_inventory that answers with FALSE', function()
     -- ox_inventory said "no such item" two different ways. Up to v2.11.5 the

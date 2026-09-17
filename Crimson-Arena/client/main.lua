@@ -321,37 +321,9 @@ local COMMAND_HELP = {
         name = 'arenaadmin',
         help = 'Open the arena admin tablet. (admin)',
         params = {
-            { name = 'action', help = 'blank opens the tablet. list | stop <matchId> | wipe from the console.' },
-        },
-    },
-    {
-        name = 'arenahours',
-        help = 'Report whether the arena is open now, and when it next opens. (admin)',
-    },
-    {
-        name = 'arenadispatch',
-        help = 'Report which police/EMS scripts are running and which still need muting. (admin)',
-    },
-    {
-        name = 'arenaisolation',
-        help = 'Report the routing-bucket isolation of every live match. (admin)',
-    },
-    {
-        name = 'arenarevive',
-        help = 'Run the end-of-match revive against one player, to test your medical script. (admin)',
-        params = {
-            { name = 'serverId', help = 'Server id to revive. Blank means yourself.' },
-        },
-    },
-    {
-        name = 'arenaattachments',
-        help = 'Report configured attachment names this ox_inventory will not take. (admin)',
-    },
-    {
-        name = 'arenaunjam',
-        help = 'Report stashes the arena is holding back, and release one once it is empty. (admin)',
-        params = {
-            { name = 'stashId', help = 'Blank lists them. A stash id releases that one.' },
+            { name = 'action', help = 'Blank opens the tablet. At the SERVER CONSOLE only: '
+                .. 'list | stop <matchId> | wipe | hours | dispatch | isolation | attachments | '
+                .. 'owed | jams | medical [id] | unjam [stash] [force].' },
         },
     },
 }

@@ -107,27 +107,47 @@ local function anyLine(lines, needle)
     return false
 end
 
+-- THESE WERE THREE COMMANDS OF THEIR OWN -- /arenahours, /arenaisolation
+-- and /arenadispatch -- and they are three subcommands of the one command
+-- this resource still registers. The readings did not change and neither did
+-- the gate on them; what changed is that there is one door instead of four.
+--
+-- ASKED AT THE CONSOLE, because that is the only place a subcommand can be
+-- typed now: a player gets the tablet and is refused anything else they type.
+-- Both halves are covered below.
 for _, cmd in ipairs({
-    { name = 'arenahours',     admin = 'hours' },
-    { name = 'arenaisolation', admin = 'isolation' },
-    { name = 'arenadispatch',  admin = 'dispatch' },
+    { name = 'hours',     admin = 'hours' },
+    { name = 'isolation', admin = 'isolation' },
+    { name = 'dispatch',  admin = 'dispatch' },
 }) do
-    t.test(('/%s is registered'):format(cmd.name), function()
-        t.isTrue(newServer().registered(cmd.name), 'the command is not registered, so nothing below tests it')
+    t.test('/arenaadmin is the one command, and it is registered', function()
+        t.isTrue(newServer().registered('arenaadmin'),
+            'the command is not registered, so nothing below tests it')
     end)
 
-    t.test(('/%s refuses a player who is not an admin, and does nothing else'):format(cmd.name), function()
+    t.test(('/arenaadmin %s refuses a player who is not an admin, and does nothing else'):format(cmd.name), function()
         local s = newServer({ adminSrc = 4 })
-        local sentTo, lines = s.run(cmd.name, 2, {})
+        local sentTo, lines = s.run('arenaadmin', 2, { cmd.name })
         t.isTrue(refused(sentTo, 2), 'a non-admin was not told they are not cleared')
         t.isFalse(anyLine(lines, cmd.admin), ('the %s report ran for a non-admin'):format(cmd.admin))
     end)
 
-    t.test(('/%s runs for an admin, which is the control'):format(cmd.name), function()
+    t.test(('and an ADMIN who is a player is sent to the tablet rather than answered in chat'):format(), function()
+        -- The route, not the permission. This player may do all of it -- on
+        -- the screen built to show them what they are acting on. A typed
+        -- subcommand is the second door, and the second door is gone.
         local s = newServer({ adminSrc = 4 })
-        local sentTo, lines = s.run(cmd.name, 4, {})
-        t.isFalse(refused(sentTo, 4), 'an admin was refused their own command')
-        t.isTrue(anyLine(lines, cmd.admin) or #sentTo > 0, ('the %s command did nothing for an admin'):format(cmd.admin))
+        local _, lines = s.run('arenaadmin', 4, { cmd.name })
+        t.isFalse(anyLine(lines, cmd.admin),
+            ('the %s report was printed for a player who should have been sent to the tablet'):format(cmd.admin))
+    end)
+
+    t.test(('/arenaadmin %s runs at the CONSOLE, which is the control'):format(cmd.name), function()
+        local s = newServer({ adminSrc = 4 })
+        local sentTo, lines = s.run('arenaadmin', 0, { cmd.name })
+        t.isFalse(refused(sentTo, 0), 'the console was refused its own command')
+        t.isTrue(anyLine(lines, cmd.admin) or #sentTo > 0,
+            ('the %s subcommand did nothing at a console'):format(cmd.admin))
     end)
 end
 

@@ -14,6 +14,8 @@
         "already_in_match": "You are already in a match.",
         "arena_in_use": "That arena is being fought in. Wait for it, or pick another.",
         "arena_shut": "The arena is shut at this hour. The panel has the times.",
+        "use_the_tablet": "That is on the tablet. Open it with /arenaadmin on its own -- it shows you what you are acting on before you act, which a typed command cannot.",
+        "confirm_wipe": "Press it again to wipe every match. Everyone fighting is thrown out and every stake and entry fee is refunded.",
         "stash_held_back": "That stash is being held back -- the door will not empty it. Read what is in it, take out anything that is not theirs, then clear the hold and hand it back.",
         "stash_not_held_back": "That stash is not being held back, so there was no hold to clear.",
         "stash_not_empty": "That stash still has things in it. Clearing the hold now could hand the owner a second copy of what they already carry. Take out anything that is not theirs, then press it again to clear it anyway.",

@@ -176,22 +176,37 @@ end
 
 print('==> the command an operator could not find')
 
-t.test('/arenadispatch is registered, in the shared realm where a server-only grep misses it', function()
+t.test('THE FIX THAT OUTLIVED THE BUG: there is exactly ONE command now', function()
+    -- /arenadispatch was the command nobody could discover, and this file was
+    -- written because of it. It is not registered any more, and neither are
+    -- the five others that sat beside it: every reading they printed is on
+    -- the admin tablet, and at a console each is `/arenaadmin <name>`.
+    --
+    -- So the discoverability rule this file enforces got easier rather than
+    -- weaker. There is one name to find, it is suggested, and the guard below
+    -- still fails the moment a second command is registered without being
+    -- made discoverable too.
     local commands = registeredCommands()
-    t.isNotNil(commands.arenadispatch, '/arenadispatch is not registered anywhere in this resource')
-    t.equals(commands.arenadispatch, 'shared/compat/dispatch.lua',
-        '/arenadispatch moved; the spec header explaining why it was missed needs moving with it')
+
+    local names = {}
+    for name in pairs(commands) do names[#names + 1] = name end
+    table.sort(names)
+
+    t.equals(#names, 1, 'this resource registers ' .. table.concat(names, ', '))
+    t.equals(names[1], 'arenaadmin', 'the one command is not the one that opens the tablet')
+    t.equals(commands.arenaadmin, 'server/main.lua',
+        '/arenaadmin moved; the file that dispatches its subcommands moved with it')
 end)
 
-t.test('/arenadispatch offers itself to autocomplete', function()
+t.test('and it offers itself to autocomplete', function()
     local client = loadClient()
     local found
     for _, entry in ipairs(client.suggested) do
-        if entry.command == '/arenadispatch' then found = entry end
+        if entry.command == '/arenaadmin' then found = entry end
     end
-    t.isNotNil(found, 'typing /arenad still offers nothing -- the reported bug is back')
+    t.isNotNil(found, 'typing /arena still offers nothing -- the reported bug is back')
     t.isTrue(type(found.help) == 'string' and #found.help > 0,
-        '/arenadispatch is suggested with no help text, which is a name and nothing else')
+        '/arenaadmin is suggested with no help text, which is a name and nothing else')
 end)
 
 t.test('and the suggestions come back when the chat resource restarts', function()

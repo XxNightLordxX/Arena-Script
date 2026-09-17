@@ -285,7 +285,15 @@ register('adminState', function(data)
 end)
 
 register('adminTool', function(data)
-    TriggerServerEvent('crimson_arena:server:adminTool', { tool = data.tool })
+    TriggerServerEvent('crimson_arena:server:adminTool', {
+        tool = data.tool,
+        -- ONLY THE MEDICAL TEST READS THIS, and the server decides that, not
+        -- the page: a target sent alongside a report that does not want one
+        -- is handed to nothing. Passed through as it arrives so the two ends
+        -- cannot disagree about what an empty box means -- the server reads a
+        -- missing or unusable id as "the person who pressed it".
+        target = data.target,
+    })
 end)
 
 register('adminStop', function(data)
@@ -304,6 +312,15 @@ register('adminHours', function(data)
         -- two ends a chance to disagree about what a third value means.
         forced = data.forced,
         matchId = data.matchId,
+    })
+end)
+
+register('adminWipe', function(data)
+    TriggerServerEvent('crimson_arena:server:adminWipe', {
+        -- COERCED HERE, as adminUnjam's is: the page sends this only on the
+        -- press that follows the warning, and a nil arriving as anything but
+        -- false would be a confirmation nobody gave.
+        confirm = data.confirm == true,
     })
 end)
 

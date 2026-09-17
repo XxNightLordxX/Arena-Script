@@ -57,7 +57,7 @@ local function newArena(admins, mutate)
     --- the list. Assigning a field on the returned table looks like it works
     --- and changes nothing: the double closes over the local, not the field.
     local owedBox, returned, queued = { rows = {}, pending = {} }, {}, {}
-    local unjammed, forcedClears = {}, {}
+    local unjammed, forcedClears, revived = {}, {}, {}
 
     local env = Sandbox.newArenaEnv({
         exports = qbx.exports,
@@ -186,6 +186,13 @@ local function newArena(admins, mutate)
             end,
         },
         ArenaDispatch = {
+            -- THE ONE TOOL THAT IS HANDED SOMETHING. Records who it was
+            -- asked about, because "which player did the tablet actually
+            -- revive" is the whole of what can go wrong here.
+            ReviveReport = function(target)
+                revived[#revived + 1] = target
+                return { 'ran against ' .. tostring(target) }
+            end,
             Set = function() end, Clear = function() end,
             Revive = function(src)
                 netEvents.revived = netEvents.revived or {}
@@ -293,6 +300,9 @@ local function newArena(admins, mutate)
 
     --- Whether each of those clears carried the operator's confirmation.
     function server.forcedClears() return forcedClears end
+
+    --- Every server id the medical test was run against.
+    function server.medicalTargets() return revived end
     function server.log() return table.concat(console, '\n') end
 
     --- Every client event of one name, newest last.
@@ -891,6 +901,55 @@ t.test('and the screen is redrawn on the REFUSAL too, not only on the clear', fu
         'a refused clear left the screen with nothing to say')
 end)
 
+t.test('THE REQUEST: the tablet stops every match, and asks before it does', function()
+    -- /arenaadmin wipe has always existed at a console. Bringing it to the
+    -- tablet brings the console's one protection with it and then some: the
+    -- SERVER refuses an unconfirmed wipe, so a mis-click cannot be turned
+    -- into one by a crafted request either.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    t.equals(#s.lobby.All(), 1, 'the fixture did not make a match to wipe')
+
+    s.fire('adminWipe', 1, {})
+    t.equals(#s.lobby.All(), 1, 'an unconfirmed wipe took the server out')
+
+    s.fire('adminWipe', 1, { confirm = true })
+    t.equals(#s.lobby.All(), 0, 'a confirmed wipe stopped nothing')
+end)
+
+t.test('and a confirmation that is not a real yes is not one', function()
+    -- The same coercion setReady's relay does. A truthy string arriving from
+    -- a crafted request is not somebody pressing a button twice.
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminWipe', 1, { confirm = 'yes' })
+    s.fire('adminWipe', 1, { confirm = 1 })
+
+    t.equals(#s.lobby.All(), 1, 'a wipe went through on something that was not a yes')
+end)
+
+t.test('and a player who is not an admin cannot wipe the server', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminWipe', 3, { confirm = true })
+
+    t.equals(#s.lobby.All(), 1, 'a non-admin stopped every match on the server')
+end)
+
+t.test('and the screen is redrawn afterwards, even though nothing is left', function()
+    -- An operator who pressed a destructive button and saw the same list
+    -- presses it again.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    local before = #s.sentNamed('adminState')
+
+    s.fire('adminWipe', 1, { confirm = true })
+
+    t.isTrue(#s.sentNamed('adminState') > before, 'the wipe left the screen showing the dead rounds')
+end)
+
 t.test('and a clear with no stash named is refused', function()
     local s = newArena({ [1] = true })
     s.jam('crimson_arena_CID777')
@@ -1347,6 +1406,69 @@ t.test('every line is a string, whatever the report handed back', function()
         end
     end
     t.isTrue(checked > 0, 'no line was examined at all, so this test cannot fail')
+end)
+
+t.test('THE REQUEST: the medical test runs against the id the operator typed', function()
+    -- /arenarevive is the one admin action that deliberately reaches somebody
+    -- who is NOT in a match: it exists so an operator can watch their medical
+    -- script answer the arena's revive without first putting a player through
+    -- a round. The tablet's own revive button refuses anyone outside the
+    -- match being looked at, so it could not stand in for this.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminTool', 1, { tool = 'medical', target = 7 })
+
+    t.equals(#s.medicalTargets(), 1, 'the medical test ran against nobody')
+    t.equals(s.medicalTargets()[1], 7, 'it revived the wrong player')
+    t.contains(table.concat(s.lastNamed('adminTool').payload.lines, ' '), 'ran against 7',
+        'the reading did not reach the screen')
+end)
+
+t.test('and an empty box means whoever is holding the tablet', function()
+    -- The common case by far: an operator testing their own medical script is
+    -- usually the person standing there watching it happen.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminTool', 1, { tool = 'medical' })
+    s.fire('adminTool', 1, { tool = 'medical', target = 0 })
+    s.fire('adminTool', 1, { tool = 'medical', target = 'nonsense' })
+
+    t.equals(#s.medicalTargets(), 3, 'a blank or unusable id ran against nobody at all')
+    for _, who in ipairs(s.medicalTargets()) do
+        t.equals(who, 1, 'a blank id revived somebody other than the operator')
+    end
+end)
+
+t.test('and no OTHER report revives anybody, whatever id is sent with it', function()
+    -- WHAT THIS CAN AND CANNOT PROVE, said plainly rather than implied by a
+    -- confident name. It pins the behaviour that matters: only the medical
+    -- test ever revives, so a stale id left in the box cannot be carried into
+    -- a reading by pressing the wrong button.
+    --
+    -- It does NOT prove the `tool.wants` line in main.lua. Every other report
+    -- takes no argument and ignores an extra one, so deleting that line
+    -- leaves this test green -- measured, not assumed. The line is there for
+    -- the NEXT tool that takes a target, and it is honest to say that no test
+    -- here holds it in place.
+    local s = newArena({ [1] = true })
+
+    for _, tool in ipairs(adminToolNames()) do
+        if tool ~= 'medical' then
+            s.fire('adminTool', 1, { tool = tool, target = 7 })
+        end
+    end
+
+    t.equals(#s.medicalTargets(), 0, 'a report that wants no target revived somebody')
+end)
+
+t.test('and a player who is not an admin cannot revive anybody through it', function()
+    -- The revive is a real action on a real player, so this is the one tool
+    -- where the permission check is not merely about who may READ a report.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminTool', 2, { tool = 'medical', target = 1 })
+
+    t.equals(#s.medicalTargets(), 0, 'a non-admin revived a player from the tools tab')
 end)
 
 t.test('a tool name the server does not know is refused, not answered', function()

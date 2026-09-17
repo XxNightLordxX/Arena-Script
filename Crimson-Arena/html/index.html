@@ -305,6 +305,8 @@
     <section id="admin-list">
         <p id="admin-empty" class="hint hidden">No matches are running.</p>
         <div id="admin-matches"></div>
+        <button id="admin-wipe" class="btn hidden" type="button">Stop every match</button>
+        <p id="admin-wipe-hint" class="hint hidden"></p>
     </section>
 
     <section id="admin-detail" class="hidden">
@@ -350,6 +352,17 @@
             <button id="admin-tool-owed" class="btn" type="button">Money owed</button>
             <button id="admin-tool-attachments" class="btn" type="button">Attachments</button>
             <button id="admin-tool-jams" class="btn" type="button">Held-back stashes</button>
+            <button id="admin-tool-medical" class="btn" type="button">Medical test</button>
+        </div>
+
+        <!-- Shown for the medical test alone. Blank means whoever is holding
+             the tablet, which is the common case: an operator testing their
+             own medical script is usually standing there watching it. -->
+        <div id="admin-tool-target-row" class="field hidden">
+            <span class="field-label">Medical test: server id</span>
+            <input id="admin-tool-target" type="number" min="1" step="1">
+            <p class="hint">Who the Medical test revives. Blank means you. The other
+                reports ignore it.</p>
         </div>
 
         <p id="admin-tool-hint" class="hint">Pick a report above.

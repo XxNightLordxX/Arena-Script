@@ -6253,24 +6253,22 @@ function ArenaAmmo.ClearHold(stash, forced)
     return ArenaAmmo.Unjam(stash), nil, rows
 end
 
---- Shows the jams and clears them. `/arenaunjam` on its own lists; with a
---- stash name, or `all`, it clears.
+--- Shows the jams and clears them. `/arenaadmin unjam` on its own lists;
+--- with a stash name, or `all`, it clears.
 ---
---- GUARDED, because this file is not only loaded by a server. The six
---- harnesses under tools/harness build the smallest environment that can run
---- the ledger and the door, and a command surface is not part of it -- so
---- registering unconditionally took all six down at load. Every other thing
---- this file reaches for outside itself (ArenaIsAdmin, ArenaNotifyKey,
---- ArenaDispatch) is asked for by type for the same reason.
-if type(RegisterCommand) == 'function' then
-RegisterCommand('arenaunjam', function(src, args)
-    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
-        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
-            ArenaNotifyKey(src, 'error.no_permission', 'error')
-        end
-        return
-    end
-
+--- NOT A COMMAND OF ITS OWN ANY MORE. It was `/arenaunjam`, and the resource
+--- now registers exactly one command: everything an operator can do is either
+--- on the admin tablet or behind `/arenaadmin <thing>` at a console. Two
+--- doors to one action is two sets of argument handling to keep in step, and
+--- the one that went was the one nobody could discover.
+---
+--- THE PERMISSION CHECK WENT WITH IT, on purpose and not by omission:
+--- `/arenaadmin` refuses a non-admin before it looks at what was typed, so a
+--- second check here would be a line no behaviour could tell apart from its
+--- absence. Called from anywhere else, this function assumes its caller has
+--- already asked. DO NOT call it without doing so.
+--- @param args string[]?
+function ArenaAmmo.UnjamCommand(args)
     local stashes, known = ArenaAmmo.JammedStashes()
 
     if #stashes == 0 then
@@ -6360,7 +6358,6 @@ RegisterCommand('arenaunjam', function(src, args)
     end
 
     if clear(wanted) then ArenaLog('arenaunjam: cleared %s.', wanted) end
-end, false)
 end
 
 function ArenaAmmo.HeldFor(src)
@@ -7936,20 +7933,11 @@ end
 --- file is loaded by the harnesses under tools/harness, which build the
 --- smallest environment that can run the ledger and the door and have no
 --- command surface in it.
-if type(RegisterCommand) == 'function' then
-RegisterCommand('arenaattachments', function(src, _args)
-    if type(ArenaIsAdmin) ~= 'function' or not ArenaIsAdmin(src) then
-        if src ~= 0 and type(ArenaNotifyKey) == 'function' then
-            ArenaNotifyKey(src, 'error.no_permission', 'error')
-        end
-        return
-    end
-
-    for _, line in ipairs(ArenaAmmo.AttachmentReport()) do
-        ArenaLog('arenaattachments: %s', line)
-    end
-end, false)
-end
+-- `/arenaattachments` USED TO BE REGISTERED HERE and is not a command any
+-- more. The reading it printed is ArenaAmmo.AttachmentReport, which the admin
+-- tablet draws under Tools and `/arenaadmin attachments` prints at a console
+-- -- the same lines from the same function, through the one command this
+-- resource still registers.
 
 -- THE CHECK RUNS AT START, BEFORE ANYBODY FIGHTS.
 --

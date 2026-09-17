@@ -452,7 +452,7 @@ t.test('the surface this file fuzzes is the whole surface, not just net events',
         counts[point.kind] = counts[point.kind] + 1
     end
 
-    t.equals(counts.net, 25, 'the number of client events changed -- update this file with it')
+    t.equals(counts.net, 26, 'the number of client events changed -- update this file with it')
     t.isTrue(counts.callback >= 1, 'the ox_lib callback surface vanished')
     t.isTrue(counts.handler >= 8,
         ('only %d AddEventHandler entry points found'):format(counts.handler))
@@ -481,6 +481,10 @@ t.test('the surface this file fuzzes is the whole surface, not just net events',
         -- abuse MAKES ITEMS -- so it is fuzzed by name rather than left to
         -- the sweep to happen to cover.
         'crimson_arena:server:adminUnjam',
+        -- And the one that stops every round on the server at once. Refunds
+        -- everybody, so it makes nobody poorer -- but an unguarded one ends
+        -- every fight in progress, which is the griefing tool on this screen.
+        'crimson_arena:server:adminWipe',
     }) do
         t.isTrue(byName[required] == true, ('%s is no longer being fuzzed'):format(required))
     end

@@ -1923,7 +1923,19 @@ function ArenaBetting.Settle(matchId, context)
     -- Arena.ComputePayouts cannot overspend the pot it was handed, so this
     -- only trips when the caller's player list disagrees with escrow. The
     -- honest answer to that is everyone's own stake back, not a guess.
-    if (distributed + houseCut) > pot then
+    --
+    -- AND UNDERSPENDING IS THE SAME DISAGREEMENT, which this read as fine
+    -- for as long as it said `>`. An empty or short payout list marked the
+    -- WHOLE POT settled as 'payout' with nobody credited for the difference
+    -- -- the money did not go to the wrong player, it stopped existing. That
+    -- is worse than the overspend this was written for, because an overspend
+    -- refuses loudly and an underspend balanced perfectly and said nothing.
+    --
+    -- `~=` IS THE WHOLE FIX. The pot is held in escrow and every case that
+    -- reaches here is a mismatch between what was held and what the caller
+    -- wants to hand out; neither direction is a guess worth making, and both
+    -- have the same honest answer -- give everybody their own stake back.
+    if (distributed + houseCut) ~= pot then
         ArenaLog('SETTLE REFUSED: match %s computed %d + %d house against a held pot of %d. Refunding instead.',
             tostring(matchId), distributed, houseCut, pot)
         ArenaBetting.RefundAll(matchId, 'refund_settle_mismatch')

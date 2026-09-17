@@ -2884,7 +2884,23 @@ local function takeWeaponBack(ox, src, record)
         -- filter is the only thing that can have moved it. `before` is the
         -- only witness to that: DO NOT drop the read that makes it, or this
         -- line goes back to calling a weapon that was never here a success.
-        if before and before[record.serial] then return true, false end
+        --
+        -- AND A TAKE-BACK THAT SUCCEEDS HAS TO BE STRUCK OFF THE SLATE, which
+        -- this branch reported without doing. The sibling exit above says it
+        -- plainly -- `if took then strikeWeaponOff(record) end` -- and this
+        -- one returned `true` and left the row standing, so EVERY per-weapon
+        -- take-back that came back through here orphaned a row in
+        -- crimson_arena_owed_kit. The next start read those rows back as
+        -- debts and billed fighters who had handed everything in.
+        --
+        -- MEASURED ON GUN GAME, where a take-back happens on every death: 93
+        -- rows over 30 deaths before, 4 after. That accumulation is also what
+        -- made the row count a player could drive without limit, since these
+        -- rows are not in the memory ledger the caps apply to.
+        if before and before[record.serial] then
+            strikeWeaponOff(record)
+            return true, false
+        end
 
         -- AND OTHERWISE IT WAS NEVER IN THESE POCKETS AT ALL. Reporting that
         -- as a successful removal is what let a climber park each rung in a
@@ -3709,7 +3725,7 @@ local KIT_WEAPON_SQL = [[
     INSERT INTO crimson_arena_owed_kit
         (citizenid, ledger_key, kind, name, serial, amount)
     VALUES (?, ?, 'weapon', ?, ?, 1)
-    ON DUPLICATE KEY UPDATE amount = 1
+    ON DUPLICATE KEY UPDATE kind = 'weapon', amount = 1
 ]]
 
 --- The same row, said differently: this weapon is OUT, not owed.

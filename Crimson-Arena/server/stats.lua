@@ -91,7 +91,12 @@ function ArenaStats.Record(entry)
         losses = entry.won == true and 0 or 1,
         kills = math.max(0, Arena.ToInt(entry.kills) or 0),
         deaths = math.max(0, Arena.ToInt(entry.deaths) or 0),
-        earnings = Arena.ToInt(entry.earnings) or 0,
+        -- CLAMPED LIKE THE TWO ABOVE IT. No producer can emit a negative
+        -- today -- every settlement path was walked -- so this changes nothing
+        -- any input can currently reach. It is here because the two lines
+        -- above it clamp and this one did not, and a column that accumulates
+        -- with `earnings + VALUES(earnings)` has no way back from a negative.
+        earnings = math.max(0, Arena.ToInt(entry.earnings) or 0),
     }
 
     accumulate(session, entry.citizenid, delta)

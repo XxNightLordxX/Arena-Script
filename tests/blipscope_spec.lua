@@ -1177,6 +1177,39 @@ t.test('a free-for-all tells it nothing, or the whole round is harmless', functi
     t.isNil(f.team, 'a free-for-all put every fighter on the same side')
 end)
 
+t.test('and a side the config cannot place takes the hold OFF rather than leaving it half on', function()
+    -- Arena.TeamIndex answers nil when the round's teamKey is not in
+    -- Arena.GetEnabledTeams() -- an operator disabling a team while a round
+    -- using it is live, or a key this client's config does not know. There is
+    -- no honest index to use, so the hold cannot be taken.
+    --
+    -- WHAT IT MUST NOT DO IS LEAVE HALF OF ONE STANDING. A player left on a
+    -- stale arena team with the option still off is the worst of both: the
+    -- engine is refusing damage between whoever happens to share that number
+    -- now, which is not the round's own sides. Bailing has to RELEASE.
+    --
+    -- Deleting that release used to break nothing -- checked across every
+    -- spec that loads client/match.lua.
+    local f = newFixture()
+    f.enterLive()
+    local heldTeam = f.team
+    t.equals(heldTeam, f.env.Arena.TeamIndex('crimson'),
+        'the hold never started, so this proves nothing')
+    t.isFalse(f.friendlyFire, 'the hold never switched the option off, so this proves nothing')
+
+    -- NOW THE SIDE STOPS BEING PLACEABLE, and something moves the player off
+    -- their number so the drift repair reaches holdFriendlyFire again.
+    f.env.Config.Teams.list = {}
+    f.engineTeam = 7
+    f.step()
+
+    t.isTrue(f.friendlyFire,
+        'a round whose side cannot be placed kept friendly fire switched off -- the engine is '
+            .. 'still refusing damage between whoever shares that team number now')
+    t.isTrue(f.team ~= heldTeam,
+        'the player was left on the arena team for a side the config can no longer place')
+end)
+
 t.test('THE CONFIG WHERE THIS IS THE ONLY THING LEFT: the server guard off', function()
     -- Config.Match.crossfireGuard.enabled is an operator switch, and BOTH
     -- server handlers open on it: weaponDamageEvent and explosionEvent each

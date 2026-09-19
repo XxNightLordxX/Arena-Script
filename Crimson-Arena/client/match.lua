@@ -272,6 +272,13 @@ end
 --- the file has finished loading, so no caller can reach a nil here.
 local ArenaDebugPrint
 
+--- FORWARD-DECLARED for the same reason as ArenaDebugPrint above, and it is
+--- the second time this file has caught the same trap: the loggers live with
+--- the rest of the logging, hundreds of lines below the first code that wants
+--- one. Assigned at the definition rather than redeclared, so the body writes
+--- this local instead of shadowing it.
+local ArenaLogOnce
+
 local friendlyFireHeld = false
 
 local priorTeam = nil
@@ -312,8 +319,27 @@ local function holdFriendlyFire(ped)
     -- least it can do is leave a line behind.
     local index = Arena.TeamIndex(currentMatch.teamKey)
     if not index then
-        ArenaDebugPrint('friendly fire: no engine team for "%s", so this round runs with no '
-            .. 'client-side hold -- teammates can be caught by a spread meant for an enemy.',
+        -- ONCE A SESSION, NOT ONCE A CALL. This is a misconfiguration --
+        -- somebody's teamKey is not in Config.Teams -- so it is true for the
+        -- whole round and probably the whole session, and saying it again
+        -- adds nothing. The respawn handler calls holdFriendlyFire on every
+        -- respawn, so "once a call" is once per death on a round that is
+        -- already broken.
+        --
+        -- NOT per-frame, though, and that is worth writing down because it
+        -- reads like it could be: the drift repair in the arena loop only
+        -- calls holdFriendlyFire while friendlyFireHeld is true, and the
+        -- releaseFriendlyFire below clears it. One bail ends the loop's
+        -- interest.
+        --
+        -- ArenaLogOnce rather than ArenaDebugPrint for the other half too:
+        -- ArenaDebugPrint sends a net event to the server per call, and a
+        -- misconfiguration warning is not worth a packet each time.
+        ArenaLogOnce('friendly-fire-no-team',
+            'friendly fire: no engine team for "%s", so this round runs with no client-side '
+            .. 'hold -- teammates can be caught by a spread meant for an enemy, and the melee '
+            .. 'the server barely refuses. Check that teamKey is in Config.Teams. '
+            .. '(Said once a session.)',
             tostring(currentMatch.teamKey))
         releaseFriendlyFire(ped)
         return
@@ -845,7 +871,10 @@ local saidOnce = {}
 --- A console line worth printing ONCE, however many times it is reached.
 --- @param key string
 --- @param fmt string
-local function ArenaLogOnce(key, fmt, ...)
+-- ASSIGNED, NOT DECLARED: it writes the local forward-declared above, and it
+-- must not sit at column zero as `function Name(` -- checklist_spec counts
+-- those as this file's public surface and checks them against REFERENCE.md.
+ArenaLogOnce = function(key, fmt, ...)
     if saidOnce[key] then return end
     saidOnce[key] = true
     -- A MESSAGE THAT IS ALREADY FINISHED IS NOT RE-FORMATTED. Two callers

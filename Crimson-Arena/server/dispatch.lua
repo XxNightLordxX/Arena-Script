@@ -1620,7 +1620,8 @@ end
 --- dozen lines apart, so a window measured only in characters runs out of one
 --- handler and into the next -- which would report an unguarded
 --- `ambulanceAlert` as guarded on the strength of the guard in `EMSDownAlert`
---- below it. The window stops at the next RegisterNetEvent for that reason.
+--- below it. The window stops at the handler's own `end)` for that reason,
+--- and at the next registration after it, whichever comes first.
 ---
 --- IT REPORTS WHAT IT SAW AND NEVER GUESSES. A file it cannot read, a build
 --- whose handlers are written some other way, a resource that is not running
@@ -1683,10 +1684,10 @@ local function ambulanceGuardLine()
     -- function used 600, which is INSIDE that and passed its own test purely
     -- because the 601st character fell in the middle of the word it was
     -- looking for. Ten characters of accident is not a gate. So the window
-    -- stops at the next RegisterNetEvent, which is where the handler being
-    -- judged actually ends, and the count is deliberately set far ABOVE any
-    -- real gap so that it never decides anything except for the last handler
-    -- in a file, where there is no next one to stop at.
+    -- stops at the handler's own end, and the count is deliberately set far
+    -- ABOVE any real gap so that it decides nothing on a file this check can
+    -- read at all. guardedAt below has the three edges and why each is there.
+    --
     -- THE KEY AS WELL AS THE NAME. A guard written the way this resource's own
     -- config.lua suggests -- `if Player(src).state.crimsonArena then return
     -- end` -- never says "Crimson-Arena" at all, and reporting that working
@@ -1708,14 +1709,41 @@ local function ambulanceGuardLine()
         -- starts, but the handler being judged ends before that -- at its own
         -- `end)` -- and the gap between them holds ordinary file comments. A
         -- window that ran to the next registration would count a mention
-        -- sitting in that gap as a guard inside the handler above it. The
-        -- count only ever decides anything for a handler with no `end)` and no
-        -- registration after it, which is a file this check cannot read anyway.
+        -- sitting in that gap as a guard inside the handler above it.
+        --
+        -- THE CLOSER IS MATCHED WITH ITS INDENT, and the version that did not
+        -- was wrong in a way that gave the one answer this line must never
+        -- give by accident. It looked for a literal "\nend)" -- an `end)` at
+        -- COLUMN ZERO -- so the moment a registration is wrapped in anything,
+        -- that edge silently disappeared:
+        --
+        --     if MDTIntegration and MDTIntegration.Enabled then
+        --         RegisterNetEvent('hospital:server:EMSDownAlert', function(street)
+        --             ...
+        --         end)
+        --     end
+        --
+        -- That is ordinary Lua, and sc-ambulance's own handler invites it --
+        -- its first line is a test on exactly that setting, so hoisting the
+        -- test around the registration is the obvious edit. (The setting is
+        -- on THEIR Config table, and is deliberately not written here as a
+        -- dotted Config name: tools/verify_contracts.py reads every such name
+        -- in this tree as a setting THIS resource must define, and has now
+        -- caught two of somebody else's.) With the closer
+        -- indented, and no further registration below it, BOTH strong edges
+        -- were gone and the character count ran 2000 bytes into the tail of
+        -- the file. Any unrelated mention down there -- a cached export, a
+        -- config table, a compat block -- and a wide-open person-down handler
+        -- was reported as carrying a guard.
+        --
+        -- So the count decides nothing on any file this check can read, which
+        -- is what the sentence that used to stand here claimed without it
+        -- being true. It is a backstop against a runaway search, nothing more.
         local stop = at + 2000
         -- #'RegisterNetEvent' == 16, so this starts past the one we are in.
         local nextAt = body:find('RegisterNetEvent', at + 16, true)
         if nextAt and nextAt < stop then stop = nextAt end
-        local endAt = body:find('\nend)', at, true)
+        local endAt = body:find('\n%s*end%)', at)
         if endAt and endAt < stop then stop = endAt end
 
         -- A COMMENT IS NOT A GUARD, and this is the trap the shape of our own

@@ -3149,6 +3149,56 @@ t.test('and a resource that is STOPPED is not treated as running', function()
         'a stopped sc-ambulance was treated as running')
 end)
 
+t.test('and an INDENTED end) still ends the handler, so the tail of the file is not its guard', function()
+    -- THE FALSE POSITIVE THIS PINS is the one answer this line must never give
+    -- by accident: a wide-open person-down handler reported as carrying a
+    -- guard. It needs no exotic file. The closer edge used to be the literal
+    -- "\nend)" -- an `end)` at COLUMN ZERO -- so wrapping the registration in
+    -- anything at all made that edge disappear:
+    --
+    --     if Config.MDTIntegration and Config.MDTIntegration.Enabled then
+    --         RegisterNetEvent('hospital:server:EMSDownAlert', function(street)
+    --         ...
+    --         end)
+    --     end
+    --
+    -- sc-ambulance's own handler opens with a test on exactly that setting, so
+    -- hoisting it around the registration is the obvious edit, and the result
+    -- is ordinary Lua. With the closer indented AND nothing registered below
+    -- it, both strong edges were gone and the character backstop ran into the
+    -- tail of the file -- where an unrelated `exports['Crimson-Arena']` read
+    -- as the handler's guard.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        'if Config.MDTIntegration and Config.MDTIntegration.Enabled then',
+        "    RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '        local src = source',
+        '        TriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        '    end)',
+        'end',
+        '',
+        '-- ordinary tail of the file, nothing to do with the handler above',
+        string.rep('local filler = 1\n', 30),
+        "local arenaCompat = exports['Crimson-Arena']",
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+
+    t.contains(report, 'NO arena guard',
+        'the tail of the file was counted as the last handler\'s guard: ' .. report)
+    local named = report:match('NO arena guard in ([^,]+),')
+    t.isTrue(named ~= nil and named:find('EMSDownAlert', 1, true) ~= nil,
+        'the wrapped, unguarded handler was not the one named: ' .. tostring(named))
+    t.isTrue(named == nil or named:find('ambulanceAlert', 1, true) == nil,
+        'the genuinely guarded handler above was dragged in: ' .. tostring(named))
+end)
+
 t.test('and a file it cannot read is reported as UNKNOWN, never guessed', function()
     -- Same rule as the sc-dispatch line above: an operator told the guard is
     -- in when it is not stops looking.

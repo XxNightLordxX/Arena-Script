@@ -265,6 +265,13 @@ local function stripIssuedWeapons(ped)
     end
 end
 
+--- FORWARD-DECLARED so holdFriendlyFire's bail can say something. The real
+--- definition is ArenaDebugPrint's, a few hundred lines down beside the rest
+--- of the logging; `local function` there would shadow this one, so it is
+--- assigned rather than redeclared. Nothing above that assignment runs before
+--- the file has finished loading, so no caller can reach a nil here.
+local ArenaDebugPrint
+
 local friendlyFireHeld = false
 
 local priorTeam = nil
@@ -289,8 +296,25 @@ local function holdFriendlyFire(ped)
         return
     end
 
+    -- AND IT SAYS SO WHEN IT CANNOT PLACE THE SIDE, rather than quietly
+    -- running the round with no hold at all.
+    --
+    -- Arena.TeamIndex answers nil when the client's teamKey is not in
+    -- Arena.GetEnabledTeams() -- an operator disabling a team while a round
+    -- using it is live, or a key this client's config does not know. Bailing
+    -- is right: a made-up index would put two sides on one number, and that
+    -- is the bug this whole block exists to avoid.
+    --
+    -- BUT IT USED TO BAIL IN SILENCE, and a round with the engine hold absent
+    -- looks exactly like a round with it on until somebody shotguns a
+    -- teammate through the server's deliberate spread bend. The server's own
+    -- equivalent fails CLOSED and says so; this one has to fail open, so the
+    -- least it can do is leave a line behind.
     local index = Arena.TeamIndex(currentMatch.teamKey)
     if not index then
+        ArenaDebugPrint('friendly fire: no engine team for "%s", so this round runs with no '
+            .. 'client-side hold -- teammates can be caught by a spread meant for an enemy.',
+            tostring(currentMatch.teamKey))
         releaseFriendlyFire(ped)
         return
     end
@@ -313,21 +337,39 @@ local function holdFriendlyFire(ped)
     -- It is also per-PED, which is why it had to be re-applied on every
     -- respawn; the team does not.
     --
-    -- THAT PARAGRAPH IS INFERENCE AND IS LABELLED AS INFERENCE. The native
-    -- reference says only "setting ped to true allows the ped to shoot" its
-    -- own side; it does not describe the relationship group, and nobody has
-    -- measured this in game. It is the only reading that explains a block
-    -- that was TOTAL and SYMMETRIC in team modes only, and the alternatives
-    -- were each checked and fail: the team index really is distinct per side
-    -- (Arena.TeamIndex returns the ipairs position), the buckets are per
-    -- MATCH so both fighters share one, and the server allows the shot --
-    -- crossfire_spec drives an enemy being hit and hitting back.
+    -- AND THE NATIVE REFERENCE SAYS SO OUTRIGHT, which is worth quoting here
+    -- because this was argued from symptoms for two commits before anybody
+    -- read it. SET_CAN_ATTACK_FRIENDLY(ped, toggle, p2), verbatim:
     --
-    -- IF IT IS EVER WRONG, THE CHEAP TEST IS THE SERVER'S OWN LOG. mayDamage
-    -- prints `crossfire: %s may not damage %s` on every refused packet. A
-    -- round where nobody can hurt anybody either shows those lines -- and
-    -- then the block is the server's and this file is innocent -- or shows
-    -- none, and it is here.
+    --     Setting ped to true allows the ped to shoot "friendlies".
+    --     p2 set to true when toggle is also true seams to make peds
+    --     permanently unable to aim at, even if you set p2 back to false.
+    --     p1 = false & p2 = false for unable to aim at.
+    --     p1 = true & p2 = false for able to aim at.
+    --
+    -- The hold wrote (ped, false, false). That is the third line: UNABLE TO
+    -- AIM AT, stated flatly and NOT scoped to friendlies. The report was not
+    -- a misreading of a team flag; it is what the documented argument pair
+    -- does.
+    --
+    -- AND THE OLD RELEASE WROTE (ped, true, true) -- the second line, the one
+    -- the reference warns makes a ped PERMANENTLY unable to aim at, "even if
+    -- you set p2 back to false". Anybody who played a team round on a build
+    -- that shipped that release may still be carrying it, and no change here
+    -- can reach them: it wants a fresh ped, which a respawn or a reconnect
+    -- gives. Worth knowing before concluding a fix did not work.
+    --
+    -- IF IT IS EVER WRONG ANYWAY, THE CHEAP TEST IS THE SERVER'S OWN LOG.
+    -- mayDamage prints `crossfire: %s may not damage %s` on every refused
+    -- packet. A round where nobody can hurt anybody either shows those lines
+    -- -- and then the block is the server's and this file is innocent -- or
+    -- shows none, and it is here.
+    --
+    -- CHECK Config.Debug FIRST, because that print is ArenaDebug and
+    -- server/util.lua returns early unless Debug is true. It ships true, so
+    -- a stock install answers honestly -- but on a live server with Debug
+    -- turned off a REFUSING server is silent, and silence is the branch that
+    -- blames this file. No Debug, no verdict.
     --
     -- NetworkSetFriendlyFireOption STAYS, AND REMOVING IT WAS A MISTAKE THAT
     -- LASTED ONE COMMIT. It is team-scoped: it governs damage between players
@@ -749,7 +791,12 @@ local WHY_NOT_NETWORKED = 4
 --- build does not have, a native it is missing) is still printed outright,
 --- because that one is not noise, it is the answer.
 --- @param fmt string
-local function ArenaDebugPrint(fmt, ...)
+-- ASSIGNED, NOT DECLARED, and the form is load-bearing twice over. It has to
+-- write the local forward-declared above rather than shadow it, and it must
+-- not sit at column zero as `function Name(` -- checklist_spec counts those as
+-- this file's public surface and checks them against REFERENCE.md, so the
+-- declaration form alone would enter a private logger into the documented API.
+ArenaDebugPrint = function(fmt, ...)
     if Config.Debug ~= true then return end
     local ok, text = pcall(string.format, fmt, ...)
     text = ok and text or fmt

@@ -2723,8 +2723,15 @@ t.test('AND A GUARD IN ONE DOES NOT COUNT FOR THE OTHER', function()
         'a guard in EMSDownAlert was counted for ambulanceAlert: ' .. report)
     t.contains(report, 'hospital:server:ambulanceAlert',
         'the unguarded handler was not the one named: ' .. report)
-    t.isTrue(report:find('hospital:server:EMSDownAlert is a hole', 1, true) == nil,
-        'the guarded handler was reported as unguarded')
+    -- NOT A SEARCH FOR WORDS THE CODE NEVER SAYS. This used to look for
+    -- 'hospital:server:EMSDownAlert is a hole' -- a phrase no branch of
+    -- ambulanceGuardLine produces -- so it could never fail and pinned
+    -- nothing. The real claim is that the guarded handler is not in the list
+    -- of open ones, and the list is what the sentence names.
+    local named = report:match('NO arena guard in ([^,]+),')
+    t.isTrue(named ~= nil, 'the report did not name any open handler: ' .. report)
+    t.isTrue(named:find('EMSDownAlert', 1, true) == nil,
+        'the GUARDED handler was listed among the open ones: ' .. tostring(named))
 
     -- AND THE OTHER WAY ROUND, so the clamp is not passing by reporting
     -- everything unguarded. A guard in the FIRST handler must not be counted
@@ -2774,8 +2781,14 @@ t.test('and the word alone is not the guard -- it is the resource name or nothin
     --
     -- The handler below says the word and carries no guard. It must read as a
     -- hole.
+    -- THE BAIT HAS TO BE EXECUTABLE. This fixture used to put the word in a
+    -- COMMENT -- and the moment trailing-comment stripping was added below,
+    -- that line stopped reaching the needle at all and this test went vacuous:
+    -- the needle could be loosened from 'Crimson%-Arena' to 'Crimson' with the
+    -- whole suite still green. A test that survives the change it guards is
+    -- worse than no test, because it reads as cover.
     local said = AMBULANCE_SRC:format(
-        '\t-- Crimson RP: medics respond to arena calls like any other.\n',
+        '\tlocal crew = "Crimson RP"   -- medics respond to arena calls like any other\n',
         AMBULANCE_GUARD)
 
     local report = ambulanceBox({}, said)
@@ -2852,6 +2865,33 @@ t.test('and a SECOND, unguarded registration of the same event is not hidden', f
         'a duplicate unguarded registration was hidden behind the guarded one: ' .. report)
     t.contains(report, 'hospital:server:ambulanceAlert',
         'the doubly-registered event was not named as open: ' .. report)
+
+    -- BOTH ORDERINGS, BECAUSE ONE OF THEM PINS NOTHING. With the guarded
+    -- registration first, folding the results with "the last one wins" gives
+    -- the same answer as "all of them must" -- so a fold broken that way
+    -- survives the case above. Put the UNGUARDED one first and the two
+    -- disagree.
+    local report2 = ambulanceBox({}, table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n')
+
+    t.isTrue(report2:find('(2 of 2)', 1, true) == nil,
+        'with the UNGUARDED registration first, a last-wins fold reported it covered: ' .. report2)
+    t.contains(report2, 'hospital:server:ambulanceAlert',
+        'the open first registration was not named: ' .. report2)
 end)
 
 t.test('and the STATE BAG form counts as a guard, because config.lua suggests it', function()
@@ -2898,6 +2938,215 @@ t.test('THE sc-dispatch SWITCH: a COMMENTED-OUT example is not the live setting'
     end
     t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'CrimsonArena = true',
         'a genuinely enabled integration stopped being confirmed')
+end)
+
+t.test('and the NEXT-REGISTRATION clamp holds where a handler has no end) of its own', function()
+    -- The `\nend)` edge and the next-registration edge cover each other on an
+    -- ordinarily-formatted file, so a fixture with both pins NEITHER: delete
+    -- either and the suite stays green. This is the shape where only the
+    -- registration edge is left -- a handler passed a NAMED function, so it
+    -- closes on its own line with no `end)` anywhere in it. The first `\nend)`
+    -- below it belongs to the NEXT handler, which is guarded. Without the
+    -- registration clamp, the open handler borrows that guard and the report
+    -- says 2 of 2 over a handler with nothing in it at all.
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', ambulanceAlertHandler)",
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)",
+        '\tif ok and quiet == true then return end',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+    t.contains(report, 'NO arena guard',
+        'a handler with no body borrowed the guard from the handler below it: ' .. report)
+    local named = report:match('NO arena guard in ([^,]+),')
+    t.isTrue(named ~= nil and named:find('ambulanceAlert', 1, true) ~= nil,
+        'the empty handler was not the one named: ' .. tostring(named))
+    t.isTrue(named == nil or named:find('EMSDownAlert', 1, true) == nil,
+        'the genuinely guarded handler below was dragged in too: ' .. tostring(named))
+end)
+
+t.test('and a name that lives ONLY in a trailing comment is not a guard', function()
+    -- THE DISCRIMINATING CASE, and the first version of this test missed it by
+    -- asserting the wrong direction. It checked that a real guard carrying a
+    -- trailing note still counts -- which is true whether the strip cuts
+    -- trailing comments or only whole-line ones, so narrowing the strip
+    -- survived it. What the strip actually buys is THIS: a line of ordinary
+    -- code whose only mention of this resource is in the note after it.
+    local decoy = '\tlocal attempts = 0  -- Crimson-Arena: see DISPATCH-ALERTS.md\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        decoy .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        decoy .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    t.contains(ambulanceBox({}, body), 'NO arena guard',
+        'a name sitting only in a trailing comment was counted as a guard')
+
+    -- AND THE OTHER HALF, so the strip cannot be "fixed" by throwing the whole
+    -- line away: a real guard that carries its own trailing note still counts.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)  -- arena\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local kept = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    t.contains(ambulanceBox({}, kept), '(2 of 2)',
+        'a guard carrying its own trailing comment was thrown away with the comment')
+end)
+
+t.test('and a handler registered with DOUBLE quotes is read too', function()
+    -- handlerPositions tries both quote styles. Every other fixture in this
+    -- file uses single quotes, so the double-quote half was never reached and
+    -- could be deleted with the suite still green. Lua treats the two alike
+    -- and other resources use both.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local body = table.concat({
+        'RegisterNetEvent("hospital:server:ambulanceAlert", function(text)',
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        'RegisterNetEvent("hospital:server:EMSDownAlert", function(street)',
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    t.contains(ambulanceBox({}, body), '(2 of 2)',
+        'a double-quoted registration was not recognised as a handler at all')
+end)
+
+t.test('and ONE unreadable handler is counted as one, not as all of them', function()
+    -- The unfound branch is worded to read correctly for one and for two, and
+    -- says so in the source. Nothing had ever put exactly one handler in that
+    -- state, so the count could be swapped for the total and stay green.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "AddEventHandler('hospital:server:EMSDownAlert', function(street) end)",
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+    t.contains(report, 'cannot find 1 of its expected alert handlers',
+        'one unreadable handler was not counted as one: ' .. report)
+    t.contains(report, 'hospital:server:EMSDownAlert',
+        'the one it could not read was not named: ' .. report)
+    t.isTrue(report:find('ambulanceAlert', 1, true) == nil,
+        'a handler it read perfectly well was named as unreadable: ' .. report)
+end)
+
+t.test('and it asks sc-ambulance for server/main.lua by name', function()
+    -- The stub used to ignore the filename entirely, so the path could be
+    -- changed to a file that does not exist and every test stayed green. A
+    -- report about a file nobody has is worse than no report.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+    local asked = {}
+    f.env.LoadResourceFile = function(resource, file)
+        asked[#asked + 1] = tostring(resource) .. '/' .. tostring(file)
+        return nil
+    end
+    f.env.ArenaDispatch.CompatReport()
+
+    local found = false
+    for _, path in ipairs(asked) do
+        if path == 'sc-ambulance/server/main.lua' then found = true end
+    end
+    t.isTrue(found, 'it never asked for sc-ambulance/server/main.lua; it asked for: '
+        .. table.concat(asked, ', '))
+end)
+
+t.test('and the sc-dispatch switch takes the FIRST live line, not the last', function()
+    -- Every fixture had exactly one live assignment, so dropping the break --
+    -- making the LAST match win -- changed no answer. A config with the real
+    -- setting above a commented block and a second example below it is
+    -- ordinary, and the two readings disagree there.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = false,\n}\n'
+            .. '\n-- a later example, for reference only\n'
+            .. 'local example = { CrimsonArena = true }\n'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'is FALSE',
+        'a later line won over the live setting above it')
+end)
+
+t.test('and a SHORT state-bag key cannot make an unguarded resource read as covered', function()
+    -- stateBagKey is whatever the operator types. A bare substring search for
+    -- a short one matches ordinary code: both of sc-ambulance's handlers open
+    -- with `local src = source`, so a key of "src" would have reported a
+    -- completely unguarded resource as 2 of 2 -- the one answer this line must
+    -- never give by accident. The match is anchored on "state." for that
+    -- reason.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+    f.env.Config.Dispatch.custom = f.env.Config.Dispatch.custom or {}
+    f.env.Config.Dispatch.custom.stateBagKey = 'src'
+    f.env.LoadResourceFile = function(resource)
+        if resource ~= 'sc-ambulance' then return nil end
+        return AMBULANCE_SRC:format('', '')
+    end
+
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+    t.contains(report, 'NO arena guard',
+        'a one-word stateBagKey matched ordinary code and reported a hole as covered: ' .. report)
+end)
+
+t.test('and a RENAMED key is still accepted where the guard really reads it', function()
+    -- The control for the test above, and the reason the key is accepted at
+    -- all: an operator who renamed the key and guarded their script with it
+    -- must not be told to re-paste something they already did right.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+    f.env.Config.Dispatch.custom = f.env.Config.Dispatch.custom or {}
+    f.env.Config.Dispatch.custom.stateBagKey = 'myArenaFlag'
+    f.env.LoadResourceFile = function(resource)
+        if resource ~= 'sc-ambulance' then return nil end
+        local guard = '\tif Player(src).state.myArenaFlag then return end\n'
+        return AMBULANCE_SRC:format(guard, guard)
+    end
+
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), '(2 of 2)',
+        'a guard reading the operator\'s own renamed key was reported as a hole')
+end)
+
+t.test('and a resource that is STOPPED is not treated as running', function()
+    -- The fixture only ever answered 'started' or 'missing', so relaxing the
+    -- check to `state == 'missing'` changed no answer here while treating
+    -- every other FiveM state -- stopped, starting, uninitialized -- as live.
+    -- Reading a stopped resource's files and reporting on them as though they
+    -- were loaded is a confident wrong answer.
+    local f = newCompatAndServer({})
+    f.env.GetResourceState = function(name)
+        if name == 'sc-ambulance' then return 'stopped' end
+        return 'missing'
+    end
+
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'),
+        'sc-ambulance is not running',
+        'a stopped sc-ambulance was treated as running')
 end)
 
 t.test('and a file it cannot read is reported as UNKNOWN, never guessed', function()

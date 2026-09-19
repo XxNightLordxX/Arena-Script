@@ -2755,7 +2755,7 @@ Config.Dispatch = {
         --
         -- Empty the list to switch it off.
         cancelEvents = {
-            -- THESE SIX ARE THE EVENTS sc-dispatch AND sc-ambulance REALLY
+            -- THESE FOUR ARE THE EVENTS sc-dispatch AND sc-ambulance REALLY
             -- RAISE, read out of those two resources rather than guessed. If
             -- you run something else, replace the list.
 

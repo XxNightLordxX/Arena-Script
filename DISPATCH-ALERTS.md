@@ -129,11 +129,21 @@ side.
 
 ### Which one actually fires on your box
 
-**Do paste 2 first.** With `sc-ambulance`'s shipped config — `MDTIntegration.
-Enabled = true`, `DisableDefaultAlerts = true` — and `sc-dispatch` running,
-`EMSDownAlert` is the **only** one of the two that ever fires. All three live
-`ambulanceAlert` sites are the `else` branch of that same check, and the shipped
-config never reaches them.
+**Do paste 2 first.** With `sc-ambulance`'s shipped config
+(`MDTIntegration.Enabled = true`, `DisableDefaultAlerts = true`) and
+`sc-dispatch` running, `EMSDownAlert` is the **only** one of the two that ever
+fires.
+
+All three live `ambulanceAlert` sites are dormant on that config, though not by
+the same mechanism, and the difference matters if you change a setting:
+
+- `client/laststand.lua:99` and `client/dead.lua:230` are the `else` of
+  `MDTIntegration.Enabled and GetResourceState('sc-dispatch') == 'started'` —
+  they wake up if the integration is disabled **or sc-dispatch stops**.
+- `client/dead.lua:71` is gated on
+  `not (MDTIntegration.Enabled and DisableDefaultAlerts)` and never consults
+  `sc-dispatch` at all — it wakes up only if one of those two settings is
+  turned off.
 
 | Path | Fires as shipped? | With no paste |
 |---|---|---|
@@ -225,6 +235,14 @@ Crimson-Arena at all.
 
 **It reads `src`, which both handlers already have** on their first line. Do
 not move the paste above it.
+
+**The colon is load-bearing.** `exports['Crimson-Arena']:ShouldSuppressAlert(src)`
+with a `.` instead of a `:` passes the exports table itself as the first
+argument and `src` as the second, so the export answers about nobody, returns
+`false`, and **every arena alert goes out** — with no error and nothing in the
+console. The admin tablet cannot catch this one either: the line is there and
+it names the resource, so it reads as a guard. Copy the block, do not retype
+it.
 
 ---
 

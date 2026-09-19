@@ -1567,9 +1567,9 @@ end
 --- sc-ambulance SHIPS NO ARENA INTEGRATION AT ALL. Not a mention of this
 --- resource, a state bag, a combat zone or a paintball check anywhere in it --
 --- and once sc-dispatch's own integration is switched on, this is the one
---- real hole left. Its client raises `hospital:server:ambulanceAlert` from six
---- places and `hospital:server:EMSDownAlert` from two, and the server handler
---- for each pages every on-duty medic.
+--- real hole left. Its client raises `hospital:server:EMSDownAlert` from two
+--- places and `hospital:server:ambulanceAlert` from three, and the server
+--- handler for each pages every on-duty medic.
 ---
 --- NEITHER IS COVERED BY sc-dispatch'S OWN INTEGRATION, and the two are not
 --- equally bad. Worth having straight, because the obvious reading gets it
@@ -1692,7 +1692,15 @@ local function ambulanceGuardLine()
     -- end` -- never says "Crimson-Arena" at all, and reporting that working
     -- guard as a definite hole would send an operator to re-paste something
     -- they had already done right. The configured key counts too.
-    local key = stateKey()
+    --
+    -- BUT ONLY WHERE A STATE BAG IS BEING READ, which is why this is "state."
+    -- and the key rather than the key on its own. stateBagKey is whatever the
+    -- operator types: nothing stops it being `src`, `active` or `s`, and a
+    -- bare substring search for one of those matches `local src = source` --
+    -- a line BOTH of sc-ambulance's handlers already have. A short key would
+    -- have reported a completely unguarded resource as fully covered, which
+    -- is the one answer this line must never give by accident.
+    local keyRead = 'state.' .. stateKey()
 
     local function guardedAt(at)
         -- THREE EDGES, NEAREST WINS, and the character count is the weakest of
@@ -1728,7 +1736,7 @@ local function ambulanceGuardLine()
         -- paste this document asks for can produce.
         for line in body:sub(at, stop):gmatch('[^\n]+') do
             local code = line:gsub('%-%-.*$', '')
-            if code:find('Crimson%-Arena') or code:find(key, 1, true) then return true end
+            if code:find('Crimson%-Arena') or code:find(keyRead, 1, true) then return true end
         end
         return false
     end

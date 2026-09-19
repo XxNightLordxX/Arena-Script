@@ -174,9 +174,11 @@ help-call alert at all.
 **That covers police alerts and not medical ones, which is the hole most boxes still have.**
 `sc-ambulance` has no arena integration of its own, and its person-down handler calls
 `sc-dispatch`'s *server* export — already past the client check above — so a fully
-configured `sc-dispatch` still lets arena deaths reach EMS. Its calls are at least withdrawn a
-beat later by the retract layer; the other six alert sites go straight to every on-duty medic
-with no call id and nothing to withdraw. Two lines at the top of two handlers fix both.
+configured `sc-dispatch` still lets arena deaths reach EMS — and on the shipped config that
+handler is the *only* one of the two that fires. Its calls are at least withdrawn a beat later
+by the retract layer. The three `ambulanceAlert` sites are dormant today, and the day a setting
+changes they go straight to every on-duty medic with no call id and nothing to withdraw. Two
+lines at the top of two handlers fix both.
 
 **Both halves, and everything else to change outside this resource, are in one file:**
 [`DISPATCH-ALERTS.md`](DISPATCH-ALERTS.md).

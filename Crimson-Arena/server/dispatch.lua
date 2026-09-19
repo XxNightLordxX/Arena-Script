@@ -671,8 +671,8 @@ end
 --- may use the wide window because it asks about ids it built itself around
 --- one player; a PASSIVE listener that sees every alert filed anywhere on the
 --- server, about anybody, may not. This is that passive listener and then
---- some -- the block in ALERT-GUARD.md wraps the single funnel every
---- dispatch-panel alert on the box goes through -- and it is strictly worse
+--- some -- a dispatch script asks this BEFORE raising an alert at all, as
+--- sc-dispatch does on the shooter's own client -- and it is strictly worse
 --- placed than the filed listener, because suppression here is TOTAL. The
 --- retract layer files the call and then withdraws it, so a mistake leaves a
 --- trace and a medic who saw something flash. A mistake here is a person-down
@@ -1454,79 +1454,245 @@ local function downStateLine()
         :format(downState.watching, downState.changes, downState.edges)
 end
 
---- One line per dispatch script this box runs, saying whether the paste-in
---- alert guard is in it.
+--- What sc-dispatch's OWN arena integration is doing, and whether this
+--- resource is holding up its end of it.
 ---
---- WHY THIS IS IN THE REPORT AT ALL. The guard is a block of code an operator
---- pastes into SOMEBODY ELSE'S resource. Nothing in this repository can make
---- them do it, and nothing here can tell from the outside whether an alert
---- was suppressed or simply never raised -- so without this line the only way
---- to find out whether the paste took is to go and die in the arena and watch
---- a medic's screen. The guard announces itself with one export whose whole
---- job is to be asked this question.
+--- THIS USED TO REPORT ON A BLOCK WE SHIPPED. A retired document asked an
+--- operator to paste ~230 lines into the bottom of sc-dispatch/server/main.lua,
+--- and this line asked that block to answer for itself. Both are gone, and
+--- DISPATCH-ALERTS.md keeps the story under "What used to be here": the block
+--- never installed, because an export resolved through TriggerEvent arrives as
+--- a msgpack FUNCREF TABLE rather than a function, so its
+--- `type(original) ~= 'function'` gate took the bail-out every time. Its own
+--- tests passed because the harness handed the callback a raw Lua closure
+--- instead of round-tripping it the way the runtime does. sc-dispatch ships
+--- the integration itself now.
 ---
---- ASKED THROUGH pcall, because an export that does not exist RAISES rather
---- than answering nil, and a missing guard is the ordinary case rather than
---- an error.
+--- WHAT HE BUILT IS BETTER THAN WHAT WE HAD. His check runs on the shooter's
+--- OWN CLIENT and stops the alert being RAISED -- shots fired, person down,
+--- person dead, and the manual "press G for help" call, which nothing on our
+--- side ever reached. Ours cancelled the packet after the fact.
 ---
---- ONLY RESOURCES A BLOCK EXISTS FOR ARE JUDGED, and that is the whole
---- correctness of this line rather than a detail of it.
+--- SO ALL THIS RESOURCE OWES IT IS THE TWO THINGS IT READS, and this line
+--- says whether both are true:
 ---
---- THE FIRST VERSION ASKED EVERY DETECTED RESOURCE and reported any that did
---- not answer as missing a paste. There is exactly one block, it wraps
---- sc-dispatch's own AddNotification export, and ALERT-GUARD.md says in so
---- many words that one paste covers sc-ambulance too and that you do not need
---- to touch it. So on the very setup the document is written for -- a correct
---- paste, sc-dispatch and sc-ambulance both running -- the one tool whose job
---- is to confirm the paste answered "live in sc-dispatch and NOT in
---- sc-ambulance", and sent the operator hunting for a second block that does
---- not exist. On a stock Qbox box with no sc-* scripts at all it named three
---- qbx resources as unguarded forever.
+---   1. `LocalPlayer.state.crimsonArena.active` -- the replicated bag, which
+---      ArenaDispatch.Set writes for fighters AND spectators.
+---   2. `exports['Crimson-Arena']:IsInArena()` -- the client export, which is
+---      the fighter-only fallback he tries when the bag is empty.
 ---
---- ASKED THROUGH pcall, because an export that does not exist RAISES rather
---- than answering nil, and a missing guard is the ordinary case rather than
---- an error.
 --- @return string
 local function alertGuardLine()
-    -- THE ONE RESOURCE THE BLOCK IS WRITTEN FOR. If a second block is ever
-    -- published for another dispatch script, add its name here and nowhere
-    -- else -- and do not go back to asking everything that happens to be
-    -- running.
-    local HOSTS = { 'sc-dispatch' }
-
-    local present = {}
-    for _, name in ipairs(HOSTS) do
-        local known, state = pcall(GetResourceState, name)
-        if known and state == 'started' then present[#present + 1] = name end
+    local known, state = pcall(GetResourceState, 'sc-dispatch')
+    if not known or state ~= 'started' then
+        return 'sc-dispatch is not running, so its arena integration is not this box\'s route to '
+            .. 'a quiet dispatch. The layers above are what is keeping alerts down here.'
     end
 
-    if #present == 0 then
-        return 'the paste-in alert guard has nothing to be in on this box: it is a block for '
-            .. 'sc-dispatch, and sc-dispatch is not running. Every other layer is unaffected.'
+    -- THE KEY HE READS IS HARD-CODED ON HIS SIDE, and this is the one way an
+    -- operator can break the integration from OUR config without being told.
+    --
+    -- He reads `LocalPlayer.state.crimsonArena` by that literal name. Rename
+    -- stateBagKey here and the bag he looks for is never written -- and the
+    -- export he falls back to answers only for FIGHTERS, because a spectator
+    -- never calls ArenaDispatch.Enter on their own client. So the hole a
+    -- rename opens is precisely the watchers: people sitting in the arena
+    -- with a camera up, raising shots-fired and person-down calls about a
+    -- round they are not even in.
+    local key = stateKey()
+    if key ~= 'crimsonArena' then
+        return ('sc-dispatch is running, but Config.Dispatch.custom.stateBagKey here is "%s" and '
+            .. 'sc-dispatch reads "crimsonArena" by that exact name. Fighters are still covered '
+            .. 'by the export it falls back to; SPECTATORS ARE NOT, because that export only '
+            .. 'answers for somebody actually placed in a round. Put the key back to '
+            .. '"crimsonArena" or expect watchers to page EMS from inside the arena.')
+            :format(tostring(key))
     end
 
-    local guarded, bare = {}, {}
-    for _, name in ipairs(present) do
-        local asked, answer = pcall(function()
-            return exports[name]:CrimsonArenaAlertGuard()
-        end)
-        if asked and answer then
-            guarded[#guarded + 1] = name
+    -- HIS SWITCH, READ OFF HIS OWN CONFIG FILE. The `Integrations` table in
+    -- sc-dispatch's config is a table in HIS Lua state -- nothing to do with
+    -- this resource's Config, and deliberately not written here as a dotted
+    -- Config name, because tools/verify_contracts.py reads every such name in
+    -- this tree as a setting THIS resource must define. There is no export for
+    -- it either, so this reads the
+    -- file he ships unencrypted and looks for the assignment. A read, never a
+    -- write, and wrong-answer-proof: anything it cannot parse is reported as
+    -- unknown rather than guessed at.
+    local settingSays = nil
+    local read, body = pcall(LoadResourceFile, 'sc-dispatch', 'config.lua')
+    if read and type(body) == 'string' then
+        local value = body:match('CrimsonArena%s*=%s*([%a]+)')
+        if value == 'true' then settingSays = true
+        elseif value == 'false' then settingSays = false end
+    end
+
+    if settingSays == true then
+        return 'sc-dispatch is running with Integrations.CrimsonArena = true in its own config, '
+            .. 'so it asks '
+            .. 'this resource before raising an alert and no arena shot, death or help-call is '
+            .. 'paged. Fighters answer through the state bag and the client export; spectators '
+            .. 'through the bag.'
+    end
+
+    if settingSays == false then
+        return 'sc-dispatch is running but Integrations.CrimsonArena in its own config is FALSE, '
+            .. 'so it '
+            .. 'never asks this resource and every arena shot and death is paged as an ordinary '
+            .. 'city call. Set it to true in sc-dispatch/config.lua -- nothing needs changing '
+            .. 'here.'
+    end
+
+    return 'sc-dispatch is running. Its config could not be read from here, so check '
+        .. 'Integrations.CrimsonArena is true in sc-dispatch/config.lua -- that switch is '
+        .. 'what makes it ask this resource before paging anybody. Nothing needs changing here.'
+end
+
+--- WHETHER sc-ambulance'S TWO ALERT HANDLERS HAVE AN ARENA GUARD IN THEM.
+---
+--- sc-ambulance SHIPS NO ARENA INTEGRATION AT ALL. Not a mention of this
+--- resource, a state bag, a combat zone or a paintball check anywhere in it --
+--- and once sc-dispatch's own integration is switched on, this is the one
+--- real hole left. Its client raises `hospital:server:ambulanceAlert` from six
+--- places and `hospital:server:EMSDownAlert` from two, and the server handler
+--- for each pages every on-duty medic.
+---
+--- NEITHER IS COVERED BY sc-dispatch'S OWN INTEGRATION, and the two are not
+--- equally bad. Worth having straight, because the obvious reading gets it
+--- backwards.
+---
+--- EMSDownAlert calls sc-dispatch's SERVER export. sc-dispatch's integration
+--- is a CLIENT check -- it runs on the player's own machine before an alert
+--- is raised -- so a call arriving at its server export has already gone
+--- round it, and turning that integration on does not touch this path. BUT
+--- the call does not stand: AddNotification announces the whole payload on
+--- `sc-dispatch:server:witnessForward` before it writes a row, the retract
+--- layer in this file is listening on exactly that event, and the payload
+--- sc-ambulance builds carries `caller_source`. So this one is raised and
+--- then WITHDRAWN a quarter of a second later. A medic on duty at that
+--- instant still sees it flash; nothing persists.
+---
+--- ambulanceAlert is the worse of the two, and it is the quieter-looking
+--- one. It never touches sc-dispatch at all -- the handler loops the on-duty
+--- medics and TriggerClientEvents each of them directly. There is no call id,
+--- no filed announcement and NOTHING TO WITHDRAW. Six of sc-ambulance's
+--- eight alert sites go down it. That hole is permanent until the paste is
+--- in.
+---
+--- Config.Dispatch.custom.cancelEvents CANNOT COVER IT EITHER, for the reason
+--- the list itself now gives where it names these two events: sc-ambulance
+--- never calls WasEventCanceled(), so raising the cancelled flag changes
+--- nothing about what it does next. Two lines in its own server/main.lua are
+--- the only thing that works, and DISPATCH-ALERTS.md spells them out.
+---
+--- SO THIS ANSWERS "DID THE PASTE TAKE" WITHOUT DYING IN THE ARENA TO FIND
+--- OUT. It reads the file sc-ambulance ships, finds each handler, and looks
+--- for a mention of this resource's name inside that handler's own body. A
+--- read, never a write, and never a call into another resource.
+---
+--- EACH HANDLER IS JUDGED ON ITS OWN BODY AND NOT ON THE FILE. The two sit a
+--- dozen lines apart, so a window measured only in characters runs out of one
+--- handler and into the next -- which would report an unguarded
+--- `ambulanceAlert` as guarded on the strength of the guard in `EMSDownAlert`
+--- below it. The window stops at the next RegisterNetEvent for that reason.
+---
+--- IT REPORTS WHAT IT SAW AND NEVER GUESSES. A file it cannot read, a build
+--- whose handlers are written some other way, a resource that is not running
+--- -- each of those comes back as its own answer, because an operator told
+--- the guard is in when it is not stops looking.
+---
+--- /311 IS NOT JUDGED HERE. sc-ambulance also lets a player type `/311` to
+--- page EMS, which works from inside the arena like anywhere else. It is a
+--- deliberate act rather than something a fighter's death does to them, so
+--- guarding it is optional and DISPATCH-ALERTS.md files it that way. This line
+--- speaks only for the two handlers, and says so.
+--- @return string
+local function ambulanceGuardLine()
+    local known, state = pcall(GetResourceState, 'sc-ambulance')
+    if not known or state ~= 'started' then
+        return 'sc-ambulance is not running, so its medical alert handlers are not a hole on '
+            .. 'this box.'
+    end
+
+    local read, body = pcall(LoadResourceFile, 'sc-ambulance', 'server/main.lua')
+    if not read or type(body) ~= 'string' or body == '' then
+        return 'sc-ambulance is running but its server/main.lua could not be read from here, so '
+            .. 'whether the arena guard is in its alert handlers is unknown. DISPATCH-ALERTS.md '
+            .. 'has the two lines and where they go.'
+    end
+
+    -- THE EXACT SHAPE OR NOTHING. A handler written some other way is reported
+    -- as not found rather than searched for loosely, because the whole value
+    -- of this line is that a "guarded" reading can be trusted.
+    local function handlerAt(name)
+        for _, quote in ipairs({ "'", '"' }) do
+            local at = body:find('RegisterNetEvent(' .. quote .. name .. quote, 1, true)
+            if at then return at end
+        end
+        return nil
+    end
+
+    -- THE NEXT HANDLER IS THE EDGE, AND THE CHARACTER COUNT IS ONLY A
+    -- BACKSTOP. Both facts are load-bearing and the first one carries the
+    -- correctness on its own.
+    --
+    -- The two handlers sit 499 characters apart in the file sc-ambulance
+    -- ships, and the guard this resource asks for lands about 90 characters
+    -- into the second one. A window measured only in characters therefore has
+    -- to be under ~590 to stay out of it -- and the first version of this
+    -- function used 600, which is INSIDE that and passed its own test purely
+    -- because the 601st character fell in the middle of the word it was
+    -- looking for. Ten characters of accident is not a gate. So the window
+    -- stops at the next RegisterNetEvent, which is where the handler being
+    -- judged actually ends, and the count is deliberately set far ABOVE any
+    -- real gap so that it never decides anything except for the last handler
+    -- in a file, where there is no next one to stop at.
+    local function guardedAt(at)
+        local stop = at + 2000
+        -- #'RegisterNetEvent' == 16, so this starts past the one we are in.
+        local nextAt = body:find('RegisterNetEvent', at + 16, true)
+        if nextAt and nextAt < stop then stop = nextAt end
+        return body:sub(at, stop):find('Crimson%-Arena') ~= nil
+    end
+
+    local names = { 'hospital:server:ambulanceAlert', 'hospital:server:EMSDownAlert' }
+    local missing, unfound, guarded = {}, {}, 0
+
+    for _, name in ipairs(names) do
+        local at = handlerAt(name)
+        if not at then
+            unfound[#unfound + 1] = name
+        elseif guardedAt(at) then
+            guarded = guarded + 1
         else
-            bare[#bare + 1] = name
+            missing[#missing + 1] = name
         end
     end
 
-    if #bare == 0 then
-        return ('the paste-in alert guard is live in: %s. Alerts for fighters are never raised -- '
-            .. 'including the ones sc-ambulance files through it.')
-            :format(table.concat(guarded, ', '))
+    if #unfound > 0 then
+        -- WORDED TO READ CORRECTLY FOR ONE HANDLER AND FOR TWO. The obvious
+        -- phrasing -- "%d of its handlers are not written ..." -- says "1 ...
+        -- are" on the commoner of the two cases. These lines are read off a
+        -- panel by somebody already unsure whether their server is broken.
+        return ('sc-ambulance is running but this check cannot find %d of its expected alert '
+            .. 'handlers (%s) written the way it reads them, so the guard cannot be confirmed '
+            .. 'from here. DISPATCH-ALERTS.md has the two lines and where they go.')
+            :format(#unfound, table.concat(unfound, ', '))
     end
 
-    return ('the paste-in alert guard is NOT in: %s. That script still raises arena alerts, and '
-        .. 'the retract layer clears them a second or two later. See the ALERT-GUARD document '
-        .. 'for the block to paste at the bottom of its server/main.lua.')
-        :format(table.concat(bare, ', '))
+    if #missing > 0 then
+        -- "there is NO arena guard in X" rather than "X has NO arena guard in
+        -- it", for the same reason as above: the second reads "A and B has"
+        -- whenever both handlers are missing it, which is the state every
+        -- server starts in.
+        return ('sc-ambulance is running and there is NO arena guard in %s, so an arena death '
+            .. 'still pages every on-duty medic. Neither sc-dispatch\'s integration nor '
+            .. 'cancelEvents can cover this -- DISPATCH-ALERTS.md has the line to paste.')
+            :format(table.concat(missing, ' and '))
+    end
+
+    return ('sc-ambulance is running and both of its alert handlers (%d of %d) carry an arena '
+        .. 'guard, so arena deaths and help-calls are not paged. Its /311 command is not '
+        .. 'checked here and is not guarded by default.'):format(guarded, #names)
 end
 
 function ArenaDispatch.CompatReport()
@@ -1536,6 +1702,7 @@ function ArenaDispatch.CompatReport()
         out[1] = 'this build has no dispatch compat report.'
         out[2] = downStateLine()
         out[3] = alertGuardLine()
+        out[4] = ambulanceGuardLine()
         return out
     end
 
@@ -1544,6 +1711,7 @@ function ArenaDispatch.CompatReport()
         out[1] = 'the dispatch compat report could not be taken: ' .. tostring(lines)
         out[2] = downStateLine()
         out[3] = alertGuardLine()
+        out[4] = ambulanceGuardLine()
         return out
     end
 
@@ -1555,6 +1723,7 @@ function ArenaDispatch.CompatReport()
     -- about a paste into somebody else's file rather than about this build,
     -- so a compat layer that failed says nothing about whether it happened.
     out[#out + 1] = alertGuardLine()
+    out[#out + 1] = ambulanceGuardLine()
     return out
 end
 

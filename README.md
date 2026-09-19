@@ -165,11 +165,21 @@ Watch would be renewable immunity in the city. If the arena cannot
 answer — mid-restart, stopped, not installed — it returns `false` and your alert is raised,
 which is the safe direction for a script that pages ambulances.
 
-**If you run `sc-dispatch`, you do not have to write any of this yourself.**
-[`ALERT-GUARD.md`](ALERT-GUARD.md) is a block you paste at the bottom of
-`sc-dispatch/server/main.lua` that does it for every alert that script files — including
-the ones `sc-ambulance` sends through it. It is safe to paste whether or not you run the
-arena.
+**If you run `sc-dispatch`, you do not have to write any of this yourself, and there is
+nothing to paste.** It ships its own arena integration: set
+`Config.Integrations.CrimsonArena = true` in **its** config and it asks this resource, on
+the player's own client, before raising a shots-fired, person-down, person-dead or
+help-call alert at all.
+
+**That covers police alerts and not medical ones, which is the hole most boxes still have.**
+`sc-ambulance` has no arena integration of its own, and its person-down handler calls
+`sc-dispatch`'s *server* export — already past the client check above — so a fully
+configured `sc-dispatch` still lets arena deaths reach EMS. Its calls are at least withdrawn a
+beat later by the retract layer; the other six alert sites go straight to every on-duty medic
+with no call id and nothing to withdraw. Two lines at the top of two handlers fix both.
+
+**Both halves, and everything else to change outside this resource, are in one file:**
+[`DISPATCH-ALERTS.md`](DISPATCH-ALERTS.md).
 
 ### Client side
 

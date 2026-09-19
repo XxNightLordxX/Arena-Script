@@ -2762,15 +2762,42 @@ Config.Dispatch = {
             -- Gunfire, sent from the shooter's own machine.
             'sc-dispatch:server:ShotsFired',
 
-            -- REMOVED AT THE OWNER'S INSTRUCTION, and worth knowing why
-            -- before anybody puts them back: hospital:server:EMSDownAlert and
-            -- hospital:server:ambulanceAlert used to be listed here. Neither
-            -- event EXISTS on this box. A search of sc-dispatch, sc-ambulance
-            -- and sc-police finds no handler and no trigger for either, so
-            -- both were registering a handler on an event nothing ever
-            -- raises. They cost nothing and did nothing. If you move to a
-            -- build whose ambulance script raises them -- the stock QBCore
-            -- one does -- add them back.
+            -- hospital:server:EMSDownAlert AND hospital:server:ambulanceAlert
+            -- ARE DELIBERATELY NOT IN THIS LIST. They are out for a different
+            -- reason than the one that used to be written here, so read this
+            -- before putting them back.
+            --
+            -- THE NOTE THAT STOOD HERE WAS FALSE, and it is worth saying so
+            -- plainly rather than quietly rewriting it. It said neither event
+            -- exists on this box. Both do. sc-ambulance's client raises
+            -- ambulanceAlert from SIX places -- client/laststand.lua,
+            -- client/dead.lua twice, client/qbx_medical_compat.lua three
+            -- times -- and EMSDownAlert from TWO, client/laststand.lua and
+            -- client/dead.lua. Its server/main.lua registers a handler for
+            -- each, and each pages every on-duty medic.
+            --
+            -- THEY STAY OUT ANYWAY, because listing them would not help.
+            -- sc-ambulance NEVER CALLS WasEventCanceled(). Its handlers page
+            -- the medics the moment they run, cancelled flag or no -- which
+            -- is the weakness this whole section is labelled with, met head
+            -- on. Adding the names back buys a handler that raises a flag
+            -- nothing ever reads.
+            --
+            -- WHAT ACTUALLY WORKS IS TWO LINES IN ITS OWN server/main.lua,
+            -- one at the top of each of those two handlers, asking this
+            -- resource's ShouldSuppressAlert export. DISPATCH-ALERTS.md is that
+            -- document: what to paste, where it goes, and how the admin
+            -- tablet tells you whether it took.
+            --
+            -- AND DO NOT ASSUME sc-dispatch COVERS IT. Its arena integration
+            -- is a CLIENT check, run before an alert is raised on the
+            -- player's own machine. sc-ambulance's EMSDownAlert handler calls
+            -- sc-dispatch's SERVER export directly, which is already past
+            -- that gate. A box can read as fully covered and still page EMS
+            -- for every arena death.
+            --
+            -- If you move to an ambulance script that DOES check
+            -- WasEventCanceled(), add both names here and they will work.
 
             -- The second EMS entry point.
             'mydispatch:requestEMS',

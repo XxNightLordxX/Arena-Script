@@ -2503,89 +2503,317 @@ t.test('the panel carries every compat line verbatim, and adds only its own', fu
             ('panel line %d is not the compat layer\'s line %d'):format(index, index))
     end
 
-    -- TWO LINES, AND ONLY TWO. The compat layer reports on the resources
-    -- AROUND the arena. The other two are things it knows nothing about: the
-    -- down-state edge listener is a setting INSIDE this resource, and the
-    -- alert guard is a block of code pasted into somebody else's file. Both
-    -- are invisible to the layer that reports on everything else, and
-    -- anything beyond these two is the panel rewriting the report.
-    t.equals(#fromPanel, #fromCompat + 2,
-        'the panel added something other than the down-state and alert-guard lines')
-    t.contains(fromPanel[#fromPanel - 1], 'down-state',
+    -- THREE LINES, AND ONLY THREE. The compat layer reports on the resources
+    -- AROUND the arena. These three are things it knows nothing about: the
+    -- down-state edge listener is a setting INSIDE this resource; the second
+    -- is sc-dispatch's OWN arena integration -- his switch, and the two
+    -- things this resource owes it; the third is whether sc-ambulance's two
+    -- alert handlers carry the guard, which is a paste into a file nothing
+    -- here can see any other way. Anything beyond these three is the panel
+    -- rewriting the report.
+    t.equals(#fromPanel, #fromCompat + 3,
+        'the panel added something other than the down-state, dispatch and ambulance lines')
+    t.contains(fromPanel[#fromPanel - 2], 'down-state',
         'the panel does not say what the down-state layer is doing')
-    t.contains(fromPanel[#fromPanel], 'alert guard',
-        'the panel does not say whether the paste-in alert guard is installed')
+    t.contains(fromPanel[#fromPanel - 1], 'sc-dispatch',
+        'the panel does not say what sc-dispatch\'s arena integration is doing')
+    t.contains(fromPanel[#fromPanel], 'sc-ambulance',
+        'the panel does not say whether sc-ambulance carries the guard')
 end)
 
-t.test('and it says the alert guard is MISSING when nothing answers for it', function()
-    -- The ordinary case, and the one an operator needs named: sc-dispatch is
-    -- running and the block has not been pasted into it. Nothing about a
-    -- suppressed alert is visible from outside the other resource, so without
-    -- this line the only way to find out is to go and die in the arena.
+t.test('THE INTEGRATION LINE: a box with no sc-dispatch is told so, not told it failed', function()
+    -- This line used to report on a block WE shipped, which an operator was
+    -- asked to paste into sc-dispatch. That block never installed on a real
+    -- server -- an export resolved through TriggerEvent arrives as a funcref
+    -- TABLE, so its `type(original) ~= 'function'` gate always bailed -- and
+    -- sc-dispatch now ships the integration itself. The line reports on HIS
+    -- switch now.
+    local f = newCompatAndServer({ ['qbx_policejob'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'sc-dispatch is not running',
+        'a box without sc-dispatch was not told the integration simply does not apply')
+end)
+
+t.test('THE HOLE A RENAMED KEY OPENS, and it is the spectators', function()
+    -- sc-dispatch reads `LocalPlayer.state.crimsonArena` by that literal
+    -- name. Rename stateBagKey here and the bag it looks for is never
+    -- written. Its fallback -- exports['Crimson-Arena']:IsInArena() -- only
+    -- answers for somebody PLACED in a round, because a spectator never calls
+    -- ArenaDispatch.Enter on their own client.
+    --
+    -- So the rename does not break fighters. It breaks WATCHERS: people
+    -- sitting in the arena with a camera up, paging EMS about a round they
+    -- are not in. Nothing else on either side would say why.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.Config.Dispatch.custom = f.env.Config.Dispatch.custom or {}
+    f.env.Config.Dispatch.custom.stateBagKey = 'myArenaFlag'
+
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'myArenaFlag', 'the report does not name the key that was changed')
+    t.contains(report, 'SPECTATORS ARE NOT',
+        'the report does not say WHO the rename stops covering: ' .. report)
+end)
+
+t.test('and the default key is not reported as a problem', function()
+    -- The control. A report that warned on the shipped default would be noise
+    -- on every server that never touched the setting.
     local f = newCompatAndServer({ ['sc-dispatch'] = true })
     local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
 
-    t.contains(report, 'alert guard is NOT in: sc-dispatch',
-        'a script with no guard pasted into it was not named')
+    t.isTrue(report:find('SPECTATORS ARE NOT', 1, true) == nil,
+        'the shipped default was reported as a misconfiguration: ' .. report)
 end)
 
-t.test('THE FALSE ALARM: a correct paste is not reported as half-done', function()
-    -- The first version asked EVERY detected resource for the guard and
-    -- reported any that could not answer as missing a paste. There is one
-    -- block, it wraps sc-dispatch's own AddNotification, and ALERT-GUARD.md
-    -- says outright that one paste covers sc-ambulance too. So on exactly the
-    -- setup the document is written for, the one tool whose job is to confirm
-    -- the paste told the operator it was missing from sc-ambulance and sent
-    -- them hunting for a second block that does not exist.
-    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
-    f.env.exportAnswers['sc-dispatch'] = { CrimsonArenaAlertGuard = function() return true end }
-
-    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
-
-    t.contains(report, 'alert guard is live in: sc-dispatch', 'a correct paste was not confirmed')
-    t.isTrue(report:find('NOT in', 1, true) == nil,
-        'a correctly guarded server was told a paste was missing: ' .. report)
-end)
-
-t.test('and a box with no sc-dispatch is told there is nothing to paste, not that it failed',
-function()
-    -- A stock Qbox server runs qbx_policejob and qbx_ambulancejob and no sc-*
-    -- script at all. It used to be told every one of them was unguarded, on
-    -- every report, forever -- for a block none of them can take.
-    local f = newCompatAndServer({ ['qbx_policejob'] = true, ['qbx_ambulancejob'] = true })
-    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
-
-    t.contains(report, 'nothing to be in on this box',
-        'a server with no sc-dispatch was not told the guard simply does not apply')
-    t.isTrue(report:find('qbx_policejob', 1, true) == nil
-        or report:find('alert guard is NOT in: qbx', 1, true) == nil,
-        'a resource with no guard block was named as missing one: ' .. report)
-end)
-
-t.test('and it says the guard is LIVE once that resource answers for it', function()
+t.test('and his switch is read off his own config, both ways', function()
+    -- Config.Integrations.CrimsonArena is a table in HIS Lua state with no
+    -- export, so this reads the config file he ships unencrypted. Anything it
+    -- cannot parse is reported as unknown rather than guessed at.
     local f = newCompatAndServer({ ['sc-dispatch'] = true })
-    f.env.exportAnswers['sc-dispatch'] = { CrimsonArenaAlertGuard = function() return true end }
 
-    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
-    t.contains(report, 'alert guard is live in: sc-dispatch',
-        'a pasted guard that answered for itself was reported missing')
-    t.isFalse(report:find('alert guard is in NONE') ~= nil,
-        'the same report said the guard was both live and missing')
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = true,\n}'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'),
+        'CrimsonArena = true',
+        'an integration that is switched ON was not confirmed')
+
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = false,\n}'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'),
+        'is FALSE',
+        'an integration that is switched OFF was not reported as off')
 end)
 
-t.test('and an export that RAISES does not take the report down', function()
-    -- THE HAZARD. Reaching for an export a resource never registered raises
-    -- in the live game, and a missing guard is the ordinary case -- so an
-    -- unguarded script must not be able to kill the whole reading an admin
-    -- opened the tablet for.
-    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
-    f.env.exportAnswers['sc-dispatch'] = { CrimsonArenaAlertGuard = function() error('boom') end }
+t.test('and a config it cannot read is reported as UNKNOWN, never guessed', function()
+    -- The dangerous answer here is a confident one. An operator told the
+    -- integration is on, when it is off, stops looking.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
 
-    local ok, report = pcall(f.env.ArenaDispatch.CompatReport)
-    t.isTrue(ok, 'a throwing export took the compat report down with it')
-    t.isTrue(#report > 0, 'the report came back empty')
-    t.contains(table.concat(report, '\n'), 'alert guard',
-        'the guard line went missing rather than reporting the failure')
+    for _, answer in ipairs({ function() return nil end,
+                              function() return 42 end,
+                              function() error('no such file') end }) do
+        f.env.LoadResourceFile = answer
+        local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+        t.contains(report, 'Its config could not be read from here',
+            'an unreadable config was answered with a guess: ' .. report)
+    end
+end)
+
+-- ======================================================================
+-- THE sc-ambulance LINE
+--
+-- sc-ambulance ships NO arena integration -- not a mention of this resource
+-- anywhere in it -- and that is the hole left after sc-dispatch's own
+-- integration is switched on, because its person-down handler calls
+-- sc-dispatch's SERVER export, which is already past sc-dispatch's client
+-- check. cancelEvents cannot close it either: sc-ambulance never calls
+-- WasEventCanceled(). Two lines in its own server/main.lua are the only
+-- thing that works, and this report line is how an operator finds out
+-- whether the paste took without dying in the arena to test it.
+-- ======================================================================
+
+--- sc-ambulance's two alert handlers, as it really ships them, with a slot at
+--- the top of each for the guard.
+---
+--- THE SPACING IS THE POINT and not decoration. The two handlers sit about
+--- four hundred characters apart in the real file, which is well inside any
+--- window generous enough to find a guard placed a few lines into a handler.
+--- Test the window without that spacing and the bleed this fixture exists to
+--- catch cannot happen.
+local AMBULANCE_SRC = [[
+RegisterNetEvent('hospital:server:ambulanceAlert', function(text)
+	local src = source
+%s	local ped = GetPlayerPed(src)
+	local coords = GetEntityCoords(ped)
+	local players = QBCore.Functions.GetQBPlayers()
+	for _, v in pairs(players) do
+		if v.PlayerData.job.name == 'ambulance' and v.PlayerData.job.onduty then
+			TriggerClientEvent('hospital:client:ambulanceAlert', v.PlayerData.source, coords, text)
+		end
+	end
+end)
+
+-- Downed player pressed G to request help - send the call to EMS via sc-dispatch
+RegisterNetEvent('hospital:server:EMSDownAlert', function(street)
+	local src = source
+%s	if not (Config.MDTIntegration and Config.MDTIntegration.Enabled) then return end
+	local Player = QBCore.Functions.GetPlayer(src)
+	if not Player then return end
+	local coords = GetEntityCoords(GetPlayerPed(src))
+	exports['sc-dispatch']:AddNotification(dispatchData)
+end)
+]]
+
+--- The paste DISPATCH-ALERTS.md asks for, character for character.
+---
+--- THE COMMENT LINE IS PART OF IT and is not decoration here either. It is
+--- what the document tells an operator to paste, so it is what a real
+--- sc-ambulance has -- and it puts the FIRST occurrence of this resource's
+--- name five characters into the guard instead of fifty-five. That is the
+--- difference between the bleed below landing inside the window and landing
+--- just outside it, which is how the first version of this fixture passed
+--- against a build with no clamp at all.
+local AMBULANCE_GUARD =
+    "\n\t-- Crimson-Arena: no medical page for a fighter or a spectator in a round.\n"
+    .. "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+    .. "\tif ok and quiet == true then return end\n\n"
+
+--- A fixture whose sc-ambulance is running and whose server/main.lua has the
+--- guard in the handlers named. `which` is { alert = bool, down = bool }.
+local function ambulanceBox(which, override)
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+    local body = override or AMBULANCE_SRC:format(
+        which.alert and AMBULANCE_GUARD or '',
+        which.down and AMBULANCE_GUARD or '')
+    f.env.LoadResourceFile = function(resource)
+        if resource ~= 'sc-ambulance' then return nil end
+        return body
+    end
+    return table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+end
+
+t.test('THE sc-ambulance LINE: a box not running it is told so, not told it failed', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'sc-ambulance is not running',
+        'a box without sc-ambulance was not told its handlers are not a hole here')
+end)
+
+t.test('and a guard in BOTH handlers is confirmed', function()
+    local report = ambulanceBox({ alert = true, down = true })
+
+    t.contains(report, '(2 of 2)',
+        'both handlers guarded was not reported as covered: ' .. report)
+    t.isTrue(report:find('NO arena guard', 1, true) == nil,
+        'a fully guarded sc-ambulance was reported as a hole: ' .. report)
+end)
+
+t.test('and a guard in NEITHER names both handlers', function()
+    local report = ambulanceBox({ alert = false, down = false })
+
+    t.contains(report, 'NO arena guard',
+        'an unguarded sc-ambulance was not reported as a hole: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the report does not name the handler the operator has to edit')
+    t.contains(report, 'hospital:server:EMSDownAlert',
+        'the report does not name the person-down handler')
+end)
+
+t.test('AND A GUARD IN ONE DOES NOT COUNT FOR THE OTHER', function()
+    -- THE DEFECT THIS PINS, and it is a false PASS rather than a false fail,
+    -- which is the direction that costs somebody a quiet arena they think
+    -- they have. The two handlers sit ~400 characters apart. A window
+    -- measured only in characters -- 600 was the first number tried -- runs
+    -- out of the `ambulanceAlert` handler, through the comment between them,
+    -- and into the `EMSDownAlert` guard below. The line then reports an
+    -- ENTIRELY UNGUARDED `ambulanceAlert` as covered, on the strength of a
+    -- paste in a different handler. Six of sc-ambulance's eight alert sites
+    -- funnel into that one, so the operator is told 2 of 2 and every arena
+    -- death still pages EMS.
+    --
+    -- The window stops at the next RegisterNetEvent for this reason. Remove
+    -- that clamp and this test fails while the three around it still pass.
+    local report = ambulanceBox({ alert = false, down = true })
+
+    t.contains(report, 'NO arena guard',
+        'a guard in EMSDownAlert was counted for ambulanceAlert: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the unguarded handler was not the one named: ' .. report)
+    t.isTrue(report:find('hospital:server:EMSDownAlert is a hole', 1, true) == nil,
+        'the guarded handler was reported as unguarded')
+
+    -- AND THE OTHER WAY ROUND, so the clamp is not passing by reporting
+    -- everything unguarded. A guard in the FIRST handler must not be counted
+    -- for the second either.
+    local flipped = ambulanceBox({ alert = true, down = false })
+    t.contains(flipped, 'hospital:server:EMSDownAlert',
+        'a guard in ambulanceAlert was counted for EMSDownAlert: ' .. flipped)
+    t.isTrue(flipped:find('(2 of 2)', 1, true) == nil,
+        'a half-guarded sc-ambulance was reported as fully covered: ' .. flipped)
+end)
+
+t.test('and the word alone is not the guard -- it is the resource name or nothing', function()
+    -- WHAT THIS LINE PROMISES IS THAT A "GUARDED" READING CAN BE TRUSTED, and
+    -- a needle of 'Crimson' rather than 'Crimson-Arena' breaks exactly that
+    -- promise without breaking anything a looser test would notice. A server
+    -- called Crimson RP, a comment mentioning the crew, a stray word in an
+    -- unrelated block -- any of those would report a wide-open handler as
+    -- covered, and the operator would stop looking.
+    --
+    -- The handler below says the word and carries no guard. It must read as a
+    -- hole.
+    local said = AMBULANCE_SRC:format(
+        '\t-- Crimson RP: medics respond to arena calls like any other.\n',
+        AMBULANCE_GUARD)
+
+    local report = ambulanceBox({}, said)
+
+    t.contains(report, 'NO arena guard',
+        'a handler that merely says "Crimson" was counted as guarded: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the handler that only mentions the word was not the one named: ' .. report)
+end)
+
+t.test('and a file it cannot read is reported as UNKNOWN, never guessed', function()
+    -- Same rule as the sc-dispatch line above: an operator told the guard is
+    -- in when it is not stops looking.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+
+    for _, answer in ipairs({ function() return nil end,
+                              function() return 42 end,
+                              function() return '' end,
+                              function() error('escrowed') end }) do
+        f.env.LoadResourceFile = answer
+        local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+        t.contains(report, 'server/main.lua could not be read from here',
+            'an unreadable sc-ambulance was answered with a guess: ' .. report)
+    end
+end)
+
+t.test('and a build whose handlers are written some other way is not judged', function()
+    -- A guess here is worse than an admission. If the handlers are not the
+    -- shape this check reads, it says so and sends the operator to the doc.
+    --
+    -- BOTH HANDLERS ARE IN THIS FIXTURE, AND THAT IS THE TEST. An earlier
+    -- version supplied only the first one, so it passed on the SECOND being
+    -- absent rather than on the first being the wrong shape -- and a build
+    -- that found handlers by bare event name, ignoring RegisterNetEvent
+    -- entirely, sailed through it. With both present and both written the
+    -- other way, a loose search finds two unguarded handlers and reports a
+    -- hole; only the strict search reports what is true, which is that it
+    -- cannot read this build.
+    local report = ambulanceBox({}, table.concat({
+        "AddEventHandler('hospital:server:ambulanceAlert', function() end)",
+        "AddEventHandler('hospital:server:EMSDownAlert', function() end)",
+    }, '\n') .. '\n')
+
+    t.contains(report, 'cannot find 2 of its expected alert handlers',
+        'a build with different handlers was judged anyway: ' .. report)
+    t.contains(report, 'hospital:server:EMSDownAlert',
+        'the report does not name every handler it could not read: ' .. report)
+    t.isTrue(report:find('NO arena guard', 1, true) == nil,
+        'a build this check cannot read was reported as unguarded: ' .. report)
+end)
+
+t.test('and the sc-ambulance line reaches the report on every path CompatReport has', function()
+    -- downStateLine and alertGuardLine are appended on the failure paths too,
+    -- for the same reason: they are about a paste into somebody else's file,
+    -- so a compat layer that failed says nothing about whether it happened.
+    -- A line that only appears when everything else worked is a line an
+    -- operator reads on the one box where it matters least.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+
+    f.env.ArenaCompat = nil
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'sc-ambulance',
+        'a build with no compat layer drops the sc-ambulance line')
+
+    f.env.ArenaCompat = { Report = function() error('compat exploded') end }
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'sc-ambulance',
+        'a compat layer that threw drops the sc-ambulance line')
 end)
 
 t.test('and the console prints exactly what the tablet shows', function()

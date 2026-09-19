@@ -256,8 +256,9 @@ anyway. `ShouldSuppressAlert` stays `true` for a few seconds afterwards — the 
 not the retract sweep's wide one, because this answer suppresses an alert *before* it is ever
 filed and a mistake leaves no trace to notice. It is also the only export here whose fallback
 is the *loud* answer: if the arena cannot tell, the alert is raised. A spurious alert during a
-round is an annoyance; a swallowed one for a city death is not. `ALERT-GUARD.md` is the
-block of code that calls it.
+round is an annoyance; a swallowed one for a city death is not. `DISPATCH-ALERTS.md` covers
+how sc-dispatch asks this resource instead — on the player's own client, before an alert is
+raised at all.
 
 **Every one of these is a reading.** Nothing stops a match, pays anybody, issues kit or
 clears a hold, and that is a line rather than a gap. An export is callable by any resource
@@ -601,7 +602,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseBucket(matchId)` | Gives a match's bucket number back to the pool, empty. |
 | `ArenaDispatch.IsolationState()` | What isolation is ACTUALLY doing right now, for the startup report and for **Tools → Instancing**. |
 | `ArenaDispatch.IsolationReport()` | The routing-bucket isolation of every live match, as lines. Drawn by the admin tablet under **Tools → Instancing**, and printed by `/arenaconsole` at a console. |
-| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, plus two lines of its own: what the down-state edge listener is doing, and whether the paste-in alert guard is live in sc-dispatch. Drawn by the admin tablet under **Tools → Police & EMS**, and printed by `/arenaconsole` at a console. |
+| `ArenaDispatch.CompatReport()` | The police/EMS compat report shared/compat/dispatch.lua builds, as lines, plus two lines of its own: what the down-state edge listener is doing, and what sc-dispatch's own arena integration is doing (its switch, and whether a renamed `stateBagKey` has broken the half that covers spectators). Drawn by the admin tablet under **Tools → Police & EMS**, and printed by `/arenaconsole` at a console. |
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 

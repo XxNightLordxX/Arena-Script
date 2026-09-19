@@ -2711,9 +2711,9 @@ t.test('AND A GUARD IN ONE DOES NOT COUNT FOR THE OTHER', function()
     -- out of the `ambulanceAlert` handler, through the comment between them,
     -- and into the `EMSDownAlert` guard below. The line then reports an
     -- ENTIRELY UNGUARDED `ambulanceAlert` as covered, on the strength of a
-    -- paste in a different handler. Six of sc-ambulance's eight alert sites
-    -- funnel into that one, so the operator is told 2 of 2 and every arena
-    -- death still pages EMS.
+    -- paste in a different handler. Three of sc-ambulance's live alert sites
+    -- funnel into that one, so the operator is told 2 of 2 over a wide-open
+    -- handler.
     --
     -- The window stops at the next RegisterNetEvent for this reason. Remove
     -- that clamp and this test fails while the three around it still pass.
@@ -2736,6 +2736,34 @@ t.test('AND A GUARD IN ONE DOES NOT COUNT FOR THE OTHER', function()
         'a half-guarded sc-ambulance was reported as fully covered: ' .. flipped)
 end)
 
+t.test('AND A COMMENTED-OUT GUARD IS NOT A GUARD', function()
+    -- THE TRAP OUR OWN PASTE SETS, and a false PASS again -- the direction
+    -- that costs an operator a quiet arena they believe they have.
+    -- DISPATCH-ALERTS.md asks for a comment line NAMING this resource directly
+    -- above the two working lines, so a check that looked for the name
+    -- anywhere in the handler answers "guarded" for a handler holding the
+    -- comment and NOTHING ELSE. That is the state somebody debugging their
+    -- ambulance script leaves it in, and the state a bad merge leaves behind
+    -- when it takes the working lines and keeps the comment. They would read
+    -- 2 of 2 while every arena death paged every on-duty medic.
+    local commentOnly = '\n\t-- Crimson-Arena: no medical page for a fighter or a spectator in a round.\n\n'
+    t.contains(ambulanceBox({}, AMBULANCE_SRC:format(commentOnly, commentOnly)), 'NO arena guard',
+        'a handler holding only the comment from our own paste was counted as guarded')
+
+    -- And the guard commented out where it stands, which is what debugging
+    -- actually looks like.
+    local disabled = '\n\t-- local ok, quiet = pcall(function() return exports[\'Crimson-Arena\']:ShouldSuppressAlert(src) end)\n'
+        .. '\t-- if ok and quiet == true then return end\n\n'
+    t.contains(ambulanceBox({}, AMBULANCE_SRC:format(disabled, disabled)), 'NO arena guard',
+        'a guard commented out in place was counted as guarded')
+
+    -- THE CONTROL, and it is the one that stops this being fixed by reporting
+    -- everything unguarded: the real paste -- comment line and all -- still
+    -- reads as covered.
+    t.contains(ambulanceBox({ alert = true, down = true }), '(2 of 2)',
+        'the paste the document actually asks for stopped counting as a guard')
+end)
+
 t.test('and the word alone is not the guard -- it is the resource name or nothing', function()
     -- WHAT THIS LINE PROMISES IS THAT A "GUARDED" READING CAN BE TRUSTED, and
     -- a needle of 'Crimson' rather than 'Crimson-Arena' breaks exactly that
@@ -2756,6 +2784,120 @@ t.test('and the word alone is not the guard -- it is the resource name or nothin
         'a handler that merely says "Crimson" was counted as guarded: ' .. report)
     t.contains(report, 'hospital:server:ambulanceAlert',
         'the handler that only mentions the word was not the one named: ' .. report)
+end)
+
+t.test('and a mention in the GAP BETWEEN handlers is not a guard in either', function()
+    -- The handler being judged ends at its own `end)`. The next registration
+    -- is further down still, and the gap between them holds ordinary file
+    -- comments -- sc-ambulance really does carry one there. A window that ran
+    -- to the next registration would read a mention sitting in that gap as a
+    -- guard inside the handler ABOVE it, and report a wide-open handler as
+    -- covered.
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        -- EXECUTABLE, NOT A COMMENT, and that is the whole test. A comment in
+        -- the gap is already thrown out by the line-stripping above, so a
+        -- fixture built from one exercises nothing and passes against a build
+        -- with no `end)` edge at all. Top-level code between two handlers is
+        -- ordinary -- caching an export is the obvious example -- and it is
+        -- what the edge actually has to exclude.
+        "local arenaExport = exports['Crimson-Arena']",
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+
+    t.contains(report, 'NO arena guard',
+        'a note in the gap between handlers was counted as a guard: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the handler above the gap was not reported as the open one: ' .. report)
+end)
+
+t.test('and a SECOND, unguarded registration of the same event is not hidden', function()
+    -- Nothing stops a resource registering the same net event twice -- a
+    -- compat shim, a second file, a merge that duplicated a block -- and both
+    -- handlers run. Judging only the first reports 2 of 2 with a wide-open
+    -- registration further down the file paging every medic.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+        '',
+        '-- a compat shim registered the same event a second time',
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+
+    t.isTrue(report:find('(2 of 2)', 1, true) == nil,
+        'a duplicate unguarded registration was hidden behind the guarded one: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the doubly-registered event was not named as open: ' .. report)
+end)
+
+t.test('and the STATE BAG form counts as a guard, because config.lua suggests it', function()
+    -- config.lua's FORM 2 hands out `if Player(src).state.crimsonArena then
+    -- return end`, which never says "Crimson-Arena" at all. Reporting that
+    -- working guard as a definite hole sends an operator to re-paste something
+    -- they already did right.
+    local guard = '\tif Player(src).state.crimsonArena then return end\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    t.contains(ambulanceBox({}, body), '(2 of 2)',
+        'the state-bag guard config.lua itself suggests was reported as a hole')
+end)
+
+t.test('THE sc-dispatch SWITCH: a COMMENTED-OUT example is not the live setting', function()
+    -- The dangerous direction again, and in the other half of the report. A
+    -- match run over the whole config file reads a commented-out example as
+    -- the setting -- so a build shipping the block commented out above the
+    -- real one reported the integration ON while the live line said false.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+
+    f.env.LoadResourceFile = function()
+        return '-- Config.Integrations = {\n'
+            .. '--     CrimsonArena = true,\n'
+            .. '-- }\n'
+            .. 'Config.Integrations = {\n    CrimsonArena = false,\n}\n'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'is FALSE',
+        'a commented-out example was read as the live setting, reporting OFF as ON')
+
+    -- The control: a live true is still read as true.
+    f.env.LoadResourceFile = function()
+        return '-- an example above the real thing\nConfig.Integrations = {\n    CrimsonArena = true,\n}\n'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'CrimsonArena = true',
+        'a genuinely enabled integration stopped being confirmed')
 end)
 
 t.test('and a file it cannot read is reported as UNKNOWN, never guessed', function()

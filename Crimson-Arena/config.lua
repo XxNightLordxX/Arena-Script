@@ -2770,11 +2770,15 @@ Config.Dispatch = {
             -- THE NOTE THAT STOOD HERE WAS FALSE, and it is worth saying so
             -- plainly rather than quietly rewriting it. It said neither event
             -- exists on this box. Both do. sc-ambulance's client raises
-            -- ambulanceAlert from SIX places -- client/laststand.lua,
-            -- client/dead.lua twice, client/qbx_medical_compat.lua three
-            -- times -- and EMSDownAlert from TWO, client/laststand.lua and
-            -- client/dead.lua. Its server/main.lua registers a handler for
-            -- each, and each pages every on-duty medic.
+            -- EMSDownAlert from TWO places -- client/laststand.lua and
+            -- client/dead.lua -- and ambulanceAlert from THREE,
+            -- client/laststand.lua and client/dead.lua twice.
+            -- (client/qbx_medical_compat.lua raises it three more times and
+            -- is not in that resource's fxmanifest, so it never loads.) Its
+            -- server/main.lua registers a handler for each, and each pages
+            -- every on-duty medic. On the shipped config, with sc-dispatch
+            -- running, only EMSDownAlert actually fires -- the ambulanceAlert
+            -- sites are the else branch of that same check.
             --
             -- THEY STAY OUT ANYWAY, because listing them would not help.
             -- sc-ambulance NEVER CALLS WasEventCanceled(). Its handlers page

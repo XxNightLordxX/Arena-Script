@@ -1521,9 +1521,24 @@ local function alertGuardLine()
     local settingSays = nil
     local read, body = pcall(LoadResourceFile, 'sc-dispatch', 'config.lua')
     if read and type(body) == 'string' then
-        local value = body:match('CrimsonArena%s*=%s*([%a]+)')
-        if value == 'true' then settingSays = true
-        elseif value == 'false' then settingSays = false end
+        -- LINE BY LINE, WITH TRAILING COMMENTS CUT OFF, because a match run
+        -- over the whole file reads a COMMENTED-OUT example as the live
+        -- setting. sc-dispatch's config ships the block commented out above
+        -- the real one on some builds, and a whole-file match found the
+        -- example's `CrimsonArena = true` and reported the integration ON
+        -- while the live line underneath said false. That is the dangerous
+        -- direction: an operator told it is working stops looking.
+        --
+        -- The first LIVE assignment wins. A long-bracket comment would still
+        -- fool this; that is the honest limit of reading a file you do not
+        -- parse, and it is why the unknown answer exists.
+        for line in body:gmatch('[^\n]+') do
+            local value = line:gsub('%-%-.*$', ''):match('CrimsonArena%s*=%s*([%a]+)')
+            if value == 'true' or value == 'false' then
+                settingSays = (value == 'true')
+                break
+            end
+        end
     end
 
     if settingSays == true then
@@ -1571,12 +1586,24 @@ end
 --- then WITHDRAWN a quarter of a second later. A medic on duty at that
 --- instant still sees it flash; nothing persists.
 ---
---- ambulanceAlert is the worse of the two, and it is the quieter-looking
---- one. It never touches sc-dispatch at all -- the handler loops the on-duty
---- medics and TriggerClientEvents each of them directly. There is no call id,
---- no filed announcement and NOTHING TO WITHDRAW. Six of sc-ambulance's
---- eight alert sites go down it. That hole is permanent until the paste is
---- in.
+--- ambulanceAlert never touches sc-dispatch at all -- the handler loops the
+--- on-duty medics and TriggerClientEvents each of them directly. There is no
+--- call id, no filed announcement and NOTHING TO WITHDRAW. That hole is
+--- permanent until the paste is in.
+---
+--- BUT IT IS DORMANT ON THE SHIPPED CONFIG, and saying so is the difference
+--- between an operator fixing what is happening and fixing what is not. All
+--- three of its live call sites are the ELSE branch of a check on
+--- MDTIntegration.Enabled and DisableDefaultAlerts, both of which sc-ambulance
+--- ships true, so with sc-dispatch running EMSDownAlert is the only one of the
+--- two that ever fires. ambulanceAlert wakes up the day somebody turns one of
+--- those off or sc-dispatch stops -- and then it is the un-withdrawable one.
+--- Both handlers want the paste; only one of them is paging medics today.
+---
+--- THREE MORE ambulanceAlert SITES ARE IN client/qbx_medical_compat.lua, which
+--- is NOT in sc-ambulance's fxmanifest and is never loaded. They are counted
+--- nowhere here for that reason, and the same paste covers them if a future
+--- version adds the file.
 ---
 --- Config.Dispatch.custom.cancelEvents CANNOT COVER IT EITHER, for the reason
 --- the list itself now gives where it names these two events: sc-ambulance
@@ -1623,12 +1650,26 @@ local function ambulanceGuardLine()
     -- THE EXACT SHAPE OR NOTHING. A handler written some other way is reported
     -- as not found rather than searched for loosely, because the whole value
     -- of this line is that a "guarded" reading can be trusted.
-    local function handlerAt(name)
+    --
+    -- EVERY REGISTRATION, NOT THE FIRST. Nothing stops a resource registering
+    -- the same net event twice -- a compat shim, a second file, a merge that
+    -- duplicated a block -- and both handlers run. Taking only the first would
+    -- report 2 of 2 with a second, wide-open registration sitting further down
+    -- the file paging every medic. All of them have to carry it.
+    local function handlerPositions(name)
+        local out = {}
         for _, quote in ipairs({ "'", '"' }) do
-            local at = body:find('RegisterNetEvent(' .. quote .. name .. quote, 1, true)
-            if at then return at end
+            local needle = 'RegisterNetEvent(' .. quote .. name .. quote
+            local from = 1
+            while true do
+                local at = body:find(needle, from, true)
+                if not at then break end
+                out[#out + 1] = at
+                from = at + 1
+            end
         end
-        return nil
+        table.sort(out)
+        return out
     end
 
     -- THE NEXT HANDLER IS THE EDGE, AND THE CHARACTER COUNT IS ONLY A
@@ -1646,25 +1687,68 @@ local function ambulanceGuardLine()
     -- judged actually ends, and the count is deliberately set far ABOVE any
     -- real gap so that it never decides anything except for the last handler
     -- in a file, where there is no next one to stop at.
+    -- THE KEY AS WELL AS THE NAME. A guard written the way this resource's own
+    -- config.lua suggests -- `if Player(src).state.crimsonArena then return
+    -- end` -- never says "Crimson-Arena" at all, and reporting that working
+    -- guard as a definite hole would send an operator to re-paste something
+    -- they had already done right. The configured key counts too.
+    local key = stateKey()
+
     local function guardedAt(at)
+        -- THREE EDGES, NEAREST WINS, and the character count is the weakest of
+        -- the three. The next RegisterNetEvent is where the NEXT handler
+        -- starts, but the handler being judged ends before that -- at its own
+        -- `end)` -- and the gap between them holds ordinary file comments. A
+        -- window that ran to the next registration would count a mention
+        -- sitting in that gap as a guard inside the handler above it. The
+        -- count only ever decides anything for a handler with no `end)` and no
+        -- registration after it, which is a file this check cannot read anyway.
         local stop = at + 2000
         -- #'RegisterNetEvent' == 16, so this starts past the one we are in.
         local nextAt = body:find('RegisterNetEvent', at + 16, true)
         if nextAt and nextAt < stop then stop = nextAt end
-        return body:sub(at, stop):find('Crimson%-Arena') ~= nil
+        local endAt = body:find('\nend)', at, true)
+        if endAt and endAt < stop then stop = endAt end
+
+        -- A COMMENT IS NOT A GUARD, and this is the trap the shape of our own
+        -- paste sets. DISPATCH-ALERTS.md asks the operator to paste a comment
+        -- line NAMING this resource directly above the two working lines. A
+        -- check that only looked for the name anywhere in the handler would
+        -- therefore answer "guarded" for a handler holding the comment and
+        -- nothing else -- which is exactly the state somebody leaves it in
+        -- while debugging their ambulance script, or after a bad merge takes
+        -- the working lines and leaves the comment. They would be told 2 of 2
+        -- while every arena death paged every medic.
+        --
+        -- So each line has its trailing comment cut off before it is read.
+        -- A whole-line comment collapses to whitespace and matches nothing;
+        -- `exports['Crimson-Arena']...` survives with its own trailing note
+        -- removed. It is not a Lua parser and does not need to be: a long
+        -- bracket comment or a string holding the name are not states any
+        -- paste this document asks for can produce.
+        for line in body:sub(at, stop):gmatch('[^\n]+') do
+            local code = line:gsub('%-%-.*$', '')
+            if code:find('Crimson%-Arena') or code:find(key, 1, true) then return true end
+        end
+        return false
     end
 
     local names = { 'hospital:server:ambulanceAlert', 'hospital:server:EMSDownAlert' }
     local missing, unfound, guarded = {}, {}, 0
 
     for _, name in ipairs(names) do
-        local at = handlerAt(name)
-        if not at then
+        local positions = handlerPositions(name)
+        if #positions == 0 then
             unfound[#unfound + 1] = name
-        elseif guardedAt(at) then
-            guarded = guarded + 1
         else
-            missing[#missing + 1] = name
+            -- ALL OF THEM OR NONE. One guarded registration and one open one
+            -- is an open handler, and reporting it as covered is the reading
+            -- that stops an operator looking.
+            local all = true
+            for _, at in ipairs(positions) do
+                if not guardedAt(at) then all = false end
+            end
+            if all then guarded = guarded + 1 else missing[#missing + 1] = name end
         end
     end
 

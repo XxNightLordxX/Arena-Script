@@ -21,11 +21,17 @@ read already ships.
 # Part 1 — `sc-dispatch` (police alerts)
 
 ```lua
--- sc-dispatch/config.lua
+-- sc-dispatch/config.lua -- set the one key; do not replace the table
 Config.Integrations = {
-    CrimsonArena = true,
+    PugPaintball = false,    -- leave whatever is already here alone
+    CrimsonArena = true,     -- <- this is the line
 }
 ```
+
+`Config.Integrations` already exists in that file and has other keys in it.
+**Set `CrimsonArena`; do not paste over the table** — dropping `PugPaintball`
+on a server running pug-paintball starts filing shots-fired calls for paintball
+matches, with nothing saying why.
 
 That is the whole job. There is no block to paste into `sc-dispatch`.
 
@@ -47,8 +53,9 @@ and nothing flashes on a medic's screen. That is strictly better than anything
 this resource can do from its own side, which is why there is no longer a
 Crimson-Arena-side block for it.
 
-Its panic button is **not** gated, but it needs an on-duty officer to press it,
-so a fighter cannot raise one.
+Its panic button is **not** gated. It needs the presser to be **on duty** as
+police, EMS or fire, so a civilian fighter cannot raise one — but an on-duty
+medic or officer who walks into a match can.
 
 ## What Crimson-Arena provides for it
 
@@ -98,13 +105,18 @@ not a mention of this resource, a state bag, a combat zone or a paintball check
 anywhere in it. It raises its own alerts, from its own client, down its own
 events:
 
-| Event | Raised from | Times |
+| Event | Raised from | Live sites |
 |---|---|---|
-| `hospital:server:ambulanceAlert` | `client/laststand.lua`, `client/dead.lua` (×2), `client/qbx_medical_compat.lua` (×3) | 6 |
-| `hospital:server:EMSDownAlert` | `client/laststand.lua`, `client/dead.lua` | 2 |
+| `hospital:server:EMSDownAlert` | `client/laststand.lua:97`, `client/dead.lua:228` | 2 |
+| `hospital:server:ambulanceAlert` | `client/laststand.lua:99`, `client/dead.lua:71`, `client/dead.lua:230` | 3 |
 
-All eight funnel into **two** server handlers, which is why two pastes cover
-all eight.
+They all funnel into **two** server handlers, which is why two pastes cover
+every one of them.
+
+`client/qbx_medical_compat.lua` raises `ambulanceAlert` three more times and is
+**not in sc-ambulance's `fxmanifest.lua`** — it is never loaded, so those three
+do not count. If a future version adds it to the manifest, the same two pastes
+already cover it.
 
 ### The part that catches people out
 
@@ -115,18 +127,22 @@ it. **A box can have `sc-dispatch` fully set up, read as covered, and still
 have arena deaths reach EMS.** Neither path is closed from the Crimson-Arena
 side.
 
-### What each path actually costs you today
+### Which one actually fires on your box
 
-They are not equally bad, and the obvious reading gets it backwards.
+**Do paste 2 first.** With `sc-ambulance`'s shipped config — `MDTIntegration.
+Enabled = true`, `DisableDefaultAlerts = true` — and `sc-dispatch` running,
+`EMSDownAlert` is the **only** one of the two that ever fires. All three live
+`ambulanceAlert` sites are the `else` branch of that same check, and the shipped
+config never reaches them.
 
-| Path | With no paste |
-|---|---|
-| `hospital:server:EMSDownAlert` (2 sites) | The call reaches `AddNotification`, which announces the whole payload on `sc-dispatch:server:witnessForward` before it writes a row. Crimson-Arena's retract layer listens on exactly that event and the payload carries `caller_source`, so the call is **withdrawn about a quarter of a second later**. A medic on duty at that instant still sees it flash; nothing persists. |
-| `hospital:server:ambulanceAlert` (6 sites) | Goes **straight** to every on-duty medic — the handler loops them and `TriggerClientEvent`s each one. No `sc-dispatch` call, no call id, **nothing to withdraw**. |
+| Path | Fires as shipped? | With no paste |
+|---|---|---|
+| `hospital:server:EMSDownAlert` (2 sites) | **Yes — this is the live one.** | The call reaches `AddNotification`, which announces the whole payload on `sc-dispatch:server:witnessForward` before it writes a row. Crimson-Arena's retract layer listens on exactly that event and the payload carries `caller_source`, so the call is **withdrawn about a quarter of a second later**. A medic on duty at that instant still sees it flash; nothing persists. |
+| `hospital:server:ambulanceAlert` (3 sites) | No, not as shipped. Live if `MDTIntegration.Enabled` or `DisableDefaultAlerts` is turned off, or `sc-dispatch` stops. | Goes **straight** to every on-duty medic — the handler loops them and `TriggerClientEvent`s each one. No `sc-dispatch` call, no call id, **nothing to withdraw**. |
 
-So paste **1** closes a permanent hole and is the one to do first; paste **2**
-turns a flash-then-clear into never-raised. Six of the eight alert sites go
-down the first one.
+So: paste **2** stops what is happening today. Paste **1** costs nothing now and
+is what stands between you and a permanent, un-withdrawable hole the day
+somebody flips one of those two settings or `sc-dispatch` is down. Do both.
 
 ### Why Crimson-Arena cannot do it from its own side
 
@@ -143,7 +159,10 @@ search for the event name.
 
 ### 1. `hospital:server:ambulanceAlert` — around line 258
 
-Covers all six `ambulanceAlert` sites. Paste **after** `local src = source`:
+Covers all three live `ambulanceAlert` sites (and the three in the unloaded
+compat file, if it is ever added to the manifest). Dormant on the shipped
+config; the one that leaves nothing to withdraw when it is not. Paste **after**
+`local src = source`:
 
 ```lua
 RegisterNetEvent('hospital:server:ambulanceAlert', function(text)
@@ -159,10 +178,10 @@ RegisterNetEvent('hospital:server:ambulanceAlert', function(text)
 
 ### 2. `hospital:server:EMSDownAlert` — around line 271
 
-Covers both `EMSDownAlert` sites — the server-export path above, whose calls
-are currently withdrawn a beat after they are raised rather than never raised.
-Paste **after** `local src = source`, **before** the `Config.MDTIntegration`
-check:
+**The one that fires today.** Covers both `EMSDownAlert` sites — the
+server-export path above, whose calls are currently withdrawn a beat after they
+are raised rather than never raised. Paste **after** `local src = source`,
+**before** the `Config.MDTIntegration` check:
 
 ```lua
 RegisterNetEvent('hospital:server:EMSDownAlert', function(street)
@@ -219,6 +238,7 @@ console. The last two lines are about the two halves above.
 - `sc-dispatch is running with Integrations.CrimsonArena = true ...` — Part 1 done.
 - `... Integrations.CrimsonArena in its own config is FALSE ...` — set it to true.
 - `... stateBagKey here is "x" and sc-dispatch reads "crimsonArena" ...` — see Part 1.
+- `... Its config could not be read from here ...` — usually an escrowed or moved config; check the setting by hand.
 - `sc-dispatch is not running ...` — Part 1 is not your route; the other layers apply.
 
 **The `sc-ambulance` line** says one of:
@@ -235,10 +255,19 @@ body**. It is a read and never a write. It judges each handler separately, so a
 guard in one is never counted for the other — and it does **not** look at
 `/311`.
 
-If you rename the resource folder, the comment in the paste stops matching and
-the tablet reports the guard as missing even though it works. The
-`exports['Crimson-Arena']` call carries the name too, so keeping the folder
-name is the simplest answer.
+It reads the **code** on each line, with any trailing comment cut off first, so
+a guard that has been commented out — or a paste where only the comment line
+survived a merge — is reported as missing, which is what it is. It accepts two
+forms: a line naming `Crimson-Arena`, or a line naming your
+`Config.Dispatch.custom.stateBagKey` (`crimsonArena` by default), so the state
+bag form `config.lua` suggests counts too.
+
+**If you rename the resource folder**, `exports['Crimson-Arena']` has to change
+with it, and the tablet then reports the guard as missing — the name it looks
+for is the folder name, not the `name` field in `fxmanifest.lua`. The guard
+still works; the report is what goes wrong. Keeping the folder name is the
+simplest answer. (`sc-dispatch` hard-codes `Crimson-Arena` too, so a rename
+costs you Part 1 as well.)
 
 ---
 
@@ -254,6 +283,18 @@ if Player(src).state.crimsonArena then return end        -- server realm
 if LocalPlayer.state.crimsonArena then return end        -- client realm
 ```
 
+**One caveat on the server-realm form, which `config.lua` carries and this file
+used not to.** A replicated state bag can be written by a client as well as by
+the server, so a player who has never been near the arena could in principle pin
+that flag on themselves and have your dispatch script politely ignore them
+robbing a bank. Crimson-Arena only ever writes it from the server, but reading
+it on the server means trusting a value the client can also set.
+
+`exports['Crimson-Arena']:ShouldSuppressAlert(src)` — the export Part 2 uses —
+has no such hole: it answers from a table inside this resource that nothing
+outside it can write. **On the server, prefer the export.** The bag is the right
+answer on the client, where the player could lie to themselves and gain nothing.
+
 If you replace `sc-ambulance`, the same two lines from Part 2 go at the top of
 whatever the replacement uses to page medics.
 
@@ -261,9 +302,11 @@ whatever the replacement uses to page medics.
 
 # What used to be here
 
-This file used to carry a ~230 line block to paste at the bottom of
-`sc-dispatch/server/main.lua`, which wrapped its `AddNotification` export and
-dropped alerts for arena fighters.
+A file called `ALERT-GUARD.md` used to sit beside this one and carry a ~230 line
+block to paste at the bottom of `sc-dispatch/server/main.lua`, which wrapped its
+`AddNotification` export and dropped alerts for arena fighters. That file is
+gone and this one replaced it, which is why the link you followed may have
+pointed somewhere that no longer exists.
 
 **It never worked, and it is gone.** In FiveM an export resolved through
 `TriggerEvent` arrives as a msgpack **funcref table**, not a function — so the

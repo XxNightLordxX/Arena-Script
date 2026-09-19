@@ -167,7 +167,12 @@ local function newFixture(mutate)
         SetEntityDrawOutlineRenderTechnique = function(group) f.technique = group end,
         ResetEntityDrawOutlineRenderTechnique = function() f.technique = nil end,
         GetPlayerTeam = function() return f.engineTeam end,
-        SetPlayerTeam = function(_player, team) f.team = team; f.engineTeam = team end,
+        SetPlayerTeam = function(_player, team)
+            f.team = team
+            f.engineTeam = team
+            -- COUNTED, so the per-frame test has something real to watch.
+            f.teamWrites = (f.teamWrites or 0) + 1
+        end,
         NetworkSetFriendlyFireOption = function(on) f.friendlyFire = on end,
         SetCanAttackFriendly = function(ped, on)
             f.canAttackFriendly = on
@@ -321,18 +326,6 @@ local function newFixture(mutate)
     end
 
     return f
-end
-
---- Every SetCanAttackFriendly call as `ped:on`, in order, for a failure
---- message that says what really happened rather than which flag was last.
---- @param calls table[]
---- @return string
-local function listedCalls(calls)
-    local out = {}
-    for _, call in ipairs(calls) do
-        out[#out + 1] = ('%s:%s'):format(tostring(call.ped), tostring(call.on))
-    end
-    return table.concat(out, ' ')
 end
 
 --- @param ids table -- set of server ids
@@ -1301,17 +1294,34 @@ end)
 
 
 
-t.test('and it is not re-applied every frame to a ped that already holds it', function()
-    -- The loop is per-frame, so a re-hold that did not check would call two
+t.test('and it is not re-applied every frame while nothing has touched it', function()
+    -- The loop is per-frame, so a re-hold that did not check would write both
     -- natives on every frame of every team round for ever.
+    --
+    -- IT USED TO COUNT SetCanAttackFriendly CALLS AND SO COUNTED NOTHING.
+    -- That native is not written any more, `f.friendlyCalls` is appended to
+    -- only by its stub, and both sides of the comparison were therefore 0 on
+    -- every run -- an assertion that could not fail for ANY change to
+    -- client/match.lua, under a name claiming to guard the hot path. It
+    -- counts the writes that really happen now.
     local f = newFixture()
     f.enterLive()
-    local afterEntry = #f.friendlyCalls
+    local afterEntry = f.teamWrites
 
     for _ = 1, 10 do f.step() end
 
-    t.equals(#f.friendlyCalls, afterEntry,
-        'the hold was re-applied to a ped that was already holding it')
+    t.equals(f.teamWrites, afterEntry,
+        'the hold was re-applied on a frame where nothing had drifted')
+
+    -- AND THE CONTROL, so this cannot pass by the re-assert being dead: move
+    -- the player off their side and the very next frame must put it back.
+    -- `engineTeam` is what the fixture's GetPlayerTeam reads, which is what
+    -- the guard compares against -- setting only `team` would move nothing
+    -- the guard can see, and this control would pass while testing nothing.
+    f.engineTeam = 7
+    f.step()
+    t.isTrue(f.teamWrites > afterEntry,
+        'the re-assert never fired after another resource moved the player')
 end)
 
 t.test('and entering a free-for-all straight from a team round puts it back', function()

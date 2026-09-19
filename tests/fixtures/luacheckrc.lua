@@ -332,7 +332,6 @@ files['client/'] = {
         'GetPlayerTeam',
         'SetPlayerTeam',
         'NetworkSetFriendlyFireOption',
-        'SetCanAttackFriendly',
 
         -- Per-arena weather and time overrides.
         'ClearOverrideWeather',

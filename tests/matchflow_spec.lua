@@ -2236,13 +2236,22 @@ t.test('a team match puts the player on their side and turns friendly fire off',
     local f = outlinedTeamMatch()
     t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
         'the engine was never told which side this fighter is on')
-    -- NEITHER NATIVE IS WRITTEN ANY MORE, so the claim is that this resource
-    -- never touches them at all. Together they stopped a fighter damaging
-    -- ANYBODY -- SetCanAttackFriendly answers a RELATIONSHIP question, and
-    -- GTA's single PLAYER group makes every player friendly to every other,
-    -- so refusing "friendlies" refused every player and the team index beside
-    -- it changed nothing. Friendly fire is enforced by the SERVER, in
-    -- weaponDamageEvent off Arena.CanDamage; crossfire_spec drives both ways.
+    -- ONE OF THE TWO IS WRITTEN, AND ONLY ONE.
+    --
+    -- NetworkSetFriendlyFireOption IS. It is team-scoped, so it cannot refuse
+    -- an enemy, and it is the only thing that zeroes the teammate's half of a
+    -- spread the server deliberately lets through whole (crossfire_spec's
+    -- "THE REGRESSION: a spread that catches a teammate still hits the
+    -- enemy"), or a melee blow the server mostly never sees -- measured in
+    -- this repo's history: three team rounds of bottles and crowbars produced
+    -- exactly ONE friendly-fire refusal, and it was a gun.
+    --
+    -- SetCanAttackFriendly IS NOT. It answers a RELATIONSHIP question, and
+    -- GTA's one PLAYER group makes every player friendly to every other, so
+    -- refusing "friendlies" refused every player regardless of the team index
+    -- set alongside it -- the report, "i can't shoot my enemies and they
+    -- can't shoot me".
+
     t.isFalse(f.friendlyFire, 'friendly fire was left ON for a round whose rule is that it is off')
 end)
 

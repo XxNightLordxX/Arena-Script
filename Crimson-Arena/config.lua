@@ -21,17 +21,17 @@
       159   Schedule      Opening hours: when the door is actually open
       195   Match         Lives, timers, player counts, win condition
       500   Teams         The sides, and whether they may be uneven
-      633   Modes         Free-for-all, team deathmatch and gun game
-      937   DefaultMode   Which of them a new lobby opens on
-      956   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1200   UI            Panel colours, logo and title
-     1258   Permissions   Who may open a match, who may force-stop one
-     1344   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1778   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2353   Database      Optional: four tables the arena owns. Ships OFF
-     2384   Leaderboard   Which matches count towards the board, and which do not
-     2450   Webhook       Optional: a Discord line per finished match
-     2482   Dispatch      Optional: keeping police and EMS out of the arena
+      643   Modes         Free-for-all, team deathmatch and gun game
+      947   DefaultMode   Which of them a new lobby opens on
+      966   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1210   UI            Panel colours, logo and title
+     1268   Permissions   Who may open a match, who may force-stop one
+     1354   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1788   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2363   Database      Optional: four tables the arena owns. Ships OFF
+     2394   Leaderboard   Which matches count towards the board, and which do not
+     2460   Webhook       Optional: a Discord line per finished match
+     2492   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -530,7 +530,17 @@ Config.Teams = {
     --
     -- WHAT "REFUSED" COVERS, since the engine decides the shape of this:
     --
-    --   Bullets and melee are refused on the server.
+    --   BULLETS are refused on the server, by cancelling the damage packet.
+    --
+    --   MELEE IS MOSTLY NOT, and the measurement is in this repository's own
+    --   history: three team rounds where every loadout carried a bottle, a
+    --   crowbar, a hatchet or a candycane produced exactly ONE friendly-fire
+    --   refusal in the whole session, and it was a gun. weaponDamageEvent is
+    --   what a shooter's client reports, and plenty of damage never produces
+    --   one the server can cancel in time. What refuses melee is the engine
+    --   hold the client puts on -- the network team plus friendly fire off --
+    --   which is decided before any damage exists and is the one place melee
+    --   and gunfire are the same thing.
     --
     --   Nothing stops the TRIGGER. Aiming at your own side still fires,
     --   still spends the round, and still plays the flinch on your own

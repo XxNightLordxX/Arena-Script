@@ -600,21 +600,22 @@ t.test('a team round puts the player on their side and turns friendly fire off',
 
     t.equals(client.engineTeam, client.Arena.TeamIndex('crimson'),
         'the engine was never told which side this fighter is on')
-    -- NEITHER NATIVE IS WRITTEN ANY MORE, and asserting that is a STRONGER
-    -- guard than the two lines that used to stand here, not a weaker one.
-    -- ONE OF THE TWO IS STILL WRITTEN, AND ONLY ONE.
+    -- ONE OF THE TWO IS WRITTEN, AND ONLY ONE.
     --
-    -- NetworkSetFriendlyFireOption IS: it is team-scoped, so it cannot refuse
+    -- NetworkSetFriendlyFireOption IS. It is team-scoped, so it cannot refuse
     -- an enemy, and it is the only thing that zeroes the teammate's half of a
     -- spread the server deliberately lets through whole (crossfire_spec's
     -- "THE REGRESSION: a spread that catches a teammate still hits the
-    -- enemy") or a flamethrower burn the server never sees at all.
+    -- enemy"), or a melee blow the server mostly never sees -- measured in
+    -- this repo's history: three team rounds of bottles and crowbars produced
+    -- exactly ONE friendly-fire refusal, and it was a gun.
     --
     -- SetCanAttackFriendly IS NOT. It answers a RELATIONSHIP question, and
     -- GTA's one PLAYER group makes every player friendly to every other, so
     -- refusing "friendlies" refused every player regardless of the team index
-    -- set alongside it -- the owner's report, "i can't shoot my enemies and
-    -- they can't shoot me".
+    -- set alongside it -- the report, "i can't shoot my enemies and they
+    -- can't shoot me".
+
     t.isFalse(client.friendlyFire,
         'friendly fire was left ON in a mode whose rule is that it is off')
     t.isNil(client.canAttackFriendly, 'this resource is writing SetCanAttackFriendly again')

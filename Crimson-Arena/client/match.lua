@@ -313,6 +313,22 @@ local function holdFriendlyFire(ped)
     -- It is also per-PED, which is why it had to be re-applied on every
     -- respawn; the team does not.
     --
+    -- THAT PARAGRAPH IS INFERENCE AND IS LABELLED AS INFERENCE. The native
+    -- reference says only "setting ped to true allows the ped to shoot" its
+    -- own side; it does not describe the relationship group, and nobody has
+    -- measured this in game. It is the only reading that explains a block
+    -- that was TOTAL and SYMMETRIC in team modes only, and the alternatives
+    -- were each checked and fail: the team index really is distinct per side
+    -- (Arena.TeamIndex returns the ipairs position), the buckets are per
+    -- MATCH so both fighters share one, and the server allows the shot --
+    -- crossfire_spec drives an enemy being hit and hitting back.
+    --
+    -- IF IT IS EVER WRONG, THE CHEAP TEST IS THE SERVER'S OWN LOG. mayDamage
+    -- prints `crossfire: %s may not damage %s` on every refused packet. A
+    -- round where nobody can hurt anybody either shows those lines -- and
+    -- then the block is the server's and this file is innocent -- or shows
+    -- none, and it is here.
+    --
     -- NetworkSetFriendlyFireOption STAYS, AND REMOVING IT WAS A MISTAKE THAT
     -- LASTED ONE COMMIT. It is team-scoped: it governs damage between players
     -- the engine considers on the SAME network team, and the line above has
@@ -685,6 +701,19 @@ local function reviveForCountdown(ped)
 
     local revived = PlayerPedId()
 
+    -- DEFENSIVE, AND NOT TEST-HELD, said plainly rather than left looking
+    -- load-bearing. This used to be measured: the resurrect handed back a new
+    -- ped, SetCanAttackFriendly is a property of the PED, and the per-frame
+    -- loop would not re-apply it until the next frame -- a frame with the hold
+    -- dropped is a frame the engine lets a teammate's bullet through. A test
+    -- drove exactly that and would fail if this line went.
+    --
+    -- That native is gone, and with it the property. Both settings still held
+    -- belong to the PLAYER and a resurrect does not touch them, so deleting
+    -- this line now changes no answer any honest test can produce -- the loop
+    -- below would repair a drift a frame later anyway. It stays because it
+    -- costs nothing and because "the hold is re-asserted wherever this file
+    -- hands back a ped" is worth keeping true for whoever adds the next ped.
     holdFriendlyFire(revived)
     ClearPedBloodDamage(revived)
 
@@ -1194,16 +1223,25 @@ local function startArenaThread()
                 if arenaVitals.armour then SetPedArmour(ped, arenaVitals.armour) end
             end
 
-            -- THE TEAM ONLY, AND SO NO LONGER "DID THE PED CHANGE".
+            -- WATCHED ON THE TEAM, AND SO NO LONGER "DID THE PED CHANGE".
             --
             -- This used to re-apply the hold whenever the player came back on
             -- a NEW PED, because SetCanAttackFriendly is a property of the ped
             -- and a respawn hands back a fresh one with the flag cleared. That
             -- native is not written any more -- see holdFriendlyFire -- and
-            -- the one setting that is left, the network team, belongs to the
-            -- PLAYER and survives every respawn, model change and handover on
-            -- its own. So the ped is no longer a reason to re-assert anything,
-            -- and `heldPed` went with the check that read it.
+            -- both settings that are left belong to the PLAYER, surviving
+            -- every respawn, model change and handover on their own. So the
+            -- ped is no longer a reason to re-assert, and `heldPed` went with
+            -- the check that read it.
+            --
+            -- THE TEAM IS THE ONLY ONE THIS CAN WATCH, not the only one set.
+            -- NetworkSetFriendlyFireOption has no getter in this build, so
+            -- drift on it cannot be detected -- but re-applying the hold on a
+            -- team change writes BOTH again, so anything that moves the
+            -- player off their side repairs the option as a side effect. What
+            -- is not covered is a resource that flips the option while
+            -- leaving the team alone, and there is no way to see that from
+            -- here.
             --
             -- THE TEAM CHECK STAYS, and it is not about this file: nothing
             -- stops another resource calling SetPlayerTeam mid-round, and a

@@ -735,7 +735,7 @@ t.test('the client fights under the side the server sent it, and two sides are n
     -- so refusing "friendlies" refused every player and the team index beside
     -- it changed nothing. Friendly fire is enforced by the SERVER, in
     -- weaponDamageEvent off Arena.CanDamage; crossfire_spec drives both ways.
-    t.isNil(client.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
+    t.isFalse(client.friendlyFire, 'friendly fire was left ON for a round whose rule is that it is off')
 
     -- The next round, on the other side. Nothing about the first may follow
     -- this player into it -- a cached side here is the client half of the

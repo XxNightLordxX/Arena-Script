@@ -2374,7 +2374,7 @@ t.test('a floor that will not build does not send the arena home with the player
     -- A SETTING NEVER WRITTEN IS NEVER LEFT BEHIND. These two used to be the
     -- "one thing this must never do"; now they cannot be done at all, which
     -- is the stronger form of the same promise.
-    t.isNil(c.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
+    t.isTrue(c.friendlyFire, 'friendly fire was left OFF outside the arena')
     t.isNil(c.canAttackFriendly, 'SetCanAttackFriendly is being written again')
     t.equals(#c.world.live(), 0, 'nor is any half-built scenery left standing')
 end)
@@ -2389,7 +2389,7 @@ t.test('and the hold really was on, so the test above is not measuring nothing',
 
     t.isTrue(c.playerTeam ~= nil and c.playerTeam ~= -1,
         'the hold never put the player on the arena team, so nothing above is being tested')
-    t.isNil(c.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
+    t.isFalse(c.friendlyFire, 'the hold never switched friendly fire off, so nothing above is tested')
     t.isNil(c.canAttackFriendly, 'SetCanAttackFriendly is being written again')
 end)
 

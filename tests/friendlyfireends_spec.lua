@@ -602,19 +602,21 @@ t.test('a team round puts the player on their side and turns friendly fire off',
         'the engine was never told which side this fighter is on')
     -- NEITHER NATIVE IS WRITTEN ANY MORE, and asserting that is a STRONGER
     -- guard than the two lines that used to stand here, not a weaker one.
-    -- They used to be checked for the values the hold put in them; now the
-    -- claim is that this resource never touches them at all, in either
-    -- direction, so there is nothing left for any exit path to forget.
+    -- ONE OF THE TWO IS STILL WRITTEN, AND ONLY ONE.
     --
-    -- WHY THEY WENT: between them they stopped a fighter damaging ANYBODY.
-    -- SetCanAttackFriendly answers a RELATIONSHIP question, and GTA's one
-    -- PLAYER group makes every player friendly to every other, so refusing
-    -- "friendlies" refused every player regardless of the team index set
-    -- alongside it. The owner's report was "i can't shoot my enemies and they
-    -- can't shoot me". Friendly fire is enforced by the SERVER, in
-    -- weaponDamageEvent off Arena.CanDamage -- crossfire_spec drives both
-    -- directions of it -- so nothing was lost.
-    t.isNil(client.friendlyFire, 'this resource is writing NetworkSetFriendlyFireOption again')
+    -- NetworkSetFriendlyFireOption IS: it is team-scoped, so it cannot refuse
+    -- an enemy, and it is the only thing that zeroes the teammate's half of a
+    -- spread the server deliberately lets through whole (crossfire_spec's
+    -- "THE REGRESSION: a spread that catches a teammate still hits the
+    -- enemy") or a flamethrower burn the server never sees at all.
+    --
+    -- SetCanAttackFriendly IS NOT. It answers a RELATIONSHIP question, and
+    -- GTA's one PLAYER group makes every player friendly to every other, so
+    -- refusing "friendlies" refused every player regardless of the team index
+    -- set alongside it -- the owner's report, "i can't shoot my enemies and
+    -- they can't shoot me".
+    t.isFalse(client.friendlyFire,
+        'friendly fire was left ON in a mode whose rule is that it is off')
     t.isNil(client.canAttackFriendly, 'this resource is writing SetCanAttackFriendly again')
 end)
 
@@ -635,7 +637,7 @@ t.test('and walking out of the round puts all three back', function()
     -- GUESS at what the operator had -- the exact thing
     -- client/dispatch.lua:147 forbids. Now they are untouched going in, so
     -- there is nothing to hand back coming out.
-    t.isNil(client.friendlyFire, 'the exit path is writing NetworkSetFriendlyFireOption')
+    t.isTrue(client.friendlyFire, 'friendly fire stayed OFF after the round that turned it off')
     t.isNil(client.canAttackFriendly, 'the exit path is writing SetCanAttackFriendly')
 end)
 
@@ -645,7 +647,7 @@ t.test('and so does the resource going down under them', function()
     client.fire('onResourceStop', 'crimson_arena')
 
     t.equals(client.engineTeam, -1, 'a restart left the arena team on the player')
-    t.isNil(client.friendlyFire, 'a restart is writing NetworkSetFriendlyFireOption')
+    t.isTrue(client.friendlyFire, 'a restart left friendly fire OFF')
 end)
 
 t.test('a free-for-all never touches either of them, so it has nothing to leave behind', function()

@@ -1171,7 +1171,7 @@ t.test('a team round tells the engine which side this player is on', function()
     -- values these two lines used to check: there is no flag left for any
     -- exit path to forget, and none this resource has to guess a stock
     -- value for on the way out. See the collapsed test below for why.
-    t.isNil(f.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
+    t.isFalse(f.friendlyFire, 'friendly fire was left ON for a round whose rule is that it is off')
     t.isNil(f.canAttackFriendly, 'SetCanAttackFriendly is being written again')
 end)
 
@@ -1200,7 +1200,7 @@ t.test('THE ONE THAT MATTERS: it does not follow the player out of the arena', f
     f.fire('crimson_arena:client:exitArena', {})
 
     t.equals(f.team, -1, 'the player left the arena still on the arena\'s team')
-    t.isNil(f.friendlyFire, 'the exit wrote NetworkSetFriendlyFireOption')
+    t.isTrue(f.friendlyFire, 'friendly fire was left OFF for the rest of this player\'s session')
     t.isNil(f.canAttackFriendly, 'the exit wrote SetCanAttackFriendly')
 end)
 
@@ -1214,7 +1214,7 @@ t.test('and the resource stopping mid-round puts it back as well', function()
     f.fire('onResourceStop', 'crimson_arena')
 
     t.equals(f.team, -1, 'a restart mid-round left the player on the arena\'s team for good')
-    t.isNil(f.friendlyFire, 'a restart wrote NetworkSetFriendlyFireOption')
+    t.isTrue(f.friendlyFire, 'a restart mid-round left friendly fire OFF for good')
 end)
 
 
@@ -1258,7 +1258,7 @@ t.test('THE HOLD IS ON THE PLAYER NOW, so no ped can drop it', function()
         'the fixture did not give the player a new ped, so this test measures nothing')
     t.equals(f.team, side, 'a respawn moved the player off their side')
     t.isNil(f.canAttackFriendly, 'a respawn wrote SetCanAttackFriendly again')
-    t.isNil(f.friendlyFire, 'a respawn wrote NetworkSetFriendlyFireOption again')
+    t.isFalse(f.friendlyFire, 'a respawn left friendly fire ON inside a team round')
 
     -- AND THE EXIT STILL PUTS THE TEAM BACK, which is the half that always
     -- mattered: it is the one of the three with a real getter, so it is the
@@ -1266,7 +1266,7 @@ t.test('THE HOLD IS ON THE PLAYER NOW, so no ped can drop it', function()
     f.fire('crimson_arena:client:exitArena', {})
     t.equals(f.team, -1, 'the player left the arena still on the arena\'s team')
     t.isNil(f.canAttackFriendly, 'the exit wrote SetCanAttackFriendly')
-    t.isNil(f.friendlyFire, 'the exit wrote NetworkSetFriendlyFireOption')
+    t.isTrue(f.friendlyFire, 'friendly fire was left OFF for the rest of this player\'s session')
 end)
 
 t.test('and leaving puts back the network team the player was already on', function()
@@ -1327,7 +1327,7 @@ t.test('and entering a free-for-all straight from a team round puts it back', fu
 
     f.enterLive({ modeKey = 'ffa', teamKey = nil })
 
-    t.isNil(f.friendlyFire, 'a free-for-all wrote NetworkSetFriendlyFireOption')
+    t.isTrue(f.friendlyFire, 'a free-for-all inherited the team round\'s friendly-fire hold')
     t.isNil(f.canAttackFriendly, 'a free-for-all wrote SetCanAttackFriendly')
     t.equals(f.team, -1, 'and the player was left on the previous round\'s engine team')
 end)
@@ -1348,7 +1348,8 @@ t.test('and so does a server that wants friendly fire, mid-session', function()
     -- the player off the arena's side, not on it.
     t.equals(f.team, -1,
         'a round the operator wants friendly fire in kept the previous hold')
-    t.isNil(f.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
+    t.isTrue(f.friendlyFire,
+        'a round the operator wants friendly fire in kept the hold switched off')
 end)
 
 t.test('THE CAUSE: the outline mask is drawn with a group ped shaders implement', function()

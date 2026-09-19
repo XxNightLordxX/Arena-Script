@@ -2243,7 +2243,7 @@ t.test('a team match puts the player on their side and turns friendly fire off',
     -- so refusing "friendlies" refused every player and the team index beside
     -- it changed nothing. Friendly fire is enforced by the SERVER, in
     -- weaponDamageEvent off Arena.CanDamage; crossfire_spec drives both ways.
-    t.isNil(f.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
+    t.isFalse(f.friendlyFire, 'friendly fire was left ON for a round whose rule is that it is off')
 end)
 
 t.test('and another resource moving the player off it does not switch friendly fire back on', function()
@@ -2271,7 +2271,7 @@ t.test('and another resource moving the player off it does not switch friendly f
     f.step()
 
     t.equals(f.team, ours, 'the arena never put its own side back')
-    t.isNil(f.friendlyFire, 'the re-assert is writing NetworkSetFriendlyFireOption again')
+    t.isFalse(f.friendlyFire, 'the re-assert left friendly fire ON for the rest of the round')
 end)
 
 t.test('and the hold is not re-written every frame while nothing has touched it', function()

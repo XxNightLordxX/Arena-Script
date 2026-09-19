@@ -297,39 +297,45 @@ local function holdFriendlyFire(ped)
 
     if not friendlyFireHeld then priorTeam = GetPlayerTeam(PlayerId()) end
 
-    -- THE TEAM, AND NOTHING ELSE. This used to also write
-    -- NetworkSetFriendlyFireOption(false) and SetCanAttackFriendly(ped, false,
-    -- false), and BOTH ARE GONE because between them they stopped a fighter
-    -- damaging ANYBODY -- their own side and the other side alike.
+    -- TWO OF THE THREE. `SetCanAttackFriendly(ped, false, false)` used to sit
+    -- here as well and is GONE; the other two stay, and the difference
+    -- between them is the whole of this.
     --
-    -- THE REPORT: "i can't shoot my enemies and they can't shoot me".
+    -- THE REPORT: "i can't shoot my enemies and they can't shoot me". Not
+    -- teammates -- ANYBODY, in both directions, because every client was
+    -- doing it to itself.
     --
-    -- WHY THE TEAM INDEX DID NOT SAVE IT. GTA's default relationship has one
-    -- PLAYER group and every player is friendly to it, which is a different
-    -- question from the network team this sets. `SetCanAttackFriendly(ped,
-    -- false, ...)` answers the relationship question, not the team one, so it
-    -- told this ped it may not shoot PLAYERS -- full stop -- and the distinct
-    -- team index underneath it changed nothing.
+    -- SetCanAttackFriendly ANSWERS A RELATIONSHIP QUESTION, NOT A TEAM ONE,
+    -- and that is why it could not be saved by the team index set beside it.
+    -- GTA's default relationships put every player in one PLAYER group that
+    -- is friendly to itself, so a ped told it may not attack "friendlies" may
+    -- not attack PLAYERS -- full stop, whatever network team anybody is on.
+    -- It is also per-PED, which is why it had to be re-applied on every
+    -- respawn; the team does not.
     --
-    -- NOTHING IS LOST BY REMOVING THEM, because neither was ever what enforced
-    -- friendly fire. The server does that, in weaponDamageEvent, off
-    -- Arena.CanDamage, and it is the only place a shot can actually be
-    -- refused: crossfire_spec drives both directions of it -- a teammate's
-    -- shot refused, an enemy's allowed, and a spread that catches both still
-    -- landing on the enemy. A client-side hold on top of an authoritative
-    -- server check was belt and braces; it turned out to be a blindfold.
+    -- NetworkSetFriendlyFireOption STAYS, AND REMOVING IT WAS A MISTAKE THAT
+    -- LASTED ONE COMMIT. It is team-scoped: it governs damage between players
+    -- the engine considers on the SAME network team, and the line above has
+    -- just put the two sides on different ones. It cannot refuse an enemy, so
+    -- it was never part of the report -- and it is doing real work that
+    -- NOTHING ELSE DOES.
     --
-    -- AND IT MENDS A SECOND DEFECT ON THE WAY OUT. Neither native has a
-    -- getter, so the release could only ever hand back a GUESS at what the
-    -- server had before -- which is the one thing client/dispatch.lua:147
-    -- forbids in capitals, and it was undoing operators' own settings for the
-    -- rest of a player's session. A setting this resource never writes is one
-    -- it never has to guess at.
+    -- WHAT IT COVERS THAT THE SERVER DOES NOT, which is the reason it is back:
+    -- the server refuses a PACKET, never a victim. crossfire_spec's own
+    -- "THE REGRESSION: a spread that catches a teammate still hits the enemy"
+    -- pins that deliberately -- a spread naming an enemy AND a teammate is
+    -- allowed through whole, because cancelling it would make hugging a
+    -- teammate shotgun-proof. The teammate's half of that spread is zeroed
+    -- HERE or nowhere. The same goes for every damage class the two server
+    -- handlers never see: a flamethrower's burn raises no weaponDamageEvent
+    -- and no explosionEvent, and neither does running somebody over.
     --
-    -- SetPlayerTeam STAYS: GetPlayerTeam is a real getter, so it is restored
-    -- to what was actually read rather than to a constant, and the team is
-    -- what colours teammates on the radar.
+    -- SO THE SERVER IS THE AUTHORITY AND THIS IS THE COVER. The server is
+    -- what an edited client cannot get past; this is what catches the cases
+    -- the server deliberately or structurally lets through. Neither is
+    -- redundant and the round needs both.
     SetPlayerTeam(PlayerId(), index)
+    NetworkSetFriendlyFireOption(false)
     friendlyFireHeld = true
     heldTeam = index
 end
@@ -339,12 +345,30 @@ releaseFriendlyFire = function(ped)
     friendlyFireHeld = false
     heldTeam = nil
 
-    -- RESTORED TO WHAT WAS READ, and it is the only one of the three this
-    -- ever had a reading for. The other two are not set any more and so are
-    -- not unset -- see holdFriendlyFire. `ped` is still taken so the two
-    -- halves keep the same shape and callers do not have to change.
+    -- THE TEAM IS RESTORED TO WHAT WAS READ. GetPlayerTeam is a real getter,
+    -- so this hands back the reading taken at the door rather than a constant.
     SetPlayerTeam(PlayerId(), priorTeam or -1)
     priorTeam = nil
+
+    -- AND THE OPTION IS PUT BACK ON, which is an ASSUMPTION and is flagged as
+    -- one rather than hidden. There is no getter for it in this build, so
+    -- `true` is the stock value guessed at, and client/dispatch.lua:147's rule
+    -- -- a setting this resource cannot read back is one it does not set --
+    -- is bent here knowingly.
+    --
+    -- WHY IT IS BENT RATHER THAN OBEYED. Obeying it means one of two things,
+    -- and both are worse than the guess: leave the option off, and a player
+    -- carries "my own side cannot hurt me" into the city for the rest of their
+    -- session; or never set it, and teammates take the spread and fire damage
+    -- the server structurally cannot refuse. The cost of the guess is an
+    -- operator who had deliberately turned friendly fire OFF server-wide
+    -- finding it on again after a round -- narrow, and it only bites a server
+    -- that both sets this native and puts players on shared teams.
+    --
+    -- SetCanAttackFriendly IS NOT UNSET HERE because it is no longer set --
+    -- see holdFriendlyFire. `ped` is still taken so both halves keep the same
+    -- shape and callers do not change.
+    NetworkSetFriendlyFireOption(true)
 end
 
 local function restoreOwnLoadout(ped)

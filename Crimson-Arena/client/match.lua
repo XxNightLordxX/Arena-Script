@@ -360,10 +360,20 @@ local function holdFriendlyFire(ped)
     -- gives. Worth knowing before concluding a fix did not work.
     --
     -- IF IT IS EVER WRONG ANYWAY, THE CHEAP TEST IS THE SERVER'S OWN LOG.
-    -- mayDamage prints `crossfire: %s may not damage %s` on every refused
-    -- packet. A round where nobody can hurt anybody either shows those lines
-    -- -- and then the block is the server's and this file is innocent -- or
-    -- shows none, and it is here.
+    -- The weaponDamageEvent handler prints `crossfire: %s may not damage %s`
+    -- when it cancels on a per-victim refusal. Seeing those lines in a round
+    -- where nobody can hurt anybody means the block is the SERVER's and this
+    -- file is innocent.
+    --
+    -- SILENCE IS NOT THE OPPOSITE VERDICT, and reading it as one is the trap.
+    -- The server also cancels WITHOUT printing that line -- a packet naming
+    -- more than MAX_HITS entities, and the explosion handler, which has its
+    -- own refusal and its own wording. And ArenaDebug is gated on
+    -- Config.Debug (server/util.lua), which ships true but is the first thing
+    -- a live server turns off. So silence means "no per-victim refusal was
+    -- logged", which is consistent with the server blocking for another
+    -- reason, with Debug being off, and with this file being at fault. Rule
+    -- the first two out before believing the third.
     --
     -- CHECK Config.Debug FIRST, because that print is ArenaDebug and
     -- server/util.lua returns early unless Debug is true. It ships true, so
@@ -432,8 +442,10 @@ releaseFriendlyFire = function(ped)
     -- WHY IT IS BENT RATHER THAN OBEYED. Obeying it means one of two things,
     -- and both are worse than the guess: leave the option off, and a player
     -- carries "my own side cannot hurt me" into the city for the rest of their
-    -- session; or never set it, and teammates take the spread and fire damage
-    -- the server structurally cannot refuse. The cost of the guess is an
+    -- session; or never set it, and teammates take the half of a mixed spread
+    -- the server deliberately lets through, and the melee the server barely
+    -- catches. (NOT fire -- that claim is retracted where the hold is taken,
+    -- and repeating it here is how a file ends up arguing with itself.) The cost of the guess is an
     -- operator who had deliberately turned friendly fire OFF server-wide
     -- finding it on again after a round -- narrow, and it only bites a server
     -- that both sets this native and puts players on shared teams.

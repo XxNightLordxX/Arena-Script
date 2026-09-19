@@ -21,17 +21,17 @@
       159   Schedule      Opening hours: when the door is actually open
       195   Match         Lives, timers, player counts, win condition
       500   Teams         The sides, and whether they may be uneven
-      643   Modes         Free-for-all, team deathmatch and gun game
-      947   DefaultMode   Which of them a new lobby opens on
-      966   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1210   UI            Panel colours, logo and title
-     1268   Permissions   Who may open a match, who may force-stop one
-     1354   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1788   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2363   Database      Optional: four tables the arena owns. Ships OFF
-     2394   Leaderboard   Which matches count towards the board, and which do not
-     2460   Webhook       Optional: a Discord line per finished match
-     2492   Dispatch      Optional: keeping police and EMS out of the arena
+      670   Modes         Free-for-all, team deathmatch and gun game
+      974   DefaultMode   Which of them a new lobby opens on
+      993   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1237   UI            Panel colours, logo and title
+     1295   Permissions   Who may open a match, who may force-stop one
+     1381   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1815   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2390   Database      Optional: four tables the arena owns. Ships OFF
+     2421   Leaderboard   Which matches count towards the board, and which do not
+     2487   Webhook       Optional: a Discord line per finished match
+     2519   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -526,7 +526,10 @@ Config.Teams = {
 
     -- CAN TEAMMATES HURT EACH OTHER? Off means the SHOT is refused, not
     -- merely that the kill is not counted. This is the one switch to move --
-    -- three separate places read it.
+    -- three FILES read it, at four decision points: the client's own hold,
+    -- and the three callers of Arena.CanDamage (kill attribution, the
+    -- weapon-damage refusal and the explosion refusal). The fourth arrived
+    -- with the explosion handler and is easy to miss when changing this.
     --
     -- WHAT "REFUSED" COVERS, since the engine decides the shape of this:
     --
@@ -537,10 +540,16 @@ Config.Teams = {
     --   crowbar, a hatchet or a candycane produced exactly ONE friendly-fire
     --   refusal in the whole session, and it was a gun. weaponDamageEvent is
     --   what a shooter's client reports, and plenty of damage never produces
-    --   one the server can cancel in time. What refuses melee is the engine
-    --   hold the client puts on -- the network team plus friendly fire off --
-    --   which is decided before any damage exists and is the one place melee
-    --   and gunfire are the same thing.
+    --   one the server can cancel in time. What is EXPECTED to refuse melee
+    --   is the engine hold the client puts on -- the network team plus
+    --   friendly fire off -- which is decided before any damage exists.
+    --
+    --   THAT SECOND HALF IS NOT MEASURED, and it is written unmeasured on
+    --   purpose rather than stated as fact. d697fa8 measured the problem
+    --   (the server barely refuses melee) and reasoned the fix; nobody has
+    --   since watched a bottle bounce off a team-mate. The same reasoning
+    --   said the hold covered explosions and it did not. If you run melee
+    --   loadouts on a team mode, test it before you rely on it.
     --
     --   Nothing stops the TRIGGER. Aiming at your own side still fires,
     --   still spends the round, and still plays the flinch on your own
@@ -551,12 +560,30 @@ Config.Teams = {
     --   everybody it touched, and it is allowed or refused whole. The kill
     --   is still not counted.
     --
-    --   EXPLOSIONS ARE NOT REFUSED, AND EXPLOSIVES DO SHIP ENABLED. Every
-    --   weapon in config.weapons.lua is switched on, the whole `heavy`
-    --   category included -- launchers, the minigun, the railgun, the
-    --   flamethrower. So on a team mode, teammates CAN blow each other up
-    --   whatever this setting says. Switch the heavy entries off in
-    --   config.weapons.lua if that is not the round you want.
+    --   EXPLOSIONS ARE REFUSED TOO, AND THIS PARAGRAPH USED TO SAY THEY WERE
+    --   NOT. It was true when written and stopped being true at cce70c9,
+    --   which added the explosionEvent handler: a blast that would catch a
+    --   team-mate, with no enemy of the thrower inside the radius, is
+    --   cancelled outright. Left uncorrected it cost an operator thirteen
+    --   weapons -- the advice was to switch the whole `heavy` category off
+    --   to solve something the server already solves.
+    --
+    --   WITH THE SAME BEND AS A SPREAD, for the same reason. If an enemy is
+    --   in the blast as well, the explosion lands whole and the team-mate
+    --   goes up with them; refusing it would make standing next to a
+    --   team-mate launcher-proof. So teammates CAN still blow each other up,
+    --   but only when the shot was a legitimate one at somebody else.
+    --
+    --   THE RADIUS IS THIS RESOURCE'S OWN NUMBER AND IT IS FLAT. Ten metres,
+    --   measured in two dimensions, so a team-mate standing further out than
+    --   that -- or directly above or below the impact -- is outside what the
+    --   server checks and takes the blast either way.
+    --
+    --   EXPLOSIVES DO SHIP ENABLED: all thirteen `heavy` entries are on --
+    --   launchers, the minigun, the railgun, the flamethrower. (Not EVERY
+    --   weapon in the catalogue is, whatever this used to say: dbshotgun,
+    --   marksmanrifle and musket ship off, each with a comment saying why.
+    --   Leave those alone.)
     friendlyFire = false,
 
     -- YOUR OWN SIDE ON THE MAP, all round. Knowing where your team is is the

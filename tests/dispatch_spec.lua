@@ -1,0 +1,3320 @@
+--[[
+    crimson_arena/tests/dispatch_spec.lua
+
+    The real, unmodified server/dispatch.lua, loaded into a sandbox.
+
+    This file exists because the flag it manages is the one piece of this
+    resource that other people's scripts are meant to trust. A flag that
+    outlives the match it belonged to does not fail loudly -- it quietly
+    suppresses that player's police and medical alerts for the rest of their
+    session, which is indistinguishable from "the dispatch script is broken"
+    right up until somebody works out why one player can rob a bank in
+    silence. Every test below is some version of that worry.
+
+    WHAT IS STUBBED, and no more than that: Player(src).state:set,
+    TriggerEvent, AddEventHandler, exports, and the two logging helpers
+    server/util.lua would otherwise provide. Arena.IsKey comes from the real
+    shared/arena.lua, because the guard in Set() genuinely depends on it.
+]]
+
+local t = dofile('testkit.lua')
+local Sandbox = dofile('fixtures/sandbox.lua')
+
+--- One fresh, fully isolated load of server/dispatch.lua.
+--- @param dispatchConfig table? -- replaces Config.Dispatch entirely when given
+--- @return table fixture
+local function newFixture(dispatchConfig)
+    local bags = {}          -- [src] = last value written to that player's bag
+    local bagWrites = {}     -- every write, in order, so a double-write shows up
+    local events = {}        -- every TriggerEvent, in order
+    local handlers = {}      -- AddEventHandler registrations
+    local logs = {}
+    local commands = {}      -- every ExecuteCommand line, in order
+    local cancelled = 0      -- how many times CancelEvent() was called
+    local toClients = {}     -- every TriggerClientEvent, in order
+    local netRegistered = {} -- every RegisterNetEvent name, in order
+    local threads = {}       -- every CreateThread body, in order
+    local registeredCommands = {}  -- name -> handler
+    local timeouts = {}      -- every SetTimeout body, in order
+    local exportCalls = {}   -- every exports['res']:Name(...) call, in order
+    local resourceStates = {}      -- name -> what GetResourceState reports
+    local metadata = {}            -- [src] = { key = value }, as the framework holds it
+    local metaWrites = {}          -- every SetMetaData, in order
+    local playerObjects = {}       -- [src] = a framework player, or absent
+    local gameClock = 0            -- ms, advanced only by Wait()
+
+    local env = Sandbox.newEnv({
+        ExecuteCommand = function(line) commands[#commands + 1] = line end,
+        CancelEvent = function() cancelled = cancelled + 1 end,
+        -- /arenarevive registers at load. Captured so a spec can run it
+        -- directly instead of needing a whole round to reach the revive.
+        RegisterCommand = function(name, fn) registeredCommands[name] = fn end,
+        -- CAPTURED, NOT RUN. The permission grant runs in a thread so the
+        -- command system is up before it adds to it; running it inline at
+        -- load would test a different order to the real one. step() below is
+        -- how a test asks for it.
+        CreateThread = function(fn) threads[#threads + 1] = fn end,
+        Wait = function(ms) gameClock = gameClock + (tonumber(ms) or 0) end,
+        -- The cancel layer registers each alert event for the network before
+        -- listening: without that, FXServer never delivers a client-triggered
+        -- event to this resource at all. Recorded so a spec can assert it.
+        RegisterNetEvent = function(name) netRegistered[#netRegistered + 1] = name end,
+        TriggerClientEvent = function(name, target, ...)
+            toClients[#toClients + 1] = { name = name, target = target, args = { ... } }
+        end,
+        Player = function(src)
+            return {
+                state = {
+                    set = function(_self, key, value, replicated)
+                        bags[src] = value
+                        bagWrites[#bagWrites + 1] =
+                            { src = src, key = key, value = value, replicated = replicated }
+                    end,
+                },
+            }
+        end,
+        TriggerEvent = function(name, ...)
+            events[#events + 1] = { name = name, args = { ... } }
+        end,
+        AddEventHandler = function(name, fn)
+            handlers[name] = handlers[name] or {}
+            handlers[name][#handlers[name] + 1] = fn
+        end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        -- THE SWEEP'S CLOCK. RetractCallsFor loops until this passes its
+        -- deadline, so a constant would hang the spec and the wall clock
+        -- would make the number of passes depend on how fast the box is.
+        -- Advanced by Wait() instead -- exactly what the server does, one
+        -- tick per yield, only deterministically.
+        GetGameTimer = function() return gameClock end,
+        -- 'missing' unless a spec says otherwise, which is the state the
+        -- retract layer has to survive: an operator naming a resource they do
+        -- not run must get one console line, never a broken alert handler.
+        GetResourceState = function(name) return resourceStates[name] or 'missing' end,
+        -- CAPTURED, NOT RUN, for the same reason CreateThread is. The
+        -- withdrawal is deliberately deferred past the sending resource's own
+        -- handler, and a spec that ran it inline would be testing an ordering
+        -- the server never produces. runTimeouts() below is how a test asks
+        -- for it.
+        SetTimeout = function(_ms, fn) timeouts[#timeouts + 1] = fn end,
+        -- __call is `exports('Name', fn)`, which this file uses to publish
+        -- its own exports. __index is `exports['res']:Name(...)`, which the
+        -- retract layer uses to reach somebody else's -- recorded rather than
+        -- performed, so a spec can assert on exactly what was asked of it.
+        exports = setmetatable({}, {
+            __call = function() end,
+            __index = function(_t, resource)
+                return setmetatable({}, {
+                    __index = function(_t2, name)
+                        return function(_self, ...)
+                            exportCalls[#exportCalls + 1] =
+                                { resource = resource, export = name, args = { ... } }
+                        end
+                    end,
+                })
+            end,
+        }),
+        ArenaLog = function(fmt, ...) logs[#logs + 1] = (select('#', ...) > 0) and fmt:format(...) or fmt end,
+        ArenaDebug = function() end,
+        -- THE FRAMEWORK PLAYER, because the down-state metadata lives on it.
+        -- A medical script keeps "this player is down" as qbx_core metadata
+        -- rather than in a table of its own, and that is the one part of its
+        -- record the arena can reach -- so the fixture has to be able to hold
+        -- one and report what was written to it.
+        ArenaGetPlayer = function(src) return playerObjects[src] end,
+    })
+
+    Sandbox.loadInto('../Crimson-Arena/config.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
+    if dispatchConfig ~= nil then env.Config.Dispatch = dispatchConfig end
+
+    -- THE HOLD THREAD IS PARKED IN THIS FIXTURE, on purpose. `Wait` here does
+    -- not yield -- it returns immediately -- so a production `while true`
+    -- loop driven by step() would never come back. `0` ends that thread at
+    -- load, which is also the documented way an operator switches the hold
+    -- off, and ArenaDispatch.HoldDownState is what the tests below drive
+    -- instead: the loop is one line, the work is a function, and the work is
+    -- what is worth asserting.
+    env.Config.Dispatch = env.Config.Dispatch or {}
+    local down = env.Config.Dispatch.downState
+    if type(down) ~= 'table' then
+        down = { keys = { 'inlaststand', 'isdead' } }
+        env.Config.Dispatch.downState = down
+    end
+    down.holdIntervalMs = 0
+
+    -- AFTER the env exists, not inside its constructor. A closure written in
+    -- the table above would capture a GLOBAL `env` -- nil -- rather than the
+    -- local being declared by that very statement, and every lookup through
+    -- it would quietly return nothing.
+    --
+    -- The location pin asks the lobby which arena a live match is in.
+    -- Answered with the first enabled arena, which is where arenaPoints()
+    -- takes its coordinates from, so the two agree by construction rather
+    -- than through a hard-coded key.
+    env.ArenaLobby = {
+        Get = function(matchId)
+            local first = env.Arena.GetEnabledArenas()[1]
+            if not first then return nil end
+            return { id = matchId, arenaKey = first.key }
+        end,
+    }
+
+    Sandbox.loadInto('../Crimson-Arena/server/dispatch.lua', env)
+
+    --- Gives `src` a framework player carrying `values` as its metadata.
+    --- @param src integer
+    --- @param values table
+    --- @param withGetter boolean? -- false models a build with no GetMetaData
+    local function givePlayer(src, values, withGetter)
+        metadata[src] = values
+        playerObjects[src] = {
+            Functions = {
+                SetMetaData = function(key, value)
+                    metadata[src][key] = value
+                    metaWrites[#metaWrites + 1] = { src = src, key = key, value = value }
+                end,
+                GetMetaData = withGetter ~= false
+                    and function(key) return metadata[src][key] end
+                    or nil,
+            },
+        }
+    end
+
+    return {
+        env = env,
+        D = env.ArenaDispatch,
+        givePlayer = givePlayer,
+        --- Something OTHER than the arena writing to the framework object --
+        --- a medical script putting a player back down, which is exactly
+        --- what the hold exists to answer. Deliberately not routed through
+        --- SetMetaData, so it does not show up in metaWrites and a test can
+        --- still count what the ARENA wrote.
+        setMetadata = function(src, key, value)
+            metadata[src] = metadata[src] or {}
+            metadata[src][key] = value
+        end,
+        metadata = function(src) return metadata[src] end,
+        metaWrites = metaWrites,
+        bag = function(src) return bags[src] end,
+        bagWrites = bagWrites,
+        events = events,
+        logs = logs,
+        commands = commands,
+        --- Runs every handler registered for `name`, the way FXServer would.
+        fire = function(name, ...)
+            for _, fn in ipairs(handlers[name] or {}) do fn(...) end
+        end,
+        --- How many times CancelEvent() has been called so far.
+        --- A function, not a number: a number captured here would be the
+        --- value at construction -- zero, forever -- and every assertion
+        --- against it would pass without the code under test running.
+        cancelled = function() return cancelled end,
+        toClients = toClients,
+        netRegistered = netRegistered,
+        --- Runs every thread this load started, once, in order.
+        --- Runs a registered command as `src` with `args`.
+        runCommand = function(name, src, args)
+            local fn = registeredCommands[name]
+            if not fn then error('no command registered called ' .. tostring(name), 2) end
+            fn(src, args or {})
+        end,
+        step = function()
+            local pending = threads
+            threads = {}
+            for _, fn in ipairs(pending) do fn() end
+        end,
+        --- Every exports['res']:Name(...) the code under test made, in order.
+        exportCalls = exportCalls,
+        --- Tells GetResourceState that `name` is running.
+        setResource = function(name, state) resourceStates[name] = state or 'started' end,
+        --- Runs every SetTimeout body this load queued, once, in order.
+        --- How many SetTimeout bodies are waiting, without running them.
+        pendingTimeouts = function() return #timeouts end,
+        runTimeouts = function()
+            local pending = timeouts
+            timeouts = {}
+            for _, fn in ipairs(pending) do fn() end
+        end,
+        eventNames = function()
+            local out = {}
+            for _, e in ipairs(events) do out[#out + 1] = e.name end
+            return table.concat(out, ',')
+        end,
+    }
+end
+
+-- ========================================================================
+-- The flag itself
+-- ========================================================================
+
+t.test('Set flags the player, writes a replicated bag, and announces entry', function()
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+
+    t.isTrue(f.D.IsPlayerInArena(7))
+    t.equals(f.D.GetPlayerMatchId(7), 'match-1')
+
+    local write = f.bagWrites[1]
+    t.equals(write.src, 7)
+    t.equals(write.key, 'crimsonArena')
+    t.equals(write.value.active, true)
+    t.equals(write.value.matchId, 'match-1')
+    -- Unreplicated, the bag is invisible to the client half of any dispatch
+    -- script that reads it -- which is half the point of publishing it.
+    t.isTrue(write.replicated)
+
+    t.equals(#f.events, 1)
+    t.equals(f.events[1].name, 'crimson_arena:dispatch:enter')
+    t.equals(f.events[1].args[1], 7)
+    t.equals(f.events[1].args[2], 'match-1')
+end)
+
+t.test('DEFECT: a STRING server id is a real one, because GetPlayers hands out strings', function()
+    -- These two are exported for third-party police, medical and dispatch
+    -- scripts to ask before raising an alert, and the ordinary way such a
+    -- script walks the server is FiveM's own GetPlayers(), which returns an
+    -- array of STRINGS. `active` is keyed by number, and in Lua active[7]
+    -- and active["7"] are different keys -- so the integrator doing the
+    -- obvious thing was told every fighter in the arena was out in the
+    -- world, and every shot fired in a match raised the alert the export
+    -- exists to suppress.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+
+    t.isTrue(f.D.IsPlayerInArena('7'),
+        'a player looked up by string id was reported as not in a match')
+    t.equals(f.D.GetPlayerMatchId('7'), 'match-1',
+        'a string id did not find the match the same number id finds')
+end)
+
+t.test('and nonsense is still nobody, rather than an error', function()
+    -- tonumber is the coercion, so anything it cannot read has to fall
+    -- through as "not in a match" rather than indexing the table with it.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+
+    for _, junk in ipairs({ 'seven', '', 'match-1', {}, true }) do
+        local ok, err = pcall(function()
+            t.isFalse(f.D.IsPlayerInArena(junk), 'junk was read as a player in a match')
+            t.isNil(f.D.GetPlayerMatchId(junk), 'junk resolved to a match id')
+        end)
+        t.isTrue(ok, ('%s raised: %s'):format(type(junk), tostring(err)))
+    end
+
+    t.isNil(f.D.GetPlayerMatchId(nil), 'a nil id resolved to a match')
+end)
+
+t.test('Clear unflags, nils the bag, and announces the exit', function()
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+    f.D.Clear(7)
+
+    t.isFalse(f.D.IsPlayerInArena(7))
+    t.isNil(f.D.GetPlayerMatchId(7))
+    t.isNil(f.bag(7))
+    t.equals(f.eventNames(), 'crimson_arena:dispatch:enter,crimson_arena:dispatch:exit')
+end)
+
+t.test('ShouldSuppressAlert says yes for a fighter, and no for anybody else', function()
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+
+    t.isTrue(f.D.ShouldSuppressAlert(7), 'a fighter\'s alert would be raised')
+    t.isFalse(f.D.ShouldSuppressAlert(3),
+        'an ordinary city death was silenced -- that is a real player bleeding out')
+end)
+
+t.test('THE GAP IT EXISTS FOR: it still says yes the instant the round lets them go',
+function()
+    -- The flag comes down when the round resolves. The other script files its
+    -- person-down call for the body that just fell MILLISECONDS later, and
+    -- IsPlayerInArena is honestly answering "no" by then. This is the one
+    -- difference between the two answers and the entire reason for the
+    -- second one.
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+    f.D.Clear(7)
+
+    t.isFalse(f.D.IsPlayerInArena(7), 'the fixture no longer shows the gap')
+    t.isTrue(f.D.ShouldSuppressAlert(7),
+        'the alert for a body that fell in the arena would go out after the round ended')
+end)
+
+t.test('and the window CLOSES -- it is not a flag for the rest of a session', function()
+    -- A suppression that outlives its round is the retract layer's own
+    -- hazard: server ids are recycled, and the next person to hold this one
+    -- gets shot in the city with nobody paged.
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+    f.D.Clear(7)
+
+    local realTime = os.time
+    f.env.os = setmetatable({ time = function() return realTime() + 11 end }, { __index = os })
+
+    t.isFalse(f.D.ShouldSuppressAlert(7),
+        'the window outlived the ten seconds it is allowed')
+end)
+
+t.test('and the window is the NARROW one, because this is a passive server-wide listener',
+function()
+    -- The file argues the two windows apart at length: the sweep may use
+    -- sixty seconds because it asks about ids it built itself around one
+    -- player; a passive listener that sees every alert filed anywhere, about
+    -- anybody, may not. ShouldSuppressAlert is that passive listener and
+    -- worse -- it suppresses BEFORE the call is filed, so a mistake leaves no
+    -- trace at all. Its first version used the wide window.
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+    f.D.Clear(7)
+
+    local realTime = os.time
+
+    f.env.os = setmetatable({ time = function() return realTime() + 9 end }, { __index = os })
+    t.isTrue(f.D.ShouldSuppressAlert(7), 'the window closed before the gap it exists to cover')
+
+    -- The retract sweep's OWN window is untouched and still wide, which is
+    -- the control: these two must not drift back into being one number.
+    f.env.os = setmetatable({ time = function() return realTime() + 30 end }, { __index = os })
+    t.isFalse(f.D.ShouldSuppressAlert(7),
+        'thirty seconds on is the retract window, not this one')
+end)
+
+t.test('and a SPECTATOR earns no window at all when they stop watching', function()
+    -- Watchers are flagged while they watch, deliberately -- their client is
+    -- in the instance. But pressing stop resolves no round, so a window there
+    -- is renewable immunity in the city for anybody who can press Watch.
+    local f = newFixture()
+
+    f.D.Set(9, 'match-1')                       -- the sweep's call: no fighter flag
+    t.isTrue(f.D.ShouldSuppressAlert(9), 'a watcher was not covered WHILE watching')
+
+    f.D.Clear(9)
+    t.isFalse(f.D.ShouldSuppressAlert(9),
+        'a watcher kept a suppression window after stopping, which is renewable immunity')
+end)
+
+t.test('THE RECYCLED ID: a drop WHILE FLAGGED leaves no window behind', function()
+    -- The forget handler used to just nil leftAt, and that never worked for
+    -- the one case it was written for. This resource loads server/dispatch.lua
+    -- BEFORE server/main.lua and FiveM runs handlers in registration order, so
+    -- the forget ran FIRST and main.lua's detach then reached Clear with the
+    -- player still flagged -- stamping the window straight back onto an id
+    -- that was already going back in the pool.
+    --
+    -- MODELLED IN THE REAL ORDER, which the older test had backwards: it
+    -- cleared and THEN dropped. Here the drop comes first and the detach
+    -- follows it, exactly as the two handlers really run.
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+
+    f.env.source = 7
+    f.fire('playerDropped', nil)
+    f.D.Clear(7)                                -- main.lua's detach, still unwinding
+
+    t.isFalse(f.D.ShouldSuppressAlert(7),
+        'the next player handed this server id inherited a fighter\'s silence')
+end)
+
+t.test('and the id becomes ordinary again once somebody new fights on it', function()
+    -- The latch must not be permanent, or a real fighter on a recycled id
+    -- never gets the window the feature exists for.
+    local f = newFixture()
+    f.D.Set(7, 'match-1', true)
+    f.env.source = 7
+    f.fire('playerDropped', nil)
+    f.D.Clear(7)
+
+    f.D.Set(7, 'match-2', true)                 -- a NEW player, same id
+    f.D.Clear(7)
+
+    t.isTrue(f.D.ShouldSuppressAlert(7),
+        'a genuine fighter on a recycled id was denied the window')
+end)
+
+t.test('and a player who LEFT THE SERVER is not covered by it at all', function()
+    -- playerDropped forgets the window, because the id is about to belong to
+    -- somebody else. Without that, the next connection to be handed id 7
+    -- inherits a fighter\'s silence.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+    f.D.Clear(7)
+
+    f.env.source = 7
+    f.fire('playerDropped', nil)
+
+    t.isFalse(f.D.ShouldSuppressAlert(7),
+        'a recycled server id inherited the last holder\'s arena silence')
+end)
+
+t.test('and it reads junk the same way the rest of this file does', function()
+    local f = newFixture()
+    for _, junk in ipairs({ 0, -1, 'abc', {}, true }) do
+        local ok = pcall(function()
+            t.isFalse(f.D.ShouldSuppressAlert(junk), 'junk was read as somebody to stay quiet for')
+        end)
+        t.isTrue(ok, ('%s raised'):format(type(junk)))
+    end
+    t.isFalse(f.D.ShouldSuppressAlert(nil), 'a nil id was read as somebody to stay quiet for')
+end)
+
+t.test('Clear announces even for somebody who was never flagged', function()
+    -- A dispatch script that missed the entry -- it restarted, or was not
+    -- running yet -- would otherwise keep that player ignored forever. A
+    -- clear for somebody never flagged is a harmless no-op on its side.
+    local f = newFixture()
+    f.D.Clear(99)
+    t.equals(#f.events, 1)
+    t.equals(f.events[1].name, 'crimson_arena:dispatch:exit')
+    t.isNil(f.events[1].args[2])
+end)
+
+t.test('Set refuses rubbish rather than flagging on it', function()
+    local f = newFixture()
+    f.D.Set(nil, 'match-1')
+    f.D.Set(0, 'match-1')
+    f.D.Set(-3, 'match-1')
+    f.D.Set('7', 'match-1')
+    f.D.Set(7, nil)
+    f.D.Set(7, '')
+    f.D.Set(7, {})
+
+    t.equals(#f.bagWrites, 0)
+    t.equals(#f.events, 0)
+    t.equals(next(f.D.GetArenaPlayers()), nil)
+end)
+
+t.test('GetArenaPlayers hands back a copy, not the live record', function()
+    local f = newFixture()
+    f.D.Set(1, 'm')
+    local snapshot = f.D.GetArenaPlayers()
+    snapshot[1] = 'tampered'
+    snapshot[2] = 'invented'
+
+    t.equals(f.D.GetPlayerMatchId(1), 'm')
+    t.isNil(f.D.GetPlayerMatchId(2))
+end)
+
+-- ========================================================================
+-- Operator configuration
+-- ========================================================================
+
+t.test('a renamed stateBagKey is the one actually written', function()
+    local f = newFixture({ custom = { stateBagKey = 'inTheArena' } })
+    f.D.Set(4, 'm')
+    t.equals(f.bagWrites[1].key, 'inTheArena')
+end)
+
+t.test('an absent or empty stateBagKey falls back rather than writing a nameless bag', function()
+    for _, key in ipairs({ '', 42, {} }) do
+        local f = newFixture({ custom = { stateBagKey = key } })
+        f.D.Set(4, 'm')
+        t.equals(f.bagWrites[1].key, 'crimsonArena')
+    end
+
+    local none = newFixture({ custom = {} })
+    none.D.Set(4, 'm')
+    t.equals(none.bagWrites[1].key, 'crimsonArena')
+end)
+
+t.test('an event name set to nil fires nothing, and the flag still works', function()
+    local f = newFixture({ custom = { enterEvent = nil, exitEvent = nil } })
+    f.D.Set(4, 'm')
+    f.D.Clear(4)
+
+    t.equals(#f.events, 0)
+    t.equals(#f.bagWrites, 2)
+end)
+
+t.test('a non-string event name is refused rather than passed to TriggerEvent', function()
+    local f = newFixture({ custom = { enterEvent = 12345, exitEvent = {} } })
+    f.D.Set(4, 'm')
+    f.D.Clear(4)
+    t.equals(#f.events, 0)
+end)
+
+t.test('an entirely missing Config.Dispatch.custom still flags and still writes', function()
+    local f = newFixture({})
+    f.D.Set(4, 'm')
+    t.isTrue(f.D.IsPlayerInArena(4))
+    t.equals(f.bagWrites[1].key, 'crimsonArena')
+    t.equals(#f.events, 0)
+end)
+
+-- ========================================================================
+-- Somebody else's handler misbehaving
+-- ========================================================================
+
+t.test('a dispatch handler that throws does not take the caller down with it', function()
+    local f = newFixture()
+    f.env.TriggerEvent = function() error('their bug, not ours') end
+
+    -- The flag must still be set: a broken listener on the far side cannot be
+    -- allowed to stop this resource tracking who is in a match, or a match
+    -- start would fail on somebody else's typo.
+    local ok = pcall(f.D.Set, 5, 'm')
+    t.isTrue(ok)
+    t.isTrue(f.D.IsPlayerInArena(5))
+    t.equals(#f.logs, 1)
+end)
+
+-- ========================================================================
+-- Shutdown
+-- ========================================================================
+
+t.test('another resource starting announces nothing at all', function()
+    -- onResourceStart fires for every resource on the box. This file has no
+    -- business reacting to any of them: a re-announcement nobody asked for
+    -- hands a dispatch script an ignore entry it never lost.
+    local f = newFixture({ custom = {
+        enterEvent = 'crimson_arena:dispatch:enter',
+        exitEvent = 'crimson_arena:dispatch:exit',
+    } })
+    f.D.Set(1, 'm1')
+    f.D.Set(2, 'm1')
+    local before = #f.events
+
+    f.fire('onResourceStart', 'my_dispatch')
+    f.fire('onResourceStart', 'crimson_arena')
+
+    t.equals(#f.events, before, 'a resource restarting made this file announce something')
+end)
+
+t.test('stopping this resource leaves nobody flagged', function()
+    -- A dispatch script outliving a restart would otherwise keep reading a
+    -- stale bag and keep suppressing alerts for players standing in town.
+    local f = newFixture()
+    f.D.Set(1, 'm1')
+    f.D.Set(2, 'm1')
+    f.D.Set(3, 'm2')
+
+    f.fire('onResourceStop', 'crimson_arena')
+
+    t.equals(next(f.D.GetArenaPlayers()), nil)
+    t.isNil(f.bag(1))
+    t.isNil(f.bag(2))
+    t.isNil(f.bag(3))
+end)
+
+t.test('another resource stopping leaves the flags alone', function()
+    local f = newFixture()
+    f.D.Set(1, 'm1')
+    f.fire('onResourceStop', 'some_other_script')
+    t.isTrue(f.D.IsPlayerInArena(1))
+end)
+
+print('dispatch_spec')
+--- shared/compat/dispatch.lua loaded on its own, with the handful of natives
+--- it reaches for at load time.
+---
+--- It is the one shared file that calls natives, and it decides which half of
+--- itself to run from IsDuplicityVersion() -- so that answer is the fixture's
+--- most important stub rather than a detail. Server side here: the report is
+--- printed from both realms, and the server's is the one an operator reads.
+--- @param mutate fun(config: table)?
+--- @return table env
+local function newCompat(mutate)
+    local env = Sandbox.newArenaEnv({
+        IsDuplicityVersion = function() return true end,
+        GetResourceState = function() return 'missing' end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        CreateThread = function() end,
+        AddEventHandler = function() end,
+        RegisterCommand = function() end,
+        Wait = function() end,
+        ArenaIsAdmin = function() return false end,
+        ArenaNotify = function() end,
+        ArenaNotifyKey = function() end,
+    })
+
+    if mutate then mutate(env.Config) end
+    Sandbox.loadInto('../Crimson-Arena/shared/compat/dispatch.lua', env)
+    return env
+end
+
+-- ========================================================================
+-- CANCELLING AN ALERT THAT SAYS ONLY *WHERE*
+--
+-- Some alert events carry no player. A resource raises them on the server
+-- with a payload describing where something happened and nothing about who,
+-- so `source` is meaningless and no argument holds a server id -- the
+-- player pin has nothing to work with and the alert goes out.
+--
+-- The location is the one thing such a payload does have, and an arena is a
+-- place. Requiring a LIVE match is the whole safety of it: an arena can sit
+-- on a real map location that ordinary play uses the rest of the time, and
+-- suppressing every alert that ever happens there would silence real crimes
+-- -- a worse failure than the one this fixes.
+-- ========================================================================
+
+--- A dispatch config whose one cancel entry is pinned on location.
+local function locationConfig()
+    return {
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = {
+            enabled = true,
+            disableExports = {},
+            cancelEvents = { { event = 'alerts:raise', coordsArg = 1 } },
+        },
+        vanillaPolice = { enabled = false },
+        revive = { enabled = false, commands = {}, serverEvents = {}, clientEvents = {}, exports = {} },
+    }
+end
+
+--- The centre of the first shipped arena, and a point well outside it.
+local function arenaPoints(env)
+    local arena = env.Arena.GetEnabledArenas()[1]
+    local b = env.Config.Arenas[arena.key].boundary
+    return b.center, { x = b.center.x + (b.radius * 4), y = b.center.y, z = b.center.z }
+end
+
+-- ========================================================================
+-- THE CANCEL LAYER HAS TO BE REGISTERED FOR THE NETWORK
+--
+-- THE DEFECT THIS EXISTS FOR. FXServer routes a network-sourced event only
+-- to resources that have called RegisterNetEvent for that name. A resource
+-- with AddEventHandler alone is never delivered it: no error, no warning,
+-- the handler simply never runs.
+--
+-- Every alert a script raises with TriggerServerEvent from the player's own
+-- client -- which is how gunfire and deaths are reported, because that is
+-- where they are detected -- therefore passed this resource without touching
+-- it. The whole layer was inert for the events it was written for, and the
+-- startup report counted them as configured the entire time.
+-- ========================================================================
+
+t.test('every cancelEvents entry is registered for the network, not just listened for', function()
+    local f = newFixture(locationConfig())
+
+    t.equals(#f.netRegistered, 1,
+        'the alert event was never registered for the network, so a client-triggered alert never arrives')
+    t.equals(f.netRegistered[1], 'alerts:raise')
+end)
+
+-- ========================================================================
+-- AND BEING REGISTERED FOR THE NETWORK IS WHAT MAKES IT AN ATTACK SURFACE
+--
+-- RegisterNetEvent means any player can raise these with any payload. The
+-- registration's own comment used to say a forged call "costs nothing: the
+-- handler's only power is CancelEvent()". That is true of its POWER and was
+-- false of its BOOKKEEPING: the diagnostics wrote down what they saw, and
+-- what they saw was a payload the caller chose.
+--
+--   ONE packet carrying 300,000 job names was concatenated into a single
+--   string and kept forever as a table key -- megabytes, retained for the
+--   life of the resource, from one keybind.
+--
+--   A LOOP of packets with a distinct job list each printed an
+--   unconditional log line every time, filling the console and the log file
+--   as fast as the wire allowed.
+--
+-- Neither needed a match, a permission or an account.
+-- ========================================================================
+
+t.test('THE DoS: one enormous job list is not swallowed whole', function()
+    local f = newFixture(locationConfig())
+
+    local names = {}
+    for index = 1, 50000 do names[index] = ('job%d'):format(index) end
+    f.fire('alerts:raise', { jobs = names })
+
+    -- The line it prints is a diagnostic, so it may print -- what it may not
+    -- do is carry 50,000 names into it.
+    local said = table.concat(f.logs, '\n')
+    t.isTrue(#said < 2000,
+        ('a forged payload put %d characters into the log from one call'):format(#said))
+
+    -- TWO SEPARATE BOUNDS, asserted separately, because each one hides the
+    -- other. Cap the names and the text is short anyway; cap the text and
+    -- the name count never shows. Removed one at a time, neither failed
+    -- this test -- so the count is checked here by looking at WHICH names
+    -- survived, not just how many characters did.
+    --
+    -- The count bound is the one that matters for work rather than log
+    -- size: without it a 300,000-name payload is still built into a table
+    -- and concatenated in full before anything gets truncated.
+    t.contains(said, 'job1,', 'the first job name was not reported at all')
+    t.notContains(said, 'job13',
+        'more than MAX_JOB_NAMES names were read out of a forged payload')
+end)
+
+t.test('and THREE enormous ones are not either, which is the other shape', function()
+    -- The name COUNT cap does not help here: three names is a perfectly
+    -- ordinary number. It is the total LENGTH that has to be bounded, and
+    -- until this case existed that bound could be deleted without a single
+    -- red line -- the other cap was hiding it.
+    local f = newFixture(locationConfig())
+
+    local huge = string.rep('X', 100000)
+    f.fire('alerts:raise', { jobs = { huge, huge, huge } })
+
+    local said = table.concat(f.logs, '\n')
+    t.isTrue(#said < 2000,
+        ('three long job names put %d characters into the log'):format(#said))
+end)
+
+t.test('and a flood of DIFFERENT job lists stops being written down', function()
+    -- The retained-memory half. Each distinct list used to become a
+    -- permanent key, so the table grew for as long as somebody kept firing.
+    local f = newFixture(locationConfig())
+
+    for index = 1, 500 do
+        f.fire('alerts:raise', { jobs = { ('kind%d'):format(index) } })
+    end
+
+    -- One line per distinct list would be 500. The bound is 32, plus the
+    -- first-firing line and the one that says it has stopped recording.
+    t.isTrue(#f.logs <= 40,
+        ('500 forged alerts produced %d console lines'):format(#f.logs))
+    t.contains(table.concat(f.logs, '\n'), 'no more will be recorded',
+        'the log never says it stopped recording, so an operator cannot tell why')
+end)
+
+t.test('and a REAL alert is still reported, because that is what it is for', function()
+    -- The other direction, and the reason the bounds are not just "print
+    -- nothing". A handful of job kinds is what a real server has, and each
+    -- of them is the observation this diagnostic exists to make.
+    local f = newFixture(locationConfig())
+
+    f.fire('alerts:raise', { jobs = { 'police' } })
+    f.fire('alerts:raise', { jobs = { 'ambulance' } })
+
+    local said = table.concat(f.logs, '\n')
+    t.contains(said, 'police', 'a real police alert was not reported')
+    t.contains(said, 'ambulance', 'a real EMS alert was not reported')
+end)
+
+t.test('the shipped sc-dispatch entries are the events those resources really raise', function()
+    -- The config that actually ships, rather than a fixture's.
+    --
+    -- THIS TEST HAS NOW BEEN WRONG TWICE, IN OPPOSITE DIRECTIONS, AND BOTH
+    -- TIMES BECAUSE THE NAMES WERE REASONED ABOUT RATHER THAN READ.
+    --
+    -- First it passed on two names that do not exist,
+    -- 'sc-dispatch:server:AddNotification' and 'sc-dispatch:AddNotification',
+    -- and was green the whole time the layer was listening to silence.
+    -- Those were replaced on the argument that AddNotification is an EXPORT
+    -- and nothing can register a handler on an export call. THAT ARGUMENT WAS
+    -- ALSO WRONG: sc-dispatch really does register both as ordinary net
+    -- events, at server/main.lua:2664 and :2679, each forwarding to the
+    -- export. A name being an export does not stop it also being an event.
+    -- They stay out of the list anyway, because on those two the `source` is
+    -- whoever RAISED the alert rather than who it is ABOUT, so cancelling on
+    -- it would be a guess -- which is a reason, not an assumption.
+    --
+    -- Then it asserted two ambulance names, 'hospital:server:EMSDownAlert'
+    -- and 'hospital:server:ambulanceAlert', which are equally absent: a
+    -- search of sc-dispatch, sc-ambulance and sc-police finds no handler and
+    -- no trigger for either. They were removed at the owner's instruction.
+    --
+    -- SO THE FOUR BELOW ARE THE ONES READ OUT OF sc-dispatch'S OWN CLIENT,
+    -- each with the line that raises it. DO NOT add a name here without
+    -- opening the resource and finding the TriggerServerEvent that sends it.
+    local f = newFixture()
+
+    local names = table.concat(f.netRegistered, ',')
+    t.contains(names, 'sc-dispatch:server:ShotsFired',
+        'the gunfire path is not registered -- it is the one that carries arena shots-fired alerts')
+    t.contains(names, 'sc-dispatch:server:PlayerDown',
+        'the person-down path is not registered -- raised by sc-dispatch client/main.lua:3731')
+    t.contains(names, 'sc-dispatch:server:PlayerDead',
+        'the DOA path is not registered -- raised by sc-dispatch client/main.lua:3747')
+    t.contains(names, 'mydispatch:requestEMS')
+
+    -- The two that were removed must STAY removed: re-adding a name nothing
+    -- raises is how this test was green over a dead layer in the first place.
+    t.isTrue(not names:find('hospital:server:', 1, true),
+        'a hospital:server: event is back in the list, and nothing on this box raises one')
+end)
+
+-- ========================================================================
+-- WITHDRAWING AN ALERT THAT WAS ALREADY CREATED
+--
+-- THE DEFECT THESE EXIST FOR. CancelEvent() raises a flag and stops nothing:
+-- Cfx's own documentation is explicit that it does not prevent another
+-- resource's handler running, and sc-dispatch never calls
+-- WasEventCanceled(). So the cancel layer above -- with the right event
+-- names or the wrong ones -- was never going to stop a single 10-71. Police
+-- and EMS were paged to every round, and the config said the alerts were
+-- handled.
+--
+-- Withdrawal is what actually removes the call. These specs pin the two
+-- halves that make it safe: it fires for a player who is IN a match, and it
+-- rebuilds the id out of that player's OWN server id, so it can never reach
+-- somebody else's call.
+-- ========================================================================
+
+t.test('an arena alert is withdrawn, not merely cancelled', function()
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    f.fire('sc-dispatch:server:ShotsFired', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+
+    -- Nothing yet: the withdrawal is deferred past the sending resource's own
+    -- handler on purpose. Clearing a call that has not been inserted clears
+    -- nothing at all, which is the failure this delay exists for.
+    t.equals(#f.exportCalls, 0,
+        'the withdrawal ran inline, so it would clear a call sc-dispatch has not created yet')
+
+    f.runTimeouts()
+
+    t.isTrue(#f.exportCalls > 0, 'the call was cancelled and then left standing')
+    t.equals(f.exportCalls[1].resource, 'sc-dispatch')
+    t.equals(f.exportCalls[1].export, 'ClearNotification')
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    t.contains(table.concat(ids, ','), ('shots_7_%d'):format(at),
+        'the id withdrawn is not the one sc-dispatch files a shots-fired call under')
+end)
+
+t.test('every id withdrawn carries the arena player\'s own server id', function()
+    -- THE SAFETY OF THE WHOLE LAYER. The clock slack widens the TIMESTAMP,
+    -- because the two handlers can straddle a one-second boundary. It must
+    -- never widen the PLAYER: withdrawing a stranger's call is the same harm
+    -- as cancelling their alert, arrived at from the other direction.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    f.env.source = 7
+    f.fire('sc-dispatch:server:ShotsFired', {})
+    f.runTimeouts()
+
+    for _, call in ipairs(f.exportCalls) do
+        t.contains(tostring(call.args[1]), '_7_',
+            'an id was withdrawn for somebody other than the arena player')
+    end
+end)
+
+t.test('nothing is withdrawn for a player who is not in a match', function()
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+
+    f.env.source = 7
+    f.fire('sc-dispatch:server:ShotsFired', {})
+    f.runTimeouts()
+
+    t.equals(#f.exportCalls, 0,
+        'a real shots-fired call from an ordinary player was withdrawn')
+end)
+
+t.test('a retract resource that is not running costs one line, not a broken handler', function()
+    -- This runs inside somebody else's event handler. An error raised here
+    -- would surface as that resource misbehaving, which is a worse bug than
+    -- the one being fixed -- so a missing resource must degrade, never throw.
+    local f = newFixture()
+    f.D.Set(7, 'match-1')
+
+    f.env.source = 7
+    f.fire('sc-dispatch:server:ShotsFired', {})
+    f.runTimeouts()
+
+    t.equals(#f.exportCalls, 0)
+    t.contains(table.concat(f.logs, '\n'), 'not started')
+end)
+
+t.test('the jobs an alert names are reported, so EMS and police can be told apart', function()
+    -- On this family of dispatch scripts police and EMS alerts travel the
+    -- SAME event and differ only by the jobs in the payload -- so "police
+    -- went quiet but the ambulance did not" is not something that event can
+    -- do. Printing the jobs turns that from a guess into an observation.
+    local f = newFixture(locationConfig())
+    f.D.Set(1, 'm1')
+
+    f.env.source = 1
+    f.fire('alerts:raise', { job_table = { 'ambulance', 'doctor' }, title = '10-52' })
+
+    t.contains(table.concat(f.logs, '\n'), 'ambulance, doctor',
+        'an EMS alert arrived and nothing recorded which kind it was')
+end)
+
+t.test('and a payload that names no jobs is not invented for', function()
+    local f = newFixture(locationConfig())
+    f.D.Set(1, 'm1')
+
+    f.env.source = 1
+    f.fire('alerts:raise', { title = 'no jobs here' })
+
+    t.notContains(table.concat(f.logs, '\n'), 'an alert for [',
+        'jobs were reported for a payload that named none')
+end)
+
+t.test('a location-declared entry is pinned by location or not at all', function()
+    -- The over-cancel this closes: with the point outside every arena, the
+    -- handler used to fall through to the ambient `source`, which FiveM
+    -- leaves set to whoever triggered the outermost net event. An alert
+    -- about somewhere else, raised anywhere inside an arena player's call
+    -- chain, was cancelled on the strength of who was on top of the stack.
+    local f = newFixture(locationConfig())
+    local _, outside = arenaPoints(f.env)
+
+    f.D.Set(1, 'm1')
+    f.env.source = 1                       -- an arena player is on the stack
+    f.fire('alerts:raise', { coords = outside })
+
+    t.equals(f.cancelled(), 0,
+        'an alert about somewhere else was cancelled because an arena player triggered the chain')
+end)
+
+t.test('an alert about a spot inside a live arena is cancelled', function()
+    local f = newFixture(locationConfig())
+    local inside = arenaPoints(f.env)
+
+    -- Somebody is in a match at that arena.
+    f.D.Set(1, 'm1')
+    f.fire('alerts:raise', { coords = inside, title = '10-13' })
+
+    t.isTrue(f.cancelled() > 0, 'an alert from inside a live arena went out')
+end)
+
+t.test('the same alert is left alone with no match running', function()
+    -- The safety line. Outside a match these coordinates are an ordinary
+    -- piece of the map, and an alert about one is somebody else's business.
+    local f = newFixture(locationConfig())
+    local inside = arenaPoints(f.env)
+
+    f.fire('alerts:raise', { coords = inside, title = '10-13' })
+
+    t.equals(f.cancelled(), 0, 'a real alert was suppressed with no match running')
+end)
+
+t.test('an alert from outside the boundary is left alone even mid-match', function()
+    local f = newFixture(locationConfig())
+    local _, outside = arenaPoints(f.env)
+
+    f.D.Set(1, 'm1')
+    f.fire('alerts:raise', { coords = outside, title = '10-13' })
+
+    t.equals(f.cancelled(), 0, 'an alert from outside the arena was suppressed')
+end)
+
+t.test('a payload that is the point itself, not wrapped in coords, still pins', function()
+    local f = newFixture(locationConfig())
+    local inside = arenaPoints(f.env)
+
+    f.D.Set(1, 'm1')
+    f.fire('alerts:raise', inside)
+
+    t.isTrue(f.cancelled() > 0, 'only the wrapped shape is recognised')
+end)
+
+t.test('a payload with no usable location is left alone rather than guessed at', function()
+    local f = newFixture(locationConfig())
+    f.D.Set(1, 'm1')
+
+    f.fire('alerts:raise', { title = 'no location at all' })
+    f.fire('alerts:raise', { coords = { x = 'north', y = 'west' } })
+    f.fire('alerts:raise', 'not a table')
+
+    t.equals(f.cancelled(), 0, 'something without a location was cancelled anyway')
+end)
+
+-- ========================================================================
+-- TELLING THE AMBULANCE SCRIPT THEY ARE ALIVE
+--
+-- The arena stands its own dead back up. That is the whole job for the ped
+-- and none of it for the server: a medical script keeps its own record and
+-- nothing about resurrecting a ped reaches it, so a player who died walks
+-- out still dead as far as that script is concerned.
+--
+-- Most servers' revive is a command -- `/revive <id>`, run by an admin --
+-- rather than an event or an export, so that is the form these cover.
+-- ========================================================================
+
+--- A dispatch config with revive wired to one command template.
+local function reviveConfig(_eventName)
+    return {
+        enabled = true,
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = { enabled = false, disableExports = {}, cancelEvents = {} },
+        revive = { afterRespawnDelayMs = 2000, sweepAfterMatchMs = 5000 },
+    }
+end
+
+--- The detected medical script whose revive event the handoff fires. The
+--- catalogue is the only source of these names, so a fixture that wants the
+--- handoff to reach something stands in for the catalogue rather than
+--- configuring one.
+local function withDetectedMedical(f, eventName)
+    f.env.ArenaCompat = {
+        ReviveClientEvents = function() return { eventName } end,
+    }
+    return f
+end
+
+-- ========================================================================
+-- THIS RESOURCE ASKS THE SERVER FOR NO PERMISSIONS
+--
+-- It used to try to grant itself the rights its revive command needed: an
+-- ace for the command, and failing that membership of the admin group. Both
+-- are removed, and this section is what stops either coming back.
+--
+--   THEY DID NOT WORK. A server that lets a resource write its own
+--   permissions is a server with no permissions, so the sensible ones
+--   refuse -- and a refusal is not an error. ExecuteCommand returns
+--   normally and the console prints "Access denied", so the resource
+--   carried a page of settings for a capability it did not have.
+--
+--   THEY WERE NOT NEEDED. The arena revives its own players in code and
+--   asks nobody's permission to undo something it did itself.
+--
+--   AND THE ADMIN ONE COST SOMETHING REAL. Group membership made any flaw
+--   anywhere in this resource a way to run any command on the box.
+-- ========================================================================
+
+t.test('nothing is granted, ever, whatever the revive is configured to do', function()
+    -- Not "unless asked for" -- there is nothing left to ask with. A
+    -- resource that never writes a permission cannot hold one it should not.
+    local f = newFixture(reviveConfig())
+    f.step()
+
+    local ran = table.concat(f.commands, '\n')
+    t.notContains(ran, 'add_ace', 'this resource granted itself a permission')
+    t.notContains(ran, 'add_principal', 'this resource put itself in a group')
+end)
+
+t.test('and the settings that used to do it are gone from config, not merely off', function()
+    -- OFF IS NOT ENOUGH FOR THESE TWO. A setting that ships false but is
+    -- documented as something you may switch on is an invitation, and what
+    -- it invites here is "any flaw in this resource runs any command".
+    --
+    -- It is also the shape that caused the last round of this: one of the
+    -- pair had a page of config describing when to turn it on, a stated
+    -- default that disagreed with its own value, and no code reading it at
+    -- all. Removing them is what makes the documentation true.
+    local revive = Sandbox.newArenaEnv().Config.Dispatch.revive
+
+    t.isNil(revive.grantSelfAdmin, 'grantSelfAdmin is back in config')
+    t.isNil(revive.grantSelfPermission, 'grantSelfPermission is back in config')
+    t.isNil(revive.adminGroups, "the revive's own admin group list is back in config")
+end)
+
+t.test('and no source file reaches for the permission natives at all', function()
+    -- The removal is only real if nothing anywhere still calls them. Read
+    -- off the files rather than trusted: a second copy of this in another
+    -- file would pass every test above.
+    for _, path in ipairs({ '../Crimson-Arena/server/dispatch.lua', '../Crimson-Arena/server/main.lua', '../Crimson-Arena/server/util.lua',
+                            '../Crimson-Arena/server/match.lua', '../Crimson-Arena/server/lobby.lua', '../Crimson-Arena/server/ammo.lua',
+                            '../Crimson-Arena/server/betting.lua', '../Crimson-Arena/server/stats.lua' }) do
+        local handle = assert(io.open(path, 'r'))
+        local source = handle:read('a')
+        handle:close()
+
+        -- COMMENTS DO NOT COUNT. Both files explain, in prose, the
+        -- server.cfg line an operator would write for themselves -- which is
+        -- the whole point of the removal and must not be what fails this.
+        local code = source:gsub('%-%-[^\n]*', '')
+
+        -- The ExecuteCommand LINES, not the words: server/util.lua reads
+        -- Config.Permissions.adminGroups to decide who may force-stop a
+        -- match, which is a different thing entirely and stays.
+        t.isNil(code:match('add_ace%s'), ('%s still writes an ace'):format(path))
+        t.isNil(code:match('add_principal%s'), ('%s still writes a principal'):format(path))
+        t.isNil(code:match('IsPrincipalAceAllowed'),
+            ('%s still checks a permission it can no longer be granted'):format(path))
+    end
+end)
+
+-- ========================================================================
+-- TESTING THE REVIVE WITHOUT PLAYING A MATCH
+--
+-- The revive has been the hardest thing in this resource to get right, and
+-- the reason is the feedback loop rather than the code: every attempt cost a
+-- full round to learn one bit of information. /arenarevive fires the same
+-- path on demand.
+-- ========================================================================
+
+--- Every send of the detected medical script's revive event, in order.
+local function firedFor(f, eventName)
+    local out = {}
+    for _, call in ipairs(f.toClients or {}) do
+        if call.name == eventName then out[#out + 1] = call end
+    end
+    return out
+end
+
+t.test('the Medical test runs the same path a finished match runs', function()
+    -- IT WAS /arenarevive AND IS NOW A BUTTON. The tablet's Tools tab presses
+    -- it, and `/arenaadmin medical <id>` prints the same lines at a console;
+    -- both land on ArenaDispatch.ReviveReport, which is what this asserts.
+    -- The permission gate moved with it -- see admintablet_spec, where a
+    -- non-admin pressing the tool is refused.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    -- SOMEBODY HAS TO BE HOLDING THE ID. The report refuses an id nobody is
+    -- on, because a diagnosis that cannot tell "it worked" from "there was
+    -- nobody there" sends the operator hunting somewhere else.
+    f.givePlayer(7, { inlaststand = true, isdead = false })
+
+    local lines = f.D.ReviveReport(7)
+
+    local fired = firedFor(f, 'mymedical:revive')
+    t.equals(#fired, 1, 'the handoff did not run, or ran more than once')
+    t.equals(fired[1].target, 7, 'the handoff ran against the wrong player')
+    t.isTrue(#lines > 0, 'it revived somebody and said nothing about it')
+end)
+
+t.test('and it says which medical script it asked, which is the whole reading', function()
+    -- The lines ARE the feature: an operator wiring a medical script up needs
+    -- to know whether anything was asked at all, and what to do when the
+    -- player is up but something still treats them as dead.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = true, isdead = false })
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, '7', 'the reading does not say who it ran against')
+    t.contains(text, 'done', 'the reading never says it finished')
+end)
+
+t.test('THE DIAGNOSIS THAT LIED: an id nobody is holding is told so, not told "done"',
+function()
+    -- Nothing on this path used to check that the typed id belonged to a
+    -- connected player. Revive answers for any positive number,
+    -- clearDownMetadata returns 0 the moment ArenaGetPlayer is nil and that
+    -- count is thrown away, and a client event to an id nobody holds reaches
+    -- nobody quietly. So a stale or mistyped id printed the SAME "done. 12's
+    -- down metadata was cleared and 1 medical script(s) were asked to revive
+    -- them" as a real one -- while the operator's test player lay on the floor
+    -- untouched and they went looking for a catalogue bug that was not there.
+    --
+    -- This is the one tool whose entire output is a diagnosis. A diagnosis
+    -- that cannot tell "it worked" from "nobody was there" is worse than no
+    -- tool at all.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    -- Deliberately NOT giving 7 a player: this is the stale-id case.
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'NOTHING WAS DONE', 'a revive against nobody reported itself as done')
+    t.equals(#firedFor(f, 'mymedical:revive'), 0,
+        'a medical script was asked to revive an id nobody is holding')
+    t.isTrue(text:find('done. 7', 1, true) == nil,
+        'the report still claims the metadata was cleared: ' .. text)
+end)
+
+t.test('and the CONTROL: a real player still gets the full reading', function()
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = true, isdead = false })
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+    t.contains(text, 'done', 'the guard now refuses a player who really is there')
+    t.equals(#firedFor(f, 'mymedical:revive'), 1, 'the real handoff stopped running')
+end)
+
+t.test('and a target that is not a server id is refused rather than revived', function()
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+
+    local lines = f.D.ReviveReport(0)
+
+    t.equals(#firedFor(f, 'mymedical:revive'), 0, 'it revived somebody on a nonsense id')
+    t.isTrue(#lines > 0, 'and said nothing about why')
+end)
+
+t.test('the client is told to hold the arena\'s vitals over the handoff', function()
+    -- EVERYTHING THE HANDOFF DOES IS A REQUEST TO ANOTHER SCRIPT TO TOUCH
+    -- THIS BODY. A medical revive does not only clear a death record: it
+    -- sets health, and most of them set armour to zero doing it. The arena
+    -- has just put this fighter back on full health and a full plate for
+    -- their next life and then, two seconds later, asks a script to revive
+    -- them -- so without this the plate a player is promised every life is
+    -- taken off them by the arena's own handoff, on every respawn.
+    --
+    -- It used to ride on the arena's own revive event. That went with the
+    -- self-made revive and took the signal with it, so it is its own event.
+    local f = newFixture(reviveConfig())
+    f.D.Revive(7)
+
+    local told = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'crimson_arena:client:holdVitals' then told = message end
+    end
+
+    t.isNotNil(told, 'the handoff ran and the client was never told to hold its vitals')
+    t.equals(told.target, 7, 'the hold was sent to the wrong player')
+end)
+
+t.test('AND IT NO LONGER STANDS THE PLAYER UP ITSELF', function()
+    -- THE REMOVAL, ASSERTED. The arena used to resurrect the ped here on top
+    -- of the handoff -- a second writer for a body the medical script also
+    -- has an opinion about, racing whatever that script does next and then
+    -- re-asserting its own numbers to win. Two resources arguing over one
+    -- ped is a flicker with a winner, not a revive.
+    --
+    -- Nothing is left on the floor by dropping it: ClearDeadState already
+    -- resurrects in the frame the ped dies, and the respawn releases that
+    -- hold and re-applies the loadout.
+    local f = newFixture(reviveConfig())
+    f.D.Revive(7)
+
+    for _, message in ipairs(f.toClients) do
+        t.isTrue(message.name ~= 'crimson_arena:client:revive',
+            'the arena is still sending itself a revive')
+        t.isTrue(message.name ~= 'crimson_arena:client:runCommand',
+            'the arena still has a channel for running commands on a client')
+    end
+end)
+
+-- THE PERMISSION TESTS FOR THIS MOVED, rather than being dropped.
+--
+-- It was /arenarevive, a chat command that nothing upstream rate-limited or
+-- gated, so the line in its handler was the only protection there was and
+-- these were its only tests. It is a tablet button now: the gate is on
+-- `crimson_arena:server:adminTool`, behind ArenaIsAdmin and the admin rate
+-- limiter, and tests/admintablet_spec.lua checks that a non-admin pressing
+-- Medical test revives nobody. ReviveReport itself is deliberately ungated --
+-- it assumes its caller has already asked, and both callers do.
+
+-- ========================================================================
+-- THE REPORT SAYS WHETHER A DEAD PLAYER WILL COME BACK
+--
+-- Every other line of this report is about stopping alerts going OUT. This
+-- one is about a player coming back, and it is here because the failure it
+-- describes is completely silent: the arena stands its own dead back up, the
+-- medical script keeps its own record and is never told, and the player
+-- leaves the arena still dead with nothing in any console. An operator hits
+-- that and concludes the arena is broken.
+-- ========================================================================
+
+t.test('a box with no medical script detected is warned, with the consequence', function()
+    local env = newCompat()
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
+    t.contains(report, 'still dead',
+        'the report raises the alarm but never says what goes wrong')
+    t.contains(report, 'shared/compat/dispatch.lua',
+        'the report describes the problem but not where to fix it')
+end)
+
+t.test('and a detected one is reported by the event it will be sent', function()
+    -- Named rather than counted. An operator who sees the wrong event name
+    -- here has found their bug; one who sees "1 script" has not.
+    local env = newCompat()
+    env.GetResourceState = function(name)
+        return name == 'sc-ambulance' and 'started' or 'missing'
+    end
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'hospital:client:Revive')
+    t.notContains(report, 'NOTHING IS TELLING YOUR MEDICAL SCRIPT')
+end)
+
+t.test('the warning cannot be silenced from config', function()
+    -- THE CONTRACT. Whether a dead player comes back is a fact about which
+    -- resources are running, and nothing an operator writes in config.lua is
+    -- allowed to make the report claim a handoff this box does not have.
+    local env = newCompat(function(config)
+        config.Dispatch.revive = {
+            enabled = true,
+            serverEvents = { 'my_ambulance:server:revive' },
+            exports = { { resource = 'my_ambulance', export = 'Revive' } },
+        }
+    end)
+
+    t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'NOTHING IS TELLING YOUR MEDICAL SCRIPT',
+        'config keys are being read as a handoff again -- the report is describing a setup nobody has')
+end)
+
+-- ========================================================================
+-- NOTHING IN THE REPORT MAY BE OPTIMISTIC
+--
+-- This block is the only diagnostic an operator has, and all three defects
+-- below are the same shape: the report sounding better than the setup it is
+-- describing. Every one of them was reassuring, and every one of them left
+-- police and EMS alerts going out of an arena.
+--
+-- The catalogue is the thread running through them. It is a list of names to
+-- LOOK FOR, never a census -- so "recognised nothing" says nothing at all
+-- about what this box runs, and must never be read as "nothing to do".
+-- ========================================================================
+
+--- newCompat, plus a say-so about which resources this box is running.
+---
+--- GetResourceState is re-read on every Detect() and never cached -- the
+--- file says so and means it -- so replacing the stub after the load is
+--- enough, and testing through the stub rather than around it keeps these
+--- tests honest about how detection really answers.
+--- @param runningNames string[] -- resources GetResourceState calls 'started'
+--- @param mutate fun(config: table)?
+--- @return table env
+local function compatWith(runningNames, mutate)
+    local env = newCompat(mutate)
+    local started = {}
+    for _, name in ipairs(runningNames) do started[name] = true end
+    env.GetResourceState = function(name)
+        return started[name] and 'started' or 'missing'
+    end
+    return env
+end
+
+t.test('the guard line is printed even when nothing was recognised by name', function()
+    -- THE DEFECT. The paste block was gated on a count only a DETECTED row
+    -- could ever raise, so it printed for a script the catalogue knew and
+    -- stayed silent for one it did not -- leaving the operator running an
+    -- uncatalogued dispatch script, the one person nothing else in this
+    -- resource can help, with a report that named their problem and then
+    -- withheld the fix.
+    local env = compatWith({})
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'no police or EMS resource recognised by name')
+    t.contains(report, 'Paste at the top of whatever sends the alert',
+        'nothing was recognised, so nothing is wired -- and the line was withheld')
+    t.contains(report, 'if Player(src).state.crimsonArena then return end')
+    t.contains(report, 'if LocalPlayer.state.crimsonArena then return end')
+end)
+
+t.test('and withheld once an operator hook really reaches a running script', function()
+    -- The other half of the same contract. A line that prints unconditionally
+    -- is wallpaper, and an operator who has done the work has to be able to
+    -- see that they have.
+    local env = compatWith({ 'my_dispatch' }, function(config)
+        config.Dispatch.custom.disableExports = {
+            { resource = 'my_dispatch', export = 'SetIgnoredPlayer' },
+        }
+    end)
+
+    t.notContains(table.concat(env.ArenaCompat.Report(), '\n'), 'Paste at the top')
+end)
+
+t.test('a disableExport naming a script that is not running counts for nothing', function()
+    -- client/dispatch.lua skips exactly this entry at run time and says so in
+    -- the console, so crediting it here would report an integration that
+    -- never fires -- the same lie by a different route.
+    local env = compatWith({}, function(config)
+        config.Dispatch.custom.disableExports = {
+            { resource = 'removed_dispatch', export = 'SetIgnoredPlayer' },
+        }
+    end)
+
+    t.contains(table.concat(env.ArenaCompat.Report(), '\n'), 'Paste at the top')
+end)
+
+t.test('cancelEvents on its own is never counted as wired up', function()
+    -- config.lua's own instruction, in its own words: if this is the only
+    -- form on the list you have filled in, assume the alerts are still being
+    -- sent. The report has to agree with the config that documents it.
+    local env = compatWith({ 'my_dispatch' })
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    -- AND IT IS LABELLED FOR WHAT IT IS. Listing "6 cancelEvent(s)" beside
+    -- "1 disableExport(s)" read as six more layers of coverage, which is the
+    -- opposite of what they are: a cancelled event reaches nothing unless
+    -- the script that raised it goes back and asks whether anybody objected,
+    -- and the ones this server runs do not.
+    t.contains(report, 'alert event(s) watched',
+        'the shipped config has none, so this test proves nothing')
+    t.contains(report, 'DIAGNOSTIC ONLY',
+        'the watched events are still being counted as if they suppressed something')
+    t.notContains(report, 'cancelEvent(s)',
+        'the old wording is back, and it reads as coverage')
+    t.contains(report, 'Paste at the top')
+end)
+
+t.test('isolation keeps its caveat when nothing is confirmed wired', function()
+    -- THE DEFECT. Isolation on plus nothing detected printed a flat "no OTHER
+    -- player's client can see the fight" -- true, and the most misleading true
+    -- sentence available, because the alerts an arena player's OWN client
+    -- raises are precisely the ones still going out. The caveat was dropped in
+    -- the one branch it exists for.
+    local env = compatWith({})
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'Isolation is on')
+    t.contains(report, 'own client still can',
+        'isolation was reported as though it settled the matter')
+    t.contains(report, 'nothing here is confirmed wired')
+end)
+
+t.test('and drops it once every detected resource is accounted for', function()
+    local env = compatWith({ 'sc-dispatch' }, function(config)
+        config.Dispatch.custom.disableExports = {
+            { resource = 'sc-dispatch', export = 'SetIgnoredPlayer' },
+        }
+    end)
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'Isolation is on')
+    t.notContains(report, 'own client still can')
+end)
+
+t.test('the caveat and the line it promises appear together or not at all', function()
+    -- The caveat ends "that is what the line below is for", so a run where one
+    -- prints without the other is a report contradicting itself on screen.
+    -- Isolation ships on, which is the case the caveat is written for.
+    local cases = { {}, { 'my_dispatch' }, { 'sc-dispatch' } }
+
+    for _, running in ipairs(cases) do
+        local report = table.concat(compatWith(running).ArenaCompat.Report(), '\n')
+        local promised = report:find('that is what the line below is for', 1, true) ~= nil
+        local printed = report:find('Paste at the top', 1, true) ~= nil
+
+        t.equals(promised, printed,
+            'the isolation caveat and the paste block disagreed about whether anything is wired')
+    end
+end)
+
+t.test('the shipped entry/exit event names are not reported as configuration', function()
+    -- THE DEFECT. config.lua ships both names non-nil, so hookLine() read an
+    -- untouched install as an operator who had wired up entry/exit events.
+    -- A name is not a listener: the events were firing into an empty room and
+    -- the report called it an integration.
+    local env = compatWith({})
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.notContains(report, 'Hooks configured: entry/exit events',
+        'a shipped default was counted as something the operator had built')
+    t.contains(report, 'nothing here can see a listener',
+        'the events do still fire, and the report has to say so rather than go quiet')
+end)
+
+t.test('but they are, once a detected script carries a mute hung off them', function()
+    -- And not by comparing names against the shipped default: what earns the
+    -- credit is something demonstrably riding the events, so renaming them
+    -- changes nothing.
+    local env = compatWith({ 'my_dispatch' }, function(config)
+        config.Dispatch.custom.enterEvent = 'my_arena:enter'
+        config.Dispatch.custom.exitEvent = 'my_arena:exit'
+    end)
+    env.ArenaCompat.RegisterAdapter({
+        resource = 'my_dispatch', kind = 'both', mute = function() end,
+    })
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'Hooks configured: entry/exit events')
+    t.notContains(report, 'nothing here can see a listener')
+end)
+
+-- ========================================================================
+-- ENTERING A MATCH CHANGES NO GAME SETTING
+--
+-- THE DEFECT THESE EXIST FOR, in two rounds. Config.Dispatch opened with a
+-- key named `suppressPoliceShotsFired`, introduced as one of "the two
+-- switches you actually came here for" and shipped true. Its only reader was
+-- inside a `vanillaPolice` branch of client/dispatch.lua, and that branch was
+-- gated on `vanillaPolice.enabled`, which shipped FALSE. So on a stock config
+-- the key did nothing in either position -- and it was the first thing an
+-- operator whose police still turned up at a round would reach for, and the
+-- one thing that could not have been the cause.
+--
+-- The second round removed the block it was unreachable behind. A block that
+-- ships off, has never run on this server, and could not have helped against
+-- a custom dispatch script is not coverage; it is something to read and
+-- dismiss at every edit. So neither key exists now, and what these tests
+-- assert is the stronger and simpler fact that replaced them: ENTERING A
+-- MATCH REACHES NO GAME NATIVE AT ALL. Anything put back here has to earn
+-- its way past a test that counts every native by name.
+--
+-- These are the only tests in this suite that load the REAL
+-- client/dispatch.lua. Its natives are recorded by name rather than
+-- emulated: the whole question here is whether a given config reaches them.
+-- ========================================================================
+
+--- One fresh load of client/dispatch.lua against the REAL shipped config,
+--- with `mutate` free to change Config.Dispatch before the file sees it.
+--- @param mutate fun(dispatch: table)?
+--- @return table fixture
+local function newClientFixture(mutate)
+    local calls = {}    -- every recorded native, in call order
+
+    local function record(name, value)
+        return function()
+            calls[#calls + 1] = name
+            return value
+        end
+    end
+
+    local env = Sandbox.newEnv({
+        exports = setmetatable({}, { __call = function() end }),
+        AddEventHandler = function() end,
+        RegisterNetEvent = function() end,
+        ExecuteCommand = function() end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        GetResourceState = function() return 'missing' end,
+        print = function() end,
+
+        PlayerId = function() return 0 end,
+        PlayerPedId = function() return 11 end,
+
+        -- The vanilla wanted system. Every one of these is recorded, so
+        -- "touched nothing" is provable rather than assumed.
+        SetPoliceIgnorePlayer = record('SetPoliceIgnorePlayer'),
+        SetDispatchCopsForPlayer = record('SetDispatchCopsForPlayer'),
+        GetPlayerWantedLevel = record('GetPlayerWantedLevel', 3),
+        SetPlayerWantedLevel = record('SetPlayerWantedLevel'),
+        SetPlayerWantedLevelNow = record('SetPlayerWantedLevelNow'),
+
+        -- The dead-state side, for the switch that survived.
+        GetEntityCoords = function() return { 1.0, 2.0, 3.0 } end,
+        GetEntityHeading = function() return 90.0 end,
+        GetEntityMaxHealth = function() return 200 end,
+        NetworkResurrectLocalPlayer = record('NetworkResurrectLocalPlayer'),
+        SetEntityInvincible = record('SetEntityInvincible'),
+        SetEntityVisible = record('SetEntityVisible'),
+        SetEntityCollision = record('SetEntityCollision'),
+        FreezeEntityPosition = record('FreezeEntityPosition'),
+        SetEntityHealth = record('SetEntityHealth'),
+    })
+
+    Sandbox.loadInto('../Crimson-Arena/config.lua', env)
+    if mutate then mutate(env.Config.Dispatch) end
+    Sandbox.loadInto('../Crimson-Arena/client/dispatch.lua', env)
+
+    return {
+        env = env,
+        D = env.ArenaDispatch,
+        calls = calls,
+        --- Whether a native was reached at all, by name.
+        called = function(name)
+            for _, seen in ipairs(calls) do
+                if seen == name then return true end
+            end
+            return false
+        end,
+    }
+end
+
+t.test('the shipped config declares no suppressPoliceShotsFired switch', function()
+    -- THE CONTRACT, stated: a key at the top of Config.Dispatch is read as
+    -- something an operator can act on, so a key up there whose only reader
+    -- lives inside a block that ships off must not exist. Put it back and
+    -- this goes red, which is the whole job of this test.
+    local f = newClientFixture()
+
+    t.isNil(f.env.Config.Dispatch.suppressPoliceShotsFired,
+        'the unreachable police switch is back at the top of Config.Dispatch')
+end)
+
+t.test('the shipped config declares no vanillaPolice block either', function()
+    -- The key half of the removal. `suppressPoliceShotsFired` above was
+    -- unreachable BECAUSE of this block, and a block that ships off is the
+    -- place an unreachable key goes to hide. Put it back and the hiding
+    -- place is back with it.
+    local f = newClientFixture()
+
+    t.isNil(f.env.Config.Dispatch.vanillaPolice,
+        'the vanilla police block is back in Config.Dispatch')
+end)
+
+t.test('entering a match reaches no game native at all', function()
+    -- The behavioural half, and deliberately stated as a count rather than a
+    -- list of names: a test that checked three specific natives would pass
+    -- for a fourth one added later. Nothing about walking into an arena is
+    -- allowed to change a setting on this player's game.
+    local f = newClientFixture()
+
+    f.D.Enter('match-1')
+    t.equals(#f.calls, 0, 'entering a match changed a game setting')
+end)
+
+t.test('and leaving one reaches none either, so there is nothing to restore', function()
+    -- The symmetry that used to need a stash-and-restore record. With
+    -- nothing set on the way in there is nothing to hand back, and this is
+    -- what says so: a native called only on exit would leak a setting into
+    -- the rest of that player's session with no capture to undo it.
+    local f = newClientFixture()
+
+    f.D.Enter('match-1')
+    f.D.Exit()
+    t.equals(#f.calls, 0, 'leaving a match changed a game setting')
+end)
+
+t.test('a config that switches something on cannot put a native back', function()
+    -- THE REGRESSION GUARD, and the reason it sets keys that no longer
+    -- exist. Restoring the old block means restoring the code that reads
+    -- these, so a build where this fixture reaches a native is a build where
+    -- the block came back -- whatever it ends up being called.
+    local f = newClientFixture(function(dispatch)
+        dispatch.vanillaPolice = {
+            enabled = true, ignorePlayer = true,
+            stopDispatch = true, stashWantedLevel = true,
+        }
+        dispatch.suppressPoliceShotsFired = true
+    end)
+
+    f.D.Enter('match-1')
+    t.equals(#f.calls, 0,
+        'a removed config block is being read again -- the vanilla police branch is back')
+end)
+
+-- ========================================================================
+-- THE HANDOFF TO A MEDICAL SCRIPT, WIRED FROM THE CATALOGUE
+--
+-- The half the arena cannot do by resurrecting. sc-ambulance keeps its own
+-- `isDead` and `InLaststand`, and nothing about standing a ped up touches
+-- either -- so the player is up and walking while everything that script
+-- does to a casualty is still being done to them. That is the state reported
+-- as "the revive is not working", and the ped genuinely is standing up,
+-- which is exactly what makes it read as a lie.
+--
+-- 'hospital:client:Revive' is what clears the pair. Read out of
+-- sc-ambulance's own client/main.lua, whose handler opens
+--     if isDead or InLaststand then
+-- which is the pair, named by the script itself. Not a guess, and not a name
+-- that merely sounds right -- this file's own rule.
+-- ========================================================================
+
+t.test('a running medical script is told, without the operator naming a thing', function()
+    local env = compatWith({ 'sc-ambulance' })
+    local events = env.ArenaCompat.ReviveClientEvents()
+
+    t.equals(#events, 1, 'sc-ambulance is running and nothing would be sent to it')
+    t.equals(events[1], 'hospital:client:Revive',
+        'the wrong event would be sent -- sc-ambulance clears isDead and InLaststand on hospital:client:Revive and on nothing else')
+end)
+
+t.test('a medical script this box does NOT run is not told', function()
+    -- The catalogue is a list of names to look for, never a census. Firing at
+    -- a resource that is not running is harmless but it would make the report
+    -- claim a handoff that is not happening.
+    local env = compatWith({})
+    t.equals(#env.ArenaCompat.ReviveClientEvents(), 0,
+        'an event was aimed at a medical script this box is not running')
+end)
+
+t.test('two scripts sharing the event name are told once, not twice', function()
+    -- The QBCore family shares 'hospital:client:Revive'. A box running two of
+    -- them would otherwise get the same event fired at it repeatedly.
+    local env = compatWith({ 'sc-ambulance', 'qbx_ambulancejob' })
+    t.equals(#env.ArenaCompat.ReviveClientEvents(), 1,
+        'the same revive event is sent once per resource rather than once per name')
+end)
+
+t.test('the arena revive really sends it, not just knows it', function()
+    -- The gap this whole session kept falling into: a value correct at one end
+    -- and never arriving. Knowing the event name is worth nothing unless
+    -- ArenaDispatch.Revive actually fires it.
+    local f = newFixture()
+    f.env.ArenaCompat = {
+        ReviveClientEvents = function() return { 'hospital:client:Revive' } end,
+    }
+
+    f.D.Revive(4)
+
+    local told = nil
+    for _, message in ipairs(f.toClients) do
+        if message.name == 'hospital:client:Revive' then told = message end
+    end
+
+    t.isNotNil(told, 'the arena knows the medical script\'s revive event and never sends it')
+    t.equals(told.target, 4, 'the wrong player was handed off')
+end)
+
+t.test('and it still stands the player up first, whatever the handoff does', function()
+    -- Order matters and so does independence: a medical script that is absent,
+    -- broken or throwing must not cost the player their own revive.
+    local f = newFixture()
+    f.env.ArenaCompat = { ReviveClientEvents = function() return {} end }
+    f.givePlayer(4, { inlaststand = true })
+
+    f.D.Revive(4)
+
+    -- WHAT IS LEFT WHEN NOTHING IS DETECTED, and it is not nothing. The
+    -- arena does not resurrect the ped any more -- ClearDeadState did that
+    -- in the frame the ped died -- but it still puts the medical script's
+    -- own down flag back down, which is the half that reaches another
+    -- resource's records.
+    t.isFalse(f.metadata(4).inlaststand,
+        'with no medical script detected nothing was done for the player at all')
+end)
+
+-- ========================================================================
+-- START ORDER, which decides whether an EMS call can be stopped at all
+--
+-- Read out of sc-ambulance and sc-dispatch rather than reasoned about:
+--
+--   laststand.lua sends hospital:server:SetLaststandStatus (which sets the
+--   player's `inlaststand` metadata) and THEN hospital:server:EMSDownAlert,
+--   whose server handler admits the call only for a player carrying that
+--   metadata. Both are TriggerServerEvent from the victim's own client, in
+--   that order, so the guard's own condition is satisfied before it runs --
+--   and no resource can cancel another resource's event.
+--
+-- So the only winnable moment is before laststand is entered at all, which
+-- the arena does by resurrecting inside the same event dispatch. That is a
+-- race decided by resource start order, and when it is lost the failure is
+-- silent and looks exactly like the arena being broken. Hence a report line.
+-- ========================================================================
+
+--- A compat env loaded while `runningNames` are ALREADY started.
+---
+--- Different from compatWith on purpose: that one patches resource state
+--- after the load, which is right for detection (re-read every time) and
+--- useless for start order (captured once, at load). Getting these two mixed
+--- up is how a start-order check turns into a permanent false warning.
+--- @param runningNames string[]
+--- @return table env
+local function compatLoadedAfter(runningNames)
+    local started = {}
+    for _, name in ipairs(runningNames) do started[name] = true end
+
+    local console = {}
+    local env = Sandbox.newArenaEnv({
+        print = function(line) console[#console + 1] = tostring(line) end,
+        IsDuplicityVersion = function() return true end,
+        GetResourceState = function(name) return started[name] and 'started' or 'missing' end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        CreateThread = function() end,
+        AddEventHandler = function() end,
+        RegisterCommand = function() end,
+        Wait = function() end,
+        ArenaIsAdmin = function() return false end,
+        ArenaNotify = function() end,
+        ArenaNotifyKey = function() end,
+    })
+    Sandbox.loadInto('../Crimson-Arena/shared/compat/dispatch.lua', env)
+    env.consoleText = function() return table.concat(console, '\n') end
+    return env
+end
+
+t.test('an emergency script that started first is named, with the fix', function()
+    local env = compatLoadedAfter({ 'sc-ambulance' })
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'start order', 'nothing tells the operator who answers a death first')
+    t.contains(report, 'sc-ambulance', 'the report warns about start order without naming the resource')
+    t.contains(report, 'server.cfg', 'the operator is told there is a problem and not where to fix it')
+end)
+
+t.test('and when the arena started first it says so, rather than staying quiet', function()
+    -- Silence would be ambiguous: an operator who has just fixed their
+    -- server.cfg needs to see that it took.
+    local env = compatLoadedAfter({})
+    local report = table.concat(env.ArenaCompat.Report(), '\n')
+
+    t.contains(report, 'started first',
+        'a correct start order is reported as nothing at all, so it cannot be confirmed')
+end)
+
+t.test('start order is judged at LOAD, not whenever the report is read', function()
+    -- The whole signal is "was it already running while we were loading".
+    -- Ask later and everything reports 'started', including resources that
+    -- started after this one -- which would turn a correct setup into a
+    -- permanent false warning.
+    local env = compatLoadedAfter({})
+    t.equals(#env.ArenaCompat.StartedBeforeUs(), 0)
+
+    -- Everything comes up afterwards. The answer must not change.
+    env.GetResourceState = function() return 'started' end
+    t.equals(#env.ArenaCompat.StartedBeforeUs(), 0,
+        'the check re-reads resource state after load, so a resource that started LATER is blamed for starting first')
+end)
+
+-- ----------------------------------------------------------------------
+-- THE DOWN FLAG, CLEARED WHERE IT REALLY LIVES
+-- ----------------------------------------------------------------------
+--
+-- Reported from a live server after everything above was already configured:
+-- "the ambulance job is still getting notifications for people down."
+--
+-- Every suppression this file tests until here fights the alert at the moment
+-- it is raised, and every one of them can lose: CancelEvent needs the sender
+-- to check it, retraction needs an id, and answering the death first needs to
+-- have started first. What none of them touched is the FLAG all of it reads.
+--
+-- The QB-family medical scripts keep "this player is down" as player metadata
+-- on the framework object -- qbx_core's data, not theirs -- so the arena can
+-- write it. Cleared, sc-dispatch's 500ms poll never raises PlayerDown at all,
+-- and sc-ambulance's own EMSDownAlert guard refuses the call. It is also
+-- simply true: the arena has just stood this player up.
+
+t.test('DEFECT: a revive clears the medical script\'s own down flag', function()
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = true, isdead = true })
+
+    f.D.Revive(7)
+
+    local meta = f.metadata(7)
+    t.isFalse(meta.inlaststand, 'the last-stand flag was left up after a revive')
+    t.isFalse(meta.isdead, 'the dead flag was left up after a revive')
+end)
+
+t.test('and writes nothing for a flag that is already down', function()
+    -- A start-up full of writes to fields nobody set is noise, and on a
+    -- server using neither name this has to cost nothing at all.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = false, isdead = false })
+
+    f.D.Revive(7)
+
+    t.equals(#f.metaWrites, 0, 'it wrote to metadata that was already clear')
+end)
+
+t.test('and writes anyway on a framework with no metadata reader', function()
+    -- GetMetaData is not on every build. A missing reader means "write it" --
+    -- the write is the point and it is idempotent -- rather than "do nothing",
+    -- which would silently disable this on exactly the servers that cannot
+    -- report their own state.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = true }, false)
+
+    f.D.Revive(7)
+
+    t.isTrue(#f.metaWrites > 0, 'a framework with no getter had nothing written to it')
+    t.isFalse(f.metadata(7).inlaststand, 'the flag was left up')
+end)
+
+t.test('and the keys come from config, so another script can be named', function()
+    local f = newFixture()
+    f.env.Config.Dispatch.downState.keys = { 'myscript_down' }
+    f.givePlayer(7, { myscript_down = true, inlaststand = true })
+
+    f.D.Revive(7)
+
+    t.isFalse(f.metadata(7).myscript_down, 'the operator\'s own key was not cleared')
+    t.isTrue(f.metadata(7).inlaststand,
+        'a key the operator did not name was written to anyway')
+end)
+
+t.test('THE SEVEN-SECOND WINDOW: the flag comes down at the death, not at the revive', function()
+    -- THE DEFECT THIS CLOSES, and it was a guaranteed loss rather than a
+    -- risk. These keys used to be written only by ArenaDispatch.Revive, and
+    -- on the path a fighter takes most -- dying with lives left -- that runs
+    -- Config.Match.respawnDelaySeconds (5s) plus revive.afterRespawnDelayMs
+    -- (2000ms) after the death. Seven seconds, against a dispatch client
+    -- polling the same metadata every 500ms: fourteen windows. PlayerDown
+    -- and PlayerDead were not "never raised" as the config claimed. They
+    -- were certain, on every death of every round.
+    --
+    -- ClearDownState is the entry point server/match.lua calls from OnDeath
+    -- itself, with nothing waited on in between.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = true, isdead = true })
+
+    local cleared = f.D.ClearDownState(7)
+
+    t.equals(cleared, 2, 'the down flags were not put back down at the death')
+    t.isFalse(f.metadata(7).inlaststand)
+    t.isFalse(f.metadata(7).isdead)
+end)
+
+t.test('and it refuses a source that is not one', function()
+    local f = newFixture()
+    t.equals(f.D.ClearDownState(nil), 0)
+    t.equals(f.D.ClearDownState(0), 0)
+    t.equals(f.D.ClearDownState(-1), 0)
+    t.equals(#f.metaWrites, 0)
+end)
+
+t.test('CLEARING ONCE IS NOT KEEPING CLEAR: the hold puts them back down again', function()
+    -- A medical script sets its flag from the victim's own client and several
+    -- of them re-assert it -- on a respawn, on a poll of their own, on a
+    -- restart. One clear at one instant answers one of those. The hold is a
+    -- write against a wall clock rather than a race: it does not matter who
+    -- wrote last, only that the arena writes again inside the window the
+    -- flag is being read in.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = false, isdead = false })
+    f.D.Set(7, 'm1')
+
+    -- Something else puts the player down again, the way sc-ambulance does.
+    f.setMetadata(7, 'inlaststand', true)
+
+    t.equals(f.D.HoldDownState(), 1, 'the hold did not put the flag back down')
+    t.isFalse(f.metadata(7).inlaststand)
+
+    -- And it costs nothing on the pass where nothing is set.
+    local before = #f.metaWrites
+    t.equals(f.D.HoldDownState(), 0)
+    t.equals(#f.metaWrites, before, 'the hold wrote to a flag that was already down')
+end)
+
+t.test('AND THE HOLD CANNOT OUTLIVE THE MATCH', function()
+    -- The failure ArenaDispatch.Clear exists to prevent, in a new place. A
+    -- flag held down for a player who has gone home silences that player's
+    -- medical state for the rest of their session -- and unlike the state
+    -- bag, nothing about it is visible to them or to an operator.
+    --
+    -- Keyed on `active` rather than on a list of its own, so every exit path
+    -- that clears the flag stops the hold in the same breath.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = false })
+    f.D.Set(7, 'm1')
+    f.D.Clear(7)
+
+    f.setMetadata(7, 'inlaststand', true)
+
+    t.equals(f.D.HoldDownState(), 0, 'the arena is still holding a flag down for somebody who left the match')
+    t.isTrue(f.metadata(7).inlaststand, 'a player who left the arena had their medical state written anyway')
+end)
+
+t.test('and a player in a match who is NOT down is left alone', function()
+    -- The hold is not a claim that everybody in an arena is healthy. It puts
+    -- back down what something else put up; it does not write to a field
+    -- nobody set.
+    local f = newFixture()
+    f.givePlayer(7, { inlaststand = false, isdead = false })
+    f.D.Set(7, 'm1')
+
+    t.equals(f.D.HoldDownState(), 0)
+    t.equals(#f.metaWrites, 0)
+end)
+
+t.test('and an empty list switches the whole thing off', function()
+    local f = newFixture()
+    f.env.Config.Dispatch.downState.keys = {}
+    f.givePlayer(7, { inlaststand = true })
+
+    f.D.Revive(7)
+
+    t.equals(#f.metaWrites, 0, 'metadata was written with the feature switched off')
+end)
+
+t.test('and it runs even where revive.enabled is off', function()
+    -- `revive.enabled` gates the operator-configured commands and events --
+    -- reaching a script by a name somebody typed. This is not that: it is
+    -- correcting a field about a player the arena has just stood up, and it
+    -- is the one suppression that does not depend on winning a race.
+    local f = newFixture()
+    f.env.Config.Dispatch.revive.enabled = false
+    f.givePlayer(7, { inlaststand = true })
+
+    f.D.Revive(7)
+
+    t.isFalse(f.metadata(7).inlaststand,
+        'switching the configured revives off also switched off the flag clear')
+end)
+
+t.test('and a player the framework does not know is left alone', function()
+    -- No player object, no crash. A disconnect between the death and the
+    -- revive is ordinary.
+    local f = newFixture()
+    f.D.Revive(7)
+    t.equals(#f.metaWrites, 0, 'something was written for a player who is not there')
+end)
+
+-- ----------------------------------------------------------------------
+-- AND SAID AGAIN WHERE THE SYMPTOM IS
+-- ----------------------------------------------------------------------
+--
+-- The boot report names the losing start order once, among six other
+-- subjects, and the thing it predicts does not happen until somebody dies in
+-- a match -- an EMS call for a fighter, which is the whole reason this file
+-- exists. Between the warning and the symptom is every other line the server
+-- printed while it was starting.
+
+t.test('DEFECT: the first death in an arena repeats the start-order warning', function()
+    local env = compatLoadedAfter({ 'sc-ambulance' })
+
+    t.isTrue(env.ArenaCompat.WarnLateStartOnce(), 'the first death printed nothing')
+    local said = env.consoleText()
+    t.contains(said, 'sc-ambulance', 'the warning does not name the resource that won the race')
+    t.contains(said, 'server.cfg', 'the warning does not say how to fix it')
+    t.contains(said, 'crimsonArena', 'the warning does not offer the state-bag guard as a fallback')
+end)
+
+t.test('and it warns that the outline wants the OPPOSITE order', function()
+    -- REPORTED: an operator followed this warning, got a working ambulance
+    -- job, and then reported that the team outline was not showing up.
+    --
+    -- Both are true at once and they pull opposite ways. The outline colour
+    -- and shader are ONE game-wide setting, and the last resource to write
+    -- them each frame wins -- which is start order. Starting this resource
+    -- FIRST, exactly as the lines above tell an operator to, is the order
+    -- that loses that race every frame.
+    --
+    -- Nothing in any log disagrees when it happens, because as far as
+    -- client/match.lua is concerned it drew the outline: it did, in whatever
+    -- colour and shader the winner left behind. So the only place this can
+    -- be caught is beside the advice that causes it.
+    local env = compatLoadedAfter({ 'sc-ambulance' })
+    env.ArenaCompat.WarnLateStartOnce()
+    local said = env.consoleText()
+
+    t.contains(said, 'OPPOSITE order',
+        'the warning sends an operator to a start order that silently breaks the team outline, '
+            .. 'and never mentions it')
+    t.contains(said, 'LAST',
+        'the warning does not say which order the outline actually needs')
+end)
+
+t.test('and says it ONCE, not on every death for the rest of the session', function()
+    -- A warning printed every time a fighter falls is a warning nobody reads
+    -- twice, and it would bury the console output the rest of this file
+    -- checks its guarantees through.
+    local env = compatLoadedAfter({ 'sc-ambulance' })
+
+    t.isTrue(env.ArenaCompat.WarnLateStartOnce(), 'the first call printed nothing')
+    for _ = 1, 5 do
+        t.isFalse(env.ArenaCompat.WarnLateStartOnce(), 'it printed again on a later death')
+    end
+end)
+
+t.test('and stays silent on a server that started this resource first', function()
+    -- The correct setup, which is most of them. A frightening warning on a
+    -- working server sends an operator to fix something that is not broken.
+    local env = compatLoadedAfter({})
+    t.isFalse(env.ArenaCompat.WarnLateStartOnce(),
+        'a correctly ordered server was told its ambulance job would be paged')
+    t.notContains(env.consoleText(), 'ANSWERED FIRST', 'it printed the warning anyway')
+end)
+
+
+-- ========================================================================
+-- Withdrawing by PLAYER rather than by event
+-- ========================================================================
+--
+-- The cancel layer can only withdraw a call it SAW being filed. The medical
+-- alert that actually reached EMS on this server never reaches this resource
+-- at all -- it is raised by a third path in the dispatch script that the
+-- arena has no handler for -- so the revive has to withdraw by server id,
+-- blind, over every id shape the operator listed.
+
+t.test('an event with no id shape schedules nothing at all', function()
+    -- NOT A WARNING, AND NOT A NO-OP EITHER. An event listed for cancelling
+    -- with no shape beside it is an ordinary, deliberate state -- Form 4
+    -- covers it and Form 5 does not claim to -- so the withdrawal returns
+    -- early and says nothing.
+    --
+    -- WHAT THE EARLY RETURN IS ACTUALLY WORTH, which is the reason this test
+    -- exists: without it the retry ladder still arms, so every such alert
+    -- leaves four timers behind that wake up, walk an empty list and go back
+    -- to sleep. On a busy arena that is four dead timers per alert per
+    -- fighter. A mutation sweep found nothing noticed when the guard was
+    -- removed; this is what notices.
+    local f = newFixture({
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = {
+            enabled = true,
+            disableExports = {},
+            cancelEvents = { { event = 'sc-dispatch:server:PlayerDown' } },
+            retract = {
+                resource = 'sc-dispatch',
+                export = 'ClearNotification',
+                -- Listed for cancelling, with no shape of its own.
+                idTemplates = { ['something:else'] = 'other_%d_%d' },
+            },
+        },
+        vanillaPolice = { enabled = false },
+        revive = { enabled = false, commands = {}, serverEvents = {}, clientEvents = {}, exports = {} },
+    })
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    f.env.source = 7
+    f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+
+    local armed = f.pendingTimeouts()
+    t.equals(armed, 0,
+        ('%d timer(s) were armed for an event with no id shape to withdraw'):format(armed))
+
+    f.runTimeouts()
+    t.equals(#f.exportCalls, 0, 'and nothing was withdrawn either')
+end)
+
+t.test('THE FIFTH SHAPE: an event may file under more than one id', function()
+    -- READ OFF A LIVE CONSOLE. The operator had four shapes listed, the
+    -- sweep asked for all four -- twenty-eight ids in one round -- and the
+    -- call sc-dispatch had actually filed was under a FIFTH:
+    --
+    --   [SC-Dispatch] ManualClearCall by <name> (2) ID: emsdown_3_1789388681
+    --
+    -- They were clearing their own person-down calls by hand while a layer
+    -- built to withdraw them reported success on every one. So a shape may
+    -- be a list, and every name in it is asked for.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+    f.runTimeouts()
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    local joined = table.concat(ids, ',')
+
+    t.contains(joined, ('emsdown_7_%d'):format(at),
+        'the shape this server really files person-down calls under was never asked for')
+    t.contains(joined, ('playerdown_7_%d'):format(at),
+        'adding the second shape dropped the first one')
+end)
+
+t.test('and the revive sweep asks for the extra shapes too', function()
+    -- The sweep walks every shape of every entry, not the first of each.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.D.Revive(7)
+    f.step()
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    t.contains(table.concat(ids, ','), ('emsdown_7_%d'):format(at),
+        'the revive sweep skipped a shape listed beside another one')
+end)
+
+t.test('and a shape list with rubbish in it is filtered, not raised on', function()
+    -- idTemplates is operator text. A stray number or an empty string in the
+    -- list must cost that entry, not the whole withdrawal.
+    local f = newFixture({
+        stateBagKey = 'crimsonArena',
+        isolation = { enabled = false },
+        custom = {
+            enabled = true,
+            disableExports = {},
+            cancelEvents = { { event = 'sc-dispatch:server:PlayerDown' } },
+            retract = {
+                resource = 'sc-dispatch',
+                export = 'ClearNotification',
+                clockSlack = 0,
+                idTemplates = {
+                    ['sc-dispatch:server:PlayerDown'] = { 'good_%d_%d', 42, '', false },
+                },
+            },
+        },
+        vanillaPolice = { enabled = false },
+        revive = { enabled = false, commands = {}, serverEvents = {}, clientEvents = {}, exports = {} },
+    })
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    local ok = pcall(function()
+        f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+        f.runTimeouts()
+    end)
+
+    t.isTrue(ok, 'rubbish in a shape list took the withdrawal down with it')
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    t.contains(table.concat(ids, ','), ('good_%d_%d'):format(7, at),
+        'the one usable shape in the list was not asked for')
+end)
+
+t.test('THE SLOW INSERT: the same withdrawal is asked for more than once', function()
+    -- THE REPORT: "its not even recalling the alert for a person down".
+    --
+    -- The withdrawal used to be asked for exactly once, delayMs after the
+    -- event. sc-dispatch's AddNotification awaits several oxmysql statements
+    -- before it pushes the call anywhere, so under load that single ask
+    -- lands FIRST: it updates a row that does not exist yet and clears a
+    -- call no screen has been told about. The alert then goes out and stays
+    -- out, looking exactly like this layer never ran.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+
+    f.runTimeouts()
+
+    local wanted = ('playerdown_7_%d'):format(at)
+    local asked = 0
+    for _, call in ipairs(f.exportCalls) do
+        if tostring(call.args[1]) == wanted then asked = asked + 1 end
+    end
+
+    t.isTrue(asked > 1,
+        ('the person-down call was asked for %d time(s) -- one ask is a race with the other '
+            .. 'resource\'s own insert, and losing it leaves the alert standing'):format(asked))
+end)
+
+t.test('and the retries are the SAME id, not a walk down the clock', function()
+    -- The uncertainty is WHEN the call appears, not WHICH call it is: the id
+    -- is known from the event this handler is standing in. Rebuilding ids
+    -- around a moving clock would multiply them by every second it ran
+    -- through, and each one costs three awaited UPDATEs in the other
+    -- resource -- paid on every death, on every fighter.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.env.source = 7
+    f.fire('sc-dispatch:server:PlayerDown', { coords = { x = 0.0, y = 0.0, z = 0.0 } })
+    f.runTimeouts()
+
+    for _, call in ipairs(f.exportCalls) do
+        local stamp = tonumber(tostring(call.args[1]):match('_(%d+)$'))
+        t.isNotNil(stamp, 'an id was withdrawn with no timestamp on the end at all')
+        t.isTrue(math.abs(stamp - at) <= 1,
+            ('an id %ds off the event was withdrawn -- the retries are walking the clock')
+                :format(stamp - at))
+    end
+end)
+
+t.test('the revive withdraws every id shape listed, for that player', function()
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    local at = os.time()
+    f.D.Revive(7)
+    f.step()
+
+    t.isTrue(#f.exportCalls > 0,
+        'the revive withdrew nothing, so an alert nobody saw filed is left standing')
+
+    local ids = {}
+    for _, call in ipairs(f.exportCalls) do ids[#ids + 1] = tostring(call.args[1]) end
+    local joined = table.concat(ids, ',')
+
+    -- THE ONE THAT MATTERS. emshelp_ is the shape the ungated third path
+    -- files under, and it is the reason this function exists at all.
+    for _, shape in ipairs({ 'emshelp', 'playerdown', 'playerdead', 'shots' }) do
+        t.contains(joined, ('%s_7_%d'):format(shape, at),
+            ('the revive never asked for a %s id, so that alert survives it'):format(shape))
+    end
+end)
+
+t.test('and it can never reach a call belonging to somebody else', function()
+    -- The same safety the cancel layer has, arrived at from the other
+    -- direction: this one fires with no event to read, so the only thing
+    -- stopping it clearing a stranger's alert is that the id is built out of
+    -- the revived player's own server id.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    f.D.Revive(7)
+    f.step()
+
+    for _, call in ipairs(f.exportCalls) do
+        t.contains(tostring(call.args[1]), '_7_',
+            'the revive withdrew a call filed for somebody other than the revived player')
+    end
+end)
+
+t.test('and no id is asked for twice, however long the sweep runs', function()
+    -- SWEPT, NOT FIRED ONCE: the alert does not exist yet when the fighter
+    -- goes down. A sweep that re-asked for the same id every pass would be
+    -- hundreds of exports per revive on a full server.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+
+    f.D.Revive(7)
+    f.step()
+
+    local seen = {}
+    for _, call in ipairs(f.exportCalls) do
+        local id = tostring(call.args[1])
+        t.isNil(seen[id], ('%s was withdrawn more than once'):format(id))
+        seen[id] = true
+    end
+end)
+
+t.test('and a dispatch resource that is not running costs nothing', function()
+    -- Revive runs on EVERY arena death. An unguarded native or a bare export
+    -- here does not fail politely -- it takes the revive down and leaves the
+    -- fighter on the floor.
+    local f = newFixture()          -- GetResourceState reports 'missing'
+    f.D.Set(7, 'match-1')
+
+    f.D.Revive(7)
+    f.step()
+
+    t.equals(#f.exportCalls, 0,
+        'a resource this server does not run was exported into anyway')
+end)
+
+t.test('and the post-match sweep still withdraws, after the flag has come down', function()
+    -- THE WINDOW THE GATE ABOVE HAS TO LEAVE OPEN. server/match.lua revives
+    -- the whole roster seconds AFTER the match ends, by which time Clear has
+    -- run -- and that sweep is the safety net this entire layer exists to
+    -- be. A gate on the live flag alone would switch it off.
+    --
+    -- FLAGGED AS A FIGHTER, which is what server/match.lua does when it places
+    -- somebody. The withdrawal window is a fighter's -- a spectator who stops
+    -- watching resolves no round and earns none -- so a fixture that skipped
+    -- the flag here would be modelling a watcher and testing nothing.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1', true)
+    f.D.Clear(7)
+
+    f.D.Revive(7)
+    f.step()
+
+    t.isTrue(#f.exportCalls > 0,
+        'the post-match sweep withdrew nothing, so an alert filed at the last death survives the match')
+end)
+
+t.test('and the window does not survive the server id being handed to somebody else', function()
+    -- SERVER IDS ARE REUSED. A fighter leaves a match, disconnects, and the
+    -- next person to connect gets their number -- then that person is shot
+    -- in the city and stood up by an admin, inside the same minute. Without
+    -- the drop handler their real ambulance is withdrawn on the strength of
+    -- a round they were never in.
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+    f.D.Set(7, 'match-1')
+    f.D.Clear(7)
+
+    f.env.source = 7
+    f.fire('playerDropped', nil)
+
+    f.D.Revive(7)
+    f.step()
+
+    t.equals(#f.exportCalls, 0,
+        'a stranger who inherited the server id had their real medical call withdrawn')
+end)
+
+t.test('and a revive for a player who is not in a match withdraws nothing', function()
+    local f = newFixture()
+    f.setResource('sc-dispatch')
+
+    f.D.Revive(7)
+    f.step()
+
+    t.equals(#f.exportCalls, 0,
+        'an ordinary player being revived had their real medical call withdrawn')
+end)
+
+-- ========================================================================
+-- THE COMPAT REPORT, AND THE TWO WAYS OUT OF IT
+--
+-- An operator reported "there is no /arenadispatch command" while EMS alerts
+-- were still firing out of their arena. The command was registered the whole
+-- time -- in shared/compat/dispatch.lua, inside the `if IS_SERVER then` half
+-- -- which is why a search of server/*.lua does not find it and why this
+-- block asserts the registration rather than assuming it.
+--
+-- What they could not do was READ it. Both existing routes end at the server
+-- console: the start-up print and the command's own print. In-game the
+-- command answered with the entire report concatenated into a single
+-- notification toast, and the one thing the report exists to tell you is
+-- WHICH of your scripts still needs the state-bag line pasted into it -- a
+-- resource name, in a wall of text, in a corner, for a few seconds.
+--
+-- So the tablet gets the same lines through ArenaDispatch.CompatReport. The
+-- tests below are mostly about SAMENESS: two ways out of one report is only
+-- an improvement while they cannot disagree.
+-- ========================================================================
+
+--- shared/compat/dispatch.lua and server/dispatch.lua loaded together, which
+--- is the pairing the tablet path actually runs through: the compat layer
+--- builds the report, the server file hands it to the panel.
+--- @param running table -- { ['sc-dispatch'] = true, ... }
+--- @return table fixture
+local function newCompatAndServer(running)
+    running = running or {}
+    local commands, console, toasts = {}, {}, {}
+
+    local env = Sandbox.newArenaEnv({
+        IsDuplicityVersion = function() return true end,
+        GetResourceState = function(name) return running[name] and 'started' or 'missing' end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        GetNumResources = function() return 0 end,
+        GetPlayerName = function() return 'an admin' end,
+        GetVehiclePedIsIn = function() return 0 end,
+        IsPlayerAceAllowed = function() return true end,
+        CreateThread = function() end,
+        Wait = function() end,
+        SetTimeout = function() end,
+        AddEventHandler = function() end,
+        RegisterNetEvent = function() end,
+        TriggerClientEvent = function() end,
+        RegisterCommand = function(name, fn) commands[name] = fn end,
+        print = function(line) console[#console + 1] = tostring(line) end,
+        ArenaIsAdmin = function() return true end,
+        ArenaNotify = function(src, text, kind)
+            toasts[#toasts + 1] = { src = src, text = tostring(text), kind = kind }
+        end,
+        ArenaNotifyKey = function() end,
+        ArenaLog = function(fmt, ...)
+            console[#console + 1] = (select('#', ...) > 0) and fmt:format(...) or fmt
+        end,
+        ArenaDebug = function() end,
+        ArenaLobby = { Get = function() return nil end, All = function() return {} end },
+        -- A spec fills exportAnswers[resource][name] to make somebody else's
+        -- resource answer -- or throw. Anything not filled in answers nil,
+        -- which is what a resource with no such export amounts to here.
+        --
+        -- THE LIVE GAME IS HARSHER THAN THIS STUB: reaching for an export a
+        -- resource never registered RAISES. The code under test pcalls for
+        -- that reason, and the throwing case below is what pins it.
+        exportAnswers = {},
+        exports = setmetatable({}, {
+            __call = function() end,
+            __index = function(t, resource)
+                return setmetatable({}, {
+                    __index = function(_t2, name)
+                        local answers = rawget(t, 'answers')
+                        local fn = answers and answers[resource] and answers[resource][name]
+                        return function(_self, ...)
+                            if fn then return fn(...) end
+                            return nil
+                        end
+                    end,
+                })
+            end,
+        }),
+    })
+
+    -- AFTER the env exists. The metatable above reaches `answers` off the
+    -- exports table itself with rawget, rather than closing over `env` --
+    -- a closure written inside the constructor would capture a GLOBAL `env`,
+    -- which is nil, instead of the local being declared by that statement.
+    rawset(env.exports, 'answers', env.exportAnswers)
+
+    Sandbox.loadInto('../Crimson-Arena/config.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
+    env.Config.Dispatch = env.Config.Dispatch or {}
+    env.Config.Dispatch.downState = env.Config.Dispatch.downState or {}
+    env.Config.Dispatch.downState.holdIntervalMs = 0
+
+    -- MANIFEST ORDER: the shared script is loaded by the game before any
+    -- server script, so ArenaCompat exists by the time server/dispatch.lua
+    -- reaches for it. Loading them the other way round here would test a
+    -- build the game never produces.
+    Sandbox.loadInto('../Crimson-Arena/shared/compat/dispatch.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/server/dispatch.lua', env)
+
+    return { env = env, commands = commands, console = console, toasts = toasts }
+end
+
+t.test('the reading an operator could not find is reachable without any command at all', function()
+    -- /arenadispatch WAS the command nobody could discover, and it is not a
+    -- command any more: it is a button on the tablet under Tools, and
+    -- `/arenaadmin dispatch` at a console. Both call the function below, so
+    -- what has to hold is that the function answers -- the routes to it are
+    -- covered by commands_spec, admingates_spec and admintablet_spec.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    t.equals(type(f.env.ArenaDispatch.CompatReport), 'function',
+        'nothing can take the dispatch compat reading at all')
+    t.isTrue(#f.env.ArenaDispatch.CompatReport() > 0, 'the reading came back empty')
+end)
+
+t.test('the panel carries every compat line verbatim, and adds only its own', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+
+    local fromCompat = f.env.ArenaCompat.Report()
+    local fromPanel = f.env.ArenaDispatch.CompatReport()
+
+    for index, line in ipairs(fromCompat) do
+        t.equals(fromPanel[index], line,
+            ('panel line %d is not the compat layer\'s line %d'):format(index, index))
+    end
+
+    -- THREE LINES, AND ONLY THREE. The compat layer reports on the resources
+    -- AROUND the arena. These three are things it knows nothing about: the
+    -- down-state edge listener is a setting INSIDE this resource; the second
+    -- is sc-dispatch's OWN arena integration -- his switch, and the two
+    -- things this resource owes it; the third is whether sc-ambulance's two
+    -- alert handlers carry the guard, which is a paste into a file nothing
+    -- here can see any other way. Anything beyond these three is the panel
+    -- rewriting the report.
+    t.equals(#fromPanel, #fromCompat + 3,
+        'the panel added something other than the down-state, dispatch and ambulance lines')
+    t.contains(fromPanel[#fromPanel - 2], 'down-state',
+        'the panel does not say what the down-state layer is doing')
+    t.contains(fromPanel[#fromPanel - 1], 'sc-dispatch',
+        'the panel does not say what sc-dispatch\'s arena integration is doing')
+    t.contains(fromPanel[#fromPanel], 'sc-ambulance',
+        'the panel does not say whether sc-ambulance carries the guard')
+end)
+
+t.test('THE INTEGRATION LINE: a box with no sc-dispatch is told so, not told it failed', function()
+    -- This line used to report on a block WE shipped, which an operator was
+    -- asked to paste into sc-dispatch. That block never installed on a real
+    -- server -- an export resolved through TriggerEvent arrives as a funcref
+    -- TABLE, so its `type(original) ~= 'function'` gate always bailed -- and
+    -- sc-dispatch now ships the integration itself. The line reports on HIS
+    -- switch now.
+    local f = newCompatAndServer({ ['qbx_policejob'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'sc-dispatch is not running',
+        'a box without sc-dispatch was not told the integration simply does not apply')
+end)
+
+t.test('THE HOLE A RENAMED KEY OPENS, and it is the spectators', function()
+    -- sc-dispatch reads `LocalPlayer.state.crimsonArena` by that literal
+    -- name. Rename stateBagKey here and the bag it looks for is never
+    -- written. Its fallback -- exports['Crimson-Arena']:IsInArena() -- only
+    -- answers for somebody PLACED in a round, because a spectator never calls
+    -- ArenaDispatch.Enter on their own client.
+    --
+    -- So the rename does not break fighters. It breaks WATCHERS: people
+    -- sitting in the arena with a camera up, paging EMS about a round they
+    -- are not in. Nothing else on either side would say why.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.Config.Dispatch.custom = f.env.Config.Dispatch.custom or {}
+    f.env.Config.Dispatch.custom.stateBagKey = 'myArenaFlag'
+
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'myArenaFlag', 'the report does not name the key that was changed')
+    t.contains(report, 'SPECTATORS ARE NOT',
+        'the report does not say WHO the rename stops covering: ' .. report)
+end)
+
+t.test('and the default key is not reported as a problem', function()
+    -- The control. A report that warned on the shipped default would be noise
+    -- on every server that never touched the setting.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.isTrue(report:find('SPECTATORS ARE NOT', 1, true) == nil,
+        'the shipped default was reported as a misconfiguration: ' .. report)
+end)
+
+t.test('and his switch is read off his own config, both ways', function()
+    -- Config.Integrations.CrimsonArena is a table in HIS Lua state with no
+    -- export, so this reads the config file he ships unencrypted. Anything it
+    -- cannot parse is reported as unknown rather than guessed at.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = true,\n}'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'),
+        'CrimsonArena = true',
+        'an integration that is switched ON was not confirmed')
+
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = false,\n}'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'),
+        'is FALSE',
+        'an integration that is switched OFF was not reported as off')
+end)
+
+t.test('and a config it cannot read is reported as UNKNOWN, never guessed', function()
+    -- The dangerous answer here is a confident one. An operator told the
+    -- integration is on, when it is off, stops looking.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+
+    for _, answer in ipairs({ function() return nil end,
+                              function() return 42 end,
+                              function() error('no such file') end }) do
+        f.env.LoadResourceFile = answer
+        local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+        t.contains(report, 'Its config could not be read from here',
+            'an unreadable config was answered with a guess: ' .. report)
+    end
+end)
+
+-- ======================================================================
+-- THE sc-ambulance LINE
+--
+-- sc-ambulance ships NO arena integration -- not a mention of this resource
+-- anywhere in it -- and that is the hole left after sc-dispatch's own
+-- integration is switched on, because its person-down handler calls
+-- sc-dispatch's SERVER export, which is already past sc-dispatch's client
+-- check. cancelEvents cannot close it either: sc-ambulance never calls
+-- WasEventCanceled(). Two lines in its own server/main.lua are the only
+-- thing that works, and this report line is how an operator finds out
+-- whether the paste took without dying in the arena to test it.
+-- ======================================================================
+
+--- sc-ambulance's two alert handlers, as it really ships them, with a slot at
+--- the top of each for the guard.
+---
+--- THE SPACING IS THE POINT and not decoration. The two handlers sit about
+--- four hundred characters apart in the real file, which is well inside any
+--- window generous enough to find a guard placed a few lines into a handler.
+--- Test the window without that spacing and the bleed this fixture exists to
+--- catch cannot happen.
+local AMBULANCE_SRC = [[
+RegisterNetEvent('hospital:server:ambulanceAlert', function(text)
+	local src = source
+%s	local ped = GetPlayerPed(src)
+	local coords = GetEntityCoords(ped)
+	local players = QBCore.Functions.GetQBPlayers()
+	for _, v in pairs(players) do
+		if v.PlayerData.job.name == 'ambulance' and v.PlayerData.job.onduty then
+			TriggerClientEvent('hospital:client:ambulanceAlert', v.PlayerData.source, coords, text)
+		end
+	end
+end)
+
+-- Downed player pressed G to request help - send the call to EMS via sc-dispatch
+RegisterNetEvent('hospital:server:EMSDownAlert', function(street)
+	local src = source
+%s	if not (Config.MDTIntegration and Config.MDTIntegration.Enabled) then return end
+	local Player = QBCore.Functions.GetPlayer(src)
+	if not Player then return end
+	local coords = GetEntityCoords(GetPlayerPed(src))
+	exports['sc-dispatch']:AddNotification(dispatchData)
+end)
+]]
+
+--- The paste DISPATCH-ALERTS.md asks for, character for character.
+---
+--- THE COMMENT LINE IS PART OF IT and is not decoration here either. It is
+--- what the document tells an operator to paste, so it is what a real
+--- sc-ambulance has -- and it puts the FIRST occurrence of this resource's
+--- name five characters into the guard instead of fifty-five. That is the
+--- difference between the bleed below landing inside the window and landing
+--- just outside it, which is how the first version of this fixture passed
+--- against a build with no clamp at all.
+local AMBULANCE_GUARD =
+    "\n\t-- Crimson-Arena: no medical page for a fighter or a spectator in a round.\n"
+    .. "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+    .. "\tif ok and quiet == true then return end\n\n"
+
+--- A fixture whose sc-ambulance is running and whose server/main.lua has the
+--- guard in the handlers named. `which` is { alert = bool, down = bool }.
+local function ambulanceBox(which, override)
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+    local body = override or AMBULANCE_SRC:format(
+        which.alert and AMBULANCE_GUARD or '',
+        which.down and AMBULANCE_GUARD or '')
+    f.env.LoadResourceFile = function(resource)
+        if resource ~= 'sc-ambulance' then return nil end
+        return body
+    end
+    return table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+end
+
+t.test('THE sc-ambulance LINE: a box not running it is told so, not told it failed', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'sc-ambulance is not running',
+        'a box without sc-ambulance was not told its handlers are not a hole here')
+end)
+
+t.test('and a guard in BOTH handlers is confirmed', function()
+    local report = ambulanceBox({ alert = true, down = true })
+
+    t.contains(report, '(2 of 2)',
+        'both handlers guarded was not reported as covered: ' .. report)
+    t.isTrue(report:find('NO arena guard', 1, true) == nil,
+        'a fully guarded sc-ambulance was reported as a hole: ' .. report)
+end)
+
+t.test('and a guard in NEITHER names both handlers', function()
+    local report = ambulanceBox({ alert = false, down = false })
+
+    t.contains(report, 'NO arena guard',
+        'an unguarded sc-ambulance was not reported as a hole: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the report does not name the handler the operator has to edit')
+    t.contains(report, 'hospital:server:EMSDownAlert',
+        'the report does not name the person-down handler')
+end)
+
+t.test('AND A GUARD IN ONE DOES NOT COUNT FOR THE OTHER', function()
+    -- THE DEFECT THIS PINS, and it is a false PASS rather than a false fail,
+    -- which is the direction that costs somebody a quiet arena they think
+    -- they have. The two handlers sit ~400 characters apart. A window
+    -- measured only in characters -- 600 was the first number tried -- runs
+    -- out of the `ambulanceAlert` handler, through the comment between them,
+    -- and into the `EMSDownAlert` guard below. The line then reports an
+    -- ENTIRELY UNGUARDED `ambulanceAlert` as covered, on the strength of a
+    -- paste in a different handler. Three of sc-ambulance's live alert sites
+    -- funnel into that one, so the operator is told 2 of 2 over a wide-open
+    -- handler.
+    --
+    -- The window stops at the next RegisterNetEvent for this reason. Remove
+    -- that clamp and this test fails while the three around it still pass.
+    local report = ambulanceBox({ alert = false, down = true })
+
+    t.contains(report, 'NO arena guard',
+        'a guard in EMSDownAlert was counted for ambulanceAlert: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the unguarded handler was not the one named: ' .. report)
+    -- NOT A SEARCH FOR WORDS THE CODE NEVER SAYS. This used to look for
+    -- 'hospital:server:EMSDownAlert is a hole' -- a phrase no branch of
+    -- ambulanceGuardLine produces -- so it could never fail and pinned
+    -- nothing. The real claim is that the guarded handler is not in the list
+    -- of open ones, and the list is what the sentence names.
+    local named = report:match('NO arena guard in ([^,]+),')
+    t.isTrue(named ~= nil, 'the report did not name any open handler: ' .. report)
+    t.isTrue(named:find('EMSDownAlert', 1, true) == nil,
+        'the GUARDED handler was listed among the open ones: ' .. tostring(named))
+
+    -- AND THE OTHER WAY ROUND, so the clamp is not passing by reporting
+    -- everything unguarded. A guard in the FIRST handler must not be counted
+    -- for the second either.
+    local flipped = ambulanceBox({ alert = true, down = false })
+    t.contains(flipped, 'hospital:server:EMSDownAlert',
+        'a guard in ambulanceAlert was counted for EMSDownAlert: ' .. flipped)
+    t.isTrue(flipped:find('(2 of 2)', 1, true) == nil,
+        'a half-guarded sc-ambulance was reported as fully covered: ' .. flipped)
+end)
+
+t.test('AND A COMMENTED-OUT GUARD IS NOT A GUARD', function()
+    -- THE TRAP OUR OWN PASTE SETS, and a false PASS again -- the direction
+    -- that costs an operator a quiet arena they believe they have.
+    -- DISPATCH-ALERTS.md asks for a comment line NAMING this resource directly
+    -- above the two working lines, so a check that looked for the name
+    -- anywhere in the handler answers "guarded" for a handler holding the
+    -- comment and NOTHING ELSE. That is the state somebody debugging their
+    -- ambulance script leaves it in, and the state a bad merge leaves behind
+    -- when it takes the working lines and keeps the comment. They would read
+    -- 2 of 2 while every arena death paged every on-duty medic.
+    local commentOnly = '\n\t-- Crimson-Arena: no medical page for a fighter or a spectator in a round.\n\n'
+    t.contains(ambulanceBox({}, AMBULANCE_SRC:format(commentOnly, commentOnly)), 'NO arena guard',
+        'a handler holding only the comment from our own paste was counted as guarded')
+
+    -- And the guard commented out where it stands, which is what debugging
+    -- actually looks like.
+    local disabled = '\n\t-- local ok, quiet = pcall(function() return exports[\'Crimson-Arena\']:ShouldSuppressAlert(src) end)\n'
+        .. '\t-- if ok and quiet == true then return end\n\n'
+    t.contains(ambulanceBox({}, AMBULANCE_SRC:format(disabled, disabled)), 'NO arena guard',
+        'a guard commented out in place was counted as guarded')
+
+    -- THE CONTROL, and it is the one that stops this being fixed by reporting
+    -- everything unguarded: the real paste -- comment line and all -- still
+    -- reads as covered.
+    t.contains(ambulanceBox({ alert = true, down = true }), '(2 of 2)',
+        'the paste the document actually asks for stopped counting as a guard')
+end)
+
+t.test('and the word alone is not the guard -- it is the resource name or nothing', function()
+    -- WHAT THIS LINE PROMISES IS THAT A "GUARDED" READING CAN BE TRUSTED, and
+    -- a needle of 'Crimson' rather than 'Crimson-Arena' breaks exactly that
+    -- promise without breaking anything a looser test would notice. A server
+    -- called Crimson RP, a comment mentioning the crew, a stray word in an
+    -- unrelated block -- any of those would report a wide-open handler as
+    -- covered, and the operator would stop looking.
+    --
+    -- The handler below says the word and carries no guard. It must read as a
+    -- hole.
+    -- THE BAIT HAS TO BE EXECUTABLE. This fixture used to put the word in a
+    -- COMMENT -- and the moment trailing-comment stripping was added below,
+    -- that line stopped reaching the needle at all and this test went vacuous:
+    -- the needle could be loosened from 'Crimson%-Arena' to 'Crimson' with the
+    -- whole suite still green. A test that survives the change it guards is
+    -- worse than no test, because it reads as cover.
+    local said = AMBULANCE_SRC:format(
+        '\tlocal crew = "Crimson RP"   -- medics respond to arena calls like any other\n',
+        AMBULANCE_GUARD)
+
+    local report = ambulanceBox({}, said)
+
+    t.contains(report, 'NO arena guard',
+        'a handler that merely says "Crimson" was counted as guarded: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the handler that only mentions the word was not the one named: ' .. report)
+end)
+
+t.test('and a mention in the GAP BETWEEN handlers is not a guard in either', function()
+    -- The handler being judged ends at its own `end)`. The next registration
+    -- is further down still, and the gap between them holds ordinary file
+    -- comments -- sc-ambulance really does carry one there. A window that ran
+    -- to the next registration would read a mention sitting in that gap as a
+    -- guard inside the handler ABOVE it, and report a wide-open handler as
+    -- covered.
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        -- EXECUTABLE, NOT A COMMENT, and that is the whole test. A comment in
+        -- the gap is already thrown out by the line-stripping above, so a
+        -- fixture built from one exercises nothing and passes against a build
+        -- with no `end)` edge at all. Top-level code between two handlers is
+        -- ordinary -- caching an export is the obvious example -- and it is
+        -- what the edge actually has to exclude.
+        "local arenaExport = exports['Crimson-Arena']",
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+
+    t.contains(report, 'NO arena guard',
+        'a note in the gap between handlers was counted as a guard: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the handler above the gap was not reported as the open one: ' .. report)
+end)
+
+t.test('and a SECOND, unguarded registration of the same event is not hidden', function()
+    -- Nothing stops a resource registering the same net event twice -- a
+    -- compat shim, a second file, a merge that duplicated a block -- and both
+    -- handlers run. Judging only the first reports 2 of 2 with a wide-open
+    -- registration further down the file paging every medic.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+        '',
+        '-- a compat shim registered the same event a second time',
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+
+    t.isTrue(report:find('(2 of 2)', 1, true) == nil,
+        'a duplicate unguarded registration was hidden behind the guarded one: ' .. report)
+    t.contains(report, 'hospital:server:ambulanceAlert',
+        'the doubly-registered event was not named as open: ' .. report)
+
+    -- BOTH ORDERINGS, BECAUSE ONE OF THEM PINS NOTHING. With the guarded
+    -- registration first, folding the results with "the last one wins" gives
+    -- the same answer as "all of them must" -- so a fold broken that way
+    -- survives the case above. Put the UNGUARDED one first and the two
+    -- disagree.
+    local report2 = ambulanceBox({}, table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n')
+
+    t.isTrue(report2:find('(2 of 2)', 1, true) == nil,
+        'with the UNGUARDED registration first, a last-wins fold reported it covered: ' .. report2)
+    t.contains(report2, 'hospital:server:ambulanceAlert',
+        'the open first registration was not named: ' .. report2)
+end)
+
+t.test('and the STATE BAG form counts as a guard, because config.lua suggests it', function()
+    -- config.lua's FORM 2 hands out `if Player(src).state.crimsonArena then
+    -- return end`, which never says "Crimson-Arena" at all. Reporting that
+    -- working guard as a definite hole sends an operator to re-paste something
+    -- they already did right.
+    local guard = '\tif Player(src).state.crimsonArena then return end\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    t.contains(ambulanceBox({}, body), '(2 of 2)',
+        'the state-bag guard config.lua itself suggests was reported as a hole')
+end)
+
+t.test('THE sc-dispatch SWITCH: a COMMENTED-OUT example is not the live setting', function()
+    -- The dangerous direction again, and in the other half of the report. A
+    -- match run over the whole config file reads a commented-out example as
+    -- the setting -- so a build shipping the block commented out above the
+    -- real one reported the integration ON while the live line said false.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+
+    f.env.LoadResourceFile = function()
+        return '-- Config.Integrations = {\n'
+            .. '--     CrimsonArena = true,\n'
+            .. '-- }\n'
+            .. 'Config.Integrations = {\n    CrimsonArena = false,\n}\n'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'is FALSE',
+        'a commented-out example was read as the live setting, reporting OFF as ON')
+
+    -- The control: a live true is still read as true.
+    f.env.LoadResourceFile = function()
+        return '-- an example above the real thing\nConfig.Integrations = {\n    CrimsonArena = true,\n}\n'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'CrimsonArena = true',
+        'a genuinely enabled integration stopped being confirmed')
+end)
+
+t.test('and the NEXT-REGISTRATION clamp holds where a handler has no end) of its own', function()
+    -- The `\nend)` edge and the next-registration edge cover each other on an
+    -- ordinarily-formatted file, so a fixture with both pins NEITHER: delete
+    -- either and the suite stays green. This is the shape where only the
+    -- registration edge is left -- a handler passed a NAMED function, so it
+    -- closes on its own line with no `end)` anywhere in it. The first `\nend)`
+    -- below it belongs to the NEXT handler, which is guarded. Without the
+    -- registration clamp, the open handler borrows that guard and the report
+    -- says 2 of 2 over a handler with nothing in it at all.
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', ambulanceAlertHandler)",
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)",
+        '\tif ok and quiet == true then return end',
+        '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+    t.contains(report, 'NO arena guard',
+        'a handler with no body borrowed the guard from the handler below it: ' .. report)
+    local named = report:match('NO arena guard in ([^,]+),')
+    t.isTrue(named ~= nil and named:find('ambulanceAlert', 1, true) ~= nil,
+        'the empty handler was not the one named: ' .. tostring(named))
+    t.isTrue(named == nil or named:find('EMSDownAlert', 1, true) == nil,
+        'the genuinely guarded handler below was dragged in too: ' .. tostring(named))
+end)
+
+t.test('and a name that lives ONLY in a trailing comment is not a guard', function()
+    -- THE DISCRIMINATING CASE, and the first version of this test missed it by
+    -- asserting the wrong direction. It checked that a real guard carrying a
+    -- trailing note still counts -- which is true whether the strip cuts
+    -- trailing comments or only whole-line ones, so narrowing the strip
+    -- survived it. What the strip actually buys is THIS: a line of ordinary
+    -- code whose only mention of this resource is in the note after it.
+    local decoy = '\tlocal attempts = 0  -- Crimson-Arena: see DISPATCH-ALERTS.md\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        decoy .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        decoy .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    t.contains(ambulanceBox({}, body), 'NO arena guard',
+        'a name sitting only in a trailing comment was counted as a guard')
+
+    -- AND THE OTHER HALF, so the strip cannot be "fixed" by throwing the whole
+    -- line away: a real guard that carries its own trailing note still counts.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)  -- arena\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local kept = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "RegisterNetEvent('hospital:server:EMSDownAlert', function(street)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    t.contains(ambulanceBox({}, kept), '(2 of 2)',
+        'a guard carrying its own trailing comment was thrown away with the comment')
+end)
+
+t.test('and a handler registered with DOUBLE quotes is read too', function()
+    -- handlerPositions tries both quote styles. Every other fixture in this
+    -- file uses single quotes, so the double-quote half was never reached and
+    -- could be deleted with the suite still green. Lua treats the two alike
+    -- and other resources use both.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local body = table.concat({
+        'RegisterNetEvent("hospital:server:ambulanceAlert", function(text)',
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        'RegisterNetEvent("hospital:server:EMSDownAlert", function(street)',
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, street)',
+        'end)',
+    }, '\n') .. '\n'
+
+    t.contains(ambulanceBox({}, body), '(2 of 2)',
+        'a double-quoted registration was not recognised as a handler at all')
+end)
+
+t.test('and ONE unreadable handler is counted as one, not as all of them', function()
+    -- The unfound branch is worded to read correctly for one and for two, and
+    -- says so in the source. Nothing had ever put exactly one handler in that
+    -- state, so the count could be swapped for the total and stay green.
+    local guard = "\tlocal ok, quiet = pcall(function() return exports['Crimson-Arena']:ShouldSuppressAlert(src) end)\n"
+        .. '\tif ok and quiet == true then return end\n'
+    local body = table.concat({
+        "RegisterNetEvent('hospital:server:ambulanceAlert', function(text)",
+        '\tlocal src = source',
+        guard .. '\tTriggerClientEvent("hospital:client:ambulanceAlert", 1, nil, text)',
+        'end)',
+        '',
+        "AddEventHandler('hospital:server:EMSDownAlert', function(street) end)",
+    }, '\n') .. '\n'
+
+    local report = ambulanceBox({}, body)
+    t.contains(report, 'cannot find 1 of its expected alert handlers',
+        'one unreadable handler was not counted as one: ' .. report)
+    t.contains(report, 'hospital:server:EMSDownAlert',
+        'the one it could not read was not named: ' .. report)
+    t.isTrue(report:find('ambulanceAlert', 1, true) == nil,
+        'a handler it read perfectly well was named as unreadable: ' .. report)
+end)
+
+t.test('and it asks sc-ambulance for server/main.lua by name', function()
+    -- The stub used to ignore the filename entirely, so the path could be
+    -- changed to a file that does not exist and every test stayed green. A
+    -- report about a file nobody has is worse than no report.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+    local asked = {}
+    f.env.LoadResourceFile = function(resource, file)
+        asked[#asked + 1] = tostring(resource) .. '/' .. tostring(file)
+        return nil
+    end
+    f.env.ArenaDispatch.CompatReport()
+
+    local found = false
+    for _, path in ipairs(asked) do
+        if path == 'sc-ambulance/server/main.lua' then found = true end
+    end
+    t.isTrue(found, 'it never asked for sc-ambulance/server/main.lua; it asked for: '
+        .. table.concat(asked, ', '))
+end)
+
+t.test('and the sc-dispatch switch takes the FIRST live line, not the last', function()
+    -- Every fixture had exactly one live assignment, so dropping the break --
+    -- making the LAST match win -- changed no answer. A config with the real
+    -- setting above a commented block and a second example below it is
+    -- ordinary, and the two readings disagree there.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = false,\n}\n'
+            .. '\n-- a later example, for reference only\n'
+            .. 'local example = { CrimsonArena = true }\n'
+    end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'is FALSE',
+        'a later line won over the live setting above it')
+end)
+
+t.test('and a SHORT state-bag key cannot make an unguarded resource read as covered', function()
+    -- stateBagKey is whatever the operator types. A bare substring search for
+    -- a short one matches ordinary code: both of sc-ambulance's handlers open
+    -- with `local src = source`, so a key of "src" would have reported a
+    -- completely unguarded resource as 2 of 2 -- the one answer this line must
+    -- never give by accident. The match is anchored on "state." for that
+    -- reason.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+    f.env.Config.Dispatch.custom = f.env.Config.Dispatch.custom or {}
+    f.env.Config.Dispatch.custom.stateBagKey = 'src'
+    f.env.LoadResourceFile = function(resource)
+        if resource ~= 'sc-ambulance' then return nil end
+        return AMBULANCE_SRC:format('', '')
+    end
+
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+    t.contains(report, 'NO arena guard',
+        'a one-word stateBagKey matched ordinary code and reported a hole as covered: ' .. report)
+end)
+
+t.test('and a RENAMED key is still accepted where the guard really reads it', function()
+    -- The control for the test above, and the reason the key is accepted at
+    -- all: an operator who renamed the key and guarded their script with it
+    -- must not be told to re-paste something they already did right.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+    f.env.Config.Dispatch.custom = f.env.Config.Dispatch.custom or {}
+    f.env.Config.Dispatch.custom.stateBagKey = 'myArenaFlag'
+    f.env.LoadResourceFile = function(resource)
+        if resource ~= 'sc-ambulance' then return nil end
+        local guard = '\tif Player(src).state.myArenaFlag then return end\n'
+        return AMBULANCE_SRC:format(guard, guard)
+    end
+
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), '(2 of 2)',
+        'a guard reading the operator\'s own renamed key was reported as a hole')
+end)
+
+t.test('and a resource that is STOPPED is not treated as running', function()
+    -- The fixture only ever answered 'started' or 'missing', so relaxing the
+    -- check to `state == 'missing'` changed no answer here while treating
+    -- every other FiveM state -- stopped, starting, uninitialized -- as live.
+    -- Reading a stopped resource's files and reporting on them as though they
+    -- were loaded is a confident wrong answer.
+    local f = newCompatAndServer({})
+    f.env.GetResourceState = function(name)
+        if name == 'sc-ambulance' then return 'stopped' end
+        return 'missing'
+    end
+
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'),
+        'sc-ambulance is not running',
+        'a stopped sc-ambulance was treated as running')
+end)
+
+t.test('and a file it cannot read is reported as UNKNOWN, never guessed', function()
+    -- Same rule as the sc-dispatch line above: an operator told the guard is
+    -- in when it is not stops looking.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+
+    for _, answer in ipairs({ function() return nil end,
+                              function() return 42 end,
+                              function() return '' end,
+                              function() error('escrowed') end }) do
+        f.env.LoadResourceFile = answer
+        local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+        t.contains(report, 'server/main.lua could not be read from here',
+            'an unreadable sc-ambulance was answered with a guess: ' .. report)
+    end
+end)
+
+t.test('and a build whose handlers are written some other way is not judged', function()
+    -- A guess here is worse than an admission. If the handlers are not the
+    -- shape this check reads, it says so and sends the operator to the doc.
+    --
+    -- BOTH HANDLERS ARE IN THIS FIXTURE, AND THAT IS THE TEST. An earlier
+    -- version supplied only the first one, so it passed on the SECOND being
+    -- absent rather than on the first being the wrong shape -- and a build
+    -- that found handlers by bare event name, ignoring RegisterNetEvent
+    -- entirely, sailed through it. With both present and both written the
+    -- other way, a loose search finds two unguarded handlers and reports a
+    -- hole; only the strict search reports what is true, which is that it
+    -- cannot read this build.
+    local report = ambulanceBox({}, table.concat({
+        "AddEventHandler('hospital:server:ambulanceAlert', function() end)",
+        "AddEventHandler('hospital:server:EMSDownAlert', function() end)",
+    }, '\n') .. '\n')
+
+    t.contains(report, 'cannot find 2 of its expected alert handlers',
+        'a build with different handlers was judged anyway: ' .. report)
+    t.contains(report, 'hospital:server:EMSDownAlert',
+        'the report does not name every handler it could not read: ' .. report)
+    t.isTrue(report:find('NO arena guard', 1, true) == nil,
+        'a build this check cannot read was reported as unguarded: ' .. report)
+end)
+
+t.test('and the sc-ambulance line reaches the report on every path CompatReport has', function()
+    -- downStateLine and alertGuardLine are appended on the failure paths too,
+    -- for the same reason: they are about a paste into somebody else's file,
+    -- so a compat layer that failed says nothing about whether it happened.
+    -- A line that only appears when everything else worked is a line an
+    -- operator reads on the one box where it matters least.
+    local f = newCompatAndServer({ ['sc-ambulance'] = true })
+
+    f.env.ArenaCompat = nil
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'sc-ambulance',
+        'a build with no compat layer drops the sc-ambulance line')
+
+    f.env.ArenaCompat = { Report = function() error('compat exploded') end }
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'sc-ambulance',
+        'a compat layer that threw drops the sc-ambulance line')
+end)
+
+t.test('and the console prints exactly what the tablet shows', function()
+    -- THE POINT OF A COMPAT REPORT IS THAT EVERYONE IS LOOKING AT THE SAME
+    -- READING. An operator at the console and an admin on the tablet
+    -- comparing notes on two different reports is the confusion this whole
+    -- feature exists to end.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+
+    -- ONE FUNCTION, SO THEY CANNOT DISAGREE. This used to compare the
+    -- console command's output against the panel's; the command is gone and
+    -- `/arenaadmin dispatch` prints exactly what this returns, line for line,
+    -- which admingates_spec asserts at the console end. What is left to hold
+    -- here is that the panel's reading IS the compat layer's, unedited.
+    local fromPanel = f.env.ArenaDispatch.CompatReport()
+    local fromCompat = f.env.ArenaCompat.Report()
+
+    for index, line in ipairs(fromCompat) do
+        t.equals(fromPanel[index], line,
+            ('panel line %d is not the compat layer\'s line %d'):format(index, index))
+    end
+end)
+
+t.test('and it names the unwired scripts and the start-order fix an operator has to make by hand', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true, ['sc-ambulance'] = true })
+    local report = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.contains(report, 'sc-dispatch', 'the tablet report does not name sc-dispatch')
+    t.contains(report, 'sc-ambulance', 'the tablet report does not name sc-ambulance')
+    t.contains(report, 'Player(src).state.crimsonArena',
+        'the tablet report does not carry the line an operator is supposed to paste')
+    t.contains(report, 'ensure crimson_arena',
+        'the tablet report does not carry the server.cfg fix, which is the one thing '
+            .. 'that cannot be fixed from inside this resource')
+end)
+
+t.test('every line reaches the panel as a string', function()
+    -- The panel prints these straight out. Anything else is "table: 0x..."
+    -- on the screen of an operator who already believes their server is broken.
+    --
+    -- THE COMPAT LAYER IS MADE TO HAND BACK RUBBISH, and without that this
+    -- test proves nothing about CompatReport at all: the real layer already
+    -- answers with strings, so the loop below was checking the layer rather
+    -- than the coercion that exists in case it does not. The coercion could
+    -- be deleted and this stayed green.
+    --
+    -- Not a hypothetical shape either. ArenaCompat is a shared_script from a
+    -- file an operator can edit, replace or break, and this whole function
+    -- exists because it might be missing entirely.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.ArenaCompat = { Report = function() return { 1, {}, true, 'a real line' } end }
+
+    local lines = f.env.ArenaDispatch.CompatReport()
+    t.isTrue(#lines > 0, 'the report came back empty, so the loop below proves nothing')
+    for index, line in ipairs(lines) do
+        t.equals(type(line), 'string', ('compat report line %d reached the panel as a %s')
+            :format(index, type(line)))
+    end
+end)
+
+-- THE IN-GAME TOAST TESTS WENT WITH THE COMMAND THEY TESTED.
+--
+-- /arenadispatch answered an in-game admin with the whole report concatenated
+-- into one corner notification, and those tests pinned the short reply that
+-- replaced it -- a line saying "it went to the console, read it on the tablet
+-- under Tools". There is no in-game command left to reply to: an admin in the
+-- game opens the tablet and reads the report on the screen the toast used to
+-- point at. The reading itself is asserted above, and the tablet's route to
+-- it in tests/admintablet_spec.lua.
+
+t.test('a build with no compat layer answers the panel instead of crashing it', function()
+    -- shared/compat/dispatch.lua is a shared_script. Drop it from the
+    -- manifest, or have it die on load, and ArenaCompat is simply absent --
+    -- at which point an admin pressing Police & EMS must get a sentence, not
+    -- a tablet that stops responding.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.ArenaCompat = nil
+
+    local lines = f.env.ArenaDispatch.CompatReport()
+    t.equals(type(lines), 'table', 'the panel got no lines back at all')
+    t.isTrue(#lines > 0, 'the panel got an empty report with nothing explaining why')
+    t.equals(type(lines[1]), 'string', 'the explanation was not a string')
+end)
+
+t.test('a compat layer that throws is caught, and the panel is told what threw', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.ArenaCompat = { Report = function() error('a native this build does not have') end }
+
+    local lines = f.env.ArenaDispatch.CompatReport()
+    t.equals(type(lines), 'table', 'a throwing report took the panel down with it')
+    t.contains(table.concat(lines, '\n'), 'a native this build does not have',
+        'the panel was told the report failed but not what failed')
+end)
+
+t.test('a compat layer that hands back nothing says so rather than showing a blank screen', function()
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.ArenaCompat = { Report = function() return {} end }
+
+    local lines = f.env.ArenaDispatch.CompatReport()
+    t.isTrue(#lines > 0, 'an empty report reached the panel as an empty screen')
+    t.equals(type(lines[1]), 'string', 'the explanation was not a string')
+    t.contains(lines[1], 'empty', 'the panel was not told the report came back empty')
+
+    -- AND THE DOWN-STATE LINE IS STILL THERE. It is about this resource
+    -- rather than the ones around it, so a compat layer that said nothing
+    -- says nothing about whether that half is running -- and an operator
+    -- reading an empty report is exactly the one who needs to know.
+    t.contains(table.concat(lines, '\n'), 'down-state',
+        'a compat layer with nothing to say took the arena\'s own line down with it')
+end)
+
+
+os.exit(t.summary())

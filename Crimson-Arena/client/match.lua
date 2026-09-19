@@ -384,9 +384,24 @@ local function holdFriendlyFire(ped)
     -- pins that deliberately -- a spread naming an enemy AND a teammate is
     -- allowed through whole, because cancelling it would make hugging a
     -- teammate shotgun-proof. The teammate's half of that spread is zeroed
-    -- HERE or nowhere. The same goes for every damage class the two server
-    -- handlers never see: a flamethrower's burn raises no weaponDamageEvent
-    -- and no explosionEvent, and neither does running somebody over.
+    -- HERE or nowhere. Melee is the other half of the same argument, and it
+    -- is measured rather than reasoned: d697fa8 records three team rounds
+    -- where every loadout carried a bottle, a crowbar, a hatchet or a
+    -- candycane and the server produced exactly ONE friendly-fire refusal in
+    -- the whole session -- and it was a gun.
+    --
+    -- AND IT DOES NOT COVER EVERYTHING, WHICH IS NOT A GUESS EITHER. An
+    -- earlier version of this comment claimed it caught "every damage class
+    -- the two server handlers never see", naming a flamethrower's burn and
+    -- being run over. There is no evidence for that and there is evidence
+    -- against the same reasoning: cce70c9 measured a grenade killing a
+    -- team-mate on team deathmatch with friendly fire off, at a commit where
+    -- BOTH of these natives were live. config.lua says the same to the
+    -- operator -- "EXPLOSIONS ARE NOT REFUSED". So this covers weapon damage:
+    -- bullets, pellets and melee. Explosions it demonstrably does not, and
+    -- fire ticks and vehicle rams are the same shape of damage as an
+    -- explosion rather than the same shape as a bullet, so they are claimed
+    -- for nothing until somebody measures them.
     --
     -- SO THE SERVER IS THE AUTHORITY AND THIS IS THE COVER. The server is
     -- what an edited client cannot get past; this is what catches the cases

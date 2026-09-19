@@ -1177,6 +1177,37 @@ t.test('a free-for-all tells it nothing, or the whole round is harmless', functi
     t.isNil(f.team, 'a free-for-all put every fighter on the same side')
 end)
 
+t.test('THE CONFIG WHERE THIS IS THE ONLY THING LEFT: the server guard off', function()
+    -- Config.Match.crossfireGuard.enabled is an operator switch, and BOTH
+    -- server handlers open on it: weaponDamageEvent and explosionEvent each
+    -- `if not crossfireEnabled() then return end`. With it off the server
+    -- refuses nothing at all -- not crossfire, not friendly fire -- so this
+    -- client hold is the ONLY friendly-fire enforcement on the whole box.
+    --
+    -- NOTHING PINNED THAT. crossfire_spec drives the switch off, but only to
+    -- prove the server stops touching other people's damage, which is the
+    -- opposite assertion. The property that matters here is INDEPENDENCE: the
+    -- client must not consult that switch, because a client hold that
+    -- switched itself off with the server would leave a team round with no
+    -- friendly fire of any kind and nothing on either side saying so.
+    --
+    -- Today the client never reads crossfireGuard at all -- a grep over
+    -- Crimson-Arena/client returns nothing -- and this is what keeps that
+    -- true for whoever is tempted to "tidy" the two switches into one.
+    local f = newFixture(function(config)
+        config.Match = config.Match or {}
+        config.Match.crossfireGuard = config.Match.crossfireGuard or {}
+        config.Match.crossfireGuard.enabled = false
+    end)
+    f.enterLive()
+
+    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
+        'the server guard being off took the engine team with it')
+    t.isFalse(f.friendlyFire,
+        'the server guard being off turned the client hold off too -- a team round with the '
+            .. 'guard disabled now has NO friendly-fire enforcement anywhere')
+end)
+
 t.test('and a server that WANTS friendly fire is left alone too', function()
     local f = newFixture(function(config) config.Teams.friendlyFire = true end)
     f.enterLive()

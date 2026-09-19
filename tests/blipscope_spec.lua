@@ -1167,8 +1167,12 @@ t.test('a team round tells the engine which side this player is on', function()
 
     t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
         'the engine was never told the side, so it has no reason to refuse a teammate')
-    t.isFalse(f.friendlyFire, 'friendly fire was left switched on for the round')
-    t.isFalse(f.canAttackFriendly, 'the ped was still allowed to attack its own side')
+    -- NEITHER IS WRITTEN AT ALL NOW, which is a stronger claim than the
+    -- values these two lines used to check: there is no flag left for any
+    -- exit path to forget, and none this resource has to guess a stock
+    -- value for on the way out. See the collapsed test below for why.
+    t.isNil(f.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
+    t.isNil(f.canAttackFriendly, 'SetCanAttackFriendly is being written again')
 end)
 
 t.test('a free-for-all tells it nothing, or the whole round is harmless', function()
@@ -1190,15 +1194,14 @@ end)
 t.test('THE ONE THAT MATTERS: it does not follow the player out of the arena', function()
     local f = newFixture()
     f.enterLive()
-    t.isFalse(f.friendlyFire, 'the hold never started, so this proves nothing')
+    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
+        'the hold never started, so this proves nothing')
 
     f.fire('crimson_arena:client:exitArena', {})
 
     t.equals(f.team, -1, 'the player left the arena still on the arena\'s team')
-    t.isTrue(f.friendlyFire,
-        'friendly fire was left switched off for the rest of this player\'s session -- '
-            .. 'half the server cannot hurt them and nothing will ever put it back')
-    t.isTrue(f.canAttackFriendly, 'the ped was left unable to attack its own side')
+    t.isNil(f.friendlyFire, 'the exit wrote NetworkSetFriendlyFireOption')
+    t.isNil(f.canAttackFriendly, 'the exit wrote SetCanAttackFriendly')
 end)
 
 t.test('and the resource stopping mid-round puts it back as well', function()
@@ -1211,25 +1214,39 @@ t.test('and the resource stopping mid-round puts it back as well', function()
     f.fire('onResourceStop', 'crimson_arena')
 
     t.equals(f.team, -1, 'a restart mid-round left the player on the arena\'s team for good')
-    t.isTrue(f.friendlyFire, 'a restart mid-round left friendly fire off for good')
+    t.isNil(f.friendlyFire, 'a restart wrote NetworkSetFriendlyFireOption')
 end)
 
-t.test('a respawn puts the hold on the ped the player comes back on', function()
-    -- SET_CAN_ATTACK_FRIENDLY IS PER-PED and a resurrect hands back a new
-    -- one, so the half of the hold that stops THIS client's own bullets
-    -- landing on a teammate was dropped by the first death of the round and
-    -- never re-applied. Measured before the fix: the entire call trail was
-    -- [ped=1001 off], on a player who had been standing on ped 1002 since
-    -- their first respawn -- and the exit then released 1002, a ped that had
-    -- never carried it.
+
+
+t.test('THE HOLD IS ON THE PLAYER NOW, so no ped can drop it', function()
+    -- FOUR TESTS STOOD HERE AND ARE GONE, and what they measured is gone with
+    -- them rather than unmeasured. Each drove one way a player gets a NEW PED
+    -- mid-round -- a respawn, a handover this file does not listen for, a
+    -- revive during the countdown -- and asserted that SetCanAttackFriendly
+    -- had been re-applied to it, because that native is a property of the PED
+    -- and a resurrect hands back a fresh one with the flag cleared.
     --
-    -- The player-level halves survive a respawn (SetPlayerTeam and
-    -- NetworkSetFriendlyFireOption are per-player), which is why this is a
-    -- narrow hole rather than "friendly fire came back on" -- and why the
-    -- flags alone could not see it.
+    -- THAT NATIVE IS NOT WRITTEN ANY MORE. Together with
+    -- NetworkSetFriendlyFireOption it stopped a fighter damaging ANYBODY:
+    -- SetCanAttackFriendly answers a RELATIONSHIP question, and GTA's single
+    -- PLAYER group makes every player friendly to every other, so refusing
+    -- "friendlies" refused every player -- the team index set beside it
+    -- changed nothing. The owner's report was "i can't shoot my enemies and
+    -- they can't shoot me". Friendly fire is enforced by the SERVER, in
+    -- weaponDamageEvent off Arena.CanDamage, which crossfire_spec drives in
+    -- both directions.
+    --
+    -- SO THE PER-PED QUESTION HAS NO SUBJECT LEFT. The one setting still
+    -- written is the network team, which belongs to the PLAYER and survives
+    -- every respawn, model change and handover on its own. This test is the
+    -- four of them collapsed into the claim that is actually left: drive the
+    -- same ped changes, and the team is still right afterwards while neither
+    -- per-ped native is ever touched.
     local f = newFixture()
     f.enterLive()
     local entered = f.ped
+    local side = f.env.Arena.TeamIndex('crimson')
 
     f.fire('crimson_arena:client:respawn', {
         spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
@@ -1239,41 +1256,17 @@ t.test('a respawn puts the hold on the ped the player comes back on', function()
 
     t.isTrue(f.ped ~= entered,
         'the fixture did not give the player a new ped, so this test measures nothing')
+    t.equals(f.team, side, 'a respawn moved the player off their side')
+    t.isNil(f.canAttackFriendly, 'a respawn wrote SetCanAttackFriendly again')
+    t.isNil(f.friendlyFire, 'a respawn wrote NetworkSetFriendlyFireOption again')
 
-    local held = nil
-    for _, call in ipairs(f.friendlyCalls) do
-        if call.ped == f.ped and call.on == false then held = call end
-    end
-    t.isTrue(held ~= nil,
-        ('the ped the player respawned on (%s) was never told to refuse its own side -- '
-            .. 'trail: %s'):format(tostring(f.ped), listedCalls(f.friendlyCalls)))
-end)
-
-t.test('and the exit releases the ped that is actually carrying it', function()
-    -- The other end of the same defect: releaseFriendlyFire reads
-    -- PlayerPedId() at exit, so it always aimed at the CURRENT ped -- which
-    -- was the right ped to aim at only if the hold had followed the player
-    -- there. It had not.
-    local f = newFixture()
-    f.enterLive()
-    f.fire('crimson_arena:client:respawn', {
-        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
-        scatterRadius = 0,
-    })
-    for _ = 1, 6 do f.step() end
-
-    local onExit = f.ped
+    -- AND THE EXIT STILL PUTS THE TEAM BACK, which is the half that always
+    -- mattered: it is the one of the three with a real getter, so it is the
+    -- one restored to what was READ rather than to a guessed constant.
     f.fire('crimson_arena:client:exitArena', {})
-
-    local heldIt, releasedIt = false, false
-    for _, call in ipairs(f.friendlyCalls) do
-        if call.ped == onExit and call.on == false then heldIt = true end
-        if call.ped == onExit and call.on == true then releasedIt = true end
-    end
-    t.isTrue(releasedIt, 'the exit released some other ped than the one the player is on')
-    t.isTrue(heldIt,
-        ('the exit released a ped that never held the setting -- trail: %s')
-            :format(listedCalls(f.friendlyCalls)))
+    t.equals(f.team, -1, 'the player left the arena still on the arena\'s team')
+    t.isNil(f.canAttackFriendly, 'the exit wrote SetCanAttackFriendly')
+    t.isNil(f.friendlyFire, 'the exit wrote NetworkSetFriendlyFireOption')
 end)
 
 t.test('and leaving puts back the network team the player was already on', function()
@@ -1306,71 +1299,7 @@ t.test('and leaving puts back the network team the player was already on', funct
     t.equals(f.engineTeam, 7, 'and the engine still has them on the arena\'s side')
 end)
 
-t.test('and the hold follows the body however it changed hands', function()
-    -- THE RESPAWN HANDLER IS NOT THE ONLY THING THAT HANDS OUT A NEW PED.
-    -- ArenaDispatch.ClearDeadState resurrects on elimination, and the SERVER
-    -- schedules a medical revive two seconds after every respawn which
-    -- arrives as some OTHER resource's event and reaches no handler in this
-    -- file at all. Re-applying the hold at each known site is a list that
-    -- goes stale; the per-frame loop asking whether the ped still holds it
-    -- cannot.
-    --
-    -- Modelled here as the bluntest version of the problem: the body simply
-    -- changes under the client, with nothing this file listens for.
-    local f = newFixture()
-    f.enterLive()
-    local entered = f.ped
 
-    f.ped = f.ped + 5
-    for _ = 1, 3 do f.step() end
-
-    local held = false
-    for _, call in ipairs(f.friendlyCalls) do
-        if call.ped == f.ped and call.on == false then held = true end
-    end
-    t.isTrue(f.ped ~= entered, 'the fixture never changed the ped, so this measures nothing')
-    t.isTrue(held,
-        ('a ped handed to the player by something this file does not listen for was left able '
-            .. 'to shoot its own side -- trail: %s'):format(listedCalls(f.friendlyCalls)))
-end)
-
-t.test('and a death during the COUNTDOWN does not cost a frame of it', function()
-    -- handleDeath's countdown branch resurrects on the spot -- there is no
-    -- round for the death to have happened in -- and that resurrect hands
-    -- back a new ped like any other. The per-frame loop would catch it, but
-    -- not until the NEXT frame, and a frame with the hold dropped is a frame
-    -- the engine will let a teammate's bullet through. So this one is
-    -- re-applied on the spot, and this test is what says the loop is not
-    -- quietly doing the work for it.
-    local f = newFixture()
-
-    -- INTO THE ARENA BUT NOT LIVE: enterArena without matchLive, which is
-    -- exactly the window handleDeath's first branch exists for.
-    f.fire('crimson_arena:client:enterArena', {
-        matchId = 'match-1',
-        modeKey = 'tdm',
-        teamKey = 'crimson',
-        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
-        scatterRadius = 0.0,
-        freezeSeconds = 0,
-        radar = false,
-        loadout = { weapons = {}, health = 200, armor = 0 },
-    })
-    local entered = f.ped
-
-    f.dead = true
-    f.step()
-
-    t.isTrue(f.ped ~= entered, 'the countdown revive never handed back a new ped')
-
-    local held = false
-    for _, call in ipairs(f.friendlyCalls) do
-        if call.ped == f.ped and call.on == false then held = true end
-    end
-    t.isTrue(held,
-        ('the ped the countdown revive handed back was left able to shoot its own side for a '
-            .. 'frame -- trail: %s'):format(listedCalls(f.friendlyCalls)))
-end)
 
 t.test('and it is not re-applied every frame to a ped that already holds it', function()
     -- The loop is per-frame, so a re-hold that did not check would call two
@@ -1393,12 +1322,13 @@ t.test('and entering a free-for-all straight from a team round puts it back', fu
     -- side's engine team, friendly fire off, for the whole of it.
     local f = newFixture()
     f.enterLive()
-    t.isFalse(f.friendlyFire, 'the hold never started, so this proves nothing')
+    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
+        'the hold never started, so this proves nothing')
 
     f.enterLive({ modeKey = 'ffa', teamKey = nil })
 
-    t.isTrue(f.friendlyFire, 'a free-for-all inherited the team round\'s friendly-fire hold')
-    t.isTrue(f.canAttackFriendly, 'and its ped was left unable to attack its own side')
+    t.isNil(f.friendlyFire, 'a free-for-all wrote NetworkSetFriendlyFireOption')
+    t.isNil(f.canAttackFriendly, 'a free-for-all wrote SetCanAttackFriendly')
     t.equals(f.team, -1, 'and the player was left on the previous round\'s engine team')
 end)
 
@@ -1407,13 +1337,18 @@ t.test('and so does a server that wants friendly fire, mid-session', function()
     -- Config.Teams.friendlyFire and the client re-entering.
     local f = newFixture()
     f.enterLive()
-    t.isFalse(f.friendlyFire, 'the hold never started')
+    t.equals(f.team, f.env.Arena.TeamIndex('crimson'), 'the hold never started')
 
     f.env.Config.Teams.friendlyFire = true
     f.enterLive()
 
-    t.isTrue(f.friendlyFire,
+    -- THE TEAM IS THE OBSERVABLE NOW. holdFriendlyFire releases when the
+    -- operator has asked for friendly fire, and releasing is what puts the
+    -- network team back -- so a round entered under that setting must leave
+    -- the player off the arena's side, not on it.
+    t.equals(f.team, -1,
         'a round the operator wants friendly fire in kept the previous hold')
+    t.isNil(f.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
 end)
 
 t.test('THE CAUSE: the outline mask is drawn with a group ped shaders implement', function()

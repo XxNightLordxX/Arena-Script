@@ -600,8 +600,22 @@ t.test('a team round puts the player on their side and turns friendly fire off',
 
     t.equals(client.engineTeam, client.Arena.TeamIndex('crimson'),
         'the engine was never told which side this fighter is on')
-    t.isFalse(client.friendlyFire, 'friendly fire was left on in a mode whose rule is that it is off')
-    t.isFalse(client.canAttackFriendly)
+    -- NEITHER NATIVE IS WRITTEN ANY MORE, and asserting that is a STRONGER
+    -- guard than the two lines that used to stand here, not a weaker one.
+    -- They used to be checked for the values the hold put in them; now the
+    -- claim is that this resource never touches them at all, in either
+    -- direction, so there is nothing left for any exit path to forget.
+    --
+    -- WHY THEY WENT: between them they stopped a fighter damaging ANYBODY.
+    -- SetCanAttackFriendly answers a RELATIONSHIP question, and GTA's one
+    -- PLAYER group makes every player friendly to every other, so refusing
+    -- "friendlies" refused every player regardless of the team index set
+    -- alongside it. The owner's report was "i can't shoot my enemies and they
+    -- can't shoot me". Friendly fire is enforced by the SERVER, in
+    -- weaponDamageEvent off Arena.CanDamage -- crossfire_spec drives both
+    -- directions of it -- so nothing was lost.
+    t.isNil(client.friendlyFire, 'this resource is writing NetworkSetFriendlyFireOption again')
+    t.isNil(client.canAttackFriendly, 'this resource is writing SetCanAttackFriendly again')
 end)
 
 t.test('and walking out of the round puts all three back', function()
@@ -615,8 +629,14 @@ t.test('and walking out of the round puts all three back', function()
     client.exit()
 
     t.equals(client.engineTeam, -1, 'the arena kept this player on its own team after the round')
-    t.isTrue(client.friendlyFire, 'friendly fire stayed off after the round that turned it off')
-    t.isTrue(client.canAttackFriendly)
+    -- A SETTING NEVER WRITTEN IS A SETTING NEVER LEFT BEHIND. This is the
+    -- half of the header's promise that used to need a release at all: both
+    -- of these lack a getter, so the release could only ever hand back a
+    -- GUESS at what the operator had -- the exact thing
+    -- client/dispatch.lua:147 forbids. Now they are untouched going in, so
+    -- there is nothing to hand back coming out.
+    t.isNil(client.friendlyFire, 'the exit path is writing NetworkSetFriendlyFireOption')
+    t.isNil(client.canAttackFriendly, 'the exit path is writing SetCanAttackFriendly')
 end)
 
 t.test('and so does the resource going down under them', function()
@@ -625,7 +645,7 @@ t.test('and so does the resource going down under them', function()
     client.fire('onResourceStop', 'crimson_arena')
 
     t.equals(client.engineTeam, -1, 'a restart left the arena team on the player')
-    t.isTrue(client.friendlyFire, 'a restart left friendly fire off')
+    t.isNil(client.friendlyFire, 'a restart is writing NetworkSetFriendlyFireOption')
 end)
 
 t.test('a free-for-all never touches either of them, so it has nothing to leave behind', function()
@@ -634,6 +654,7 @@ t.test('a free-for-all never touches either of them, so it has nothing to leave 
 
     t.isNil(client.engineTeam, 'a mode with no sides put the player on one')
     t.isNil(client.friendlyFire, 'a mode with no sides had an opinion about friendly fire')
+    t.isNil(client.canAttackFriendly, 'a mode with no sides touched SetCanAttackFriendly')
 end)
 
 t.test('a second round on the other side starts from the engine default, not from the first', function()

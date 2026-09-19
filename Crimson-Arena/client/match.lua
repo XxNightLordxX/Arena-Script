@@ -269,8 +269,13 @@ local friendlyFireHeld = false
 
 local priorTeam = nil
 
-local heldPed = nil
-
+--- THE TEAM THIS FILE PUT THE PLAYER ON, so the per-frame loop can tell
+--- whether somebody else has moved them off it.
+---
+--- `heldPed` STOOD HERE AND IS GONE. It existed so the loop could notice the
+--- player coming back on a new ped and re-apply SetCanAttackFriendly, which
+--- is a property of the ped. That native is not written any more and the team
+--- is a property of the PLAYER, so there was nothing left for it to answer.
 local heldTeam = nil
 
 local releaseFriendlyFire
@@ -292,11 +297,40 @@ local function holdFriendlyFire(ped)
 
     if not friendlyFireHeld then priorTeam = GetPlayerTeam(PlayerId()) end
 
+    -- THE TEAM, AND NOTHING ELSE. This used to also write
+    -- NetworkSetFriendlyFireOption(false) and SetCanAttackFriendly(ped, false,
+    -- false), and BOTH ARE GONE because between them they stopped a fighter
+    -- damaging ANYBODY -- their own side and the other side alike.
+    --
+    -- THE REPORT: "i can't shoot my enemies and they can't shoot me".
+    --
+    -- WHY THE TEAM INDEX DID NOT SAVE IT. GTA's default relationship has one
+    -- PLAYER group and every player is friendly to it, which is a different
+    -- question from the network team this sets. `SetCanAttackFriendly(ped,
+    -- false, ...)` answers the relationship question, not the team one, so it
+    -- told this ped it may not shoot PLAYERS -- full stop -- and the distinct
+    -- team index underneath it changed nothing.
+    --
+    -- NOTHING IS LOST BY REMOVING THEM, because neither was ever what enforced
+    -- friendly fire. The server does that, in weaponDamageEvent, off
+    -- Arena.CanDamage, and it is the only place a shot can actually be
+    -- refused: crossfire_spec drives both directions of it -- a teammate's
+    -- shot refused, an enemy's allowed, and a spread that catches both still
+    -- landing on the enemy. A client-side hold on top of an authoritative
+    -- server check was belt and braces; it turned out to be a blindfold.
+    --
+    -- AND IT MENDS A SECOND DEFECT ON THE WAY OUT. Neither native has a
+    -- getter, so the release could only ever hand back a GUESS at what the
+    -- server had before -- which is the one thing client/dispatch.lua:147
+    -- forbids in capitals, and it was undoing operators' own settings for the
+    -- rest of a player's session. A setting this resource never writes is one
+    -- it never has to guess at.
+    --
+    -- SetPlayerTeam STAYS: GetPlayerTeam is a real getter, so it is restored
+    -- to what was actually read rather than to a constant, and the team is
+    -- what colours teammates on the radar.
     SetPlayerTeam(PlayerId(), index)
-    NetworkSetFriendlyFireOption(false)
-    SetCanAttackFriendly(ped, false, false)
     friendlyFireHeld = true
-    heldPed = ped
     heldTeam = index
 end
 
@@ -304,12 +338,13 @@ releaseFriendlyFire = function(ped)
     if not friendlyFireHeld then return end
     friendlyFireHeld = false
     heldTeam = nil
-    heldPed = nil
 
+    -- RESTORED TO WHAT WAS READ, and it is the only one of the three this
+    -- ever had a reading for. The other two are not set any more and so are
+    -- not unset -- see holdFriendlyFire. `ped` is still taken so the two
+    -- halves keep the same shape and callers do not have to change.
     SetPlayerTeam(PlayerId(), priorTeam or -1)
     priorTeam = nil
-    NetworkSetFriendlyFireOption(true)
-    SetCanAttackFriendly(ped, true, true)
 end
 
 local function restoreOwnLoadout(ped)
@@ -1135,10 +1170,23 @@ local function startArenaThread()
                 if arenaVitals.armour then SetPedArmour(ped, arenaVitals.armour) end
             end
 
+            -- THE TEAM ONLY, AND SO NO LONGER "DID THE PED CHANGE".
+            --
+            -- This used to re-apply the hold whenever the player came back on
+            -- a NEW PED, because SetCanAttackFriendly is a property of the ped
+            -- and a respawn hands back a fresh one with the flag cleared. That
+            -- native is not written any more -- see holdFriendlyFire -- and
+            -- the one setting that is left, the network team, belongs to the
+            -- PLAYER and survives every respawn, model change and handover on
+            -- its own. So the ped is no longer a reason to re-assert anything,
+            -- and `heldPed` went with the check that read it.
+            --
+            -- THE TEAM CHECK STAYS, and it is not about this file: nothing
+            -- stops another resource calling SetPlayerTeam mid-round, and a
+            -- fighter quietly moved off their side stops being outlined with
+            -- them. Re-asserted the moment it disagrees.
             local current = PlayerPedId()
-            if friendlyFireHeld
-                and (current ~= heldPed or GetPlayerTeam(PlayerId()) ~= heldTeam)
-            then
+            if friendlyFireHeld and GetPlayerTeam(PlayerId()) ~= heldTeam then
                 holdFriendlyFire(current)
             end
 

@@ -2236,7 +2236,14 @@ t.test('a team match puts the player on their side and turns friendly fire off',
     local f = outlinedTeamMatch()
     t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
         'the engine was never told which side this fighter is on')
-    t.isFalse(f.friendlyFire, 'and friendly fire was left on in a mode whose rule is that it is off')
+    -- NEITHER NATIVE IS WRITTEN ANY MORE, so the claim is that this resource
+    -- never touches them at all. Together they stopped a fighter damaging
+    -- ANYBODY -- SetCanAttackFriendly answers a RELATIONSHIP question, and
+    -- GTA's single PLAYER group makes every player friendly to every other,
+    -- so refusing "friendlies" refused every player and the team index beside
+    -- it changed nothing. Friendly fire is enforced by the SERVER, in
+    -- weaponDamageEvent off Arena.CanDamage; crossfire_spec drives both ways.
+    t.isNil(f.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
 end)
 
 t.test('and another resource moving the player off it does not switch friendly fire back on', function()
@@ -2255,14 +2262,16 @@ t.test('and another resource moving the player off it does not switch friendly f
     local f = outlinedTeamMatch()
     local ours = f.team
 
-    -- SOMEBODY ELSE'S RESOURCE, mid-round.
+    -- SOMEBODY ELSE'S RESOURCE, mid-round. Only the TEAM is seeded now: the
+    -- friendly-fire flag is not a setting this resource writes any more, so
+    -- another resource owning it is not this file's business. The team is,
+    -- and putting it back is the whole of what the re-assert is for.
     f.team = 7
-    f.friendlyFire = true
 
     f.step()
 
     t.equals(f.team, ours, 'the arena never put its own side back')
-    t.isFalse(f.friendlyFire, 'and friendly fire stayed on for the rest of the round')
+    t.isNil(f.friendlyFire, 'the re-assert is writing NetworkSetFriendlyFireOption again')
 end)
 
 t.test('and the hold is not re-written every frame while nothing has touched it', function()

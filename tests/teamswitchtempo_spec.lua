@@ -728,7 +728,14 @@ t.test('the client fights under the side the server sent it, and two sides are n
     local crimson = client.engineTeam
     t.equals(crimson, client.Arena.TeamIndex('crimson'),
         'the engine was told a side that is not the one the server sent')
-    t.isFalse(client.friendlyFire, 'friendly fire was left on in a mode whose rule is that it is off')
+    -- NEITHER NATIVE IS WRITTEN ANY MORE, so the claim is that this resource
+    -- never touches them at all. Together they stopped a fighter damaging
+    -- ANYBODY -- SetCanAttackFriendly answers a RELATIONSHIP question, and
+    -- GTA's single PLAYER group makes every player friendly to every other,
+    -- so refusing "friendlies" refused every player and the team index beside
+    -- it changed nothing. Friendly fire is enforced by the SERVER, in
+    -- weaponDamageEvent off Arena.CanDamage; crossfire_spec drives both ways.
+    t.isNil(client.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
 
     -- The next round, on the other side. Nothing about the first may follow
     -- this player into it -- a cached side here is the client half of the

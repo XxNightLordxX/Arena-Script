@@ -61,12 +61,23 @@
         the other half of that sentence, and wentHome puts it on every end
         path.
 
-    EIGHT MUTATIONS ARE KILLED BY THIS FILE, and they are listed so the next
+    AND A THIRD ASSERTION WAS WRITTEN AND THROWN AWAY, which is worth
+    recording too. The ordering guard at the foot of this file started as a
+    driven test -- make a teardown native throw, then check the team came
+    back -- and it passed with the two lines in EITHER order, because the
+    entry handler parks before it builds anything and clearArenaScenery then
+    returns without calling a single native. A test that cannot fail is
+    worse than no test, so it was replaced with one that reads the source.
+    DO NOT "improve" it back into a driven one without first making the
+    fixture build a prop.
+
+    TEN MUTATIONS ARE KILLED BY THIS FILE, and they are listed so the next
     person can re-run them: release hands back a hardcoded -1; release loses
     its not-held guard; being eliminated drops the hold mid-round;
     Arena.TeamIndex collapses both sides onto one number; Destroy stops
     sending exitArena; sendExitArena stops sending; sendPlayerHome always
-    refuses; leaveArena forgets to release.
+    refuses; leaveArena forgets to release; leaveArena releases UNDER the
+    prop teardown instead of ahead of it; and the release line is deleted.
 ]]
 
 local t = dofile('testkit.lua')
@@ -893,6 +904,50 @@ t.test('an eliminated fighter is still held while the round runs, and let go whe
 
     t.equals(client.engineTeam, 7, 'an eliminated fighter was left on the arena team after the round ended')
     t.isTrue(client.friendlyFire, 'an eliminated fighter was left with friendly fire off after the round ended')
+end)
+
+t.test('THE RELEASE IS THE FIRST THING leaveArena DOES, ahead of the prop teardown', function()
+    -- ASSERTED AGAINST THE SOURCE, and that is deliberate rather than lazy.
+    --
+    -- WHAT THE PROPERTY IS. The engine team and NetworkSetFriendlyFireOption
+    -- are the only two things in that whole teardown that outlive the
+    -- session -- props, blips, outlines and the camera are all put right by
+    -- a respawn or a reconnect on their own. So they must not sit behind
+    -- anything that can throw. clearArenaScenery is seven natives deep --
+    -- GetGamePool, DoesEntityExist, GetEntityModel, GetEntityCoords,
+    -- SetEntityAsMissionEntity, DeleteObject and ArenaDebugPrint, across
+    -- removeArenaProps and the stray sweep -- and any one of them failing on
+    -- a build that lacks it, or on an entity that went away between the
+    -- existence check and the delete, used to take the release down with it.
+    -- Worst on the path with no second chance: leaveArena is also the
+    -- onResourceStop handler, where there is no later round to put it right.
+    --
+    -- WHY NOT DRIVE IT. That was tried first and it was a ZOMBIE. The entry
+    -- handler in this fixture parks before it builds anything, so arenaProps
+    -- is empty and builtArena is nil, and clearArenaScenery quietly returns
+    -- without calling a single native -- there is nothing to make fail.
+    -- Making a teardown native throw and then asserting the team came back
+    -- passed with the two lines in EITHER order, which is worse than no test
+    -- at all. Measured, not supposed: the mutation was run.
+    --
+    -- So the ordering is pinned where the ordering lives. Swap the two lines
+    -- in client/match.lua and this goes red, which is the whole job.
+    local source = assert(io.open('../Crimson-Arena/client/match.lua', 'r'))
+    local text = source:read('a')
+    source:close()
+
+    local body = text:match('local function leaveArena%(returnCoords%)(.-)\nend\n')
+    t.isTrue(body ~= nil, 'leaveArena is not where this test thinks it is -- find it and fix this test')
+
+    local release = body:find('releaseFriendlyFire%(PlayerPedId%(%)%)')
+    local scenery = body:find('clearArenaScenery%(%)')
+
+    t.isTrue(release ~= nil, 'leaveArena no longer releases the friendly-fire hold at all')
+    t.isTrue(scenery ~= nil, 'leaveArena no longer tears the scenery down -- find it and fix this test')
+    t.isTrue(release < scenery,
+        'the friendly-fire release is back UNDER the prop teardown: a native failing in there now leaves '
+        .. 'the arena team and friendly fire set on the player until they reconnect, and on the resource-stop '
+        .. 'path there is no second chance at it')
 end)
 
 os.exit(t.summary())

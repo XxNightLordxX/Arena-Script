@@ -2539,9 +2539,35 @@ end
 --- handler that does not finish.
 --- @param returnCoords table|nil
 local function leaveArena(returnCoords)
-    clearArenaScenery()
-
+    -- FIRST, AHEAD OF EVERYTHING INCLUDING THE SCENERY, and the order is
+    -- the point rather than tidiness.
+    --
+    -- THIS IS THE ONLY THING IN THE WHOLE TEARDOWN THAT OUTLIVES THE
+    -- SESSION. Every other line below puts back something a respawn, a
+    -- reconnect or another resource would fix anyway -- props, blips,
+    -- outlines, a camera. The engine team and NetworkSetFriendlyFireOption
+    -- are settings on the PLAYER, nothing else on a server writes them and
+    -- nothing else will ever put them back, so a leave that does not reach
+    -- this line leaves them set until the player reconnects.
+    --
+    -- AND IT USED TO SIT BEHIND SEVEN NATIVES. clearArenaScenery reaches
+    -- GetGamePool, DoesEntityExist, GetEntityModel, GetEntityCoords,
+    -- SetEntityAsMissionEntity, DeleteObject and ArenaDebugPrint, across
+    -- removeArenaProps and the stray sweep. One of those failing -- a build
+    -- without the pool native, an entity that went away between the
+    -- existence check and the delete -- took the release down with it.
+    --
+    -- WHICH MATTERS MOST ON THE PATH WITH NO SECOND CHANCE. leaveArena is
+    -- also the onResourceStop handler. A round ending has other ways to
+    -- come back round; a resource going down has none, and an error in the
+    -- prop teardown there is permanent.
+    --
+    -- FREE TO MOVE, because it reads and writes nothing this function
+    -- touches: the player's team and one network option, neither of which
+    -- any line below is looking at. DO NOT put it back under the scenery.
     releaseFriendlyFire(PlayerPedId())
+
+    clearArenaScenery()
 
     if not currentMatch then return end
 

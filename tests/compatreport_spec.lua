@@ -59,8 +59,12 @@ local function newReport(opts)
     local fixture = { env = env, compat = env.ArenaCompat, console = console }
 
     --- The report as one block of text, which is how it is read.
+    ---
+    --- `opts.integrations` is what the SERVER realm establishes and this
+    --- shared file cannot see for itself -- see statusOf. Absent by default,
+    --- which is every pre-existing test in this file.
     function fixture.text()
-        return table.concat(fixture.compat.Report(), '\n')
+        return table.concat(fixture.compat.Report(opts.integrations), '\n')
     end
 
     return fixture
@@ -105,6 +109,95 @@ t.test('a resource with nothing reaching it is called out as NOT muted', functio
     local f = newReport({ running = { ['sc-dispatch'] = true } })
 
     t.contains(f.text(), 'NOT muted', 'a script nothing reaches was not called out')
+end)
+
+t.test('and one that mutes ITSELF for us is not called out either', function()
+    -- REPORTED OFF A LIVE SERVER, and the report contradicted itself inside
+    -- twenty lines. sc-dispatch ships its own arena integration -- a switch
+    -- in ITS config that makes it ask this resource before paging anybody --
+    -- and server/dispatch.lua reads that switch and says so in prose, at the
+    -- foot of this very report: "no arena shot, death or help-call is paged".
+    --
+    -- The TABLE at the top said, of the same resource, in the same breath:
+    --     sc-dispatch          police+EMS  NOT muted -- needs the line below
+    --
+    -- statusOf knew two ways an alert can be stopped -- a mute this resource
+    -- carries, and a disableExports call -- and had never heard of the third,
+    -- the other script asking us. So the operator was told to go and paste a
+    -- guard into a script that was already guarded.
+    local f = newReport({
+        running = { ['sc-dispatch'] = true },
+        integrations = {
+            ['sc-dispatch'] = { muted = true, note = 'muted by its own integration -- Integrations.CrimsonArena = true' },
+        },
+    })
+    local said = f.text()
+
+    t.contains(said, 'muted by its own integration',
+        'a resource that mutes itself for us was not credited with it')
+    t.notContains(said, 'NOT muted',
+        'a resource that mutes itself for us was still called out as unmuted')
+end)
+
+t.test('AND THAT ROW NO LONGER DRAGS THE REST OF THE REPORT DOWN WITH IT', function()
+    -- THE EXPENSIVE HALF OF THE SAME BUG. A row with no status raises
+    -- `unhandled`, and `unhandled` is what turns OFF the "something is wired"
+    -- verdict. So one wrong row did not just print one wrong line: it also
+    -- printed the whole paste-this-into-your-dispatch block, and put "nothing
+    -- here is confirmed wired" on the isolation line. Three pieces of wrong
+    -- advice from one wrong answer.
+    local f = newReport({
+        running = { ['sc-dispatch'] = true },
+        integrations = {
+            ['sc-dispatch'] = { muted = true, note = 'muted by its own integration' },
+        },
+    })
+    local said = f.text()
+
+    t.notContains(said, 'Paste at the top of whatever sends the alert',
+        'an operator whose dispatch already asks us was still told to go and paste a guard into it')
+    t.notContains(said, 'nothing here is confirmed wired',
+        'the isolation line still doubted an integration this report had confirmed')
+end)
+
+t.test('and an integration that is OFF, or that could not be read, is NOT credited', function()
+    -- THE SAFE DIRECTION, pinned so the fix above cannot be widened into
+    -- "assume it is fine". Only a positive, checked mute is ever passed in.
+    -- A switch read as false, or a config that could not be read at all,
+    -- reaches this file as NO ENTRY -- and no entry must mean no credit,
+    -- because an operator wrongly told they are covered stops looking.
+    local off = newReport({
+        running = { ['sc-dispatch'] = true },
+        integrations = { ['sc-dispatch'] = { muted = false } },
+    })
+    t.contains(off.text(), 'NOT muted',
+        'a resource whose own integration is switched OFF was reported as handled')
+
+    local unknown = newReport({
+        running = { ['sc-dispatch'] = true },
+        integrations = {},
+    })
+    t.contains(unknown.text(), 'NOT muted',
+        'a resource nothing could be established about was reported as handled')
+end)
+
+t.test('and a confirmed mute for ONE resource says nothing about the others', function()
+    -- sc-dispatch's switch is sc-dispatch's. sc-police and sc-ambulance raise
+    -- their own alerts through their own handlers, and this report's own
+    -- ambulance paragraph exists because sc-dispatch's integration does NOT
+    -- cover them. Crediting a neighbour because their neighbour is wired is
+    -- exactly the false all-clear the test above guards against.
+    local f = newReport({
+        running = { ['sc-dispatch'] = true, ['sc-ambulance'] = true },
+        integrations = {
+            ['sc-dispatch'] = { muted = true, note = 'muted by its own integration' },
+        },
+    })
+    local said = f.text()
+
+    t.contains(said, 'muted by its own integration', 'the wired resource lost its credit')
+    t.contains(said, 'NOT muted',
+        'an unguarded ambulance script was waved through because a DIFFERENT resource was wired')
 end)
 
 t.test('and one with an ignore export named is not', function()

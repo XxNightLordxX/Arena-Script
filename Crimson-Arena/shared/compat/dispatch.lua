@@ -432,7 +432,33 @@ end
 -- THE REPORT
 -- ======================================================================
 
-local function statusOf(adapter)
+--- @param adapter table
+--- @param integrations table<string, table>|nil -- confirmed mutes the SERVER
+---        realm established that this file cannot see for itself. Only
+---        positive, checked mutes are ever passed in; an entry that is absent
+---        means "no verdict", not "not muted".
+local function statusOf(adapter, integrations)
+    -- A RESOURCE THAT MUTES ITSELF FOR US IS MUTED, and this row used to deny
+    -- it. There are three ways an alert can be stopped and this function knew
+    -- two: a mute this resource carries, and a disableExports call. The third
+    -- is the other script asking US first -- sc-dispatch's
+    -- Integrations.CrimsonArena, which server/dispatch.lua reads out of its
+    -- config file and reports on, in prose, further down the SAME report.
+    --
+    -- So a correctly integrated server read:
+    --     sc-dispatch          police+EMS  NOT muted -- needs the line below
+    -- immediately above a paragraph stating that nothing arena-side is paged.
+    -- And because a row with no status raises `unhandled`, the false row also
+    -- turned off the "wired" verdict -- printing a paste-this-line block the
+    -- operator did not need, and putting a caveat on the isolation line that
+    -- was not true. Reported by an operator whose dispatch was already quiet.
+    --
+    -- FIRST, so a confirmed mute is never overwritten by a weaker reading.
+    local own = type(integrations) == 'table' and integrations[adapter.resource] or nil
+    if type(own) == 'table' and own.muted == true then
+        return own.note or 'muted by its own arena integration'
+    end
+
     if adapter.mute then
         if not enterEventName() then
             return 'has a mute, but custom.enterEvent is nil so nothing triggers it'
@@ -566,7 +592,10 @@ end
 --- who meets a wall of text at every restart stops reading it, and this is
 --- the one block that has to still be read on the hundredth boot.
 --- @return string[] lines
-function ArenaCompat.Report()
+--- @param integrations table<string, table>|nil -- see statusOf. Optional, so
+---        a caller that has nothing to add (and every existing one) is
+---        unchanged.
+function ArenaCompat.Report(integrations)
     local lines = {}
     local running = ArenaCompat.Detect()
     local unhandled = 0
@@ -577,7 +606,7 @@ function ArenaCompat.Report()
     else
         lines[#lines + 1] = ('dispatch compat: %d police/EMS resource(s) running.'):format(#running)
         for _, adapter in ipairs(running) do
-            local status = statusOf(adapter)
+            local status = statusOf(adapter, integrations)
             if not status then unhandled = unhandled + 1 end
             lines[#lines + 1] = ('  %-20s %-11s %s'):format(adapter.resource, KINDS[adapter.kind], status or 'NOT muted -- needs the line below')
         end

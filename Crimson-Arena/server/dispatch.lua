@@ -1482,6 +1482,86 @@ end
 ---      the fighter-only fallback he tries when the bag is empty.
 ---
 --- @return string
+--- sc-dispatch'S OWN SWITCH, AS A VERDICT RATHER THAN AS PROSE.
+---
+--- SPLIT OUT BECAUSE THE REPORT WAS ANSWERING THE SAME QUESTION TWICE AND
+--- DISAGREEING WITH ITSELF. alertGuardLine below reads this switch and, when
+--- it is on, tells the operator in as many words that "no arena shot, death
+--- or help-call is paged". The TABLE at the top of the same report is built
+--- by shared/compat/dispatch.lua's statusOf, which knew only two ways a
+--- resource can be handled -- a mute this resource carries, or a
+--- disableExports call -- and had never heard of sc-dispatch asking US.
+---
+--- So a correctly integrated server was shown, in one report:
+---     sc-dispatch          police+EMS  NOT muted -- needs the line below
+--- directly above a paragraph saying it was muted. Worse than cosmetic: that
+--- row is also what raises `unhandled`, which is what suppresses the "wired"
+--- verdict -- so the false row also printed a paste-this-line block the
+--- operator did not need and put a caveat on the isolation line that was not
+--- true. One wrong answer, three wrong pieces of advice. Reported by an
+--- operator whose dispatch was, in fact, silent.
+---
+--- READ, NEVER WRITTEN, and unknown-safe: see the file-reading note in the
+--- body. nil means "could not tell", which is NOT the same as false and must
+--- never be reported as one.
+--- @return boolean|nil on -- true, false, or nil when it could not be read
+local function scDispatchIntegrationOn()
+    -- HIS `Integrations` TABLE IS A TABLE IN HIS LUA STATE -- nothing to do
+    -- with this resource's own settings, and deliberately not written here as
+    -- a dotted name, because tools/verify_contracts.py reads every such name
+    -- in this tree as a setting THIS resource must define. There is no export
+    -- for it either, so this reads the file he ships unencrypted and looks
+    -- for the assignment.
+    local read, body = pcall(LoadResourceFile, 'sc-dispatch', 'config.lua')
+    if not read or type(body) ~= 'string' then return nil end
+
+    -- LINE BY LINE, WITH TRAILING COMMENTS CUT OFF, because a match run over
+    -- the whole file reads a COMMENTED-OUT example as the live setting.
+    -- sc-dispatch's config ships the block commented out above the real one
+    -- on some builds, and a whole-file match found the example's
+    -- `CrimsonArena = true` and reported the integration ON while the live
+    -- line underneath said false. That is the dangerous direction: an
+    -- operator told it is working stops looking.
+    --
+    -- The first LIVE assignment wins. A long-bracket comment would still fool
+    -- this; that is the honest limit of reading a file you do not parse, and
+    -- it is why the nil answer exists.
+    for line in body:gmatch('[^\n]+') do
+        local value = line:gsub('%-%-.*$', ''):match('CrimsonArena%s*=%s*([%a]+)')
+        if value == 'true' then return true end
+        if value == 'false' then return false end
+    end
+
+    return nil
+end
+
+--- WHAT THE COMPAT TABLE SHOULD SAY ABOUT EACH DETECTED RESOURCE, for the
+--- rows shared/compat/dispatch.lua cannot work out on its own.
+---
+--- ONLY POSITIVE, CONFIRMED MUTES GO IN HERE. A resource this cannot vouch
+--- for is left out entirely, so the table falls back to its own reading and
+--- keeps saying NOT muted -- which is the safe direction. In particular
+--- sc-police and sc-ambulance are NOT listed: sc-dispatch's switch is its own
+--- integration and says nothing about what those two raise directly. See
+--- ambulanceGuardLine for why that distinction is load-bearing.
+--- @return table<string, table>
+local function compatIntegrations()
+    local out = {}
+
+    local known, state = pcall(GetResourceState, 'sc-dispatch')
+    if known and state == 'started'
+        and stateKey() == 'crimsonArena'
+        and scDispatchIntegrationOn() == true
+    then
+        out['sc-dispatch'] = {
+            muted = true,
+            note = 'muted by its own integration -- Integrations.CrimsonArena = true in sc-dispatch/config.lua',
+        }
+    end
+
+    return out
+end
+
 local function alertGuardLine()
     local known, state = pcall(GetResourceState, 'sc-dispatch')
     if not known or state ~= 'started' then
@@ -1509,37 +1589,10 @@ local function alertGuardLine()
             :format(tostring(key))
     end
 
-    -- HIS SWITCH, READ OFF HIS OWN CONFIG FILE. The `Integrations` table in
-    -- sc-dispatch's config is a table in HIS Lua state -- nothing to do with
-    -- this resource's Config, and deliberately not written here as a dotted
-    -- Config name, because tools/verify_contracts.py reads every such name in
-    -- this tree as a setting THIS resource must define. There is no export for
-    -- it either, so this reads the
-    -- file he ships unencrypted and looks for the assignment. A read, never a
-    -- write, and wrong-answer-proof: anything it cannot parse is reported as
-    -- unknown rather than guessed at.
-    local settingSays = nil
-    local read, body = pcall(LoadResourceFile, 'sc-dispatch', 'config.lua')
-    if read and type(body) == 'string' then
-        -- LINE BY LINE, WITH TRAILING COMMENTS CUT OFF, because a match run
-        -- over the whole file reads a COMMENTED-OUT example as the live
-        -- setting. sc-dispatch's config ships the block commented out above
-        -- the real one on some builds, and a whole-file match found the
-        -- example's `CrimsonArena = true` and reported the integration ON
-        -- while the live line underneath said false. That is the dangerous
-        -- direction: an operator told it is working stops looking.
-        --
-        -- The first LIVE assignment wins. A long-bracket comment would still
-        -- fool this; that is the honest limit of reading a file you do not
-        -- parse, and it is why the unknown answer exists.
-        for line in body:gmatch('[^\n]+') do
-            local value = line:gsub('%-%-.*$', ''):match('CrimsonArena%s*=%s*([%a]+)')
-            if value == 'true' or value == 'false' then
-                settingSays = (value == 'true')
-                break
-            end
-        end
-    end
+    -- HIS SWITCH, READ OFF HIS OWN CONFIG FILE -- see scDispatchIntegrationOn.
+    -- ONE READER, SHARED WITH THE TABLE ABOVE. It used to be inlined here,
+    -- which is how the row and this paragraph came to disagree.
+    local settingSays = scDispatchIntegrationOn()
 
     if settingSays == true then
         return 'sc-dispatch is running with Integrations.CrimsonArena = true in its own config, '
@@ -1826,7 +1879,7 @@ function ArenaDispatch.CompatReport()
         return out
     end
 
-    local ok, lines = pcall(ArenaCompat.Report)
+    local ok, lines = pcall(ArenaCompat.Report, compatIntegrations())
     if not ok or type(lines) ~= 'table' then
         out[1] = 'the dispatch compat report could not be taken: ' .. tostring(lines)
         out[2] = downStateLine()

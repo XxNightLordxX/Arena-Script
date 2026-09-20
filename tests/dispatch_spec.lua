@@ -2587,6 +2587,84 @@ t.test('and his switch is read off his own config, both ways', function()
         'an integration that is switched OFF was not reported as off')
 end)
 
+t.test('AND THE TABLE AT THE TOP AGREES WITH IT, which it did not', function()
+    -- THE SEAM, DRIVEN END TO END. Reported off a live server: one report
+    -- said, of the same resource, twenty lines apart:
+    --
+    --     sc-dispatch          police+EMS  NOT muted -- needs the line below
+    --   ...
+    --     sc-dispatch is running with Integrations.CrimsonArena = true in its
+    --     own config, so it asks this resource before raising an alert and no
+    --     arena shot, death or help-call is paged.
+    --
+    -- Two code paths answering the same question and only one of them having
+    -- read the switch. The pessimistic one wrote the headline, printed a
+    -- paste-this-guard block the operator did not need, and put "nothing here
+    -- is confirmed wired" on the isolation line.
+    --
+    -- WHY IT IS TESTED HERE RATHER THAN IN compatreport_spec. That file drives
+    -- shared/compat/dispatch.lua directly and hands it the verdict, so it
+    -- proves the TABLE uses a verdict it is given. It cannot prove the server
+    -- GIVES it one -- delete the argument at the call site and every test
+    -- there still passes. Measured: that mutation survived until this test
+    -- existed. This is the only test that crosses the two files.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = true,\n}'
+    end
+    local on = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+    t.contains(on, 'muted by its own integration',
+        'the table did not credit an integration the same report confirms in prose')
+    t.notContains(on, 'NOT muted',
+        'the table still called a confirmed integration unmuted')
+    t.notContains(on, 'Paste at the top of whatever sends the alert',
+        'an operator whose dispatch already asks us was told to paste a guard into it anyway')
+
+    -- AND THE OTHER WAY, so this cannot be satisfied by always crediting.
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = false,\n}'
+    end
+    local off = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+    t.contains(off, 'NOT muted',
+        'a switch that is OFF was credited as a mute')
+    t.notContains(off, 'muted by its own integration',
+        'a switch that is OFF was credited as a mute')
+
+    -- AND A CONFIG THAT CANNOT BE READ IS NOT CREDIT EITHER.
+    f.env.LoadResourceFile = function() return nil end
+    t.contains(table.concat(f.env.ArenaDispatch.CompatReport(), '\n'), 'NOT muted',
+        'an unreadable config was credited as a mute')
+end)
+
+t.test('and a RENAMED state bag key withdraws the credit, because spectators lose cover', function()
+    -- sc-dispatch READS THE BAG BY A LITERAL NAME. Its client checks
+    -- LocalPlayer.state.crimsonArena, spelled exactly that way on its side,
+    -- with no export for it. Rename the key here and the bag it looks for is
+    -- never written -- and the export it falls back to answers only for
+    -- FIGHTERS, because a spectator never calls Enter on their own client.
+    --
+    -- So a rename does not break the integration evenly: it opens a hole
+    -- under exactly the people sitting in the arena with a camera up, paging
+    -- EMS about a round they are not in. The prose paragraph has always said
+    -- so. The TABLE must not hand out a clean bill of health over the top of
+    -- it -- "muted" next to a warning that watchers are not is the same
+    -- self-contradiction this whole section exists to remove, pointing the
+    -- other way.
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.Config.Dispatch.custom.stateBagKey = 'inTheArena'
+
+    f.env.LoadResourceFile = function()
+        return 'Config.Integrations = {\n    CrimsonArena = true,\n}'
+    end
+    local said = table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+
+    t.notContains(said, 'muted by its own integration',
+        'a renamed bag key still credited sc-dispatch with a mute it cannot perform for watchers')
+    t.contains(said, 'SPECTATORS ARE NOT',
+        'the warning that watchers lose cover on a rename went missing')
+end)
+
 t.test('and a config it cannot read is reported as UNKNOWN, never guessed', function()
     -- The dangerous answer here is a confident one. An operator told the
     -- integration is on, when it is off, stops looking.

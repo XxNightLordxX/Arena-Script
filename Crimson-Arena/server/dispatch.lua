@@ -2434,7 +2434,7 @@ end
 --- @param px number
 --- @param py number
 --- @return string|nil reason
-local function explosionRefusal(exploder, matchId, px, py)
+local function explosionRefusal(exploder, matchId, px, py, pz)
     -- FAILS OPEN ON A LOBBY THAT HAS NOT ANSWERED, deliberately, and for the
     -- reason mayDamage gives: the thrower is already known to be in the round
     -- this blast landed in, and freezing a live round over a roster that is
@@ -2450,15 +2450,42 @@ local function explosionRefusal(exploder, matchId, px, py)
     local reach = BLAST_METRES * BLAST_METRES
     local caught, lawful = false, false
 
+    -- MEASURED AS A SPHERE, NOT A CIRCLE ON THE MAP, and pointXY's own
+    -- comment records this exact class of mistake being fixed one call away:
+    -- "Z TOO, when the point has one. It was dropped here ... and that is how
+    -- the arena became a circle on the map instead of the sphere every other
+    -- check uses." The z was dropped again here, and both directions of the
+    -- error are real on a map with rooftops and a skydome.
+    --
+    -- A TEAM-MATE THIRTY METRES STRAIGHT UP counted as caught, so a grenade
+    -- thrown at street level was refused on their account although the blast
+    -- could never reach them -- a refusal the file's own rule calls worse
+    -- than a miss, because nothing tells the thrower why their launcher did
+    -- nothing.
+    --
+    -- AND AN ENEMY THIRTY METRES STRAIGHT UP counted as lawful, which is the
+    -- half that lets a team-mate be hurt: an enemy on a roof made every blast
+    -- below them a legitimate one, and the team-mate standing in it went up
+    -- with it.
+    --
+    -- FALLS BACK TO THE FLAT READING when either point has no z rather than
+    -- refusing to measure: explosionEvent can arrive without a posZ, and a
+    -- circle is a worse answer than a sphere but a much better one than none.
+
     -- `match.players` is keyed by SERVER ID, so this is pairs and not ipairs.
     for src, row in pairs(match.players) do
         if src ~= exploder and not Arena.IsEliminated(row) then
             local at = positionOf(src)
             if at then
-                local x, y = pointXY(at)
+                local x, y, z = pointXY(at)
                 if x then
                     local dx, dy = x - px, y - py
-                    if (dx * dx + dy * dy) <= reach then
+                    local squared = dx * dx + dy * dy
+                    if z and pz then
+                        local dz = z - pz
+                        squared = squared + dz * dz
+                    end
+                    if squared <= reach then
                         if Arena.CanDamage(match.modeKey, thrower.team, row.team) then
                             lawful = true
                         else
@@ -2491,7 +2518,7 @@ AddEventHandler('explosionEvent', function(sender, data)
     -- what this asked, and DO NOT put that test back: it made a fighter at
     -- one arena free to shell the round being fought at another.
     if ownMatch and matchCoversPoint(ownMatch, x, y, z) then
-        local refusal = explosionRefusal(exploder, ownMatch, x, y)
+        local refusal = explosionRefusal(exploder, ownMatch, x, y, z)
         if refusal then
             ArenaDebug('crossfire: refused an explosion from %s -- %s.', tostring(sender), refusal)
             CancelEvent()

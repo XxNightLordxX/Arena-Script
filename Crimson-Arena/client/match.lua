@@ -304,11 +304,20 @@ local heldTeam = nil
 
 local releaseFriendlyFire
 
+--- WHETHER A HOLD SHOULD BE STANDING AT ALL, as one question in one place.
+---
+--- holdFriendlyFire asked this inline and the arena loop needs the same
+--- answer to notice an operator changing their mind mid-round. Two copies of
+--- a three-part condition is how they drift apart, so there is one.
+--- @return boolean
+local function wantsHold()
+    return currentMatch ~= nil
+        and Arena.ModeUsesTeams(currentMatch.modeKey)
+        and Config.Teams.friendlyFire ~= true
+end
+
 local function holdFriendlyFire(ped)
-    if not currentMatch
-        or not Arena.ModeUsesTeams(currentMatch.modeKey)
-        or Config.Teams.friendlyFire == true
-    then
+    if not wantsHold() then
         releaseFriendlyFire(ped)
         return
     end
@@ -1390,7 +1399,26 @@ local function startArenaThread()
             -- 60fps to catch something only a config change can cause would
             -- trade a rare hazard for a constant one. A second is far inside
             -- any round and costs nothing measurable.
-            if friendlyFireHeld then
+            -- AND WHETHER THE OPERATOR STILL WANTS THE HOLD AT ALL, which is
+            -- the third question and the cheapest of the three.
+            --
+            -- Config.Teams.friendlyFire was read exactly once, inside
+            -- holdFriendlyFire, and holdFriendlyFire is reached from entry,
+            -- respawn, the countdown revive and the drift repair. A round
+            -- where nobody dies and nothing moves the player therefore never
+            -- looked at it again: an operator turning friendly fire ON
+            -- mid-round kept the hold, and teammates went on being unable to
+            -- hurt each other until somebody happened to respawn. Turning it
+            -- OFF mid-round is the same in reverse and is the direction that
+            -- matters -- a round the operator has just protected is not
+            -- protected for anyone who does not die.
+            --
+            -- A boolean compare against the flag this file already keeps, so
+            -- it is free to ask every frame, and holdFriendlyFire decides
+            -- what to do about it as it always has.
+            if friendlyFireHeld ~= (wantsHold() == true) then
+                holdFriendlyFire(current)
+            elseif friendlyFireHeld then
                 local want = heldTeam
                 local now = GetGameTimer()
                 if now >= nextTeamIndexCheck then

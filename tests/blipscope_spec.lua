@@ -1252,6 +1252,42 @@ t.test('and a side the config cannot place takes the hold OFF rather than leavin
         'the player was left on the arena team for a side the config can no longer place')
 end)
 
+t.test('AND AN OPERATOR CHANGING THEIR MIND MID-ROUND IS NOTICED', function()
+    -- Config.Teams.friendlyFire was read exactly once, inside
+    -- holdFriendlyFire, which is reached from entry, respawn, the countdown
+    -- revive and the drift repair. A round where nobody dies and nothing
+    -- moves the player never looked at it again -- so an operator turning
+    -- friendly fire ON mid-round kept the hold, and teammates went on being
+    -- unable to hurt each other until somebody happened to respawn.
+    local f = newFixture()
+    f.enterLive()
+    t.isFalse(f.friendlyFire, 'the hold never started, so this proves nothing')
+
+    f.env.Config.Teams.friendlyFire = true
+    f.step()
+
+    t.isTrue(f.friendlyFire,
+        'the operator turned friendly fire on mid-round and the hold stayed -- teammates '
+            .. 'still cannot hurt each other')
+    t.equals(f.team, -1, 'and the player was left on the arena team')
+end)
+
+t.test('and the same in reverse, which is the direction that matters', function()
+    -- Turning it OFF mid-round: a round the operator has just decided to
+    -- protect must be protected for everyone, not only for whoever dies next.
+    local f = newFixture(function(config) config.Teams.friendlyFire = true end)
+    f.enterLive()
+    t.isTrue(f.friendlyFire ~= false, 'the hold started when the operator did not want one')
+
+    f.env.Config.Teams.friendlyFire = false
+    f.step()
+
+    t.isFalse(f.friendlyFire,
+        'the operator turned friendly fire off mid-round and nothing took the hold')
+    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
+        'and the player was never put on their side')
+end)
+
 t.test('THE CONFIG WHERE THIS IS THE ONLY THING LEFT: the server guard off', function()
     -- Config.Match.crossfireGuard.enabled is an operator switch, and BOTH
     -- server handlers open on it: weaponDamageEvent and explosionEvent each

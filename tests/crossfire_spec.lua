@@ -52,6 +52,8 @@ local function newFixture(opts)
         netIds = {},
         --- How many times the guard walked every player on the server.
         walks = 0,
+        --- src -> where that fighter is standing, for the explosion walk.
+        at = {},
         debugs = {},
     }
 
@@ -73,6 +75,15 @@ local function newFixture(opts)
             return out
         end,
         GetPlayerPed = function(src) return 1000 + (tonumber(src) or 0) end,
+        -- WHERE EACH FIGHTER IS STANDING. Without this, positionOf answers nil
+        -- for everybody and explosionRefusal's whole roster walk -- the
+        -- caught/lawful decision that IS the friendly-fire half of the
+        -- explosion guard -- never ran in any test in this file. Every
+        -- explosion case here drove the outer gates only.
+        GetEntityCoords = function(ped)
+            local src = (tonumber(ped) or 0) - 1000
+            return f.at[src] or { x = 0.0, y = 0.0, z = 0.0 }
+        end,
         NetworkGetNetworkIdFromEntity = function(ped)
             local src = (tonumber(ped) or 0) - 1000
             return f.netIds[src] or 0
@@ -147,6 +158,11 @@ local function newFixture(opts)
     end
 
     --- Fires the engine's explosion packet.
+    --- Puts a fighter somewhere, for the explosion roster walk.
+    function f.stand(src, x, y, z)
+        f.at[src] = { x = x + 0.0, y = y + 0.0, z = z + 0.0 }
+    end
+
     function f.explode(sender, x, y, z)
         f.cancelled = false
         local data = { posX = x, posY = y, posZ = z }
@@ -186,7 +202,11 @@ local function newFixture(opts)
         f.env.ArenaLobby = {
             Get = function(id)
                 if id ~= matchId then return nil end
-                return { modeKey = modeKey, players = players }
+                -- arenaKey TOO. Without it matchCoversPoint cannot place the
+                -- blast, so explosionEvent returns before explosionRefusal is
+                -- ever called -- which is why no test in this file had
+                -- reached the caught/lawful walk.
+                return { modeKey = modeKey, players = players, arenaKey = 'trailerpark' }
             end,
         }
         -- HANDED BACK, so a test can knock somebody out of the round the way
@@ -571,6 +591,102 @@ t.test('and the arena in the sky is guarded the same way', function()
     t.isTrue(f.explode(9, SKY.x, SKY.y, SKY.z), 'an explosion landed in the sky arena from outside')
     t.isFalse(f.explode(9, PARK.x, PARK.y, PARK.z),
         'an explosion at the trailer park was refused by the sky arena a kilometre away')
+end)
+
+-- ======================================================================
+-- THE HALF OF THE EXPLOSION GUARD THAT DECIDES FRIENDLY FIRE
+--
+-- Everything above drives the outer gates: outside the arena, the wrong
+-- round, an eliminated thrower, a malformed packet. NONE of it reached
+-- explosionRefusal's roster walk, because the fixture never told the server
+-- where anybody was standing -- positionOf answered nil for every fighter,
+-- so `caught` and `lawful` were both false and no explosion was ever refused
+-- on a team rule. The caught/lawful decision IS the friendly-fire half, and
+-- it was untested.
+-- ======================================================================
+
+t.test('an explosion that would catch only a teammate is refused', function()
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson' })
+    f.stand(1, PARK.x, PARK.y, PARK.z)
+    f.stand(2, PARK.x + 3.0, PARK.y, PARK.z)
+
+    t.isTrue(f.explode(1, PARK.x + 3.0, PARK.y, PARK.z),
+        'a grenade landing on nobody but their own team was allowed')
+end)
+
+t.test('and one that also catches an enemy goes through, teammate included', function()
+    -- The same bend as a shotgun spread, and for the same reason: CancelEvent
+    -- kills the whole blast, so refusing this would make standing next to a
+    -- teammate a shield against every launcher in the arena.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'ash' })
+    f.stand(1, PARK.x, PARK.y, PARK.z)
+    f.stand(2, PARK.x + 3.0, PARK.y, PARK.z)
+    f.stand(3, PARK.x + 4.0, PARK.y, PARK.z)
+
+    t.isFalse(f.explode(1, PARK.x + 3.5, PARK.y, PARK.z),
+        'a blast catching an enemy AND a teammate was cancelled -- hugging a teammate makes '
+            .. 'you launcher-proof')
+end)
+
+t.test('THE SPHERE: an enemy far overhead does not make a blast below them lawful', function()
+    -- The distance was measured FLAT -- dx*dx + dy*dy, with the z that
+    -- pointXY hands back thrown away. So an enemy on a roof thirty metres up
+    -- counted as being in a blast at street level, `lawful` went true, and
+    -- the teammate actually standing in it went up with the grenade.
+    --
+    -- This is the direction that hurts a teammate, which is why it is the
+    -- case written first.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'ash' })
+    f.stand(1, PARK.x, PARK.y, PARK.z)
+    f.stand(2, PARK.x + 3.0, PARK.y, PARK.z)          -- teammate, in the blast
+    f.stand(3, PARK.x + 3.0, PARK.y, PARK.z + 40.0)   -- enemy, forty metres up
+
+    t.isTrue(f.explode(1, PARK.x + 3.0, PARK.y, PARK.z),
+        'an enemy forty metres overhead made the blast lawful, and the teammate standing in '
+            .. 'it was not protected')
+end)
+
+t.test('and a teammate far overhead does not have a street-level blast refused for them', function()
+    -- The same error in the harmless-looking direction: a teammate on a roof
+    -- counted as caught, so a grenade that could never reach them refused --
+    -- and nothing tells the thrower why their launcher did nothing.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'ash' })
+    f.stand(1, PARK.x, PARK.y, PARK.z)
+    f.stand(2, PARK.x + 3.0, PARK.y, PARK.z + 40.0)   -- teammate, forty metres up
+    f.stand(3, PARK.x + 3.0, PARK.y, PARK.z)          -- enemy, in the blast
+
+    t.isFalse(f.explode(1, PARK.x + 3.0, PARK.y, PARK.z),
+        'a teammate forty metres overhead had a street-level blast refused on their account')
+end)
+
+t.test('and a packet with no z still measures flat rather than refusing to measure', function()
+    -- explosionEvent can arrive without a posZ. A circle is a worse answer
+    -- than a sphere and a much better one than none, so the fallback is the
+    -- old reading rather than "cannot tell".
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson' })
+    f.stand(1, PARK.x, PARK.y, PARK.z)
+    f.stand(2, PARK.x + 3.0, PARK.y, PARK.z)
+
+    t.isTrue(f.explode(1, PARK.x + 3.0, PARK.y, nil),
+        'a blast with no z stopped protecting the teammate standing in it')
 end)
 
 t.test('and a malformed explosion packet cannot take the handler down', function()

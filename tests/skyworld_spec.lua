@@ -2347,21 +2347,25 @@ t.test('and a watch that runs to the end still gets its arena', function()
     t.equals(#c.world.live(), 0, 'the scenery an uninterrupted watch built could not be taken down')
 end)
 
-t.test('a floor that will not build does not send the arena home with the player', function()
+t.test('a floor that will not build leaves no global player state behind either', function()
     -- leaveArena's own comment says "every exit comes through here,
     -- onResourceStop included, so this is the one place that can promise
     -- it". THIS was the exit that did not: the floor-failure branch cleared
     -- the scenery, teleported the player home, unfroze them and returned.
     --
-    -- What it therefore never put back is the state that is not per match --
-    -- global player state this resource reached out and changed, that
-    -- nothing else on the server sets and nothing else will ever restore.
-    -- A team-deathmatch player whose floor failed was left standing in the
-    -- CITY on the arena's network team, with friendly fire off, unable to be
-    -- shot by half the server for the rest of their session.
+    -- What it therefore never put back was global player state this resource
+    -- reached out and changed -- a team-deathmatch player whose floor failed
+    -- was left standing in the CITY on the arena's network team, with
+    -- friendly fire off, for the rest of their session.
+    --
+    -- THAT WHOLE CLASS IS GONE NOW, and by the strongest available means: the
+    -- resource no longer writes either setting at all. A setting never
+    -- written cannot be left behind by any exit, including this one. The
+    -- assertions are inverted rather than deleted because the exit path is
+    -- still worth watching -- if anybody re-adds the hold, this is one of the
+    -- exits they will forget.
     local c = newClient()
 
-    -- The hold only ever starts for a player on a side.
     local realCreate = c.env.CreateObject
     c.env.CreateObject = function() return 0 end
 
@@ -2369,27 +2373,27 @@ t.test('a floor that will not build does not send the arena home with the player
 
     c.env.CreateObject = realCreate
 
-    t.equals(c.playerTeam, -1,
-        'the arena network team followed the player back into the city')
-    -- A SETTING NEVER WRITTEN IS NEVER LEFT BEHIND. These two used to be the
-    -- "one thing this must never do"; now they cannot be done at all, which
-    -- is the stronger form of the same promise.
-    t.isTrue(c.friendlyFire, 'friendly fire was left OFF outside the arena')
+    t.isNil(c.playerTeam, 'the client is writing SetPlayerTeam again')
+    t.isNil(c.friendlyFire, 'the client is writing NetworkSetFriendlyFireOption again')
     t.isNil(c.canAttackFriendly, 'SetCanAttackFriendly is being written again')
     t.equals(#c.world.live(), 0, 'nor is any half-built scenery left standing')
 end)
 
-t.test('and the hold really was on, so the test above is not measuring nothing', function()
-    -- THE CONTROL. Every assertion in the test above is "this was put back",
-    -- and every one of them passes trivially if the hold never started --
-    -- which is exactly what would happen on a free-for-all, or on a server
-    -- with friendlyFire on. So this proves the fixture can see it being set.
+t.test('and a round that builds perfectly writes none of them either, which is the control', function()
+    -- THE CONTROL, INVERTED WITH THE TEST ABOVE. It used to prove the fixture
+    -- could SEE the hold being set, because "it was put back" passes
+    -- trivially when it was never set. Now "it was never set" is the claim,
+    -- so the control is that a completely ordinary, successful team round on
+    -- the same client writes nothing either -- i.e. the test above is not
+    -- passing because the floor failure happened to skip the code.
     local c = newClient()
     c.enter('skydome', nil, nil, { modeKey = 'tdm', teamKey = 'crimson' })
 
-    t.isTrue(c.playerTeam ~= nil and c.playerTeam ~= -1,
-        'the hold never put the player on the arena team, so nothing above is being tested')
-    t.isFalse(c.friendlyFire, 'the hold never switched friendly fire off, so nothing above is tested')
+    t.isTrue(#c.world.live() > 0, 'the control built no scenery, so it is not a successful round')
+    t.isNil(c.playerTeam,
+        'a successful team round is writing the engine team again -- the pair that '
+        .. 'stopped enemies killing each other in a live team deathmatch')
+    t.isNil(c.friendlyFire, 'a successful team round is writing NetworkSetFriendlyFireOption again')
     t.isNil(c.canAttackFriendly, 'SetCanAttackFriendly is being written again')
 end)
 

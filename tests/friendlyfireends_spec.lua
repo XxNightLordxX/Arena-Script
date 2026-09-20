@@ -1,83 +1,78 @@
 --[[
     crimson_arena/tests/friendlyfireends_spec.lua
 
-    THE FRIENDLY-FIRE HOLD MUST NOT OUTLIVE THE ROUND THAT PUT IT ON.
+    FRIENDLY FIRE IS THE SERVER'S JOB, AND THE ROUND MUST NOT FOLLOW ANYONE
+    HOME.
 
-    IN A PLAYER'S WORDS: "Ensure the friendly fire etc does not follow after
-    a match is over."
+    THIS FILE ONCE GUARDED A CLIENT-SIDE HOLD. It does not any more, and the
+    reason is the most important thing in it.
 
-    He asks it having just been bitten by the opposite mistake -- a round
-    where two fighters could not hurt each other, which he read as friendly
-    fire being broken and which was really a team switch the server never
-    took (see teamswitchtempo_spec). This is the other end of the same
-    worry, and it is a fair one, because BOTH halves of the rule are state
-    somebody has to remember to put back:
+    WHAT THE HOLD WAS. On entering a team round, client/match.lua called
+    SetPlayerTeam(PlayerId(), Arena.TeamIndex(teamKey)) and
+    NetworkSetFriendlyFireOption(false), re-asserted both once a second, and
+    put them back on every exit. This file proved, in eleven client tests,
+    that it did all of that correctly. Ten deliberate mutations of it were
+    written and all ten were caught. Every one of those tests was green.
 
-      * THE SERVER refuses a damage packet in server/dispatch.lua by asking
-        `active[src]` which round a player is in and then reading their side
-        off the live roster row. A flag left raised, or a lobby row left
+    THE ARENA WAS BROKEN ANYWAY. From a live team deathmatch, in the owner's
+    words: "Enemies can't kill each other." That pair of writes was the only
+    difference between the arena and the rest of a server where PvP works.
+
+    IT IS THE SECOND TIME THESE NATIVES DID THAT. The first report -- "i can't
+    shoot my enemies and they can't shoot me" (0baa2e3) -- was blamed on
+    SetCanAttackFriendly alone, and this pair was kept on the strength of one
+    sentence: "NetworkSetFriendlyFireOption is team-scoped, the two sides are
+    on different engine teams, so it cannot refuse an enemy." Nothing ever
+    supported that sentence. The native takes ONE BARE BOOL -- no player
+    argument, no team argument -- its description field in the FiveM native
+    reference is the EMPTY STRING, and no getter for it exists in any of the
+    44 namespaces. Two readings fit the evidence and BOTH produce the reported
+    symptom: the option is not team-scoped at all, or SetPlayerTeam does not
+    replicate the way the file assumed and every client reads every other as
+    one team. Both writes are gone, because removing both fixes it under
+    either reading.
+
+    WHY NO AMOUNT OF TESTING HERE COULD HAVE CAUGHT IT, which is the lesson
+    worth keeping. Every client fixture in this suite wires GetPlayerTeam
+    straight back to the same client's own SetPlayerTeam, so the suite can
+    only ever watch this resource agree with itself. It cannot represent a
+    second engine, and the failure lived between two engines. A green suite
+    was never evidence about these natives and never could have been.
+
+    SO WHAT IS LEFT, AND IT IS IN TWO HALVES.
+
+      * THE SERVER, which is now the only thing that refuses damage at all.
+        server/dispatch.lua cancels weaponDamageEvent and explosionEvent by
+        asking `active[src]` which round a player is in and reading their side
+        off the live roster. Both handlers are WEAPON-AGNOSTIC -- there is no
+        weapon hash, type or melee branch anywhere in the file -- so a bottle
+        is refused by the identical code that refuses a rifle round, provided
+        the engine emits the packet. A flag left raised, or a lobby row left
         lying about, and two people who fought together are still allies in
-        the street.
+        the street: that is what the server section below drives, through
+        every way a round can end -- End, Abort, an admin stop, the lobby row
+        torn down, a fighter disconnecting, the resource stopping mid-round,
+        and an ally eliminated before the end. server.sentHome counts the exit
+        the client is told by, because the refusal reads ArenaDispatch and
+        would go green on a path that never told the client anything.
 
-      * THE CLIENT sets SetPlayerTeam and NetworkSetFriendlyFireOption,
-        which are settings on the PLAYER and not on the ped. Nothing else on
-        a server writes them and nothing else will ever put them back, so a
-        path out of a round that forgets to release them leaves them set for
-        the rest of that player's session -- through every respawn, every
-        death, every other resource, until they reconnect.
+      * THE CLIENT, where the whole guard is now an absence. It must write
+        none of SetPlayerTeam, NetworkSetFriendlyFireOption or
+        SetCanAttackFriendly, on any path. Three tests drive the entry, exit,
+        restart, respawn and free-for-all paths; a fourth reads the source,
+        because the fixture parks partway through entry and a re-added write
+        in a branch no test drives would pass the other three.
 
-    MEASURED, NOT REASONED ABOUT. Every way a round can end is driven here
-    and then a bullet is fired: End, Abort, an admin stop, the host closing
-    the lobby, a fighter disconnecting, the resource stopping mid-round, and
-    an ally who was eliminated before the end. The client half is the real
-    file, entered and left.
+    WHAT IS GENUINELY LOST, stated rather than glossed. The hold was the only
+    claimed cover for two things: the teammate's half of a shotgun spread,
+    which the server lets through whole on purpose (crossfire_spec.lua:762),
+    and melee, IF melee turns out not to raise weaponDamageEvent. Neither was
+    ever measured to be covered by it. Its only measured effect in a live
+    round is the one that removed it.
 
-    NOTHING WAS FOUND WRONG IN THE RESOURCE. This file is a guard, not a fix
-    -- and it is checked against the mutations it is meant to catch: delete
-    the ArenaDispatch.Clear on the exit path, or the releaseFriendlyFire at
-    the top of leaveArena, and it goes red. DO NOT weaken it into asserting
-    only that a live round refuses -- that half passes on its own.
-
-    TWO THINGS WERE FOUND WRONG IN THIS FILE, both of the same kind: an
-    assertion that could not fail. They are worth naming because the shape
-    recurs.
-
-      * THE RELEASE COULD NOT BE TOLD FROM A CONSTANT. Every client test
-        started from engine team -1, which is both the default AND what a
-        release that had forgotten its reading would hand back. Replacing
-        `SetPlayerTeam(PlayerId(), priorTeam or -1)` with a bare -1 passed
-        the whole file. The tests below now walk in on team 7 -- a job or
-        gang script's team, which is the ordinary case on a roleplay server
-        and the one where the two answers differ.
-
-      * THE SERVER HALF WENT GREEN WITHOUT TELLING THE CLIENT ANYTHING.
-        Every server assertion here asks whether the server would still
-        refuse a bullet, and the server answers out of ArenaDispatch, which
-        each exit path clears directly. Delete the exitArena from
-        ArenaLobby.Destroy's fighter loop and all of it still passed --
-        while every fighter in a torn-down round kept the arena's team and
-        its friendly fire setting for the rest of their session. The client
-        section proves the release happens WHEN TOLD; server.sentHome is
-        the other half of that sentence, and wentHome puts it on every end
-        path.
-
-    AND A THIRD ASSERTION WAS WRITTEN AND THROWN AWAY, which is worth
-    recording too. The ordering guard at the foot of this file started as a
-    driven test -- make a teardown native throw, then check the team came
-    back -- and it passed with the two lines in EITHER order, because the
-    entry handler parks before it builds anything and clearArenaScenery then
-    returns without calling a single native. A test that cannot fail is
-    worse than no test, so it was replaced with one that reads the source.
-    DO NOT "improve" it back into a driven one without first making the
-    fixture build a prop.
-
-    TEN MUTATIONS ARE KILLED BY THIS FILE, and they are listed so the next
-    person can re-run them: release hands back a hardcoded -1; release loses
-    its not-held guard; being eliminated drops the hold mid-round;
-    Arena.TeamIndex collapses both sides onto one number; Destroy stops
-    sending exitArena; sendExitArena stops sending; sendPlayerHome always
-    refuses; leaveArena forgets to release; leaveArena releases UNDER the
-    prop teardown instead of ahead of it; and the release line is deleted.
+    DO NOT "RESTORE" THE CLIENT TESTS, and do not weaken the server section
+    into asserting only that a live round refuses -- that half passes on its
+    own.
 ]]
 
 local t = dofile('testkit.lua')
@@ -581,16 +576,17 @@ t.test('and when the lobby row is torn down under a round that is still being fo
 end)
 
 -- ======================================================================
--- THE CLIENT
+-- THE CLIENT, WHICH NO LONGER TOUCHES EITHER SETTING
 -- ======================================================================
 
---- The real client/match.lua, far enough in to have told the engine which
---- side this player is on.
+--- The real client/match.lua, driven far enough in to have written whatever
+--- it is going to write about friendly fire.
 ---
 --- NOT A WHOLE ROUND. The entry handler goes on to build an arena out of
 --- props and yield inside model loads, and none of that is this section's
---- question: holdFriendlyFire runs BEFORE any of it, so the handler is
---- driven until it parks or falls over and what it wrote is read off after.
+--- question: the hold used to run BEFORE any of it, so the handler is driven
+--- until it parks or falls over and what it wrote -- now, nothing -- is read
+--- off after.
 --- @return table client
 local function newClient()
     local runner = Sandbox.newThreadRunner()
@@ -625,8 +621,6 @@ local function newClient()
         IsEntityDead = function() return false end,
         GetEntityHealth = function() return 200 end,
         GetPedArmour = function() return 0 end,
-        -- The identity, as fixtures/world.lua does it: a weapon hash IS its
-        -- name here, which is all this section needs of it.
         joaat = function(name) return name end,
         GetSelectedPedWeapon = function() return 'WEAPON_UNARMED' end,
         HasPedGotWeapon = function() return false end,
@@ -634,10 +628,10 @@ local function newClient()
         SetCurrentPedWeapon = function() end,
         RemoveAllPedWeapons = function() end,
 
-        -- THE THREE WRITES THIS SECTION IS ABOUT. They are settings on the
-        -- PLAYER rather than the ped, they are what the engine judges a
-        -- bullet between two players against, and nothing else on a server
-        -- puts them back.
+        -- THE THREE WRITES THIS SECTION IS ABOUT, AND ALL THREE MUST STAY
+        -- UNTOUCHED. They are settings on the PLAYER rather than the ped,
+        -- they are what the engine judges a bullet between two players
+        -- against, and this resource has now been burned by two of them.
         SetPlayerTeam = function(_player, team) c.engineTeam = team end,
         GetPlayerTeam = function() return c.engineTeam or -1 end,
         NetworkSetFriendlyFireOption = function(on) c.friendlyFire = on end,
@@ -648,32 +642,6 @@ local function newClient()
 
     c.env = env
     c.Arena = env.Arena
-
-    --- Drives the entry handler until it parks in a yield or falls over on a
-    --- native this fixture does not carry. Either is fine: the engine team
-    --- is set in the first dozen lines.
-    function c.enter(teamKey)
-        local handler = handlers['crimson_arena:client:enterArena']
-        assert(handler, 'client/match.lua registered no enterArena handler')
-        local thread = coroutine.create(function()
-            handler({
-                matchId = 'match-1',
-                arenaKey = 'trailerpark',
-                modeKey = 'tdm',
-                teamKey = teamKey,
-                spawn = { x = 2344.4, y = 2565.1, z = 46.7, w = 90.0 },
-                scatterRadius = 0.0,
-                sizeFactor = 1.0,
-                loadout = { weapons = {}, health = 200, armor = 0 },
-                freezeSeconds = 0,
-            })
-        end)
-        for _ = 1, 50 do
-            if coroutine.status(thread) == 'dead' then break end
-            if not select(1, coroutine.resume(thread)) then break end
-        end
-    end
-
     c.handlers = handlers
 
     --- Any handler, driven the way FiveM drives one.
@@ -688,266 +656,131 @@ local function newClient()
         end
     end
 
+    --- A round in a mode of the caller's choosing.
+    function c.enterMode(modeKey, teamKey)
+        c.fire('crimson_arena:client:enterArena', {
+            matchId = 'match-1',
+            arenaKey = 'trailerpark',
+            modeKey = modeKey,
+            teamKey = teamKey,
+            spawn = { x = 2344.4, y = 2565.1, z = 46.7, w = 90.0 },
+            scatterRadius = 0.0,
+            sizeFactor = 1.0,
+            loadout = { weapons = {}, health = 200, armor = 0 },
+            freezeSeconds = 0,
+        })
+    end
+
+    function c.enter(teamKey) c.enterMode('tdm', teamKey) end
+
     --- The round ending under this client, as the server ends it.
     function c.exit()
         c.fire('crimson_arena:client:exitArena',
             { returnCoords = { x = 0.0, y = 0.0, z = 0.0, w = 0.0 } })
     end
 
-    --- A round in a mode of the caller's choosing, for the free-for-all
-    --- case -- where there is no side and nothing may be held at all.
-    function c.enterMode(modeKey, teamKey)
-        local handler = handlers['crimson_arena:client:enterArena']
-        local thread = coroutine.create(function()
-            handler({
-                matchId = 'match-1',
-                arenaKey = 'trailerpark',
-                modeKey = modeKey,
-                teamKey = teamKey,
-                spawn = { x = 2344.4, y = 2565.1, z = 46.7, w = 90.0 },
-                scatterRadius = 0.0,
-                sizeFactor = 1.0,
-                loadout = { weapons = {}, health = 200, armor = 0 },
-                freezeSeconds = 0,
-            })
-        end)
-        for _ = 1, 50 do
-            if coroutine.status(thread) == 'dead' then break end
-            if not select(1, coroutine.resume(thread)) then break end
-        end
+    --- Nothing about friendly fire was written, in either direction.
+    function c.untouched()
+        return c.engineTeam == nil and c.friendlyFire == nil and c.canAttackFriendly == nil
     end
 
     return c
 end
 
-t.test('a team round puts the player on their side and turns friendly fire off', function()
+t.test('a team round writes NONE of the three friendly-fire natives', function()
+    -- THE ASSERTION THAT USED TO BE HERE WAS THE EXACT OPPOSITE, and a live
+    -- round says it was wrong. See this file's header.
     local client = newClient()
     client.enter('crimson')
 
-    t.equals(client.engineTeam, client.Arena.TeamIndex('crimson'),
-        'the engine was never told which side this fighter is on')
-    -- ONE OF THE TWO IS WRITTEN, AND ONLY ONE.
-    --
-    -- NetworkSetFriendlyFireOption IS. It is team-scoped, so it cannot refuse
-    -- an enemy, and it is the only thing that zeroes the teammate's half of a
-    -- spread the server deliberately lets through whole (crossfire_spec's
-    -- "THE REGRESSION: a spread that catches a teammate still hits the
-    -- enemy"), or a melee blow the server mostly never sees -- measured in
-    -- this repo's history: three team rounds of bottles and crowbars produced
-    -- exactly ONE friendly-fire refusal, and it was a gun.
-    --
-    -- SetCanAttackFriendly IS NOT. It answers a RELATIONSHIP question, and
-    -- GTA's one PLAYER group makes every player friendly to every other, so
-    -- refusing "friendlies" refused every player regardless of the team index
-    -- set alongside it -- the report, "i can't shoot my enemies and they
-    -- can't shoot me".
-
-    t.isFalse(client.friendlyFire,
-        'friendly fire was left ON in a mode whose rule is that it is off')
-    t.isNil(client.canAttackFriendly, 'this resource is writing SetCanAttackFriendly again')
+    t.isNil(client.engineTeam,
+        'SetPlayerTeam is being written again -- that write, with the friendly-fire option '
+        .. 'beside it, is what stopped enemies killing each other in a live team deathmatch')
+    t.isNil(client.friendlyFire,
+        'NetworkSetFriendlyFireOption is being written again -- one bare BOOL, an EMPTY '
+        .. 'description in the native reference, and no getter anywhere: nothing has ever '
+        .. 'shown it doing what this resource claimed, and the one round it was measured '
+        .. 'in it broke the arena')
+    t.isNil(client.canAttackFriendly,
+        'SetCanAttackFriendly is being written again -- the first cause of "i can\'t shoot '
+        .. 'my enemies and they can\'t shoot me"')
 end)
 
-t.test('and walking out of the round puts all three back', function()
-    -- THE ONE THAT FOLLOWS YOU HOME. These are settings on the PLAYER, not
-    -- on the ped, so a respawn does not clear them and neither does
-    -- anything else on the box. Left set, this player spends the rest of
-    -- their session unable to hurt -- or be hurt by -- everyone the engine
-    -- still has on team 1.
+t.test('and leaving writes none of them either, because there is nothing to put back', function()
+    -- A SETTING NEVER WRITTEN IS A SETTING NEVER LEFT BEHIND, and that is now
+    -- the whole of this file's client-side promise -- the strongest form of
+    -- it, because it needs no exit path to be reached, no ordering to hold,
+    -- and no guessed constant to restore. The player walks out of the arena
+    -- on exactly the team and exactly the option they walked in on, whatever
+    -- those were, because nobody here ever looked.
     local client = newClient()
+    client.engineTeam = 7        -- a job, gang or faction script's team
     client.enter('crimson')
     client.exit()
-
-    t.equals(client.engineTeam, -1, 'the arena kept this player on its own team after the round')
-    -- A SETTING NEVER WRITTEN IS A SETTING NEVER LEFT BEHIND. This is the
-    -- half of the header's promise that used to need a release at all: both
-    -- of these lack a getter, so the release could only ever hand back a
-    -- GUESS at what the operator had -- the exact thing
-    -- client/dispatch.lua:147 forbids. Now they are untouched going in, so
-    -- there is nothing to hand back coming out.
-    t.isTrue(client.friendlyFire, 'friendly fire stayed OFF after the round that turned it off')
-    t.isNil(client.canAttackFriendly, 'the exit path is writing SetCanAttackFriendly')
-end)
-
-t.test('and so does the resource going down under them', function()
-    local client = newClient()
-    client.enter('crimson')
     client.fire('onResourceStop', 'crimson_arena')
-
-    t.equals(client.engineTeam, -1, 'a restart left the arena team on the player')
-    t.isTrue(client.friendlyFire, 'a restart left friendly fire OFF')
-end)
-
-t.test('a free-for-all never touches either of them, so it has nothing to leave behind', function()
-    local client = newClient()
-    client.enterMode('ffa', nil)
-
-    t.isNil(client.engineTeam, 'a mode with no sides put the player on one')
-    t.isNil(client.friendlyFire, 'a mode with no sides had an opinion about friendly fire')
-    t.isNil(client.canAttackFriendly, 'a mode with no sides touched SetCanAttackFriendly')
-end)
-
-t.test('a second round on the other side starts from the engine default, not from the first', function()
-    local client = newClient()
-    client.enter('crimson')
-    client.exit()
-    client.enter('ash')
-
-    t.equals(client.engineTeam, client.Arena.TeamIndex('ash'),
-        'the second round inherited the first round\'s side')
-
-    client.exit()
-    t.equals(client.engineTeam, -1,
-        'and the second round put back the side the FIRST one had set, not the engine default')
-end)
-
-t.test('and the two sides are given DIFFERENT engine numbers, which is what makes an enemy shootable at all', function()
-    -- THE REPORT THIS WHOLE FIX CAME FROM WAS "i can't shoot my enemies",
-    -- and one number for both sides is the other way to cause it. The
-    -- engine judges a bullet between two players by the team index; two
-    -- sides sharing one index ARE one side, and the
-    -- NetworkSetFriendlyFireOption(false) set alongside it then refuses
-    -- every shot in the round -- enemies included.
-    --
-    -- Arena.TeamIndex is POSITIONAL, over a list an operator edits. This
-    -- asserts the property the hold depends on rather than the numbers,
-    -- so it still means something after that list is reordered.
-    local client = newClient()
-    local crimson = client.Arena.TeamIndex('crimson')
-    local ash = client.Arena.TeamIndex('ash')
-
-    t.isTrue(crimson ~= nil, 'a configured side has no engine number to be put on')
-    t.isTrue(ash ~= nil, 'a configured side has no engine number to be put on')
-    t.isTrue(crimson ~= ash, 'both sides of a team round were given the SAME engine number, so nobody can shoot anybody')
-    t.isTrue(crimson ~= -1 and ash ~= -1,
-        'a side was given the engine default as its number, so every unteamed player in the city is on it too')
-end)
-
-t.test('the side the player ARRIVED on is what comes back, not the engine default', function()
-    -- EVERY OTHER TEST IN THIS SECTION STARTS FROM -1, which is the engine
-    -- default and is also the constant the release would hand back if it
-    -- had forgotten what it read. From -1 those two are the same answer and
-    -- the release cannot be told from a hardcoded SetPlayerTeam(-1).
-    --
-    -- A job, gang, whitelist or war script putting its people on a team is
-    -- ordinary on a roleplay server, and -1 is emphatically not what those
-    -- players had. Left on -1 by the arena, they come out of a round having
-    -- quietly resigned from their own faction -- and the one thing this
-    -- file exists to prevent is the round changing something about a player
-    -- that outlives it.
-    local client = newClient()
-    client.engineTeam = 7
-    client.enter('crimson')
-
-    t.equals(client.engineTeam, client.Arena.TeamIndex('crimson'),
-        'the round never put this fighter on their side')
-
-    client.exit()
 
     t.equals(client.engineTeam, 7,
-        'the round handed back the engine default instead of the team this player walked in on')
-    t.isTrue(client.friendlyFire, 'and left friendly fire off with it')
+        'the arena moved a player off the team another resource had them on')
+    t.isNil(client.friendlyFire, 'the exit is writing NetworkSetFriendlyFireOption again')
+    t.isNil(client.canAttackFriendly, 'the exit is writing SetCanAttackFriendly again')
 end)
 
-t.test('and a second exit does not take it off them again', function()
-    -- The exit is not sent once. ArenaMatch.End sends it, ArenaLobby.Destroy
-    -- can send another behind it, and onResourceStop runs leaveArena on top
-    -- of whatever already happened -- an operator restarting the resource a
-    -- moment after a round ends is all it takes. A release that runs twice
-    -- has no reading left to hand back the second time, so without its own
-    -- guard the second run writes the -1 the first one was careful not to.
-    local client = newClient()
-    client.engineTeam = 7
-    client.enter('crimson')
-    client.exit()
-    client.exit()
-    client.fire('onResourceStop', 'crimson_arena')
+t.test('and neither does a free-for-all, a round that ends in a restart, or a respawn', function()
+    local ffa = newClient()
+    ffa.enterMode('ffa', nil)
+    ffa.exit()
+    t.isTrue(ffa.untouched(), 'a free-for-all touched one of the three')
 
-    t.equals(client.engineTeam, 7, 'a repeated exit wiped the team the player walked in on')
+    local restarted = newClient()
+    restarted.enter('crimson')
+    restarted.fire('onResourceStop', 'crimson_arena')
+    t.isTrue(restarted.untouched(), 'a restart mid-round touched one of the three')
+
+    local respawned = newClient()
+    respawned.enter('crimson')
+    respawned.fire('crimson_arena:client:respawn', {
+        spawn = { x = 1.0, y = 2.0, z = 3.0, w = 0.0 },
+        scatterRadius = 0.0,
+        loadout = { weapons = {}, health = 200, armor = 0 },
+    })
+    t.isTrue(respawned.untouched(), 'a respawn touched one of the three')
 end)
 
-t.test('and a free-for-all ending does not hand back a side it never took', function()
-    -- THE SAME GUARD FROM THE OTHER DIRECTION, and the cheaper one to break.
-    -- A mode with no sides writes neither setting going in, so the way out
-    -- must write neither either. Without the guard the exit hands back a
-    -- reading it never took -- and a player who walked into an FFA on their
-    -- faction's team walks out of it on nobody's.
-    local client = newClient()
-    client.engineTeam = 7
-    client.enterMode('ffa', nil)
-    client.exit()
-
-    t.equals(client.engineTeam, 7, 'a round that never touched the team wrote one on the way out')
-    t.isNil(client.friendlyFire, 'a round that never touched friendly fire had an opinion about it on the way out')
-end)
-
-t.test('an eliminated fighter is still held while the round runs, and let go when it ends', function()
-    -- BEING KNOCKED OUT IS NOT LEAVING. An eliminated fighter stays in the
-    -- match -- they spectate, they are still on the roster, the server still
-    -- reads their side off it -- and the server deliberately does NOT send
-    -- them an exit at that moment. So the hold must survive it: dropped
-    -- there, a dead ally watching from the sidelines is a body their own
-    -- side can shoot at, and a respawn in a mode with lives puts them back
-    -- in the round with no hold at all.
+t.test('THE GUARD THAT CANNOT BE SATISFIED BY LUCK: the source calls none of them', function()
+    -- EVERY TEST ABOVE DRIVES ONE ENTRY PATH. This reads the file.
     --
-    -- And it must not survive the round. The exit that does come, when the
-    -- match actually ends, is the one that has to put them back.
-    local client = newClient()
-    client.engineTeam = 7
-    client.enter('crimson')
-    client.fire('crimson_arena:client:eliminated', { matchId = 'match-1', spectate = true })
-
-    t.equals(client.engineTeam, client.Arena.TeamIndex('crimson'),
-        'being knocked out of a live round dropped the side mid-round')
-    t.isFalse(client.friendlyFire, 'being knocked out of a live round turned friendly fire back on mid-round')
-
-    client.exit()
-
-    t.equals(client.engineTeam, 7, 'an eliminated fighter was left on the arena team after the round ended')
-    t.isTrue(client.friendlyFire, 'an eliminated fighter was left with friendly fire off after the round ended')
-end)
-
-t.test('THE RELEASE IS THE FIRST THING leaveArena DOES, ahead of the prop teardown', function()
-    -- ASSERTED AGAINST THE SOURCE, and that is deliberate rather than lazy.
+    -- The three assertions above can only see the paths the fixture reaches,
+    -- and the entry handler parks partway through on a native this fixture
+    -- does not carry -- so a re-added write further down, in a branch no test
+    -- drives, would pass all of them. This one cannot be fooled that way:
+    -- there must be no CALL to any of the three anywhere in the file.
     --
-    -- WHAT THE PROPERTY IS. The engine team and NetworkSetFriendlyFireOption
-    -- are the only two things in that whole teardown that outlive the
-    -- session -- props, blips, outlines and the camera are all put right by
-    -- a respawn or a reconnect on their own. So they must not sit behind
-    -- anything that can throw. clearArenaScenery is seven natives deep --
-    -- GetGamePool, DoesEntityExist, GetEntityModel, GetEntityCoords,
-    -- SetEntityAsMissionEntity, DeleteObject and ArenaDebugPrint, across
-    -- removeArenaProps and the stray sweep -- and any one of them failing on
-    -- a build that lacks it, or on an entity that went away between the
-    -- existence check and the delete, used to take the release down with it.
-    -- Worst on the path with no second chance: leaveArena is also the
-    -- onResourceStop handler, where there is no later round to put it right.
-    --
-    -- WHY NOT DRIVE IT. That was tried first and it was a ZOMBIE. The entry
-    -- handler in this fixture parks before it builds anything, so arenaProps
-    -- is empty and builtArena is nil, and clearArenaScenery quietly returns
-    -- without calling a single native -- there is nothing to make fail.
-    -- Making a teardown native throw and then asserting the team came back
-    -- passed with the two lines in EITHER order, which is worse than no test
-    -- at all. Measured, not supposed: the mutation was run.
-    --
-    -- So the ordering is pinned where the ordering lives. Swap the two lines
-    -- in client/match.lua and this goes red, which is the whole job.
+    -- Comments are allowed and deliberately so -- the epitaph in
+    -- client/match.lua names all three while explaining why they are gone --
+    -- so this strips comment lines before looking.
     local source = assert(io.open('../Crimson-Arena/client/match.lua', 'r'))
     local text = source:read('a')
     source:close()
 
-    local body = text:match('local function leaveArena%(returnCoords%)(.-)\nend\n')
-    t.isTrue(body ~= nil, 'leaveArena is not where this test thinks it is -- find it and fix this test')
+    local offenders = {}
+    local n = 0
+    for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+        n = n + 1
+        local bare = line:gsub('^%s+', '')
+        if not bare:match('^%-%-') then
+            for _, native in ipairs({ 'SetPlayerTeam', 'GetPlayerTeam',
+                                     'NetworkSetFriendlyFireOption', 'SetCanAttackFriendly' }) do
+                if bare:find(native .. '%s*%(') then
+                    offenders[#offenders + 1] = ('%s at line %d'):format(native, n)
+                end
+            end
+        end
+    end
 
-    local release = body:find('releaseFriendlyFire%(PlayerPedId%(%)%)')
-    local scenery = body:find('clearArenaScenery%(%)')
-
-    t.isTrue(release ~= nil, 'leaveArena no longer releases the friendly-fire hold at all')
-    t.isTrue(scenery ~= nil, 'leaveArena no longer tears the scenery down -- find it and fix this test')
-    t.isTrue(release < scenery,
-        'the friendly-fire release is back UNDER the prop teardown: a native failing in there now leaves '
-        .. 'the arena team and friendly fire set on the player until they reconnect, and on the resource-stop '
-        .. 'path there is no second chance at it')
+    t.equals(#offenders, 0,
+        'client/match.lua is calling a friendly-fire native again (' .. table.concat(offenders, ', ')
+        .. '). Two of these have each already caused the report "enemies cannot kill each other" '
+        .. 'in a live round. Read the epitaph at the top of the file before putting any of them back.')
 end)
 
 os.exit(t.summary())

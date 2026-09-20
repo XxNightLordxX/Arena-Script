@@ -535,21 +535,21 @@ Config.Teams = {
     --
     --   BULLETS are refused on the server, by cancelling the damage packet.
     --
-    --   MELEE IS MOSTLY NOT, and the measurement is in this repository's own
-    --   history: three team rounds where every loadout carried a bottle, a
-    --   crowbar, a hatchet or a candycane produced exactly ONE friendly-fire
-    --   refusal in the whole session, and it was a gun. weaponDamageEvent is
-    --   what a shooter's client reports, and plenty of damage never produces
-    --   one the server can cancel in time. What is EXPECTED to refuse melee
-    --   is the engine hold the client puts on -- the network team plus
-    --   friendly fire off -- which is decided before any damage exists.
+    --   MELEE IS THE ONE TO TEST YOURSELF. That refusal is weapon-agnostic
+    --   -- there is no weapon hash or melee branch anywhere in
+    --   server/dispatch.lua, so a bottle is refused by the identical code
+    --   that refuses a rifle round -- but only IF the engine reports the
+    --   swing as a damage packet at all, and this repository's history
+    --   gives reason to doubt it: three team rounds where every loadout
+    --   carried a bottle, a crowbar, a hatchet or a candycane produced
+    --   exactly ONE friendly-fire refusal all session, and it was a gun.
     --
-    --   THAT SECOND HALF IS NOT MEASURED, and it is written unmeasured on
-    --   purpose rather than stated as fact. d697fa8 measured the problem
-    --   (the server barely refuses melee) and reasoned the fix; nobody has
-    --   since watched a bottle bounce off a team-mate. The same reasoning
-    --   said the hold covered explosions and it did not. If you run melee
-    --   loadouts on a team mode, test it before you rely on it.
+    --   THERE IS NO LONGER A SECOND LAYER BEHIND IT. The client used to set
+    --   a network team and switch friendly fire off, and that pair was
+    --   claimed to catch melee. It was never measured doing so, and in a
+    --   live team deathmatch it stopped ENEMIES killing each other -- twice.
+    --   Both writes are gone; see the epitaph atop client/match.lua. Test
+    --   melee before you rely on it.
     --
     --   Nothing stops the TRIGGER. Aiming at your own side still fires,
     --   still spends the round, and still plays the flinch on your own

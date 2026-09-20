@@ -1142,366 +1142,94 @@ t.test('and the hold stops when there is nothing outlined', function()
 end)
 
 -- ======================================================================
--- FRIENDLY FIRE
+-- FRIENDLY FIRE: THE CLIENT DOES NOT TOUCH IT, AND MUST NOT START AGAIN
 --
--- REPORTED FROM A LIVE SERVER, for melee AND gunfire both: teammates could
--- hurt each other in a team round with friendly fire off. server/dispatch.lua
--- refuses those shots by cancelling weaponDamageEvent, which is the right
--- guard and not a complete one -- plenty of damage never produces one the
--- server can cancel in time, melee above all.
+-- THIS SECTION USED TO HOLD FIFTEEN TESTS DEMANDING THE OPPOSITE. They
+-- required the client to call SetPlayerTeam and NetworkSetFriendlyFireOption
+-- on entry, re-assert both once a second against other resources, and put
+-- them back on the way out. All fifteen were green. The arena was broken.
 --
--- The engine is now told as well, and the thing that matters most about
--- telling it is UNDOING it. A network team left set follows the player out of
--- the arena and into the rest of the server, where nothing else set it and
--- nothing else will ever put it back.
+-- WHAT A LIVE ROUND SAID, in the owner's words, on team deathmatch:
+-- "Enemies can't kill each other." That pair was the only difference between
+-- the arena and the rest of a server where PvP works -- and it is the SECOND
+-- time these natives produced that symptom. The first, "i can't shoot my
+-- enemies and they can't shoot me", was pinned on SetCanAttackFriendly alone,
+-- and this pair was kept on an argument rather than a measurement.
+--
+-- WHY THE ARGUMENT COULD NEVER HAVE BEEN CHECKED FROM HERE. The claim was
+-- "NetworkSetFriendlyFireOption is team-scoped, the sides are on different
+-- engine teams, so it cannot refuse an enemy". The native takes ONE BARE
+-- BOOL -- no player, no team -- its description in the FiveM native reference
+-- is the EMPTY STRING, and no getter for it exists in any namespace. Two
+-- readings fit, and both produce the reported symptom: the option is not
+-- team-scoped at all, or SetPlayerTeam does not replicate the way the file
+-- assumed and every client reads every other as one team. Removing both
+-- fixes it either way.
+--
+-- AND WHY NO TEST COULD HAVE CAUGHT IT. Every fixture here wires
+-- GetPlayerTeam straight back to the same client's own SetPlayerTeam, so the
+-- suite can only ever see this resource agreeing with itself. It cannot
+-- represent a second engine, which is where the failure lived.
+--
+-- FRIENDLY FIRE IS THE SERVER'S JOB NOW, AND ONLY THE SERVER'S --
+-- weaponDamageEvent and explosionEvent through Arena.CanDamage, both
+-- weapon-agnostic. What remains here is the guard that keeps the client out
+-- of it. DO NOT "restore" these tests.
 -- ======================================================================
 
-t.test('a team round tells the engine which side this player is on', function()
+t.test('a team round writes neither friendly-fire native', function()
     local f = newFixture()
     f.enterLive()
 
-    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
-        'the engine was never told the side, so it has no reason to refuse a teammate')
-    -- NEITHER IS WRITTEN AT ALL NOW, which is a stronger claim than the
-    -- values these two lines used to check: there is no flag left for any
-    -- exit path to forget, and none this resource has to guess a stock
-    -- value for on the way out. See the collapsed test below for why.
-    t.isFalse(f.friendlyFire, 'friendly fire was left ON for a round whose rule is that it is off')
-    t.isNil(f.canAttackFriendly, 'SetCanAttackFriendly is being written again')
+    t.isNil(f.team,
+        'SetPlayerTeam is being written again -- with the option beside it, that is what '
+        .. 'stopped enemies killing each other in a live team deathmatch')
+    t.isNil(f.friendlyFire, 'NetworkSetFriendlyFireOption is being written again')
 end)
 
-t.test('a free-for-all tells it nothing, or the whole round is harmless', function()
-    -- Everybody on one team with friendly fire off is a round where nobody
-    -- can hurt anybody. The mode has no sides, so the engine is left alone.
+t.test('and nor does a free-for-all, which never did', function()
     local f = newFixture()
     f.enterLive({ modeKey = 'ffa', teamKey = nil })
 
-    t.isNil(f.team, 'a free-for-all put every fighter on the same side')
+    t.isNil(f.team, 'a mode with no sides put the player on one')
+    t.isNil(f.friendlyFire, 'a mode with no sides had an opinion about friendly fire')
 end)
 
-t.test('AND THE INDEX MOVING UNDER A LIVE ROUND IS SEEN, not just the player moving off it', function()
-    -- Arena.TeamIndex is POSITIONAL: the place of a side in
-    -- ipairs(Arena.GetEnabledTeams()), which is sorted by order then key. It
-    -- is not a stable name for a team. Anything that changes
-    -- Config.Teams.list renumbers it.
-    --
-    -- THE PER-FRAME CHECK CANNOT SEE THAT, and that is the whole of this
-    -- test. It compares GetPlayerTeam against the number stored when the hold
-    -- was taken -- so when the NUMBER moves rather than the player, nothing
-    -- looks wrong: the player is still on the value that was stored. Every
-    -- fighter who respawns after the change is put on the new one, and one
-    -- side ends up on two engine teams -- the respawned cannot hurt an enemy
-    -- who now shares their number, and CAN hurt the team-mate still on the
-    -- old one.
-    --
-    -- The recheck is throttled because Arena.GetEnabledTeams allocates and
-    -- sorts per call, so the clock is advanced past it rather than spinning
-    -- sixty frames.
+t.test('and a whole round start-to-finish leaves the player exactly as it found them', function()
+    -- THE PROMISE THIS SECTION EXISTS FOR, in its strongest available form.
+    -- It used to be "whatever we set, we put back", which needed every exit
+    -- path to be reached and a guessed constant to restore. It is now
+    -- "we set nothing", which needs neither.
     local f = newFixture()
+    f.team = 7               -- a job, gang or faction script's team
+
     f.enterLive()
-    local before = f.team
-    t.equals(before, f.env.Arena.TeamIndex('crimson'),
-        'the hold never started, so this proves nothing')
-
-    -- A SIDE APPEARS AHEAD OF CRIMSON IN THE ORDER, renumbering it. The
-    -- player has NOT moved: f.engineTeam is untouched.
-    f.env.Config.Teams.list = f.env.Config.Teams.list or {}
-    f.env.Config.Teams.list.aurum = { label = 'Aurum', order = 0, enabled = true }
-    local after = f.env.Arena.TeamIndex('crimson')
-    t.isTrue(after ~= before,
-        'the fixture did not actually renumber the side, so this test measures nothing')
-
-    f.clock = 5000
     f.step()
-
-    t.equals(f.team, after,
-        'the index moved out from under a live round and nothing put the player on the new '
-            .. 'one -- one side is now split across two engine teams')
-end)
-
-t.test('and a side the config cannot place takes the hold OFF rather than leaving it half on', function()
-    -- Arena.TeamIndex answers nil when the round's teamKey is not in
-    -- Arena.GetEnabledTeams() -- an operator disabling a team while a round
-    -- using it is live, or a key this client's config does not know. There is
-    -- no honest index to use, so the hold cannot be taken.
-    --
-    -- WHAT IT MUST NOT DO IS LEAVE HALF OF ONE STANDING. A player left on a
-    -- stale arena team with the option still off is the worst of both: the
-    -- engine is refusing damage between whoever happens to share that number
-    -- now, which is not the round's own sides. Bailing has to RELEASE.
-    --
-    -- Deleting that release used to break nothing -- checked across every
-    -- spec that loads client/match.lua.
-    local f = newFixture()
-    f.enterLive()
-    local heldTeam = f.team
-    t.equals(heldTeam, f.env.Arena.TeamIndex('crimson'),
-        'the hold never started, so this proves nothing')
-    t.isFalse(f.friendlyFire, 'the hold never switched the option off, so this proves nothing')
-
-    -- NOW THE SIDE STOPS BEING PLACEABLE, and something moves the player off
-    -- their number so the drift repair reaches holdFriendlyFire again.
-    f.env.Config.Teams.list = {}
-    f.engineTeam = 7
     f.step()
+    f.fire('crimson_arena:client:exitArena', { returnCoords = { x = 0.0, y = 0.0, z = 0.0, w = 0.0 } })
 
-    t.isTrue(f.friendlyFire,
-        'a round whose side cannot be placed kept friendly fire switched off -- the engine is '
-            .. 'still refusing damage between whoever shares that team number now')
-    t.isTrue(f.team ~= heldTeam,
-        'the player was left on the arena team for a side the config can no longer place')
+    t.equals(f.team, 7, 'the arena moved a player off a team it did not set')
+    t.isNil(f.friendlyFire, 'the arena wrote the friendly-fire option somewhere in the round')
 end)
 
-t.test('AND AN OPERATOR CHANGING THEIR MIND MID-ROUND IS NOTICED', function()
-    -- Config.Teams.friendlyFire was read exactly once, inside
-    -- holdFriendlyFire, which is reached from entry, respawn, the countdown
-    -- revive and the drift repair. A round where nobody dies and nothing
-    -- moves the player never looked at it again -- so an operator turning
-    -- friendly fire ON mid-round kept the hold, and teammates went on being
-    -- unable to hurt each other until somebody happened to respawn.
-    local f = newFixture()
-    f.enterLive()
-    t.isFalse(f.friendlyFire, 'the hold never started, so this proves nothing')
-
-    f.env.Config.Teams.friendlyFire = true
-    f.step()
-
-    t.isTrue(f.friendlyFire,
-        'the operator turned friendly fire on mid-round and the hold stayed -- teammates '
-            .. 'still cannot hurt each other')
-    t.equals(f.team, -1, 'and the player was left on the arena team')
-end)
-
-t.test('and the same in reverse, which is the direction that matters', function()
-    -- Turning it OFF mid-round: a round the operator has just decided to
-    -- protect must be protected for everyone, not only for whoever dies next.
-    local f = newFixture(function(config) config.Teams.friendlyFire = true end)
-    f.enterLive()
-    t.isTrue(f.friendlyFire ~= false, 'the hold started when the operator did not want one')
-
-    f.env.Config.Teams.friendlyFire = false
-    f.step()
-
-    t.isFalse(f.friendlyFire,
-        'the operator turned friendly fire off mid-round and nothing took the hold')
-    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
-        'and the player was never put on their side')
-end)
-
-t.test('THE CONFIG WHERE THIS IS THE ONLY THING LEFT: the server guard off', function()
-    -- Config.Match.crossfireGuard.enabled is an operator switch, and BOTH
-    -- server handlers open on it: weaponDamageEvent and explosionEvent each
-    -- `if not crossfireEnabled() then return end`. With it off the server
-    -- refuses nothing at all -- not crossfire, not friendly fire -- so this
-    -- client hold is the ONLY friendly-fire enforcement on the whole box.
-    --
-    -- NOTHING PINNED THAT. crossfire_spec drives the switch off, but only to
-    -- prove the server stops touching other people's damage, which is the
-    -- opposite assertion. The property that matters here is INDEPENDENCE: the
-    -- client must not consult that switch, because a client hold that
-    -- switched itself off with the server would leave a team round with no
-    -- friendly fire of any kind and nothing on either side saying so.
-    --
-    -- Today the client never reads crossfireGuard at all -- a grep over
-    -- Crimson-Arena/client returns nothing -- and this is what keeps that
-    -- true for whoever is tempted to "tidy" the two switches into one.
-    local f = newFixture(function(config)
-        config.Match = config.Match or {}
-        config.Match.crossfireGuard = config.Match.crossfireGuard or {}
-        config.Match.crossfireGuard.enabled = false
-    end)
-    f.enterLive()
-
-    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
-        'the server guard being off took the engine team with it')
-    t.isFalse(f.friendlyFire,
-        'the server guard being off turned the client hold off too -- a team round with the '
-            .. 'guard disabled now has NO friendly-fire enforcement anywhere')
-end)
-
-t.test('and a server that WANTS friendly fire is left alone too', function()
-    local f = newFixture(function(config) config.Teams.friendlyFire = true end)
-    f.enterLive()
-
-    t.isNil(f.team, 'the operator asked for teammates to be able to hurt each other')
-end)
-
-t.test('THE ONE THAT MATTERS: it does not follow the player out of the arena', function()
-    local f = newFixture()
-    f.enterLive()
-    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
-        'the hold never started, so this proves nothing')
-
-    f.fire('crimson_arena:client:exitArena', {})
-
-    t.equals(f.team, -1, 'the player left the arena still on the arena\'s team')
-    t.isTrue(f.friendlyFire, 'friendly fire was left OFF for the rest of this player\'s session')
-    t.isNil(f.canAttackFriendly, 'the exit wrote SetCanAttackFriendly')
-end)
-
-t.test('and the resource stopping mid-round puts it back as well', function()
-    -- The exit nobody chooses. A restart with a round in progress reaches
-    -- leaveArena the same way, and this state is exactly the kind that
-    -- outlives the resource that set it.
+t.test('and no per-frame writer fights the rest of the server for the team', function()
+    -- THE RE-ASSERT IS GONE WITH THE HOLD. It ran once a second and rewrote
+    -- both natives whenever the engine team disagreed with the one this file
+    -- had set. Defending a setting the resource no longer owns is just two
+    -- resources overwriting each other every frame for no reason.
     local f = newFixture()
     f.enterLive()
 
-    f.fire('onResourceStop', 'crimson_arena')
+    local writes = 0
+    local real = f.env.SetPlayerTeam
+    f.env.SetPlayerTeam = function(...) writes = writes + 1 return real(...) end
 
-    t.equals(f.team, -1, 'a restart mid-round left the player on the arena\'s team for good')
-    t.isTrue(f.friendlyFire, 'a restart mid-round left friendly fire OFF for good')
-end)
-
-
-
-t.test('THE HOLD IS ON THE PLAYER NOW, so no ped can drop it', function()
-    -- FOUR TESTS STOOD HERE AND ARE GONE, and what they measured is gone with
-    -- them rather than unmeasured. Each drove one way a player gets a NEW PED
-    -- mid-round -- a respawn, a handover this file does not listen for, a
-    -- revive during the countdown -- and asserted that SetCanAttackFriendly
-    -- had been re-applied to it, because that native is a property of the PED
-    -- and a resurrect hands back a fresh one with the flag cleared.
-    --
-    -- THAT NATIVE IS NOT WRITTEN ANY MORE. Together with
-    -- NetworkSetFriendlyFireOption it stopped a fighter damaging ANYBODY:
-    -- SetCanAttackFriendly answers a RELATIONSHIP question, and GTA's single
-    -- PLAYER group makes every player friendly to every other, so refusing
-    -- "friendlies" refused every player -- the team index set beside it
-    -- changed nothing. The owner's report was "i can't shoot my enemies and
-    -- they can't shoot me". Friendly fire is enforced by the SERVER, in
-    -- weaponDamageEvent off Arena.CanDamage, which crossfire_spec drives in
-    -- both directions.
-    --
-    -- SO THE PER-PED QUESTION HAS NO SUBJECT LEFT. The one setting still
-    -- written is the network team, which belongs to the PLAYER and survives
-    -- every respawn, model change and handover on its own. This test is the
-    -- four of them collapsed into the claim that is actually left: drive the
-    -- same ped changes, and the team is still right afterwards while neither
-    -- per-ped native is ever touched.
-    local f = newFixture()
-    f.enterLive()
-    local entered = f.ped
-    local side = f.env.Arena.TeamIndex('crimson')
-
-    f.fire('crimson_arena:client:respawn', {
-        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
-        scatterRadius = 0,
-    })
-    for _ = 1, 6 do f.step() end
-
-    t.isTrue(f.ped ~= entered,
-        'the fixture did not give the player a new ped, so this test measures nothing')
-    t.equals(f.team, side, 'a respawn moved the player off their side')
-    t.isNil(f.canAttackFriendly, 'a respawn wrote SetCanAttackFriendly again')
-    t.isFalse(f.friendlyFire, 'a respawn left friendly fire ON inside a team round')
-
-    -- AND THE EXIT STILL PUTS THE TEAM BACK, which is the half that always
-    -- mattered: it is the one of the three with a real getter, so it is the
-    -- one restored to what was READ rather than to a guessed constant.
-    f.fire('crimson_arena:client:exitArena', {})
-    t.equals(f.team, -1, 'the player left the arena still on the arena\'s team')
-    t.isNil(f.canAttackFriendly, 'the exit wrote SetCanAttackFriendly')
-    t.isTrue(f.friendlyFire, 'friendly fire was left OFF for the rest of this player\'s session')
-end)
-
-t.test('and leaving puts back the network team the player was already on', function()
-    -- -1 IS AN ASSUMPTION, not a reading. The arena stamped it on the way
-    -- out without ever having asked what was there, so on a server whose own
-    -- resource puts players on network teams, walking out of a round quietly
-    -- cleared somebody else's. PLAYER::GET_PLAYER_TEAM exists, so this one
-    -- is readable -- unlike the two engine flags beside it, which have no
-    -- getter at all and stay documented assumptions.
-    local f = newFixture()
-    f.engineTeam = 7
-    f.enterLive()
-
-    t.equals(f.team, f.env.Arena.TeamIndex('crimson'), 'the hold never started')
-
-    -- THROUGH A RESPAWN, which is what makes this about the read and not
-    -- merely about the write. The hold is re-applied on the new ped every
-    -- time somebody comes back up, and a version that re-read the prior team
-    -- there would record the ARENA'S OWN side as the thing to go back to --
-    -- restoring a value it had written itself, which looks exactly like
-    -- working until somebody checks what the player walked in on.
-    f.fire('crimson_arena:client:respawn', {
-        spawn = { x = 10.0, y = 20.0, z = 30.0, w = 0.0 },
-        scatterRadius = 0,
-    })
-    for _ = 1, 6 do f.step() end
-
-    f.fire('crimson_arena:client:exitArena', {})
-    t.equals(f.team, 7, 'the player was left on no team instead of the one they walked in on')
-    t.equals(f.engineTeam, 7, 'and the engine still has them on the arena\'s side')
-end)
-
-
-
-t.test('and it is not re-applied every frame while nothing has touched it', function()
-    -- The loop is per-frame, so a re-hold that did not check would write both
-    -- natives on every frame of every team round for ever.
-    --
-    -- IT USED TO COUNT SetCanAttackFriendly CALLS AND SO COUNTED NOTHING.
-    -- That native is not written any more, `f.friendlyCalls` is appended to
-    -- only by its stub, and both sides of the comparison were therefore 0 on
-    -- every run -- an assertion that could not fail for ANY change to
-    -- client/match.lua, under a name claiming to guard the hot path. It
-    -- counts the writes that really happen now.
-    local f = newFixture()
-    f.enterLive()
-    local afterEntry = f.teamWrites
-
+    f.team = 7
     for _ = 1, 10 do f.step() end
 
-    t.equals(f.teamWrites, afterEntry,
-        'the hold was re-applied on a frame where nothing had drifted')
-
-    -- AND THE CONTROL, so this cannot pass by the re-assert being dead: move
-    -- the player off their side and the very next frame must put it back.
-    -- `engineTeam` is what the fixture's GetPlayerTeam reads, which is what
-    -- the guard compares against -- setting only `team` would move nothing
-    -- the guard can see, and this control would pass while testing nothing.
-    f.engineTeam = 7
-    f.step()
-    t.isTrue(f.teamWrites > afterEntry,
-        'the re-assert never fired after another resource moved the player')
-end)
-
-t.test('and entering a free-for-all straight from a team round puts it back', function()
-    -- holdFriendlyFire is the one place that knows whether the hold SHOULD
-    -- be on, so its bails are not "nothing to do" -- they are "whatever is
-    -- held should not be". Returning instead left a player who went from a
-    -- team round into a free-for-all with no exit between them on their old
-    -- side's engine team, friendly fire off, for the whole of it.
-    local f = newFixture()
-    f.enterLive()
-    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
-        'the hold never started, so this proves nothing')
-
-    f.enterLive({ modeKey = 'ffa', teamKey = nil })
-
-    t.isTrue(f.friendlyFire, 'a free-for-all inherited the team round\'s friendly-fire hold')
-    t.isNil(f.canAttackFriendly, 'a free-for-all wrote SetCanAttackFriendly')
-    t.equals(f.team, -1, 'and the player was left on the previous round\'s engine team')
-end)
-
-t.test('and so does a server that wants friendly fire, mid-session', function()
-    -- The same bail, reached by the other route: an operator flipping
-    -- Config.Teams.friendlyFire and the client re-entering.
-    local f = newFixture()
-    f.enterLive()
-    t.equals(f.team, f.env.Arena.TeamIndex('crimson'), 'the hold never started')
-
-    f.env.Config.Teams.friendlyFire = true
-    f.enterLive()
-
-    -- THE TEAM IS THE OBSERVABLE NOW. holdFriendlyFire releases when the
-    -- operator has asked for friendly fire, and releasing is what puts the
-    -- network team back -- so a round entered under that setting must leave
-    -- the player off the arena's side, not on it.
-    t.equals(f.team, -1,
-        'a round the operator wants friendly fire in kept the previous hold')
-    t.isTrue(f.friendlyFire,
-        'a round the operator wants friendly fire in kept the hold switched off')
+    t.equals(writes, 0, 'the arena is re-asserting a team again')
+    t.equals(f.team, 7, 'the arena overwrote a team another resource set mid-round')
+    f.env.SetPlayerTeam = real
 end)
 
 t.test('THE CAUSE: the outline mask is drawn with a group ped shaders implement', function()

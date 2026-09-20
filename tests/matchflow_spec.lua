@@ -2229,75 +2229,52 @@ t.test('and a new round clears the flag, so they can be sent home again', functi
 end)
 
 -- ======================================================================
--- THE FRIENDLY-FIRE HOLD, AGAINST THE REST OF THE SERVER
+-- THE CLIENT-SIDE FRIENDLY-FIRE HOLD IS GONE, AND MUST STAY GONE
 -- ======================================================================
 
-t.test('a team match puts the player on their side and turns friendly fire off', function()
+t.test('a team match writes NEITHER friendly-fire native, because writing them broke the arena', function()
+    -- THIS SECTION USED TO ASSERT THE OPPOSITE, and the round it was checked
+    -- against says it was wrong.
+    --
+    -- IN THE OWNER'S WORDS, from a live team deathmatch: "Enemies can't kill
+    -- each other." The pair those tests demanded -- SetPlayerTeam plus
+    -- NetworkSetFriendlyFireOption(false) -- was the only difference between
+    -- the arena and the rest of a server where PvP works. It is the SECOND
+    -- time these natives produced that symptom; the first, "i can't shoot my
+    -- enemies and they can't shoot me", was blamed on SetCanAttackFriendly
+    -- alone and this pair was kept on an argument that nothing supported.
+    --
+    -- The native reference is the reason it could never have been settled
+    -- from the desk: NETWORK_SET_FRIENDLY_FIRE_OPTION takes one bare BOOL --
+    -- no player, no team -- its description field is the EMPTY STRING, and no
+    -- getter for it exists in any namespace. "It is team-scoped so it cannot
+    -- refuse an enemy" was always belief.
+    --
+    -- SO THE TEST IS INVERTED ON PURPOSE. Friendly fire is the SERVER's job
+    -- now, and only the server's. Re-add either write and this goes red.
     local f = outlinedTeamMatch()
-    t.equals(f.team, f.env.Arena.TeamIndex('crimson'),
-        'the engine was never told which side this fighter is on')
-    -- ONE OF THE TWO IS WRITTEN, AND ONLY ONE.
-    --
-    -- NetworkSetFriendlyFireOption IS. It is team-scoped, so it cannot refuse
-    -- an enemy, and it is the only thing that zeroes the teammate's half of a
-    -- spread the server deliberately lets through whole (crossfire_spec's
-    -- "THE REGRESSION: a spread that catches a teammate still hits the
-    -- enemy"), or a melee blow the server mostly never sees -- measured in
-    -- this repo's history: three team rounds of bottles and crowbars produced
-    -- exactly ONE friendly-fire refusal, and it was a gun.
-    --
-    -- SetCanAttackFriendly IS NOT. It answers a RELATIONSHIP question, and
-    -- GTA's one PLAYER group makes every player friendly to every other, so
-    -- refusing "friendlies" refused every player regardless of the team index
-    -- set alongside it -- the report, "i can't shoot my enemies and they
-    -- can't shoot me".
 
-    t.isFalse(f.friendlyFire, 'friendly fire was left ON for a round whose rule is that it is off')
+    t.isNil(f.team,
+        'the client is telling the engine which side this fighter is on again -- '
+        .. 'that pair is what made enemies unable to kill each other in a live round')
+    t.isNil(f.friendlyFire,
+        'the client is writing NetworkSetFriendlyFireOption again -- there is no getter '
+        .. 'for it, its description in the native reference is empty, and the one round '
+        .. 'it was measured in it stopped enemies killing each other')
 end)
 
-t.test('and another resource moving the player off it does not switch friendly fire back on', function()
-    -- IN A PLAYER'S WORDS: "when switching teams on team deathmatch, when you
-    -- try to start it with the same team then switch again, it keeps friendly
-    -- fire".
-    --
-    -- SetPlayerTeam and NetworkSetFriendlyFireOption are settings on the
-    -- PLAYER, not the ped, and every other resource on the box can write
-    -- them: a gang script, a job script, a spectator or freecam resource
-    -- putting you on a side of its own. The arena wrote them once at entry
-    -- and never looked again -- so the first resource to touch either one
-    -- turned friendly fire back on for the rest of the round, teammates
-    -- shooting each other in a mode whose whole rule is that they cannot,
-    -- with nothing said at either end.
+t.test('and another resource moving the player onto a team is left alone', function()
+    -- THE RE-ASSERT WENT WITH THE HOLD. It existed to defend a setting this
+    -- resource no longer writes, and a per-frame writer defending nothing is
+    -- just a resource fighting the gang script for no reason.
     local f = outlinedTeamMatch()
-    local ours = f.team
 
-    -- SOMEBODY ELSE'S RESOURCE, mid-round. Only the TEAM is seeded now: the
-    -- friendly-fire flag is not a setting this resource writes any more, so
-    -- another resource owning it is not this file's business. The team is,
-    -- and putting it back is the whole of what the re-assert is for.
     f.team = 7
-
-    f.step()
-
-    t.equals(f.team, ours, 'the arena never put its own side back')
-    t.isFalse(f.friendlyFire, 'the re-assert left friendly fire ON for the rest of the round')
-end)
-
-t.test('and the hold is not re-written every frame while nothing has touched it', function()
-    -- A GUARD THAT ALWAYS FIRES IS NOT A GUARD. The re-hold is meant to cost
-    -- one native read a frame on an untouched server; a comparison that never
-    -- matches would have it writing three natives a frame for every fighter
-    -- in every team round, for ever.
-    local f = outlinedTeamMatch()
-    local writes = 0
-    local realSet = f.env.SetPlayerTeam
-    f.env.SetPlayerTeam = function(...) writes = writes + 1 return realSet(...) end
-
     f.step()
     f.step()
 
-    t.equals(writes, 0, 'the hold rewrote itself on a frame where nothing had drifted')
-    f.env.SetPlayerTeam = realSet
+    t.equals(f.team, 7,
+        'the arena is reaching in and overwriting a team it did not set and does not use')
 end)
 
 -- ======================================================================

@@ -721,65 +721,37 @@ local function newClient()
     return c
 end
 
-t.test('the client fights under the side the server sent it, and two sides are never one engine team', function()
+t.test('the client tells the ENGINE nothing about sides, on the first round or the second', function()
+    -- THIS TEST USED TO DEMAND THE ENGINE BE TOLD, AND THAT WAS THE BUG.
+    --
+    -- The client wrote SetPlayerTeam plus NetworkSetFriendlyFireOption(false)
+    -- on entry. In a live team deathmatch the owner reported the result in
+    -- four words: "Enemies can't kill each other." Both writes are gone; the
+    -- server is the only thing that decides a bullet now.
+    --
+    -- Arena.TeamIndex went with it -- it existed only to produce the number
+    -- SetPlayerTeam was handed, and nothing else ever called it. Which side a
+    -- fighter is on is now a SERVER fact, read off the roster by
+    -- Arena.CanDamage; teamsguard_spec pins that the sides stay distinct
+    -- there, which is where it now matters.
+    --
+    -- WHAT IS STILL WORTH PINNING HERE is that entering a round -- a first
+    -- one, or a second on the other side -- writes nothing to the engine at
+    -- all. This spec is about team switching, so it is the natural place to
+    -- catch a re-added write that only fires on the second entry.
     local client = newClient()
 
     client.enter('crimson')
-    local crimson = client.engineTeam
-    t.equals(crimson, client.Arena.TeamIndex('crimson'),
-        'the engine was told a side that is not the one the server sent')
-    -- ONE OF THE TWO IS WRITTEN, AND ONLY ONE.
-    --
-    -- NetworkSetFriendlyFireOption IS. It is team-scoped, so it cannot refuse
-    -- an enemy, and it is the only thing that zeroes the teammate's half of a
-    -- spread the server deliberately lets through whole (crossfire_spec's
-    -- "THE REGRESSION: a spread that catches a teammate still hits the
-    -- enemy"), or a melee blow the server mostly never sees -- measured in
-    -- this repo's history: three team rounds of bottles and crowbars produced
-    -- exactly ONE friendly-fire refusal, and it was a gun.
-    --
-    -- SetCanAttackFriendly IS NOT. It answers a RELATIONSHIP question, and
-    -- GTA's one PLAYER group makes every player friendly to every other, so
-    -- refusing "friendlies" refused every player regardless of the team index
-    -- set alongside it -- the report, "i can't shoot my enemies and they
-    -- can't shoot me".
+    t.isNil(client.engineTeam,
+        'the client is writing SetPlayerTeam again -- that write, with the friendly-fire '
+        .. 'option beside it, is what stopped enemies killing each other in a live round')
+    t.isNil(client.friendlyFire,
+        'the client is writing NetworkSetFriendlyFireOption again')
 
-    t.isFalse(client.friendlyFire, 'friendly fire was left ON for a round whose rule is that it is off')
-
-    -- The next round, on the other side. Nothing about the first may follow
-    -- this player into it -- a cached side here is the client half of the
-    -- reported bug, and it would look exactly the same from inside the game.
     client.enter('ash')
-    local ash = client.engineTeam
-    t.equals(ash, client.Arena.TeamIndex('ash'),
-        'the client kept the side it was told last round')
-
-    t.isNotNil(crimson)
-    t.isNotNil(ash)
-    t.isTrue(crimson ~= ash,
-        'both sides map to ONE engine team, so the game would refuse every shot between them whatever the server allowed')
+    t.isNil(client.engineTeam, 'a second round started writing the engine team again')
+    t.isNil(client.friendlyFire, 'a second round started writing the friendly-fire option again')
 end)
 
-t.test('the enabled sides map onto engine teams one for one, in a fixed order', function()
-    -- EVERY CLIENT HAS TO AGREE, and nothing synchronises this: each one
-    -- works its own index out from the shared config. Arena.GetEnabledTeams
-    -- walks `pairs` over a hash table, so the SORT underneath it is the only
-    -- thing standing between two players and the same engine team.
-    local client = newClient()
-    local seen = {}
-    for _, team in ipairs(client.Arena.GetEnabledTeams()) do
-        local index = client.Arena.TeamIndex(team.key)
-        t.isNotNil(index, ('enabled side %s has no engine team'):format(team.key))
-        t.isNil(seen[index], ('two sides share engine team %s'):format(tostring(index)))
-        seen[index] = team.key
-    end
-
-    -- Asked twice, because an order that changes between two calls in one
-    -- process is an order that changes between two players.
-    for _, team in ipairs(client.Arena.GetEnabledTeams()) do
-        t.equals(seen[client.Arena.TeamIndex(team.key)], team.key,
-            'the side-to-team mapping is not stable across calls')
-    end
-end)
 
 os.exit(t.summary())

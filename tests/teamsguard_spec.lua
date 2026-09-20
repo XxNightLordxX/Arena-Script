@@ -128,37 +128,40 @@ end)
 -- THE FOUR SEAMS FRIENDLY FIRE HANGS OFF
 -- ======================================================================
 
-t.test('every enabled team maps to a real engine team number, and nobody to -1', function()
-    -- Arena.TeamIndex IS WHAT holdFriendlyFire PUTS THE PLAYER ON.
-    -- SetPlayerTeam(-1) is the engine's "no team", which is where an
-    -- ordinary player starts -- so a mapping that answered -1, or 0, or the
-    -- same number for two sides, would silently switch engine-level friendly
-    -- fire OFF for that side while every other test in the suite stayed
-    -- green. The mapping was asserted nowhere.
+t.test('the enabled sides are distinct, which is what lets the server tell them apart', function()
+    -- THIS TEST USED TO BE ABOUT Arena.TeamIndex, THE ENGINE TEAM NUMBER.
+    -- That function is gone with the client-side friendly-fire hold it fed:
+    -- writing SetPlayerTeam and NetworkSetFriendlyFireOption stopped enemies
+    -- killing each other in a live team deathmatch, twice, and the client no
+    -- longer touches either. See the epitaph at the top of client/match.lua.
+    --
+    -- WHAT THE TEST WAS REALLY PROTECTING SURVIVES THE FUNCTION, and it is
+    -- the config property underneath: two sides that are not distinct are ONE
+    -- side. Arena.CanDamage compares team KEYS off the server roster
+    -- (shared/arena.lua), so a duplicate key would have the server allowing
+    -- teammates to shoot each other and refusing enemies -- the same harm the
+    -- engine-number version was watching for, at the layer that now decides.
     local env = Sandbox.newArenaEnv({})
     local teams = env.Arena.GetEnabledTeams()
     t.isTrue(#teams >= 2, 'the shipped config needs at least two sides for this to mean anything')
 
     local seen = {}
     for _, team in ipairs(teams) do
-        local index = env.Arena.TeamIndex(team.key)
-
-        t.isTrue(type(index) == 'number',
-            ('team %s has no engine team number at all'):format(team.key))
-        t.isTrue(index >= 1,
-            ('team %s maps to %s -- anything below 1 is the engine\'s "no team", which turns friendly fire back ON for that side')
-                :format(team.key, tostring(index)))
-        t.equals(seen[index], nil,
-            ('teams %s and %s share engine number %s, so they can shoot each other')
-                :format(tostring(seen[index]), team.key, tostring(index)))
-        seen[index] = team.key
+        t.isTrue(env.Arena.IsKey(team.key),
+            ('an enabled side has no usable key: %s'):format(tostring(team.key)))
+        t.equals(seen[team.key], nil,
+            ('two enabled sides share the key %s, so the server cannot tell them apart')
+                :format(tostring(team.key)))
+        seen[team.key] = true
     end
 
-    -- AND A KEY THAT IS NOT A TEAM ANSWERS NOTHING, rather than a number
-    -- that would put the player on somebody else's side. holdFriendlyFire
-    -- returns early on nil, which is the safe reading.
-    t.equals(env.Arena.TeamIndex('nosuchteam'), nil, 'an invented key maps to nothing')
-    t.equals(env.Arena.TeamIndex(nil), nil, 'and so does no key at all')
+    -- AND THE ORDER IS STABLE, asked twice. Every client works the list out
+    -- from the shared config on its own and nothing synchronises it.
+    local first = {}
+    for n, team in ipairs(env.Arena.GetEnabledTeams()) do first[n] = team.key end
+    for n, team in ipairs(env.Arena.GetEnabledTeams()) do
+        t.equals(team.key, first[n], 'the side order is not stable across calls')
+    end
 end)
 
 t.test('a fighter cannot change sides once the round has started', function()

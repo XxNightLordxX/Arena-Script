@@ -265,22 +265,13 @@ local function stripIssuedWeapons(ped)
     end
 end
 
---- FORWARD-DECLARED so holdFriendlyFire's bail can say something. The real
---- definition is ArenaDebugPrint's, a few hundred lines down beside the rest
---- of the logging; `local function` there would shadow this one, so it is
---- assigned rather than redeclared. Nothing above that assignment runs before
---- the file has finished loading, so no caller can reach a nil here.
+--- FORWARD-DECLARED so the name stays LOCAL. The real definition is a few
+--- hundred lines down beside the rest of the logging and is an ASSIGNMENT --
+--- `local function` there would shadow this one -- so without this line that
+--- assignment silently creates a global. The caller that originally needed it
+--- this early was the friendly-fire hold's bail, which is gone; the
+--- declaration is not, and must not be "tidied away" for that reason.
 local ArenaDebugPrint
-
---- HOW OFTEN THE POSITIONAL TEAM INDEX IS RE-ASKED, in milliseconds. See the
---- arena loop for why it is not every frame: Arena.GetEnabledTeams allocates
---- and sorts on every call, and the only thing that can move an index is a
---- change to Config.Teams.list.
-local TEAM_INDEX_RECHECK_MS = 1000
-
---- When that recheck is next due. Reset with the hold so a fresh round asks
---- once promptly rather than inheriting the last round's schedule.
-local nextTeamIndexCheck = 0
 
 --- FORWARD-DECLARED for the same reason as ArenaDebugPrint above, and it is
 --- the second time this file has caught the same trap: the loggers live with
@@ -289,218 +280,64 @@ local nextTeamIndexCheck = 0
 --- this local instead of shadowing it.
 local ArenaLogOnce
 
-local friendlyFireHeld = false
-
-local priorTeam = nil
-
---- THE TEAM THIS FILE PUT THE PLAYER ON, so the per-frame loop can tell
---- whether somebody else has moved them off it.
+--- THE CLIENT-SIDE FRIENDLY-FIRE HOLD STOOD HERE AND IS GONE. DO NOT PUT IT
+--- BACK WITHOUT MEASURING IT IN A ROUND FIRST.
 ---
---- `heldPed` STOOD HERE AND IS GONE. It existed so the loop could notice the
---- player coming back on a new ped and re-apply SetCanAttackFriendly, which
---- is a property of the ped. That native is not written any more and the team
---- is a property of the PLAYER, so there was nothing left for it to answer.
-local heldTeam = nil
-
-local releaseFriendlyFire
-
---- WHETHER A HOLD SHOULD BE STANDING AT ALL, as one question in one place.
+--- WHAT IT WAS: on entering a team round this file called
+---   SetPlayerTeam(PlayerId(), Arena.TeamIndex(teamKey))
+---   NetworkSetFriendlyFireOption(false)
+--- and put them back on the way out, re-asserting both once a second against
+--- other resources. It was there to cover the two cases the server cannot:
+--- the teammate's half of a shotgun spread the server deliberately lets
+--- through whole, and melee.
 ---
---- holdFriendlyFire asked this inline and the arena loop needs the same
---- answer to notice an operator changing their mind mid-round. Two copies of
---- a three-part condition is how they drift apart, so there is one.
---- @return boolean
-local function wantsHold()
-    return currentMatch ~= nil
-        and Arena.ModeUsesTeams(currentMatch.modeKey)
-        and Config.Teams.friendlyFire ~= true
-end
-
-local function holdFriendlyFire(ped)
-    if not wantsHold() then
-        releaseFriendlyFire(ped)
-        return
-    end
-
-    -- AND IT SAYS SO WHEN IT CANNOT PLACE THE SIDE, rather than quietly
-    -- running the round with no hold at all.
-    --
-    -- Arena.TeamIndex answers nil when the client's teamKey is not in
-    -- Arena.GetEnabledTeams() -- an operator disabling a team while a round
-    -- using it is live, or a key this client's config does not know. Bailing
-    -- is right: a made-up index would put two sides on one number, and that
-    -- is the bug this whole block exists to avoid.
-    --
-    -- BUT IT USED TO BAIL IN SILENCE, and a round with the engine hold absent
-    -- looks exactly like a round with it on until somebody shotguns a
-    -- teammate through the server's deliberate spread bend. The server's own
-    -- equivalent fails CLOSED and says so; this one has to fail open, so the
-    -- least it can do is leave a line behind.
-    local index = Arena.TeamIndex(currentMatch.teamKey)
-    if not index then
-        -- ONCE A SESSION, NOT ONCE A CALL. This is a misconfiguration --
-        -- somebody's teamKey is not in Config.Teams -- so it is true for the
-        -- whole round and probably the whole session, and saying it again
-        -- adds nothing. The respawn handler calls holdFriendlyFire on every
-        -- respawn, so "once a call" is once per death on a round that is
-        -- already broken.
-        --
-        -- NOT per-frame, though, and that is worth writing down because it
-        -- reads like it could be: the drift repair in the arena loop only
-        -- calls holdFriendlyFire while friendlyFireHeld is true, and the
-        -- releaseFriendlyFire below clears it. One bail ends the loop's
-        -- interest.
-        --
-        -- ArenaLogOnce rather than ArenaDebugPrint for the other half too:
-        -- ArenaDebugPrint sends a net event to the server per call, and a
-        -- misconfiguration warning is not worth a packet each time.
-        ArenaLogOnce('friendly-fire-no-team',
-            'friendly fire: no engine team for "%s", so this round runs with no client-side '
-            .. 'hold -- teammates can be caught by a spread meant for an enemy, and the melee '
-            .. 'the server barely refuses. Check that teamKey is in Config.Teams. '
-            .. '(Said once a session.)',
-            tostring(currentMatch.teamKey))
-        releaseFriendlyFire(ped)
-        return
-    end
-
-    if not friendlyFireHeld then priorTeam = GetPlayerTeam(PlayerId()) end
-
-    -- TWO OF THE THREE. `SetCanAttackFriendly(ped, false, false)` used to sit
-    -- here as well and is GONE; the other two stay, and the difference
-    -- between them is the whole of this.
-    --
-    -- THE REPORT: "i can't shoot my enemies and they can't shoot me". Not
-    -- teammates -- ANYBODY, in both directions, because every client was
-    -- doing it to itself.
-    --
-    -- SetCanAttackFriendly ANSWERS A RELATIONSHIP QUESTION, NOT A TEAM ONE,
-    -- and that is why it could not be saved by the team index set beside it.
-    -- GTA's default relationships put every player in one PLAYER group that
-    -- is friendly to itself, so a ped told it may not attack "friendlies" may
-    -- not attack PLAYERS -- full stop, whatever network team anybody is on.
-    -- It is also per-PED, which is why it had to be re-applied on every
-    -- respawn; the team does not.
-    --
-    -- AND THE NATIVE REFERENCE SAYS SO OUTRIGHT, which is worth quoting here
-    -- because this was argued from symptoms for two commits before anybody
-    -- read it. SET_CAN_ATTACK_FRIENDLY(ped, toggle, p2), verbatim:
-    --
-    --     Setting ped to true allows the ped to shoot "friendlies".
-    --     p2 set to true when toggle is also true seams to make peds
-    --     permanently unable to aim at, even if you set p2 back to false.
-    --     p1 = false & p2 = false for unable to aim at.
-    --     p1 = true & p2 = false for able to aim at.
-    --
-    -- The hold wrote (ped, false, false). That is the third line: UNABLE TO
-    -- AIM AT, stated flatly and NOT scoped to friendlies. The report was not
-    -- a misreading of a team flag; it is what the documented argument pair
-    -- does.
-    --
-    -- AND THE OLD RELEASE WROTE (ped, true, true) -- the second line, the one
-    -- the reference warns makes a ped PERMANENTLY unable to aim at, "even if
-    -- you set p2 back to false". Anybody who played a team round on a build
-    -- that shipped that release may still be carrying it, and no change here
-    -- can reach them: it wants a fresh ped, which a respawn or a reconnect
-    -- gives. Worth knowing before concluding a fix did not work.
-    --
-    -- IF IT IS EVER WRONG ANYWAY, THE CHEAP TEST IS THE SERVER'S OWN LOG.
-    -- The weaponDamageEvent handler prints `crossfire: %s may not damage %s`
-    -- when it cancels on a per-victim refusal. Seeing those lines in a round
-    -- where nobody can hurt anybody means the block is the SERVER's and this
-    -- file is innocent.
-    --
-    -- SILENCE IS NOT THE OPPOSITE VERDICT, and reading it as one is the trap.
-    -- The server also cancels WITHOUT printing that line -- a packet naming
-    -- more than MAX_HITS entities, and the explosion handler, which has its
-    -- own refusal and its own wording. And ArenaDebug is gated on
-    -- Config.Debug (server/util.lua), which ships true but is the first thing
-    -- a live server turns off. So silence means "no per-victim refusal was
-    -- logged", which is consistent with the server blocking for another
-    -- reason, with Debug being off, and with this file being at fault. Rule
-    -- the first two out before believing the third.
-    --
-    -- CHECK Config.Debug FIRST, because that print is ArenaDebug and
-    -- server/util.lua returns early unless Debug is true. It ships true, so
-    -- a stock install answers honestly -- but on a live server with Debug
-    -- turned off a REFUSING server is silent, and silence is the branch that
-    -- blames this file. No Debug, no verdict.
-    --
-    -- NetworkSetFriendlyFireOption STAYS, AND REMOVING IT WAS A MISTAKE THAT
-    -- LASTED ONE COMMIT. It is team-scoped: it governs damage between players
-    -- the engine considers on the SAME network team, and the line above has
-    -- just put the two sides on different ones. It cannot refuse an enemy, so
-    -- it was never part of the report -- and it is doing real work that
-    -- NOTHING ELSE DOES.
-    --
-    -- WHAT IT COVERS THAT THE SERVER DOES NOT, which is the reason it is back:
-    -- the server refuses a PACKET, never a victim. crossfire_spec's own
-    -- "THE REGRESSION: a spread that catches a teammate still hits the enemy"
-    -- pins that deliberately -- a spread naming an enemy AND a teammate is
-    -- allowed through whole, because cancelling it would make hugging a
-    -- teammate shotgun-proof. The teammate's half of that spread is zeroed
-    -- HERE or nowhere. Melee is the other half of the same argument, and it
-    -- is measured rather than reasoned: d697fa8 records three team rounds
-    -- where every loadout carried a bottle, a crowbar, a hatchet or a
-    -- candycane and the server produced exactly ONE friendly-fire refusal in
-    -- the whole session -- and it was a gun.
-    --
-    -- AND IT DOES NOT COVER EVERYTHING, WHICH IS NOT A GUESS EITHER. An
-    -- earlier version of this comment claimed it caught "every damage class
-    -- the two server handlers never see", naming a flamethrower's burn and
-    -- being run over. There is no evidence for that and there is evidence
-    -- against the same reasoning: cce70c9 measured a grenade killing a
-    -- team-mate on team deathmatch with friendly fire off, at a commit where
-    -- BOTH of these natives were live. config.lua says the same to the
-    -- operator -- "EXPLOSIONS ARE NOT REFUSED". So this covers weapon damage:
-    -- bullets, pellets and melee. Explosions it demonstrably does not, and
-    -- fire ticks and vehicle rams are the same shape of damage as an
-    -- explosion rather than the same shape as a bullet, so they are claimed
-    -- for nothing until somebody measures them.
-    --
-    -- SO THE SERVER IS THE AUTHORITY AND THIS IS THE COVER. The server is
-    -- what an edited client cannot get past; this is what catches the cases
-    -- the server deliberately or structurally lets through. Neither is
-    -- redundant and the round needs both.
-    SetPlayerTeam(PlayerId(), index)
-    NetworkSetFriendlyFireOption(false)
-    friendlyFireHeld = true
-    heldTeam = index
-    nextTeamIndexCheck = GetGameTimer() + TEAM_INDEX_RECHECK_MS
-end
-
-releaseFriendlyFire = function(ped)
-    if not friendlyFireHeld then return end
-    friendlyFireHeld = false
-    heldTeam = nil
-
-    -- THE TEAM IS RESTORED TO WHAT WAS READ. GetPlayerTeam is a real getter,
-    -- so this hands back the reading taken at the door rather than a constant.
-    SetPlayerTeam(PlayerId(), priorTeam or -1)
-    priorTeam = nil
-
-    -- AND THE OPTION IS PUT BACK ON, which is an ASSUMPTION and is flagged as
-    -- one rather than hidden. There is no getter for it in this build, so
-    -- `true` is the stock value guessed at, and client/dispatch.lua:147's rule
-    -- -- a setting this resource cannot read back is one it does not set --
-    -- is bent here knowingly.
-    --
-    -- WHY IT IS BENT RATHER THAN OBEYED. Obeying it means one of two things,
-    -- and both are worse than the guess: leave the option off, and a player
-    -- carries "my own side cannot hurt me" into the city for the rest of their
-    -- session; or never set it, and teammates take the half of a mixed spread
-    -- the server deliberately lets through, and the melee the server barely
-    -- catches. (NOT fire -- that claim is retracted where the hold is taken,
-    -- and repeating it here is how a file ends up arguing with itself.) The cost of the guess is an
-    -- operator who had deliberately turned friendly fire OFF server-wide
-    -- finding it on again after a round -- narrow, and it only bites a server
-    -- that both sets this native and puts players on shared teams.
-    --
-    -- SetCanAttackFriendly IS NOT UNSET HERE because it is no longer set --
-    -- see holdFriendlyFire. `ped` is still taken so both halves keep the same
-    -- shape and callers do not change.
-    NetworkSetFriendlyFireOption(true)
-end
+--- WHY IT IS GONE: IT BROKE THE ARENA. Reported from a live team deathmatch,
+--- in the owner's words, "Enemies can't kill each other" -- with this pair as
+--- the only difference between the arena and the rest of the server, where
+--- PvP works. That is the SECOND time these natives have produced that exact
+--- symptom: the first report, "i can't shoot my enemies and they can't shoot
+--- me" (0baa2e3), was blamed on SetCanAttackFriendly alone and this pair was
+--- kept on the strength of an argument. The argument was wrong.
+---
+--- THE ARGUMENT THAT WAS WRONG, recorded so it is not made a third time. It
+--- ran: NetworkSetFriendlyFireOption is team-scoped, the two sides have just
+--- been put on different engine teams, so it cannot refuse an enemy. Nothing
+--- ever supported that. The native takes ONE BARE BOOL -- no player argument,
+--- no team argument -- its description field in the FiveM native reference is
+--- the EMPTY STRING, and no getter for it exists in any namespace. Two
+--- readings fit the evidence and BOTH produce the reported symptom:
+---   * the option is not team-scoped at all, and false simply stops players
+---     damaging players; or
+---   * SetPlayerTeam does not replicate the way this file assumed, so every
+---     client reads every other as team -1 -- one team -- and the option then
+---     refuses everybody.
+--- Removing both writes fixes it under either reading, which is why both go
+--- rather than one.
+---
+--- WHAT COVERS FRIENDLY FIRE NOW: the server, alone, and that is the honest
+--- description of this design. server/dispatch.lua refuses at
+--- weaponDamageEvent and explosionEvent through Arena.CanDamage. Both are
+--- WEAPON-AGNOSTIC -- grep the file for weaponType, weaponHash or melee and
+--- you get nothing; the handler reads data.hitGlobalIds and nothing else --
+--- so a bottle to a teammate's head is refused by the identical code that
+--- refuses a rifle round, PROVIDED the engine emits the packet for it.
+---
+--- WHAT IS GENUINELY LOST, stated rather than glossed: the teammate's half of
+--- a mixed spread still lands, because the server refuses per packet and that
+--- packet is allowed through whole on purpose (crossfire_spec.lua:762). And
+--- if melee turns out not to raise weaponDamageEvent at all, melee between
+--- teammates is not refused by anything. Both were previously claimed as
+--- covered by the hold. Neither was ever measured to be, and the hold's only
+--- measured effect in a live round is the one that removed it.
+---
+--- NOTHING ELSE IN THIS RESOURCE READS THE ENGINE TEAM. Every GetPlayerTeam
+--- call in the tree belonged to this mechanism; blips, outlines and team
+--- marks all read row.team off the server's scoreboard instead. So this is a
+--- removal, not a hole.
+---
+--- PLAYERS WHO FOUGHT A ROUND ON AN OLDER BUILD still carry the team and the
+--- option this file set, and there is no getter to check or repair them from
+--- here. They must reconnect once.
 
 local function restoreOwnLoadout(ped)
     if not carried then return end
@@ -816,20 +653,6 @@ local function reviveForCountdown(ped)
 
     local revived = PlayerPedId()
 
-    -- DEFENSIVE, AND NOT TEST-HELD, said plainly rather than left looking
-    -- load-bearing. This used to be measured: the resurrect handed back a new
-    -- ped, SetCanAttackFriendly is a property of the PED, and the per-frame
-    -- loop would not re-apply it until the next frame -- a frame with the hold
-    -- dropped is a frame the engine lets a teammate's bullet through. A test
-    -- drove exactly that and would fail if this line went.
-    --
-    -- That native is gone, and with it the property. Both settings still held
-    -- belong to the PLAYER and a resurrect does not touch them, so deleting
-    -- this line now changes no answer any honest test can produce -- the loop
-    -- below would repair a drift a frame later anyway. It stays because it
-    -- costs nothing and because "the hold is re-asserted wherever this file
-    -- hands back a ped" is worth keeping true for whoever adds the next ped.
-    holdFriendlyFire(revived)
     ClearPedBloodDamage(revived)
 
     applyLoadout(revived, currentMatch and currentMatch.loadout)
@@ -1346,91 +1169,7 @@ local function startArenaThread()
                 if arenaVitals.armour then SetPedArmour(ped, arenaVitals.armour) end
             end
 
-            -- WATCHED ON THE TEAM, AND SO NO LONGER "DID THE PED CHANGE".
-            --
-            -- This used to re-apply the hold whenever the player came back on
-            -- a NEW PED, because SetCanAttackFriendly is a property of the ped
-            -- and a respawn hands back a fresh one with the flag cleared. That
-            -- native is not written any more -- see holdFriendlyFire -- and
-            -- both settings that are left belong to the PLAYER, surviving
-            -- every respawn, model change and handover on their own. So the
-            -- ped is no longer a reason to re-assert, and `heldPed` went with
-            -- the check that read it.
-            --
-            -- THE TEAM IS THE ONLY ONE THIS CAN WATCH, not the only one set.
-            -- NetworkSetFriendlyFireOption has no getter in this build, so
-            -- drift on it cannot be detected -- but re-applying the hold on a
-            -- team change writes BOTH again, so anything that moves the
-            -- player off their side repairs the option as a side effect. What
-            -- is not covered is a resource that flips the option while
-            -- leaving the team alone, and there is no way to see that from
-            -- here.
-            --
-            -- THE TEAM CHECK STAYS, and it is not about this file: nothing
-            -- stops another resource calling SetPlayerTeam mid-round, and a
-            -- fighter quietly moved off their side stops being outlined with
-            -- them. Re-asserted the moment it disagrees.
-            local current = PlayerPedId()
-
-            -- TWO QUESTIONS, ASKED AT DIFFERENT RATES, because they cost very
-            -- different amounts.
-            --
-            -- THE CHEAP ONE, EVERY FRAME: has somebody moved the player off
-            -- the number this file put them on? GetPlayerTeam is a getter and
-            -- the comparison is an integer, so it is free to ask at 60fps.
-            --
-            -- THE EXPENSIVE ONE, ONCE A SECOND: has the NUMBER moved out from
-            -- under the player? Arena.TeamIndex is POSITIONAL -- the index of
-            -- a side in ipairs(Arena.GetEnabledTeams()) -- so it is not a
-            -- stable name for a team, it is a place in a list that any change
-            -- to Config.Teams.list renumbers. The per-frame check cannot see
-            -- that: the player has not moved, so GetPlayerTeam still equals
-            -- heldTeam and nothing looks wrong -- while every fighter who
-            -- respawns after the change is put on the NEW number. One side
-            -- then sits on two engine teams: the ones who respawned cannot
-            -- hurt the enemy who happens to share their new number, and CAN
-            -- hurt the team-mate still on the old one. That is the "two sides
-            -- on one number" outcome the bail exists to prevent, reached
-            -- through the branch that is supposed to be safe.
-            --
-            -- ONCE A SECOND AND NOT PER FRAME, deliberately.
-            -- Arena.GetEnabledTeams allocates a table for the list and one
-            -- more per side and then sorts them, every call. Asking that at
-            -- 60fps to catch something only a config change can cause would
-            -- trade a rare hazard for a constant one. A second is far inside
-            -- any round and costs nothing measurable.
-            -- AND WHETHER THE OPERATOR STILL WANTS THE HOLD AT ALL, which is
-            -- the third question and the cheapest of the three.
-            --
-            -- Config.Teams.friendlyFire was read exactly once, inside
-            -- holdFriendlyFire, and holdFriendlyFire is reached from entry,
-            -- respawn, the countdown revive and the drift repair. A round
-            -- where nobody dies and nothing moves the player therefore never
-            -- looked at it again: an operator turning friendly fire ON
-            -- mid-round kept the hold, and teammates went on being unable to
-            -- hurt each other until somebody happened to respawn. Turning it
-            -- OFF mid-round is the same in reverse and is the direction that
-            -- matters -- a round the operator has just protected is not
-            -- protected for anyone who does not die.
-            --
-            -- A boolean compare against the flag this file already keeps, so
-            -- it is free to ask every frame, and holdFriendlyFire decides
-            -- what to do about it as it always has.
-            if friendlyFireHeld ~= (wantsHold() == true) then
-                holdFriendlyFire(current)
-            elseif friendlyFireHeld then
-                local want = heldTeam
-                local now = GetGameTimer()
-                if now >= nextTeamIndexCheck then
-                    nextTeamIndexCheck = now + TEAM_INDEX_RECHECK_MS
-                    want = currentMatch and Arena.TeamIndex(currentMatch.teamKey) or nil
-                end
-                if GetPlayerTeam(PlayerId()) ~= want then
-                    holdFriendlyFire(current)
-                end
-            end
-
-            handleDeath(current)
+            handleDeath(PlayerPedId())
 
             -- HOLD THE TEAM OUTLINE AGAINST THE OTHER RESOURCES ON THE BOX.
             --
@@ -2539,34 +2278,6 @@ end
 --- handler that does not finish.
 --- @param returnCoords table|nil
 local function leaveArena(returnCoords)
-    -- FIRST, AHEAD OF EVERYTHING INCLUDING THE SCENERY, and the order is
-    -- the point rather than tidiness.
-    --
-    -- THIS IS THE ONLY THING IN THE WHOLE TEARDOWN THAT OUTLIVES THE
-    -- SESSION. Every other line below puts back something a respawn, a
-    -- reconnect or another resource would fix anyway -- props, blips,
-    -- outlines, a camera. The engine team and NetworkSetFriendlyFireOption
-    -- are settings on the PLAYER, nothing else on a server writes them and
-    -- nothing else will ever put them back, so a leave that does not reach
-    -- this line leaves them set until the player reconnects.
-    --
-    -- AND IT USED TO SIT BEHIND SEVEN NATIVES. clearArenaScenery reaches
-    -- GetGamePool, DoesEntityExist, GetEntityModel, GetEntityCoords,
-    -- SetEntityAsMissionEntity, DeleteObject and ArenaDebugPrint, across
-    -- removeArenaProps and the stray sweep. One of those failing -- a build
-    -- without the pool native, an entity that went away between the
-    -- existence check and the delete -- took the release down with it.
-    --
-    -- WHICH MATTERS MOST ON THE PATH WITH NO SECOND CHANCE. leaveArena is
-    -- also the onResourceStop handler. A round ending has other ways to
-    -- come back round; a resource going down has none, and an error in the
-    -- prop teardown there is permanent.
-    --
-    -- FREE TO MOVE, because it reads and writes nothing this function
-    -- touches: the player's team and one network option, neither of which
-    -- any line below is looking at. DO NOT put it back under the scenery.
-    releaseFriendlyFire(PlayerPedId())
-
     clearArenaScenery()
 
     if not currentMatch then return end
@@ -2841,8 +2552,6 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
     ArenaDispatch.Enter(data.matchId)
 
-    holdFriendlyFire(ped)
-
     local sx, sy, sz, sheading = scatter(data.spawn,
         tonumber(data.scatterRadius) or Config.Match.spawnScatterRadius)
 
@@ -2957,8 +2666,6 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
 
     deathReported = false
     forgetAttribution()
-
-    holdFriendlyFire(ped)
 
     ClearPedBloodDamage(ped)
 

@@ -231,14 +231,6 @@ function Arena.GetEnabledTeams()
     return out
 end
 
-function Arena.TeamIndex(teamKey)
-    if not Arena.IsKey(teamKey) then return nil end
-    for index, team in ipairs(Arena.GetEnabledTeams()) do
-        if team.key == teamKey then return index end
-    end
-    return nil
-end
-
 function Arena.GetTeamByKey(key)
     if not Arena.IsKey(key) then return nil end
     for _, team in ipairs(Arena.GetEnabledTeams()) do
